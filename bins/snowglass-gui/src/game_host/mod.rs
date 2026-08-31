@@ -434,9 +434,22 @@ impl GameHost {
         session.change(topology).map(Some)
     }
 
-    pub fn take_controller_errors(
+    pub fn pause_resume(&self, state: snowglass_pluginhost::PauseState) -> Result<(), String> {
+        let Some(active) = &self.active else {
+            return Ok(());
+        };
+        let Some(session) = &active.controller_session else {
+            return Ok(());
+        };
+        session.pause_resume(state)
+    }
+
+    pub fn take_plugin_errors(
         &self,
-    ) -> Option<(crate::shell_runtime::InstanceToken, Vec<String>)> {
+    ) -> Option<(
+        crate::shell_runtime::InstanceToken,
+        Vec<snowglass_pluginhost::SessionError>,
+    )> {
         let active = self.active.as_ref()?;
         let session = active.controller_session.as_ref()?;
         let errors = session.take_errors();
@@ -611,6 +624,27 @@ impl GameHost {
             },
             move |_listener| Ok(()),
         )?;
+        if let Some(controller_session) = &controller_session {
+            let endpoint = self
+                .session
+                .instance()
+                .expect("a successful session launch owns an emulator instance")
+                .action_endpoint();
+            let attached = controller_session.attach_actions(move |hotkey| match hotkey {
+                snowglass_pluginhost::ParsedHotkey::Keyboard { code, modifiers } => {
+                    endpoint.activate_keyboard(code, modifiers)
+                }
+                snowglass_pluginhost::ParsedHotkey::Binding { player, keys } => {
+                    endpoint.activate_bindings(*player, keys)
+                }
+            });
+            if let Err(error) = attached {
+                let _ = self
+                    .session
+                    .finish(snowglass_vfs::FinalizationReason::LaunchFailed);
+                return Err(error);
+            }
+        }
         let automation = if let Some(controller_session) = &controller_session {
             let process_id = self
                 .session

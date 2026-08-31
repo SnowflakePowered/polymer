@@ -1,4 +1,5 @@
 import type {
+    Actions,
     Configuration as HostConfiguration,
     ControllerChangeContext as HostControllerChangeContext,
     ControllerMapping,
@@ -6,7 +7,9 @@ import type {
     Filesystem,
     InputProvider,
     Resource,
+    PauseResumeContext,
 } from "../plugin-api.ts";
+import { HotkeyParser } from "./hotkeys.ts";
 
 // Host-backed view of snowglass-config's ConfigurationInstance. This object is
 // deliberately opaque: the plugin may inspect and adjust option values, but it
@@ -22,6 +25,8 @@ type Configuration = HostConfiguration<{
                 gci_folder_a_path: string,
                 slot_a: string,
                 slot_b: string,
+                wiimote_continuous_scanning: boolean,
+                wiimote_controller_interface: boolean,
             },
             general: {
                 nand_root_path: string,
@@ -47,6 +52,7 @@ type Package = Readonly<{
 }>;
 
 type EmulatorLaunchArgs = {
+    actions: Actions,
     launchPath: string,
     console: string,
     package: Package,
@@ -308,6 +314,12 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     options.interface.skip_n_kit_warning = true;
 
     if (isWii) {
+        // The synthetic HID topology can arrive just after Dolphin's first
+        // scanner pass and can change while a mixed-controller session is live.
+        // Keep the Real Wiimote scanner active, but do not expose its devices
+        // through ControllerInterface where the SDL/emulated path could claim it.
+        options.core.wiimote_continuous_scanning = true;
+        options.core.wiimote_controller_interface = false;
         const wiiOptions = args.configuration.options().ports.NINTENDO_WII.wii;
         for (const mapping of args.controllerTopology.mappings) {
             if (mapping.target.group !== "wii") continue;
@@ -332,7 +344,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     return {
         command: args.filesystem.path("/Dolphin/Dolphin.exe"),
         argv,
-        isolate: false,
+        isolate: true,
         hooks: ["d3d11"],
         inputHooks: isWii ? ["bluetooth-api-win32"] : [],
         inputProviders,
@@ -360,7 +372,15 @@ export const onControllerChanged = async (context: ControllerChangeContext) => {
     return { inputProviders: rawWiimoteProviders(topology), controllerTopology: topology };
 };
 
+export const onParseHotkey = (expression: string) => HotkeyParser.dolphin(expression);
+
+export const onPauseResume = (context: PauseResumeContext) => {
+    context.actions.pause?.activate();
+};
+
 export default {
     onLaunch,
+    onPauseResume,
     onControllerChanged,
+    onParseHotkey,
 }

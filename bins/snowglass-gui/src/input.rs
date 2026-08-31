@@ -501,6 +501,9 @@ impl InputRouter {
 
     pub fn clear_native_input(&mut self) {
         self.raw_hid.clear();
+        if let Some(listener) = &self.listener {
+            listener.clear_raw_hid();
+        }
         self.applied_native_providers.clear();
         self.native_providers.lock().clear();
         if let Some(topology) = &mut self.topology {
@@ -767,6 +770,7 @@ impl InputRouter {
         }
         self.raw_hid.clear();
         if let Some(listener) = &self.listener {
+            listener.clear_raw_hid();
             for binding in &topology.raw_hid {
                 let spec = RawHidSpec {
                     pipe_name: binding.pipe.clone(),

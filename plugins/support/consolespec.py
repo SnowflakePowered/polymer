@@ -221,9 +221,10 @@ def check_group(machine: MachineSpec, group: str, layouts, ports: int,
     """Check a plugin's port group against what the machine declares.
 
     A layout the group does not accept is an error: the plugin is offering a
-    device that cannot be plugged in there. More ports than the machine
-    declares is only a warning, because the machine's count is its base port
-    count and a multitap legitimately exceeds it.
+    device that cannot be plugged in there. Exceeding the declared port count
+    is also an error because Snowglass validates plugin ports against that
+    topology. Multitap slots must therefore be represented by the machine
+    specification before a plugin can expose them.
     """
     spec = machine.group(group)
     for layout in layouts:
@@ -231,9 +232,8 @@ def check_group(machine: MachineSpec, group: str, layouts, ports: int,
             report.error(f"{context}: {machine.id}/{group} does not accept "
                          f"`{layout}`; it accepts {', '.join(spec.inputs) or 'nothing'}")
     if spec.ports is not None and ports > spec.ports:
-        report.warn(f"{context}: {ports} ports declared for {machine.id}/{group}, "
-                    f"which has {spec.ports}; correct only if the extras are a "
-                    f"multitap the machine's spec does not count")
+        report.error(f"{context}: {ports} ports declared for {machine.id}/{group}, "
+                     f"which has {spec.ports}")
     return spec
 
 

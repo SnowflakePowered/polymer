@@ -373,13 +373,15 @@ impl ShellCoordinator {
             }
             self.notify_snowglass(SnowglassNotification::ControllerApiStateChanged(state));
         }
-        if let Some((token, errors)) = self.game_host.take_controller_errors() {
+        if let Some((token, errors)) = self.game_host.take_plugin_errors() {
             for error in errors {
-                self.emit_instance_event(
-                    token,
-                    "controllerchangeerror",
-                    &instance_events::error(error),
-                );
+                let event = match &error {
+                    snowglass_pluginhost::SessionError::ControllerChanged(_) => {
+                        "controllerchangeerror"
+                    }
+                    snowglass_pluginhost::SessionError::PauseResume(_) => "pauseresumeerror",
+                };
+                self.emit_instance_event(token, event, &instance_events::error(error.message()));
             }
         }
         self.window.request_overlay_repaint();

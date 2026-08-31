@@ -337,9 +337,6 @@ def build_actions(hotkeys: list[dict], defaults: dict[str, str], revision: str |
         "",
         "[actions]",
         f'target = {toml_string(target_id("settings", "Hotkeys"))}',
-        # DuckStation reads the keyboard through Qt, so window messages reach it.
-        'transport = "win32-message"',
-        'keynames = "duckstation"',
         "",
         "[actions.map]",
     ]
@@ -365,7 +362,7 @@ def build_actions(hotkeys: list[dict], defaults: dict[str, str], revision: str |
         else:
             chord = canonical_chord(expression)
         lines.append(f"{action} = "
-                     f"{toml_value({'key': chord, 'expression': expression, 'name': hotkey})}")
+                     f"{toml_value({'expression': expression, 'name': hotkey})}")
         resolved += 1
     report.note(f"actions: {resolved} of {len(ACTION_VOCABULARY)} vocabulary entries resolved, "
                 f"{len(known) - resolved} DuckStation hotkeys unused")

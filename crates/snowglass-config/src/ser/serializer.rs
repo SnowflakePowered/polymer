@@ -119,6 +119,7 @@ impl<'a> Serializer<'a> {
         serializer.plan_section_writes()?;
         serializer.plan_input_writes()?;
         serializer.plan_port_writes()?;
+        serializer.plan_action_writes()?;
         if let Some(((group, index), _)) = serializer.gamepad_bindings.first_key_value() {
             return Err(Error::UnexpectedGamepadBinding {
                 group: group.clone(),
@@ -341,6 +342,22 @@ impl<'a> Serializer<'a> {
                     self.add_emit(Some(&port.target), &option.emit, source)?;
                 }
             }
+        }
+        Ok(())
+    }
+
+    fn plan_action_writes(&mut self) -> Result<()> {
+        let Some(actions) = self.definition.actions.as_ref() else {
+            return Ok(());
+        };
+        for emit in &actions.emit {
+            let Some(value) = emit.value.as_ref() else {
+                continue;
+            };
+            self.add_emit(Some(&actions.target), emit, WriteSource::Literal(value))?;
+        }
+        for action in actions.map.values() {
+            self.add_binding(&actions.target, &action.name, &action.expression)?;
         }
         Ok(())
     }
@@ -757,21 +774,34 @@ mod tests {
         let dolphin = serialize_plugin(
             &[
                 include_str!("../../../../plugins/dolphin/config/dolphin.toml"),
+                include_str!("../../../../plugins/dolphin/config/actions.toml"),
                 include_str!("../../../../plugins/dolphin/config/input.toml"),
             ],
             "NINTENDO_GCN",
             "controller",
             "GAMECUBE_CONTROLLER",
         );
+        let dolphin_hotkeys = text(&dolphin["Config/Hotkeys.ini"]);
         let dolphin = text(&dolphin["Config/GCPadNew.ini"]);
         assert!(
             dolphin.contains("Device=SDL/0/Snowglass Virtual Gamepad"),
             "{dolphin}"
         );
         assert!(dolphin.contains("Buttons/A=`Button S`"), "{dolphin}");
+        assert!(
+            dolphin_hotkeys.contains("Device=DInput/0/Keyboard Mouse"),
+            "{dolphin_hotkeys}"
+        );
+        assert!(
+            dolphin_hotkeys.contains("General/Toggle Pause=F10"),
+            "{dolphin_hotkeys}"
+        );
 
         let pcsx2 = serialize_plugin(
-            &[include_str!("../../../../plugins/pcsx2/config/input.toml")],
+            &[
+                include_str!("../../../../plugins/pcsx2/config/actions.toml"),
+                include_str!("../../../../plugins/pcsx2/config/input.toml"),
+            ],
             "SONY_PS2",
             "controller",
             "DUALSHOCK_2_CONTROLLER",
@@ -779,6 +809,22 @@ mod tests {
         let pcsx2 = text(&pcsx2["inis/PCSX2.ini"]);
         assert!(pcsx2.contains("Type=DualShock2"), "{pcsx2}");
         assert!(pcsx2.contains("Cross=SDL-0/FaceSouth"), "{pcsx2}");
+        assert!(pcsx2.contains("TogglePause=Keyboard/Space"), "{pcsx2}");
+
+        let duckstation = serialize_plugin(
+            &[
+                include_str!("../../../../plugins/duckstation/config/actions.toml"),
+                include_str!("../../../../plugins/duckstation/config/input.toml"),
+            ],
+            "SONY_PSX",
+            "controller",
+            "DUALSHOCK_CONTROLLER",
+        );
+        let duckstation = text(&duckstation["settings.ini"]);
+        assert!(
+            duckstation.contains("TogglePause=Keyboard/Space"),
+            "{duckstation}"
+        );
 
         let ares = serialize_plugin(
             &[include_str!("../../../../plugins/ares/config/input.toml")],

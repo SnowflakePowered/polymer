@@ -26,6 +26,30 @@ struct ConfigurationEntry {
 pub(crate) struct ConfigurationCheckpoint(ConfigurationEntry);
 
 impl ConfigurationInstances {
+    pub(crate) fn actions(
+        &self,
+        id: ConfigurationId,
+    ) -> Result<BTreeMap<String, String>, ConfigurationAccessError> {
+        let entry = self
+            .instances
+            .get(&id)
+            .ok_or(ConfigurationAccessError::UnknownConfiguration(id))?;
+        Ok(entry
+            .instance
+            .definition()
+            .definition()
+            .actions
+            .as_ref()
+            .map(|actions| {
+                actions
+                    .map
+                    .iter()
+                    .map(|(name, action)| (name.to_string(), action.expression.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
     pub(crate) fn insert(
         &mut self,
         instance: ConfigurationInstance,

@@ -1,10 +1,13 @@
 import config from "pkg:plugin.toml";
 import type {
+    Actions,
     Configuration as HostConfiguration,
     ControllerChangeContext as HostControllerChangeContext,
     Filesystem,
     Resource,
+    PauseResumeContext,
 } from "../plugin-api.ts";
+import { HotkeyParser } from "./hotkeys.ts";
 
 type Configuration = HostConfiguration<{
         ui: {
@@ -39,6 +42,7 @@ type Configuration = HostConfiguration<{
 }>;
 
 type EmulatorLaunchArgs = {
+    actions: Actions,
     launchPath: string,
     console: string,
     configuration: Configuration,
@@ -112,6 +116,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
         argv: ["-portable", "-batch", "--", args.filesystem.path(`/Game/${gameName}`)],
         isolate: false,
         hooks: ["d3d11"],
+        
         surfaces: [
             { index: 0 },
         ],
@@ -126,4 +131,10 @@ export const onControllerChanged = (context: ControllerChangeContext) => {
     }
 };
 
-export default { onLaunch, onControllerChanged };
+export const onParseHotkey = (expression: string) => HotkeyParser.pcsx2(expression);
+
+export const onPauseResume = (context: PauseResumeContext) => {
+    context.actions.pause?.activate();
+};
+
+export default { onLaunch, onControllerChanged, onParseHotkey, onPauseResume };

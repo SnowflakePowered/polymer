@@ -1,8 +1,11 @@
 use crate::{enumeration::SyntheticEnumeration, handles::SyntheticHandles};
 use snowglass_hook_input::HookInput;
-use std::sync::{
-    Arc,
-    atomic::{AtomicU32, Ordering},
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
 };
 use windows_sys::{
     Win32::{
@@ -10,7 +13,7 @@ use windows_sys::{
             DeviceAndDriverInstallation::{CONFIGRET, CR_SUCCESS},
             HumanInterfaceDevice::HIDD_ATTRIBUTES,
         },
-        Foundation::{HANDLE, INVALID_HANDLE_VALUE},
+        Foundation::{ERROR_FILE_NOT_FOUND, HANDLE, INVALID_HANDLE_VALUE, SetLastError},
         Storage::FileSystem::{FILE_FLAG_OVERLAPPED, OPEN_EXISTING},
         System::{Pipes::WaitNamedPipeW, Threading::CreateEventW},
     },
@@ -21,33 +24,48 @@ pub(crate) struct Runtime {
     pub(crate) enumeration: SyntheticEnumeration,
     pub(crate) handles: SyntheticHandles,
     input: Option<Arc<HookInput>>,
-    revision: AtomicU32,
+    session: Option<String>,
+    topology_generation: AtomicU64,
 }
 
 impl Default for Runtime {
     fn default() -> Self {
+        let session = snowglass_hook::config::session().ok();
+        let enumeration = SyntheticEnumeration::default();
+        if let Some(session) = &session {
+            enumeration.rebind(session, &[]);
+        }
         Self {
-            enumeration: SyntheticEnumeration::default(),
+            enumeration,
             handles: SyntheticHandles::default(),
-            input: snowglass_hook::config::session()
-                .ok()
-                .map(|session| HookInput::start(&session)),
-            revision: AtomicU32::new(u32::MAX),
+            input: session.as_ref().map(|session| HookInput::start(session)),
+            session,
+            topology_generation: AtomicU64::new(u64::MAX),
         }
     }
 }
 
 impl Runtime {
-    fn synchronize_topology(&self) {
+    fn synchronize_topology(&self, wait_for_initial: bool) {
         let Some(input) = &self.input else {
             return;
         };
+        if wait_for_initial {
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while !input.topology().received() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
         let topology = input.topology();
-        if self.revision.load(Ordering::Acquire) == topology.revision() {
+        if self.topology_generation.load(Ordering::Acquire) == topology.generation() {
             return;
         }
-        self.enumeration.rebind(&topology.document().raw_hid);
-        self.revision.store(topology.revision(), Ordering::Release);
+        if let Some(session) = &self.session {
+            self.enumeration
+                .rebind(session, &topology.document().raw_hid);
+        }
+        self.topology_generation
+            .store(topology.generation(), Ordering::Release);
     }
 }
 
@@ -59,7 +77,9 @@ pub(crate) unsafe fn interface_list_size(
     mut next: crate::hooks::CmGetDeviceInterfaceListSizeWContext<'_>,
 ) -> CONFIGRET {
     let state = next.state.clone();
-    state.synchronize_topology();
+    state.synchronize_topology(
+        device_id.is_null() && unsafe { state.enumeration.supports(interface) },
+    );
     let result = snowglass_hook::next!(next, length, interface, device_id, flags);
     if result == CR_SUCCESS
         && device_id.is_null()
@@ -80,7 +100,9 @@ pub(crate) unsafe fn interface_list(
     mut next: crate::hooks::CmGetDeviceInterfaceListWContext<'_>,
 ) -> CONFIGRET {
     let state = next.state.clone();
-    state.synchronize_topology();
+    state.synchronize_topology(
+        device_id.is_null() && unsafe { state.enumeration.supports(interface) },
+    );
     let result = snowglass_hook::next!(next, interface, device_id, buffer, buffer_len, flags);
     if result == CR_SUCCESS
         && device_id.is_null()
@@ -103,7 +125,7 @@ pub(crate) unsafe fn create_file(
     mut next: crate::hooks::CreateFileWContext<'_>,
 ) -> HANDLE {
     let state = next.state.clone();
-    state.synchronize_topology();
+    state.synchronize_topology(false);
     let Some(device) = (unsafe { state.enumeration.find_path(path) }) else {
         return snowglass_hook::next!(
             next,
@@ -116,6 +138,10 @@ pub(crate) unsafe fn create_file(
             template
         );
     };
+    if desired_access != 0 && !device.active {
+        unsafe { SetLastError(ERROR_FILE_NOT_FOUND) };
+        return INVALID_HANDLE_VALUE;
+    }
     let pipe = device.pipe.clone();
     let product_id = device.product_id;
     let handle = if desired_access == 0 {

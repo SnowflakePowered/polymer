@@ -17,6 +17,8 @@ struct CompiledPort {
 struct Current {
     document: InputTopology,
     ports: BTreeMap<u8, CompiledPort>,
+    generation: u64,
+    received: bool,
 }
 
 #[derive(Default)]
@@ -67,7 +69,14 @@ impl TopologyState {
                 })
             })
             .collect();
-        *self.0.write() = Current { document, ports };
+        let mut current = self.0.write();
+        let generation = current.generation.wrapping_add(1);
+        *current = Current {
+            document,
+            ports,
+            generation,
+            received: true,
+        };
     }
 
     pub fn map(
@@ -138,6 +147,16 @@ impl TopologyGuard<'_> {
         self.0.document.revision
     }
 
+    /// Monotonically changes for every topology message, including provider-only
+    /// updates which deliberately keep the configuration revision unchanged.
+    pub fn generation(&self) -> u64 {
+        self.0.generation
+    }
+
+    pub fn received(&self) -> bool {
+        self.0.received
+    }
+
     pub fn pad_count(&self) -> usize {
         self.0.document.ports.len().min(8)
     }
@@ -150,5 +169,40 @@ impl TopologyGuard<'_> {
             .take(8)
             .map(|port| port.layout.as_str())
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use snowglass_input_layout::topology::RawHidBinding;
+
+    #[test]
+    fn provider_only_updates_advance_the_topology_generation() {
+        let state = TopologyState::default();
+        assert!(!state.read().received());
+
+        state.set(InputTopology {
+            revision: 7,
+            ..Default::default()
+        });
+        let first_generation = state.read().generation();
+        assert!(state.read().received());
+
+        state.set(InputTopology {
+            revision: 7,
+            raw_hid: vec![RawHidBinding {
+                player: 0,
+                port: 0,
+                vendor_id: 0x057e,
+                product_id: 0x0306,
+                pipe: r"\\.\pipe\snowglass-test-hid-0".to_owned(),
+            }],
+            ..Default::default()
+        });
+
+        let updated = state.read();
+        assert_ne!(updated.generation(), first_generation);
+        assert_eq!(updated.document().raw_hid.len(), 1);
     }
 }

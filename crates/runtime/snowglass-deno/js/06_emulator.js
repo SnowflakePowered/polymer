@@ -3,6 +3,7 @@ import {
   op_emulator_input,
   op_emulator_launch,
   op_emulator_message,
+  op_emulator_pause_state,
   op_emulator_set_muted,
   op_emulator_set_volume,
 } from "ext:core/ops";
@@ -172,6 +173,13 @@ export function createEmulator(webrtc) {
 
     deactivateInput() {
       if (this.#canControl()) op_emulator_input(this.id, false);
+    }
+
+    setPauseState(pauseState) {
+      if (pauseState !== "pause" && pauseState !== "resume") {
+        throw new TypeError("pause state must be 'pause' or 'resume'");
+      }
+      if (this.#canControl()) op_emulator_pause_state(this.id, pauseState === "pause");
     }
 
     close() {

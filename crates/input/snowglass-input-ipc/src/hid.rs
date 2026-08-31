@@ -31,7 +31,19 @@ struct Inner {
     spec: RawHidSpec,
     reports: mpsc::UnboundedSender<Vec<u8>>,
     capture: Arc<AtomicBool>,
+    listener: Arc<Mutex<Option<ListenerHandle>>>,
     worker: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        if let Some(handle) = self.listener.lock().as_ref() {
+            let _ = handle.set_raw_hid_capture(self.index, false);
+        }
+        if let Some(worker) = self.worker.get_mut().take() {
+            worker.abort();
+        }
+    }
 }
 
 impl RawHidChannel {
@@ -60,6 +72,7 @@ impl RawHidChannel {
             spec: spec.clone(),
             reports,
             capture: capture.clone(),
+            listener: listener.clone(),
             worker: Mutex::new(None),
         });
         let worker = tokio::runtime::Handle::try_current()

@@ -296,6 +296,20 @@ mod tests {
         instances
             .set(
                 id,
+                "main.core.wiimote_continuous_scanning",
+                serde_json::json!(true),
+            )
+            .unwrap();
+        instances
+            .set(
+                id,
+                "main.core.wiimote_controller_interface",
+                serde_json::json!(false),
+            )
+            .unwrap();
+        instances
+            .set(
+                id,
                 "ports.NINTENDO_WII.wii.0.relative_input",
                 serde_json::json!(true),
             )
@@ -311,6 +325,15 @@ mod tests {
             }],
         )
         .unwrap();
+        let dolphin = std::str::from_utf8(&files["Config/Dolphin.ini"]).unwrap();
+        assert!(
+            dolphin.contains("WiimoteContinuousScanning=True"),
+            "{dolphin}"
+        );
+        assert!(
+            dolphin.contains("WiimoteControllerInterface=False"),
+            "{dolphin}"
+        );
         let wiimote = std::str::from_utf8(&files["Config/WiimoteNew.ini"]).unwrap();
         assert!(wiimote.contains("IR/Left=`Right X-`"), "{wiimote}");
         assert!(wiimote.contains("IR/Up=`Right Y+`"), "{wiimote}");

@@ -99,10 +99,27 @@ export type UiAutomation = {
     ): Promise<UiWindow>,
 };
 
+export type ParsedHotkey =
+    | Readonly<{ kind: "keyboard", code: string, modifiers?: readonly string[] }>
+    | Readonly<{ kind: "binding", player: number, keys: readonly string[] }>;
+
+export type HotkeyAction = Readonly<{
+    activate(): void,
+}>;
+
+export type Actions = Readonly<Record<string, HotkeyAction>>;
+
+export type PauseResumeContext = Readonly<{
+    pauseState: "pause" | "resume",
+    actions: Actions,
+    ui: UiAutomation,
+}>;
+
 export type ControllerChangeContext<Options = unknown> = Readonly<{
     topology: ControllerTopology,
     previousTopology: ControllerTopology,
     configuration: Configuration<Options>,
     filesystem: Filesystem,
     ui: UiAutomation,
+    actions: Actions,
 }>;

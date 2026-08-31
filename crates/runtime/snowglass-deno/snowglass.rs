@@ -51,6 +51,7 @@ pub trait SnowglassHost: Send + Sync {
     fn emulator_set_muted(&self, token: InstanceToken, muted: bool);
     fn emulator_message(&self, token: InstanceToken, name: String, args: Value);
     fn emulator_input(&self, token: InstanceToken, active: bool);
+    fn emulator_pause_state(&self, token: InstanceToken, pause: bool);
     fn input_configure(&self, request_id: u32, transaction: Value);
     fn controller_api_snapshot(&self) -> Value;
     fn controller_api_command(&self, command: Value) -> ApiFuture<Result<Value, String>>;
@@ -339,6 +340,13 @@ fn op_emulator_input(state: &mut OpState, token: u32, active: bool) {
         .emulator_input(InstanceToken(token), active);
 }
 
+#[op2(fast)]
+fn op_emulator_pause_state(state: &mut OpState, token: u32, pause: bool) {
+    state
+        .borrow::<Arc<dyn SnowglassHost>>()
+        .emulator_pause_state(InstanceToken(token), pause);
+}
+
 #[op2]
 fn op_input_configure(
     state: &mut OpState,
@@ -441,6 +449,7 @@ deno_core::extension!(
         op_emulator_set_muted,
         op_emulator_message,
         op_emulator_input,
+        op_emulator_pause_state,
         op_input_configure,
         op_controller_api_snapshot,
         op_controller_api_command,

@@ -22,6 +22,7 @@ main = "pcsx2.ts"
 [emulator.configuration]
 definitions = [
     "config/pcsx2.toml",
+    "config/actions.toml",
     "config/input.toml",
     "config/runtime.toml",
     "config/sections/*.toml",

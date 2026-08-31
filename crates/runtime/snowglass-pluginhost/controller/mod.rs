@@ -13,7 +13,21 @@ pub(crate) type InputProviderSink = Arc<
 #[derive(Clone, Debug)]
 pub struct ControllerSession {
     pub(crate) commands: std::sync::mpsc::Sender<ControllerSessionCommand>,
-    errors: Arc<Mutex<Vec<String>>>,
+    errors: Arc<Mutex<Vec<SessionError>>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SessionError {
+    ControllerChanged(String),
+    PauseResume(String),
+}
+
+impl SessionError {
+    pub fn message(&self) -> &str {
+        match self {
+            Self::ControllerChanged(message) | Self::PauseResume(message) => message,
+        }
+    }
 }
 
 pub(crate) enum ControllerSessionCommand {
@@ -25,17 +39,59 @@ pub(crate) enum ControllerSessionCommand {
         InputProviderSink,
         std::sync::mpsc::SyncSender<Result<(), String>>,
     ),
+    AttachActions(
+        crate::actions::ActionSink,
+        std::sync::mpsc::SyncSender<Result<(), String>>,
+    ),
     Changed(
         snowglass_controllers::ControllerTopology,
         tokio::sync::oneshot::Sender<Result<(), String>>,
     ),
+    PauseResume(PauseState),
     Stop,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PauseState {
+    Pause,
+    Resume,
+}
+
+impl PauseState {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pause => "pause",
+            Self::Resume => "resume",
+        }
+    }
+}
+
 impl ControllerSession {
+    pub fn pause_resume(&self, state: PauseState) -> Result<(), String> {
+        self.commands
+            .send(ControllerSessionCommand::PauseResume(state))
+            .map_err(|_| "emulator plugin session is closed".to_owned())
+    }
+
+    pub fn attach_actions(
+        &self,
+        sink: impl Fn(&crate::ParsedHotkey) -> Result<(), String> + Send + Sync + 'static,
+    ) -> Result<(), String> {
+        let (result, response) = std::sync::mpsc::sync_channel(1);
+        self.commands
+            .send(ControllerSessionCommand::AttachActions(
+                Arc::new(sink),
+                result,
+            ))
+            .map_err(|_| "emulator plugin session is closed while attaching actions".to_owned())?;
+        response
+            .recv()
+            .map_err(|_| "emulator plugin session closed while attaching actions".to_owned())?
+    }
+
     pub(crate) fn new(
         commands: std::sync::mpsc::Sender<ControllerSessionCommand>,
-        errors: Arc<Mutex<Vec<String>>>,
+        errors: Arc<Mutex<Vec<SessionError>>>,
     ) -> Self {
         Self { commands, errors }
     }
@@ -86,7 +142,7 @@ impl ControllerSession {
         })?
     }
 
-    pub fn take_errors(&self) -> Vec<String> {
+    pub fn take_errors(&self) -> Vec<SessionError> {
         std::mem::take(&mut *self.errors.lock())
     }
 }

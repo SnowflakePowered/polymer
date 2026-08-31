@@ -6,9 +6,13 @@ class PauseRegistry {
   readonly #leases = new Map<LaunchInstance, number>();
 
   acquire(launch: LaunchInstance) {
+    const isRootLease = !this.#leases.has(launch);
     const leases = this.#leases.get(launch) ?? 0;
     this.#leases.set(launch, leases + 1);
-    if (leases === 0) launch.deactivateInput();
+    if (isRootLease) {
+      launch.deactivateInput();
+      launch.setPauseState("pause");
+    }
     return () => this.#release(launch);
   }
 
@@ -18,6 +22,7 @@ class PauseRegistry {
     queueMicrotask(() => {
       if (this.#leases.get(launch) !== 0) return;
       this.#leases.delete(launch);
+      launch.setPauseState("resume");
       launch.activateInput();
     });
   }
@@ -28,8 +33,8 @@ const pauseRegistry = new PauseRegistry();
 /**
  * Marks UI that takes exclusive control while a game is running.
  *
- * Input suspension is the only pause primitive exposed by LaunchInstance today.
- * Emulator pause/resume can be added here without coupling each overlay to it.
+ * The first overlay filters input and requests emulator pause; the final
+ * overlay release resumes the emulator and restores input.
  */
 export function PauseDecorator(props: ParentProps) {
   const shell = useShell();

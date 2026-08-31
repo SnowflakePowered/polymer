@@ -1,5 +1,6 @@
 //! Invocation-scoped Deno adapter used only by pluginhost-owned workers.
 
+use crate::actions::ActionsState;
 use crate::automation::{AutomationState, op_ui_automation_request};
 use crate::{
     ConfigurationAccessError, EmulatorHostError, EmulatorLaunchArguments, EmulatorLaunchInvocation,
@@ -73,6 +74,18 @@ fn op_configuration_render(
         .collect())
 }
 
+#[op2]
+#[serde]
+fn op_configuration_actions(
+    state: &mut OpState,
+    id: ConfigurationId,
+) -> Result<std::collections::BTreeMap<String, String>, JsErrorBox> {
+    state
+        .borrow::<ConfigurationInstances>()
+        .actions(id)
+        .map_err(|error| JsErrorBox::generic(error.to_string()))
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ConfigurationLookup {
@@ -87,13 +100,17 @@ deno_core::extension!(
         op_configuration_set,
         op_configuration_entries,
         op_configuration_render,
+        op_configuration_actions,
+        crate::actions::op_actions_register,
+        crate::actions::op_action_activate,
         op_ui_automation_request,
     ],
     esm_entry_point = "ext:snowglass_pluginhost_deno/configuration.js",
-    esm = [dir "js", "configuration.js", "controller.js", "automation.js"],
+    esm = [dir "js", "configuration.js", "controller.js", "automation.js", "actions.js"],
     state = |state| {
         state.put(ConfigurationInstances::default());
         state.put(AutomationState::default());
+        state.put(ActionsState::default());
     },
 );
 
@@ -124,6 +141,9 @@ impl<'runtime> EmulatorWorker<'runtime> {
         let controller_changes = self
             .supports_controller_changes(&pending)
             .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
+        let pause_resume = self
+            .supports_pause_resume(&pending)
+            .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
         let configuration_id = pending.configuration_id;
         let launch = self
             .finish(pending)
@@ -132,6 +152,7 @@ impl<'runtime> EmulatorWorker<'runtime> {
             launch,
             configuration_id,
             controller_changes,
+            pause_resume,
         })
     }
 
@@ -200,16 +221,36 @@ impl<'runtime> EmulatorWorker<'runtime> {
                     args.filesystem = __snowglassFilesystem.filesystem;
                     args.resources = __snowglassFilesystem.resources;
                     args.storage = __snowglassFilesystem.storage;
+                    const parserReceiver = typeof module.onParseHotkey === "function"
+                      ? module
+                      : receiver;
+                    const actions = __snowglassActions.create(
+                      {configuration_id},
+                      parserReceiver?.onParseHotkey,
+                    );
+                    args.actions = actions;
                     const controllerReceiver = typeof module.onControllerChanged === "function"
                       ? module
                       : receiver;
                     const onControllerChanged = controllerReceiver?.onControllerChanged;
+                    const pauseReceiver = typeof module.onPauseResume === "function"
+                      ? module
+                      : receiver;
+                    const onPauseResume = pauseReceiver?.onPauseResume;
                     const result = await Reflect.apply(onLaunch, receiver, [args]);
                     const controllerChanges = typeof onControllerChanged === "function"
                       || __snowglassFilesystem.hasConfigurationMounts();
-                    if (controllerChanges) {{
-                      Object.defineProperty(globalThis, "__snowglassActiveControllerChange", {{
-                        value: Object.freeze({{ receiver: controllerReceiver, callback: onControllerChanged, configuration }}),
+                    const pauseResume = typeof onPauseResume === "function";
+                    if (controllerChanges || pauseResume) {{
+                      Object.defineProperty(globalThis, "__snowglassActiveEmulator", {{
+                        value: Object.freeze({{
+                          controllerReceiver,
+                          onControllerChanged,
+                          pauseReceiver,
+                          onPauseResume,
+                          configuration,
+                          actions,
+                        }}),
                         configurable: false,
                         enumerable: false,
                         writable: false,
@@ -219,6 +260,7 @@ impl<'runtime> EmulatorWorker<'runtime> {
                       result,
                       configuration,
                       controllerChanges,
+                      pauseResume,
                     }};
                 }})()"#,
             entrypoint = entrypoint,
@@ -267,6 +309,15 @@ impl<'runtime> EmulatorWorker<'runtime> {
         deno_core::scope!(scope, self.runtime);
         let wrapper = local_object(scope, &launch.value, "pluginhost launch result")?;
         Ok(property(scope, wrapper, "controllerChanges")?.boolean_value(scope))
+    }
+
+    fn supports_pause_resume(
+        &mut self,
+        launch: &PendingDenoLaunch,
+    ) -> Result<bool, DenoPluginError> {
+        deno_core::scope!(scope, self.runtime);
+        let wrapper = local_object(scope, &launch.value, "pluginhost launch result")?;
+        Ok(property(scope, wrapper, "pauseResume")?.boolean_value(scope))
     }
 
     fn finish(
@@ -333,7 +384,7 @@ pub(crate) async fn execute_controller_change(
         .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
     let script = format!(
         r#"(async () => {{
-          const active = globalThis.__snowglassActiveControllerChange;
+          const active = globalThis.__snowglassActiveEmulator;
           if (active == null) throw new TypeError("plugin does not export onControllerChanged");
           const inputTopology = {topology};
           const context = __snowglassControllerChange.context(
@@ -341,9 +392,10 @@ pub(crate) async fn execute_controller_change(
             {previous},
             active.configuration,
             __snowglassFilesystem.filesystem,
+            active.actions,
           );
-          const result = typeof active.callback === "function"
-            ? await Reflect.apply(active.callback, active.receiver, [context])
+          const result = typeof active.onControllerChanged === "function"
+            ? await Reflect.apply(active.onControllerChanged, active.controllerReceiver, [context])
             : undefined;
           __snowglassFilesystem.refreshConfigurations();
           return {{
@@ -365,10 +417,36 @@ pub(crate) async fn execute_controller_change(
     serde_v8::from_v8(scope, value).map_err(|error| EmulatorHostError::Runtime(error.to_string()))
 }
 
+pub(crate) async fn execute_pause_resume(
+    runtime: &mut JsRuntime,
+    pause_state: crate::PauseState,
+) -> Result<(), EmulatorHostError> {
+    let pause_state = serde_json::to_string(pause_state.as_str())
+        .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
+    let script = format!(
+        r#"(async () => {{
+          const active = globalThis.__snowglassActiveEmulator;
+          if (active == null || typeof active.onPauseResume !== "function") return;
+          const context = __snowglassControllerChange.pauseContext({pause_state}, active.actions);
+          await Reflect.apply(active.onPauseResume, active.pauseReceiver, [context]);
+        }})()"#
+    );
+    let promise = runtime
+        .execute_script("snowglass:pluginhost/pause-resume.js", script)
+        .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
+    #[allow(deprecated)]
+    runtime
+        .resolve_value(promise)
+        .await
+        .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
+    Ok(())
+}
+
 pub(crate) struct RetainedEmulator {
     pub launch: EmulatorLaunchArguments,
     pub configuration_id: ConfigurationId,
     pub controller_changes: bool,
+    pub pause_resume: bool,
 }
 
 pub(crate) fn rematerialize_configuration(

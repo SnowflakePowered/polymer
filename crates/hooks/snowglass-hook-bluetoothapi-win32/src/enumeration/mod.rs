@@ -22,16 +22,20 @@ impl Default for SyntheticEnumeration {
 }
 
 impl SyntheticEnumeration {
-    pub(crate) fn rebind(&self, bindings: &[RawHidBinding]) {
-        *self.devices.write() = bindings
-            .iter()
-            .map(SyntheticWiimote::from_binding)
+    pub(crate) fn rebind(&self, session: &str, bindings: &[RawHidBinding]) {
+        *self.devices.write() = (0..4)
+            .map(|port| {
+                SyntheticWiimote::for_port(
+                    session,
+                    port,
+                    bindings.iter().find(|binding| binding.port == port),
+                )
+            })
             .collect();
     }
 
-    pub(crate) unsafe fn extends(&self, interface: *const GUID) -> bool {
-        !self.devices.read().is_empty()
-            && !interface.is_null()
+    pub(crate) unsafe fn supports(&self, interface: *const GUID) -> bool {
+        !interface.is_null()
             && unsafe {
                 let interface = &*interface;
                 interface.data1 == GUID_DEVINTERFACE_HID.data1
@@ -39,6 +43,10 @@ impl SyntheticEnumeration {
                     && interface.data3 == GUID_DEVINTERFACE_HID.data3
                     && interface.data4 == GUID_DEVINTERFACE_HID.data4
             }
+    }
+
+    pub(crate) unsafe fn extends(&self, interface: *const GUID) -> bool {
+        !self.devices.read().is_empty() && unsafe { self.supports(interface) }
     }
 
     pub(crate) fn additional_len(&self) -> u32 {

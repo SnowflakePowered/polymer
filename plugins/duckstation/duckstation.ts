@@ -1,5 +1,6 @@
 import config from "pkg:plugin.toml";
-import type { Configuration as HostConfiguration, Filesystem, Resource } from "../plugin-api.ts";
+import type { Actions, Configuration as HostConfiguration, Filesystem, PauseResumeContext, Resource } from "../plugin-api.ts";
+import { HotkeyParser } from "./hotkeys.ts";
 
 type Configuration = HostConfiguration<{
         main: {
@@ -42,6 +43,7 @@ type Configuration = HostConfiguration<{
         input_sources: { sdl: boolean },
 }>;
 type EmulatorLaunchArgs = {
+    actions: Actions,
     launchPath: string,
     console: string,
     configuration: Configuration,
@@ -132,4 +134,10 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     };
 };
 
-export default { onLaunch };
+export const onParseHotkey = (expression: string) => HotkeyParser.pcsx2(expression);
+
+export const onPauseResume = (context: PauseResumeContext) => {
+    context.actions.pause?.activate();
+};
+
+export default { onLaunch, onParseHotkey, onPauseResume };

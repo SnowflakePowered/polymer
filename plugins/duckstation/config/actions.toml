@@ -8,16 +8,14 @@ output = { format = "ini", path = "settings.ini" }
 
 [actions]
 target = "settings.Hotkeys"
-transport = "win32-message"
-keynames = "duckstation"
 
 [actions.map]
-exit = { key = "f8", expression = "Keyboard/F8", name = "PowerOff" }
-fast_forward = { key = "tab", expression = "Keyboard/Tab", name = "FastForward" }
-frame_advance = { key = "f6", expression = "Keyboard/F6", name = "FrameStep" }
-load_state = { key = "f1", expression = "Keyboard/F1", name = "LoadSelectedSaveState" }
-pause = { key = "space", expression = "Keyboard/Space", name = "TogglePause" }
-reset = { key = "f7", expression = "Keyboard/F7", name = "Reset" }
-save_state = { key = "f2", expression = "Keyboard/F2", name = "SaveSelectedSaveState" }
-screenshot = { key = "f10", expression = "Keyboard/F10", name = "Screenshot" }
-toggle_fullscreen = { key = "f11", expression = "Keyboard/F11", name = "ToggleFullscreen" }
+exit = { expression = "Keyboard/F8", name = "PowerOff" }
+fast_forward = { expression = "Keyboard/Tab", name = "FastForward" }
+frame_advance = { expression = "Keyboard/F6", name = "FrameStep" }
+load_state = { expression = "Keyboard/F1", name = "LoadSelectedSaveState" }
+pause = { expression = "Keyboard/Space", name = "TogglePause" }
+reset = { expression = "Keyboard/F7", name = "Reset" }
+save_state = { expression = "Keyboard/F2", name = "SaveSelectedSaveState" }
+screenshot = { expression = "Keyboard/F10", name = "Screenshot" }
+toggle_fullscreen = { expression = "Keyboard/F11", name = "ToggleFullscreen" }
