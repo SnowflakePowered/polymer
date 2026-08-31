@@ -196,10 +196,10 @@ impl ExportInvocation {
             ));
         }
         Ok(match path {
-            [name] if name == "onEmulatorLaunch" => Self::EmulatorLaunch {
+            [name] if name == "onLaunch" => Self::EmulatorLaunch {
                 explicit_default: false,
             },
-            [root, name] if root == "default" && name == "onEmulatorLaunch" => {
+            [root, name] if root == "default" && name == "onLaunch" => {
                 Self::EmulatorLaunch {
                     explicit_default: true,
                 }
@@ -224,14 +224,14 @@ impl PreparedEmulatorLaunch {
             PluginInvocationError::new(
                 "TypeError",
                 "INVALID_ARGUMENTS",
-                "onEmulatorLaunch expects exactly one argument object",
+                "onLaunch expects exactly one argument object",
             )
         })?;
         let object = arguments.as_object_mut().ok_or_else(|| {
             PluginInvocationError::new(
                 "TypeError",
                 "INVALID_ARGUMENTS",
-                "onEmulatorLaunch expects exactly one argument object",
+                "onLaunch expects exactly one argument object",
             )
         })?;
         let console = object
@@ -241,7 +241,7 @@ impl PreparedEmulatorLaunch {
                 PluginInvocationError::new(
                     "TypeError",
                     "INVALID_ARGUMENTS",
-                    "onEmulatorLaunch arguments require a string console",
+                    "onLaunch arguments require a string console",
                 )
             })?
             .to_owned();
@@ -250,7 +250,7 @@ impl PreparedEmulatorLaunch {
                 PluginInvocationError::new(
                     "TypeError",
                     "INVALID_ARGUMENTS",
-                    "onEmulatorLaunch arguments require controllerTopology",
+                    "onLaunch arguments require controllerTopology",
                 )
             })?,
         )
@@ -258,7 +258,7 @@ impl PreparedEmulatorLaunch {
             PluginInvocationError::new(
                 "TypeError",
                 "INVALID_ARGUMENTS",
-                format!("invalid onEmulatorLaunch controllerTopology: {error}"),
+                format!("invalid onLaunch controllerTopology: {error}"),
             )
         })?;
         let assignments = topology
@@ -275,7 +275,7 @@ impl PreparedEmulatorLaunch {
             PluginInvocationError::new(
                 "TypeError",
                 "INVALID_ARGUMENTS",
-                "onEmulatorLaunch settings must be an object",
+                "onLaunch settings must be an object",
             )
         })?;
         for (path, value) in settings {
@@ -1114,7 +1114,7 @@ mod tests {
                   throw new Error("worker-test-boom");
                 }
                 export const notCallable = 17;
-                export function onEmulatorLaunch(args) {
+                export function onLaunch(args) {
                   args.configuration.options().general.enabled = true;
                   let command = "emulator.exe";
                   let argv = [];
@@ -1154,7 +1154,7 @@ mod tests {
                 export default {
                   fallback(value) { return `fallback:${value}`; },
                   nonFunction: 23,
-                  onEmulatorLaunch,
+                  onLaunch,
                   onControllerChanged,
                 };
             "#,
@@ -1170,7 +1170,7 @@ mod tests {
         std::fs::write(
             root.path().join("plugin.js"),
             r#"
-                export function onEmulatorLaunch(args) {
+                export function onLaunch(args) {
                   args.filesystem.mountTree("/Emulator", args.resources.runtime, { mode: "rx" });
                   args.filesystem.mountConfiguration("/Emulator/Config", args.configuration, { mode: "r" });
                   return {
@@ -1231,7 +1231,7 @@ mod tests {
             .handle()
             .invoke(
                 "worker-test",
-                &["onEmulatorLaunch".to_owned()],
+                &["onLaunch".to_owned()],
                 vec![serde_json::json!({
                     "launchPath": "game",
                     "console": "TEST",
@@ -1247,7 +1247,7 @@ mod tests {
             .handle()
             .invoke(
                 "worker-test",
-                &["default".to_owned(), "onEmulatorLaunch".to_owned()],
+                &["default".to_owned(), "onLaunch".to_owned()],
                 vec![serde_json::json!({
                     "launchPath": "game",
                     "console": "TEST",
@@ -1267,7 +1267,7 @@ mod tests {
         let result = handle
             .invoke_with_storage_owned(
                 "worker-test",
-                &["onEmulatorLaunch".to_owned()],
+                &["onLaunch".to_owned()],
                 vec![serde_json::json!({
                     "launchPath": root.path().join("game.iso"),
                     "console": "TEST",
@@ -1291,7 +1291,7 @@ mod tests {
             .handle()
             .invoke_with_storage_owned(
                 "worker-test",
-                &["onEmulatorLaunch".to_owned()],
+                &["onLaunch".to_owned()],
                 vec![serde_json::json!({
                     "launchPath": root.path().join("game.iso"),
                     "console": "TEST",
@@ -1354,7 +1354,7 @@ mod tests {
             .handle()
             .invoke_with_storage_owned(
                 "worker-test",
-                &["onEmulatorLaunch".to_owned()],
+                &["onLaunch".to_owned()],
                 vec![serde_json::json!({
                     "launchPath": root.path().join("game.iso"),
                     "console": "TEST",

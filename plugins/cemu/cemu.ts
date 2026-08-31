@@ -23,7 +23,7 @@ type EmulatorLaunchArgs = {
     }>,
 }
 
-export const onEmulatorLaunch = (args: EmulatorLaunchArgs) => {
+export const onLaunch = (args: EmulatorLaunchArgs) => {
     args.configuration.options().content.open_pad = true;
 
     // The package files are recursive read-only submounts over a writable,
@@ -67,5 +67,5 @@ export const onEmulatorLaunch = (args: EmulatorLaunchArgs) => {
 }
 
 export default {
-    onEmulatorLaunch
+    onLaunch
 }

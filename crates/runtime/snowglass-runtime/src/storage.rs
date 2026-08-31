@@ -186,8 +186,8 @@ fn watch_save_history(
 }
 
 fn is_emulator_launch(export_path: &[String]) -> bool {
-    matches!(export_path, [name] if name == "onEmulatorLaunch")
-        || matches!(export_path, [default, name] if default == "default" && name == "onEmulatorLaunch")
+    matches!(export_path, [name] if name == "onLaunch")
+        || matches!(export_path, [default, name] if default == "default" && name == "onLaunch")
 }
 
 pub async fn launch_storage(
@@ -411,7 +411,7 @@ mod tests {
         let (notifications, mut saved) = tokio::sync::mpsc::unbounded_channel();
         let factories = launch_storage(
             Some(manager.clone()),
-            &["onEmulatorLaunch".to_owned()],
+            &["onLaunch".to_owned()],
             &[arguments],
             notifications,
         )

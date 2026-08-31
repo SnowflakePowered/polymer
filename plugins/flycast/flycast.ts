@@ -25,7 +25,7 @@ function dirname(path: string): string {
     return normalized.slice(0, separator);
 }
 
-export const onEmulatorLaunch = (args: EmulatorLaunchArgs) => {
+export const onLaunch = (args: EmulatorLaunchArgs) => {
     const gameName = basename(args.launchPath);
     const discName = gameName.replace(/ \(Track \d+\)\.bin$/i, ".cue");
     const biosName = basename(config.plugin.config.bios);
@@ -85,4 +85,4 @@ export const onEmulatorLaunch = (args: EmulatorLaunchArgs) => {
     };
 };
 
-export default { onEmulatorLaunch };
+export default { onLaunch };

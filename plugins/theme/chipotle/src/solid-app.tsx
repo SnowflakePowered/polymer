@@ -377,7 +377,7 @@ function ShellProvider(props: ParentProps) {
         } else if (game.platform === PS2_PLATFORM) {
           selection.storage = { mem1: (await ensureDefaultPs2Card()).id };
         }
-        const request = await window.Snowglass.configuration.onEmulatorLaunch(packageValue, selection);
+        const request = await window.Snowglass.configuration.onLaunch(packageValue, selection);
         setModel("request", request);
         setModel("surfaces", structuredClone(request.surfaces));
         navigateMemory("/game/launching", true);

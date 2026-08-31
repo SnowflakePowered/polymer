@@ -63,7 +63,7 @@ function dirname(path: string): string {
     return normalized.slice(0, separator);
 }
 
-export const onEmulatorLaunch = (args: EmulatorLaunchArgs) => {
+export const onLaunch = (args: EmulatorLaunchArgs) => {
     const biosName = basename(config.plugin.config.bios);
     const gameName = basename(args.launchPath);
     const path = (virtualPath: string) => args.filesystem.path(virtualPath);
@@ -132,4 +132,4 @@ export const onEmulatorLaunch = (args: EmulatorLaunchArgs) => {
     };
 };
 
-export default { onEmulatorLaunch };
+export default { onLaunch };

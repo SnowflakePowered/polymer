@@ -231,10 +231,10 @@ async function applyWiiConnectionChanges(context: ControllerChangeContext): Prom
     }
 }
 
-export const onEmulatorLaunch = (args: EmulatorLaunchArgs) => {
+export const onLaunch = (args: EmulatorLaunchArgs) => {
     const gameName = basename(args.launchPath);
     const isWii = args.console === "NINTENDO_WII";
-    // Wii WADs are installed into the selected NAND before onEmulatorLaunch and
+    // Wii WADs are installed into the selected NAND before onLaunch and
     // must continue to boot by title ID. Disc images instead need to remain
     // visible as files and be passed to Dolphin with -e.
     const launchesNandTitle = isWii && !isDiscImage(gameName);
@@ -361,6 +361,6 @@ export const onControllerChanged = async (context: ControllerChangeContext) => {
 };
 
 export default {
-    onEmulatorLaunch,
+    onLaunch,
     onControllerChanged,
 }
