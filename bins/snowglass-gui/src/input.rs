@@ -733,41 +733,38 @@ impl InputRouter {
             .map(|provider| {
                 let snowglass_pluginhost::InputProvider::RawHid {
                     source_id,
-                    port,
+                    target,
+                    vendor_id,
                     product_id,
                 } = provider;
-                let binding = topology
-                    .ports
-                    .iter()
-                    .find(|binding| binding.port == *port)
-                    .ok_or_else(|| format!("raw HID port {port} is not in the input topology"))?;
-                let vendor_id = devices
+                if !topology.ports.iter().any(|binding| {
+                    binding.group == target.group && usize::from(binding.port) == target.port
+                }) {
+                    return Err(format!(
+                        "raw HID target {}:{} is not in the input topology",
+                        target.group, target.port
+                    ));
+                }
+                let (source_player, _) = devices
                     .iter()
                     .find(|(_, device)| device.id.as_str() == source_id)
-                    .and_then(|(_, device)| device.vendor_id)
-                    .unwrap_or(0x057e);
+                    .ok_or_else(|| format!("raw HID source '{source_id}' is not connected"))?;
+                let source_player = source_player.ok_or_else(|| {
+                    format!("raw HID source '{source_id}' has no input assignment")
+                })?;
                 Ok(snowglass_input_layout::topology::RawHidBinding {
-                    player: binding.player,
-                    port: *port,
-                    vendor_id,
+                    player: source_player.get(),
+                    port: u8::try_from(target.port)
+                        .map_err(|_| format!("raw HID target port {} exceeds 255", target.port))?,
+                    vendor_id: *vendor_id,
                     product_id: *product_id,
-                    pipe: format!(r"\\.\pipe\snowglass-{}-hid-{}", self.native_namespace, port),
+                    pipe: format!(
+                        r"\\.\pipe\snowglass-{}-hid-{}",
+                        self.native_namespace, target.port
+                    ),
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
-        for binding in &topology.raw_hid {
-            if let Some(port) = topology
-                .ports
-                .iter_mut()
-                .find(|port| port.player == binding.player)
-            {
-                port.mode = snowglass_input_layout::topology::RemapMode::Passthrough;
-                port.pointer = snowglass_input_layout::topology::PointerBinding {
-                    source: snowglass_input_layout::topology::PointerSource::None,
-                    mode: snowglass_input_layout::topology::PointerMode::None,
-                };
-            }
-        }
         self.raw_hid.clear();
         if let Some(listener) = &self.listener {
             listener.clear_raw_hid();

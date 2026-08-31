@@ -63,7 +63,8 @@ pub enum InputHook {
 pub enum InputProvider {
     RawHid {
         source_id: String,
-        port: u8,
+        target: snowglass_controllers::ControllerTarget,
+        vendor_id: u16,
         product_id: u16,
     },
 }
@@ -123,14 +124,16 @@ mod tests {
         let provider: InputProvider = serde_json::from_value(serde_json::json!({
             "type": "rawHid",
             "sourceId": "bt://br-edr/00:11:22:33:44:55",
-            "port": 2,
+            "target": { "group": "wii", "port": 2 },
+            "vendorId": 0x057e,
             "productId": 0x0330,
         }))
         .unwrap();
         assert!(matches!(
             provider,
             InputProvider::RawHid {
-                port: 2,
+                target: snowglass_controllers::ControllerTarget { port: 2, .. },
+                vendor_id: 0x057e,
                 product_id: 0x0330,
                 ..
             }

@@ -1,6 +1,10 @@
 use windows_sys::{
     Win32::{
         Devices::{
+            Bluetooth::{
+                BLUETOOTH_DEVICE_INFO, BLUETOOTH_DEVICE_SEARCH_PARAMS, BluetoothFindFirstDevice,
+                HBLUETOOTH_DEVICE_FIND,
+            },
             DeviceAndDriverInstallation::{
                 CM_Get_Device_Interface_List_SizeW, CM_Get_Device_Interface_ListW, CONFIGRET,
             },
@@ -17,6 +21,14 @@ snowglass_hook::chain_hooks! {
     #![detour(snowglass_platform_windows::InlineDetour<_>)]
     #[installer(state = crate::runtime::Runtime)]
     pub(crate) struct HookInstallation;
+
+    #[trampoline]
+    #[terminal(installed(target = BluetoothFindFirstDevice), fallback = std::ptr::null_mut())]
+    #[infix(crate::runtime::bluetooth_find_first_device)]
+    pub unsafe extern "system" fn bluetooth_find_first_device(
+        search: *const BLUETOOTH_DEVICE_SEARCH_PARAMS,
+        device: *mut BLUETOOTH_DEVICE_INFO,
+    ) -> HBLUETOOTH_DEVICE_FIND;
 
     #[trampoline]
     #[terminal(installed(target = CM_Get_Device_Interface_List_SizeW), fallback = 1)]

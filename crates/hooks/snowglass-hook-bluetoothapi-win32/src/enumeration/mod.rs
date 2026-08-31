@@ -23,15 +23,15 @@ impl Default for SyntheticEnumeration {
 
 impl SyntheticEnumeration {
     pub(crate) fn rebind(&self, session: &str, bindings: &[RawHidBinding]) {
-        *self.devices.write() = (0..4)
-            .map(|port| {
-                SyntheticWiimote::for_port(
-                    session,
-                    port,
-                    bindings.iter().find(|binding| binding.port == port),
-                )
-            })
+        *self.devices.write() = bindings
+            .iter()
+            .filter(|binding| binding.port < 4)
+            .map(|binding| SyntheticWiimote::for_port(session, binding.port, Some(binding)))
             .collect();
+    }
+
+    pub(crate) fn has_devices(&self) -> bool {
+        !self.devices.read().is_empty()
     }
 
     pub(crate) unsafe fn supports(&self, interface: *const GUID) -> bool {
@@ -86,10 +86,52 @@ impl SyntheticEnumeration {
         }
         let length = (0..32_768).find(|offset| unsafe { *path.add(*offset) == 0 })?;
         let path = unsafe { std::slice::from_raw_parts(path, length) };
-        self.devices
-            .read()
+        let devices = self.devices.read();
+        devices
             .iter()
             .find(|device| device.path_matches(path))
+            .or_else(|| {
+                let path = String::from_utf16_lossy(path).to_ascii_lowercase();
+                let port = path
+                    .split("snowglass-")
+                    .nth(1)?
+                    .split('#')
+                    .next()?
+                    .parse::<u8>()
+                    .ok()?;
+                devices.iter().find(|device| device.port == port)
+            })
             .cloned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{ffi::OsStr, os::windows::ffi::OsStrExt};
+
+    #[test]
+    fn resolves_a_normalized_synthetic_path_by_port() {
+        let enumeration = SyntheticEnumeration::default();
+        enumeration.rebind(
+            "test-session",
+            &[RawHidBinding {
+                player: 1,
+                port: 0,
+                vendor_id: 0x057e,
+                product_id: 0x0306,
+                pipe: r"\\.\pipe\test-session-hid-0".to_owned(),
+            }],
+        );
+        let path = OsStr::new(
+            r"\\?\hid#normalized-by-dolphin#snowglass-0#{4d1e55b2-f16f-11cf-88cb-001111000030}",
+        )
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+
+        let device = unsafe { enumeration.find_path(path.as_ptr()) }.unwrap();
+        assert_eq!(device.port, 0);
+        assert!(device.active);
     }
 }

@@ -143,6 +143,13 @@ fn hook_environment(runtime: &EmulatorLaunchConfig) -> Vec<(OsString, OsString)>
                 .join("snowglass-gdi.log")
                 .into_os_string(),
         ),
+        (
+            OsString::from(config::BLUETOOTH_API_LOG_FILE),
+            runtime
+                .artifact_root
+                .join("snowglass-bluetooth-api.log")
+                .into_os_string(),
+        ),
         (OsString::from("SDL_JOYSTICK_HIDAPI"), OsString::from("0")),
         (
             OsString::from("SDL_JOYSTICK_DIRECTINPUT"),

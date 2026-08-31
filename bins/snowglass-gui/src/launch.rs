@@ -64,20 +64,25 @@ impl AttachedLaunchPlan {
             match provider {
                 InputProvider::RawHid {
                     source_id,
-                    port,
+                    target,
+                    vendor_id,
                     product_id,
                 } => {
-                    if source_id.is_empty() || *port >= 4 || !native_ports.insert(*port) {
-                        return Err("Bluetooth HID providers require unique ports 0..=3".to_owned());
+                    if source_id.is_empty()
+                        || target.group.is_empty()
+                        || target.port > usize::from(u8::MAX)
+                        || !native_ports.insert(target.port)
+                    {
+                        return Err(
+                            "raw HID providers require a source and unique valid targets"
+                                .to_owned(),
+                        );
                     }
-                    if !matches!(*product_id, 0x0306 | 0x0330) {
-                        return Err(format!(
-                            "unsupported Wii Remote product ID 0x{product_id:04x}"
-                        ));
+                    if *vendor_id == 0 || *product_id == 0 {
+                        return Err("raw HID providers require non-zero VID and PID".to_owned());
                     }
                     let mapped = self.controller_topology.mappings.iter().any(|mapping| {
-                        mapping.target.group == "wii"
-                            && mapping.target.port == usize::from(*port)
+                        mapping.target == *target
                             && mapping
                                 .device
                                 .as_ref()
@@ -85,7 +90,8 @@ impl AttachedLaunchPlan {
                     });
                     if !mapped {
                         return Err(format!(
-                            "Bluetooth HID provider for port {port} does not match its topology source"
+                            "raw HID provider for {}:{} does not match its topology source",
+                            target.group, target.port
                         ));
                     }
                 }

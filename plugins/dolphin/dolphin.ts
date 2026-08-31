@@ -114,7 +114,8 @@ function rawWiimote(mapping: ControllerMapping): InputProvider | null {
     return {
         type: "rawHid",
         sourceId: device.id,
-        port: mapping.target.port,
+        target: mapping.target,
+        vendorId: device.vendorId ?? 0x057e,
         productId,
     };
 }
@@ -259,6 +260,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
             "IOS_ES = True",
             "IOS_FS = True",
             "WII_IPC = True",
+            "WIIMOTE = True",
             "[Options]",
             "Verbosity = 4",
             "WriteToConsole = True",

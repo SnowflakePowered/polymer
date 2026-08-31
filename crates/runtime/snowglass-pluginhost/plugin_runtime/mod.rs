@@ -452,7 +452,9 @@ impl PluginRuntimeHandle {
             .await?;
         let filesystem = result.filesystem.take();
         let retained_session = result.session.take().or(session);
-        result.controller_topology = Some(setup.topology);
+        if result.controller_topology.is_none() {
+            result.controller_topology = Some(setup.topology);
+        }
         result.prepared_filesystem = None;
         let value = serde_json::to_value(result).map_err(PluginInvocationError::worker)?;
         Ok(PluginInvocationResult {
@@ -764,7 +766,11 @@ impl ControllerSessionWorker {
         let retained_session = controller_changes || retained.pause_resume;
         let configuration_id = retained.configuration_id;
         let mut launch = retained.launch;
-        launch.controller_topology = Some(args.topology.clone());
+        let applied_topology = launch
+            .controller_topology
+            .clone()
+            .unwrap_or_else(|| args.topology.clone());
+        launch.controller_topology = Some(applied_topology.clone());
         if args
             .started
             .send(Ok(ControllerWorkerStartup {
@@ -783,7 +789,7 @@ impl ControllerSessionWorker {
             plugin,
             console,
             configuration_id,
-            previous_topology: args.topology,
+            previous_topology: applied_topology,
             input_provider_sink: None,
             commands: args.commands,
             errors: args.errors,
@@ -1308,6 +1314,102 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(explicit_default["command"], "emulator.exe");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dolphin_launch_selects_real_wiimote_and_raw_hid_provider() {
+        let plugin = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join("plugins/dolphin");
+        let registry = PluginRegistry::new();
+        registry.load(&plugin).unwrap();
+        let runtime = PluginRuntime::new(registry, PluginRuntimeOptions::default());
+        let game = tempfile::Builder::new().suffix(".iso").tempfile().unwrap();
+        let mut storage = BTreeMap::new();
+        storage.insert(
+            "nand".to_owned(),
+            Arc::new(snowglass_vfs::ScratchVolumeFactory::new(
+                snowglass_vfs::ScratchBacking::Memory,
+            )) as crate::StorageFactory,
+        );
+        let result = runtime
+            .handle()
+            .invoke_with_storage_owned(
+                "dolphin",
+                &["onLaunch".to_owned()],
+                vec![serde_json::json!({
+                    "launchPath": game.path(),
+                    "console": "NINTENDO_WII",
+                    "controllerTopology": {
+                        "mappings": [{
+                            "target": { "group": "wii", "port": 0 },
+                            "gamepad": 0,
+                            "source": { "kind": "device", "deviceId": "bt:br-edr/00:11:22:33:44:55" },
+                            "layout": "WII_REMOTE_CONTROLLER",
+                            "connected": true,
+                            "mouse": false,
+                            "projectionMode": "position",
+                            "mapping": {},
+                            "pointer": { "source": "deviceNative", "mode": "absoluteDevice" },
+                            "device": {
+                                "id": "bt:br-edr/00:11:22:33:44:55",
+                                "name": "Nintendo RVL-CNT-01",
+                                "profile": "nintendo.wiimote.original",
+                                "vendorId": 0x057e,
+                                "productId": 0x0306,
+                                "serial": null,
+                                "role": "Whole",
+                                "capabilities": ["rawHid", "accelerometer", "pointerAngular"]
+                            }
+                        }]
+                    }
+                })],
+                storage,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result.value["inputHooks"],
+            serde_json::json!(["bluetooth-api-win32"])
+        );
+        assert_eq!(
+            result.value["inputProviders"],
+            serde_json::json!([{
+                "type": "rawHid",
+                "sourceId": "bt:br-edr/00:11:22:33:44:55",
+                "target": { "group": "wii", "port": 0 },
+                "vendorId": 0x057e,
+                "productId": 0x0306
+            }])
+        );
+        let filesystem = result.prepared_filesystem.unwrap();
+        filesystem.filesystem().materialize().unwrap();
+        for (path, expected) in [
+            ("/User/Config/WiimoteNew.ini", "Source=2"),
+            ("/User/Config/Dolphin.ini", "WiimoteContinuousScanning=True"),
+            (
+                "/User/Config/Dolphin.ini",
+                "WiimoteControllerInterface=False",
+            ),
+        ] {
+            let path = path.parse().unwrap();
+            let file = filesystem
+                .filesystem()
+                .open(
+                    &path,
+                    snowglass_vfs::OpenOptions {
+                        read: true,
+                        write: false,
+                        truncate: false,
+                    },
+                )
+                .unwrap();
+            let mut bytes = vec![0; 128 * 1024];
+            let length = file.read(0, &mut bytes).unwrap();
+            let rendered = String::from_utf8_lossy(&bytes[..length]);
+            assert!(rendered.contains(expected), "{path:?}: {rendered}");
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
