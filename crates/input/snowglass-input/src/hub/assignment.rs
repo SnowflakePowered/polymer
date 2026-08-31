@@ -1,4 +1,4 @@
-use super::{Composite, CompositionMode, DeviceEntry, HubError, HubInner, HubState};
+use super::{Composite, CompositionMode, DeviceEntry, HubError, HubInner};
 use crate::{
     BackendId, Capabilities, DeviceDescriptor, DeviceId, DeviceRole, DeviceState, Feedback,
     InputEvent, PlayerIndex, PointerSample,
@@ -13,39 +13,33 @@ impl HubInner {
         explicit: bool,
     ) -> Result<(), HubError> {
         let events = {
-            let mut state = self.state.lock();
-            if !state.devices.contains_key(device) {
+            let _topology = self.topology.write();
+            if !self.devices.contains_key(device) {
                 return Err(HubError::DeviceNotFound(device.clone()));
             }
-            if index.is_some_and(|value| value.get() >= state.policy.max_players) {
+            if index.is_some_and(|value| value.get() >= self.policy.read().max_players) {
                 return Err(HubError::InvalidPlayerIndex(index.unwrap()));
             }
-            let from = state.index_of(device);
+            let from = self.index_of(device);
             if from == index {
                 return Ok(());
             }
             if let Some(from) = from {
-                state.assignments.remove(&from);
+                self.assignments.remove(&from);
             }
             let mut events = vec![(device.clone(), from, index)];
             if let Some(index) = index {
-                if let Some(displaced) = state.assignments.insert(index, device.clone()) {
-                    let to = explicit.then(|| state.lowest_free()).flatten();
+                if let Some(displaced) = self.assignments.insert(index, device.clone()) {
+                    let to = explicit.then(|| self.lowest_free()).flatten();
                     if let Some(to) = to {
-                        state.assignments.insert(to, displaced.clone());
+                        self.assignments.insert(to, displaced.clone());
                     }
                     events.push((displaced, Some(index), to));
                 }
             }
             events
         };
-        let listeners = self
-            .state
-            .lock()
-            .listeners
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
+        let listeners = self.listeners();
         for (device, from, to) in &events {
             for listener in &listeners {
                 listener.on_input(InputEvent::Assigned {
@@ -82,27 +76,26 @@ impl HubInner {
             ),
         );
         let descriptor = {
-            let mut state = self.state.lock();
-            if state.decomposed.contains(&composite) && automatic {
+            let _topology = self.topology.write();
+            if self.decomposed.contains(&composite) && automatic {
                 return Err(HubError::InvalidComposition);
             }
-            if state.composites.contains_key(&composite) {
+            if self.composites.contains_key(&composite) {
                 return Ok(composite);
             }
             let entries = members
                 .iter()
                 .map(|member| {
-                    if state
+                    if self
                         .composites
-                        .values()
-                        .any(|value| value.members.contains(member))
+                        .iter()
+                        .any(|entry| entry.members.contains(member))
                     {
                         return Err(HubError::AlreadyComposed(member.clone()));
                     }
-                    state
-                        .devices
+                    self.devices
                         .get(member)
-                        .cloned()
+                        .map(|entry| entry.clone())
                         .ok_or_else(|| HubError::DeviceNotFound(member.clone()))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -128,12 +121,12 @@ impl HubInner {
             };
             let state_value = Self::composite_state(&entries, mode);
             for member in members {
-                if let Some(index) = state.index_of(member) {
-                    state.assignments.remove(&index);
+                if let Some(index) = self.index_of(member) {
+                    self.assignments.remove(&index);
                 }
-                state.individual_devices.remove(member);
+                self.individual_devices.remove(member);
             }
-            state.devices.insert(
+            self.devices.insert(
                 composite.clone(),
                 DeviceEntry {
                     descriptor: descriptor.clone(),
@@ -145,7 +138,7 @@ impl HubInner {
                     connected,
                 },
             );
-            state.composites.insert(
+            self.composites.insert(
                 composite.clone(),
                 Composite {
                     members: members.to_vec(),
@@ -154,13 +147,7 @@ impl HubInner {
             );
             descriptor
         };
-        let listeners = self
-            .state
-            .lock()
-            .listeners
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
+        let listeners = self.listeners();
         for listener in listeners {
             listener.on_input(InputEvent::Connected {
                 index: None,
@@ -173,25 +160,21 @@ impl HubInner {
 
     pub(crate) fn decompose(&self, composite: &DeviceId) -> Result<(), HubError> {
         let (members, index, listeners) = {
-            let mut state = self.state.lock();
-            let value = state
+            let _topology = self.topology.write();
+            let (_, value) = self
                 .composites
                 .remove(composite)
                 .ok_or_else(|| HubError::DeviceNotFound(composite.clone()))?;
-            let index = state.index_of(composite);
+            let index = self.index_of(composite);
             if let Some(index) = index {
-                state.assignments.remove(&index);
+                self.assignments.remove(&index);
             }
-            state.devices.remove(composite);
-            state.decomposed.insert(composite.clone());
-            state
-                .individual_devices
-                .extend(value.members.iter().cloned());
-            (
-                value.members,
-                index,
-                state.listeners.values().cloned().collect::<Vec<_>>(),
-            )
+            self.devices.remove(composite);
+            self.decomposed.insert(composite.clone());
+            for member in &value.members {
+                self.individual_devices.insert(member.clone());
+            }
+            (value.members, index, self.listeners())
         };
         for listener in listeners {
             listener.on_input(InputEvent::Disconnected {
@@ -207,24 +190,24 @@ impl HubInner {
 
     pub(crate) fn try_auto_assign(&self, device: &DeviceId) {
         let index = {
-            let state = self.state.lock();
-            if !state.policy.auto_assign || state.index_of(device).is_some() {
+            let policy = *self.policy.read();
+            if !policy.auto_assign || self.index_of(device).is_some() {
                 return;
             }
-            let Some(entry) = state.devices.get(device) else {
+            let Some(entry) = self.devices.get(device) else {
                 return;
             };
             if !entry.connected
-                || (state.policy.auto_compose
+                || (policy.auto_compose
                     && matches!(
                         entry.descriptor.role,
                         DeviceRole::LeftHalf | DeviceRole::RightHalf
                     )
-                    && !state.individual_devices.contains(device))
+                    && !self.individual_devices.contains(device))
             {
                 return;
             }
-            state.lowest_free()
+            self.lowest_free()
         };
         if let Some(index) = index {
             let _ = self.assign(device, Some(index), false);
@@ -233,23 +216,22 @@ impl HubInner {
 
     pub(crate) fn try_auto_compose(&self) {
         let (members, individuals) = {
-            let mut state = self.state.lock();
-            if !state.policy.auto_compose {
+            let _topology = self.topology.write();
+            if !self.policy.read().auto_compose {
                 return;
             }
             let eligible = |role| {
-                state
-                    .devices
-                    .values()
+                self.devices
+                    .iter()
                     .filter(|entry| {
                         entry.connected
                             && entry.descriptor.id.backend() == BackendId::BLUETOOTH
                             && entry.descriptor.role == role
-                            && state.index_of(&entry.descriptor.id).is_none()
-                            && !state
+                            && self.index_of(&entry.descriptor.id).is_none()
+                            && !self
                                 .composites
-                                .values()
-                                .any(|value| value.members.contains(&entry.descriptor.id))
+                                .iter()
+                                .any(|composite| composite.members.contains(&entry.descriptor.id))
                     })
                     .map(|entry| entry.descriptor.id.clone())
                     .collect::<Vec<_>>()
@@ -260,7 +242,9 @@ impl HubInner {
                 (Some(vec![left[0].clone(), right[0].clone()]), Vec::new())
             } else if !left.is_empty() || !right.is_empty() {
                 let individuals = left.into_iter().chain(right).collect::<Vec<_>>();
-                state.individual_devices.extend(individuals.iter().cloned());
+                for device in &individuals {
+                    self.individual_devices.insert(device.clone());
+                }
                 (None, individuals)
             } else {
                 (None, Vec::new())
@@ -275,15 +259,12 @@ impl HubInner {
     }
 
     pub(crate) fn update_composites(&self, member: &DeviceId) {
-        let composites = {
-            let state = self.state.lock();
-            state
-                .composites
-                .iter()
-                .filter(|(_, value)| value.members.contains(member))
-                .map(|(id, value)| (id.clone(), value.clone()))
-                .collect::<Vec<_>>()
-        };
+        let composites = self
+            .composites
+            .iter()
+            .filter(|entry| entry.members.contains(member))
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect::<Vec<_>>();
         for (id, composite) in composites {
             self.update_composite(&id, &composite);
         }
@@ -291,11 +272,11 @@ impl HubInner {
 
     fn update_composite(&self, id: &DeviceId, composite: &Composite) {
         let event = {
-            let mut state = self.state.lock();
+            let _topology = self.topology.write();
             let entries = composite
                 .members
                 .iter()
-                .filter_map(|member| state.devices.get(member).cloned())
+                .filter_map(|member| self.devices.get(member).map(|entry| entry.clone()))
                 .collect::<Vec<_>>();
             if entries.len() != composite.members.len() {
                 return;
@@ -308,7 +289,7 @@ impl HubInner {
                 .map(|entry| entry.pointer_revision)
                 .max()
                 .unwrap_or_default();
-            let Some(entry) = state.devices.get_mut(id) else {
+            let Some(mut entry) = self.devices.get_mut(id) else {
                 return;
             };
             let changed_connection = entry.connected != connected;
@@ -316,14 +297,15 @@ impl HubInner {
             entry.state = value;
             entry.pointer = pointer;
             entry.pointer_revision = pointer_revision;
-            let index = state.index_of(id);
+            drop(entry);
+            let index = self.index_of(id);
             let sequence = index.map(|index| {
-                let sequence = state.sequences.entry(index).or_default();
+                let mut sequence = self.sequences.entry(index).or_default();
                 *sequence = sequence.wrapping_add(1);
                 *sequence
             });
             (
-                state.listeners.values().cloned().collect::<Vec<_>>(),
+                self.listeners(),
                 index,
                 sequence,
                 changed_connection,
@@ -334,14 +316,7 @@ impl HubInner {
         for listener in event.0 {
             if event.3 {
                 if event.4 {
-                    let descriptor = self
-                        .state
-                        .lock()
-                        .devices
-                        .get(id)
-                        .unwrap()
-                        .descriptor
-                        .clone();
+                    let descriptor = self.devices.get(id).unwrap().descriptor.clone();
                     listener.on_input(InputEvent::Connected {
                         index: event.1,
                         device: &descriptor,
@@ -416,18 +391,15 @@ impl HubInner {
     }
 
     fn apply_managed_led(&self, device: &DeviceId, index: PlayerIndex) -> Result<(), HubError> {
-        let members = {
-            let state = self.state.lock();
-            state
-                .composites
-                .get(device)
-                .map_or_else(|| vec![device.clone()], |value| value.members.clone())
-        };
+        let members = self
+            .composites
+            .get(device)
+            .map_or_else(|| vec![device.clone()], |value| value.members.clone());
         for member in members {
-            let backend = {
-                let state = self.state.lock();
-                state.backends.get(&member.backend()).cloned()
-            };
+            let backend = self
+                .backends
+                .get(&member.backend())
+                .map(|value| value.clone());
             if let Some(backend) = backend {
                 match backend.apply_feedback(&member, &Feedback::PlayerLed { index: index.get() }) {
                     Ok(()) | Err(crate::BackendError::Unsupported) => {}
@@ -436,13 +408,5 @@ impl HubInner {
             }
         }
         Ok(())
-    }
-}
-
-impl HubState {
-    pub(crate) fn lowest_free(&self) -> Option<PlayerIndex> {
-        (0..self.policy.max_players)
-            .map(PlayerIndex::new)
-            .find(|index| !self.assignments.contains_key(index))
     }
 }

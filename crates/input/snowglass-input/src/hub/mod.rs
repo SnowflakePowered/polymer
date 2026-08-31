@@ -7,9 +7,9 @@ use crate::{
     HostInputEvent, HostListener, HostListenerHandle, InputBackend, InputEvent, Listener,
     ListenerHandle, ListenerId, PlayerIndex, PointerReport, PointerSample,
 };
-use parking_lot::Mutex;
+use dashmap::{DashMap, DashSet};
+use parking_lot::RwLock;
 use std::{
-    collections::{BTreeMap, BTreeSet},
     fmt,
     sync::{
         Arc,
@@ -82,28 +82,25 @@ pub struct InputHub {
 }
 
 pub(crate) struct HubInner {
-    pub(crate) state: Mutex<HubState>,
+    pub(crate) topology: RwLock<()>,
+    pub(crate) policy: RwLock<AssignmentPolicy>,
+    pub(crate) backends: DashMap<BackendId, Arc<dyn InputBackend>>,
+    pub(crate) devices: DashMap<DeviceId, DeviceEntry>,
+    pub(crate) assignments: DashMap<PlayerIndex, DeviceId>,
+    pub(crate) composites: DashMap<DeviceId, Composite>,
+    pub(crate) decomposed: DashSet<DeviceId>,
+    pub(crate) individual_devices: DashSet<DeviceId>,
+    pub(crate) sequences: DashMap<PlayerIndex, u32>,
+    pub(crate) pointer_overrides: DashMap<PlayerIndex, PointerReport>,
+    pub(crate) listeners: DashMap<ListenerId, Listener>,
+    pub(crate) host_listeners: DashMap<ListenerId, HostListener>,
+    pub(crate) feedback_priority: RwLock<Option<ListenerId>>,
+    pub(crate) next_listener: AtomicU64,
+    pub(crate) calibrations: DashMap<DeviceId, Calibration>,
+    pub(crate) home_led: DashMap<DeviceId, u8>,
+    pub(crate) captures: DashMap<DeviceId, CaptureState>,
     pub(crate) next_pointer_revision: AtomicU64,
     pub(crate) composition_revision: AtomicU64,
-}
-
-pub(crate) struct HubState {
-    pub(crate) policy: AssignmentPolicy,
-    pub(crate) backends: BTreeMap<BackendId, Arc<dyn InputBackend>>,
-    pub(crate) devices: BTreeMap<DeviceId, DeviceEntry>,
-    pub(crate) assignments: BTreeMap<PlayerIndex, DeviceId>,
-    pub(crate) composites: BTreeMap<DeviceId, Composite>,
-    pub(crate) decomposed: BTreeSet<DeviceId>,
-    pub(crate) individual_devices: BTreeSet<DeviceId>,
-    pub(crate) sequences: BTreeMap<PlayerIndex, u32>,
-    pub(crate) pointer_overrides: BTreeMap<PlayerIndex, PointerReport>,
-    pub(crate) listeners: BTreeMap<ListenerId, Listener>,
-    pub(crate) host_listeners: BTreeMap<ListenerId, HostListener>,
-    pub(crate) feedback_priority: Option<ListenerId>,
-    pub(crate) next_listener: u64,
-    pub(crate) calibrations: BTreeMap<DeviceId, Calibration>,
-    pub(crate) home_led: BTreeMap<DeviceId, u8>,
-    pub(crate) captures: BTreeMap<DeviceId, CaptureState>,
 }
 
 #[derive(Clone)]
@@ -172,24 +169,23 @@ impl InputHub {
     pub fn new(policy: AssignmentPolicy) -> Self {
         Self {
             inner: Arc::new(HubInner {
-                state: Mutex::new(HubState {
-                    policy,
-                    backends: BTreeMap::new(),
-                    devices: BTreeMap::new(),
-                    assignments: BTreeMap::new(),
-                    composites: BTreeMap::new(),
-                    decomposed: BTreeSet::new(),
-                    individual_devices: BTreeSet::new(),
-                    sequences: BTreeMap::new(),
-                    pointer_overrides: BTreeMap::new(),
-                    listeners: BTreeMap::new(),
-                    host_listeners: BTreeMap::new(),
-                    feedback_priority: None,
-                    next_listener: 1,
-                    calibrations: BTreeMap::new(),
-                    home_led: BTreeMap::new(),
-                    captures: BTreeMap::new(),
-                }),
+                topology: RwLock::new(()),
+                policy: RwLock::new(policy),
+                backends: DashMap::new(),
+                devices: DashMap::new(),
+                assignments: DashMap::new(),
+                composites: DashMap::new(),
+                decomposed: DashSet::new(),
+                individual_devices: DashSet::new(),
+                sequences: DashMap::new(),
+                pointer_overrides: DashMap::new(),
+                listeners: DashMap::new(),
+                host_listeners: DashMap::new(),
+                feedback_priority: RwLock::new(None),
+                next_listener: AtomicU64::new(1),
+                calibrations: DashMap::new(),
+                home_led: DashMap::new(),
+                captures: DashMap::new(),
                 next_pointer_revision: AtomicU64::new(1),
                 composition_revision: AtomicU64::new(0),
             }),
@@ -199,14 +195,14 @@ impl InputHub {
     pub fn register_backend(&self, backend: Arc<dyn InputBackend>) -> Result<(), HubError> {
         let id = backend.id();
         {
-            let mut state = self.inner.state.lock();
-            if state.backends.contains_key(&id) {
+            let _topology = self.inner.topology.write();
+            if self.inner.backends.contains_key(&id) {
                 return Err(HubError::DuplicateBackend(id));
             }
-            state.backends.insert(id, backend.clone());
+            self.inner.backends.insert(id, backend.clone());
         }
         if let Err(error) = backend.start(BackendHandle::new(&self.inner, id)) {
-            self.inner.state.lock().backends.remove(&id);
+            self.inner.backends.remove(&id);
             return Err(error.into());
         }
         Ok(())
@@ -214,34 +210,39 @@ impl InputHub {
 
     pub fn add_listener(&self, listener: Arc<dyn crate::InputListener>) -> ListenerHandle {
         let (id, devices, states) = {
-            let mut state = self.inner.state.lock();
-            let id = ListenerId(state.next_listener);
-            state.next_listener = state.next_listener.wrapping_add(1).max(1);
-            state.listeners.insert(id, listener.clone());
-            let devices = state
+            let _topology = self.inner.topology.write();
+            let id = self.inner.next_listener_id();
+            self.inner.listeners.insert(id, listener.clone());
+            let mut devices = self
+                .inner
                 .devices
-                .values()
+                .iter()
                 .map(|entry| {
                     (
-                        state.index_of(&entry.descriptor.id),
+                        self.inner.index_of(&entry.descriptor.id),
                         entry.descriptor.clone(),
                         entry.connected,
                     )
                 })
                 .collect::<Vec<_>>();
-            let states = state
+            devices.sort_by(|(_, left, _), (_, right, _)| left.id.cmp(&right.id));
+            let mut states = self
+                .inner
                 .assignments
                 .iter()
-                .filter_map(|(index, device)| {
-                    let entry = state.devices.get(device)?;
+                .filter_map(|assignment| {
+                    let index = *assignment.key();
+                    let device = assignment.value().clone();
+                    let entry = self.inner.devices.get(&device)?;
                     entry.connected.then_some((
-                        *index,
-                        *state.sequences.get(index).unwrap_or(&0),
-                        device.clone(),
+                        index,
+                        self.inner.sequences.get(&index).map_or(0, |value| *value),
+                        device,
                         entry.state,
                     ))
                 })
                 .collect::<Vec<_>>();
+            states.sort_by_key(|(index, _, _, _)| *index);
             (id, devices, states)
         };
         for (index, device, connected) in &devices {
@@ -271,13 +272,8 @@ impl InputHub {
         &self,
         listener: Arc<dyn crate::HostInputListener>,
     ) -> HostListenerHandle {
-        let id = {
-            let mut state = self.inner.state.lock();
-            let id = ListenerId(state.next_listener);
-            state.next_listener = state.next_listener.wrapping_add(1).max(1);
-            state.host_listeners.insert(id, listener);
-            id
-        };
+        let id = self.inner.next_listener_id();
+        self.inner.host_listeners.insert(id, listener);
         HostListenerHandle {
             hub: self.clone(),
             id,
@@ -286,15 +282,14 @@ impl InputHub {
     }
 
     pub fn publish_host(&self, event: HostInputEvent) {
-        let listeners = self
+        let mut listeners = self
             .inner
-            .state
-            .lock()
             .host_listeners
-            .values()
-            .cloned()
+            .iter()
+            .map(|entry| (*entry.key(), entry.value().clone()))
             .collect::<Vec<_>>();
-        for listener in listeners {
+        listeners.sort_by_key(|(id, _)| *id);
+        for (_, listener) in listeners {
             listener.on_host_input(&event);
         }
     }
@@ -304,71 +299,82 @@ impl InputHub {
     }
 
     pub fn assignments(&self) -> Vec<(PlayerIndex, DeviceId)> {
-        self.inner
-            .state
-            .lock()
+        let _topology = self.inner.topology.read();
+        let mut assignments = self
+            .inner
             .assignments
             .iter()
-            .map(|(index, device)| (*index, device.clone()))
-            .collect()
+            .map(|entry| (*entry.key(), entry.value().clone()))
+            .collect::<Vec<_>>();
+        assignments.sort_by_key(|(index, _)| *index);
+        assignments
     }
 
     pub fn set_auto_assign(&self, enabled: bool) {
-        self.inner.state.lock().policy.auto_assign = enabled;
+        self.inner.policy.write().auto_assign = enabled;
     }
 
     pub fn devices(&self) -> Vec<(Option<PlayerIndex>, DeviceDescriptor)> {
-        let state = self.inner.state.lock();
-        state
+        let _topology = self.inner.topology.read();
+        let mut devices = self
+            .inner
             .devices
-            .values()
+            .iter()
             .map(|entry| {
                 (
-                    state.index_of(&entry.descriptor.id),
+                    self.inner.index_of(&entry.descriptor.id),
                     entry.descriptor.clone(),
                 )
             })
-            .collect()
+            .collect::<Vec<_>>();
+        devices.sort_by(|(_, left), (_, right)| left.id.cmp(&right.id));
+        devices
     }
 
     pub fn snapshot(&self) -> Vec<(Option<PlayerIndex>, DeviceDescriptor, DeviceState)> {
-        let state = self.inner.state.lock();
-        state
+        let _topology = self.inner.topology.read();
+        let mut devices = self
+            .inner
             .devices
-            .values()
+            .iter()
             .map(|entry| {
                 (
-                    state.index_of(&entry.descriptor.id),
+                    self.inner.index_of(&entry.descriptor.id),
                     entry.descriptor.clone(),
                     entry.state,
                 )
             })
-            .collect()
+            .collect::<Vec<_>>();
+        devices.sort_by(|(_, left, _), (_, right, _)| left.id.cmp(&right.id));
+        devices
     }
 
     pub fn device_snapshots(
         &self,
     ) -> Vec<(Option<PlayerIndex>, DeviceDescriptor, DeviceState, bool)> {
-        let state = self.inner.state.lock();
-        state
+        let _topology = self.inner.topology.read();
+        let mut devices = self
+            .inner
             .devices
-            .values()
+            .iter()
             .map(|entry| {
                 (
-                    state.index_of(&entry.descriptor.id),
+                    self.inner.index_of(&entry.descriptor.id),
                     entry.descriptor.clone(),
                     entry.state,
                     entry.connected,
                 )
             })
-            .collect()
+            .collect::<Vec<_>>();
+        devices.sort_by(|(_, left, _, _), (_, right, _, _)| left.id.cmp(&right.id));
+        devices
     }
 
     pub fn state(&self, index: PlayerIndex) -> Option<DeviceState> {
-        let state = self.inner.state.lock();
-        let device = state.assignments.get(&index)?;
-        let mut value = state.devices.get(device)?.state;
-        if let Some(pointer) = state.pointer_overrides.get(&index) {
+        let _topology = self.inner.topology.read();
+        let device = self.inner.assignments.get(&index)?.value().clone();
+        let mut value = self.inner.devices.get(&device)?.state;
+        if let Some(pointer) = self.inner.pointer_overrides.get(&index) {
             value.pointer = *pointer;
         }
         Some(value)
@@ -379,25 +385,24 @@ impl InputHub {
     }
 
     pub fn pointer_snapshot(&self, index: PlayerIndex) -> Option<(u64, PointerSample)> {
-        let state = self.inner.state.lock();
-        let device = state.assignments.get(&index)?;
-        let entry = state.devices.get(device)?;
+        let _topology = self.inner.topology.read();
+        let device = self.inner.assignments.get(&index)?.value().clone();
+        let entry = self.inner.devices.get(&device)?;
         Some((entry.pointer_revision, entry.pointer))
     }
 
     pub fn raw_hid_filter(&self, index: PlayerIndex) -> Option<Arc<dyn crate::RawHidFilter>> {
-        let state = self.inner.state.lock();
-        let device = state.assignments.get(&index)?;
-        let backend = state.backends.get(&device.backend())?;
-        backend.raw_hid_filter(device)
+        let _topology = self.inner.topology.read();
+        let device = self.inner.assignments.get(&index)?.value().clone();
+        let backend = self.inner.backends.get(&device.backend())?;
+        backend.raw_hid_filter(&device)
     }
 
     pub fn set_pointer_override(&self, index: PlayerIndex, pointer: Option<PointerReport>) {
-        let mut state = self.inner.state.lock();
         if let Some(pointer) = pointer {
-            state.pointer_overrides.insert(index, pointer);
+            self.inner.pointer_overrides.insert(index, pointer);
         } else {
-            state.pointer_overrides.remove(&index);
+            self.inner.pointer_overrides.remove(&index);
         }
     }
 
@@ -414,28 +419,28 @@ impl InputHub {
     }
 
     pub fn set_feedback_priority(&self, listener: Option<ListenerId>) {
-        self.inner.state.lock().feedback_priority = listener;
+        *self.inner.feedback_priority.write() = listener;
     }
 
     pub fn set_max_players(&self, max: u8) {
-        let mut state = self.inner.state.lock();
-        state.policy.max_players = max.min(8);
-        let max_players = state.policy.max_players;
-        state
+        let _topology = self.inner.topology.write();
+        let max_players = max.min(8);
+        self.inner.policy.write().max_players = max_players;
+        self.inner
             .assignments
             .retain(|index, _| index.get() < max_players);
     }
 
     pub(crate) fn remove_listener(&self, id: ListenerId) {
-        let mut state = self.inner.state.lock();
-        state.listeners.remove(&id);
-        if state.feedback_priority == Some(id) {
-            state.feedback_priority = None;
+        self.inner.listeners.remove(&id);
+        let mut priority = self.inner.feedback_priority.write();
+        if *priority == Some(id) {
+            *priority = None;
         }
     }
 
     pub(crate) fn remove_host_listener(&self, id: ListenerId) {
-        self.inner.state.lock().host_listeners.remove(&id);
+        self.inner.host_listeners.remove(&id);
     }
 
     pub(crate) fn feedback(
@@ -454,19 +459,23 @@ impl InputHub {
         format: HdRumbleFormat,
     ) -> Result<HdRumbleStream, HubError> {
         let (device, backend) = {
-            let state = self.inner.state.lock();
-            if state.feedback_priority.is_some() && state.feedback_priority != Some(listener) {
+            let _topology = self.inner.topology.read();
+            let priority = *self.inner.feedback_priority.read();
+            if priority.is_some() && priority != Some(listener) {
                 return Err(HubError::FeedbackNotOwned);
             }
-            let device = state
+            let device = self
+                .inner
                 .assignments
                 .get(&index)
                 .ok_or(HubError::InvalidPlayerIndex(index))?
+                .value()
                 .clone();
-            if state.composites.contains_key(&device) {
+            if self.inner.composites.contains_key(&device) {
                 return Err(HubError::Unsupported);
             }
-            let backend = state
+            let backend = self
+                .inner
                 .backends
                 .get(&device.backend())
                 .ok_or(HubError::BackendUnavailable(device.backend()))?
@@ -495,11 +504,9 @@ impl InputHub {
 
     pub fn calibration(&self, device: &DeviceId) -> Calibration {
         self.inner
-            .state
-            .lock()
             .calibrations
             .get(device)
-            .cloned()
+            .map(|value| value.clone())
             .unwrap_or_default()
     }
 
@@ -517,23 +524,27 @@ impl InputHub {
         kind: CalibrationKind,
     ) -> Result<CalibrationCapture, HubError> {
         let calibration = {
-            let mut state = self.inner.state.lock();
-            if !state.devices.contains_key(device) {
+            let _topology = self.inner.topology.read();
+            if !self.inner.devices.contains_key(device) {
                 return Err(HubError::DeviceNotFound(device.clone()));
             }
-            if state.captures.contains_key(device) {
+            if self.inner.captures.contains_key(device) {
                 return Err(HubError::Calibration(CalibrationError::Cancelled));
             }
-            state
+            self.inner
                 .captures
                 .insert(device.clone(), CaptureState::new(kind));
-            state.calibrations.get(device).cloned().unwrap_or_default()
+            self.inner
+                .calibrations
+                .get(device)
+                .map(|value| value.clone())
+                .unwrap_or_default()
         };
         if let Err(error) = self
             .inner
             .apply_calibration(device, &calibration.without_shaping())
         {
-            self.inner.state.lock().captures.remove(device);
+            self.inner.captures.remove(device);
             return Err(error);
         }
         Ok(CalibrationCapture {
@@ -558,8 +569,9 @@ pub struct CalibrationCapture {
 
 impl CalibrationCapture {
     pub fn progress(&self) -> f32 {
-        let state = self.hub.inner.state.lock();
-        let samples = state
+        let samples = self
+            .hub
+            .inner
             .captures
             .get(&self.device)
             .map_or(0, |capture| capture.samples);
@@ -585,17 +597,46 @@ impl Drop for CalibrationCapture {
     }
 }
 
-impl HubState {
+impl HubInner {
+    fn next_listener_id(&self) -> ListenerId {
+        ListenerId(
+            self.next_listener
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                    Some(value.wrapping_add(1).max(1))
+                })
+                .expect("listener identifiers always advance"),
+        )
+    }
+
     pub(crate) fn index_of(&self, device: &DeviceId) -> Option<PlayerIndex> {
         self.assignments
             .iter()
-            .find_map(|(index, candidate)| (candidate == device).then_some(*index))
+            .find_map(|entry| (entry.value() == device).then_some(*entry.key()))
+    }
+
+    pub(crate) fn lowest_free(&self) -> Option<PlayerIndex> {
+        (0..self.policy.read().max_players)
+            .map(PlayerIndex::new)
+            .find(|index| !self.assignments.contains_key(index))
+    }
+
+    pub(crate) fn listeners(&self) -> Vec<Listener> {
+        let mut listeners = self
+            .listeners
+            .iter()
+            .map(|entry| (*entry.key(), entry.value().clone()))
+            .collect::<Vec<_>>();
+        listeners.sort_by_key(|(id, _)| *id);
+        listeners
+            .into_iter()
+            .map(|(_, listener)| listener)
+            .collect()
     }
 }
 
 impl Drop for HubInner {
     fn drop(&mut self) {
-        for backend in self.state.get_mut().backends.values() {
+        for backend in &self.backends {
             backend.shutdown();
         }
     }

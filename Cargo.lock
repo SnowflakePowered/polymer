@@ -11510,6 +11510,7 @@ dependencies = [
 name = "snowglass-input"
 version = "0.1.0"
 dependencies = [
+ "dashmap",
  "parking_lot",
  "tracing",
 ]
