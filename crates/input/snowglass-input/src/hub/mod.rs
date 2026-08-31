@@ -13,7 +13,7 @@ use std::{
     fmt,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -83,6 +83,8 @@ pub struct InputHub {
 
 pub(crate) struct HubInner {
     pub(crate) state: Mutex<HubState>,
+    pub(crate) next_pointer_revision: AtomicU64,
+    pub(crate) composition_revision: AtomicU64,
 }
 
 pub(crate) struct HubState {
@@ -92,6 +94,7 @@ pub(crate) struct HubState {
     pub(crate) assignments: BTreeMap<PlayerIndex, DeviceId>,
     pub(crate) composites: BTreeMap<DeviceId, Composite>,
     pub(crate) decomposed: BTreeSet<DeviceId>,
+    pub(crate) individual_devices: BTreeSet<DeviceId>,
     pub(crate) sequences: BTreeMap<PlayerIndex, u32>,
     pub(crate) pointer_overrides: BTreeMap<PlayerIndex, PointerReport>,
     pub(crate) listeners: BTreeMap<ListenerId, Listener>,
@@ -108,6 +111,7 @@ pub(crate) struct DeviceEntry {
     pub(crate) descriptor: DeviceDescriptor,
     pub(crate) state: DeviceState,
     pub(crate) pointer: PointerSample,
+    pub(crate) pointer_revision: u64,
     pub(crate) connected: bool,
 }
 
@@ -175,6 +179,7 @@ impl InputHub {
                     assignments: BTreeMap::new(),
                     composites: BTreeMap::new(),
                     decomposed: BTreeSet::new(),
+                    individual_devices: BTreeSet::new(),
                     sequences: BTreeMap::new(),
                     pointer_overrides: BTreeMap::new(),
                     listeners: BTreeMap::new(),
@@ -185,6 +190,8 @@ impl InputHub {
                     home_led: BTreeMap::new(),
                     captures: BTreeMap::new(),
                 }),
+                next_pointer_revision: AtomicU64::new(1),
+                composition_revision: AtomicU64::new(0),
             }),
         }
     }
@@ -368,9 +375,14 @@ impl InputHub {
     }
 
     pub fn pointer_sample(&self, index: PlayerIndex) -> Option<PointerSample> {
+        self.pointer_snapshot(index).map(|(_, sample)| sample)
+    }
+
+    pub fn pointer_snapshot(&self, index: PlayerIndex) -> Option<(u64, PointerSample)> {
         let state = self.inner.state.lock();
         let device = state.assignments.get(&index)?;
-        Some(state.devices.get(device)?.pointer)
+        let entry = state.devices.get(device)?;
+        Some((entry.pointer_revision, entry.pointer))
     }
 
     pub fn raw_hid_filter(&self, index: PlayerIndex) -> Option<Arc<dyn crate::RawHidFilter>> {
@@ -517,8 +529,13 @@ impl InputHub {
                 .insert(device.clone(), CaptureState::new(kind));
             state.calibrations.get(device).cloned().unwrap_or_default()
         };
-        self.inner
-            .apply_calibration(device, &calibration.without_shaping())?;
+        if let Err(error) = self
+            .inner
+            .apply_calibration(device, &calibration.without_shaping())
+        {
+            self.inner.state.lock().captures.remove(device);
+            return Err(error);
+        }
         Ok(CalibrationCapture {
             hub: self.clone(),
             device: device.clone(),

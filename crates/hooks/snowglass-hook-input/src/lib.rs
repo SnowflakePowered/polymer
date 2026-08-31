@@ -50,6 +50,13 @@ impl HookInput {
         self.state.get(player)
     }
 
+    pub fn resolved(&self, player: u8) -> Option<DeviceState> {
+        let mut state = self.raw(player)?;
+        let host = self.host.sample();
+        state.pointer = self.topology.pointer(player, state.pointer, &host);
+        Some(state)
+    }
+
     pub fn host(&self) -> &HostState {
         &self.host
     }

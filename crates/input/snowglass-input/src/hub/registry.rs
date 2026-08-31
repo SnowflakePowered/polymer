@@ -6,7 +6,11 @@ use crate::{
 };
 
 impl HubInner {
-    pub(crate) fn connected(&self, backend: BackendId, descriptor: DeviceDescriptor) {
+    pub(crate) fn connected(
+        self: &std::sync::Arc<Self>,
+        backend: BackendId,
+        descriptor: DeviceDescriptor,
+    ) {
         if descriptor.id.backend() != backend {
             tracing::warn!(%backend, device = %descriptor.id, "input backend published a foreign device");
             return;
@@ -21,6 +25,7 @@ impl HubInner {
                     descriptor: descriptor.clone(),
                     state: DeviceState::default(),
                     pointer: PointerSample::None,
+                    pointer_revision: 0,
                     connected: true,
                 });
             entry.descriptor = descriptor.clone();
@@ -43,8 +48,36 @@ impl HubInner {
                 device: &descriptor,
             });
         }
-        self.try_auto_compose();
-        self.try_auto_assign(&descriptor.id);
+        let auto_compose = self.state.lock().policy.auto_compose;
+        if auto_compose
+            && matches!(
+                descriptor.role,
+                crate::DeviceRole::LeftHalf | crate::DeviceRole::RightHalf
+            )
+        {
+            let revision = self
+                .composition_revision
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                .wrapping_add(1);
+            let hub = std::sync::Arc::downgrade(self);
+            let _ = std::thread::Builder::new()
+                .name("snowglass-input-compose".to_owned())
+                .spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    let Some(hub) = hub.upgrade() else {
+                        return;
+                    };
+                    if hub
+                        .composition_revision
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                        == revision
+                    {
+                        hub.try_auto_compose();
+                    }
+                });
+        } else {
+            self.try_auto_assign(&descriptor.id);
+        }
     }
 
     pub(crate) fn disconnected(&self, backend: BackendId, device: &DeviceId) {
@@ -139,8 +172,12 @@ impl HubInner {
         if device.backend() != backend {
             return;
         }
+        let revision = self
+            .next_pointer_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if let Some(entry) = self.state.lock().devices.get_mut(device) {
             entry.pointer = *sample;
+            entry.pointer_revision = revision;
         }
         self.update_composites(device);
     }
@@ -353,32 +390,62 @@ impl HubInner {
                     let current = calibration.sticks[stick].get_or_insert_default();
                     for axis in 0..2 {
                         let observed = capture.stick_sum[stick][axis] / i64::from(capture.samples);
-                        current.center[axis] = current.center[axis].saturating_add(
-                            observed.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16,
-                        );
+                        let center = i64::from(current.center[axis]);
+                        let range = if observed < 0 {
+                            center - i64::from(current.min[axis])
+                        } else {
+                            i64::from(current.max[axis]) - center
+                        }
+                        .max(1);
+                        let correction = observed * range / i64::from(i16::MAX);
+                        current.center[axis] = (center + correction)
+                            .clamp(i64::from(i16::MIN), i64::from(i16::MAX))
+                            as i16;
                     }
                 }
             }
             CalibrationKind::StickRange => {
                 for stick in 0..2 {
                     let current = calibration.sticks[stick].get_or_insert_default();
-                    current.min = capture.stick_min[stick];
-                    current.max = capture.stick_max[stick];
+                    for axis in 0..2 {
+                        let center = i64::from(current.center[axis]);
+                        let negative_range = (center - i64::from(current.min[axis])).max(1);
+                        let positive_range = (i64::from(current.max[axis]) - center).max(1);
+                        current.min[axis] = (center
+                            + i64::from(capture.stick_min[stick][axis]) * negative_range
+                                / i64::from(i16::MAX))
+                        .clamp(i64::from(i16::MIN), i64::from(i16::MAX))
+                            as i16;
+                        current.max[axis] = (center
+                            + i64::from(capture.stick_max[stick][axis]) * positive_range
+                                / i64::from(i16::MAX))
+                        .clamp(i64::from(i16::MIN), i64::from(i16::MAX))
+                            as i16;
+                    }
                 }
             }
             CalibrationKind::TriggerRange => {
                 for trigger in 0..2 {
                     let current =
                         calibration.triggers[trigger].get_or_insert(TriggerCalibration::default());
-                    current.min = capture.trigger_min[trigger];
-                    current.max = capture.trigger_max[trigger];
+                    let min = u64::from(current.min);
+                    let range = u64::from(current.max.saturating_sub(current.min).max(1));
+                    current.min = (min
+                        + u64::from(capture.trigger_min[trigger]) * range / u64::from(u16::MAX))
+                    .min(u64::from(u16::MAX)) as u16;
+                    current.max = (min
+                        + u64::from(capture.trigger_max[trigger]) * range / u64::from(u16::MAX))
+                    .min(u64::from(u16::MAX)) as u16;
                 }
             }
             CalibrationKind::MotionBias => {
                 let current = calibration.motion.get_or_insert_default();
                 for axis in 0..3 {
-                    current.gyroscope_bias[axis] +=
-                        (capture.gyro_sum[axis] / f64::from(capture.samples)) as f32;
+                    let observed = capture.gyro_sum[axis] / f64::from(capture.samples);
+                    let scale = f64::from(current.gyroscope_scale[axis]);
+                    if scale.abs() > f64::EPSILON {
+                        current.gyroscope_bias[axis] += (observed / scale) as f32;
+                    }
                 }
             }
         }

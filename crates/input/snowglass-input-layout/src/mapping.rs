@@ -1,5 +1,5 @@
 use consolespec::input::{BindingKey, Component, Sign};
-use snowglass_input::{GamepadReport, KeyCode};
+use snowglass_input::{GamepadButton, GamepadReport, KeyCode};
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 
@@ -181,6 +181,9 @@ impl Mapping {
                     .default_gamepad_bindings()
                     .map(|(target, source)| (target, Some(source))),
             );
+            if mode == crate::layout::ProjectionMode::Name {
+                selected.extend(Self::named_face_bindings(layout));
+            }
         }
         selected.extend(bindings.iter().copied());
         let mut mapping = Self {
@@ -260,6 +263,25 @@ impl Mapping {
             _ => return Err(MappingError::invalid(target, source)),
         }
         Ok(())
+    }
+
+    fn named_face_bindings(
+        layout: &InputLayout,
+    ) -> impl Iterator<Item = (BindingKey, Option<BindingKey>)> + '_ {
+        [
+            ("A", GamepadButton::A),
+            ("B", GamepadButton::B),
+            ("X", GamepadButton::X),
+            ("Y", GamepadButton::Y),
+        ]
+        .into_iter()
+        .filter_map(|(label, source)| {
+            layout
+                .elements
+                .iter()
+                .find(|element| element.label.eq_ignore_ascii_case(label))
+                .map(|element| (element.key, Some(crate::sdl::binding_of(source))))
+        })
     }
 
     fn clear(&mut self, target: Wire) {

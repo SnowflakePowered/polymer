@@ -167,7 +167,7 @@ impl Runtime {
         let mut connections = self.connected.lock();
         let mut forwarded = false;
         for index in 0..count {
-            let raw = input.raw(index as u8);
+            let raw = input.resolved(index as u8);
             let connected = raw.is_some();
             if connections[index] != Some(connected)
                 && backend

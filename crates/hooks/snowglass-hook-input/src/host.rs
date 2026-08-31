@@ -1,17 +1,34 @@
 use parking_lot::{Mutex, RwLock};
 use snowglass_input_layout::mapping::HostSample;
 use snowglass_ipc::input::InputMessage;
-use std::collections::VecDeque;
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
 
 #[derive(Default)]
 pub struct HostState {
     sample: RwLock<HostSample>,
     events: Mutex<VecDeque<InputMessage>>,
+    moved_at: Mutex<Option<Instant>>,
 }
 
 impl HostState {
     pub fn sample(&self) -> HostSample {
-        self.sample.read().clone()
+        let mut sample = self.sample.read().clone();
+        let weight = self.moved_at.lock().map_or(0.0, |moved_at| {
+            let elapsed = moved_at.elapsed();
+            if elapsed <= Duration::from_millis(16) {
+                1.0
+            } else if elapsed >= Duration::from_millis(50) {
+                0.0
+            } else {
+                1.0 - (elapsed.as_secs_f32() - 0.016) / 0.034
+            }
+        });
+        sample.delta[0] *= weight;
+        sample.delta[1] *= weight;
+        sample
     }
 
     pub fn drain(&self) -> Vec<InputMessage> {
@@ -36,15 +53,22 @@ impl HostState {
                 value.pressed,
             ),
             InputMessage::HostPointer(value) => {
-                sample.pointer = Some(value.position.map(Self::axis));
                 sample.delta = value.delta;
-                sample.mouse_buttons = value.buttons as u8;
+                if value.coordinate_width != 0 && value.coordinate_height != 0 {
+                    sample.pointer = Some(value.position.map(Self::axis));
+                    sample.mouse_buttons = value.buttons as u8;
+                }
+                if value.delta != [0.0; 2] {
+                    *self.moved_at.lock() = Some(Instant::now());
+                }
             }
             _ => {}
         }
     }
 
     fn axis(value: f32) -> i16 {
-        (value.clamp(0.0, 1.0) * f32::from(i16::MAX)) as i16
+        (value.clamp(0.0, 1.0) * 65535.0 - 32768.0)
+            .round()
+            .clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16
     }
 }
