@@ -5,6 +5,7 @@ use toml_spanner::{Arena, FromToml, Table, Toml};
 use crate::{
     error::Error,
     toml::{
+        actions::Actions,
         config::{BoolStyle, Section, Target},
         input::{InputBlock, PortTable},
     },
@@ -22,6 +23,7 @@ pub struct ConfigurationToml<'de> {
     pub targets: BTreeMap<&'de str, Target<'de>>,
     #[toml(default)]
     pub sections: BTreeMap<&'de str, Section<'de>>,
+    pub actions: Option<Actions<'de>>,
     pub input: Option<InputBlock<'de>>,
     #[toml(default)]
     pub platforms: BTreeMap<&'de str, PortTable<'de>>,

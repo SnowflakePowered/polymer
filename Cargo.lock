@@ -11612,6 +11612,7 @@ dependencies = [
 name = "snowglass-pluginhost"
 version = "0.1.0"
 dependencies = [
+ "consolespec",
  "deno_ast",
  "deno_core",
  "deno_error",
@@ -11827,6 +11828,7 @@ version = "0.1.0"
 dependencies = [
  "parking_lot",
  "snowglass-vfs",
+ "tempfile",
  "windows 0.61.3",
  "winfsp",
 ]

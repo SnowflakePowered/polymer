@@ -16,6 +16,7 @@ pub struct ConfigurationDefinition {
     pub sections: Arena<SectionDefinition>,
     pub root_sections: Box<[Handle<SectionDefinition>]>,
     pub options: Arena<OptionDefinition>,
+    pub actions: Option<ActionsDefinition>,
     pub input: Option<InputDefinition>,
     pub(super) target_graph: OnceLock<TargetGraph>,
 }
@@ -29,6 +30,7 @@ impl ConfigurationDefinition {
             sections: Arena::new(),
             root_sections: Box::new([]),
             options: Arena::new(),
+            actions: None,
             input: None,
             target_graph: OnceLock::new(),
         }
@@ -161,6 +163,19 @@ pub struct PortDefinition {
     pub target: OwnedTargetPath,
     pub layouts: Box<[Box<str>]>,
     pub emit: BTreeMap<Box<str>, Box<[EmitDefinition]>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ActionsDefinition {
+    pub target: OwnedTargetPath,
+    pub emit: Box<[EmitDefinition]>,
+    pub map: BTreeMap<Box<str>, ActionDefinition>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ActionDefinition {
+    pub name: Box<str>,
+    pub expression: Box<str>,
 }
 
 /// A lightweight reference joining an option's static and realized rows.

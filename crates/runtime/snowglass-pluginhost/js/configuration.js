@@ -5,6 +5,7 @@ import {
   op_configuration_set,
 } from "ext:core/ops";
 import "./controller.js";
+import "./actions.js";
 
 function configuration(id) {
   const proxies = new Map();

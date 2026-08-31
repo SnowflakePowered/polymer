@@ -42,6 +42,21 @@ impl ShellCoordinator {
                 });
             }
             EmulatorCommand::Input { .. } => {}
+            EmulatorCommand::PauseState { token, pause } if self.game_host.is_active(token) => {
+                let state = if pause {
+                    snowglass_pluginhost::PauseState::Pause
+                } else {
+                    snowglass_pluginhost::PauseState::Resume
+                };
+                if let Err(error) = self.game_host.pause_resume(state) {
+                    self.emit_instance_event(
+                        token,
+                        "pauseresumeerror",
+                        &instance_events::error(error),
+                    );
+                }
+            }
+            EmulatorCommand::PauseState { .. } => {}
         }
     }
 

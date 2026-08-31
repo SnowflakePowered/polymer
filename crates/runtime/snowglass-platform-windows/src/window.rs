@@ -320,6 +320,61 @@ pub fn forward_key(window: NativeWindow, virtual_key: u32, pressed: bool, repeat
     unsafe { post_message(window, message, virtual_key as usize, lparam) };
 }
 
+#[cfg(windows)]
+pub fn keyboard_code(code: &str) -> Option<(u32, u16, bool)> {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{MAPVK_VK_TO_VSC_EX, MapVirtualKeyW};
+    let virtual_key = match code {
+        "Alt" => 0x12,
+        "Control" => 0x11,
+        "Shift" => 0x10,
+        "Meta" => 0x5b,
+        "Enter" => 0x0d,
+        "Escape" => 0x1b,
+        "Tab" => 0x09,
+        "Space" => 0x20,
+        "Backspace" => 0x08,
+        "Delete" => 0x2e,
+        "Home" => 0x24,
+        "End" => 0x23,
+        "PageUp" => 0x21,
+        "PageDown" => 0x22,
+        "ArrowLeft" => 0x25,
+        "ArrowUp" => 0x26,
+        "ArrowRight" => 0x27,
+        "ArrowDown" => 0x28,
+        "Period" => 0xbe,
+        value
+            if value.len() == 4
+                && value.starts_with("Key")
+                && value.as_bytes()[3].is_ascii_uppercase() =>
+        {
+            value.as_bytes()[3] as u32
+        }
+        value
+            if value.len() == 6
+                && value.starts_with("Digit")
+                && value.as_bytes()[5].is_ascii_digit() =>
+        {
+            value.as_bytes()[5] as u32
+        }
+        value if value.starts_with('F') => value[1..]
+            .parse::<u32>()
+            .ok()
+            .filter(|number| (1..=24).contains(number))
+            .map(|number| 0x6f + number)?,
+        value if value.starts_with("VK_") => u32::from_str_radix(&value[3..], 16)
+            .ok()
+            .filter(|key| *key <= u16::MAX.into())?,
+        _ => return None,
+    };
+    let mapped = unsafe { MapVirtualKeyW(virtual_key, MAPVK_VK_TO_VSC_EX) };
+    Some((
+        virtual_key,
+        (mapped & 0xff) as u16,
+        matches!((mapped >> 8) & 0xff, 0xe0 | 0xe1),
+    ))
+}
+
 /// Forwards a physical keyboard transition without losing the scan-code prefix
 /// supplied by Raw Input. This is important for navigation keys, whose E0
 /// prefix distinguishes them from their numeric-keypad counterparts.

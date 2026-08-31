@@ -199,11 +199,9 @@ impl ExportInvocation {
             [name] if name == "onLaunch" => Self::EmulatorLaunch {
                 explicit_default: false,
             },
-            [root, name] if root == "default" && name == "onLaunch" => {
-                Self::EmulatorLaunch {
-                    explicit_default: true,
-                }
-            }
+            [root, name] if root == "default" && name == "onLaunch" => Self::EmulatorLaunch {
+                explicit_default: true,
+            },
             _ => Self::Generic,
         })
     }
@@ -687,14 +685,14 @@ fn start_controller_session_worker(
         PluginInvocationError::worker("controller plugin session failed to start")
     })??;
     let session = startup
-        .controller_changes
+        .retained
         .then(|| crate::ControllerSession::new(commands, errors));
     Ok((startup.launch, session))
 }
 
 struct ControllerWorkerStartup {
     launch: EmulatorLaunchArguments,
-    controller_changes: bool,
+    retained: bool,
 }
 
 struct ControllerSessionWorkerArgs {
@@ -706,7 +704,7 @@ struct ControllerSessionWorkerArgs {
     explicit_default: bool,
     topology: snowglass_controllers::ControllerTopology,
     commands: std::sync::mpsc::Receiver<crate::controller::ControllerSessionCommand>,
-    errors: Arc<Mutex<Vec<String>>>,
+    errors: Arc<Mutex<Vec<crate::SessionError>>>,
     started: std::sync::mpsc::SyncSender<Result<ControllerWorkerStartup, PluginInvocationError>>,
 }
 
@@ -719,7 +717,7 @@ struct ControllerSessionWorker {
     previous_topology: snowglass_controllers::ControllerTopology,
     input_provider_sink: Option<crate::controller::InputProviderSink>,
     commands: std::sync::mpsc::Receiver<crate::controller::ControllerSessionCommand>,
-    errors: Arc<Mutex<Vec<String>>>,
+    errors: Arc<Mutex<Vec<crate::SessionError>>>,
 }
 
 fn controller_session_worker(
@@ -763,6 +761,7 @@ impl ControllerSessionWorker {
             }
         };
         let controller_changes = retained.controller_changes;
+        let retained_session = controller_changes || retained.pause_resume;
         let configuration_id = retained.configuration_id;
         let mut launch = retained.launch;
         launch.controller_topology = Some(args.topology.clone());
@@ -770,10 +769,10 @@ impl ControllerSessionWorker {
             .started
             .send(Ok(ControllerWorkerStartup {
                 launch,
-                controller_changes,
+                retained: retained_session,
             }))
             .is_err()
-            || !controller_changes
+            || !retained_session
         {
             crate::deno::discard_configuration(runtime.js_runtime_mut(), configuration_id);
             return Ok(None);
@@ -808,14 +807,41 @@ impl ControllerSessionWorker {
                     self.input_provider_sink = Some(sink);
                     let _ = response.send(Ok(()));
                 }
+                crate::controller::ControllerSessionCommand::AttachActions(sink, response) => {
+                    crate::actions::attach(self.runtime.js_runtime_mut(), sink);
+                    let _ = response.send(Ok(()));
+                }
                 crate::controller::ControllerSessionCommand::Changed(topology, response) => {
                     self.change(topology, response);
+                }
+                crate::controller::ControllerSessionCommand::PauseResume(state) => {
+                    self.pause_resume(state);
                 }
                 crate::controller::ControllerSessionCommand::Stop => break,
             }
         }
         crate::automation::close(self.runtime.js_runtime_mut());
+        crate::actions::close(self.runtime.js_runtime_mut());
         crate::deno::discard_configuration(self.runtime.js_runtime_mut(), self.configuration_id);
+    }
+
+    fn pause_resume(&mut self, state: crate::PauseState) {
+        const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+        let result = self.tokio.block_on(async {
+            tokio::time::timeout(
+                TIMEOUT,
+                crate::deno::execute_pause_resume(self.runtime.js_runtime_mut(), state),
+            )
+            .await
+            .map_err(|_| "onPauseResume exceeded its 30 second deadline".to_owned())?
+            .map_err(|error| error.to_string())
+        });
+        if let Err(error) = result {
+            tracing::error!("snowglass: onPauseResume failed: {error}");
+            self.errors
+                .lock()
+                .push(crate::SessionError::PauseResume(error));
+        }
     }
 
     fn change(
@@ -832,7 +858,9 @@ impl ControllerSessionWorker {
             Err(error) => {
                 crate::filesystem::discard_staged(self.runtime.js_runtime_mut());
                 tracing::error!("snowglass: onControllerChanged failed: {error}");
-                self.errors.lock().push(error.to_string());
+                self.errors
+                    .lock()
+                    .push(crate::SessionError::ControllerChanged(error.to_string()));
                 let _ = response.send(Err(error.to_string()));
             }
         }
@@ -1077,6 +1105,12 @@ mod tests {
                 default = false
                 emit = { key = "Enabled" }
 
+                [actions]
+                target = "settings"
+
+                [actions.map]
+                pause = { name = "TogglePause", expression = "F10" }
+
                 [input]
                 driver = "sdl3"
                 device = "SDL-{index}"
@@ -1144,6 +1178,9 @@ mod tests {
                   };
                 }
                 export async function onControllerChanged(context) {
+                  if (typeof context.actions.pause?.activate !== "function") {
+                    throw new Error("onControllerChanged did not receive configured actions");
+                  }
                   const window = await context.ui.waitForWindow({ title: { contains: "Emulator" } });
                   await window.locator('button[name="Controllers"]').press();
                   context.configuration.options().general.enabled = false;
@@ -1151,11 +1188,22 @@ mod tests {
                     context.filesystem.mountFile(`/Emulator/Config/${name}`, bytes, { mode: "r" });
                   }
                 }
+                export function onParseHotkey(expression) {
+                  return { kind: "keyboard", code: expression, modifiers: ["Control"] };
+                }
+                export function onPauseResume(context) {
+                  if (context.pauseState !== "pause" && context.pauseState !== "resume") {
+                    throw new Error(`invalid pause state: ${context.pauseState}`);
+                  }
+                  context.actions.pause.activate();
+                }
                 export default {
                   fallback(value) { return `fallback:${value}`; },
                   nonFunction: 23,
                   onLaunch,
                   onControllerChanged,
+                  onParseHotkey,
+                  onPauseResume,
                 };
             "#,
         )
@@ -1170,6 +1218,9 @@ mod tests {
         std::fs::write(
             root.path().join("plugin.js"),
             r#"
+                export function onParseHotkey(expression) {
+                  return { kind: "keyboard", code: expression };
+                }
                 export function onLaunch(args) {
                   args.filesystem.mountTree("/Emulator", args.resources.runtime, { mode: "rx" });
                   args.filesystem.mountConfiguration("/Emulator/Config", args.configuration, { mode: "r" });
@@ -1343,6 +1394,56 @@ mod tests {
         };
         assert!(rendered.contains("Enabled=false"), "{rendered}");
         assert_eq!(*automation_calls.lock().unwrap(), ["window", "action"]);
+        assert!(session.take_errors().is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pause_callback_activates_its_parsed_hotkey_action() {
+        let (root, registry) = package();
+        let runtime = PluginRuntime::new(registry, PluginRuntimeOptions::default());
+        let result = runtime
+            .handle()
+            .invoke_with_storage_owned(
+                "worker-test",
+                &["onLaunch".to_owned()],
+                vec![serde_json::json!({
+                    "launchPath": root.path().join("game.iso"),
+                    "console": "TEST",
+                    "controllerTopology": { "mappings": [] },
+                })],
+                BTreeMap::new(),
+            )
+            .await
+            .unwrap();
+        let session = result.controller_session.unwrap();
+        let activated = Arc::new(StdMutex::new(Vec::new()));
+        let recorded = activated.clone();
+        session
+            .attach_actions(move |hotkey| {
+                recorded.lock().unwrap().push(hotkey.clone());
+                Ok(())
+            })
+            .unwrap();
+        session.pause_resume(crate::PauseState::Pause).unwrap();
+        session.pause_resume(crate::PauseState::Resume).unwrap();
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while activated.lock().unwrap().len() != 2 && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            *activated.lock().unwrap(),
+            [
+                crate::ParsedHotkey::Keyboard {
+                    code: "F10".to_owned(),
+                    modifiers: vec!["Control".to_owned()],
+                },
+                crate::ParsedHotkey::Keyboard {
+                    code: "F10".to_owned(),
+                    modifiers: vec!["Control".to_owned()],
+                },
+            ]
+        );
         assert!(session.take_errors().is_empty());
     }
 

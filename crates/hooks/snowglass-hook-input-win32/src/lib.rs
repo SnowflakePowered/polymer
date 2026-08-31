@@ -4,7 +4,8 @@ use parking_lot::{Mutex, RwLock};
 use snowglass_hook_input::HookInput;
 use snowglass_ipc::input::{InputMessage, WireHostKey, WireHostPointer};
 use snowglass_platform_windows::{
-    NativeWindow, ProcessId, client_size, forward_raw_key, is_process_window, resize_client,
+    NativeWindow, ProcessId, client_size, forward_focus, forward_raw_key, is_process_window,
+    resize_client,
 };
 use snowglass_protocol::input::{PointerInput, PointerPhase, RawKeyInput};
 use std::{
@@ -193,6 +194,9 @@ impl Runtime {
                 );
             }
             return;
+        }
+        if event.pressed {
+            forward_focus(window, true);
         }
         forward_raw_key(
             window,

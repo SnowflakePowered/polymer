@@ -84,12 +84,12 @@ BINDING_TO_GENERIC = {
     "analog.stick.right.y+": "RightStickUp",
 }
 
-# The machine these ports belong to and its machinespec input group. PCSX2
-# exposes eight pad slots where a PlayStation 2 has four, the extra four being
-# the multitap slots behind the two physical ports.
+# The machine these ports belong to and its machinespec input group. PCSX2 has
+# eight internal pad slots, but Snowglass exposes the four controller ports
+# declared by the PlayStation 2 machine specification.
 MACHINE = "SONY_PS2"
 PORT_GROUP = "controller"
-PORTS = 8
+PORTS = 4
 
 # PCSX2's standard pad type is `DualShock2`, which is the DualShock 2 and not
 # the DualShock the PS2's group also accepts: the two are separate inputspec
@@ -391,8 +391,6 @@ def build_actions(names: set[str], defaults: dict[str, str], revision: str | Non
         "",
         "[actions]",
         f'target = {toml_string(target_id("ini", "Hotkeys"))}',
-        'transport = "win32-message"',
-        'keynames = "pcsx2"',
         "",
         "[actions.map]",
     ]
@@ -418,7 +416,7 @@ def build_actions(names: set[str], defaults: dict[str, str], revision: str | Non
         else:
             chord = canonical_chord(expression)
         lines.append(f"{action} = "
-                     f"{toml_value({'key': chord, 'expression': expression, 'name': hotkey})}")
+                     f"{toml_value({'expression': expression, 'name': hotkey})}")
         resolved += 1
     report.note(f"actions: {resolved} of {len(ACTION_VOCABULARY)} vocabulary entries resolved, "
                 f"{len(names) - resolved} PCSX2 hotkeys unused")
@@ -435,8 +433,7 @@ def build_input(tables: dict[str, dict[str, str]], root: Path, spec_root: Path,
         f'output = {{ format = "ini", path = {toml_string(SETTINGS_FILE)} }}',
         "",
     ]
-    # PCSX2 numbers pads by port and multitap slot: Pad1 and Pad2 are the two
-    # physical ports, Pad3-8 the multitap slots behind them.
+    # PCSX2 numbers its physical and multitap slots as one Pad sequence.
     lines += [target_header("ini", f"Pad{port}") for port in range(1, PORTS + 1)]
     lines += ["", "[input]", 'driver = "sdl3"', 'device = "SDL-{index}"', ""]
     lines += build_sdl_mapping(root, report) + [""]

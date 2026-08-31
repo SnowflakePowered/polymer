@@ -1,4 +1,4 @@
-use snowglass_input::{DeviceDescriptor, HostInputEvent, InputEvent, PlayerIndex};
+use snowglass_input::{DeviceDescriptor, DeviceState, HostInputEvent, InputEvent, PlayerIndex};
 use snowglass_ipc::input::{
     InputMessage, InputPublisher, WireDeviceConnected, WireDeviceState, WireHostKey,
     WireHostPointer, WireHostWheel,
@@ -7,12 +7,14 @@ use std::io;
 
 pub struct InputPublication {
     publisher: InputPublisher,
+    sequences: [u32; 8],
 }
 
 impl InputPublication {
     pub fn new() -> io::Result<Self> {
         Ok(Self {
             publisher: InputPublisher::new()?,
+            sequences: [0; 8],
         })
     }
 
@@ -37,26 +39,29 @@ impl InputPublication {
                 sequence,
                 state,
                 ..
-            } => Some(InputMessage::DeviceState(WireDeviceState {
-                index: index.get(),
-                sequence,
-                buttons: state.gamepad.buttons,
-                left_stick: state.gamepad.left_stick,
-                right_stick: state.gamepad.right_stick,
-                left_trigger: state.gamepad.left_trigger,
-                right_trigger: state.gamepad.right_trigger,
-                pointer_position: state.pointer.position,
-                pointer_delta: state.pointer.delta,
-                pointer_flags: state.pointer.flags.bits(),
-                pointer_kind: state.pointer.kind as u8,
-                accelerometer: state.sensor.accelerometer,
-                gyroscope: state.sensor.gyroscope,
-                orientation: state.sensor.orientation,
-                has_orientation: state.sensor.has_orientation,
-                sampled_at_ns: state.sensor.sampled_at_ns,
-                battery_level: state.battery.level,
-                charging: state.battery.charging,
-            })),
+            } => {
+                self.sequences[usize::from(index.get())] = sequence;
+                Some(InputMessage::DeviceState(WireDeviceState {
+                    index: index.get(),
+                    sequence,
+                    buttons: state.gamepad.buttons,
+                    left_stick: state.gamepad.left_stick,
+                    right_stick: state.gamepad.right_stick,
+                    left_trigger: state.gamepad.left_trigger,
+                    right_trigger: state.gamepad.right_trigger,
+                    pointer_position: state.pointer.position,
+                    pointer_delta: state.pointer.delta,
+                    pointer_flags: state.pointer.flags.bits(),
+                    pointer_kind: state.pointer.kind as u8,
+                    accelerometer: state.sensor.accelerometer,
+                    gyroscope: state.sensor.gyroscope,
+                    orientation: state.sensor.orientation,
+                    has_orientation: state.sensor.has_orientation,
+                    sampled_at_ns: state.sensor.sampled_at_ns,
+                    battery_level: state.battery.level,
+                    charging: state.battery.charging,
+                }))
+            }
             _ => None,
         };
         if let Some(message) = message {
@@ -77,6 +82,40 @@ impl InputPublication {
         let _ = self
             .publisher
             .publish(InputMessage::DeviceDisconnected { index: index.get() });
+    }
+
+    pub fn publish_action(&mut self, index: PlayerIndex, buttons: u32) {
+        let sequence = &mut self.sequences[usize::from(index.get())];
+        *sequence = sequence.wrapping_add(1);
+        let state = DeviceState {
+            gamepad: snowglass_input::GamepadReport {
+                buttons,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let _ = self
+            .publisher
+            .publish(InputMessage::DeviceState(WireDeviceState {
+                index: index.get(),
+                sequence: *sequence,
+                buttons: state.gamepad.buttons,
+                left_stick: state.gamepad.left_stick,
+                right_stick: state.gamepad.right_stick,
+                left_trigger: state.gamepad.left_trigger,
+                right_trigger: state.gamepad.right_trigger,
+                pointer_position: state.pointer.position,
+                pointer_delta: state.pointer.delta,
+                pointer_flags: state.pointer.flags.bits(),
+                pointer_kind: state.pointer.kind as u8,
+                accelerometer: state.sensor.accelerometer,
+                gyroscope: state.sensor.gyroscope,
+                orientation: state.sensor.orientation,
+                has_orientation: state.sensor.has_orientation,
+                sampled_at_ns: state.sensor.sampled_at_ns,
+                battery_level: state.battery.level,
+                charging: state.battery.charging,
+            }));
     }
 
     pub fn on_host_input(&mut self, event: &HostInputEvent) {

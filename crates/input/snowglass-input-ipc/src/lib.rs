@@ -138,6 +138,40 @@ impl InputIpcListener {
         }
     }
 
+    /// Publishes an action keystroke directly to the emulator hook even while
+    /// ordinary host input is suspended for an overlay.
+    pub fn publish_host_action(&self, event: HostInputEvent) {
+        self.0.publication.lock().on_host_input(&event);
+    }
+
+    /// Publishes an action-only SDL chord without consulting guest forwarding.
+    pub fn activate_buttons(&self, player: PlayerIndex, buttons: u32) -> Result<(), String> {
+        const HOLD_TIME: std::time::Duration = std::time::Duration::from_millis(50);
+        let handle = self.0.hub.lock();
+        let handle = handle
+            .as_ref()
+            .ok_or_else(|| "input action endpoint is not attached".to_owned())?;
+        let device = handle
+            .devices()
+            .into_iter()
+            .find_map(|(index, device)| (index == Some(player)).then_some(device))
+            .ok_or_else(|| format!("input action player {} is not connected", player.get()))?;
+        let forwarding = self.0.forwarding.lock();
+        let mut publication = self.0.publication.lock();
+        if !forwarding.enabled {
+            publication.connect(player, &device);
+        }
+        publication.publish_action(player, buttons);
+        drop(publication);
+        std::thread::sleep(HOLD_TIME);
+        let mut publication = self.0.publication.lock();
+        publication.publish_action(player, 0);
+        if !forwarding.enabled {
+            publication.disconnect(player);
+        }
+        Ok(())
+    }
+
     pub fn send_control(&self, message: snowglass_ipc::Message) -> bool {
         self.0.control.send(message)
     }
@@ -153,6 +187,10 @@ impl InputIpcListener {
             .set_capture(!forwarding.enabled || forwarding.blocked_until_neutral.contains(&index));
         self.0.raw_hid.lock().insert(index, channel.clone());
         Ok(channel)
+    }
+
+    pub fn clear_raw_hid(&self) {
+        self.0.raw_hid.lock().clear();
     }
 
     pub fn shutdown(&self) {
@@ -249,6 +287,7 @@ impl Drop for Inner {
 mod tests {
     use super::*;
     use snowglass_input::GamepadButton;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     #[test]
     fn resuming_swallows_the_held_overlay_button_through_release() {
@@ -269,5 +308,32 @@ mod tests {
 
         state.gamepad.buttons = GamepadButton::A.mask();
         assert!(forwarding.accepts(player, &state));
+    }
+
+    #[tokio::test]
+    async fn clearing_raw_hid_releases_the_named_pipe_for_rebinding() {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let identity = NEXT.fetch_add(1, Ordering::Relaxed);
+        let session = format!("snowglass-raw-hid-test-{}-{identity}", std::process::id());
+        let pipe_name = format!(r"\\.\pipe\{session}-hid-0");
+        let listener = InputIpcListener::bind(&session).unwrap();
+        let spec = RawHidSpec {
+            pipe_name,
+            vendor_id: 0x057e,
+            product_id: 0x0306,
+            report_size: 22,
+        };
+
+        let first = listener
+            .open_raw_hid(PlayerIndex::new(0), spec.clone())
+            .unwrap();
+        listener.clear_raw_hid();
+        drop(first);
+        tokio::task::yield_now().await;
+
+        let second = listener.open_raw_hid(PlayerIndex::new(0), spec).unwrap();
+        listener.clear_raw_hid();
+        drop(second);
+        listener.shutdown();
     }
 }

@@ -273,6 +273,60 @@ pub struct HotkeyChord {
     pub key: HotkeyKey,
 }
 
+#[derive(Clone)]
+pub struct EmulatorActionEndpoint {
+    lifecycle: Arc<InstanceLifecycle>,
+}
+
+impl EmulatorActionEndpoint {
+    pub fn activate_keyboard(&self, code: &str, modifiers: &[String]) -> Result<(), String> {
+        let key = Self::keyboard_key(code)?;
+        let modifiers = modifiers
+            .iter()
+            .map(|code| Self::keyboard_key(code))
+            .collect::<Result<Vec<_>, _>>()?;
+        let surface = self
+            .lifecycle
+            .surfaces
+            .active
+            .iter()
+            .min_by_key(|surface| surface.key().0)
+            .map(|surface| surface.value().handle.clone())
+            .ok_or_else(|| "emulator action has no active target surface".to_owned())?;
+        surface
+            .send_hotkey(&HotkeyChord { modifiers, key })
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn activate_bindings(&self, player: u8, keys: &[String]) -> Result<(), String> {
+        let mut buttons = 0u32;
+        for key in keys {
+            let key = key
+                .parse::<consolespec::input::BindingKey>()
+                .map_err(|error| error.to_string())?;
+            let Some(snowglass_input_layout::sdl::Wire::Button(button)) =
+                snowglass_input_layout::sdl::wire(key)
+            else {
+                return Err(format!("action binding '{key}' is not an SDL button"));
+            };
+            buttons |= 1 << button.index();
+        }
+        self.lifecycle
+            .input
+            .activate_buttons(snowglass_input::PlayerIndex::new(player), buttons)
+    }
+
+    fn keyboard_key(code: &str) -> Result<HotkeyKey, String> {
+        let (virtual_key, scan_code, extended) = snowglass_platform_windows::keyboard_code(code)
+            .ok_or_else(|| format!("unknown KeyboardEvent code '{code}'"))?;
+        Ok(HotkeyKey {
+            virtual_key,
+            scan_code,
+            extended,
+        })
+    }
+}
+
 #[derive(Clone, Debug)]
 struct SurfaceSnapshot {
     generation: u64,
@@ -370,6 +424,7 @@ impl TrackedSurfaceHandle {
     }
 
     pub fn send_hotkey(&self, chord: &HotkeyChord) -> Result<(), SurfaceError> {
+        const HOLD_TIME: std::time::Duration = std::time::Duration::from_millis(50);
         let snapshot = self.snapshot();
         self.validate_active_generation(&snapshot, snapshot.generation)?;
         for key in &chord.modifiers {
@@ -377,7 +432,10 @@ impl TrackedSurfaceHandle {
         }
         let result = self
             .send_raw_key(&snapshot, chord.key, true)
-            .and_then(|()| self.send_raw_key(&snapshot, chord.key, false));
+            .and_then(|()| {
+                std::thread::sleep(HOLD_TIME);
+                self.send_raw_key(&snapshot, chord.key, false)
+            });
         for key in chord.modifiers.iter().rev() {
             let _ = self.send_raw_key(&snapshot, *key, false);
         }
@@ -407,7 +465,7 @@ impl TrackedSurfaceHandle {
         key: HotkeyKey,
         pressed: bool,
     ) -> Result<(), SurfaceError> {
-        self.shared.input.publish_host(HostInputEvent::Key {
+        self.shared.input.publish_host_action(HostInputEvent::Key {
             code: snowglass_input::KeyCode::new("hotkey"),
             virtual_key: key.virtual_key as u16,
             scan_code: key.scan_code,
@@ -677,6 +735,12 @@ impl EmulatorInstance {
 
     pub fn input(&self) -> InputIpcListener {
         self.lifecycle.input.clone()
+    }
+
+    pub fn action_endpoint(&self) -> EmulatorActionEndpoint {
+        EmulatorActionEndpoint {
+            lifecycle: self.lifecycle.clone(),
+        }
     }
 
     pub fn tracked_surface(&self, id: TrackedSurfaceId) -> Option<TrackedSurfaceHandle> {

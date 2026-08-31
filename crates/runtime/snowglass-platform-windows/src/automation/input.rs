@@ -164,47 +164,8 @@ impl TargetedWindowInput {
     }
 
     fn virtual_key(code: &str) -> Result<u32, AutomationError> {
-        let key = match code {
-            "Alt" => 0x12,
-            "Control" => 0x11,
-            "Shift" => 0x10,
-            "Meta" => 0x5b,
-            "Enter" => 0x0d,
-            "Escape" => 0x1b,
-            "Tab" => 0x09,
-            "Space" => 0x20,
-            "Backspace" => 0x08,
-            "Delete" => 0x2e,
-            "Home" => 0x24,
-            "End" => 0x23,
-            "PageUp" => 0x21,
-            "PageDown" => 0x22,
-            "ArrowLeft" => 0x25,
-            "ArrowUp" => 0x26,
-            "ArrowRight" => 0x27,
-            "ArrowDown" => 0x28,
-            value if value.len() == 4 && value.starts_with("Key") => value.as_bytes()[3] as u32,
-            value if value.len() == 6 && value.starts_with("Digit") => value.as_bytes()[5] as u32,
-            value if value.starts_with('F') => value[1..]
-                .parse::<u32>()
-                .ok()
-                .filter(|number| (1..=24).contains(number))
-                .map(|number| 0x6f + number)
-                .ok_or_else(|| {
-                    AutomationError::invalid_argument(format!("unknown key '{code}'"))
-                })?,
-            value if value.starts_with("VK_") => u32::from_str_radix(&value[3..], 16)
-                .ok()
-                .filter(|key| *key <= u16::MAX.into())
-                .ok_or_else(|| {
-                    AutomationError::invalid_argument(format!("unknown key '{code}'"))
-                })?,
-            _ => {
-                return Err(AutomationError::invalid_argument(format!(
-                    "unknown key '{code}'"
-                )));
-            }
-        };
-        Ok(key)
+        crate::window::keyboard_code(code)
+            .map(|(virtual_key, _, _)| virtual_key)
+            .ok_or_else(|| AutomationError::invalid_argument(format!("unknown key '{code}'")))
     }
 }

@@ -51,6 +51,24 @@ impl<'de> From<ConfigurationToml<'de>> for ConfigurationDefinition {
             .map(|(key, section)| lower_section(&mut definition, None, key, section))
             .collect();
 
+        definition.actions = configuration.actions.map(|actions| ActionsDefinition {
+            target: actions.target.to_owned_path(),
+            emit: actions.emit.into_iter().map(lower_emit).collect(),
+            map: actions
+                .map
+                .into_iter()
+                .map(|(key, action)| {
+                    (
+                        key.into(),
+                        ActionDefinition {
+                            name: action.name.into(),
+                            expression: action.expression.into(),
+                        },
+                    )
+                })
+                .collect(),
+        });
+
         definition.input = configuration
             .input
             .map(|input| lower_input(&mut definition, input, configuration.platforms));

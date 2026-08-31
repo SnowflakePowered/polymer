@@ -256,16 +256,27 @@ mod tests {
         ] {
             let root = workspace.join("plugins").join(name).canonicalize().unwrap();
             let source = root.join(format!("{name}.ts"));
-            let loader = PluginModuleLoader::new(name, root);
+            let loader = PluginModuleLoader::new(name, root.clone());
             let specifier = loader.specifier(&source).unwrap();
             let output = loader
                 .transform_source(&specifier, std::fs::read(source).unwrap())
                 .unwrap();
-            assert!(
-                !String::from_utf8(output)
-                    .unwrap()
-                    .contains("../plugin-api.ts")
-            );
+            let output = String::from_utf8(output).unwrap();
+            assert!(!output.contains("../plugin-api.ts"));
+            assert!(!output.contains("../hotkeys.ts"));
+
+            let hotkeys = root.join("hotkeys.ts");
+            if hotkeys.exists() {
+                let specifier = loader.specifier(&hotkeys).unwrap();
+                let output = loader
+                    .transform_source(&specifier, std::fs::read(hotkeys).unwrap())
+                    .unwrap();
+                assert!(
+                    !String::from_utf8(output)
+                        .unwrap()
+                        .contains("../plugin-api.ts")
+                );
+            }
         }
     }
 }

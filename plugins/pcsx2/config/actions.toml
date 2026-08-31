@@ -8,16 +8,14 @@ output = { format = "ini", path = "inis/PCSX2.ini" }
 
 [actions]
 target = "ini.Hotkeys"
-transport = "win32-message"
-keynames = "pcsx2"
 
 [actions.map]
-exit = { key = "f12", expression = "Keyboard/F12", name = "ShutdownVM" }
-fast_forward = { key = "period", expression = "Keyboard/Period", name = "HoldTurbo" }
-frame_advance = { key = "f10", expression = "Keyboard/F10", name = "FrameAdvance" }
-load_state = { key = "f3", expression = "Keyboard/F3", name = "LoadStateFromSlot" }
-pause = { key = "space", expression = "Keyboard/Space", name = "TogglePause" }
-reset = { key = "f11", expression = "Keyboard/F11", name = "ResetVM" }
-save_state = { key = "f1", expression = "Keyboard/F1", name = "SaveStateToSlot" }
-screenshot = { key = "f8", expression = "Keyboard/F8", name = "Screenshot" }
-toggle_fullscreen = { key = "alt+return", expression = "Keyboard/Alt & Keyboard/Return", name = "ToggleFullscreen" }
+exit = { expression = "Keyboard/F12", name = "ShutdownVM" }
+fast_forward = { expression = "Keyboard/Period", name = "HoldTurbo" }
+frame_advance = { expression = "Keyboard/F10", name = "FrameAdvance" }
+load_state = { expression = "Keyboard/F3", name = "LoadStateFromSlot" }
+pause = { expression = "Keyboard/Space", name = "TogglePause" }
+reset = { expression = "Keyboard/F11", name = "ResetVM" }
+save_state = { expression = "Keyboard/F1", name = "SaveStateToSlot" }
+screenshot = { expression = "Keyboard/F8", name = "Screenshot" }
+toggle_fullscreen = { expression = "Keyboard/Alt & Keyboard/Return", name = "ToggleFullscreen" }

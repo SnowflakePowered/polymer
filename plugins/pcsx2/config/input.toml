@@ -8,10 +8,6 @@ output = { format = "ini", path = "inis/PCSX2.ini" }
 [targets.ini.Pad2]
 [targets.ini.Pad3]
 [targets.ini.Pad4]
-[targets.ini.Pad5]
-[targets.ini.Pad6]
-[targets.ini.Pad7]
-[targets.ini.Pad8]
 
 [input]
 driver = "sdl3"
@@ -97,30 +93,6 @@ emit.DUALSHOCK_2_CONTROLLER = [{ key = "Type", value = "DualShock2" }]
 
 [platforms.SONY_PS2.ports.controller.3]
 target = "ini.Pad4"
-layouts = ["DUALSHOCK_2_CONTROLLER"]
-emit.unplugged = [{ key = "Type", value = "None" }]
-emit.DUALSHOCK_2_CONTROLLER = [{ key = "Type", value = "DualShock2" }]
-
-[platforms.SONY_PS2.ports.controller.4]
-target = "ini.Pad5"
-layouts = ["DUALSHOCK_2_CONTROLLER"]
-emit.unplugged = [{ key = "Type", value = "None" }]
-emit.DUALSHOCK_2_CONTROLLER = [{ key = "Type", value = "DualShock2" }]
-
-[platforms.SONY_PS2.ports.controller.5]
-target = "ini.Pad6"
-layouts = ["DUALSHOCK_2_CONTROLLER"]
-emit.unplugged = [{ key = "Type", value = "None" }]
-emit.DUALSHOCK_2_CONTROLLER = [{ key = "Type", value = "DualShock2" }]
-
-[platforms.SONY_PS2.ports.controller.6]
-target = "ini.Pad7"
-layouts = ["DUALSHOCK_2_CONTROLLER"]
-emit.unplugged = [{ key = "Type", value = "None" }]
-emit.DUALSHOCK_2_CONTROLLER = [{ key = "Type", value = "DualShock2" }]
-
-[platforms.SONY_PS2.ports.controller.7]
-target = "ini.Pad8"
 layouts = ["DUALSHOCK_2_CONTROLLER"]
 emit.unplugged = [{ key = "Type", value = "None" }]
 emit.DUALSHOCK_2_CONTROLLER = [{ key = "Type", value = "DualShock2" }]

@@ -27,11 +27,11 @@ pub use frontend::{
     WebRtcCommandSink,
 };
 pub use instance::{
-    AudioState, EmulatorInstance, EmulatorLaunchConfig, HotkeyChord, HotkeyKey, InstanceExit,
-    InstanceState, LaunchError, NormalizedVolume, PresentedFrameToken, ResizeDimensions,
-    SurfaceError, SurfaceEvent, SurfaceEventReceiver, SurfaceFrameReceiver, SurfaceFrameUpdate,
-    SurfaceOffer, SurfacePointerUpdate, TrackedSurfaceConfig, TrackedSurfaceHandle,
-    TrackedSurfaceId,
+    AudioState, EmulatorActionEndpoint, EmulatorInstance, EmulatorLaunchConfig, HotkeyChord,
+    HotkeyKey, InstanceExit, InstanceState, LaunchError, NormalizedVolume, PresentedFrameToken,
+    ResizeDimensions, SurfaceError, SurfaceEvent, SurfaceEventReceiver, SurfaceFrameReceiver,
+    SurfaceFrameUpdate, SurfaceOffer, SurfacePointerUpdate, TrackedSurfaceConfig,
+    TrackedSurfaceHandle, TrackedSurfaceId,
 };
 pub use scraping::{ScrapedPackage, ScrapingError};
 pub use session::{SessionController, mount_prepared_filesystem};

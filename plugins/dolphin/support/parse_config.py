@@ -873,11 +873,10 @@ def build_actions(root: Path, revision: str | None, report: Report) -> str:
         "",
         "[actions]",
         f'target = {toml_string(target_id("hotkeys", "Hotkeys"))}',
-        'transport = "dinput"',
-        'keynames = "dolphin"',
-        # Dolphin reads hotkeys through its own `Keyboard Mouse` device, which is
-        # DirectInput on Windows; the shell's DInput record path is what reaches it.
-        'device = "DInput/0/Keyboard Mouse"',
+        "",
+        "[[actions.emit]]",
+        'key = "Device"',
+        'value = "DInput/0/Keyboard Mouse"',
         "",
         "[actions.map]",
     ]
@@ -904,7 +903,7 @@ def build_actions(root: Path, revision: str | None, report: Report) -> str:
             report.note(f"action `{action}`: {hotkey} is unbound upstream; using {expression}")
         else:
             chord = canonical_chord(expression)
-        entry = {"key": chord, "expression": expression, "name": ini_name[hotkey]}
+        entry = {"expression": expression, "name": ini_name[hotkey]}
         lines.append(f"{action} = {toml_value(entry)}")
         resolved += 1
 

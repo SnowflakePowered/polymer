@@ -275,14 +275,25 @@ impl BluetoothBackend {
                     received_at,
                     bytes,
                 } => {
+                    let raw_device = controllers
+                        .read()
+                        .get(controller_id)
+                        .and_then(|controller| {
+                            (controller.session == *session_id).then(|| controller.device.clone())
+                        });
+                    let Some(raw_device) = raw_device else {
+                        continue;
+                    };
+                    // Raw HID is the transport stream, not a by-product of normalized
+                    // decoding. Dolphin needs status, acknowledgement, memory-reply,
+                    // extension-only, and currently unknown reports as well as data modes.
+                    handle.publish_raw_hid(&raw_device, bytes);
+
                     let published = {
                         let mut controllers = controllers.write();
                         let Some(controller) = controllers.get_mut(controller_id) else {
                             continue;
                         };
-                        if controller.session != *session_id {
-                            continue;
-                        }
                         let Some(decoded) = controller
                             .decoder
                             .as_mut()
@@ -314,7 +325,6 @@ impl BluetoothBackend {
                     };
                     handle.publish(&published.0, &published.1);
                     handle.publish_pointer(&published.0, &published.2);
-                    handle.publish_raw_hid(&published.0, bytes);
                 }
                 ManagerEvent::Disconnected {
                     controller_id,

@@ -17,6 +17,7 @@ main = "dolphin.ts"
 [emulator.configuration]
 definitions = [
     "config/dolphin.toml",
+    "config/actions.toml",
     "config/input.toml",
     "config/sections/main.toml",
     "config/sections/gfx.toml",

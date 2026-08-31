@@ -245,6 +245,9 @@ impl InputLayout {
         for (axis, _) in sdl::POINTER {
             output.axis_mask |= 1 << axis;
         }
+        // Reserve SDL's six extension buttons for action chords. They remain
+        // unbound to game controls unless a layout explicitly projects one.
+        output.button_mask |= 0b11_1111 << 15;
         output
     }
 }

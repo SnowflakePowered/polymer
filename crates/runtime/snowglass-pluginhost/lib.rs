@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+mod actions;
 mod automation;
 mod configuration;
 mod controller;
@@ -19,8 +20,9 @@ mod plugin_runtime;
 mod runtime;
 pub mod toml;
 
+pub use actions::ParsedHotkey;
 pub use configuration::{ConfigurationAccessError, SerializedConfiguration};
-pub use controller::ControllerSession;
+pub use controller::{ControllerSession, PauseState, SessionError};
 pub(crate) use emulator::EmulatorLaunchInvocation;
 pub use emulator::{
     EmulatorHostError, EmulatorLaunchArguments, EmulatorPluginInstance, EmulatorPort, GraphicsHook,

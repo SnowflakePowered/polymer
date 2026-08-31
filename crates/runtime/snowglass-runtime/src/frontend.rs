@@ -45,6 +45,7 @@ pub trait RuntimePlatform: Send + Sync {
     fn emulator_set_muted(&self, token: InstanceToken, muted: bool);
     fn emulator_message(&self, token: InstanceToken, name: String, args: Value);
     fn emulator_input(&self, token: InstanceToken, active: bool);
+    fn emulator_pause_state(&self, token: InstanceToken, pause: bool);
     fn input_configure(&self, request_id: u32, transaction: Value);
     fn controller_api_snapshot(&self) -> Value;
     fn controller_api_command(&self, command: Value) -> ApiFuture<Result<Value, String>>;
@@ -83,6 +84,10 @@ pub enum EmulatorCommand {
     Input {
         token: InstanceToken,
         active: bool,
+    },
+    PauseState {
+        token: InstanceToken,
+        pause: bool,
     },
 }
 
@@ -277,6 +282,11 @@ impl RuntimePlatform for CommandRuntimePlatform {
         self.emulator.send(EmulatorCommand::Input { token, active });
     }
 
+    fn emulator_pause_state(&self, token: InstanceToken, pause: bool) {
+        self.emulator
+            .send(EmulatorCommand::PauseState { token, pause });
+    }
+
     fn input_configure(&self, request_id: u32, transaction: Value) {
         self.input.send(InputCommand::Configure {
             request_id,
@@ -425,8 +435,13 @@ impl DenoInputListener {
 
     fn get(&self, index: u8) -> Option<Value> {
         let index = snowglass_input::PlayerIndex::new(index);
-        let state = self.hub.state(index)?;
+        // Rearm notifications before taking the snapshot. A grip/order session
+        // temporarily unassigns players, so the queued read may have no state;
+        // leaving the bit set in that case suppresses every later input event.
+        // Clearing first also prevents a state update between the snapshot and
+        // acknowledgement from being mistaken for the notification we consumed.
         self.dirty[usize::from(index.get())].store(false, Ordering::Release);
+        let state = self.hub.state(index)?;
         Some(serde_json::json!({
             "buttons": state.gamepad.buttons, "leftStick": state.gamepad.left_stick,
             "rightStick": state.gamepad.right_stick, "leftTrigger": state.gamepad.left_trigger,
@@ -910,6 +925,10 @@ impl SnowglassHost for FrontendServices {
         self.platform.emulator_input(token, active);
     }
 
+    fn emulator_pause_state(&self, token: InstanceToken, pause: bool) {
+        self.platform.emulator_pause_state(token, pause);
+    }
+
     fn input_configure(&self, request_id: u32, transaction: Value) {
         self.platform.input_configure(request_id, transaction);
     }
@@ -925,5 +944,33 @@ impl SnowglassHost for FrontendServices {
 
     fn webrtc_stop(&self, token: InstanceToken) -> ApiFuture<Result<(), String>> {
         self.platform.webrtc_stop(token)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unassigned_input_read_rearms_player_notifications() {
+        let (notifications, mut inbox) = tokio::sync::mpsc::unbounded_channel();
+        let listener = DenoInputListener::new(InputHub::default(), notifications);
+        listener.dirty[0].store(true, Ordering::Relaxed);
+
+        assert!(listener.get(0).is_none());
+
+        let device = DeviceId::new(snowglass_input::BackendId::VIRTUAL, "reassigned");
+        let state = snowglass_input::DeviceState::default();
+        listener.on_input(InputEvent::State {
+            index: snowglass_input::PlayerIndex::new(0),
+            sequence: 1,
+            device: &device,
+            state: &state,
+        });
+
+        assert!(matches!(
+            inbox.try_recv(),
+            Ok(snowglass_deno::snowglass::SnowglassNotification::InputChanged { index: 0 })
+        ));
     }
 }
