@@ -720,8 +720,8 @@ fn endpoint_serial(endpoint: &str) -> u32 {
 mod tests {
     use super::*;
     use snowglass_vfs::{
-        FilesystemPlan, MemoryFileFactory, Permissions, Resource, ResourceOrigin, ScratchBacking,
-        ScratchVolumeFactory,
+        FilesystemPlan, MemoryFileFactory, PackageDirectoryFactory, Permissions, Resource,
+        ResourceOrigin, ScratchBacking, ScratchVolumeFactory,
     };
     use winfsp::U16CString;
 
@@ -821,10 +821,61 @@ mod tests {
         std::fs::write(&source_path, b"through WinFSP").unwrap();
         std::fs::rename(&source_path, &target_path).unwrap();
         assert_eq!(std::fs::read(&target_path).unwrap(), b"through WinFSP");
+        std::fs::write(&source_path, b"replacement").unwrap();
+        std::fs::rename(&source_path, &target_path).unwrap();
+        assert_eq!(std::fs::read(&target_path).unwrap(), b"replacement");
         assert_eq!(std::fs::read(&readonly_path).unwrap(), b"mounted file");
         assert!(std::fs::write(&readonly_path, b"denied").is_err());
         std::fs::remove_file(&target_path).unwrap();
         std::fs::remove_dir(&user_path).unwrap();
+        drop(mounted);
+    }
+
+    #[test]
+    #[ignore = "requires the WinFSP driver and briefly registers a random UNC prefix"]
+    fn nested_scratch_replaces_files_beneath_a_readonly_package() {
+        let package = tempfile::tempdir().unwrap();
+        std::fs::write(package.path().join("pcsx2.exe"), b"executable").unwrap();
+        let package_tree = Arc::new(Resource::new(
+            Arc::new(PackageDirectoryFactory::new(package.path().to_owned())),
+            "rx".parse().unwrap(),
+            ResourceOrigin::Package(package.path().display().to_string()),
+        ));
+        let scratch = Arc::new(Resource::new(
+            Arc::new(ScratchVolumeFactory::new(ScratchBacking::Memory)),
+            Permissions::ALL,
+            ResourceOrigin::Scratch,
+        ));
+        let mut plan = FilesystemPlan::default();
+        plan.mount_tree(
+            "/PCSX2".parse().unwrap(),
+            package_tree,
+            "rx".parse().unwrap(),
+        );
+        plan.mount_tree("/PCSX2/inis".parse().unwrap(), scratch, Permissions::ALL);
+        plan.mount_file(
+            "/PCSX2/inis/PCSX2.ini".parse().unwrap(),
+            Arc::new(Resource::new(
+                Arc::new(MemoryFileFactory::writable(b"initial".to_vec())),
+                "rw".parse().unwrap(),
+                ResourceOrigin::Memory,
+            )),
+            "rw".parse().unwrap(),
+        );
+        let filesystem = Arc::new(plan.seal().unwrap());
+        let endpoint = FilesystemEndpoint::random();
+        let inis = std::path::PathBuf::from(
+            endpoint.project("/PCSX2/inis".parse::<VfsPathBuf>().unwrap().as_path()),
+        );
+        let source = inis.join("PCSX2.ini.tmp");
+        let target = inis.join("PCSX2.ini");
+        let mounted = WinFspFilesystemHost::default()
+            .mount(endpoint, filesystem)
+            .unwrap();
+
+        std::fs::write(&source, b"replacement").unwrap();
+        std::fs::rename(&source, &target).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"replacement");
         drop(mounted);
     }
 }
