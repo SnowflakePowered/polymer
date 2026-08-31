@@ -167,6 +167,7 @@ impl OrientationTracker {
     fn is_stationary(motion: MotionFrame, rotation_rate: [f32; 3]) -> bool {
         let acceleration = motion
             .filtered_accelerometer
+            .map(|sample| sample.value)
             .unwrap_or(motion.accelerometer[2].value);
         let acceleration_magnitude = acceleration
             .iter()

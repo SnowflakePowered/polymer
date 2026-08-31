@@ -42,7 +42,7 @@ pub struct MotionFrame {
     /// Raw gyroscope history, retained across precision keyframes.
     pub gyroscope: [TimedMotionVector; 2],
     /// Filtered Q16.16 acceleration carried by a precision keyframe.
-    pub filtered_accelerometer: Option<[f32; 3]>,
+    pub filtered_accelerometer: Option<TimedMotionVector>,
     /// Whether `accelerometer` and `gyroscope` were updated by this packet.
     pub raw_samples_updated: bool,
     pub temperature_celsius: f32,
