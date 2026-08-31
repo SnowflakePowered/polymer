@@ -62,7 +62,7 @@ impl ShellCoordinator {
                     Err(format!("invalid input transaction: {error}")),
                 ),
             },
-            InputCommand::Api { command, result } => {
+            InputCommand::ControllerApi { command, result } => {
                 let response = self
                     .input
                     .controller_command(command, self.game_host.controller_topology_locked())

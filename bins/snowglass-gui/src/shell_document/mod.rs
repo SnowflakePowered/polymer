@@ -263,7 +263,7 @@ impl ShellDocument {
     }
 
     pub fn needs_paint(&self) -> bool {
-        self.dirty
+        self.dirty || self.document.as_ref().is_animating()
     }
 
     fn animation_time(&self) -> f64 {
@@ -322,7 +322,8 @@ impl ShellDocument {
     /// Re-lays out and publishes paint scenes when the shell changed.
     pub fn produce_frame(&mut self, runtime: &mut ShellRuntime) -> Option<ShellFrame> {
         let assets_arrived = self.take_arrivals();
-        if !assets_arrived && !self.dirty {
+        let animating = self.document.as_ref().is_animating();
+        if !assets_arrived && !self.dirty && !animating {
             return None;
         }
         self.dirty = false;
@@ -336,7 +337,7 @@ impl ShellDocument {
         if assets_arrived {
             self.needs_geometry_sync = true;
         }
-        if assets_arrived || self.needs_resolve {
+        if assets_arrived || self.needs_resolve || animating {
             self.needs_resolve = false;
             let resolve_started = std::time::Instant::now();
             let animation_time = self.animation_time();

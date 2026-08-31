@@ -154,11 +154,11 @@ impl<'a> DocumentProtocol<'a> {
             }
             "DOM.getBoxModel" => {
                 let node = self.request_node(params.value())?;
-                Ok(json!({"model": NodeGeometry::new(node).box_model()}))
+                Ok(json!({"model": NodeGeometry::new(document, node).box_model()}))
             }
             "DOM.getContentQuads" => {
                 let node = self.request_node(params.value())?;
-                Ok(json!({"quads": [NodeGeometry::new(node).content_quad()]}))
+                Ok(json!({"quads": [NodeGeometry::new(document, node).content_quad()]}))
             }
             "DOM.getNodeForLocation" => {
                 let x = params.number("x")? as f32;

@@ -306,6 +306,10 @@ impl InputHub {
             .collect()
     }
 
+    pub fn set_auto_assign(&self, enabled: bool) {
+        self.inner.state.lock().policy.auto_assign = enabled;
+    }
+
     pub fn devices(&self) -> Vec<(Option<PlayerIndex>, DeviceDescriptor)> {
         let state = self.inner.state.lock();
         state
@@ -330,6 +334,24 @@ impl InputHub {
                     state.index_of(&entry.descriptor.id),
                     entry.descriptor.clone(),
                     entry.state,
+                )
+            })
+            .collect()
+    }
+
+    pub fn device_snapshots(
+        &self,
+    ) -> Vec<(Option<PlayerIndex>, DeviceDescriptor, DeviceState, bool)> {
+        let state = self.inner.state.lock();
+        state
+            .devices
+            .values()
+            .map(|entry| {
+                (
+                    state.index_of(&entry.descriptor.id),
+                    entry.descriptor.clone(),
+                    entry.state,
+                    entry.connected,
                 )
             })
             .collect()

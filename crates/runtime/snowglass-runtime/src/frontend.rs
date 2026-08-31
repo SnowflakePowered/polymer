@@ -10,9 +10,9 @@ use snowglass_deno::snowglass::{
     ApiFuture, ConsoleStorageRequest, InstanceToken, SnowglassHost, SnowglassNotificationSender,
 };
 use snowglass_input::{
-    Calibration, CalibrationCapture, CalibrationKind, DeviceDescriptor, DeviceId, Feedback,
-    InputEvent, InputHub, InputListener, IrMode, IrSensitivity, ListenerHandle, MotionCalibration,
-    PointerSetup, SensorBarPosition, StickCalibration, TriggerCalibration,
+    Calibration, CalibrationCapture, CalibrationKind, DeviceId, Feedback, InputEvent, InputHub,
+    InputListener, IrMode, IrSensitivity, ListenerHandle, MotionCalibration, PointerSetup,
+    SensorBarPosition, StickCalibration, TriggerCalibration,
 };
 use snowglass_library::StorageManager;
 use std::{
@@ -25,8 +25,8 @@ use std::{
     time::Duration,
 };
 
-const INPUT_API_RESPONSE_ATTEMPTS: usize = 3;
-const INPUT_API_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
+const CONTROLLER_API_RESPONSE_ATTEMPTS: usize = 3;
+const CONTROLLER_API_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Thread-affine mechanics retained by the native shell.
 ///
@@ -46,8 +46,8 @@ pub trait RuntimePlatform: Send + Sync {
     fn emulator_message(&self, token: InstanceToken, name: String, args: Value);
     fn emulator_input(&self, token: InstanceToken, active: bool);
     fn input_configure(&self, request_id: u32, transaction: Value);
-    fn input_api_snapshot(&self) -> Value;
-    fn input_api_command(&self, command: Value) -> ApiFuture<Result<Value, String>>;
+    fn controller_api_snapshot(&self) -> Value;
+    fn controller_api_command(&self, command: Value) -> ApiFuture<Result<Value, String>>;
     fn webrtc_start(
         &self,
         token: InstanceToken,
@@ -92,20 +92,20 @@ pub enum InputCommand {
         request_id: u32,
         transaction: Value,
     },
-    Api {
+    ControllerApi {
         command: Value,
         result: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
 }
 
 #[derive(Clone)]
-pub struct InputApiState {
+pub struct ControllerApiState {
     state: Arc<RwLock<Value>>,
     controller_profiles: crate::ControllerProfiles,
     controller_assignments: Arc<RwLock<snowglass_controllers::ControllerAssignmentSnapshot>>,
 }
 
-impl Default for InputApiState {
+impl Default for ControllerApiState {
     fn default() -> Self {
         Self {
             state: Arc::new(RwLock::new(serde_json::json!({
@@ -129,7 +129,7 @@ impl Default for InputApiState {
     }
 }
 
-impl InputApiState {
+impl ControllerApiState {
     pub fn snapshot(&self) -> Value {
         self.state.read().clone()
     }
@@ -210,7 +210,7 @@ pub type WebRtcCommandSink = CommandSink<WebRtcCommand>;
 pub struct CommandRuntimePlatform {
     emulator: EmulatorCommandSink,
     input: InputCommandSink,
-    input_api: InputApiState,
+    controller_api: ControllerApiState,
     webrtc: WebRtcCommandSink,
 }
 
@@ -218,13 +218,13 @@ impl CommandRuntimePlatform {
     pub fn new(
         emulator: EmulatorCommandSink,
         input: InputCommandSink,
-        input_api: InputApiState,
+        controller_api: ControllerApiState,
         webrtc: WebRtcCommandSink,
     ) -> Self {
         Self {
             emulator,
             input,
-            input_api,
+            controller_api,
             webrtc,
         }
     }
@@ -284,30 +284,30 @@ impl RuntimePlatform for CommandRuntimePlatform {
         });
     }
 
-    fn input_api_snapshot(&self) -> Value {
-        self.input_api.snapshot()
+    fn controller_api_snapshot(&self) -> Value {
+        self.controller_api.snapshot()
     }
 
-    fn input_api_command(&self, command: Value) -> ApiFuture<Result<Value, String>> {
+    fn controller_api_command(&self, command: Value) -> ApiFuture<Result<Value, String>> {
         let sink = self.input.clone();
         Box::pin(async move {
             let (result, mut response) = tokio::sync::oneshot::channel();
-            sink.send(InputCommand::Api { command, result });
-            for attempt in 1..=INPUT_API_RESPONSE_ATTEMPTS {
-                match tokio::time::timeout(INPUT_API_RESPONSE_TIMEOUT, &mut response).await {
+            sink.send(InputCommand::ControllerApi { command, result });
+            for attempt in 1..=CONTROLLER_API_RESPONSE_ATTEMPTS {
+                match tokio::time::timeout(CONTROLLER_API_RESPONSE_TIMEOUT, &mut response).await {
                     Ok(result) => {
-                        return result.map_err(|_| "input host is unavailable".to_owned())?;
+                        return result.map_err(|_| "controller host is unavailable".to_owned())?;
                     }
-                    Err(_) if attempt < INPUT_API_RESPONSE_ATTEMPTS => {
+                    Err(_) if attempt < CONTROLLER_API_RESPONSE_ATTEMPTS => {
                         tracing::warn!(
                             attempt,
-                            "input API response is delayed; continuing to wait"
+                            "controller API response is delayed; continuing to wait"
                         );
                     }
-                    Err(_) => return Err("input API command timed out".to_owned()),
+                    Err(_) => return Err("controller API command timed out".to_owned()),
                 }
             }
-            unreachable!("input API response attempts are nonzero")
+            unreachable!("controller API response attempts are nonzero")
         })
     }
 
@@ -400,7 +400,7 @@ pub struct FrontendServices {
     prepared_filesystems: PreparedFilesystemStore,
     controller_sessions: ControllerSessionStore,
     input_sources: InputHub,
-    input_api: InputApiState,
+    controller_api: ControllerApiState,
     platform: Arc<dyn RuntimePlatform>,
     notifications: SnowglassNotificationSender,
     deno_input: Arc<DenoInputListener>,
@@ -412,7 +412,6 @@ struct DenoInputListener {
     hub: InputHub,
     notifications: SnowglassNotificationSender,
     dirty: [AtomicBool; 8],
-    connected: Mutex<HashMap<DeviceId, bool>>,
 }
 
 impl DenoInputListener {
@@ -421,26 +420,7 @@ impl DenoInputListener {
             hub,
             notifications,
             dirty: std::array::from_fn(|_| AtomicBool::new(false)),
-            connected: Mutex::new(HashMap::new()),
         }
-    }
-
-    fn devices(&self) -> Value {
-        Value::Array(
-            self.hub
-                .devices()
-                .into_iter()
-                .map(|(index, device)| {
-                    let connected = self
-                        .connected
-                        .lock()
-                        .get(&device.id)
-                        .copied()
-                        .unwrap_or(false);
-                    self.device(index.map(|index| index.get()), connected, &device)
-                })
-                .collect(),
-        )
     }
 
     fn get(&self, index: u8) -> Option<Value> {
@@ -456,62 +436,26 @@ impl DenoInputListener {
             "battery": { "level": state.battery.level, "charging": state.battery.charging }
         }))
     }
-
-    fn device(&self, index: Option<u8>, connected: bool, device: &DeviceDescriptor) -> Value {
-        let typed = snowglass_controllers::ControllerDevice::from_descriptor(device);
-        let mut value = serde_json::to_value(typed).unwrap_or_default();
-        value["index"] = index.map_or(Value::Null, |index| serde_json::json!(index));
-        value["connected"] = Value::Bool(connected);
-        value["battery"] = index
-            .and_then(|index| self.hub.state(snowglass_input::PlayerIndex::new(index)))
-            .map_or(Value::Null, |state| {
-                serde_json::json!({ "level": state.battery.level, "charging": state.battery.charging })
-            });
-        value
-    }
 }
 
 impl InputListener for DenoInputListener {
     fn on_input(&self, event: InputEvent<'_>) {
         use snowglass_deno::snowglass::SnowglassNotification;
-        let notification = match event {
-            InputEvent::Connected { index, device } => {
-                self.connected.lock().insert(device.id.clone(), true);
-                SnowglassNotification::InputDeviceConnected(self.device(
-                    index.map(|index| index.get()),
-                    true,
-                    device,
-                ))
-            }
-            InputEvent::Disconnected { index, device } => {
-                self.connected.lock().insert(device.clone(), false);
-                SnowglassNotification::InputDeviceDisconnected {
-                    id: device.to_string(),
-                    index: index.map(|index| index.get()),
-                }
-            }
-            InputEvent::Assigned { device, from, to } => {
-                SnowglassNotification::InputDeviceAssigned {
-                    id: device.to_string(),
-                    from: from.map(|index| index.get()),
-                    to: to.map(|index| index.get()),
-                }
-            }
-            InputEvent::State { index, .. } => {
-                if self.dirty[usize::from(index.get())].swap(true, Ordering::AcqRel) {
-                    return;
-                }
-                SnowglassNotification::InputChanged { index: index.get() }
-            }
-            InputEvent::RawHid { .. } => return,
+        let InputEvent::State { index, .. } = event else {
+            return;
         };
-        let _ = self.notifications.send(notification);
+        if self.dirty[usize::from(index.get())].swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let _ = self
+            .notifications
+            .send(SnowglassNotification::InputChanged { index: index.get() });
     }
 }
 
-struct InputCommandDecoder(Value);
+struct ControllerDeviceCommandDecoder(Value);
 
-impl InputCommandDecoder {
+impl ControllerDeviceCommandDecoder {
     fn new(value: Value) -> Self {
         Self(value)
     }
@@ -753,7 +697,7 @@ impl FrontendServices {
         plugins: Arc<snowglass_pluginhost::PluginRuntime>,
         configuration: Option<ConfigurationDefaults>,
         input_sources: InputHub,
-        input_api: InputApiState,
+        controller_api: ControllerApiState,
         platform: Arc<dyn RuntimePlatform>,
         notifications: SnowglassNotificationSender,
     ) -> Self {
@@ -769,7 +713,7 @@ impl FrontendServices {
             prepared_filesystems: PreparedFilesystemStore::default(),
             controller_sessions: ControllerSessionStore::default(),
             input_sources,
-            input_api,
+            controller_api,
             platform,
             notifications,
             deno_input,
@@ -814,8 +758,8 @@ impl SnowglassHost for FrontendServices {
             .configuration
             .clone()
             .ok_or_else(|| "configuration service is unavailable".to_owned())?;
-        let controller_profiles = self.input_api.controller_profiles();
-        let controller_assignments = self.input_api.controller_assignments();
+        let controller_profiles = self.controller_api.controller_profiles();
+        let controller_assignments = self.controller_api.controller_assignments();
         crate::configuration::prepare_api_with_sources(
             self.plugins.handle().registry().clone(),
             defaults,
@@ -827,24 +771,20 @@ impl SnowglassHost for FrontendServices {
         )
     }
 
-    fn input_api_snapshot(&self) -> Value {
-        self.platform.input_api_snapshot()
+    fn controller_api_snapshot(&self) -> Value {
+        self.platform.controller_api_snapshot()
     }
 
-    fn input_api_command(&self, command: Value) -> ApiFuture<Result<Value, String>> {
-        self.platform.input_api_command(command)
-    }
-
-    fn input_devices(&self) -> Value {
-        self.deno_input.devices()
+    fn controller_api_command(&self, command: Value) -> ApiFuture<Result<Value, String>> {
+        self.platform.controller_api_command(command)
     }
 
     fn input_get(&self, index: u8) -> Option<Value> {
         self.deno_input.get(index)
     }
 
-    fn input_command(&self, command: Value) -> Result<Value, String> {
-        InputCommandDecoder::new(command).execute(
+    fn controller_device_command(&self, command: Value) -> Result<Value, String> {
+        ControllerDeviceCommandDecoder::new(command).execute(
             &self.input_sources,
             &self.input_listener,
             &self.calibration_captures,

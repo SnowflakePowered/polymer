@@ -7,14 +7,14 @@ import { createWebRtc } from "./05_webrtc.js";
 import { createEmulator } from "./06_emulator.js";
 import { createConsoleStorage } from "./08_consolestorage.js";
 import { createControllers } from "./07_controllers.js";
-import { op_input_api_snapshot, op_snowglass_next_notification } from "ext:core/ops";
+import { op_controller_api_snapshot, op_snowglass_next_notification } from "ext:core/ops";
 
 const scraping = createScraping();
 const plugin = createPlugin();
 const configuration = createConfiguration(scraping, plugin);
-const initialInputApi = op_input_api_snapshot();
+const initialControllerApi = op_controller_api_snapshot();
 const input = createInput();
-const controllers = createControllers(initialInputApi.controllers);
+const controllers = createControllers(initialControllerApi.controllers);
 const webrtc = createWebRtc();
 const emulator = createEmulator(webrtc);
 const consolestorage = createConsoleStorage();
@@ -45,17 +45,8 @@ function dispatch(event) {
     case "emulatorInstance":
       emulator.dispatch(event.detail);
       break;
-    case "inputApiStateChanged":
+    case "controllerApiStateChanged":
       controllers.setState(event.detail);
-      break;
-    case "inputDeviceConnected":
-      input.snowglassInput.deviceConnected(event.detail);
-      break;
-    case "inputDeviceDisconnected":
-      input.snowglassInput.deviceDisconnected(event.detail);
-      break;
-    case "inputDeviceAssigned":
-      input.snowglassInput.deviceAssigned(event.detail);
       break;
     case "inputChanged":
       input.snowglassInput.inputChanged(event.detail);

@@ -9,12 +9,12 @@ use control::Control;
 use parking_lot::Mutex;
 use publisher::InputPublication;
 use snowglass_input::{
-    HostInputEvent, HostInputListener, HostListenerHandle, InputEvent, InputHub, InputListener,
-    ListenerHandle,
+    DeviceState, HostInputEvent, HostInputListener, HostListenerHandle, InputEvent, InputHub,
+    InputListener, ListenerHandle, PlayerIndex,
 };
 use snowglass_input_layout::topology::InputTopology;
 use snowglass_ipc::LocalSocketListener;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::{
     io,
     sync::{
@@ -36,6 +36,28 @@ struct Inner {
     stopping: AtomicBool,
     worker: Mutex<Option<JoinHandle<()>>>,
     raw_hid: Mutex<BTreeMap<snowglass_input::PlayerIndex, RawHidChannel>>,
+    forwarding: Mutex<ForwardingState>,
+}
+
+#[derive(Default)]
+struct ForwardingState {
+    enabled: bool,
+    connected: BTreeSet<PlayerIndex>,
+    blocked_until_neutral: BTreeSet<PlayerIndex>,
+}
+
+impl ForwardingState {
+    fn accepts(&mut self, index: PlayerIndex, state: &DeviceState) -> bool {
+        self.connected.insert(index);
+        if !self.blocked_until_neutral.contains(&index) {
+            return true;
+        }
+        if state.gamepad.buttons != 0 {
+            return false;
+        }
+        self.blocked_until_neutral.remove(&index);
+        true
+    }
 }
 
 impl InputIpcListener {
@@ -50,6 +72,7 @@ impl InputIpcListener {
             stopping: AtomicBool::new(false),
             worker: Mutex::new(None),
             raw_hid: Mutex::new(BTreeMap::new()),
+            forwarding: Mutex::new(ForwardingState::default()),
         }));
         let worker = value.0.control.spawn_acceptor(value.clone())?;
         *value.0.worker.lock() = Some(worker);
@@ -65,6 +88,48 @@ impl InputIpcListener {
 
     pub fn publish_topology(&self, topology: &InputTopology) -> io::Result<()> {
         self.0.control.publish_topology(topology)
+    }
+
+    /// Enables or suspends all guest-facing input publication.
+    ///
+    /// Resuming while a controller button is held keeps that player blocked
+    /// until the release report arrives. This prevents the button used to
+    /// dismiss an overlay from leaking through to the guest.
+    pub fn set_forwarding(&self, enabled: bool, hub: &InputHub) {
+        let snapshots = enabled.then(|| hub.device_snapshots());
+        let mut forwarding = self.0.forwarding.lock();
+        if forwarding.enabled == enabled {
+            return;
+        }
+
+        let mut publication = self.0.publication.lock();
+        let raw_hid = self.0.raw_hid.lock();
+        forwarding.enabled = enabled;
+        forwarding.blocked_until_neutral.clear();
+        if !enabled {
+            for channel in raw_hid.values() {
+                channel.set_capture(true);
+            }
+            for index in std::mem::take(&mut forwarding.connected) {
+                publication.disconnect(index);
+            }
+            return;
+        }
+
+        for (index, device, state, connected) in snapshots.into_iter().flatten() {
+            let Some(index) = index.filter(|_| connected) else {
+                continue;
+            };
+            publication.connect(index, &device);
+            forwarding.connected.insert(index);
+            let blocked = state.gamepad.buttons != 0;
+            if blocked {
+                forwarding.blocked_until_neutral.insert(index);
+            }
+            if let Some(channel) = raw_hid.get(&index) {
+                channel.set_capture(blocked);
+            }
+        }
     }
 
     pub fn publish_host(&self, event: HostInputEvent) {
@@ -83,6 +148,9 @@ impl InputIpcListener {
         spec: RawHidSpec,
     ) -> io::Result<RawHidChannel> {
         let channel = RawHidChannel::open(index, spec, self.0.hub.clone())?;
+        let forwarding = self.0.forwarding.lock();
+        channel
+            .set_capture(!forwarding.enabled || forwarding.blocked_until_neutral.contains(&index));
         self.0.raw_hid.lock().insert(index, channel.clone());
         Ok(channel)
     }
@@ -112,6 +180,41 @@ impl InputListener for InputIpcListener {
             if let Some(channel) = self.0.raw_hid.lock().get(&index) {
                 channel.publish(report);
             }
+            return;
+        }
+
+        let mut forwarding = self.0.forwarding.lock();
+        if !forwarding.enabled {
+            return;
+        }
+        match &event {
+            InputEvent::Connected {
+                index: Some(index), ..
+            } => {
+                forwarding.connected.insert(*index);
+            }
+            InputEvent::Disconnected {
+                index: Some(index), ..
+            } => {
+                forwarding.connected.remove(index);
+                forwarding.blocked_until_neutral.remove(index);
+            }
+            InputEvent::Assigned {
+                from: Some(index), ..
+            } => {
+                forwarding.connected.remove(index);
+                forwarding.blocked_until_neutral.remove(index);
+                self.0.publication.lock().disconnect(*index);
+            }
+            InputEvent::State { index, state, .. } => {
+                if !forwarding.accepts(*index, state) {
+                    return;
+                }
+                if let Some(channel) = self.0.raw_hid.lock().get(index) {
+                    channel.set_capture(false);
+                }
+            }
+            _ => {}
         }
         self.0.publication.lock().on_input(event);
     }
@@ -125,7 +228,9 @@ impl InputListener for InputIpcListener {
 
 impl HostInputListener for InputIpcListener {
     fn on_host_input(&self, event: &HostInputEvent) {
-        self.0.publication.lock().on_host_input(event);
+        if self.0.forwarding.lock().enabled {
+            self.0.publication.lock().on_host_input(event);
+        }
     }
 }
 
@@ -137,5 +242,32 @@ impl Drop for Inner {
         if let Some(worker) = self.worker.get_mut().take() {
             let _ = worker.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use snowglass_input::GamepadButton;
+
+    #[test]
+    fn resuming_swallows_the_held_overlay_button_through_release() {
+        let player = PlayerIndex::new(0);
+        let mut forwarding = ForwardingState {
+            enabled: true,
+            blocked_until_neutral: BTreeSet::from([player]),
+            ..Default::default()
+        };
+        let mut state = DeviceState::default();
+        state.gamepad.buttons = GamepadButton::A.mask();
+
+        assert!(!forwarding.accepts(player, &state));
+        assert!(forwarding.connected.contains(&player));
+
+        state.gamepad.buttons = 0;
+        assert!(forwarding.accepts(player, &state));
+
+        state.gamepad.buttons = GamepadButton::A.mask();
+        assert!(forwarding.accepts(player, &state));
     }
 }

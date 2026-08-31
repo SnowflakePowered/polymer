@@ -3,6 +3,40 @@ use blitz_dom::node::Node;
 use blitz_dom::{NodeData, NodeId, local_name};
 use style::values::computed::{Overflow, PointerEvents};
 
+struct PointerGeometry<'a> {
+    document: &'a blitz_dom::BaseDocument,
+}
+
+impl<'a> PointerGeometry<'a> {
+    fn new(document: &'a blitz_dom::BaseDocument) -> Self {
+        Self { document }
+    }
+
+    /// Blitz can briefly retain a layout parent that was an anonymous box
+    /// from the preceding construction pass. Its geometry API assumes every
+    /// parent is still present and unwraps that lookup, so reject an invalid
+    /// chain before asking it for the bounding rectangle.
+    fn contains(&self, node_id: NodeId, x: f32, y: f32) -> bool {
+        let mut current = Some(node_id);
+        while let Some(node_id) = current {
+            let Some(node) = self.document.get_node(node_id) else {
+                return false;
+            };
+            current = node.layout_parent.get();
+        }
+        self.document
+            .get_client_bounding_rect(node_id)
+            .is_some_and(|rect| {
+                rect.width > 0.0
+                    && rect.height > 0.0
+                    && f64::from(x) >= rect.x
+                    && f64::from(x) <= rect.x + rect.width
+                    && f64::from(y) >= rect.y
+                    && f64::from(y) <= rect.y + rect.height
+            })
+    }
+}
+
 /// Hit-tests in the same stacking order Blitz paints while allowing a child
 /// to restore `pointer-events: auto` beneath a transparent parent.
 ///
@@ -10,6 +44,7 @@ use style::values::computed::{Overflow, PointerEvents};
 /// Those lists therefore have to be traversed explicitly around the ordinary
 /// children, just as the painter does.
 pub(super) fn pointer_hit(document: &blitz_dom::BaseDocument, x: f32, y: f32) -> Option<NodeId> {
+    let geometry = PointerGeometry::new(document);
     let painted = pointer_hit_node(document, document.root_element(), x, y).and_then(|node| {
         std::iter::successors(Some(node), |node| {
             document.get_node(*node).and_then(|node| node.parent)
@@ -40,16 +75,7 @@ pub(super) fn pointer_hit(document: &blitz_dom::BaseDocument, x: f32, y: f32) ->
         if !accepts_pointer {
             continue;
         }
-        let Some(rect) = document.get_client_bounding_rect(node_id) else {
-            continue;
-        };
-        if rect.width <= 0.0
-            || rect.height <= 0.0
-            || f64::from(x) < rect.x
-            || f64::from(x) > rect.x + rect.width
-            || f64::from(y) < rect.y
-            || f64::from(y) > rect.y + rect.height
-        {
+        if !geometry.contains(node_id, x, y) {
             continue;
         }
         let mut depth = 0usize;
@@ -119,14 +145,7 @@ fn painted_pointer_target_is_valid(
     if !clips_overflow || node.transform().is_some() {
         return true;
     }
-    document
-        .get_client_bounding_rect(node_id)
-        .is_some_and(|rect| {
-            f64::from(x) >= rect.x
-                && f64::from(x) <= rect.x + rect.width
-                && f64::from(y) >= rect.y
-                && f64::from(y) <= rect.y + rect.height
-        })
+    PointerGeometry::new(document).contains(node_id, x, y)
 }
 
 pub(super) fn node_is_within_tracked_surface(

@@ -1,9 +1,10 @@
 import { createContext, onCleanup, onMount, useContext, type ParentProps } from "solid-js";
 
 export type InputDirection = "left" | "right" | "up" | "down";
+export type InputOrigin = "controller" | "keyboard";
 export type InputAction =
-  | { type: "move"; direction: InputDirection; sourceId: string | null; event: Event }
-  | { type: "activate" | "back" | "details" | "pause"; sourceId: string | null; event: Event };
+  | { type: "move"; direction: InputDirection; origin: InputOrigin; sourceId: string | null; event: Event }
+  | { type: "activate" | "back" | "details" | "pause"; origin: InputOrigin; sourceId: string | null; event: Event };
 
 type ActionListener = (action: InputAction) => void;
 type InputContextValue = { subscribe(listener: ActionListener): () => void };
@@ -62,7 +63,7 @@ export function InputProvider(props: ParentProps) {
       const { index } = (event as CustomEvent<{ index: number }>).detail;
       const state = window.Snowglass.input.get(index);
       if (!state) return;
-      const sourceId = window.Snowglass.input.devices.find((device) => device.index === index)?.id || null;
+      const sourceId = window.Snowglass.controllers.players.find((player) => player.index === index)?.controller?.id || null;
       const prior = previousButtons.get(index) || 0;
       previousButtons.set(index, state.buttons);
       const buttons = [
@@ -72,7 +73,7 @@ export function InputProvider(props: ParentProps) {
       for (const [bit, expression] of buttons) {
         if ((state.buttons & (1 << bit)) === 0 || (prior & (1 << bit)) !== 0) continue;
         const action = buttonActions[expression];
-        if (action) emit({ ...action, sourceId, event } as InputAction);
+        if (action) emit({ ...action, origin: "controller", sourceId, event } as InputAction);
       }
       const axes = [
         ["analog.stick.left.x+", state.leftStick[0]], ["analog.stick.left.y+", state.leftStick[1]],
@@ -89,7 +90,7 @@ export function InputProvider(props: ParentProps) {
         const direction = value < 0 ? -1 : 1;
         if (axisLatch.get(key) === direction) continue;
         axisLatch.set(key, direction);
-        emit({ type: "move", direction: directions[direction < 0 ? 0 : 1], sourceId, event });
+        emit({ type: "move", direction: directions[direction < 0 ? 0 : 1], origin: "controller", sourceId, event });
       }
     };
     const keyboardInput = (event: KeyboardEvent) => {
@@ -99,10 +100,10 @@ export function InputProvider(props: ParentProps) {
         ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down",
       };
       const direction = directions[event.key];
-      if (direction) emit({ type: "move", direction, sourceId: null, event });
-      else if (event.key === "Enter" || event.key === " ") emit({ type: "activate", sourceId: null, event });
-      else if (event.key === "Escape") emit({ type: "back", sourceId: null, event });
-      else if (event.key === "Shift") emit({ type: "details", sourceId: null, event });
+      if (direction) emit({ type: "move", direction, origin: "keyboard", sourceId: null, event });
+      else if (event.key === "Enter" || event.key === " ") emit({ type: "activate", origin: "keyboard", sourceId: null, event });
+      else if (event.key === "Escape") emit({ type: "back", origin: "keyboard", sourceId: null, event });
+      else if (event.key === "Shift") emit({ type: "details", origin: "keyboard", sourceId: null, event });
     };
     window.Snowglass.input.addEventListener("input", controllerInput);
     window.addEventListener("keydown", keyboardInput);

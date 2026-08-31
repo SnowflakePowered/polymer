@@ -165,7 +165,11 @@ impl Drop for Sdl3Backend {
 
 struct Pad {
     gamepad: Gamepad,
+    instance: sdl3::joystick::JoystickId,
     device: DeviceId,
+    descriptor: DeviceDescriptor,
+    active: bool,
+    awaiting_button_release: bool,
     state: DeviceState,
     touch: Option<[f32; 2]>,
     contact: bool,
@@ -201,17 +205,21 @@ impl Worker {
                 return;
             }
         };
+        worker.subsystem.update();
+        worker.refresh(false);
         let _ = started.send(Ok(()));
         while !worker.stop.load(Ordering::Acquire) {
             worker.poll_events();
             worker.subsystem.update();
-            worker.refresh();
+            worker.refresh(true);
             worker.drain_commands();
             worker.publish();
             thread::sleep(worker.poll_interval);
         }
         for pad in worker.pads.drain(..) {
-            worker.handle.disconnected(&pad.device);
+            if pad.active {
+                worker.handle.disconnected(&pad.device);
+            }
         }
     }
 
@@ -297,18 +305,14 @@ impl Worker {
             if touchpad != 0 || finger != 0 {
                 continue;
             }
-            if let Some(pad) = self
-                .pads
-                .iter_mut()
-                .find(|pad| pad.gamepad.id().is_ok_and(|id| id.0 == which))
-            {
+            if let Some(pad) = self.pads.iter_mut().find(|pad| pad.instance.0 == which) {
                 pad.touch = Some(position);
                 pad.contact = contact;
             }
         }
     }
 
-    fn refresh(&mut self) {
+    fn refresh(&mut self, activate_new: bool) {
         if Instant::now() < self.next_refresh {
             return;
         }
@@ -316,12 +320,18 @@ impl Worker {
         let Ok(ids) = self.subsystem.gamepads() else {
             return;
         };
-        let live = ids.iter().map(|id| id.0).collect::<HashSet<_>>();
+        let mut live = ids.iter().map(|id| id.0).collect::<HashSet<_>>();
+        live.extend(
+            self.pads
+                .iter()
+                .filter(|pad| pad.gamepad.connected())
+                .map(|pad| pad.instance.0),
+        );
         self.registry.observe_connections(&live);
         let mut removed = Vec::new();
         self.pads.retain(|pad| {
-            let connected = pad.gamepad.id().is_ok_and(|id| live.contains(&id.0));
-            if !connected {
+            let connected = pad.gamepad.connected();
+            if !connected && pad.active {
                 removed.push(pad.device.clone());
             }
             connected
@@ -330,18 +340,14 @@ impl Worker {
             self.handle.disconnected(&device);
         }
         for id in ids {
-            if self
-                .pads
-                .iter()
-                .any(|pad| pad.gamepad.id().is_ok_and(|existing| existing == id))
-            {
+            if self.pads.iter().any(|pad| pad.instance == id) {
                 continue;
             }
-            self.open(id);
+            self.open(id, activate_new);
         }
     }
 
-    fn open(&mut self, id: sdl3::joystick::JoystickId) {
+    fn open(&mut self, id: sdl3::joystick::JoystickId, active: bool) {
         let Ok(gamepad) = self.subsystem.open(id) else {
             return;
         };
@@ -379,7 +385,7 @@ impl Worker {
             };
         let _ = gamepad.sensor_set_enabled(SensorType::Accelerometer, true);
         let _ = gamepad.sensor_set_enabled(SensorType::Gyroscope, true);
-        self.handle.connected(DeviceDescriptor {
+        let descriptor = DeviceDescriptor {
             id: device.clone(),
             name: Arc::from(name),
             profile: None,
@@ -388,10 +394,17 @@ impl Worker {
             serial: identity.serial.as_deref().map(Arc::from),
             role: DeviceRole::Whole,
             capabilities,
-        });
+        };
+        if active {
+            self.handle.connected(descriptor.clone());
+        }
         self.pads.push(Pad {
             gamepad,
+            instance: id,
             device,
+            descriptor,
+            active,
+            awaiting_button_release: false,
             state: DeviceState::default(),
             touch: None,
             contact: false,
@@ -422,9 +435,28 @@ impl Worker {
                 calibration.correct(&mut state);
                 calibration.shape(&mut state);
             }
+            if !pad.active && state.gamepad.buttons != 0 {
+                pad.active = true;
+                pad.awaiting_button_release = true;
+                pad.state = state;
+                self.handle.connected(pad.descriptor.clone());
+                continue;
+            }
+            if pad.awaiting_button_release {
+                pad.state = state;
+                if state.gamepad.buttons == 0 {
+                    pad.awaiting_button_release = false;
+                }
+                continue;
+            }
             if state != pad.state {
                 pad.state = state;
-                self.handle.publish(&pad.device, &state);
+                if pad.active {
+                    self.handle.publish(&pad.device, &state);
+                }
+            }
+            if !pad.active {
+                continue;
             }
             let pointer =
                 pad.touch

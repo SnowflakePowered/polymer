@@ -191,6 +191,17 @@ fn apply_dom_mutation_batch(
                 };
                 if mutator.parent_id(child) == Some(parent) {
                     mutator.remove_node(child);
+                    // Blitz keeps detached DOM nodes alive so they can be
+                    // reinserted, but their cached layout hierarchy can point
+                    // through anonymous boxes owned by the old parent. Those
+                    // boxes are deallocated when that parent is reconstructed.
+                    // Detached nodes generate no boxes, so discard their stale
+                    // layout ancestry until a later insertion rebuilds it.
+                    mutator.doc.iter_subtree_mut(child, |node, document| {
+                        if let Some(node) = document.get_node_mut(node) {
+                            node.layout_parent.set(None);
+                        }
+                    });
                 }
             }
             Mutation::SetText { node, text } => {

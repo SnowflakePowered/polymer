@@ -66,7 +66,7 @@ export function InputRemapping(props: { onClose(): void }) {
     const input = (event: Event) => {
       const target = capture();
       const { index } = (event as CustomEvent<{ index: number }>).detail;
-      const device = window.Snowglass.input.devices.find((candidate) => candidate.index === index);
+      const device = api.players.find((player) => player.index === index)?.controller;
       const state = window.Snowglass.input.get(index);
       const detail = state && activeControl(state);
       if (!target || device?.id !== deviceId() || !detail) return;

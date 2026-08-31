@@ -22,8 +22,8 @@ pub use configuration::{
 };
 pub use consolestorage::{manager as console_storage_manager, serve as serve_console_storage};
 pub use frontend::{
-    CommandRuntimePlatform, CommandSink, EmulatorCommand, EmulatorCommandSink, FrontendServices,
-    InputApiState, InputCommand, InputCommandSink, RuntimePlatform, WebRtcCommand,
+    CommandRuntimePlatform, CommandSink, ControllerApiState, EmulatorCommand, EmulatorCommandSink,
+    FrontendServices, InputCommand, InputCommandSink, RuntimePlatform, WebRtcCommand,
     WebRtcCommandSink,
 };
 pub use instance::{
