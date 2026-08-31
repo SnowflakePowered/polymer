@@ -1,8 +1,8 @@
 use crate::{
-    CreateOptions, DirectoryEntry, DirectoryIterator, DirectoryNode, FileKind, FileNode,
-    Materialized, Metadata, MetadataChanges, Node, NoopResourceLease, OpenFile, OpenOptions,
-    RemoveKind, ResourceFactory, VfsComponent, VfsError, VfsPath, VfsPathBuf, VfsPathUnit,
-    VfsResult, Volume,
+    AdoptHandle, CreateOptions, DirectoryEntry, DirectoryIterator, DirectoryNode, FileKind,
+    FileNode, Materialized, Metadata, MetadataChanges, Node, NoopResourceLease, OpenFile,
+    OpenOptions, RemoveKind, ResourceFactory, VfsComponent, VfsError, VfsPath, VfsPathBuf,
+    VfsPathUnit, VfsResult, Volume,
 };
 use parking_lot::{Mutex, RwLock};
 use std::{
@@ -76,6 +76,73 @@ impl FileNode for MemoryFile {
             bytes: self.bytes.clone(),
             writable: self.writable,
         }))
+    }
+
+    fn adopt(&self, source: Arc<dyn FileNode>) -> VfsResult<Arc<dyn AdoptHandle>> {
+        VfsError::require_writable(self.writable)?;
+        let adoption = Arc::new(MemoryFileAdoption {
+            bytes: self.bytes.clone(),
+            source,
+            finalizing: Mutex::new(()),
+        });
+        adoption.finalize()?;
+        Ok(adoption)
+    }
+}
+
+struct MemoryFileAdoption {
+    bytes: Arc<RwLock<Vec<u8>>>,
+    source: Arc<dyn FileNode>,
+    finalizing: Mutex<()>,
+}
+
+impl AdoptHandle for MemoryFileAdoption {
+    fn write(&self, offset: u64, buffer: &[u8]) -> VfsResult<()> {
+        let _finalizing = self.finalizing.lock();
+        let offset = usize::try_from(offset)
+            .map_err(|_| VfsError::Unsupported("file offset overflow".into()))?;
+        let end = offset
+            .checked_add(buffer.len())
+            .ok_or_else(|| VfsError::Unsupported("file offset overflow".into()))?;
+        let mut bytes = self.bytes.write();
+        if bytes.len() < end {
+            bytes.resize(end, 0);
+        }
+        bytes[offset..end].copy_from_slice(buffer);
+        Ok(())
+    }
+
+    fn truncate(&self, len: u64) -> VfsResult<()> {
+        let _finalizing = self.finalizing.lock();
+        let len = usize::try_from(len)
+            .map_err(|_| VfsError::Unsupported("file length overflow".into()))?;
+        self.bytes.write().resize(len, 0);
+        Ok(())
+    }
+
+    fn finalize(&self) -> VfsResult<()> {
+        let _finalizing = self.finalizing.lock();
+        let len = usize::try_from(self.source.metadata()?.len)
+            .map_err(|_| VfsError::Unsupported("file length overflow".into()))?;
+        let source = self.source.open(OpenOptions {
+            read: true,
+            write: false,
+            truncate: false,
+        })?;
+        let mut replacement = vec![0_u8; len];
+        let mut offset = 0;
+        while offset < len {
+            let read = source.read(offset as u64, &mut replacement[offset..])?;
+            if read == 0 {
+                return Err(VfsError::Io(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "adopted source became shorter while reconciling",
+                )));
+            }
+            offset += read;
+        }
+        *self.bytes.write() = replacement;
+        Ok(())
     }
 }
 

@@ -1285,6 +1285,57 @@ mod tests {
     }
 
     #[test]
+    fn scratch_file_can_atomically_replace_a_writable_memory_mount() {
+        let target: VfsPathBuf = "/Scratch/settings.ini".parse().unwrap();
+        let source: VfsPathBuf = "/Scratch/settings.ini.tmp".parse().unwrap();
+        let mounted_file = Arc::new(Resource::new(
+            Arc::new(MemoryFileFactory::writable(b"old".to_vec())),
+            "rw".parse().unwrap(),
+            ResourceOrigin::Memory,
+        ));
+        let mut plan = FilesystemPlan::default();
+        plan.mount_tree("/Scratch".parse().unwrap(), scratch(), Permissions::ALL);
+        plan.mount_file(target.clone(), mounted_file, "rw".parse().unwrap());
+        let prepared = Arc::new(plan.seal().unwrap());
+        let host = MockFilesystemHost;
+        let mounted = host.mount(host.allocate_endpoint(), prepared).unwrap();
+        let filesystem = mounted.filesystem();
+        filesystem
+            .create_file(&source, CreateOptions { exclusive: true })
+            .unwrap();
+        filesystem
+            .open(
+                &source,
+                OpenOptions {
+                    read: false,
+                    write: true,
+                    truncate: false,
+                },
+            )
+            .unwrap()
+            .write(0, b"replacement")
+            .unwrap();
+
+        filesystem
+            .rename_with_options(&source, &target, true)
+            .unwrap();
+        let mut contents = [0; 11];
+        filesystem
+            .open(
+                &target,
+                OpenOptions {
+                    read: true,
+                    write: false,
+                    truncate: false,
+                },
+            )
+            .unwrap()
+            .read(0, &mut contents)
+            .unwrap();
+        assert_eq!(&contents, b"replacement");
+    }
+
+    #[test]
     fn individual_files_override_entries_inside_asar_trees() {
         let mut archive = tempfile::NamedTempFile::new().unwrap();
         let mut writer = asar::AsarWriter::new();
