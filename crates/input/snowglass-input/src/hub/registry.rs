@@ -16,9 +16,9 @@ impl HubInner {
             return;
         }
         let (listeners, index, calibration, home_led) = {
-            let mut state = self.state.lock();
+            let _topology = self.topology.write();
             let id = descriptor.id.clone();
-            let entry = state
+            let mut entry = self
                 .devices
                 .entry(id.clone())
                 .or_insert_with(|| DeviceEntry {
@@ -30,10 +30,11 @@ impl HubInner {
                 });
             entry.descriptor = descriptor.clone();
             entry.connected = true;
-            let index = state.index_of(&id);
-            let calibration = state.calibrations.get(&id).cloned();
-            let home_led = state.home_led.get(&id).copied();
-            let listeners = state.listeners.values().cloned().collect::<Vec<_>>();
+            drop(entry);
+            let index = self.index_of(&id);
+            let calibration = self.calibrations.get(&id).map(|value| value.clone());
+            let home_led = self.home_led.get(&id).map(|value| *value);
+            let listeners = self.listeners();
             (listeners, index, calibration, home_led)
         };
         if let Some(calibration) = calibration {
@@ -48,7 +49,7 @@ impl HubInner {
                 device: &descriptor,
             });
         }
-        let auto_compose = self.state.lock().policy.auto_compose;
+        let auto_compose = self.policy.read().auto_compose;
         if auto_compose
             && matches!(
                 descriptor.role,
@@ -85,25 +86,20 @@ impl HubInner {
             return;
         }
         let (listeners, index, existed, retain) = {
-            let mut state = self.state.lock();
-            let index = state.index_of(device);
-            let existed = if let Some(entry) = state.devices.get_mut(device) {
+            let _topology = self.topology.write();
+            let index = self.index_of(device);
+            let existed = if let Some(mut entry) = self.devices.get_mut(device) {
                 entry.connected = false;
                 true
             } else {
                 false
             };
-            let retain = state.policy.retain_disconnected;
+            let retain = self.policy.read().retain_disconnected;
             if !retain {
-                state.assignments.retain(|_, assigned| assigned != device);
-                state.devices.remove(device);
+                self.assignments.retain(|_, assigned| assigned != device);
+                self.devices.remove(device);
             }
-            (
-                state.listeners.values().cloned().collect::<Vec<_>>(),
-                index,
-                existed,
-                retain,
-            )
+            (self.listeners(), index, existed, retain)
         };
         if !existed {
             return;
@@ -121,36 +117,32 @@ impl HubInner {
             return;
         }
         let event = {
-            let mut state = self.state.lock();
-            let Some(entry) = state.devices.get_mut(device) else {
+            let topology = self.topology.read();
+            let Some(mut entry) = self.devices.get_mut(device) else {
                 return;
             };
             if !entry.connected {
                 return;
             }
             entry.state = *value;
-            if let Some(capture) = state.captures.get_mut(device) {
+            drop(entry);
+            if let Some(mut capture) = self.captures.get_mut(device) {
                 capture.accept(value);
             }
-            let Some(index) = state.index_of(device) else {
-                drop(state);
+            let Some(index) = self.index_of(device) else {
+                drop(topology);
                 self.update_composites(device);
                 return;
             };
-            let pointer = state.pointer_overrides.get(&index).copied();
-            let sequence = state.sequences.entry(index).or_default();
+            let pointer = self.pointer_overrides.get(&index).map(|value| *value);
+            let mut sequence = self.sequences.entry(index).or_default();
             *sequence = sequence.wrapping_add(1);
             let sequence = *sequence;
             let mut published = *value;
             if let Some(pointer) = pointer {
                 published.pointer = pointer;
             }
-            (
-                state.listeners.values().cloned().collect::<Vec<_>>(),
-                index,
-                sequence,
-                published,
-            )
+            (self.listeners(), index, sequence, published)
         };
         for listener in event.0 {
             listener.on_input(InputEvent::State {
@@ -175,7 +167,7 @@ impl HubInner {
         let revision = self
             .next_pointer_revision
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if let Some(entry) = self.state.lock().devices.get_mut(device) {
+        if let Some(mut entry) = self.devices.get_mut(device) {
             entry.pointer = *sample;
             entry.pointer_revision = revision;
         }
@@ -187,18 +179,14 @@ impl HubInner {
             return;
         }
         let (listeners, index, descriptor) = {
-            let state = self.state.lock();
-            let Some(index) = state.index_of(device) else {
+            let _topology = self.topology.read();
+            let Some(index) = self.index_of(device) else {
                 return;
             };
-            let Some(entry) = state.devices.get(device) else {
+            let Some(entry) = self.devices.get(device) else {
                 return;
             };
-            (
-                state.listeners.values().cloned().collect::<Vec<_>>(),
-                index,
-                entry.descriptor.clone(),
-            )
+            (self.listeners(), index, entry.descriptor.clone())
         };
         for listener in listeners {
             if listener.wants_raw_hid(&descriptor) {
@@ -218,15 +206,12 @@ impl HubInner {
         feedback: Feedback,
     ) -> Result<(), HubError> {
         {
-            let state = self.state.lock();
-            if !state.listeners.contains_key(&listener) {
+            if !self.listeners.contains_key(&listener) {
                 return Err(HubError::ListenerNotFound(listener));
             }
+            let priority = *self.feedback_priority.read();
             match feedback.class() {
-                FeedbackClass::Actuation
-                    if state.feedback_priority.is_some()
-                        && state.feedback_priority != Some(listener) =>
-                {
+                FeedbackClass::Actuation if priority.is_some() && priority != Some(listener) => {
                     return Err(HubError::FeedbackNotOwned);
                 }
                 FeedbackClass::Managed => return Err(HubError::HubOwned),
@@ -243,10 +228,7 @@ impl HubInner {
         let devices = self.devices_for_index(index)?;
         for device in devices {
             if let Feedback::HomeLed { brightness } = feedback {
-                self.state
-                    .lock()
-                    .home_led
-                    .insert(device.clone(), brightness);
+                self.home_led.insert(device.clone(), brightness);
             }
             self.apply_device_feedback(&device, &feedback)?;
         }
@@ -261,20 +243,18 @@ impl HubInner {
             &DeviceId,
         ) -> Result<(), crate::BackendError>,
     ) -> Result<(), HubError> {
-        let targets = {
-            let state = self.state.lock();
-            self.devices_for_index_locked(&state, index)?
-                .into_iter()
-                .map(|device| {
-                    let backend = state
-                        .backends
-                        .get(&device.backend())
-                        .ok_or(HubError::BackendUnavailable(device.backend()))?
-                        .clone();
-                    Ok((backend, device))
-                })
-                .collect::<Result<Vec<_>, HubError>>()?
-        };
+        let targets = self
+            .devices_for_index(index)?
+            .into_iter()
+            .map(|device| {
+                let backend = self
+                    .backends
+                    .get(&device.backend())
+                    .ok_or(HubError::BackendUnavailable(device.backend()))?
+                    .clone();
+                Ok((backend, device))
+            })
+            .collect::<Result<Vec<_>, HubError>>()?;
         for (backend, device) in targets {
             operation(backend.as_ref(), &device)?;
         }
@@ -282,20 +262,14 @@ impl HubInner {
     }
 
     fn devices_for_index(&self, index: PlayerIndex) -> Result<Vec<DeviceId>, HubError> {
-        let state = self.state.lock();
-        self.devices_for_index_locked(&state, index)
-    }
-
-    fn devices_for_index_locked(
-        &self,
-        state: &super::HubState,
-        index: PlayerIndex,
-    ) -> Result<Vec<DeviceId>, HubError> {
-        let device = state
+        let _topology = self.topology.read();
+        let device = self
             .assignments
             .get(&index)
-            .ok_or(HubError::InvalidPlayerIndex(index))?;
-        Ok(state.composites.get(device).map_or_else(
+            .ok_or(HubError::InvalidPlayerIndex(index))?
+            .value()
+            .clone();
+        Ok(self.composites.get(&device).map_or_else(
             || vec![device.clone()],
             |composite| composite.members.clone(),
         ))
@@ -307,11 +281,11 @@ impl HubInner {
         update: &Calibration,
     ) -> Result<(), HubError> {
         let calibration = {
-            let mut state = self.state.lock();
-            if !state.devices.contains_key(device) {
+            let _topology = self.topology.read();
+            if !self.devices.contains_key(device) {
                 return Err(HubError::DeviceNotFound(device.clone()));
             }
-            let calibration = state.calibrations.entry(device.clone()).or_default();
+            let mut calibration = self.calibrations.entry(device.clone()).or_default();
             calibration.merge(update);
             calibration.clone()
         };
@@ -323,15 +297,13 @@ impl HubInner {
         device: &DeviceId,
         calibration: Calibration,
     ) -> Result<(), HubError> {
-        {
-            let mut state = self.state.lock();
-            if !state.devices.contains_key(device) {
-                return Err(HubError::DeviceNotFound(device.clone()));
-            }
-            state
-                .calibrations
-                .insert(device.clone(), calibration.clone());
+        let topology = self.topology.read();
+        if !self.devices.contains_key(device) {
+            return Err(HubError::DeviceNotFound(device.clone()));
         }
+        self.calibrations
+            .insert(device.clone(), calibration.clone());
+        drop(topology);
         self.apply_calibration(device, &calibration)
     }
 
@@ -341,8 +313,6 @@ impl HubInner {
         calibration: &Calibration,
     ) -> Result<(), HubError> {
         let backend = self
-            .state
-            .lock()
             .backends
             .get(&device.backend())
             .ok_or(HubError::BackendUnavailable(device.backend()))?
@@ -357,8 +327,6 @@ impl HubInner {
         feedback: &Feedback,
     ) -> Result<(), HubError> {
         let backend = self
-            .state
-            .lock()
             .backends
             .get(&device.backend())
             .ok_or(HubError::BackendUnavailable(device.backend()))?
@@ -372,12 +340,15 @@ impl HubInner {
 
     pub(crate) fn finish_calibration(&self, device: &DeviceId) -> Result<(), CalibrationError> {
         let (capture, mut calibration) = {
-            let mut state = self.state.lock();
-            let capture = state
+            let (_, capture) = self
                 .captures
                 .remove(device)
                 .ok_or(CalibrationError::Cancelled)?;
-            let calibration = state.calibrations.get(device).cloned().unwrap_or_default();
+            let calibration = self
+                .calibrations
+                .get(device)
+                .map(|value| value.clone())
+                .unwrap_or_default();
             (capture, calibration)
         };
         if capture.samples == 0 {
@@ -455,9 +426,11 @@ impl HubInner {
 
     pub(crate) fn cancel_calibration(&self, device: &DeviceId) {
         let calibration = {
-            let mut state = self.state.lock();
-            state.captures.remove(device);
-            state.calibrations.get(device).cloned().unwrap_or_default()
+            self.captures.remove(device);
+            self.calibrations
+                .get(device)
+                .map(|value| value.clone())
+                .unwrap_or_default()
         };
         let _ = self.apply_calibration(device, &calibration);
     }
