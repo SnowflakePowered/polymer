@@ -167,7 +167,7 @@ impl<'runtime> EmulatorWorker<'runtime> {
         } = invocation;
         if !arguments.is_object() {
             return Err(DenoPluginError::Adapter(
-                "onEmulatorLaunch arguments must be an object".to_owned(),
+                "onLaunch arguments must be an object".to_owned(),
             ));
         }
         let topology = serde_json::from_value::<snowglass_controllers::ControllerTopology>(
@@ -176,7 +176,7 @@ impl<'runtime> EmulatorWorker<'runtime> {
                 .cloned()
                 .ok_or_else(|| {
                     DenoPluginError::Adapter(
-                        "onEmulatorLaunch arguments require controllerTopology".to_owned(),
+                        "onLaunch arguments require controllerTopology".to_owned(),
                     )
                 })?,
         )?;
@@ -187,12 +187,12 @@ impl<'runtime> EmulatorWorker<'runtime> {
             r#"(async () => {{
                     const module = await import({entrypoint});
                     const explicitDefault = {explicit_default};
-                    const receiver = !explicitDefault && typeof module.onEmulatorLaunch === "function"
+                    const receiver = !explicitDefault && typeof module.onLaunch === "function"
                       ? module
                       : module.default;
-                    const onEmulatorLaunch = receiver?.onEmulatorLaunch;
-                    if (typeof onEmulatorLaunch !== "function") {{
-                      throw new TypeError("plugin export 'onEmulatorLaunch' is not a function");
+                    const onLaunch = receiver?.onLaunch;
+                    if (typeof onLaunch !== "function") {{
+                      throw new TypeError("plugin export 'onLaunch' is not a function");
                     }}
                     const args = {arguments};
                     const configuration = __snowglassPluginHost.configuration({configuration_id});
@@ -204,7 +204,7 @@ impl<'runtime> EmulatorWorker<'runtime> {
                       ? module
                       : receiver;
                     const onControllerChanged = controllerReceiver?.onControllerChanged;
-                    const result = await Reflect.apply(onEmulatorLaunch, receiver, [args]);
+                    const result = await Reflect.apply(onLaunch, receiver, [args]);
                     const controllerChanges = typeof onControllerChanged === "function"
                       || __snowglassFilesystem.hasConfigurationMounts();
                     if (controllerChanges) {{
@@ -256,7 +256,7 @@ impl<'runtime> EmulatorWorker<'runtime> {
         deno_core::scope!(scope, self.runtime);
         let wrapper = local_object(scope, &launch.value, "pluginhost launch result")?;
         let result_value = property(scope, wrapper, "result")?;
-        let _ = local_object_value(result_value, "plugin onEmulatorLaunch result")?;
+        let _ = local_object_value(result_value, "plugin onLaunch result")?;
         Ok(())
     }
 

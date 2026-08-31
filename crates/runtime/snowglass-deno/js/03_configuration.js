@@ -14,9 +14,9 @@ export function createConfiguration(scraping, pluginApi) {
     prepare(packageValue, selection) {
       return op_configuration_prepare(scraping.serialize(packageValue), selection);
     },
-    async onEmulatorLaunch(packageValue, selection) {
+    async onLaunch(packageValue, selection) {
       const prepared = await Configuration.prepare(packageValue, selection);
-      const plugin = await pluginApi.open(prepared.plugin).onEmulatorLaunch(prepared.arguments);
+      const plugin = await pluginApi.open(prepared.plugin).onLaunch(prepared.arguments);
       const targets = new Set(prepared.webrtcTargets || []);
       const launch = Object.freeze({
         command: plugin.command,

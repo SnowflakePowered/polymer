@@ -53,7 +53,7 @@ function basename(path: string): string {
     return name;
 }
 
-export const onEmulatorLaunch = (args: EmulatorLaunchArgs) => {
+export const onLaunch = (args: EmulatorLaunchArgs) => {
     const biosName = basename(config.plugin.config.bios);
     const gameName = basename(args.launchPath);
 
@@ -126,4 +126,4 @@ export const onControllerChanged = (context: ControllerChangeContext) => {
     }
 };
 
-export default { onEmulatorLaunch, onControllerChanged };
+export default { onLaunch, onControllerChanged };

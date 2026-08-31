@@ -115,6 +115,6 @@ export async function createSelection(game: PackageConfiguration): Promise<Confi
   return selection;
 }
 
-export async function onEmulatorLaunch(packageValue: ScrapedPackage, game: PackageConfiguration) {
-  return window.Snowglass.configuration.onEmulatorLaunch(packageValue, await createSelection(game));
+export async function onLaunch(packageValue: ScrapedPackage, game: PackageConfiguration) {
+  return window.Snowglass.configuration.onLaunch(packageValue, await createSelection(game));
 }

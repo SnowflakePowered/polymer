@@ -5,7 +5,7 @@ import type { LaunchRequest, PackageConfiguration } from "../../../../../js/snow
 import type { ControllerDevice } from "../../../../../js/snowglass";
 import { ControllerConnectionToast } from "../components/ControllerConnectionToast";
 import { InputNavigation } from "../components/InputNavigation";
-import { onEmulatorLaunch, resolveGame } from "./launch";
+import { onLaunch, resolveGame } from "./launch";
 import type { RecentGame, ShellModel } from "./models";
 import "./ShellProvider.css";
 
@@ -141,7 +141,7 @@ export function ShellProvider(props: ParentProps) {
   const beginLaunch = async (packageValue: NonNullable<ShellModel["package"]>, draft: PackageConfiguration) => {
     setModel("launcher", { kind: "launching", name: draft.name });
     try {
-      const request = await onEmulatorLaunch(packageValue, draft);
+      const request = await onLaunch(packageValue, draft);
       setModel("request", request);
       setModel("surfaces", structuredClone(request.surfaces));
       go("/game/launching", true);

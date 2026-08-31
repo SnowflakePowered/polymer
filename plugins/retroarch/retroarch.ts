@@ -28,7 +28,7 @@ function quoted(value: string): string {
     return `"${value.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")}"`;
 }
 
-export const onEmulatorLaunch = (args: EmulatorLaunchArgs) => {
+export const onLaunch = (args: EmulatorLaunchArgs) => {
     const biosName = basename(config.plugin.config.bios);
     const gameName = basename(args.launchPath);
 
@@ -108,4 +108,4 @@ export const onEmulatorLaunch = (args: EmulatorLaunchArgs) => {
     };
 };
 
-export default { onEmulatorLaunch };
+export default { onLaunch };
