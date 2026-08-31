@@ -176,7 +176,7 @@ impl ShellCoordinator {
         }
         self.input.prepare_priority_change();
         self.input
-            .set_provider_enabled(priority == InputPriority::Game);
+            .set_game_input_enabled(priority == InputPriority::Game);
         self.input.replace_priority(priority);
         self.focus_game_input();
     }
@@ -354,6 +354,9 @@ impl ShellCoordinator {
             self.game_host.controller_topology_locked(),
         );
         self.window.set_input_diagnostics(publication.diagnostics);
+        if publication.configuration_changed {
+            self.publish_input_configuration();
+        }
         if let Some(state) = publication.api_state {
             let controller_change = self
                 .input
@@ -368,7 +371,7 @@ impl ShellCoordinator {
                     &instance_events::error(error),
                 );
             }
-            self.notify_snowglass(SnowglassNotification::InputApiStateChanged(state));
+            self.notify_snowglass(SnowglassNotification::ControllerApiStateChanged(state));
         }
         if let Some((token, errors)) = self.game_host.take_controller_errors() {
             for error in errors {

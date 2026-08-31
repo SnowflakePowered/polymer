@@ -403,8 +403,10 @@ impl InputPublisher {
         self.scratch = WireInputMessage::encode(message);
         let index = usize::from(self.scratch.index);
         match self.scratch.kind {
-            DEVICE_CONNECTED | DEVICE_DISCONNECTED if index < 8 => {
-                self.connected[index] = Some(self.scratch)
+            DEVICE_CONNECTED if index < 8 => self.connected[index] = Some(self.scratch),
+            DEVICE_DISCONNECTED if index < 8 => {
+                self.connected[index] = Some(self.scratch);
+                self.latest[index] = None;
             }
             DEVICE_STATE if index < 8 => self.latest[index] = Some(self.scratch),
             _ => {}

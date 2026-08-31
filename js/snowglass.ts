@@ -59,15 +59,7 @@ export interface InputCalibrationCapture {
 }
 
 export interface InputApi extends EventTarget {
-  readonly devices: readonly ManagedControllerDevice[];
   get(index: number): InputState | null;
-  rumble(index: number, options: Readonly<{ lowFrequency: number; highFrequency: number; durationMs: number }>): void;
-  recenter(index: number): void;
-  calibrate(deviceId: string, calibration: InputCalibration): InputCalibration;
-  getCalibration(deviceId: string): InputCalibration;
-  resetCalibration(deviceId: string): InputCalibration;
-  beginCalibration(deviceId: string, kind: "stickCenter" | "stickRange" | "triggerRange" | "motionBias"): InputCalibrationCapture;
-  configurePointer(deviceId: string, pointer: NonNullable<InputCalibration["pointer"]>): InputCalibration;
 }
 
 export type ControllerDevice = {
@@ -123,6 +115,13 @@ export interface ControllersApi extends EventTarget {
   readonly layouts: readonly Readonly<Record<string, unknown>>[];
   readonly activeConnectionSession: ConnectionSession | null;
   startConnectionSession(): Promise<ConnectionSession>;
+  rumble(deviceId: string, options: Readonly<{ lowFrequency: number; highFrequency: number; durationMs: number }>): void;
+  recenter(deviceId: string): void;
+  calibrate(deviceId: string, calibration: InputCalibration): InputCalibration;
+  getCalibration(deviceId: string): InputCalibration;
+  resetCalibration(deviceId: string): InputCalibration;
+  beginCalibration(deviceId: string, kind: "stickCenter" | "stickRange" | "triggerRange" | "motionBias"): InputCalibrationCapture;
+  configurePointer(deviceId: string, pointer: NonNullable<InputCalibration["pointer"]>): InputCalibration;
   disconnect(id: string): Promise<void>;
   forget(id: string): Promise<void>;
   getMapping(id: string, layoutId: string): Promise<ControllerMappingProfile>;

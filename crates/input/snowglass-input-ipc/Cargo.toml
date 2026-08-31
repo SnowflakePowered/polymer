@@ -11,7 +11,7 @@ snowglass-input.workspace = true
 snowglass-input-layout.workspace = true
 snowglass-ipc.workspace = true
 tracing.workspace = true
-tokio = { version = "1.53", features = ["io-util", "net", "rt", "sync", "time"] }
+tokio = { version = "1.53", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 
 [lints]
 workspace = true

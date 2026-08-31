@@ -38,7 +38,7 @@ Nintendo's retained-bond shutdown command, closes the local GATT session, and
 immediately waits for a fresh wake advertisement. After the LEDs turn off,
 press HOME or another normal controller button. Do not use SYNC for wake.
 Bond metadata, controller profile IDs, adapter indices, and player slots persist
-in `%LOCALAPPDATA%\Snowglass\bluetooth-controllers.json`.
+in Snowglass's shared `input.db`.
 The viewer restores them on its next launch and immediately waits for their
 wake advertisements; discovery does not need to be enabled again.
 When upgrading from a build that did not yet create this registry, startup

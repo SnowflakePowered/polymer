@@ -52,16 +52,13 @@ pub trait SnowglassHost: Send + Sync {
     fn emulator_message(&self, token: InstanceToken, name: String, args: Value);
     fn emulator_input(&self, token: InstanceToken, active: bool);
     fn input_configure(&self, request_id: u32, transaction: Value);
-    fn input_api_snapshot(&self) -> Value;
-    fn input_api_command(&self, command: Value) -> ApiFuture<Result<Value, String>>;
-    fn input_devices(&self) -> Value {
-        Value::Array(Vec::new())
-    }
+    fn controller_api_snapshot(&self) -> Value;
+    fn controller_api_command(&self, command: Value) -> ApiFuture<Result<Value, String>>;
     fn input_get(&self, _index: u8) -> Option<Value> {
         None
     }
-    fn input_command(&self, _command: Value) -> Result<Value, String> {
-        Err("input is unavailable".to_owned())
+    fn controller_device_command(&self, _command: Value) -> Result<Value, String> {
+        Err("controller devices are unavailable".to_owned())
     }
     fn webrtc_start(
         &self,
@@ -115,17 +112,7 @@ pub enum SnowglassNotification {
         request_id: u64,
         result: Value,
     },
-    InputApiStateChanged(Value),
-    InputDeviceConnected(Value),
-    InputDeviceDisconnected {
-        id: String,
-        index: Option<u8>,
-    },
-    InputDeviceAssigned {
-        id: String,
-        from: Option<u8>,
-        to: Option<u8>,
-    },
+    ControllerApiStateChanged(Value),
     InputChanged {
         index: u8,
     },
@@ -365,28 +352,22 @@ fn op_input_configure(
 
 #[op2]
 #[serde]
-fn op_input_api_snapshot(state: &mut OpState) -> Result<serde_json::Value, JsErrorBox> {
+fn op_controller_api_snapshot(state: &mut OpState) -> Result<serde_json::Value, JsErrorBox> {
     Ok(state
         .borrow::<Arc<dyn SnowglassHost>>()
-        .input_api_snapshot())
+        .controller_api_snapshot())
 }
 
 #[op2]
 #[serde]
-async fn op_input_api_command(
+async fn op_controller_api_command(
     state: Rc<RefCell<OpState>>,
     #[serde] command: serde_json::Value,
 ) -> Result<serde_json::Value, JsErrorBox> {
     let host = state.borrow().borrow::<Arc<dyn SnowglassHost>>().clone();
-    host.input_api_command(command)
+    host.controller_api_command(command)
         .await
         .map_err(JsErrorBox::generic)
-}
-
-#[op2]
-#[serde]
-fn op_input_devices(state: &mut OpState) -> serde_json::Value {
-    state.borrow::<Arc<dyn SnowglassHost>>().input_devices()
 }
 
 #[op2]
@@ -397,13 +378,13 @@ fn op_input_get(state: &mut OpState, index: u8) -> Option<serde_json::Value> {
 
 #[op2]
 #[serde]
-fn op_input_command(
+fn op_controller_device_command(
     state: &mut OpState,
     #[serde] command: serde_json::Value,
 ) -> Result<serde_json::Value, JsErrorBox> {
     state
         .borrow::<Arc<dyn SnowglassHost>>()
-        .input_command(command)
+        .controller_device_command(command)
         .map_err(JsErrorBox::type_error)
 }
 
@@ -461,11 +442,10 @@ deno_core::extension!(
         op_emulator_message,
         op_emulator_input,
         op_input_configure,
-        op_input_api_snapshot,
-        op_input_api_command,
-        op_input_devices,
+        op_controller_api_snapshot,
+        op_controller_api_command,
         op_input_get,
-        op_input_command,
+        op_controller_device_command,
         op_webrtc_start,
         op_webrtc_stop,
         op_snowglass_next_notification,

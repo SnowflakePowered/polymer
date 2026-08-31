@@ -10,7 +10,7 @@ export function PlayPage() {
     const togglePause = () => shell.setModel("pauseOpen", (open: boolean) => !open);
     const unsubscribe = input.subscribe((action) => {
       if (
-        (action.type !== "pause" && !(action.type === "back" && action.sourceId === null))
+        (action.type !== "pause" && !(action.type === "back" && action.origin === "keyboard"))
         || action.event.defaultPrevented
       ) return;
       action.event.preventDefault();

@@ -45,14 +45,20 @@ impl ControllerManager {
                         .map_err(|error| error.to_string())?
                         .as_nanos()
                 );
+                self.clear_assignments()?;
                 self.session = Some(id);
-                Ok(self.outcome(vec![ControllerManagerEffect::SessionDiscovery(true)]))
+                Ok(ControllerCommandOutcome {
+                    response: self.snapshot(),
+                    assignments: Some(Vec::new()),
+                    effects: vec![ControllerManagerEffect::SessionDiscovery(true)],
+                })
             }
             ControllerCommand::FinishSession { session_id } => {
                 if self.session.as_deref() != Some(&session_id) {
                     return Err("unknown controller connection session".to_owned());
                 }
                 self.session = None;
+                self.finish_assignment_session();
                 Ok(self.outcome(vec![ControllerManagerEffect::SessionDiscovery(false)]))
             }
             ControllerCommand::ConnectSession { session_id, id } => {
@@ -73,7 +79,7 @@ impl ControllerManager {
                     hub.assign(&descriptor.id, None)
                         .map_err(|error| error.to_string())?;
                 }
-                Ok(self.outcome(Vec::new()))
+                Ok(self.outcome(vec![ControllerManagerEffect::DisconnectSources(vec![id])]))
             }
             ControllerCommand::Forget { id } => {
                 Ok(self.outcome(vec![ControllerManagerEffect::Forget(id)]))

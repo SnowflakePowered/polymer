@@ -278,7 +278,7 @@ pub(crate) struct ShellSessionFactory {
     plugin_runtime: std::sync::Arc<snowglass_pluginhost::PluginRuntime>,
     local_storage: Option<snowglass_deno::webstorage::LocalStorage>,
     input_sources: snowglass_input::InputHub,
-    input_api: snowglass_runtime::InputApiState,
+    controller_api: snowglass_runtime::ControllerApiState,
 }
 
 impl ShellSessionFactory {
@@ -295,7 +295,7 @@ impl ShellSessionFactory {
             )),
             local_storage,
             input_sources: snowglass_input::InputHub::default(),
-            input_api: snowglass_runtime::InputApiState::default(),
+            controller_api: snowglass_runtime::ControllerApiState::default(),
         }
     }
 
@@ -303,8 +303,8 @@ impl ShellSessionFactory {
         self.input_sources.clone()
     }
 
-    pub(crate) fn input_api(&self) -> snowglass_runtime::InputApiState {
-        self.input_api.clone()
+    pub(crate) fn controller_api(&self) -> snowglass_runtime::ControllerApiState {
+        self.controller_api.clone()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -345,7 +345,7 @@ impl ShellSessionFactory {
                 plugin_runtime: self.plugin_runtime,
                 local_storage: self.local_storage,
                 input_sources: self.input_sources,
-                input_api: self.input_api,
+                controller_api: self.controller_api,
             },
         )
         .await?;

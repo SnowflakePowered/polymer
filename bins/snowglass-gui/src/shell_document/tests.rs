@@ -76,6 +76,97 @@ fn removing_a_focused_dialog_ignores_its_late_focus_request() {
     assert_ne!(document.as_ref().get_focussed_node_id(), Some(resume));
 }
 
+#[test]
+fn removing_an_inline_subtree_discards_its_anonymous_layout_parent() {
+    let mut document = blitz_html::HtmlDocument::from_html(
+        r#"<main id="root"><span id="removed">inline</span><section>block</section></main>"#,
+        blitz_dom::DocumentConfig::default(),
+    );
+    document
+        .as_mut()
+        .set_viewport(blitz_traits::shell::Viewport::new(
+            800,
+            600,
+            1.0,
+            blitz_traits::shell::ColorScheme::Dark,
+        ));
+    document.as_mut().resolve(0.0);
+
+    let find = |name| {
+        document
+            .as_ref()
+            .tree()
+            .iter()
+            .find_map(|(id, node)| (node.attr(local_name!("id")) == Some(name)).then_some(id))
+            .unwrap()
+    };
+    let root = find("root");
+    let removed = find("removed");
+    assert_ne!(
+        document
+            .as_ref()
+            .get_node(removed)
+            .unwrap()
+            .layout_parent
+            .get(),
+        Some(root)
+    );
+    let mut script_to_dom = [(1, root), (2, removed)].into_iter().collect();
+    let mut dom_to_script = [(root, 1), (removed, 2)].into_iter().collect();
+
+    apply_dom_mutations(
+        &mut document,
+        &mut script_to_dom,
+        &mut dom_to_script,
+        vec![deno::Mutation::RemoveChild {
+            parent: 1,
+            child: 2,
+        }],
+    );
+    document.as_mut().resolve(1.0);
+
+    let removed = document.as_ref().get_node(removed).unwrap();
+    assert!(!removed.flags.is_in_document());
+    assert_eq!(removed.layout_parent.get(), None);
+}
+
+#[test]
+fn pointer_hit_skips_a_node_with_a_deallocated_layout_parent() {
+    let mut document = blitz_html::HtmlDocument::from_html(
+        r#"<main><button id="target" style="width: 200px; height: 100px; overflow: hidden">Play</button></main>"#,
+        blitz_dom::DocumentConfig::default(),
+    );
+    document
+        .as_mut()
+        .set_viewport(blitz_traits::shell::Viewport::new(
+            800,
+            600,
+            1.0,
+            blitz_traits::shell::ColorScheme::Dark,
+        ));
+    document.as_mut().resolve(0.0);
+    let target = document
+        .as_ref()
+        .tree()
+        .iter()
+        .find_map(|(id, node)| (node.attr(local_name!("id")) == Some("target")).then_some(id))
+        .unwrap();
+    let stale_parent = {
+        let mut mutator = document.as_mut().mutate();
+        let node = mutator.create_comment_node("stale layout box");
+        mutator.remove_and_drop_node(node);
+        node
+    };
+    document
+        .as_mut()
+        .get_node_mut(target)
+        .unwrap()
+        .layout_parent
+        .set(Some(stale_parent));
+
+    let _ = pointer_hit(document.as_ref(), 20.0, 20.0);
+}
+
 fn image_fill_count(scene: &anyrender::Scene) -> usize {
     scene
         .commands
@@ -632,7 +723,7 @@ async fn native_pointer_sequence_dispatches_a_delegated_click() {
             )),
             local_storage: None,
             input_sources: snowglass_input::InputHub::default(),
-            input_api: snowglass_runtime::InputApiState::default(),
+            controller_api: snowglass_runtime::ControllerApiState::default(),
         },
     )
     .await

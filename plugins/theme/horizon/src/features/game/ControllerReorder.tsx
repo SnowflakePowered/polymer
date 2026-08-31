@@ -143,12 +143,6 @@ export function ControllerReorder(props: { onClose?: () => void }) {
                     <strong>{controller().name}</strong>
                   </>}</Show>
                 </div>
-                <Show when={player.controller}>{(controller) => <button
-                  type="button"
-                  class="horizon-order-disconnect"
-                  disabled={pending()}
-                  onClick={() => void window.Snowglass.controllers.disconnect(controller().id)}
-                >Disconnect</button>}</Show>
               </div>}</For>
             </section>
 
@@ -170,7 +164,7 @@ export function ControllerReorder(props: { onClose?: () => void }) {
 
             <Show when={!session()}><p class="horizon-order-loading">{error() || "Preparing controllers…"}</p></Show>
             <Show when={error() && session()}><p class="horizon-order-error" role="alert">{error()}</p></Show>
-            <button type="button" class="horizon-order-ready" disabled={!session() || pending()} onClick={() => void finish()}>
+            <button type="button" class="horizon-order-ready" data-input-default disabled={!session() || pending()} onClick={() => void finish()}>
               Press <img src={buttonA} alt="A" /> when you're ready.
             </button>
           </main>

@@ -1,4 +1,4 @@
-use snowglass_input::{HostInputEvent, InputEvent};
+use snowglass_input::{DeviceDescriptor, HostInputEvent, InputEvent, PlayerIndex};
 use snowglass_ipc::input::{
     InputMessage, InputPublisher, WireDeviceConnected, WireDeviceState, WireHostKey,
     WireHostPointer, WireHostWheel,
@@ -62,6 +62,21 @@ impl InputPublication {
         if let Some(message) = message {
             let _ = self.publisher.publish(message);
         }
+    }
+
+    pub fn connect(&mut self, index: PlayerIndex, device: &DeviceDescriptor) {
+        let _ = self
+            .publisher
+            .publish(InputMessage::DeviceConnected(WireDeviceConnected {
+                index: index.get(),
+                capabilities: device.capabilities.bits(),
+            }));
+    }
+
+    pub fn disconnect(&mut self, index: PlayerIndex) {
+        let _ = self
+            .publisher
+            .publish(InputMessage::DeviceDisconnected { index: index.get() });
     }
 
     pub fn on_host_input(&mut self, event: &HostInputEvent) {

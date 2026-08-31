@@ -17,8 +17,8 @@ use snowglass_bluetooth::{
         nintendo::switch2::{COMMON_INPUT_UUID, UnknownSwitch2Controller},
     },
     store::{
-        ControllerLinkKeyStore, ControllerRecord, ControllerStore, FileControllerStore,
-        MemoryControllerStore,
+        ControllerLinkKeyStore, ControllerRecord, ControllerStore, MemoryControllerStore,
+        SqliteControllerStore,
     },
     transport::{
         ble::{
@@ -445,7 +445,12 @@ pub fn spawn() -> (tokio_mpsc::UnboundedSender<Command>, mpsc::Receiver<Event>) 
 
 async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc::Sender<Event>) {
     let controller_store: Arc<dyn ControllerStore> =
-        match FileControllerStore::open(controller_store_path()) {
+        match snowglass_library::Directories::discover()
+            .map_err(|error| error.to_string())
+            .and_then(|directories| {
+                SqliteControllerStore::open(directories.storage().join("input.db"))
+                    .map_err(|error| error.to_string())
+            }) {
             Ok(store) => Arc::new(store),
             Err(error) => {
                 let _ = events.send(Event::Log(format!(
@@ -2227,13 +2232,6 @@ async fn stop_all_active(active: &mut HashMap<DeviceAddr, ActiveController>) {
     for addr in addresses {
         stop_active(active, addr).await;
     }
-}
-
-fn controller_store_path() -> PathBuf {
-    let base = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    base.join("Snowglass").join("bluetooth-controllers.json")
 }
 
 fn load_known_ble_controllers(store: &dyn ControllerStore) -> HashMap<DeviceAddr, KnownBle> {

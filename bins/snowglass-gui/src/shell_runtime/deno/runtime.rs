@@ -167,7 +167,7 @@ impl Runtime {
         plugin_runtime: std::sync::Arc<snowglass_pluginhost::PluginRuntime>,
         local_storage: Option<snowglass_deno::webstorage::LocalStorage>,
         input_sources: snowglass_input::InputHub,
-        input_api: snowglass_runtime::InputApiState,
+        controller_api: snowglass_runtime::ControllerApiState,
     ) -> Result<(Self, SnowglassNotificationSender), Box<dyn std::error::Error>> {
         // This process also links WebRTC's ring-backed rustls feature, while
         // the selected Deno fetch/websocket extensions use aws-lc-rs. With both providers compiled rustls
@@ -177,14 +177,14 @@ impl Runtime {
         let executor = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let (worker, notifications) = tokio::task::block_in_place(|| {
+        let worker_result = tokio::task::block_in_place(|| {
             executor.block_on(async move {
                 let document_url = ModuleSpecifier::parse(&source_name)?;
                 let browser_loader = Rc::new(BrowserModuleLoader::new());
                 let platform = Arc::new(snowglass_runtime::CommandRuntimePlatform::new(
                     emulator_commands,
                     input_commands,
-                    input_api.clone(),
+                    controller_api.clone(),
                     webrtc_commands,
                 ));
                 let (snowglass_extension, notifications) =
@@ -193,7 +193,7 @@ impl Runtime {
                             plugin_runtime.clone(),
                             Some(snowglass_runtime::ConfigurationDefaults::default()),
                             input_sources.clone(),
-                            input_api.clone(),
+                            controller_api.clone(),
                             platform,
                             notifications,
                         )
@@ -234,7 +234,14 @@ impl Runtime {
                 worker.run_up_to_duration(std::time::Duration::ZERO).await?;
                 Ok::<_, Box<dyn std::error::Error>>((worker, notifications))
             })
-        })?;
+        });
+        let (worker, notifications) = match worker_result {
+            Ok(result) => result,
+            Err(error) => {
+                executor.shutdown_background();
+                return Err(error);
+            }
+        };
         Ok((
             Self {
                 realm: DenoRealm::new(worker, executor),

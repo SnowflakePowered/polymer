@@ -29,7 +29,7 @@ pub(crate) struct ShellRuntimeOptions {
     pub plugin_runtime: std::sync::Arc<snowglass_pluginhost::PluginRuntime>,
     pub local_storage: Option<snowglass_deno::webstorage::LocalStorage>,
     pub input_sources: snowglass_input::InputHub,
-    pub input_api: snowglass_runtime::InputApiState,
+    pub controller_api: snowglass_runtime::ControllerApiState,
 }
 
 impl ShellRuntime {
@@ -50,7 +50,7 @@ impl ShellRuntime {
             plugin_runtime,
             local_storage,
             input_sources,
-            input_api,
+            controller_api,
         } = options;
         let result = match deno::Runtime::serialized_snapshot(
             document,
@@ -70,7 +70,7 @@ impl ShellRuntime {
                     plugin_runtime,
                     local_storage,
                     input_sources,
-                    input_api,
+                    controller_api,
                 )
                 .await
             }

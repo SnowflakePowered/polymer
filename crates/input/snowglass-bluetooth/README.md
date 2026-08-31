@@ -40,7 +40,8 @@ enums.
 
 `BluetoothManager` exposes async scan/connect/send/sleep/disconnect/forget
 operations and a broadcast stream of lifecycle events and unmodified HID
-reports. `FileControllerStore` persists its versioned registry atomically.
+reports. `SqliteControllerStore` persists bonds in Snowglass's shared
+`input.db`; `FileControllerStore` remains available for standalone tooling.
 
 Minimal SDP queries identify HID and PnP records before a caller applies
 product-specific policy. Unknown HID devices use the generic profile, while

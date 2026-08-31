@@ -202,24 +202,6 @@
   white-space: nowrap;
 }
 
-.horizon-order-disconnect {
-  position: absolute;
-  right: 0.55rem;
-  bottom: 0.55rem;
-  padding: 0.25rem 0.45rem;
-  border: 0;
-  color: #777b7f;
-  background: transparent;
-  font-size: 0.7rem;
-}
-
-.horizon-order-disconnect:hover,
-.horizon-order-disconnect:focus-visible {
-  color: #a31e2a;
-  text-decoration: underline;
-  outline: 0;
-}
-
 .horizon-order-unassigned {
   display: flex;
   width: 100%;

@@ -1,4 +1,36 @@
-import { op_input_api_command } from "ext:core/ops";
+import { op_controller_api_command, op_controller_device_command } from "ext:core/ops";
+
+const calibrationPrefix = "snowglass.input.calibration.";
+
+class CalibrationCapture {
+  #deviceId;
+
+  constructor(deviceId) {
+    this.#deviceId = deviceId;
+  }
+
+  get progress() {
+    return op_controller_device_command({ type: "calibrationProgress", deviceId: this.#deviceId }).progress;
+  }
+
+  finish() {
+    const value = op_controller_device_command({ type: "finishCalibration", deviceId: this.#deviceId });
+    void this.#store(value);
+    return value;
+  }
+
+  cancel() {
+    op_controller_device_command({ type: "cancelCalibration", deviceId: this.#deviceId });
+  }
+
+  async #store(value) {
+    try {
+      await localStorage.setItem(calibrationPrefix + this.#deviceId, JSON.stringify(value));
+    } catch (error) {
+      console.warn(`Unable to persist input calibration for ${this.#deviceId}`, error);
+    }
+  }
+}
 
 const freezeDevice = (device) => device ? Object.freeze({ ...device }) : null;
 
@@ -56,6 +88,7 @@ class ControllersClient extends EventTarget {
     super();
     this.#state = freezeState(initial);
     this.#syncSession();
+    for (const device of this.connected) void this.#restoreCalibration(device.id);
   }
 
   get availability() { return this.#state.availability; }
@@ -69,28 +102,63 @@ class ControllersClient extends EventTarget {
 
   async startConnectionSession() {
     if (this.activeConnectionSession) throw new Error("a controller connection session is already active");
-    this.publish(await op_input_api_command({ type: "controllers.session.start" }));
+    this.publish(await op_controller_api_command({ type: "controllers.session.start" }));
     const session = this.activeConnectionSession;
     if (!session) throw new Error("the controller connection session did not start");
     return session;
   }
 
+  rumble(deviceId, options) {
+    op_controller_device_command({ type: "rumble", index: this.#index(deviceId), ...options });
+  }
+
+  recenter(deviceId) {
+    op_controller_device_command({ type: "recenter", index: this.#index(deviceId) });
+  }
+
+  calibrate(deviceId, calibration) {
+    const value = op_controller_device_command({ type: "calibrate", deviceId: String(deviceId), calibration });
+    void this.#storeCalibration(String(deviceId), value);
+    return value;
+  }
+
+  getCalibration(deviceId) {
+    return op_controller_device_command({ type: "getCalibration", deviceId: String(deviceId) });
+  }
+
+  resetCalibration(deviceId) {
+    const id = String(deviceId);
+    const value = op_controller_device_command({ type: "resetCalibration", deviceId: id });
+    void this.#removeCalibration(id);
+    return value;
+  }
+
+  beginCalibration(deviceId, kind) {
+    const id = String(deviceId);
+    op_controller_device_command({ type: "beginCalibration", deviceId: id, kind });
+    return Object.freeze(new CalibrationCapture(id));
+  }
+
+  configurePointer(deviceId, pointer) {
+    return this.calibrate(deviceId, { pointer });
+  }
+
   disconnect(id) { return this.#stateCommand({ type: "controllers.disconnect", id: String(id) }); }
   forget(id) { return this.#stateCommand({ type: "controllers.forget", id: String(id) }); }
   getMapping(id, layoutId) {
-    return op_input_api_command({ type: "controllers.mapping.get", id: String(id), layoutId: String(layoutId) });
+    return op_controller_api_command({ type: "controllers.mapping.get", id: String(id), layoutId: String(layoutId) });
   }
   setMapping(id, layoutId, mapping) {
-    return op_input_api_command({
+    return op_controller_api_command({
       type: "controllers.mapping.set", id: String(id), layoutId: String(layoutId), mapping,
     });
   }
   resetMapping(id, layoutId) {
-    return op_input_api_command({ type: "controllers.mapping.reset", id: String(id), layoutId: String(layoutId) });
+    return op_controller_api_command({ type: "controllers.mapping.reset", id: String(id), layoutId: String(layoutId) });
   }
 
   async sessionCommand(action, sessionId, detail = {}) {
-    const state = await op_input_api_command({
+    const state = await op_controller_api_command({
       type: `controllers.session.${action}`,
       sessionId,
       ...detail,
@@ -99,7 +167,7 @@ class ControllersClient extends EventTarget {
   }
 
   async #stateCommand(command) {
-    this.publish(await op_input_api_command(command));
+    this.publish(await op_controller_api_command(command));
   }
 
   publish(state) {
@@ -116,6 +184,7 @@ class ControllersClient extends EventTarget {
     const previousDevices = new Map(previous.devices.map((device) => [device.id, device]));
     for (const device of this.devices) {
       if (device.connected && !previousDevices.get(device.id)?.connected) {
+        void this.#restoreCalibration(device.id);
         this.dispatchEvent(new CustomEvent("controllerconnected", { detail: device }));
       }
     }
@@ -163,6 +232,41 @@ class ControllersClient extends EventTarget {
       this.#session = null;
     } else if (this.#session?.id !== state.id) {
       this.#session = new ConnectionSession(this, String(state.id));
+    }
+  }
+
+  #index(deviceId) {
+    const device = this.devices.find((candidate) => candidate.id === String(deviceId));
+    if (!device || device.index === null || device.index === undefined) {
+      throw new TypeError(`Controller '${deviceId}' is not assigned to a player`);
+    }
+    return device.index;
+  }
+
+  async #restoreCalibration(deviceId) {
+    try {
+      const stored = await localStorage.getItem(calibrationPrefix + deviceId);
+      if (stored !== null) {
+        op_controller_device_command({ type: "calibrate", deviceId, calibration: JSON.parse(stored) });
+      }
+    } catch (error) {
+      console.warn(`Unable to restore input calibration for ${deviceId}`, error);
+    }
+  }
+
+  async #storeCalibration(deviceId, calibration) {
+    try {
+      await localStorage.setItem(calibrationPrefix + deviceId, JSON.stringify(calibration));
+    } catch (error) {
+      console.warn(`Unable to persist input calibration for ${deviceId}`, error);
+    }
+  }
+
+  async #removeCalibration(deviceId) {
+    try {
+      await localStorage.removeItem(calibrationPrefix + deviceId);
+    } catch (error) {
+      console.warn(`Unable to remove input calibration for ${deviceId}`, error);
     }
   }
 }

@@ -111,10 +111,10 @@ impl ShellCoordinator {
         window.commit()?;
         let session = unique_session();
         let input_sources = shell_factory.input_sources();
-        let input_api = shell_factory.input_api();
+        let controller_api = shell_factory.controller_api();
         let shell_dom = ShellSession::new(shell_factory);
 
-        let input = InputRouter::runtime(input_sources, input_api)
+        let input = InputRouter::runtime(input_sources, controller_api)
             .await
             .map_err(std::io::Error::other)?;
 

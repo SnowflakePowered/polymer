@@ -1,7 +1,7 @@
 use parking_lot::Mutex;
 use snowglass_controllers::{
-    ControllerConfiguration, ControllerManager, ControllerTopology, InputConfiguration,
-    InputTransaction,
+    ControllerConfiguration, ControllerManager, ControllerManagerEffect, ControllerTopology,
+    InputConfiguration, InputTransaction,
 };
 use snowglass_egui::{InputAxisDiagnostics, InputDiagnostics, InputSlotDiagnostics};
 use snowglass_input::{
@@ -19,6 +19,9 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+
+mod bluetooth;
+use bluetooth::BluetoothUi;
 
 const DOM_MK_SHIFT: u32 = 0x0004;
 const DOM_MK_CONTROL: u32 = 0x0008;
@@ -55,6 +58,7 @@ impl GameInputEndpoint {
 pub(crate) struct InputPublication {
     pub diagnostics: InputDiagnostics,
     pub api_state: Option<serde_json::Value>,
+    pub configuration_changed: bool,
 }
 
 pub(crate) struct InputConfigurationPublication {
@@ -77,10 +81,11 @@ pub(crate) struct InputRouter {
     hub: InputHub,
     configuration: ControllerConfiguration,
     manager: ControllerManager,
-    input_api: snowglass_runtime::InputApiState,
+    controller_api: snowglass_runtime::ControllerApiState,
     listener: Option<InputIpcListener>,
     sdl: Arc<snowglass_input_sdl3::Sdl3Backend>,
     bluetooth: Arc<snowglass_input_bluetooth::BluetoothBackend>,
+    bluetooth_ui: BluetoothUi,
     topology: Option<snowglass_input_layout::topology::InputTopology>,
     mouse_buttons: u8,
     pointer_routing: PointerRoutingState,
@@ -90,7 +95,7 @@ pub(crate) struct InputRouter {
     dom_mouse_keys: u32,
     dom_alt_key: bool,
     next_publish: Instant,
-    last_input_api_revision: u64,
+    last_controller_api_revision: u64,
     native_providers: Arc<Mutex<Vec<snowglass_pluginhost::InputProvider>>>,
     native_topology: Arc<Mutex<Option<ControllerTopology>>>,
     applied_native_providers: Vec<snowglass_pluginhost::InputProvider>,
@@ -101,40 +106,52 @@ pub(crate) struct InputRouter {
 impl InputRouter {
     pub async fn runtime(
         hub: InputHub,
-        input_api: snowglass_runtime::InputApiState,
+        controller_api: snowglass_runtime::ControllerApiState,
     ) -> Result<Self, String> {
+        let directories =
+            snowglass_library::Directories::discover().map_err(|error| error.to_string())?;
         let sdl = Arc::new(
             snowglass_input_sdl3::Sdl3Backend::new(Default::default())
                 .map_err(|error| error.to_string())?,
         );
         hub.register_backend(sdl.clone())
             .map_err(|error| error.to_string())?;
+        let bluetooth_store = snowglass_bluetooth::store::SqliteControllerStore::open(
+            directories.storage().join("input.db"),
+        )
+        .map_err(|error| error.to_string())?;
+        let bluetooth_config = snowglass_bluetooth::ManagerConfig {
+            store: Arc::new(bluetooth_store),
+            ..Default::default()
+        };
         let bluetooth = Arc::new(
-            snowglass_input_bluetooth::BluetoothBackend::start(Default::default())
+            snowglass_input_bluetooth::BluetoothBackend::start(bluetooth_config)
                 .await
                 .map_err(|error| error.to_string())?,
         );
+        let mut bluetooth_ui = BluetoothUi::new(&bluetooth);
         hub.register_backend(bluetooth.clone())
             .map_err(|error| error.to_string())?;
-        let directories =
-            snowglass_library::Directories::discover().map_err(|error| error.to_string())?;
         let manager = ControllerManager::open(
             directories.storage().join("input.db"),
-            input_api.controller_profiles(),
+            controller_api.controller_profiles(),
             hub.clone(),
         )
         .await?;
         let configuration =
             ControllerConfiguration::new(None, []).map_err(|error| error.to_string())?;
-        input_api.publish(manager.snapshot(), &manager);
+        let mut controllers = manager.snapshot();
+        bluetooth_ui.merge(&mut controllers);
+        controller_api.publish(controllers, &manager);
         Ok(Self {
             hub,
             configuration,
             manager,
-            input_api,
+            controller_api,
             listener: None,
             sdl,
             bluetooth,
+            bluetooth_ui,
             topology: None,
             mouse_buttons: 0,
             pointer_routing: PointerRoutingState::new(Instant::now()),
@@ -146,7 +163,7 @@ impl InputRouter {
             dom_mouse_keys: 0,
             dom_alt_key: false,
             next_publish: Instant::now(),
-            last_input_api_revision: 0,
+            last_controller_api_revision: 0,
             native_providers: Arc::new(Mutex::new(Vec::new())),
             native_topology: Arc::new(Mutex::new(None)),
             applied_native_providers: Vec::new(),
@@ -384,9 +401,9 @@ impl InputRouter {
     pub fn prepare_priority_change(&mut self) {
         self.hub.publish_host(HostInputEvent::FocusLost);
     }
-    pub fn set_provider_enabled(&self, enabled: bool) {
-        for channel in &self.raw_hid {
-            channel.set_capture(!enabled);
+    pub fn set_game_input_enabled(&self, enabled: bool) {
+        if let Some(listener) = &self.listener {
+            listener.set_forwarding(enabled, &self.hub);
         }
     }
     pub fn clear_provider_state(&self) {
@@ -530,10 +547,36 @@ impl InputRouter {
         _topology_locked: bool,
     ) -> Result<(serde_json::Value, bool), String> {
         let outcome = self.manager.command(command).await?;
-        let changed = !outcome.effects.is_empty();
-        self.input_api
-            .publish(self.manager.snapshot(), &self.manager);
-        Ok((outcome.response, changed))
+        let state_response = outcome.response.get("devices").is_some();
+        let mut configuration_changed = outcome
+            .assignments
+            .map(|assignments| self.replace_assignments(assignments))
+            .transpose()?
+            .unwrap_or(false);
+        for effect in outcome.effects {
+            match effect {
+                ControllerManagerEffect::SessionDiscovery(active) => {
+                    self.bluetooth_ui.set_session_active(active);
+                }
+                ControllerManagerEffect::DisconnectSources(sources) => {
+                    for source in sources {
+                        self.bluetooth_ui.disconnect(&source);
+                    }
+                }
+                ControllerManagerEffect::Connect(id) => self.bluetooth_ui.connect(&id)?,
+                ControllerManagerEffect::Forget(id) => self.bluetooth_ui.forget(&id)?,
+                ControllerManagerEffect::ReapplyMappings => configuration_changed = true,
+            }
+        }
+        let controllers = self.publish_controller_api();
+        Ok((
+            if state_response {
+                controllers
+            } else {
+                outcome.response
+            },
+            configuration_changed,
+        ))
     }
 
     pub fn build_publication(
@@ -542,7 +585,14 @@ impl InputRouter {
         game_active: bool,
         _topology_locked: bool,
     ) -> InputPublication {
+        let configuration_changed = self.manager.observe_session().is_some_and(|assignments| {
+            self.replace_assignments(assignments).unwrap_or_else(|error| {
+                tracing::error!(%error, "snowglass: updating controller session assignments failed");
+                false
+            })
+        });
         let _ = self.rebuild_native_input();
+        self.publish_controller_api();
         let snapshots = self.hub.snapshot();
         let slots = mappings
             .iter()
@@ -589,10 +639,10 @@ impl InputRouter {
                 )
             })
             .collect();
-        let api = self.input_api.snapshot();
+        let api = self.controller_api.snapshot();
         let revision = api["revision"].as_u64().unwrap_or_default();
-        let api_state = (revision != self.last_input_api_revision).then(|| {
-            self.last_input_api_revision = revision;
+        let api_state = (revision != self.last_controller_api_revision).then(|| {
+            self.last_controller_api_revision = revision;
             api
         });
         InputPublication {
@@ -601,7 +651,30 @@ impl InputRouter {
                 slots,
             },
             api_state,
+            configuration_changed,
         }
+    }
+
+    fn replace_assignments(
+        &mut self,
+        assignments: Vec<snowglass_controllers::SourceAssignment>,
+    ) -> Result<bool, String> {
+        let current = self.configuration.snapshot();
+        if current.assignments == assignments {
+            return Ok(false);
+        }
+        let transaction = InputTransaction {
+            expected_revision: current.revision,
+            operations: vec![snowglass_controllers::InputOperation::ReplaceAssignments {
+                assignments,
+            }],
+        };
+        let configuration = self
+            .configuration
+            .apply(transaction)
+            .map_err(|error| error.to_string())?;
+        self.manager.sync_configuration(&configuration)?;
+        Ok(true)
     }
 
     fn set_flag(flags: &mut u32, flag: u32, enabled: bool) {
@@ -610,6 +683,14 @@ impl InputRouter {
         } else {
             *flags &= !flag;
         }
+    }
+
+    fn publish_controller_api(&mut self) -> serde_json::Value {
+        let mut controllers = self.manager.snapshot();
+        self.bluetooth_ui.merge(&mut controllers);
+        self.controller_api
+            .publish(controllers.clone(), &self.manager);
+        controllers
     }
 
     fn rebuild_native_input(&mut self) -> Result<(), String> {

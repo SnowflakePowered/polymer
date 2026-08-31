@@ -68,13 +68,18 @@ function move(vector: Vector) {
 
 function activate() {
   const items = candidates();
-  const current = currentCandidate(items);
-  if (current) current.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
-  else items[0]?.focus();
+  const target = currentCandidate(items) ?? items.find((item) => item.hasAttribute("data-input-default"));
+  if (target) {
+    target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+  } else {
+    items[0]?.focus();
+  }
 }
 
 function back() {
-  const target = document.activeElement instanceof HTMLElement ? document.activeElement : window;
+  const scope = navigationScope();
+  const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const target = scope !== document && (!active || !scope.contains(active)) ? scope : active || window;
   dispatchControllerBack(target);
 }
 
@@ -87,10 +92,9 @@ export function InputNavigation() {
         action.event.preventDefault();
         move(vectors[action.direction]);
       } else if (action.type === "activate") {
-        if (!currentCandidate(candidates())) return;
         action.event.preventDefault();
         activate();
-      } else if (action.type === "back" && action.sourceId !== null) {
+      } else if (action.type === "back" && action.origin === "controller") {
         action.event.preventDefault();
         back();
       }
