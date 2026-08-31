@@ -30,6 +30,7 @@ type Configuration = HostConfiguration<{
             },
             general: {
                 nand_root_path: string,
+                hotkeys_require_focus: boolean,
             },
             input: {
                 background_input: boolean,
@@ -302,6 +303,8 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     options.core.gci_folder_a_path = args.filesystem.path("/MemoryCard/USA");
     options.core.slot_a = "MemoryCardFolder";
     options.core.slot_b = "None";
+
+    options.general.hotkeys_require_focus = false;
     if (isWii) {
         options.general.nand_root_path = args.filesystem.path("/User/Wii");
     }
