@@ -7,7 +7,8 @@ export type InputHook = "bluetooth-api-win32";
 export type NativeInputProvider = Readonly<{
   type: "rawHid";
   sourceId: string;
-  port: number;
+  target: Readonly<{ group: string; port: number }>;
+  vendorId: number;
   productId: number;
 }>;
 export type ProjectionMode = "name" | "position" | "custom";

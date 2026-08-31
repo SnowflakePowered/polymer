@@ -350,7 +350,7 @@ impl<'runtime> EmulatorWorker<'runtime> {
             filesystem,
             controller_session: None,
             session: None,
-            controller_topology: None,
+            controller_topology: plan.controller_topology,
         })
     }
 }
@@ -507,6 +507,8 @@ struct EmulatorLaunchPlan {
     input_hooks: Vec<InputHook>,
     #[serde(default)]
     input_providers: Vec<InputProvider>,
+    #[serde(default)]
+    controller_topology: Option<snowglass_controllers::ControllerTopology>,
     #[serde(default)]
     graph_tracking: bool,
     surfaces: Vec<TrackedSurface>,

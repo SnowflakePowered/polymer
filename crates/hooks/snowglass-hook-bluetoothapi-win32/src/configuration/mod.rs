@@ -3,6 +3,7 @@ use std::{ffi::OsStr, os::windows::ffi::OsStrExt};
 
 #[derive(Clone, Debug)]
 pub(crate) struct SyntheticWiimote {
+    pub(crate) port: u8,
     pub(crate) path: Vec<u16>,
     pub(crate) pipe: Vec<u16>,
     pub(crate) product_id: u16,
@@ -22,6 +23,7 @@ impl SyntheticWiimote {
             |binding| binding.pipe.clone(),
         );
         Self {
+            port,
             path: OsStr::new(&path).encode_wide().chain(Some(0)).collect(),
             pipe: OsStr::new(&pipe).encode_wide().chain(Some(0)).collect(),
             product_id: binding.map_or(0x0306, |binding| binding.product_id),

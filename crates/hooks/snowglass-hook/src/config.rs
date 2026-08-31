@@ -17,6 +17,7 @@ pub const D3D11_LOG_FILE: &str = "SNOWGLASS_D3D11_LOG_FILE";
 pub const D3D12_LOG_FILE: &str = "SNOWGLASS_D3D12_LOG_FILE";
 pub const OPENGL_LOG_FILE: &str = "SNOWGLASS_OPENGL_LOG_FILE";
 pub const GDI_LOG_FILE: &str = "SNOWGLASS_GDI_LOG_FILE";
+pub const BLUETOOTH_API_LOG_FILE: &str = "SNOWGLASS_BLUETOOTH_API_LOG_FILE";
 pub const TRACK_RENDER_TARGET: &str = "SNOWGLASS_TRACK_RENDER_TARGET";
 pub const TRACK_RENDER_TARGETS: &str = "SNOWGLASS_TRACK_RENDER_TARGETS";
 pub const TRACK_RENDER_TARGET_SURFACE_PATTERNS: &str =
@@ -66,6 +67,10 @@ pub fn opengl_log_file() -> Option<PathBuf> {
 
 pub fn gdi_log_file() -> Option<PathBuf> {
     path(GDI_LOG_FILE)
+}
+
+pub fn bluetooth_api_log_file() -> Option<PathBuf> {
+    path(BLUETOOTH_API_LOG_FILE)
 }
 
 pub fn tracking_enabled() -> bool {

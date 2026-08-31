@@ -54,6 +54,7 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/hooks/snowglass-hook-input-dinput/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/hooks/snowglass-hook-input-sdl/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/hooks/snowglass-hook-input-win32/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/hooks/snowglass-hook-input/examples" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/hooks/snowglass-hook-input/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/input/snowglass-bluetooth/examples" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/input/snowglass-bluetooth/src" isTestSource="false" />

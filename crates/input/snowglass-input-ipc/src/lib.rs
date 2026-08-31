@@ -91,10 +91,6 @@ impl InputIpcListener {
     }
 
     /// Enables or suspends all guest-facing input publication.
-    ///
-    /// Resuming while a controller button is held keeps that player blocked
-    /// until the release report arrives. This prevents the button used to
-    /// dismiss an overlay from leaking through to the guest.
     pub fn set_forwarding(&self, enabled: bool, hub: &InputHub) {
         let snapshots = enabled.then(|| hub.device_snapshots());
         let mut forwarding = self.0.forwarding.lock();
@@ -116,6 +112,13 @@ impl InputIpcListener {
             return;
         }
 
+        // The raw stream owns its release boundary. Waiting for a neutral raw
+        // report works even when the current Wii report mode has no normalized
+        // decoder, and prevents a physically held button from appearing as a
+        // new guest press when an overlay closes.
+        for channel in raw_hid.values() {
+            channel.release_after_neutral();
+        }
         for (index, device, state, connected) in snapshots.into_iter().flatten() {
             let Some(index) = index.filter(|_| connected) else {
                 continue;
@@ -125,9 +128,6 @@ impl InputIpcListener {
             let blocked = state.gamepad.buttons != 0;
             if blocked {
                 forwarding.blocked_until_neutral.insert(index);
-            }
-            if let Some(channel) = raw_hid.get(&index) {
-                channel.set_capture(blocked);
             }
         }
     }
@@ -183,8 +183,11 @@ impl InputIpcListener {
     ) -> io::Result<RawHidChannel> {
         let channel = RawHidChannel::open(index, spec, self.0.hub.clone())?;
         let forwarding = self.0.forwarding.lock();
-        channel
-            .set_capture(!forwarding.enabled || forwarding.blocked_until_neutral.contains(&index));
+        if forwarding.enabled {
+            channel.release_after_neutral();
+        } else {
+            channel.set_capture(true);
+        }
         self.0.raw_hid.lock().insert(index, channel.clone());
         Ok(channel)
     }
@@ -288,6 +291,7 @@ mod tests {
     use super::*;
     use snowglass_input::GamepadButton;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use tokio::{io::AsyncReadExt, net::windows::named_pipe::ClientOptions};
 
     #[test]
     fn resuming_swallows_the_held_overlay_button_through_release() {
@@ -334,6 +338,75 @@ mod tests {
         let second = listener.open_raw_hid(PlayerIndex::new(0), spec).unwrap();
         listener.clear_raw_hid();
         drop(second);
+        listener.shutdown();
+    }
+
+    #[tokio::test]
+    async fn enabling_forwarding_unmasks_raw_hid_without_a_device_snapshot() {
+        let session = format!("snowglass-raw-forward-test-{}", std::process::id());
+        let listener = InputIpcListener::bind(&session).unwrap();
+        let channel = listener
+            .open_raw_hid(
+                PlayerIndex::new(0),
+                RawHidSpec {
+                    pipe_name: format!(r"\\.\pipe\{session}-hid-0"),
+                    vendor_id: 0x057e,
+                    product_id: 0x0306,
+                    report_size: 22,
+                },
+            )
+            .unwrap();
+        assert!(channel.is_capturing());
+        listener.set_forwarding(true, &InputHub::default());
+        assert!(channel.is_capturing());
+
+        let mut client = ClientOptions::new()
+            .read(true)
+            .write(true)
+            .open(channel.spec().pipe_name.as_str())
+            .unwrap();
+        tokio::task::yield_now().await;
+        channel.publish(&[0x30, 0, 0]);
+        let mut frame = [0; 22];
+        client.read_exact(&mut frame).await.unwrap();
+        assert!(!channel.is_capturing());
+
+        listener.clear_raw_hid();
+        drop(channel);
+        listener.shutdown();
+    }
+
+    #[tokio::test]
+    async fn raw_hid_pipe_delivers_the_windows_report_shape() {
+        let session = format!("snowglass-raw-frame-test-{}", std::process::id());
+        let pipe_name = format!(r"\\.\pipe\{session}-hid-0");
+        let listener = InputIpcListener::bind(&session).unwrap();
+        let channel = listener
+            .open_raw_hid(
+                PlayerIndex::new(0),
+                RawHidSpec {
+                    pipe_name: pipe_name.clone(),
+                    vendor_id: 0x057e,
+                    product_id: 0x0306,
+                    report_size: 22,
+                },
+            )
+            .unwrap();
+        let mut client = ClientOptions::new()
+            .read(true)
+            .write(true)
+            .open(&pipe_name)
+            .unwrap();
+        tokio::task::yield_now().await;
+
+        channel.publish(&[0x30, 0x08, 0x04]);
+        let mut frame = [0xff; 22];
+        client.read_exact(&mut frame).await.unwrap();
+
+        assert_eq!(&frame[..3], &[0x30, 0x08, 0x04]);
+        assert_eq!(&frame[3..], &[0; 19]);
+        listener.clear_raw_hid();
+        drop(channel);
         listener.shutdown();
     }
 }
