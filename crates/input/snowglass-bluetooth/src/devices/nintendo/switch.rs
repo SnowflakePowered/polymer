@@ -1,8 +1,9 @@
 //! Nintendo Switch BR/EDR connection-time protocol.
 
-use std::{marker::PhantomData, time::Duration};
+use std::{marker::PhantomData, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use tokio::sync::broadcast;
 
 use crate::devices::{
@@ -15,10 +16,13 @@ const OUTPUT_RUMBLE_AND_SUBCOMMAND: u8 = 0x01;
 const INPUT_SUBCOMMAND_REPLY: u8 = 0x21;
 const SUBCOMMAND_SET_REPORT_MODE: u8 = 0x03;
 const SUBCOMMAND_SET_HCI_STATE: u8 = 0x06;
+const SUBCOMMAND_SPI_FLASH_READ: u8 = 0x10;
 const SUBCOMMAND_SET_PLAYER_LIGHTS: u8 = 0x30;
 const SUBCOMMAND_ENABLE_VIBRATION: u8 = 0x48;
 const FULL_REPORT_MODE: u8 = 0x30;
 const NEUTRAL_RUMBLE: [u8; 4] = [0x00, 0x01, 0x40, 0x40];
+const SERIAL_ADDRESS: u32 = 0x6000;
+const SERIAL_LENGTH: usize = 16;
 
 #[async_trait]
 trait SwitchModel: Send + Sync + 'static {
@@ -50,14 +54,14 @@ trait SwitchModel: Send + Sync + 'static {
         packet_counter: &mut u8,
         subcommand: u8,
         data: &[u8],
-    ) -> Result<()> {
+    ) -> Result<Bytes> {
         let mut reports = transport.reports();
         for attempt in 0..3 {
             let report = Self::subcommand_report(*packet_counter, subcommand, data);
             *packet_counter = (*packet_counter + 1) & 0x0f;
             transport.send(&report).await?;
             match Self::wait_for_subcommand_reply(&mut reports, subcommand).await {
-                Ok(()) => return Ok(()),
+                Ok(response) => return Ok(response),
                 Err(error) if attempt != 2 => {
                     tracing::debug!(subcommand, attempt, %error, "retrying Switch subcommand")
                 }
@@ -79,7 +83,10 @@ trait SwitchModel: Send + Sync + 'static {
         report
     }
 
-    async fn wait_for_subcommand_reply(reports: &mut ReportReceiver, subcommand: u8) -> Result<()> {
+    async fn wait_for_subcommand_reply(
+        reports: &mut ReportReceiver,
+        subcommand: u8,
+    ) -> Result<Bytes> {
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 match reports.recv().await {
@@ -89,7 +96,7 @@ trait SwitchModel: Send + Sync + 'static {
                             && report[14] == subcommand =>
                     {
                         return if report[13] & 0x80 != 0 {
-                            Ok(())
+                            Ok(report.slice(15..))
                         } else {
                             Err(Error::L2cap(format!(
                                 "Switch subcommand 0x{subcommand:02x} was rejected"
@@ -109,7 +116,7 @@ trait SwitchModel: Send + Sync + 'static {
         transport: &mut dyn Transport,
         player_index: u8,
         packet_counter: &mut u8,
-    ) -> Result<()> {
+    ) -> Result<Option<Arc<str>>> {
         *packet_counter = 0;
         Self::send_subcommand(
             transport,
@@ -118,6 +125,17 @@ trait SwitchModel: Send + Sync + 'static {
             &[FULL_REPORT_MODE],
         )
         .await?;
+        let serial = match Self::read_serial(transport, packet_counter).await {
+            Ok(serial) => serial,
+            Err(error) => {
+                tracing::warn!(
+                    controller = Self::DISPLAY_NAME,
+                    %error,
+                    "failed to read Switch controller serial"
+                );
+                None
+            }
+        };
         Self::send_subcommand(
             transport,
             packet_counter,
@@ -130,7 +148,45 @@ trait SwitchModel: Send + Sync + 'static {
             controller = Self::DISPLAY_NAME,
             "synchronized Switch controller"
         );
-        Ok(())
+        Ok(serial)
+    }
+
+    async fn read_serial(
+        transport: &mut dyn Transport,
+        packet_counter: &mut u8,
+    ) -> Result<Option<Arc<str>>> {
+        let mut request = [0; 5];
+        request[..4].copy_from_slice(&SERIAL_ADDRESS.to_le_bytes());
+        request[4] = SERIAL_LENGTH as u8;
+        let response = Self::send_subcommand(
+            transport,
+            packet_counter,
+            SUBCOMMAND_SPI_FLASH_READ,
+            &request,
+        )
+        .await?;
+        if response.len() < 5 + SERIAL_LENGTH
+            || response[..4] != request[..4]
+            || usize::from(response[4]) != SERIAL_LENGTH
+        {
+            return Err(Error::InvalidPacket(
+                "Switch serial-number SPI response is malformed",
+            ));
+        }
+        let bytes = &response[5..5 + SERIAL_LENGTH];
+        if bytes[0] >= 0x80 {
+            return Ok(None);
+        }
+        let bytes = &bytes[..SERIAL_LENGTH - 1];
+        if bytes.iter().any(|byte| *byte >= 0x80) {
+            return Err(Error::InvalidPacket("Switch serial number is not ASCII"));
+        }
+        let serial = bytes
+            .iter()
+            .filter(|byte| **byte != 0)
+            .map(|byte| char::from(*byte))
+            .collect::<String>();
+        Ok((!serial.is_empty()).then(|| Arc::from(serial)))
     }
 
     async fn set_led(transport: &mut dyn Transport, slot: u8, counter: &mut u8) -> Result<()> {
@@ -141,19 +197,27 @@ trait SwitchModel: Send + Sync + 'static {
             &[slot.saturating_add(1).min(0x0f)],
         )
         .await
+        .map(|_| ())
     }
 }
 
 struct SwitchSession<M> {
     packet_counter: u8,
     player_index: u8,
+    serial: Option<Arc<str>>,
     model: PhantomData<M>,
 }
 
 #[async_trait]
 impl<M: SwitchModel> ControllerSession for SwitchSession<M> {
     async fn synchronize(&mut self, transport: &mut dyn Transport) -> Result<()> {
-        M::synchronize(transport, self.player_index, &mut self.packet_counter).await
+        self.serial =
+            M::synchronize(transport, self.player_index, &mut self.packet_counter).await?;
+        Ok(())
+    }
+
+    fn serial(&self) -> Option<Arc<str>> {
+        self.serial.clone()
     }
 
     async fn set_player_led(&mut self, transport: &mut dyn Transport, slot: u8) -> Result<()> {
@@ -208,6 +272,7 @@ where
         Box::new(SwitchSession::<M> {
             packet_counter: 0,
             player_index: options.player_index,
+            serial: None,
             model: PhantomData,
         })
     }

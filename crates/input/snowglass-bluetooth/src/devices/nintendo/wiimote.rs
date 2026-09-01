@@ -1,6 +1,6 @@
 //! Wii Remote connection-time initialization.
 
-use std::{marker::PhantomData, time::Duration};
+use std::{marker::PhantomData, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use tokio::sync::broadcast;
@@ -329,6 +329,10 @@ where
                 M::product_id(identity),
             ))
         })
+    }
+
+    fn serial(&self, identity: &DeviceIdentity) -> Option<Arc<str>> {
+        Some(Arc::from(identity.address.to_string()))
     }
 
     fn connection_policy(

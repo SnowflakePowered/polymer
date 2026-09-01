@@ -388,7 +388,10 @@ impl Worker {
             profile: None,
             vendor_id: identity.vendor,
             product_id: identity.product,
-            serial: identity.serial.as_deref().map(Arc::from),
+            serial: identity
+                .serial
+                .as_deref()
+                .and_then(DeviceDescriptor::serial_uuid),
             role: DeviceRole::Whole,
             capabilities,
         };

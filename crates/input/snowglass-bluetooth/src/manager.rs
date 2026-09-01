@@ -95,6 +95,7 @@ pub struct ConnectedController {
     pub identity: DeviceIdentity,
     pub profile_id: ProfileId,
     pub vendor_product: Option<crate::devices::VendorProductId>,
+    pub serial: Option<Arc<str>>,
     pub player_index: u8,
 }
 
@@ -1362,6 +1363,9 @@ impl BluetoothServer {
         let vendor_product = controller.vendor_product(&identity);
         let mut controller_session = controller.connect(&options);
         controller_session.synchronize(transport.as_mut()).await?;
+        let serial = controller_session
+            .serial()
+            .or_else(|| controller.serial(&identity));
         keys.register(ControllerRecord {
             address,
             transport: identity.transport,
@@ -1397,6 +1401,7 @@ impl BluetoothServer {
             identity,
             profile_id,
             vendor_product,
+            serial,
             player_index: options.player_index,
         }));
         Ok(session)
@@ -1491,6 +1496,9 @@ impl BluetoothServer {
             let _ = transport.disconnect().await;
             return Err(error);
         }
+        let serial = controller_session
+            .serial()
+            .or_else(|| controller.serial(&identity));
         let controller_id = ControllerId::new(TransportKind::BrEdr, address);
         let report_task = Self::spawn_reports(
             controller_id,
@@ -1506,6 +1514,7 @@ impl BluetoothServer {
             identity: identity.clone(),
             profile_id: record.profile_id.clone(),
             vendor_product,
+            serial,
             player_index: record.player_index,
         }));
         Ok(Session {
