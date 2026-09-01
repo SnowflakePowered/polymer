@@ -177,6 +177,12 @@ impl InputRouter {
         self.configuration.snapshot()
     }
 
+    pub async fn shutdown(&self) {
+        if let Err(error) = self.bluetooth.manager().shutdown().await {
+            tracing::warn!(%error, "failed to shut down Bluetooth controllers cleanly");
+        }
+    }
+
     pub fn controller_topology(&self) -> Result<ControllerTopology, String> {
         self.manager.topology_for(&self.configuration.snapshot())
     }

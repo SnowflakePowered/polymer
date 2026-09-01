@@ -984,8 +984,37 @@ impl BluetoothServer {
                         task.abort();
                     }
                     for (_, mut session) in sessions.drain() {
+                        let slept = match session.controller.sleep(session.transport.as_mut()).await
+                        {
+                            Ok(()) => true,
+                            Err(error) => {
+                                tracing::debug!(
+                                    %error,
+                                    session_id = session.id.get(),
+                                    "controller does not support sleeping during shutdown; disconnecting"
+                                );
+                                false
+                            }
+                        };
                         session.report_task.abort();
-                        let _ = session.transport.disconnect().await;
+                        if let Err(error) = session.transport.disconnect().await {
+                            tracing::warn!(
+                                %error,
+                                session_id = session.id.get(),
+                                "failed to disconnect controller during shutdown"
+                            );
+                        }
+                        let _ = events.send(ManagerEvent::Disconnected {
+                            controller_id: session.controller_id,
+                            session_id: session.id,
+                            reason: if slept {
+                                "sleep requested"
+                            } else {
+                                "disconnected"
+                            }
+                            .into(),
+                            reconnecting: false,
+                        });
                     }
                     let _ = reply.send(());
                     break;
