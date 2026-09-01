@@ -1,4 +1,4 @@
-use crate::{BackendError, Calibration, DeviceId};
+use crate::{BackendError, Calibration};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HdRumbleChannel {
@@ -58,23 +58,4 @@ impl Feedback {
 
 pub trait HdRumbleSink: Send {
     fn submit(&mut self, samples: &[f32]) -> Result<(), BackendError>;
-}
-
-pub struct HdRumbleStream {
-    device: DeviceId,
-    sink: Box<dyn HdRumbleSink>,
-}
-
-impl HdRumbleStream {
-    pub(crate) fn new(device: DeviceId, sink: Box<dyn HdRumbleSink>) -> Self {
-        Self { device, sink }
-    }
-
-    pub fn device(&self) -> &DeviceId {
-        &self.device
-    }
-
-    pub fn submit(&mut self, samples: &[f32]) -> Result<(), BackendError> {
-        self.sink.submit(samples)
-    }
 }

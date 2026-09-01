@@ -1,6 +1,6 @@
 use crate::{
     Calibration, CalibrationCapture, CalibrationKind, DeviceDescriptor, DeviceId, DeviceState,
-    Feedback, HdRumbleFormat, HdRumbleStream, HubError, InputHub, PlayerIndex, RawControls,
+    Feedback, HdRumbleFormat, HdRumbleSink, HubError, InputHub, PlayerIndex, RawControls,
 };
 use std::sync::Arc;
 
@@ -195,7 +195,7 @@ impl ListenerHandle {
         &self,
         index: PlayerIndex,
         format: HdRumbleFormat,
-    ) -> Result<HdRumbleStream, HubError> {
+    ) -> Result<Box<dyn HdRumbleSink>, HubError> {
         self.hub.open_hd_rumble(self.id, index, format)
     }
 

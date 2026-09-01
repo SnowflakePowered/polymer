@@ -7,7 +7,7 @@ use calibration::CalibrationSession;
 
 use crate::{
     BackendError, BackendHandle, BackendId, Calibration, CalibrationError, CalibrationKind,
-    DeviceDescriptor, DeviceId, DeviceState, Feedback, HdRumbleFormat, HdRumbleStream,
+    DeviceDescriptor, DeviceId, DeviceState, Feedback, HdRumbleFormat, HdRumbleSink,
     HostInputEvent, HostListener, HostListenerHandle, InputBackend, InputEvent, Listener,
     ListenerHandle, ListenerId, PlayerIndex, PointerReport, PointerSample,
 };
@@ -412,7 +412,7 @@ impl InputHub {
         listener: ListenerId,
         index: PlayerIndex,
         format: HdRumbleFormat,
-    ) -> Result<HdRumbleStream, HubError> {
+    ) -> Result<Box<dyn HdRumbleSink>, HubError> {
         let (device, backend) = {
             let _topology = self.inner.topology.read();
             let priority = *self.inner.feedback_priority.read();
@@ -437,8 +437,7 @@ impl InputHub {
                 .clone();
             (device, backend)
         };
-        let sink = backend.open_hd_rumble(&device, format)?;
-        Ok(HdRumbleStream::new(device, sink))
+        Ok(backend.open_hd_rumble(&device, format)?)
     }
 
     pub(crate) fn send_raw_hid(&self, index: PlayerIndex, report: &[u8]) -> Result<(), HubError> {
