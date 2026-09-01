@@ -1,6 +1,6 @@
 import { Field, NumberInput, Select, Slider, Switch, createListCollection } from "@ark-ui/solid";
 import { For, Show, createMemo } from "solid-js";
-import type { ConfigurationOption } from "../../../../../js/snowglass";
+import type { ConfigurationLayoutOption } from "../../../../../js/snowglass";
 import { OverlayPortal } from "./OverlayPortal";
 import "./FormControls.css";
 
@@ -26,25 +26,29 @@ export function ChoiceControl(props: {
   </Select.Root>;
 }
 
-export function OptionControl(props: { option: ConfigurationOption; onChange(value: unknown): void }) {
-  const numeric = () => props.option.kind === "integer" || props.option.kind === "float";
-  return <Show when={props.option.kind !== "boolean"} fallback={
-    <Switch.Root class="horizon-switch" checked={Boolean(props.option.value)} onCheckedChange={(details: any) => props.onChange(details.checked)}>
+export function OptionControl(props: {
+  option: ConfigurationLayoutOption;
+  value: boolean | number | string | null;
+  onChange(value: boolean | number | string | null): void;
+}) {
+  const numeric = () => props.option.type === "int" || props.option.type === "float";
+  return <Show when={props.option.type !== "bool"} fallback={
+    <Switch.Root class="horizon-switch" checked={Boolean(props.value)} onCheckedChange={(details: any) => props.onChange(details.checked)}>
       <Switch.Label>{props.option.title}</Switch.Label>
-      <Switch.Control onClick={() => props.onChange(!Boolean(props.option.value))}><Switch.Thumb /></Switch.Control>
+      <Switch.Control onClick={() => props.onChange(!Boolean(props.value))}><Switch.Thumb /></Switch.Control>
     </Switch.Root>
   }>
-    <Show when={props.option.kind === "select"} fallback={
+    <Show when={props.option.type === "select"} fallback={
       <Show when={numeric()} fallback={
-        <Field.Root class="horizon-field"><Field.Label class="horizon-field-label">{props.option.title}</Field.Label><Field.Input value={String(props.option.value ?? "")} onInput={(event: InputEvent & { currentTarget: HTMLInputElement }) => props.onChange(event.currentTarget.value)} /></Field.Root>
+        <Field.Root class="horizon-field"><Field.Label class="horizon-field-label">{props.option.title}</Field.Label><Field.Input value={String(props.value ?? "")} onInput={(event: InputEvent & { currentTarget: HTMLInputElement }) => props.onChange(event.currentTarget.value)} /></Field.Root>
       }>
-        <NumberInput.Root class="horizon-number" value={String(props.option.value ?? 0)} min={props.option.min} max={props.option.max} onValueChange={(details: any) => props.onChange(details.valueAsNumber)}>
+        <NumberInput.Root class="horizon-number" value={String(props.value ?? 0)} min={props.option.min} max={props.option.max} onValueChange={(details: any) => props.onChange(details.valueAsNumber)}>
           <NumberInput.Label class="horizon-field-label">{props.option.title}</NumberInput.Label>
           <NumberInput.Control><NumberInput.Input /><NumberInput.DecrementTrigger>−</NumberInput.DecrementTrigger><NumberInput.IncrementTrigger>＋</NumberInput.IncrementTrigger></NumberInput.Control>
         </NumberInput.Root>
       </Show>
     }>
-      <ChoiceControl label={props.option.title} value={String(props.option.value ?? "")} items={(props.option.choices || []).map((choice) => ({ value: choice.key, label: choice.label }))} onChange={props.onChange} />
+      <ChoiceControl label={props.option.title} value={String(props.value ?? "")} items={(props.option.choices || []).map((choice) => ({ value: choice.key, label: choice.label }))} onChange={props.onChange} />
     </Show>
   </Show>;
 }

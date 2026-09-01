@@ -46,12 +46,9 @@ mod tests {
     use deno_core::ModuleSpecifier;
     use snowglass_config::{
         ConfigurationToml,
-        ast::{
-            ConfigurationDefinition, ConfigurationInstance, DefaultDefinition, DomainDefinition,
-            PortAssignments, RealizedDomain, RealizedOption, Value, ValueKind,
-        },
+        ast::{ConfigurationDefinition, ConfigurationInstance, PortAssignments},
     };
-    use std::{collections::BTreeMap, convert::Infallible, sync::Arc};
+    use std::{collections::BTreeMap, sync::Arc};
     use toml_spanner::Arena;
 
     fn configuration() -> snowglass_config::ast::ConfigurationInstance {
@@ -73,22 +70,7 @@ mod tests {
         let arena = Arena::new();
         let parsed = ConfigurationToml::try_from_tomls(&arena, [source].into_iter()).unwrap();
         let definition = Arc::new(ConfigurationDefinition::from(parsed));
-        let realized = definition
-            .resolve_with(|_, option| -> Result<_, Infallible> {
-                let domain = match &option.value.kind {
-                    ValueKind::Select {
-                        domain: DomainDefinition::Static(_),
-                    } => RealizedDomain::Static,
-                    _ => RealizedDomain::None,
-                };
-                let default = match &option.value.default {
-                    DefaultDefinition::Literal(value) => value.clone(),
-                    DefaultDefinition::None | DefaultDefinition::Resolver(_) => Value::Null,
-                };
-                Ok(RealizedOption { default, domain })
-            })
-            .unwrap();
-        realized.instantiate("example", BTreeMap::new()).unwrap()
+        definition.instantiate("example", BTreeMap::new()).unwrap()
     }
 
     struct TestPlugin {
@@ -117,6 +99,10 @@ mod tests {
     impl EmulatorPluginInstance for TestPlugin {
         fn entrypoint(&self) -> &ModuleSpecifier {
             &self.entrypoint
+        }
+
+        fn configuration_definition(&self) -> &ConfigurationDefinition {
+            unreachable!()
         }
 
         fn platforms(&self) -> &[String] {

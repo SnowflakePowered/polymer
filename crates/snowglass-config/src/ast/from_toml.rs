@@ -4,10 +4,7 @@ use crate::{
     ConfigurationToml,
     arena::Handle,
     toml::{
-        config::{
-            Emit, OptionDefinition as TomlOptionDefinition, OptionDomain, OptionValue, Section,
-            Target,
-        },
+        config::{Emit, OptionDefinition as TomlOptionDefinition, OptionValue, Section, Target},
         input::{InputBlock, LayoutMapping, PortAssignment, PortTable},
     },
 };
@@ -101,6 +98,7 @@ fn lower_target<'de>(
     let handle = definition.targets.append(TargetDefinition {
         path,
         output,
+        repeat: target.repeat,
         parent,
         additional_parents,
     });
@@ -140,6 +138,7 @@ fn lower_section<'de>(
         path,
         title: section.title.into(),
         target: target.clone(),
+        repeat: section.repeat,
         children: Box::new([]),
         options,
     });
@@ -206,13 +205,12 @@ fn lower_default(default: Option<OptionValue<'_>>, kind: &ValueKind) -> DefaultD
     })
 }
 
-fn lower_domain(domain: Option<OptionDomain<'_>>) -> DomainDefinition {
+fn lower_domain(
+    domain: Option<Vec<crate::toml::config::SelectDefinition<'_>>>,
+) -> DomainDefinition {
     match domain {
         None => DomainDefinition::None,
-        Some(OptionDomain::Resolve { source }) => {
-            DomainDefinition::Resolver(ResolverSource::new(source))
-        }
-        Some(OptionDomain::Select(choices)) => DomainDefinition::Static(
+        Some(choices) => DomainDefinition::Static(
             choices
                 .into_iter()
                 .map(|choice| Choice {
@@ -241,6 +239,7 @@ fn lower_emit(emit: Emit<'_>) -> EmitDefinition {
         value: emit.value.map(lower_value),
         bool_style: emit.bool_style.map(Into::into),
         int_style: emit.int_style.map(Into::into),
+        xml_attribute: emit.xml.is_some_and(|xml| xml.attribute),
     }
 }
 

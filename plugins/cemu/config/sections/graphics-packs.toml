@@ -1,0 +1,34 @@
+[sections.content.graphics_packs]
+title = "Graphics Packs"
+target = "settings.content.GraphicPack.Entry"
+repeat = true
+
+[[sections.content.graphics_packs.options]]
+key = "filename"
+title = "Pack"
+type = "string"
+emit = { key = "filename", xml.attribute = true }
+
+[[sections.content.graphics_packs.options]]
+key = "enabled"
+title = "Enabled"
+type = "bool"
+default = true
+emit = { key = "disabled", xml.attribute = true, bool_style = "inverted" }
+
+[sections.content.graphics_packs.presets]
+title = "Presets"
+target = "settings.content.GraphicPack.Entry.Preset"
+repeat = true
+
+[[sections.content.graphics_packs.presets.options]]
+key = "category"
+title = "Category"
+type = "string"
+emit = { key = "category" }
+
+[[sections.content.graphics_packs.presets.options]]
+key = "preset"
+title = "Preset"
+type = "string"
+emit = { key = "preset" }

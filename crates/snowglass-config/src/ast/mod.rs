@@ -2,14 +2,12 @@ mod definition;
 mod from_toml;
 mod instance;
 mod path;
-mod realized;
 mod target;
 mod value;
 
 pub use definition::*;
 pub use instance::*;
 pub use path::*;
-pub use realized::*;
 pub use target::*;
 pub use value::*;
 
@@ -22,7 +20,7 @@ mod tests {
     use super::*;
     use crate::Handle;
 
-    fn fixture() -> (Arc<RealizedDefinition>, Handle<OptionDefinition>) {
+    fn fixture() -> (Arc<ConfigurationDefinition>, Handle<OptionDefinition>) {
         let mut definition = ConfigurationDefinition::new();
         let backend = definition.options.append(OptionDefinition {
             key: "backend".into(),
@@ -56,6 +54,7 @@ mod tests {
             path: SectionPath::new("graphics").unwrap(),
             title: "Graphics".into(),
             target: None,
+            repeat: false,
             children: Box::new([]),
             options: Box::new([backend]),
         });
@@ -87,26 +86,7 @@ mod tests {
             )]),
         });
 
-        let definition = Arc::new(definition);
-        let realized = definition
-            .resolve_with(|_handle, option| -> Result<_, std::convert::Infallible> {
-                let domain = match &option.value.kind {
-                    ValueKind::Select { domain } => match domain {
-                        DomainDefinition::Static(_) => RealizedDomain::Static,
-                        DomainDefinition::None | DomainDefinition::Resolver(_) => {
-                            RealizedDomain::None
-                        }
-                    },
-                    _ => RealizedDomain::None,
-                };
-                Ok(RealizedOption {
-                    default: literal(&option.value.default),
-                    domain,
-                })
-            })
-            .unwrap();
-
-        (realized, backend)
+        (Arc::new(definition), backend)
     }
 
     fn emit(key: &str) -> EmitDefinition {
@@ -116,23 +96,20 @@ mod tests {
             value: None,
             bool_style: None,
             int_style: None,
-        }
-    }
-
-    fn literal(default: &DefaultDefinition) -> Value {
-        match default {
-            DefaultDefinition::Literal(value) => value.clone(),
-            DefaultDefinition::None | DefaultDefinition::Resolver(_) => Value::Null,
+            xml_attribute: false,
         }
     }
 
     #[test]
-    fn realized_definition_reuses_static_structure_for_the_frontend() {
+    fn definition_exposes_static_structure() {
         let (definition, backend) = fixture();
         let option = definition.option(backend);
 
-        assert_eq!(option.definition.title.as_ref(), "Backend");
-        assert_eq!(option.realized.default, Value::Choice("vulkan".into()));
+        assert_eq!(option.title.as_ref(), "Backend");
+        assert!(matches!(
+            option.value.default,
+            DefaultDefinition::Literal(Value::Choice(ref key)) if key.as_ref() == "vulkan"
+        ));
         assert_eq!(
             definition.choices(backend).unwrap()[0].label.as_ref(),
             "Vulkan"

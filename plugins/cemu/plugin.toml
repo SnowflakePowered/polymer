@@ -14,7 +14,7 @@ mode = "rx"
 name = "graphicsPacks"
 source = "pkg:bin/graphicsPacks"
 format = "directory"
-mode = "r"
+mode = "rx"
 
 [[plugin.caches]]
 key = "shaderCache"
@@ -29,5 +29,6 @@ definitions = [
     "config/cemu.toml",
     "config/input.toml",
     "config/sections/content.toml",
-    "config/sections/content-*.toml"
+    "config/sections/content-*.toml",
+    "config/sections/graphics-packs.toml"
 ]

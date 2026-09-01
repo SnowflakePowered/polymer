@@ -77,6 +77,7 @@ impl BmlEmitter {
 
 impl Emitter for BmlEmitter {
     fn enter_section(&mut self, section: SectionRef<'_>) -> EmitResult<()> {
+        section.reject_attributes("bml")?;
         let handle = self.append(section.name, None);
         self.sections.push(handle);
         Ok(())
@@ -128,10 +129,12 @@ mod tests {
         let paths = SectionRef {
             path: "settings.Paths",
             name: "Paths",
+            attributes: &[],
         };
         let super_famicom = SectionRef {
             path: "settings.Paths.SuperFamicom",
             name: "SuperFamicom",
+            attributes: &[],
         };
         emitter.enter_section(paths).unwrap();
         emitter

@@ -15,7 +15,7 @@ import {
 } from "solid-js";
 import { createStore, unwrap } from "solid-js/store";
 import type {
-  ConfigurationOption,
+  ConfigurationLayoutOption,
   ConfigurationSelection,
   ConsoleStorageVolume,
   EmulatorConfiguration,
@@ -90,15 +90,6 @@ function applyFrontendDefaults(game: PackageConfiguration) {
     }
   }
   return game;
-}
-
-function activeOptions(emulator: EmulatorConfiguration, platform: string) {
-  const activePorts = emulator.groups.flatMap((group) =>
-    group.ports.slice(0, group.connected).map((port) => `ports.${platform}.${group.name}.${port.index}.`)
-  );
-  return emulator.options.filter((option) =>
-    !option.path.startsWith("ports.") || activePorts.some((prefix) => option.path.startsWith(prefix))
-  );
 }
 
 function ensureDefaultWiiUNand() {
@@ -357,7 +348,7 @@ function ShellProvider(props: ParentProps) {
           layout: port.selectedLayout,
         })),
       })),
-      settings: Object.fromEntries(activeOptions(emulator, game.platform).filter((option) => option.value != null).map((option) => [option.path, option.value])),
+      userConfiguration: emulator.userConfiguration,
     };
     setModel("launcher", { kind: "launching", name: game.name });
     void (async () => {
@@ -414,23 +405,23 @@ function Choice(props: { label: string; value: string; items: Array<{ value: str
   );
 }
 
-function OptionControl(props: { option: ConfigurationOption; onChange(value: unknown): void }) {
+function OptionControl(props: { option: ConfigurationLayoutOption; value: boolean | number | string | null; onChange(value: boolean | number | string | null): void }) {
   return (
-    <Show when={props.option.kind !== "boolean"} fallback={
-      <Switch.Root checked={Boolean(props.option.value)} onCheckedChange={(details: any) => props.onChange(details.checked)} class="flex items-center justify-between py-2">
+    <Show when={props.option.type !== "bool"} fallback={
+      <Switch.Root checked={Boolean(props.value)} onCheckedChange={(details: any) => props.onChange(details.checked)} class="flex items-center justify-between py-2">
         <Switch.Label>{props.option.title}</Switch.Label><Switch.Control class="h-6 w-11 rounded-full bg-snow-800 data-[state=checked]:bg-ice-500"><Switch.Thumb class="block h-5 w-5 translate-x-0.5 rounded-full bg-snow-100 data-[state=checked]:translate-x-5" /></Switch.Control>
       </Switch.Root>
     }>
-      <Show when={props.option.kind === "select"} fallback={
-        <Show when={props.option.kind === "integer" || props.option.kind === "float"} fallback={
-          <Field.Root><Field.Label class="text-xs text-snow-300">{props.option.title}</Field.Label><Field.Input class="mt-1 w-full rounded-lg border border-snow-300 bg-snow-900 px-3 py-2" value={String(props.option.value ?? "")} onInput={(event: InputEvent & { currentTarget: HTMLInputElement }) => props.onChange(event.currentTarget.value)} /></Field.Root>
+      <Show when={props.option.type === "select"} fallback={
+        <Show when={props.option.type === "int" || props.option.type === "float"} fallback={
+          <Field.Root><Field.Label class="text-xs text-snow-300">{props.option.title}</Field.Label><Field.Input class="mt-1 w-full rounded-lg border border-snow-300 bg-snow-900 px-3 py-2" value={String(props.value ?? "")} onInput={(event: InputEvent & { currentTarget: HTMLInputElement }) => props.onChange(event.currentTarget.value)} /></Field.Root>
         }>
-          <NumberInput.Root value={String(props.option.value ?? 0)} min={props.option.min} max={props.option.max} onValueChange={(details: any) => props.onChange(details.valueAsNumber)}>
+          <NumberInput.Root value={String(props.value ?? 0)} min={props.option.min} max={props.option.max} onValueChange={(details: any) => props.onChange(details.valueAsNumber)}>
             <NumberInput.Label class="text-xs text-snow-300">{props.option.title}</NumberInput.Label><NumberInput.Control class="mt-1 flex"><NumberInput.Input class="min-w-0 flex-1 rounded-l-lg border border-snow-300 bg-snow-900 px-3 py-2" /><NumberInput.DecrementTrigger class="symbol-glyph border border-snow-300 px-2">−</NumberInput.DecrementTrigger><NumberInput.IncrementTrigger class="rounded-r-lg border border-snow-300 px-2">+</NumberInput.IncrementTrigger></NumberInput.Control>
           </NumberInput.Root>
         </Show>
       }>
-        <Choice label={props.option.title} value={String(props.option.value ?? "")} items={(props.option.choices || []).map((item) => ({ value: item.key, label: item.label }))} onChange={props.onChange} />
+        <Choice label={props.option.title} value={String(props.value ?? "")} items={(props.option.choices || []).map((item) => ({ value: item.key, label: item.label }))} onChange={props.onChange} />
       </Show>
     </Show>
   );
@@ -460,8 +451,28 @@ function ConfigurePage() {
   const shell = useShell();
   const game = () => shell.model.draft;
   const emulator = () => game()?.candidates.find((item) => item.id === game()?.selectedEmulator) || game()?.candidates[0];
+  const updateEmulatorById = (id: string, update: (target: EmulatorConfiguration) => void) => {
+    const next = cloneGame(game()!); const target = next.candidates.find((item) => item.id === id); if (!target) return; update(target); shell.setModel("draft", next);
+  };
   const updateEmulator = (update: (target: EmulatorConfiguration) => void) => {
-    const next = cloneGame(game()!); const target = next.candidates.find((item) => item.id === next.selectedEmulator) || next.candidates[0]; update(target); shell.setModel("draft", next);
+    const current = emulator(); if (current) updateEmulatorById(current.id, update);
+  };
+  const updateConfiguration = (group: string, option: string, value: boolean | number | string | null) => {
+    const packageValue = shell.model.package;
+    const current = emulator();
+    if (!packageValue || !current) return;
+    const values = structuredClone(current.userConfiguration) as Record<string, Record<string, boolean | number | string | null>>;
+    (values[group] ||= {})[option] = value;
+    updateEmulator((target) => {
+      target.userConfiguration = values;
+    });
+    void window.Snowglass.configuration.configure(packageValue, current.id, values).then((stable) => {
+      if (!stable) return;
+      updateEmulatorById(current.id, (target) => {
+        target.configuration = stable.configuration;
+        target.userConfiguration = stable.userConfiguration;
+      });
+    }).catch((error) => shell.setModel("error", error instanceof Error ? error.message : String(error)));
   };
   return <Show when={game()}>{(current) => <main class="configuration-page">
     <header class="configuration-header">
@@ -484,7 +495,7 @@ function ConfigurePage() {
       </section>
       <aside class="settings-pane">
         <Choice label="Emulator" value={current().selectedEmulator} items={current().candidates.map((item) => ({ value: item.id, label: friendly(item.id) }))} onChange={(value) => shell.setModel("draft", "selectedEmulator", value)} />
-        <Collapsible.Root><Collapsible.Trigger class="settings-trigger">Settings <Collapsible.Indicator class="symbol-glyph">⌄</Collapsible.Indicator></Collapsible.Trigger><Collapsible.Content class="settings-content"><For each={activeOptions(emulator()!, current().platform)}>{(option) => <OptionControl option={option} onChange={(value) => updateEmulator((target) => { const targetOption = target.options.find((candidate) => candidate.path === option.path); if (targetOption) targetOption.value = value; })} />}</For></Collapsible.Content></Collapsible.Root>
+        <Collapsible.Root><Collapsible.Trigger class="settings-trigger">Settings <Collapsible.Indicator class="symbol-glyph">⌄</Collapsible.Indicator></Collapsible.Trigger><Collapsible.Content class="settings-content"><For each={emulator()?.configuration?.groups || []}>{(group) => <section><h3>{group.title}</h3><For each={group.options}>{(option) => <OptionControl option={option} value={emulator()?.userConfiguration?.[group.key]?.[option.key] ?? option.default} onChange={(value) => updateConfiguration(group.key, option.key, value)} />}</For></section>}</For></Collapsible.Content></Collapsible.Root>
       </aside>
     </div>
   </main>}</Show>;

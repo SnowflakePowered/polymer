@@ -9,6 +9,10 @@ source_revision = "unknown"
 true = "true"
 false = "false"
 
+[bool_style.inverted]
+true = "false"
+false = "true"
+
 [targets.settings]
 output = { format = "xml", path = "settings.xml" }
 
@@ -21,6 +25,11 @@ output = { format = "xml", path = "settings.xml" }
 [targets.settings.content.Graphic]
 [targets.settings.content.Graphic.Notification]
 [targets.settings.content.Graphic.Overlay]
+[targets.settings.content.GraphicPack]
+[targets.settings.content.GraphicPack.Entry]
+repeat = true
+[targets.settings.content.GraphicPack.Entry.Preset]
+repeat = true
 [targets.settings.content.pad_position]
 [targets.settings.content.pad_size]
 [targets.settings.content.window_position]

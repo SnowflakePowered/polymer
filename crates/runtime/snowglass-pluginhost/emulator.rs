@@ -1,7 +1,7 @@
 use crate::{PackageError, PluginInstance};
 use deno_core::ModuleSpecifier;
 use serde_json::Value;
-use snowglass_config::ast::{ConfigurationInstance, PortAssignments};
+use snowglass_config::ast::{ConfigurationDefinition, ConfigurationInstance, PortAssignments};
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -112,6 +112,7 @@ pub type EmulatorPort = snowglass_controllers::ControllerPort;
 /// Emulator capability projected from a registered [`PluginInstance`].
 pub trait EmulatorPluginInstance: PluginInstance {
     fn entrypoint(&self) -> &ModuleSpecifier;
+    fn configuration_definition(&self) -> &ConfigurationDefinition;
     fn platforms(&self) -> &[String];
     fn ports(&self, console: &str) -> Result<Vec<EmulatorPort>, PackageError>;
     fn port_assignments(

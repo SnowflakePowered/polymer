@@ -12,6 +12,8 @@ import {
   op_vfs_mount_tree_pkg,
   op_vfs_mount_tree_resource,
   op_vfs_path,
+  op_vfs_resource_bytes,
+  op_vfs_resource_entries,
   op_vfs_resources,
   op_vfs_storage,
   op_vfs_set_profile,
@@ -30,10 +32,44 @@ function resource(description) {
   return value;
 }
 
+function readableEntry(description, path, entry, root = false) {
+  const current = root ? path : [...path, entry.name];
+  if (entry.kind === "directory") {
+    return Object.freeze({
+      name: entry.name,
+      kind: "directory",
+      async *[Symbol.asyncIterator]() {
+        for (const child of op_vfs_resource_entries(description.kind, description.handle, current)) {
+          yield readableEntry(description, current, child);
+        }
+      },
+    });
+  }
+  return Object.freeze({
+    name: entry.name,
+    kind: "file",
+    async bytes() {
+      return op_vfs_resource_bytes(description.kind, description.handle, current);
+    },
+    async text() {
+      return new TextDecoder().decode(op_vfs_resource_bytes(description.kind, description.handle, current));
+    },
+  });
+}
+
+function readableResource(description) {
+  const value = readableEntry(description, [], {
+    name: description.name,
+    kind: description.kind === "tree" ? "directory" : "file",
+  }, true);
+  handles.set(value, description);
+  return value;
+}
+
 const namedResources = Object.create(null);
 for (const description of op_vfs_resources()) {
   Object.defineProperty(namedResources, description.name, {
-    value: resource(description), enumerable: true, writable: false,
+    value: readableResource(description), enumerable: true, writable: false,
   });
 }
 Object.freeze(namedResources);
@@ -168,6 +204,12 @@ Object.defineProperty(globalThis, "__snowglassFilesystem", {
   value: Object.freeze({
     filesystem,
     resources: namedResources,
+    importResource(name) {
+      if (!Object.hasOwn(namedResources, name)) {
+        throw new TypeError(`resource '${name}' is not declared by this plugin`);
+      }
+      return namedResources[name];
+    },
     storage: storageResources,
     flush: op_vfs_flush,
     hasConfigurationMounts: () => configurationMounts.length !== 0,

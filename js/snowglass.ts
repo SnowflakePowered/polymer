@@ -235,15 +235,14 @@ export interface ScrapingApi extends EventTarget {
   readonly dropActive: boolean;
 }
 
-export type ConfigurationOption = {
-  path: string;
-  title: string;
-  kind: "boolean" | "integer" | "float" | "string" | "path" | "select";
-  value: unknown;
-  min?: number;
-  max?: number;
-  choices?: Array<{ key: string; label: string }>;
-};
+export type {
+  ConfigurationChoice,
+  ConfigurationGroup,
+  ConfigurationLayout,
+  ConfigurationLayoutOption,
+  UserConfiguration,
+} from "./configuration.ts";
+import type { ConfigurationLayout, UserConfiguration } from "./configuration.ts";
 
 export type ConfigurationPort = {
   index: number;
@@ -260,8 +259,13 @@ export type ConfigurationPortGroup = {
 export type EmulatorConfiguration = {
   id: string;
   groups: ConfigurationPortGroup[];
-  options: ConfigurationOption[];
+  configuration: ConfigurationLayout | null;
+  userConfiguration: UserConfiguration;
 };
+
+export type ConfigurationState = Readonly<
+  Pick<EmulatorConfiguration, "configuration" | "userConfiguration">
+>;
 
 export type PackageConfiguration = {
   path: string;
@@ -281,12 +285,17 @@ export type ConfigurationSelection = {
       mapping?: Record<string, string>;
     }>;
   }>;
-  settings: Record<string, unknown>;
+  userConfiguration: UserConfiguration;
   storage?: Record<string, string | string[]>;
 };
 
 export interface ConfigurationApi {
   describe(packageValue: ScrapedPackage, options?: { emulator?: string }): Promise<PackageConfiguration>;
+  configure(
+    packageValue: ScrapedPackage,
+    emulator: string,
+    userConfiguration?: UserConfiguration,
+  ): Promise<ConfigurationState | null>;
   prepare(packageValue: ScrapedPackage, selection: ConfigurationSelection): Promise<unknown>;
   onLaunch(packageValue: ScrapedPackage, selection: ConfigurationSelection): Promise<LaunchRequest>;
 }

@@ -35,6 +35,23 @@ impl ConfigurationDefinition {
             target_graph: OnceLock::new(),
         }
     }
+
+    pub fn option(&self, handle: Handle<OptionDefinition>) -> &OptionDefinition {
+        &self.options[handle]
+    }
+
+    pub fn choices(&self, handle: Handle<OptionDefinition>) -> Option<&[Choice]> {
+        match &self.options[handle].value.kind {
+            ValueKind::Select {
+                domain: DomainDefinition::Static(choices),
+            } => Some(choices),
+            _ => None,
+        }
+    }
+
+    pub fn root_sections(&self) -> impl ExactSizeIterator<Item = Handle<SectionDefinition>> + '_ {
+        self.root_sections.iter().copied()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -55,6 +72,7 @@ pub struct SectionDefinition {
     pub path: SectionPath,
     pub title: Box<str>,
     pub target: Option<OwnedTargetPath>,
+    pub repeat: bool,
     pub children: Box<[Handle<SectionDefinition>]>,
     pub options: Box<[Handle<OptionDefinition>]>,
 }
@@ -76,6 +94,7 @@ pub struct EmitDefinition {
     pub value: Option<Value>,
     pub bool_style: Option<Box<str>>,
     pub int_style: Option<Box<str>>,
+    pub xml_attribute: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -98,27 +117,12 @@ pub enum ValueKind {
 pub enum DefaultDefinition {
     None,
     Literal(Value),
-    Resolver(ResolverSource),
 }
 
 #[derive(Clone, Debug)]
 pub enum DomainDefinition {
     None,
     Static(Box<[Choice]>),
-    Resolver(ResolverSource),
-}
-
-#[derive(Clone, Debug)]
-pub struct ResolverSource(Box<str>);
-
-impl ResolverSource {
-    pub fn new(source: impl Into<Box<str>>) -> Self {
-        Self(source.into())
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -176,10 +180,4 @@ pub struct ActionsDefinition {
 pub struct ActionDefinition {
     pub name: Box<str>,
     pub expression: Box<str>,
-}
-
-/// A lightweight reference joining an option's static and realized rows.
-pub struct RealizedOptionRef<'a> {
-    pub definition: &'a OptionDefinition,
-    pub realized: &'a super::RealizedOption,
 }

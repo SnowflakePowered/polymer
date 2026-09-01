@@ -140,11 +140,54 @@ class UiLocator {
   async selectOption(name) {
     if (typeof name !== "string") throw new TypeError("option name must be a string");
     await this.expand();
-    const options = this.descendant("list_item");
-    await options.first().waitAttached();
-    const matches = (await options.all({ limit: 1_000 }))
-      .filter(option => option.name === name);
+    const started = Date.now();
+    let matches = [];
+    let lastLookupError;
+    do {
+      matches = [];
+      // Native combo popups (including Qt's) are often separate top-level
+      // windows rather than descendants of the combo box in the UIA tree.
+      const windows = value(await request({
+        type: "windows",
+        query: {},
+      }), "windows");
+      for (const snapshot of windows) {
+        if (!snapshot.visible) continue;
+        const window = new UiWindow(snapshot);
+        const options = window.locator("list_item");
+        let candidates;
+        try {
+          candidates = await options.all({ limit: 1_000 });
+        } catch (error) {
+          if (!(error instanceof UiAutomationError)) throw error;
+          lastLookupError = error;
+          continue;
+        }
+        for (const option of candidates) {
+          if (option.name === name
+            && option.bounds != null
+            && option.states.visible !== false
+            && option.states.enabled !== false) {
+            matches.push({ window, windowSnapshot: snapshot, option });
+          }
+        }
+      }
+      const popupMatches = matches.filter(match => match.window.id !== this.#window);
+      if (popupMatches.length !== 0) matches = popupMatches;
+      const unique = new Map();
+      for (const match of matches) {
+        const bounds = match.option.bounds;
+        const identity = bounds == null
+          ? `${match.window.id}:${match.option.stableId ?? ""}`
+          : `${match.option.processId}:${bounds.x}:${bounds.y}:${bounds.width}:${bounds.height}`;
+        if (!unique.has(identity)) unique.set(identity, match);
+      }
+      matches = [...unique.values()];
+      if (matches.length !== 0) break;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    } while (Date.now() - started < this.#timeout);
     if (matches.length === 0) {
+      if (lastLookupError != null) throw lastLookupError;
       throw new UiAutomationError({
         kind: "selectorNotMatched",
         message: `option ${JSON.stringify(name)} was not found`,
@@ -155,18 +198,23 @@ class UiLocator {
       throw new UiAutomationError({
         kind: "ambiguousSelector",
         message: `option ${JSON.stringify(name)} matched ${matches.length} elements`,
-        diagnosis: { selector: this.#selector, lastObserved: `${matches.length} matching options` },
+        diagnosis: {
+          selector: this.#selector,
+          lastObserved: `${matches.length} matching options`,
+          candidates: matches.map(match =>
+            `${match.windowSnapshot.title} (${match.windowSnapshot.className})`),
+        },
       });
     }
-    await this.#clickNode(matches[0]);
+    await matches[0].window.locator("list_item").#clickNode(matches[0].option);
 
-    const started = Date.now();
+    const selected = Date.now();
     let snapshot;
     do {
       snapshot = await this.snapshot();
-      if (snapshot.value === name) return;
+      if (snapshot.value === name || snapshot.name === name) return;
       await new Promise(resolve => setTimeout(resolve, 50));
-    } while (Date.now() - started < this.#timeout);
+    } while (Date.now() - selected < this.#timeout);
     throw new UiAutomationError({
       kind: "timeout",
       message: `option ${JSON.stringify(name)} was clicked but the value did not update`,

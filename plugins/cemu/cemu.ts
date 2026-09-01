@@ -1,38 +1,121 @@
-import type { Configuration as HostConfiguration, Filesystem, Resource } from "../plugin-api.ts";
+import graphicsPacks from "resources:graphicsPacks";
+import type {
+    Configuration as HostConfiguration,
+    ConfigurationResult,
+    ConfigureGame,
+    DirectoryResource,
+    Filesystem,
+    Resource,
+    RepeatedSection,
+    UserConfiguration,
+} from "../plugin-api.ts";
+import {
+    loadGraphicsPacks,
+    normalizeTitleId,
+    settleGraphicsPacks,
+    type GraphicsApi,
+} from "./graphics-packs.ts";
 
-// Host-backed view of snowglass-config's ConfigurationInstance. This object is
-// deliberately opaque: the plugin may inspect and adjust option values, but it
-// returns the same object to pluginhost, which alone drives serialization.
 type Configuration = HostConfiguration<{
-        content: {
-            open_pad: boolean,
-        },
+    content: {
+        open_pad: boolean,
+        graphics_packs: RepeatedSection<{
+            filename: string,
+            enabled: boolean,
+            presets: RepeatedSection<{
+                category: string,
+                preset: string,
+            }>,
+        }>,
+    },
+    "content-graphic": { api: number },
 }>;
 
 type EmulatorLaunchArgs = {
     launchPath: string,
     console: string,
+    package: Readonly<{ titleId?: string }>,
     configuration: Configuration,
+    userConfiguration?: UserConfiguration,
     filesystem: Filesystem,
-    resources: { runtime: Resource },
+    resources: { runtime: Resource, graphicsPacks: DirectoryResource },
     storage: Readonly<{
         slc?: Resource,
         slccmpt?: Resource,
         mlc?: Resource,
         sd?: Resource,
     }>,
+};
+
+const GRAPHICS_GROUP = "graphics";
+
+export async function onConfigure(
+    game: ConfigureGame,
+    userConfiguration?: UserConfiguration,
+): Promise<ConfigurationResult> {
+    const api = selectedApi(userConfiguration);
+    const groups: Array<ConfigurationResult["groups"][number]> = [{
+        key: GRAPHICS_GROUP,
+        title: "Graphics Options",
+        options: [{
+            key: "api",
+            title: "Graphics API",
+            type: "select",
+            default: "vulkan",
+            choices: [
+                { key: "vulkan", label: "Vulkan" },
+                { key: "opengl", label: "OpenGL" },
+            ],
+        }],
+    }];
+    const values: Record<string, Record<string, boolean | number | string | null>> = {
+        [GRAPHICS_GROUP]: { api },
+    };
+    if (normalizeTitleId(game.titleId)) {
+        const packs = await loadGraphicsPacks(graphicsPacks);
+        const settled = settleGraphicsPacks(packs, game.titleId, userConfiguration, api);
+        groups.push(...settled.groups);
+        Object.assign(values, settled.values);
+    }
+    return {
+        schema: "cemu/v1",
+        key: normalizeTitleId(game.titleId) || game.serial || game.launchPath,
+        groups,
+        values,
+    };
 }
 
-export const onLaunch = (args: EmulatorLaunchArgs) => {
+export async function onLaunch(args: EmulatorLaunchArgs) {
+    const userConfiguration = validUserConfiguration(args.userConfiguration);
+    const api = selectedApi(userConfiguration);
     args.configuration.options().content.open_pad = true;
+    args.configuration.options()["content-graphic"].api = api === "vulkan" ? 1 : 0;
 
-    // The package files are recursive read-only submounts over a writable,
-    // disposable Cemu directory. This lets Cemu create arbitrary caches and
-    // diagnostics beside its executable without mutating the package.
+    const packs = normalizeTitleId(args.package.titleId)
+        ? await loadGraphicsPacks(graphicsPacks)
+        : [];
+    const selected = settleGraphicsPacks(
+        packs,
+        args.package.titleId,
+        userConfiguration,
+        api,
+    ).entries;
+    for (const selectedPack of selected) {
+        const entry = args.configuration.options().content.graphics_packs.append();
+        entry.filename = selectedPack.filename;
+        entry.enabled = true;
+        for (const selectedPreset of selectedPack.presets) {
+            const preset = entry.presets.append();
+            if (selectedPreset.category) preset.category = selectedPreset.category;
+            preset.preset = selectedPreset.preset;
+        }
+    }
+
     args.filesystem.mountScratch("/Cemu", { mode: "rwx", backing: "temporary" });
     args.filesystem.mountFile("/Cemu/Cemu.exe", new URL("pkg:bin/win-x64/Cemu.exe"), { mode: "rx" });
     args.filesystem.mountTree("/Cemu/resources", new URL("pkg:bin/win-x64/resources"), { mode: "rx" });
     args.filesystem.mountTree("/Cemu/gameProfiles", new URL("pkg:bin/win-x64/gameProfiles"), { mode: "rx" });
+    args.filesystem.mountTree("/Cemu/graphicPacks/downloadedGraphicPacks", graphicsPacks, { mode: "rx" });
     args.filesystem.mountTree("/Cemu/shaderCache", args.filesystem.mountCache("shaderCache"), { mode: "rwx" });
     for (const [name, bytes] of Object.entries(args.configuration.render())) {
         args.filesystem.mountFile(`/Cemu/${name}`, bytes, { mode: "rw" });
@@ -58,14 +141,28 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
         command: executable,
         argv: ["-g", game, "--mlc", mlc],
         isolate: true,
-        hooks: { graphics: ["vulkan", "opengl"], input: ["sdl3"] },
+        hooks: { graphics: [api], input: ["sdl3"] },
         surfaces: [
             { index: 0, pattern: "Cemu+" },
-            { index: 1, pattern: "GamePad+" }
-        ]
-    }
+            { index: 1, pattern: "GamePad+" },
+        ],
+    };
 }
 
-export default {
-    onLaunch
+function selectedApi(configuration: UserConfiguration | undefined): GraphicsApi {
+    return configuration?.[GRAPHICS_GROUP]?.api === "opengl" ? "opengl" : "vulkan";
 }
+
+function validUserConfiguration(value: unknown): UserConfiguration {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    const result: Record<string, Record<string, boolean | number | string | null>> = {};
+    for (const [group, options] of Object.entries(value)) {
+        if (!options || typeof options !== "object" || Array.isArray(options)) continue;
+        result[group] = Object.fromEntries(Object.entries(options).filter(([, selected]) =>
+            selected === null || ["boolean", "number", "string"].includes(typeof selected)
+        )) as Record<string, boolean | number | string | null>;
+    }
+    return result;
+}
+
+export default { onConfigure, onLaunch };

@@ -48,6 +48,32 @@ fn op_configuration_set(
 }
 
 #[op2]
+fn op_configuration_repeats(
+    state: &mut OpState,
+    id: ConfigurationId,
+    #[string] path: String,
+) -> Result<bool, JsErrorBox> {
+    state
+        .borrow::<ConfigurationInstances>()
+        .repeats(id, &path)
+        .map_err(|error| JsErrorBox::generic(error.to_string()))
+}
+
+#[op2]
+#[string]
+fn op_configuration_append(
+    state: &mut OpState,
+    id: ConfigurationId,
+    #[string] path: String,
+) -> Result<String, JsErrorBox> {
+    state
+        .borrow_mut::<ConfigurationInstances>()
+        .append(id, &path)
+        .map(Into::into)
+        .map_err(|error| JsErrorBox::generic(error.to_string()))
+}
+
+#[op2]
 #[serde]
 fn op_configuration_entries(
     state: &mut OpState,
@@ -98,6 +124,8 @@ deno_core::extension!(
     ops = [
         op_configuration_get,
         op_configuration_set,
+        op_configuration_repeats,
+        op_configuration_append,
         op_configuration_entries,
         op_configuration_render,
         op_configuration_actions,

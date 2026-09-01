@@ -14,8 +14,7 @@ It owns:
 
 - parsing definition documents into `Raw*` structs,
 - lowering them to a validated arena IR,
-- materializing an IR into a configuration instance against host facts and an
-  optional resolver runtime,
+- materializing an IR into a launch-specific configuration instance,
 - serializing that instance to configuration bytes and a launch descriptor.
 
 It does **not** own:
@@ -23,7 +22,7 @@ It does **not** own:
 - persistence — the caller hands in a flat override map and stores whatever comes back;
 - the filesystem — `emit` returns file contents, the host writes them;
 - process launch, IPC, or `EmulatorInstance`;
-- the JS runtime — only the `ResolverRuntime` trait; `deno_core` lives in the shell.
+- plugin execution and the JS runtime.
 
 Dependencies: `toml-spanner` (§3.0), `consolespec`, `indexmap`, `thiserror`, and —
 once lowering lands — `blake3` and `smallvec`. No `tokio`, no `deno_*`, no
@@ -76,13 +75,14 @@ every section below is tagged:
 | `[input]`, `[input.mapping]`, `[input.layouts.*]` | parsed | `toml/input.rs` |
 | `[platforms.*.ports.*]` | parsed (§6.5) | `toml/input.rs` |
 | `[actions]` | authored; no type at all, and no manifest lists it (§7) | — |
-| static and resolver domains | parsed, via `OptionDomain` (§3.5) | `toml/config.rs` |
+| static domains | parsed (§3.5) | `toml/config.rs` |
 | `[env]`, `[[argv]]` | designed; no plugin authors them (§3.3) | — |
 | `parent` on a target | parsed; not yet honoured by lowering (§3.1) | `toml/config/mod.rs` |
 | `overrides` on a target | designed (§3.1) | — |
-| `enabled_when`, `when_disabled`, `repeat`, `repr` | designed (§3.2, §4) | — |
-| everything from `lower` onward | designed (§4, §5, §8) | — |
-| `onLaunch` and the instance model | designed (§5.1) | — |
+| `repeat`, `xml.attribute` | implemented (§3.1, §3.2, §5.2) | `ast`, `ser` |
+| `enabled_when`, `when_disabled`, `repr` | designed (§3.2, §4) | — |
+| lowering, instances, serialization | implemented (§4, §5, §8) | `ast`, `ser` |
+| `onLaunch` and the instance model | implemented (§5.1) | plugin host |
 
 **All four plugin packages parse completely**, and
 `toml/document.rs::every_plugin_package_parses` asserts it: it reads each
@@ -356,6 +356,11 @@ anyway. What moves into lowering is only the rule that a *child* may not declare
 one — a top-level target with neither `output` nor `parent` is a null root, not
 an error.
 
+`repeat = true` marks a target whose element or section is instantiated at
+launch rather than once with the definition. A repeated target must have a
+parent container and is active only when the launch instance appends at least
+one occurrence.
+
 `overrides` is **[designed]**; `parent` parses but lowering does not yet honour
 it.
 
@@ -430,9 +435,11 @@ enabled_when = "video.backend != 'Software'"                                # [d
 
 The parsed shape is `OptionDefinition` in `toml/config.rs`. `key`, `title`,
 `type`, and `emit` are required; `range`, `default`, and `domain` are optional.
-`type` is one of `bool`, `int`, `float`, `string`, `select` — a bare `&str` today,
+`type` is one of `bool`, `int`, `float`, `string`, `path`, `select` — a bare `&str` today,
 and a closed enum in the IR. `enabled_when`, `when_disabled`, `description`, and
-`repeat` are **[designed]**: nothing parses them and no generator emits one.
+generic predicates are **[designed]**. `repeat` is parsed on sections and must
+agree with the target it names. Such a section contributes no settings until
+the launch plugin calls `append()` on its options proxy.
 
 `target` resolves from the nearest ancestor that declares one; `emit.target`
 overrides it per option. A section holding only subsections is a legitimate
@@ -444,6 +451,11 @@ UI-only. No generator produces one, and making the field optional would mean the
 common typo — a misspelled `emit` table — parses as a UI-only option and writes
 nothing, silently. If a UI-only option is ever needed it should say so
 (`emit = false` or `ui_only = true`), not say nothing.
+
+`emit.xml.attribute = true` writes the option as an attribute of the enclosing
+XML target rather than as a child value. Attribute emits are rejected for a
+document root and for any target reachable from a non-XML output. Boolean and
+integer styles are applied before the XML emitter escapes the attribute value.
 
 **An option may also have no `default`**, and that is not the same as having one.
 Some emulators do not keep their defaults anywhere a generator can read: PCSX2
@@ -539,11 +551,11 @@ missing `title` on such a stub fatal-but-silent rather than diagnosed.
 `options` remains a reserved subsection name (§4.1): a table under a section is a
 subsection, and the `options` array is what holds its controls.
 
-`repeat` is **[designed]** — general over controller ports, memory card slots and
-per-player blocks, expanding at lower time into N sections with paths
-`port.1.mode`, `port.2.mode`. Note that ports specifically did *not* end up using
-it (§6.5): every port is written out explicitly, because the emulators' numbering
-conventions differ enough that a template would have to encode each one.
+Repeated sections are launch-local rather than lowered to a fixed count. Each
+`append()` assigns the next zero-based ordinal at that exact instance path, so
+two outer instances may independently append nested children numbered from
+zero. Ports remain explicit because their topology and numbering come from the
+controller model rather than from plugin launch logic.
 
 ### 3.3 Environment and arguments — [designed]
 
@@ -608,6 +620,12 @@ case-insensitively, plus the other style's spellings, since existing files may
 have been written by the emulator itself.
 
 ### 3.5 Domains
+
+Runtime resolver domains are withdrawn. Domains in definition documents are
+static arrays only. Dynamic choices belong to the plugin-owned `onConfigure`
+layout, and the selected scalar reaches `onLaunch` through `userConfiguration`.
+The resolver syntax described below is retained only as historical rationale
+and is rejected by the parser.
 
 | kind | source | state | plugin code? |
 | --- | --- | --- | --- |
@@ -962,6 +980,12 @@ UTF-16, a BOM, or a binary section is expressible rather than special.
 
 An `Instance` is a `Definition` plus a value per option. Materializing one seeds
 every option from its default; applying `configOverrides` writes over that.
+
+Repeated sections materialize no values initially. The plugin appends an
+occurrence through `configuration.options()` and receives a proxy rooted at an
+ordinal path such as `content.graphics_packs.0`. Nested appends retain the
+outer ordinal. These keys exist only for one launch, so persisted UI identity
+continues to use plugin layout group keys rather than instance paths.
 
 **This replaces the five-layer `ValueStack`** of an earlier revision
 (`[defaults, user profile, per-game, runtime overrides, system-forced]`). The
@@ -1664,6 +1688,15 @@ against the mode, not a runtime surprise.
 
 ### 6.7 Cross-cutting rules live in the TS module
 
+`onConfigure(game, values)` is an optional UI hook. It returns the visible
+layout and one settled value for every visible option in a single result. The
+plugin owns defaults and dependency order; the frontend never retries to seek
+a fixed point. It retains hidden persisted values separately, passes them back
+on later calls, and merges the returned visible values only after a successful
+response. A missing hook means no UI layout, not no launch configuration: TOML
+materialization and the host-backed `Configuration` passed to `onLaunch` are
+unconditional.
+
 Two rules cut across options and cannot be written as an option's own
 `enabled_when`: the overlay attaches only to renderers snowglass hooks, and no
 two passthrough ports may claim the same physical device. Neither is expressible
@@ -1891,6 +1924,11 @@ pub trait Codec {
 }
 ```
 
+The implemented event emitter carries rendered attributes on `SectionRef`.
+Repeated occurrences reuse the declared target name and nesting while retaining
+their instance-prefix order; the plugin supplies only option values, never XML
+node names or escaped text.
+
 Visitors are folds, not `&mut` walks — `Remove`/`Replace` against a borrowed tree
 gets unpleasant fast.
 
@@ -2071,7 +2109,12 @@ not running is not editing its own config, and the host holds the session.
 
 ---
 
-## 9. Resolvers
+## 9. Resolvers — withdrawn
+
+No resolver manifest entry, AST variant, runtime trait, or realized-definition
+overlay exists. `onConfigure` owns dynamic UI choices and settles them in one
+plugin call. The former design below is historical and not an implementation
+contract.
 
 Two distinct roles.
 

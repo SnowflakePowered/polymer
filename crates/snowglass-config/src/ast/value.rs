@@ -14,6 +14,19 @@ pub enum Value {
     Choice(Box<str>),
 }
 
+impl Value {
+    pub fn to_json(&self) -> serde_json::Value {
+        match self {
+            Self::Null => serde_json::Value::Null,
+            Self::Boolean(value) => (*value).into(),
+            Self::Integer(value) => (*value).into(),
+            Self::Float(value) => (*value).into(),
+            Self::String(value) | Self::Choice(value) => value.as_ref().into(),
+            Self::Path(value) => value.to_string_lossy().into_owned().into(),
+        }
+    }
+}
+
 /// The stable key of a select-domain choice.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ChoiceKey(Box<str>);

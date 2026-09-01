@@ -46,6 +46,7 @@ impl Default for IniEmitter {
 
 impl Emitter for IniEmitter {
     fn enter_section(&mut self, section: SectionRef<'_>) -> EmitResult<()> {
+        section.reject_attributes("ini")?;
         self.sections.push(section.name.into());
         Ok(())
     }
