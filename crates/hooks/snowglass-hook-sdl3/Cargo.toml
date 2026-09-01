@@ -9,6 +9,7 @@ build = "build.rs"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+consolespec.workspace = true
 tracing.workspace = true
 parking_lot.workspace = true
 snowglass-hook.workspace = true

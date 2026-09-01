@@ -2,7 +2,7 @@
 
 pub mod layout;
 pub mod mapping;
-pub mod sdl;
+pub mod model;
 pub mod topology;
 
 pub use snowglass_config::input::projection;

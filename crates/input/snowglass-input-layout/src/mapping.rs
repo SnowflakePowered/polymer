@@ -6,7 +6,7 @@ use std::fmt;
 use crate::layout::{
     EMBEDDED_DEFAULT_KEYBOARD_MAPPING, InputBinding, InputLayout, KeyboardMapping,
 };
-use crate::sdl::Wire;
+use crate::model::{self, Control};
 
 #[derive(Clone, Debug, Default)]
 pub struct KeySet(BTreeSet<String>);
@@ -239,28 +239,36 @@ impl Mapping {
     fn bind_gamepad(
         &mut self,
         layout: &InputLayout,
-        target: BindingKey,
+        target_key: BindingKey,
         source: Option<BindingKey>,
     ) -> Result<(), MappingError> {
-        let Some(target_wire) = layout.sdl_wire(target) else {
+        let Some(target_control) = layout.projected_control(target_key) else {
             return Ok(());
         };
         let Some(source) = source else {
-            self.clear(target_wire);
+            self.clear(target_control);
             return Ok(());
         };
-        match (target_wire, layout.custom_binding(target, source)) {
-            (Wire::Button(target), Some(InputBinding::Button { button })) => {
-                self.buttons[usize::from(target.index())] = Some(Source::Button(button.index()));
+        match (target_control, layout.custom_binding(target_key, source)) {
+            (Control::Button(target), Some(InputBinding::Button { button })) => {
+                let Some(Control::Button(source)) = Control::from_key(button) else {
+                    return Err(MappingError::invalid(target_key, source));
+                };
+                self.buttons[usize::from(target)] = Some(Source::Button(source));
             }
-            (Wire::Axis(target), Some(InputBinding::Axis { axis, invert })) => {
-                self.axes[usize::from(target.index())] =
-                    Some(AxisSource::axis(axis.index(), invert));
+            (Control::Axis(target), Some(InputBinding::Axis { axis, invert })) => {
+                let Some(Control::Axis(source)) = Control::from_key(axis) else {
+                    return Err(MappingError::invalid(target_key, source));
+                };
+                self.axes[usize::from(target)] = Some(AxisSource::axis(source, invert));
             }
-            (Wire::Axis(target), Some(InputBinding::Button { button })) => {
-                self.axes[usize::from(target.index())] = Some(AxisSource::button(button.index()));
+            (Control::Axis(target), Some(InputBinding::Button { button })) => {
+                let Some(Control::Button(source)) = Control::from_key(button) else {
+                    return Err(MappingError::invalid(target_key, source));
+                };
+                self.axes[usize::from(target)] = Some(AxisSource::button(source));
             }
-            _ => return Err(MappingError::invalid(target, source)),
+            _ => return Err(MappingError::invalid(target_key, source)),
         }
         Ok(())
     }
@@ -280,18 +288,17 @@ impl Mapping {
                 .elements
                 .iter()
                 .find(|element| element.label.eq_ignore_ascii_case(label))
-                .map(|element| (element.key, Some(crate::sdl::binding_of(source))))
+                .map(|element| (element.key, Some(Control::binding(source))))
         })
     }
 
-    fn clear(&mut self, target: Wire) {
+    fn clear(&mut self, target: Control) {
         match target {
-            Wire::Button(button) => self.buttons[usize::from(button.index())] = None,
-            Wire::Axis(axis) => self.axes[usize::from(axis.index())] = None,
-            Wire::RawAxis(index) if usize::from(index) < self.axes.len() => {
+            Control::Button(index) => self.buttons[usize::from(index)] = None,
+            Control::Axis(index) if usize::from(index) < self.axes.len() => {
                 self.axes[usize::from(index)] = None;
             }
-            Wire::RawAxis(_) | Wire::Sensor(_) => {}
+            Control::Axis(_) | Control::Sensor(_) => {}
         }
     }
 
@@ -311,9 +318,9 @@ impl Mapping {
     }
 
     fn target(layout: &InputLayout, key: BindingKey) -> Option<Target> {
-        match layout.sdl_wire(key)? {
-            Wire::Button(button) => Some(Target::Button(button.index())),
-            Wire::Axis(axis) => {
+        match layout.projected_control(key)? {
+            Control::Button(index) => Some(Target::Button(index)),
+            Control::Axis(index) if usize::from(index) < model::StandardGamepad::AXES.len() => {
                 let positive = !matches!(
                     key,
                     BindingKey::Analog {
@@ -324,18 +331,15 @@ impl Mapping {
                         ..
                     }
                 );
-                let direction = match (axis.index() % 2, positive) {
+                let direction = match (index % 2, positive) {
                     (1, true) => -1,
                     (1, false) => 1,
                     (_, true) => 1,
                     (_, false) => -1,
                 };
-                Some(Target::Axis {
-                    index: axis.index(),
-                    direction,
-                })
+                Some(Target::Axis { index, direction })
             }
-            Wire::RawAxis(_) | Wire::Sensor(_) => None,
+            Control::Axis(_) | Control::Sensor(_) => None,
         }
     }
 

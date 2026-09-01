@@ -15,7 +15,7 @@ use crate::{
 
 use super::{DocumentRef, EmittedBinding, EmittedValue, Emitter, ScalarValue, SectionRef};
 use crate::input::{
-    gamepad::VirtualPad,
+    gamepad::SdlGamepadIdentity,
     projection::{Projection, Target as ProjectionTarget},
 };
 
@@ -537,8 +537,8 @@ impl<'a> Serializer<'a> {
 }
 
 fn expand_device(template: &str, index: usize) -> Result<String> {
-    let name = VirtualPad::GAMEPAD_NAME;
-    let guid = VirtualPad::GAMEPAD_GUID.simple().to_string();
+    let name = SdlGamepadIdentity::NAME;
+    let guid = SdlGamepadIdentity::GUID.simple().to_string();
     let expanded = template
         .replace("{index}", &index.to_string())
         .replace("{name}", name)

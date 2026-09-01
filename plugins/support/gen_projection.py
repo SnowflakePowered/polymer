@@ -1,4 +1,4 @@
-"""Generate crates/input/snowglass-input/projection/SDL.proj.toml from consolespec.
+"""Generate the standard gamepad projection from consolespec.
 
 Run from the repository root after changing an inputspec:
 
@@ -10,7 +10,7 @@ own one. Two bugs — the Wii Remote + Nunchuk's colliding accelerometers and th
 rule, so a human reads the diff.
 
 
-The allocation rule comes from SDL's own gamecontrollerdb: real hardware fills
+The allocation rule follows the conventional gamepad layout: real hardware fills
 *unused standard slots* before it reaches for misc1 or a paddle. A Wii Remote's
 1 and 2 become X and Y because a Wii Remote has no X/Y face buttons; Saturn's C
 and Z become shoulders because a Saturn pad's shoulder slots are free. Only when
@@ -222,7 +222,7 @@ if over:
     for name, overflow in over:
         lines += [f"# {name}: {overflow} unplaced", ""]
 
-out = Path("crates/input/snowglass-input/projection/SDL.proj.toml")
+out = Path("crates/snowglass-config/projection/SDL.proj.toml")
 out.parent.mkdir(parents=True, exist_ok=True)
 out.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8", newline="\n")
 need_spare = [name for name, _, spares in entries if spares]

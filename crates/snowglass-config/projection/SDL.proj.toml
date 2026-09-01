@@ -1,18 +1,3 @@
-# Projects each consolespec device's controls onto the Snowglass SDL virtual gamepad.
-#
-# Both sides are binding keys: the left of a device, the right of
-# `crate::sdl`'s pad. A control the pad has under the same key needs no
-# entry — identity is the default, resolved against the device's primary
-# cluster, so a lone D-pad reaches the hat without being named here.
-#
-# Allocation follows SDL's gamecontrollerdb: unused standard slots first,
-# spares only when none are left.
-#
-# A value that is not a key names a transport instead: `keyboard` for a
-# keypad the emulator reads as keys, `none` for a control nothing can
-# carry. Both are decisions, and are recorded so they do not read as
-# oversights.
-
 [3DO_CONTROLLER]
 "button.c" = "button.x"
 

@@ -16,16 +16,6 @@ use std::{
     sync::Arc,
 };
 
-/// A stable emulator-facing controller port: a machinespec input group and an
-/// index within it.
-///
-/// A machine's ports are not one flat run. A Wii U has one `gamepad` port and
-/// eight `controller` ports, which accept disjoint sets of devices; a Wii has
-/// four `wii` ports *and* four GameCube `controller` ports on a separate bus.
-/// Naming the group is what lets [`ControllerConfiguration`] check a port against the machine
-/// that declares it — and it is deliberately **not** the virtual pad index, which
-/// is [`PortConfiguration::slot`]: a port in passthrough consumes an emulator
-/// port but no pad, so the two runs skew.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct VirtualPort {
     /// A machinespec `[input]` group name, e.g. `controller`, `gamepad`, `wii`.

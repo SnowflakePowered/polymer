@@ -14,7 +14,6 @@ use snowglass_input::{
     DeviceDescriptor, DeviceId, DeviceRole, DeviceState, Feedback, GamepadReport, InputBackend,
     PointerFlags, PointerKind, PointerReport, PointerSample, SensorReport,
 };
-use snowglass_input_layout::layout::EMBEDDED_GAMECONTROLLER_DB;
 use source_registry::{DeviceFingerprint, DeviceIdentity, SourceRegistry};
 use std::{
     collections::{HashMap, HashSet},
@@ -27,6 +26,9 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+
+const EMBEDDED_GAMECONTROLLER_DB: &str =
+    include_str!("../SDL_GameControllerDB/gamecontrollerdb.txt");
 
 #[derive(Clone, Debug)]
 pub struct Sdl3Config {
