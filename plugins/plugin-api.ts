@@ -63,14 +63,7 @@ export type ControllerTopology = Readonly<{
     mappings: readonly ControllerMapping[],
 }>;
 
-export type InputHook = "bluetooth-api-win32";
-export type InputProvider = Readonly<{
-    type: "rawHid",
-    sourceId: string,
-    target: Readonly<{ group: string, port: number }>,
-    vendorId: number,
-    productId: number,
-}>;
+export type InputHook = "sdl3" | "bluetooth-api-win32";
 
 export type UiTextMatch =
     | Readonly<{ equals: string, caseSensitive?: boolean }>

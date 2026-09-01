@@ -1,5 +1,5 @@
 use crate::{
-    HookBackend,
+    GraphicsHook, Hooks,
     capture::{self, ConsumerPreference, FrameRouter},
     ui::{UiRequestReceiver, UiTransport},
 };
@@ -49,8 +49,7 @@ pub struct EmulatorLaunchConfig {
     pub command: String,
     pub arguments: Vec<String>,
     pub artifact_root: PathBuf,
-    pub hooks: Vec<HookBackend>,
-    pub input_hooks: Vec<crate::InputHookBackend>,
+    pub hooks: Hooks,
     pub consumer: ConsumerPreference,
     pub isolate: bool,
     pub tracked_surfaces: Vec<TrackedSurfaceConfig>,
@@ -72,7 +71,7 @@ impl EmulatorLaunchConfig {
                 "target command must not be empty".to_owned(),
             ));
         }
-        if self.hooks.is_empty() {
+        if self.hooks.graphics.is_empty() {
             return Err(LaunchError::InvalidConfig(
                 "at least one graphics hook is required".to_owned(),
             ));
@@ -332,7 +331,7 @@ struct SurfaceSnapshot {
     generation: u64,
     protocol_surface_id: u64,
     target_window: i64,
-    backend: HookBackend,
+    backend: GraphicsHook,
     transport_dimensions: ResizeDimensions,
     active: bool,
 }
@@ -356,7 +355,7 @@ impl TrackedSurfaceHandle {
         self.id
     }
 
-    pub fn backend(&self) -> HookBackend {
+    pub fn backend(&self) -> GraphicsHook {
         self.snapshot().backend
     }
 
@@ -559,7 +558,7 @@ impl SurfaceOffer {
         self.surface.id()
     }
 
-    pub fn backend(&self) -> HookBackend {
+    pub fn backend(&self) -> GraphicsHook {
         stream_backend(self.stream.image_kind)
     }
 
@@ -838,7 +837,7 @@ struct ActiveSurface {
 }
 
 pub(crate) struct SurfaceManager {
-    hooks: Arc<[HookBackend]>,
+    hooks: Arc<[GraphicsHook]>,
     tracked_surfaces: Arc<[TrackedSurfaceConfig]>,
     input: InputIpcListener,
     router: RwLock<Option<FrameRouter>>,
@@ -848,7 +847,7 @@ pub(crate) struct SurfaceManager {
     topology: Mutex<()>,
     next_offer: AtomicU64,
     remaining_skips: AtomicU32,
-    skipped_surfaces: DashSet<(u64, HookBackend)>,
+    skipped_surfaces: DashSet<(u64, GraphicsHook)>,
     stopping: AtomicBool,
 }
 
@@ -859,7 +858,7 @@ impl SurfaceManager {
         events: SurfaceEventSender,
     ) -> Self {
         Self {
-            hooks: Arc::from(config.hooks.clone()),
+            hooks: Arc::from(config.hooks.graphics.clone()),
             tracked_surfaces: Arc::from(config.tracked_surfaces.clone()),
             input,
             router: RwLock::new(None),
@@ -1408,16 +1407,16 @@ fn graph_surface_index(surface_id: u64) -> Option<u32> {
         .and_then(|index| u32::try_from(index).ok())
 }
 
-fn stream_backend(kind: ExternalImageKind) -> HookBackend {
+fn stream_backend(kind: ExternalImageKind) -> GraphicsHook {
     match kind {
-        ExternalImageKind::GdiD3d12Resource => HookBackend::Gdi,
+        ExternalImageKind::GdiD3d12Resource => GraphicsHook::Gdi,
         ExternalImageKind::D3d11SharedResourceNt | ExternalImageKind::D3d11D3d12Resource => {
-            HookBackend::D3d11
+            GraphicsHook::D3d11
         }
-        ExternalImageKind::D3d12Resource | ExternalImageKind::D3d12Heap => HookBackend::D3d12,
-        ExternalImageKind::OpenGlD3d12Resource => HookBackend::OpenGl,
+        ExternalImageKind::D3d12Resource | ExternalImageKind::D3d12Heap => GraphicsHook::D3d12,
+        ExternalImageKind::OpenGlD3d12Resource => GraphicsHook::OpenGl,
         ExternalImageKind::VulkanOpaqueWin32 | ExternalImageKind::VulkanD3d12Resource => {
-            HookBackend::Vulkan
+            GraphicsHook::Vulkan
         }
     }
 }
@@ -1432,8 +1431,10 @@ mod tests {
             command: "emulator.exe".to_owned(),
             arguments: Vec::new(),
             artifact_root: PathBuf::from("."),
-            hooks: vec![HookBackend::D3d12],
-            input_hooks: Vec::new(),
+            hooks: Hooks {
+                graphics: vec![GraphicsHook::D3d12],
+                input: Vec::new(),
+            },
             consumer: ConsumerPreference::D3d12,
             isolate: false,
             tracked_surfaces: vec![TrackedSurfaceConfig {
@@ -1479,14 +1480,17 @@ mod tests {
     #[test]
     fn maps_every_external_image_kind_to_a_hook() {
         for (kind, expected) in [
-            (ExternalImageKind::GdiD3d12Resource, HookBackend::Gdi),
-            (ExternalImageKind::D3d11SharedResourceNt, HookBackend::D3d11),
-            (ExternalImageKind::D3d11D3d12Resource, HookBackend::D3d11),
-            (ExternalImageKind::D3d12Resource, HookBackend::D3d12),
-            (ExternalImageKind::D3d12Heap, HookBackend::D3d12),
-            (ExternalImageKind::OpenGlD3d12Resource, HookBackend::OpenGl),
-            (ExternalImageKind::VulkanOpaqueWin32, HookBackend::Vulkan),
-            (ExternalImageKind::VulkanD3d12Resource, HookBackend::Vulkan),
+            (ExternalImageKind::GdiD3d12Resource, GraphicsHook::Gdi),
+            (
+                ExternalImageKind::D3d11SharedResourceNt,
+                GraphicsHook::D3d11,
+            ),
+            (ExternalImageKind::D3d11D3d12Resource, GraphicsHook::D3d11),
+            (ExternalImageKind::D3d12Resource, GraphicsHook::D3d12),
+            (ExternalImageKind::D3d12Heap, GraphicsHook::D3d12),
+            (ExternalImageKind::OpenGlD3d12Resource, GraphicsHook::OpenGl),
+            (ExternalImageKind::VulkanOpaqueWin32, GraphicsHook::Vulkan),
+            (ExternalImageKind::VulkanD3d12Resource, GraphicsHook::Vulkan),
         ] {
             assert_eq!(stream_backend(kind), expected);
         }

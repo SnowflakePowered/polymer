@@ -75,7 +75,8 @@ struct ShellCoordinator {
 struct PendingInputChange {
     request_id: u64,
     prepared: PreparedInputTransaction,
-    response: tokio::sync::oneshot::Receiver<Result<(), String>>,
+    response:
+        tokio::sync::oneshot::Receiver<Result<snowglass_controllers::ControllerTopology, String>>,
 }
 
 impl ShellCoordinator {

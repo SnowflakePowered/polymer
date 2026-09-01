@@ -58,7 +58,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
         command: executable,
         argv: ["-g", game, "--mlc", mlc],
         isolate: true,
-        hooks: ["vulkan", "opengl"],
+        hooks: { graphics: ["vulkan", "opengl"], input: ["sdl3"] },
         surfaces: [
             { index: 0, pattern: "Cemu+" },
             { index: 1, pattern: "GamePad+" }

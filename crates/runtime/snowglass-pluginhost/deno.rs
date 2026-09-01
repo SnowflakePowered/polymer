@@ -4,7 +4,7 @@ use crate::actions::ActionsState;
 use crate::automation::{AutomationState, op_ui_automation_request};
 use crate::{
     ConfigurationAccessError, EmulatorHostError, EmulatorLaunchArguments, EmulatorLaunchInvocation,
-    GraphicsHook, InputHook, InputProvider, TrackedSurface,
+    Hooks, TrackedSurface,
     configuration::{ConfigurationCheckpoint, ConfigurationId, ConfigurationInstances},
 };
 use deno_core::{JsRuntime, OpState, op2, serde_v8, v8};
@@ -342,8 +342,6 @@ impl<'runtime> EmulatorWorker<'runtime> {
             argv: plan.argv,
             isolate: plan.isolate,
             hooks: plan.hooks,
-            input_hooks: plan.input_hooks,
-            input_providers: plan.input_providers,
             graph_tracking: plan.graph_tracking,
             surfaces: plan.surfaces,
             prepared_filesystem: None,
@@ -367,8 +365,6 @@ pub(crate) async fn execute_retained_emulator(
 
 #[derive(serde::Deserialize)]
 pub(crate) struct ControllerChangeOutput {
-    #[serde(rename = "inputProviders")]
-    pub input_providers: Vec<InputProvider>,
     #[serde(rename = "controllerTopology")]
     pub controller_topology: snowglass_controllers::ControllerTopology,
 }
@@ -399,7 +395,6 @@ pub(crate) async fn execute_controller_change(
             : undefined;
           __snowglassFilesystem.refreshConfigurations();
           return {{
-            inputProviders: result?.inputProviders ?? [],
             controllerTopology: result?.controllerTopology ?? inputTopology,
           }};
         }})()"#
@@ -502,11 +497,7 @@ struct EmulatorLaunchPlan {
     argv: Vec<String>,
     #[serde(default)]
     isolate: bool,
-    hooks: Vec<GraphicsHook>,
-    #[serde(default)]
-    input_hooks: Vec<InputHook>,
-    #[serde(default)]
-    input_providers: Vec<InputProvider>,
+    hooks: Hooks,
     #[serde(default)]
     controller_topology: Option<snowglass_controllers::ControllerTopology>,
     #[serde(default)]

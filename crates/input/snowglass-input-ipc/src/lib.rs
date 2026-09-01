@@ -112,12 +112,11 @@ impl InputIpcListener {
             return;
         }
 
-        // The raw stream owns its release boundary. Waiting for a neutral raw
-        // report works even when the current Wii report mode has no normalized
-        // decoder, and prevents a physically held button from appearing as a
-        // new guest press when an overlay closes.
-        for channel in raw_hid.values() {
-            channel.release_after_neutral();
+        // Raw streams remain captured until the corresponding normalized state
+        // is neutral. The Bluetooth decoder is the sole button-state authority.
+        for (&index, channel) in raw_hid.iter() {
+            channel.set_capture(true);
+            forwarding.blocked_until_neutral.insert(index);
         }
         for (index, device, state, connected) in snapshots.into_iter().flatten() {
             let Some(index) = index.filter(|_| connected) else {
@@ -128,6 +127,11 @@ impl InputIpcListener {
             let blocked = state.gamepad.buttons != 0;
             if blocked {
                 forwarding.blocked_until_neutral.insert(index);
+            } else {
+                forwarding.blocked_until_neutral.remove(&index);
+                if let Some(channel) = raw_hid.get(&index) {
+                    channel.set_capture(false);
+                }
             }
         }
     }
@@ -182,11 +186,21 @@ impl InputIpcListener {
         spec: RawHidSpec,
     ) -> io::Result<RawHidChannel> {
         let channel = RawHidChannel::open(index, spec, self.0.hub.clone())?;
-        let forwarding = self.0.forwarding.lock();
+        let mut forwarding = self.0.forwarding.lock();
+        channel.set_capture(true);
         if forwarding.enabled {
-            channel.release_after_neutral();
-        } else {
-            channel.set_capture(true);
+            let neutral = self
+                .0
+                .hub
+                .lock()
+                .as_ref()
+                .and_then(|handle| handle.hub().state(index))
+                .is_some_and(|state| state.gamepad.buttons == 0);
+            if neutral {
+                channel.set_capture(false);
+            } else {
+                forwarding.blocked_until_neutral.insert(index);
+            }
         }
         self.0.raw_hid.lock().insert(index, channel.clone());
         Ok(channel)
@@ -289,7 +303,7 @@ impl Drop for Inner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use snowglass_input::GamepadButton;
+    use snowglass_input::{BackendId, DeviceId, GamepadButton};
     use std::sync::atomic::{AtomicU64, Ordering};
     use tokio::{io::AsyncReadExt, net::windows::named_pipe::ClientOptions};
 
@@ -342,7 +356,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn enabling_forwarding_unmasks_raw_hid_without_a_device_snapshot() {
+    async fn normalized_neutral_state_releases_raw_hid_capture() {
         let session = format!("snowglass-raw-forward-test-{}", std::process::id());
         let listener = InputIpcListener::bind(&session).unwrap();
         let channel = listener
@@ -369,6 +383,19 @@ mod tests {
         channel.publish(&[0x30, 0, 0]);
         let mut frame = [0; 22];
         client.read_exact(&mut frame).await.unwrap();
+        assert!(channel.is_capturing());
+
+        let device = DeviceId::new(BackendId::BLUETOOTH, "test-wiimote");
+        let state = DeviceState::default();
+        InputListener::on_input(
+            &listener,
+            InputEvent::State {
+                index: PlayerIndex::new(0),
+                sequence: 1,
+                device: &device,
+                state: &state,
+            },
+        );
         assert!(!channel.is_capturing());
 
         listener.clear_raw_hid();

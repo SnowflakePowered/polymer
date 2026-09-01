@@ -31,7 +31,6 @@ struct Inner {
     spec: RawHidSpec,
     reports: mpsc::UnboundedSender<Vec<u8>>,
     capture: Arc<AtomicBool>,
-    release_when_neutral: Arc<AtomicBool>,
     listener: Arc<Mutex<Option<ListenerHandle>>>,
     worker: Mutex<Option<JoinHandle<()>>>,
 }
@@ -67,28 +66,19 @@ impl RawHidChannel {
             .as_ref()
             .and_then(|handle| handle.hub().raw_hid_filter(index));
         let (reports, receiver) = mpsc::unbounded_channel();
-        let capture = Arc::new(AtomicBool::new(false));
-        let release_when_neutral = Arc::new(AtomicBool::new(false));
+        let capture = Arc::new(AtomicBool::new(true));
         let inner = Arc::new(Inner {
             index,
             spec: spec.clone(),
             reports,
             capture: capture.clone(),
-            release_when_neutral: release_when_neutral.clone(),
             listener: listener.clone(),
             worker: Mutex::new(None),
         });
         let worker = tokio::runtime::Handle::try_current()
             .map_err(|_| io::Error::other("raw HID transport requires a Tokio runtime"))?
             .spawn(Self::serve(
-                index,
-                spec,
-                server,
-                receiver,
-                capture,
-                release_when_neutral,
-                filter,
-                listener,
+                index, spec, server, receiver, capture, filter, listener,
             ));
         *inner.worker.lock() = Some(worker);
         Ok(Self(inner))
@@ -103,13 +93,7 @@ impl RawHidChannel {
     }
 
     pub fn set_capture(&self, capture: bool) {
-        self.0.release_when_neutral.store(false, Ordering::Release);
         self.0.capture.store(capture, Ordering::Release);
-    }
-
-    pub(crate) fn release_after_neutral(&self) {
-        self.0.capture.store(true, Ordering::Release);
-        self.0.release_when_neutral.store(true, Ordering::Release);
     }
 
     #[cfg(test)]
@@ -127,7 +111,6 @@ impl RawHidChannel {
         server: tokio::net::windows::named_pipe::NamedPipeServer,
         mut reports: mpsc::UnboundedReceiver<Vec<u8>>,
         capture: Arc<AtomicBool>,
-        release_when_neutral: Arc<AtomicBool>,
         filter: Option<Arc<dyn RawHidFilter>>,
         listener: Arc<Mutex<Option<ListenerHandle>>>,
     ) {
@@ -158,12 +141,6 @@ impl RawHidChannel {
                     let mut frame = vec![0; spec.report_size];
                     let length = report.len().min(frame.len());
                     frame[..length].copy_from_slice(&report[..length]);
-                    if release_when_neutral.load(Ordering::Acquire)
-                        && filter.as_ref().is_none_or(|filter| filter.buttons_clear(&frame[..length]))
-                    {
-                        capture.store(false, Ordering::Release);
-                        release_when_neutral.store(false, Ordering::Release);
-                    }
                     if let Some(filter) = &filter {
                         filter.filter_input(&mut frame[..length], capture.load(Ordering::Acquire));
                     }

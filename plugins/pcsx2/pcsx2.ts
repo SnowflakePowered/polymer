@@ -115,7 +115,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
         command: args.filesystem.path("/PCSX2/pcsx2-qt.exe"),
         argv: ["-portable", "-batch", "--", args.filesystem.path(`/Game/${gameName}`)],
         isolate: false,
-        hooks: ["d3d11"],
+        hooks: { graphics: ["d3d11"], input: ["sdl3"] },
         
         surfaces: [
             { index: 0 },

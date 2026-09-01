@@ -357,12 +357,31 @@ impl BluetoothBackend {
         let device = Self::device_id(connected.controller_id);
         let profile = connected.profile_id.as_str();
         let pnp = connected.identity.pnp.as_ref();
+        let wiimote_product = match profile {
+            "nintendo.wiimote.original" => Some(0x0306),
+            "nintendo.wiimote.plus" => Some(0x0330),
+            "nintendo.wiimote.unknown" => Some(
+                if connected
+                    .identity
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name.ends_with("-TR"))
+                {
+                    0x0330
+                } else {
+                    0x0306
+                },
+            ),
+            _ => None,
+        };
         let descriptor = DeviceDescriptor {
             id: device.clone(),
             name: Arc::from(connected.identity.name.as_deref().unwrap_or(profile)),
             profile: Some(Arc::from(profile)),
-            vendor_id: pnp.map(|value| value.vendor_id),
-            product_id: pnp.map(|value| value.product_id),
+            vendor_id: pnp
+                .map(|value| value.vendor_id)
+                .or(wiimote_product.map(|_| 0x057e)),
+            product_id: pnp.map(|value| value.product_id).or(wiimote_product),
             serial: None,
             role: Self::role_for_profile(profile),
             capabilities: Self::capabilities(profile),
@@ -545,10 +564,5 @@ impl snowglass_input::RawHidFilter for WiimoteRawHidFilter {
         } else {
             Cow::Borrowed(report)
         }
-    }
-
-    fn buttons_clear(&self, report: &[u8]) -> bool {
-        decoder::wiimote::ReportMetadata::inspect(report)
-            .is_none_or(|metadata| metadata.physical_buttons_clear(report))
     }
 }

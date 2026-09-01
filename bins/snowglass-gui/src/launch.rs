@@ -1,6 +1,5 @@
 use snowglass_controllers::ControllerTopology;
-pub use snowglass_pluginhost::GraphicsHook;
-pub use snowglass_pluginhost::{InputHook, InputProvider};
+pub use snowglass_runtime::Hooks;
 use std::collections::HashSet;
 
 // Native game-host launch contracts and their shell adapters.
@@ -15,11 +14,7 @@ pub struct AttachedLaunchPlan {
     pub arguments: Vec<String>,
     #[serde(default)]
     pub isolated: bool,
-    pub hook: Vec<GraphicsHook>,
-    #[serde(default)]
-    pub input_hooks: Vec<InputHook>,
-    #[serde(default)]
-    pub input_providers: Vec<InputProvider>,
+    pub hooks: Hooks,
     /// Enables presentation dependency-graph traversal for every tracked
     /// surface in this process. The hook exposes this as a process-wide mode.
     #[serde(default)]
@@ -50,57 +45,14 @@ impl AttachedLaunchPlan {
         if self.command.trim().is_empty() {
             return Err("command must not be empty".to_owned());
         }
-        if self.hook.is_empty() {
+        if self.hooks.graphics.is_empty() {
             return Err("at least one graphics hook is required".to_owned());
         }
-        if self.hook.iter().collect::<HashSet<_>>().len() != self.hook.len() {
+        if self.hooks.graphics.iter().collect::<HashSet<_>>().len() != self.hooks.graphics.len() {
             return Err("graphics hooks must be unique".to_owned());
         }
-        if self.input_hooks.iter().collect::<HashSet<_>>().len() != self.input_hooks.len() {
+        if self.hooks.input.iter().collect::<HashSet<_>>().len() != self.hooks.input.len() {
             return Err("input hooks must be unique".to_owned());
-        }
-        let mut native_ports = HashSet::new();
-        for provider in &self.input_providers {
-            match provider {
-                InputProvider::RawHid {
-                    source_id,
-                    target,
-                    vendor_id,
-                    product_id,
-                } => {
-                    if source_id.is_empty()
-                        || target.group.is_empty()
-                        || target.port > usize::from(u8::MAX)
-                        || !native_ports.insert(target.port)
-                    {
-                        return Err(
-                            "raw HID providers require a source and unique valid targets"
-                                .to_owned(),
-                        );
-                    }
-                    if *vendor_id == 0 || *product_id == 0 {
-                        return Err("raw HID providers require non-zero VID and PID".to_owned());
-                    }
-                    let mapped = self.controller_topology.mappings.iter().any(|mapping| {
-                        mapping.target == *target
-                            && mapping
-                                .device
-                                .as_ref()
-                                .is_some_and(|device| device.id == *source_id)
-                    });
-                    if !mapped {
-                        return Err(format!(
-                            "raw HID provider for {}:{} does not match its topology source",
-                            target.group, target.port
-                        ));
-                    }
-                }
-            }
-        }
-        if !self.input_providers.is_empty()
-            && !self.input_hooks.contains(&InputHook::BluetoothApiWin32)
-        {
-            return Err("Bluetooth HID providers require the Bluetooth API input hook".to_owned());
         }
         if self.surfaces.is_empty() || self.surfaces.len() > 16 {
             return Err("surfaces must contain 1..=16 entries".to_owned());
@@ -135,7 +87,10 @@ mod tests {
                 "command": "game.exe",
                 "arguments": ["--fullscreen"],
                 "isolated": true,
-                "hook": ["d3d12"],
+                "hooks": {
+                    "graphics": ["d3d12"],
+                    "input": ["sdl3"]
+                },
                 "graphTracking": true,
                 "surfaces": [{
                     "index": 0,

@@ -26,7 +26,7 @@ pub use controller::{ControllerSession, PauseState, SessionError};
 pub(crate) use emulator::EmulatorLaunchInvocation;
 pub use emulator::{
     EmulatorHostError, EmulatorLaunchArguments, EmulatorPluginInstance, EmulatorPort, GraphicsHook,
-    InputHook, InputProvider, TrackedSurface,
+    Hooks, InputHook, TrackedSurface,
 };
 pub use filesystem::{StorageFactories, StorageFactory};
 pub use module_loader::PluginModuleLoader;

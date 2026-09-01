@@ -3,14 +3,7 @@ export interface HTMLTrackedSurfaceElement extends HTMLElement {
 }
 
 export type GraphicsHook = "opengl" | "vulkan" | "d3d11" | "d3d12";
-export type InputHook = "bluetooth-api-win32";
-export type NativeInputProvider = Readonly<{
-  type: "rawHid";
-  sourceId: string;
-  target: Readonly<{ group: string; port: number }>;
-  vendorId: number;
-  productId: number;
-}>;
+export type InputHook = "sdl3" | "bluetooth-api-win32";
 export type ProjectionMode = "name" | "position" | "custom";
 export type PointerMode = "none" | "relative" | "absoluteDevice" | "absoluteScreen";
 
@@ -167,9 +160,10 @@ export type LaunchOptions = {
   command: string;
   arguments: string[];
   isolated: boolean;
-  hook: GraphicsHook[];
-  inputHooks?: InputHook[];
-  inputProviders?: NativeInputProvider[];
+  hooks: Readonly<{
+    graphics: GraphicsHook[];
+    input: InputHook[];
+  }>;
   graphTracking: boolean;
   surfaces: TrackedSurface[];
   controllerTopology: ControllerTopology;

@@ -53,13 +53,6 @@ impl ReportMetadata {
             report[2] &= !0x80;
         }
     }
-
-    pub fn physical_buttons_clear(self, report: &[u8]) -> bool {
-        !self.core_buttons
-            || report
-                .get(1..3)
-                .is_some_and(|buttons| buttons[0] & 0x1f == 0 && buttons[1] & 0x9f == 0)
-    }
 }
 
 pub mod airmouse {
@@ -125,9 +118,9 @@ impl Telemetry {
 }
 
 #[derive(Default)]
-pub struct WiimoteInputProvider;
+pub struct WiimoteTelemetryDecoder;
 
-impl WiimoteInputProvider {
+impl WiimoteTelemetryDecoder {
     pub fn process(&mut self, report: &[u8]) -> Option<Telemetry> {
         parse_report(report)
     }

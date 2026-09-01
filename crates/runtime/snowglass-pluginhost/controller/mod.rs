@@ -1,15 +1,6 @@
 use parking_lot::Mutex;
 use std::sync::Arc;
 
-pub(crate) type InputProviderSink = Arc<
-    dyn Fn(
-            Vec<crate::InputProvider>,
-            snowglass_controllers::ControllerTopology,
-        ) -> Result<(), String>
-        + Send
-        + Sync,
->;
-
 #[derive(Clone, Debug)]
 pub struct ControllerSession {
     pub(crate) commands: std::sync::mpsc::Sender<ControllerSessionCommand>,
@@ -35,17 +26,13 @@ pub(crate) enum ControllerSessionCommand {
         snowglass_automation::AutomationSession,
         std::sync::mpsc::SyncSender<Result<(), String>>,
     ),
-    AttachInputProviders(
-        InputProviderSink,
-        std::sync::mpsc::SyncSender<Result<(), String>>,
-    ),
     AttachActions(
         crate::actions::ActionSink,
         std::sync::mpsc::SyncSender<Result<(), String>>,
     ),
     Changed(
         snowglass_controllers::ControllerTopology,
-        tokio::sync::oneshot::Sender<Result<(), String>>,
+        tokio::sync::oneshot::Sender<Result<snowglass_controllers::ControllerTopology, String>>,
     ),
     PauseResume(PauseState),
     Stop,
@@ -99,7 +86,10 @@ impl ControllerSession {
     pub fn change(
         &self,
         topology: snowglass_controllers::ControllerTopology,
-    ) -> Result<tokio::sync::oneshot::Receiver<Result<(), String>>, String> {
+    ) -> Result<
+        tokio::sync::oneshot::Receiver<Result<snowglass_controllers::ControllerTopology, String>>,
+        String,
+    > {
         let (response, receiver) = tokio::sync::oneshot::channel();
         self.commands
             .send(ControllerSessionCommand::Changed(topology, response))
@@ -118,28 +108,6 @@ impl ControllerSession {
         response
             .recv()
             .map_err(|_| "controller plugin session closed while attaching automation".to_owned())?
-    }
-
-    pub fn attach_input_providers(
-        &self,
-        sink: impl Fn(
-            Vec<crate::InputProvider>,
-            snowglass_controllers::ControllerTopology,
-        ) -> Result<(), String>
-        + Send
-        + Sync
-        + 'static,
-    ) -> Result<(), String> {
-        let (result, response) = std::sync::mpsc::sync_channel(1);
-        self.commands
-            .send(ControllerSessionCommand::AttachInputProviders(
-                Arc::new(sink),
-                result,
-            ))
-            .map_err(|_| "controller plugin session is closed".to_owned())?;
-        response.recv().map_err(|_| {
-            "controller plugin session closed while attaching native input".to_owned()
-        })?
     }
 
     pub fn take_errors(&self) -> Vec<SessionError> {

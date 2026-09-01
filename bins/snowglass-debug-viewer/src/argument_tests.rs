@@ -116,7 +116,7 @@ fn hook_selection_defaults_to_auto_without_gdi() -> Result<(), Box<dyn Error>> {
         arguments(&["--hook", "auto", "--", "game.exe"])?.hooks,
         AUTO_HOOKS
     );
-    assert!(!AUTO_HOOKS.contains(&HookBackend::Gdi));
+    assert!(!AUTO_HOOKS.contains(&GraphicsHook::Gdi));
     Ok(())
 }
 
@@ -125,7 +125,7 @@ fn hook_order_defines_priority() -> Result<(), Box<dyn Error>> {
     let options = arguments(&["--hook", "gdi,d3d11", "--hook", "vulkan", "--", "game.exe"])?;
     assert_eq!(
         options.hooks,
-        [HookBackend::Gdi, HookBackend::D3d11, HookBackend::Vulkan]
+        [GraphicsHook::Gdi, GraphicsHook::D3d11, GraphicsHook::Vulkan]
     );
     Ok(())
 }
@@ -135,11 +135,11 @@ fn hook_auto_appends_the_remaining_backends() -> Result<(), Box<dyn Error>> {
     assert_eq!(
         arguments(&["--hook=gdi,auto", "--", "game.exe"])?.hooks,
         [
-            HookBackend::Gdi,
-            HookBackend::Vulkan,
-            HookBackend::OpenGl,
-            HookBackend::D3d12,
-            HookBackend::D3d11,
+            GraphicsHook::Gdi,
+            GraphicsHook::Vulkan,
+            GraphicsHook::OpenGl,
+            GraphicsHook::D3d12,
+            GraphicsHook::D3d11,
         ]
     );
     Ok(())
