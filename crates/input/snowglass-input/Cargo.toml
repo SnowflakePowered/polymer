@@ -7,6 +7,7 @@ license.workspace = true
 dashmap.workspace = true
 parking_lot.workspace = true
 tracing.workspace = true
+uuid = { version = "1.24.1", features = ["v5"] }
 
 [lints]
 workspace = true

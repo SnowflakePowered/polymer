@@ -187,6 +187,10 @@ pub trait ControllerSession: Send {
         Ok(())
     }
 
+    fn serial(&self) -> Option<Arc<str>> {
+        None
+    }
+
     /// Transfers protocol configuration authority while Snowglass retains the
     /// physical Bluetooth link.
     async fn set_external_ownership(
@@ -289,6 +293,12 @@ pub trait ControllerDevice: Send + Sync {
     /// Bluetooth Device ID record.
     fn vendor_product(&self, identity: &DeviceIdentity) -> Option<VendorProductId> {
         identity.vendor_product()
+    }
+
+    /// The stable serial exposed to input consumers when it is available from
+    /// controller identity rather than the protocol session.
+    fn serial(&self, _identity: &DeviceIdentity) -> Option<Arc<str>> {
+        None
     }
 
     /// Whether this profile can establish its native protocol over a
@@ -472,6 +482,10 @@ mod tests {
         assert_eq!(
             controller.vendor_product(&identity),
             Some(VendorProductId::new(0x057e, 0x0306))
+        );
+        assert_eq!(
+            controller.serial(&identity).as_deref(),
+            Some("01:02:03:04:05:06")
         );
 
         identity.pnp = Some(PnpIdentity {

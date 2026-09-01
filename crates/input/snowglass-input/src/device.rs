@@ -1,4 +1,5 @@
 use std::{fmt, sync::Arc};
+use uuid::Uuid;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct BackendId(&'static str);
@@ -172,7 +173,21 @@ pub struct DeviceDescriptor {
     pub profile: Option<Arc<str>>,
     pub vendor_id: Option<u16>,
     pub product_id: Option<u16>,
-    pub serial: Option<Arc<str>>,
+    pub serial: Option<Uuid>,
     pub role: DeviceRole,
     pub capabilities: Capabilities,
 }
+
+impl DeviceDescriptor {
+    /// Converts a backend-provided stable identifier into Snowglass's
+    /// backend-neutral device serial namespace.
+    pub fn serial_uuid(serial: &str) -> Option<Uuid> {
+        let serial = serial.trim();
+        if serial.is_empty() {
+            return None;
+        }
+        let name = format!("snowglass:input:serial:{}", serial.to_ascii_uppercase());
+        Some(Uuid::new_v5(&Uuid::NAMESPACE_URL, name.as_bytes()))
+    }
+}
+

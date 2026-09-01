@@ -11518,6 +11518,7 @@ dependencies = [
  "dashmap",
  "parking_lot",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

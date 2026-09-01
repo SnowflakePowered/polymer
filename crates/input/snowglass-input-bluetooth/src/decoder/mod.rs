@@ -81,7 +81,10 @@ pub trait BluetoothControllerDevice: Send + Sync {
             profile: Some(Arc::from(connected.profile_id.as_str())),
             vendor_id: connected.vendor_product.map(|ids| ids.vendor_id),
             product_id: connected.vendor_product.map(|ids| ids.product_id),
-            serial: None,
+            serial: connected
+                .serial
+                .as_deref()
+                .and_then(DeviceDescriptor::serial_uuid),
             role: self.role(),
             capabilities: self.capabilities(),
         }

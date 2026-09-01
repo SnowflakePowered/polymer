@@ -1,6 +1,6 @@
 //! Nintendo Switch 2 BLE protocols.
 
-use std::{marker::PhantomData, time::Duration};
+use std::{marker::PhantomData, sync::Arc, time::Duration};
 
 use aes::{
     Aes128,
@@ -32,6 +32,8 @@ const ADVERTISEMENT_PREFIX: [u8; 4] = [0x01, 0x00, 0x03, 0x7e];
 const SPI_INIT: [u8; 16] = [
     0x21, 0x01, 0x00, 0x10, 0x00, 0x18, 0x00, 0x00, 0xd0, 0x3d, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
+const SERIAL_ADDRESS: u32 = 0x13002;
+const SERIAL_LENGTH: usize = 16;
 
 #[async_trait]
 trait Switch2Model: Send + Sync + 'static {
@@ -212,12 +214,54 @@ trait Switch2Model: Send + Sync + 'static {
         response
     }
 
-    async fn synchronize(transport: &mut dyn Transport, player_index: u8) -> Result<()> {
+    async fn synchronize(
+        transport: &mut dyn Transport,
+        player_index: u8,
+    ) -> Result<Option<Arc<str>>> {
         transport.send(&SPI_INIT).await?;
+        let serial = match Self::read_serial(transport).await {
+            Ok(serial) => serial,
+            Err(error) => {
+                tracing::warn!(
+                    controller = Self::DISPLAY_NAME,
+                    %error,
+                    "failed to read Switch 2 controller serial"
+                );
+                None
+            }
+        };
         Self::command(transport, 0x0c, 0x02, &[Self::FEATURE_MASK, 0, 0, 0]).await?;
         tokio::time::sleep(Duration::from_millis(500)).await;
         Self::command(transport, 0x0c, 0x04, &[Self::FEATURE_MASK, 0, 0, 0]).await?;
-        Self::set_led(transport, player_index).await
+        Self::set_led(transport, player_index).await?;
+        Ok(serial)
+    }
+
+    async fn read_serial(transport: &mut dyn Transport) -> Result<Option<Arc<str>>> {
+        let mut request = [0; 8];
+        request[0] = SERIAL_LENGTH as u8;
+        request[1] = 0x7e;
+        request[4..].copy_from_slice(&SERIAL_ADDRESS.to_le_bytes());
+        let response = Self::command(transport, 0x02, 0x04, &request).await?;
+        if response.len() < 8 + SERIAL_LENGTH
+            || usize::from(response[0]) != SERIAL_LENGTH
+            || response[4..8] != request[4..8]
+        {
+            return Err(Error::InvalidPacket(
+                "Switch 2 serial-number memory response is malformed",
+            ));
+        }
+        let bytes = &response[8..8 + SERIAL_LENGTH];
+        let end = bytes
+            .iter()
+            .position(|byte| matches!(byte, 0 | 0xff))
+            .unwrap_or(bytes.len());
+        if bytes[..end].iter().any(|byte| !byte.is_ascii()) {
+            return Err(Error::InvalidPacket("Switch 2 serial number is not ASCII"));
+        }
+        let serial = std::str::from_utf8(&bytes[..end])
+            .map_err(|_| Error::InvalidPacket("Switch 2 serial number is not UTF-8"))?;
+        Ok((!serial.is_empty()).then(|| Arc::from(serial)))
     }
 
     async fn set_led(transport: &mut dyn Transport, slot: u8) -> Result<()> {
@@ -230,13 +274,19 @@ trait Switch2Model: Send + Sync + 'static {
 
 struct Switch2Session<M> {
     player_index: u8,
+    serial: Option<Arc<str>>,
     model: PhantomData<M>,
 }
 
 #[async_trait]
 impl<M: Switch2Model> ControllerSession for Switch2Session<M> {
     async fn synchronize(&mut self, transport: &mut dyn Transport) -> Result<()> {
-        M::synchronize(transport, self.player_index).await
+        self.serial = M::synchronize(transport, self.player_index).await?;
+        Ok(())
+    }
+
+    fn serial(&self) -> Option<Arc<str>> {
+        self.serial.clone()
     }
 
     async fn set_player_led(&mut self, transport: &mut dyn Transport, slot: u8) -> Result<()> {
@@ -329,6 +379,7 @@ where
     fn connect(&self, options: &ConnectOptions) -> Box<dyn ControllerSession> {
         Box::new(Switch2Session::<M> {
             player_index: options.player_index,
+            serial: None,
             model: PhantomData,
         })
     }
