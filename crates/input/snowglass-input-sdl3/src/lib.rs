@@ -124,36 +124,31 @@ impl InputBackend for Sdl3Backend {
     }
 
     fn apply_feedback(&self, device: &DeviceId, feedback: &Feedback) -> Result<(), BackendError> {
-        let Feedback::Rumble {
-            low_frequency,
-            high_frequency,
-            duration_ms,
-        } = feedback
-        else {
-            return Err(BackendError::Unsupported);
-        };
-        self.commands
-            .lock()
-            .as_ref()
-            .ok_or_else(|| BackendError::Unavailable("SDL3 backend is not running".to_owned()))?
-            .send(Command::Rumble {
-                device: device.clone(),
-                low: *low_frequency,
-                high: *high_frequency,
-                duration_ms: *duration_ms,
-            })
-            .map_err(|error| BackendError::Failed(error.to_string()))
-    }
-
-    fn set_calibration(
-        &self,
-        device: &DeviceId,
-        calibration: &Calibration,
-    ) -> Result<(), BackendError> {
-        self.calibrations
-            .write()
-            .insert(device.clone(), calibration.clone());
-        Ok(())
+        match feedback {
+            Feedback::Rumble {
+                low_frequency,
+                high_frequency,
+                duration_ms,
+            } => self
+                .commands
+                .lock()
+                .as_ref()
+                .ok_or_else(|| BackendError::Unavailable("SDL3 backend is not running".to_owned()))?
+                .send(Command::Rumble {
+                    device: device.clone(),
+                    low: *low_frequency,
+                    high: *high_frequency,
+                    duration_ms: *duration_ms,
+                })
+                .map_err(|error| BackendError::Failed(error.to_string())),
+            Feedback::Calibrate(calibration) => {
+                self.calibrations
+                    .write()
+                    .insert(device.clone(), calibration.clone());
+                Ok(())
+            }
+            _ => Err(BackendError::Unsupported),
+        }
     }
 }
 

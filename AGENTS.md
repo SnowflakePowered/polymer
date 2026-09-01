@@ -5,7 +5,7 @@
 
 * Prefer functions bound as struct or trait impls instead of free functions in a module
 * Split up huge files into multiple sub modules.
-* Modules should use the mod.rs style
+* Multi-file modules should use the mod.rs style. Single file modules should be a <module-name>.rs
 * If there is common behaviour that can be abstracted over with a trait, use that instead of duplicating interfaces.
 * Prefer inlining code inside trait or struct impls instead of shims that call free functions.
 * Keep cyclomatic complexity low (less than 10)

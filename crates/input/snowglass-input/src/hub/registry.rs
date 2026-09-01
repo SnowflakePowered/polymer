@@ -1,8 +1,7 @@
 use super::{DeviceEntry, HubError, HubInner};
 use crate::{
-    BackendId, Calibration, CalibrationError, CalibrationKind, DeviceDescriptor, DeviceId,
-    DeviceState, Feedback, FeedbackClass, InputEvent, PlayerIndex, PointerSample,
-    TriggerCalibration,
+    BackendId, Calibration, DeviceDescriptor, DeviceId, DeviceState, Feedback, FeedbackClass,
+    InputEvent, PlayerIndex, PointerSample,
 };
 
 impl HubInner {
@@ -32,16 +31,19 @@ impl HubInner {
             entry.connected = true;
             drop(entry);
             let index = self.index_of(&id);
-            let calibration = self.calibrations.get(&id).map(|value| value.clone());
+            let calibration = self
+                .calibration_sessions
+                .get(&id)
+                .map(|session| session.feedback());
             let home_led = self.home_led.get(&id).map(|value| *value);
             let listeners = self.listeners();
             (listeners, index, calibration, home_led)
         };
         if let Some(calibration) = calibration {
-            let _ = self.apply_calibration(&descriptor.id, &calibration);
+            let _ = self.apply_feedback(&descriptor.id, &calibration);
         }
         if let Some(brightness) = home_led {
-            let _ = self.apply_device_feedback(&descriptor.id, &Feedback::HomeLed { brightness });
+            let _ = self.apply_feedback(&descriptor.id, &Feedback::HomeLed { brightness });
         }
         for listener in listeners {
             listener.on_input(InputEvent::Connected {
@@ -126,8 +128,8 @@ impl HubInner {
             }
             entry.state = *value;
             drop(entry);
-            if let Some(mut capture) = self.captures.get_mut(device) {
-                capture.accept(value);
+            if let Some(mut session) = self.calibration_sessions.get_mut(device) {
+                session.accept(value);
             }
             let Some(index) = self.index_of(device) else {
                 drop(topology);
@@ -199,7 +201,7 @@ impl HubInner {
         }
     }
 
-    pub(crate) fn feedback(
+    pub(crate) fn dispatch_feedback(
         &self,
         listener: crate::ListenerId,
         index: PlayerIndex,
@@ -230,7 +232,7 @@ impl HubInner {
             if let Feedback::HomeLed { brightness } = feedback {
                 self.home_led.insert(device.clone(), brightness);
             }
-            self.apply_device_feedback(&device, &feedback)?;
+            self.apply_feedback(&device, &feedback)?;
         }
         Ok(())
     }
@@ -285,11 +287,12 @@ impl HubInner {
             if !self.devices.contains_key(device) {
                 return Err(HubError::DeviceNotFound(device.clone()));
             }
-            let mut calibration = self.calibrations.entry(device.clone()).or_default();
-            calibration.merge(update);
-            calibration.clone()
+            self.calibration_sessions
+                .entry(device.clone())
+                .or_default()
+                .merge(update)
         };
-        self.apply_calibration(device, &calibration)
+        self.apply_feedback(device, &calibration)
     }
 
     pub(crate) fn set_calibration(
@@ -301,27 +304,16 @@ impl HubInner {
         if !self.devices.contains_key(device) {
             return Err(HubError::DeviceNotFound(device.clone()));
         }
-        self.calibrations
-            .insert(device.clone(), calibration.clone());
+        let feedback = self
+            .calibration_sessions
+            .entry(device.clone())
+            .or_default()
+            .replace(calibration);
         drop(topology);
-        self.apply_calibration(device, &calibration)
+        self.apply_feedback(device, &feedback)
     }
 
-    pub(crate) fn apply_calibration(
-        &self,
-        device: &DeviceId,
-        calibration: &Calibration,
-    ) -> Result<(), HubError> {
-        let backend = self
-            .backends
-            .get(&device.backend())
-            .ok_or(HubError::BackendUnavailable(device.backend()))?
-            .clone();
-        backend.set_calibration(device, calibration)?;
-        Ok(())
-    }
-
-    fn apply_device_feedback(
+    pub(crate) fn apply_feedback(
         &self,
         device: &DeviceId,
         feedback: &Feedback,
@@ -331,107 +323,7 @@ impl HubInner {
             .get(&device.backend())
             .ok_or(HubError::BackendUnavailable(device.backend()))?
             .clone();
-        match feedback {
-            Feedback::Recenter => backend.recenter(device)?,
-            _ => backend.apply_feedback(device, feedback)?,
-        }
+        backend.apply_feedback(device, feedback)?;
         Ok(())
-    }
-
-    pub(crate) fn finish_calibration(&self, device: &DeviceId) -> Result<(), CalibrationError> {
-        let (capture, mut calibration) = {
-            let (_, capture) = self
-                .captures
-                .remove(device)
-                .ok_or(CalibrationError::Cancelled)?;
-            let calibration = self
-                .calibrations
-                .get(device)
-                .map(|value| value.clone())
-                .unwrap_or_default();
-            (capture, calibration)
-        };
-        if capture.samples == 0 {
-            self.cancel_calibration(device);
-            return Err(CalibrationError::InsufficientSamples);
-        }
-        match capture.kind {
-            CalibrationKind::StickCenter => {
-                for stick in 0..2 {
-                    let current = calibration.sticks[stick].get_or_insert_default();
-                    for axis in 0..2 {
-                        let observed = capture.stick_sum[stick][axis] / i64::from(capture.samples);
-                        let center = i64::from(current.center[axis]);
-                        let range = if observed < 0 {
-                            center - i64::from(current.min[axis])
-                        } else {
-                            i64::from(current.max[axis]) - center
-                        }
-                        .max(1);
-                        let correction = observed * range / i64::from(i16::MAX);
-                        current.center[axis] = (center + correction)
-                            .clamp(i64::from(i16::MIN), i64::from(i16::MAX))
-                            as i16;
-                    }
-                }
-            }
-            CalibrationKind::StickRange => {
-                for stick in 0..2 {
-                    let current = calibration.sticks[stick].get_or_insert_default();
-                    for axis in 0..2 {
-                        let center = i64::from(current.center[axis]);
-                        let negative_range = (center - i64::from(current.min[axis])).max(1);
-                        let positive_range = (i64::from(current.max[axis]) - center).max(1);
-                        current.min[axis] = (center
-                            + i64::from(capture.stick_min[stick][axis]) * negative_range
-                                / i64::from(i16::MAX))
-                        .clamp(i64::from(i16::MIN), i64::from(i16::MAX))
-                            as i16;
-                        current.max[axis] = (center
-                            + i64::from(capture.stick_max[stick][axis]) * positive_range
-                                / i64::from(i16::MAX))
-                        .clamp(i64::from(i16::MIN), i64::from(i16::MAX))
-                            as i16;
-                    }
-                }
-            }
-            CalibrationKind::TriggerRange => {
-                for trigger in 0..2 {
-                    let current =
-                        calibration.triggers[trigger].get_or_insert(TriggerCalibration::default());
-                    let min = u64::from(current.min);
-                    let range = u64::from(current.max.saturating_sub(current.min).max(1));
-                    current.min = (min
-                        + u64::from(capture.trigger_min[trigger]) * range / u64::from(u16::MAX))
-                    .min(u64::from(u16::MAX)) as u16;
-                    current.max = (min
-                        + u64::from(capture.trigger_max[trigger]) * range / u64::from(u16::MAX))
-                    .min(u64::from(u16::MAX)) as u16;
-                }
-            }
-            CalibrationKind::MotionBias => {
-                let current = calibration.motion.get_or_insert_default();
-                for axis in 0..3 {
-                    let observed = capture.gyro_sum[axis] / f64::from(capture.samples);
-                    let scale = f64::from(current.gyroscope_scale[axis]);
-                    if scale.abs() > f64::EPSILON {
-                        current.gyroscope_bias[axis] += (observed / scale) as f32;
-                    }
-                }
-            }
-        }
-        self.set_calibration(device, calibration)
-            .map_err(|_| CalibrationError::DeviceUnavailable)
-    }
-
-    pub(crate) fn cancel_calibration(&self, device: &DeviceId) {
-        let calibration = {
-            self.captures.remove(device);
-            self.calibrations
-                .get(device)
-                .map(|value| value.clone())
-                .unwrap_or_default()
-        };
-        let _ = self.apply_calibration(device, &calibration);
     }
 }

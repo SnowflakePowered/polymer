@@ -1,7 +1,8 @@
 use super::{
-    DecodedInput, GamepadState, PointerSource, ReportDecoder, normalize_stick, set_button,
+    BluetoothControllerDevice, DecodedInput, GamepadState, PointerSource, normalize_stick,
+    set_button,
 };
-use snowglass_input::{DeviceRole, GamepadButton};
+use snowglass_input::{Calibration, Capabilities, DeviceRole, GamepadButton};
 use std::time::Instant;
 use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
@@ -108,6 +109,7 @@ trait Switch2ReportModel {
 #[derive(Default)]
 pub struct JoyCon2LeftDecoder {
     motion_decoder: NativeMotionDecoder,
+    calibration: Calibration,
 }
 
 impl Switch2ReportModel for JoyCon2LeftDecoder {
@@ -154,7 +156,7 @@ impl JoyCon2LeftDecoder {
     }
 }
 
-impl ReportDecoder for JoyCon2LeftDecoder {
+impl BluetoothControllerDevice for JoyCon2LeftDecoder {
     fn decode(&mut self, report: &[u8], received_at: Instant) -> Option<DecodedInput> {
         let mut input = self.decode_switch2(report)?;
         self.motion_decoder.update_input(
@@ -165,11 +167,28 @@ impl ReportDecoder for JoyCon2LeftDecoder {
         );
         Some(input)
     }
+
+    fn calibration(&self) -> &Calibration {
+        &self.calibration
+    }
+
+    fn calibration_mut(&mut self) -> &mut Calibration {
+        &mut self.calibration
+    }
+
+    fn role(&self) -> DeviceRole {
+        <Self as Switch2ReportModel>::ROLE
+    }
+
+    fn additional_capabilities(&self) -> Capabilities {
+        Capabilities::POINTER_RELATIVE
+    }
 }
 
 #[derive(Default)]
 pub struct JoyCon2RightDecoder {
     motion_decoder: NativeMotionDecoder,
+    calibration: Calibration,
 }
 
 impl Switch2ReportModel for JoyCon2RightDecoder {
@@ -207,7 +226,7 @@ impl Switch2ReportModel for JoyCon2RightDecoder {
     }
 }
 
-impl ReportDecoder for JoyCon2RightDecoder {
+impl BluetoothControllerDevice for JoyCon2RightDecoder {
     fn decode(&mut self, report: &[u8], received_at: Instant) -> Option<DecodedInput> {
         let mut input = self.decode_switch2(report)?;
         self.motion_decoder.update_input(
@@ -218,11 +237,28 @@ impl ReportDecoder for JoyCon2RightDecoder {
         );
         Some(input)
     }
+
+    fn calibration(&self) -> &Calibration {
+        &self.calibration
+    }
+
+    fn calibration_mut(&mut self) -> &mut Calibration {
+        &mut self.calibration
+    }
+
+    fn role(&self) -> DeviceRole {
+        <Self as Switch2ReportModel>::ROLE
+    }
+
+    fn additional_capabilities(&self) -> Capabilities {
+        Capabilities::POINTER_RELATIVE
+    }
 }
 
 #[derive(Default)]
 pub struct Switch2ProDecoder {
     motion_decoder: NativeMotionDecoder,
+    calibration: Calibration,
 }
 
 impl Switch2ReportModel for Switch2ProDecoder {
@@ -239,7 +275,7 @@ impl Switch2ReportModel for Switch2ProDecoder {
     }
 }
 
-impl ReportDecoder for Switch2ProDecoder {
+impl BluetoothControllerDevice for Switch2ProDecoder {
     fn decode(&mut self, report: &[u8], received_at: Instant) -> Option<DecodedInput> {
         let mut input = self.decode_switch2(report)?;
         self.motion_decoder.update_input(
@@ -249,5 +285,17 @@ impl ReportDecoder for Switch2ProDecoder {
             &mut input,
         );
         Some(input)
+    }
+
+    fn calibration(&self) -> &Calibration {
+        &self.calibration
+    }
+
+    fn calibration_mut(&mut self) -> &mut Calibration {
+        &mut self.calibration
+    }
+
+    fn role(&self) -> DeviceRole {
+        <Self as Switch2ReportModel>::ROLE
     }
 }

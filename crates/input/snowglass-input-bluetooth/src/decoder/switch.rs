@@ -1,5 +1,5 @@
-use super::{DecodedInput, GamepadState, ReportDecoder, normalize_stick, set_button};
-use snowglass_input::{DeviceRole, GamepadButton};
+use super::{BluetoothControllerDevice, DecodedInput, GamepadState, normalize_stick, set_button};
+use snowglass_input::{Calibration, DeviceRole, GamepadButton};
 use std::time::Instant;
 use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
@@ -133,7 +133,9 @@ trait SwitchReportModel {
 macro_rules! switch_decoder {
     ($decoder:ident, $left:literal, $right:literal, $role:expr) => {
         #[derive(Default)]
-        pub struct $decoder;
+        pub struct $decoder {
+            calibration: Calibration,
+        }
 
         impl SwitchReportModel for $decoder {
             const HAS_LEFT_STICK: bool = $left;
@@ -141,9 +143,21 @@ macro_rules! switch_decoder {
             const ROLE: DeviceRole = $role;
         }
 
-        impl ReportDecoder for $decoder {
+        impl BluetoothControllerDevice for $decoder {
             fn decode(&mut self, report: &[u8], _received_at: Instant) -> Option<DecodedInput> {
                 Self::decode_report(report)
+            }
+
+            fn calibration(&self) -> &Calibration {
+                &self.calibration
+            }
+
+            fn calibration_mut(&mut self) -> &mut Calibration {
+                &mut self.calibration
+            }
+
+            fn role(&self) -> DeviceRole {
+                <Self as SwitchReportModel>::ROLE
             }
         }
     };
@@ -163,7 +177,7 @@ mod tests {
 
     #[test]
     fn n64_decoder_reads_its_stick() {
-        let mut decoder = NsoN64Decoder;
+        let mut decoder = NsoN64Decoder::default();
         let mut report = [0_u8; 49];
         report[0] = 0x30;
         report[6..9].copy_from_slice(&[0x34, 0x52, 0x67]);
