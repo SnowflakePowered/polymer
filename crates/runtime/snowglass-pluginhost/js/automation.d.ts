@@ -1,11 +1,8 @@
-export type TextMatch =
-  | { equals: string; caseSensitive?: boolean }
-  | { contains: string; caseSensitive?: boolean };
-
 export interface WindowQuery {
-  title?: TextMatch;
-  className?: TextMatch;
-  visible?: boolean;
+  /** Rust-regex pattern matched against the window title. */
+  pattern?: string;
+  /** Accessibility selector that must match within the window. */
+  selector?: string;
 }
 
 export interface UiNodeSnapshot {

@@ -28,10 +28,14 @@ type Configuration = HostConfiguration<{
                 nand_root_path: string,
                 hotkeys_require_focus: boolean,
             },
+            display: {
+                render_to_main: boolean,
+            },
             input: {
                 background_input: boolean,
             },
             interface: {
+                confirm_stop: boolean,
                 skip_n_kit_warning: boolean,
             },
         },
@@ -137,14 +141,22 @@ async function applyWiiConnectionChanges(context: ControllerChangeContext): Prom
         .filter(mapping => mapping.target.group === "wii")
         .sort((left, right) => left.target.port - right.target.port);
 
-    const dolphin = await context.ui.waitForWindow({ title: { contains: "Dolphin" } });
-    await dolphin.setLogicalFocus();
-    await dolphin.keyboard.press("KeyO", { modifiers: ["Alt"] });
-    await dolphin.keyboard.press("KeyC");
+    // The control window title is Dolphin's source revision. The render window
+    // appends pipe-delimited CPU, graphics, audio, and optional game details.
+    const dolphin = await context.ui.waitForWindow({
+        pattern: "^Dolphin [^|]+$",
+        selector: 'button[name="Controllers"]',
+    });
+    await dolphin.locator('button[name="Controllers"]').press();
 
-    const settings = await context.ui.waitForWindow({ title: { equals: "Settings" } });
+    const settings = await context.ui.waitForWindow({
+        pattern: "^Settings$",
+        selector: 'group[name="Wii Remotes"] combo_box[enabled="true"]',
+    });
     try {
-        const sources = settings.locator('group[name="Wii Remotes"] combo_box');
+        const sources = settings.locator(
+            'group[name="Wii Remotes"] combo_box[enabled="true"]',
+        );
         for (const mapping of context.previousTopology.mappings
             .filter(mapping => mapping.target.group === "wii" && wiimoteSource(mapping) === 2)
             .sort((left, right) => left.target.port - right.target.port)) {
@@ -160,7 +172,9 @@ async function applyWiiConnectionChanges(context: ControllerChangeContext): Prom
                         : "None");
         }
     } finally {
-        await settings.keyboard.press("Escape");
+        await settings
+            .locator('button[name="Close"][stable_id="Close"]')
+            .press();
     }
 }
 
@@ -232,6 +246,9 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     options.core.slot_b = "None";
 
     options.general.hotkeys_require_focus = false;
+    // Keep Dolphin's control window available for live settings automation;
+    // the D3D render surface remains a separate tracked window.
+    options.display.render_to_main = false;
     if (isWii) {
         options.general.nand_root_path = args.filesystem.path("/User/Wii");
     }
@@ -241,6 +258,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     options.input.background_input = true;
     // NKit images trigger a modal warning before emulation starts. Snowglass
     // launches Dolphin unattended, so the warning must never block startup.
+    options.interface.confirm_stop = false;
     options.interface.skip_n_kit_warning = true;
 
     if (isWii) {
@@ -258,7 +276,9 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
         }
     }
 
-    const argv = ["-u", args.filesystem.path("/User"), "-b"];
+    // Batch mode never shows Dolphin's control window. Snowglass already
+    // isolates that UI on a private desktop and owns process termination.
+    const argv = ["-u", args.filesystem.path("/User")];
     if (launchesNandTitle) {
         const titleId = args.package.titleId?.replace(/^0x/i, "").toLowerCase();
         if (!titleId || !/^[0-9a-f]{16}$/.test(titleId)) {

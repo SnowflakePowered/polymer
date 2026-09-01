@@ -14,7 +14,7 @@ key = "Device"
 value = "DInput/0/Keyboard Mouse"
 
 [actions.map]
-exit = { expression = "ESCAPE", name = "General/Stop" }
+exit = { expression = "ESCAPE", name = "General/Exit" }
 fast_forward = { expression = "TAB", name = "Emulation Speed/Disable Emulation Speed Limit" }
 frame_advance = { expression = "@(Ctrl+F4)", name = "Frame Advance/Frame Advance" }
 load_state = { expression = "@(Ctrl+F1)", name = "Load State/Load from Selected Slot" }

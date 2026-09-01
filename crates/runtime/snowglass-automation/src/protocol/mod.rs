@@ -1,77 +1,45 @@
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct WindowId(pub String);
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TextMatch {
-    #[serde(default)]
-    pub equals: Option<String>,
-    #[serde(default)]
-    pub contains: Option<String>,
-    #[serde(default)]
-    pub case_sensitive: bool,
-}
-
-impl TextMatch {
-    pub fn matches(&self, candidate: &str) -> bool {
-        let normalize = |value: &str| {
-            if self.case_sensitive {
-                value.to_owned()
-            } else {
-                value.to_lowercase()
-            }
-        };
-        let candidate = normalize(candidate);
-        self.equals
-            .as_deref()
-            .is_none_or(|expected| candidate == normalize(expected))
-            && self
-                .contains
-                .as_deref()
-                .is_none_or(|expected| candidate.contains(&normalize(expected)))
-    }
-
-    pub fn validate(&self) -> Result<(), AutomationError> {
-        if self.equals.is_some() == self.contains.is_some() {
-            return Err(AutomationError::invalid_argument(
-                "text match requires exactly one of equals or contains",
-            ));
-        }
-        Ok(())
-    }
-}
-
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WindowQuery {
-    pub title: Option<TextMatch>,
-    pub class_name: Option<TextMatch>,
-    pub visible: Option<bool>,
+    /// A Rust-regex pattern matched against the window title.
+    pub pattern: Option<String>,
+    /// An accessibility selector that must match within the window.
+    pub selector: Option<String>,
 }
 
 impl WindowQuery {
-    pub fn validate(&self) -> Result<(), AutomationError> {
-        if let Some(value) = &self.title {
-            value.validate()?;
-        }
-        if let Some(value) = &self.class_name {
-            value.validate()?;
-        }
-        Ok(())
+    pub fn matcher(&self) -> Result<WindowMatcher, AutomationError> {
+        Ok(WindowMatcher {
+            pattern: self.pattern.as_deref().map(Self::compile).transpose()?,
+        })
     }
 
+    fn compile(pattern: &str) -> Result<Regex, AutomationError> {
+        Regex::new(pattern).map_err(|error| {
+            AutomationError::invalid_argument(format!(
+                "invalid window regex pattern '{pattern}': {error}"
+            ))
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct WindowMatcher {
+    pattern: Option<Regex>,
+}
+
+impl WindowMatcher {
     pub fn matches(&self, window: &WindowSnapshot) -> bool {
-        self.title
+        self.pattern
             .as_ref()
-            .is_none_or(|query| query.matches(&window.title))
-            && self
-                .class_name
-                .as_ref()
-                .is_none_or(|query| query.matches(&window.class_name))
-            && self.visible.is_none_or(|visible| window.visible == visible)
+            .is_none_or(|pattern| pattern.is_match(&window.title))
     }
 }
 
@@ -372,6 +340,36 @@ impl AutomationError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_queries_use_regex_patterns() {
+        let query = WindowQuery {
+            pattern: Some(r"^Dolphin \d+(?:\.\d+)*$".to_owned()),
+            selector: Some(r#"button[name="Controllers"]"#.to_owned()),
+        };
+        let matcher = query.matcher().expect("compile window query");
+        assert!(matcher.matches(&WindowSnapshot {
+            id: WindowId("main".to_owned()),
+            process_id: 7,
+            title: "Dolphin 2609".to_owned(),
+            class_name: "Qt672QWindowIcon".to_owned(),
+            visible: false,
+        }));
+
+        let error = WindowQuery {
+            pattern: Some("(".to_owned()),
+            ..WindowQuery::default()
+        }
+        .matcher()
+        .expect_err("reject invalid regex");
+        assert_eq!(error.kind, "invalidArgument");
+        assert!(error.message.contains("invalid window regex pattern"));
+
+        let stale_query = serde_json::from_value::<WindowQuery>(serde_json::json!({
+            "title": { "contains": "Dolphin" },
+        }));
+        assert!(stale_query.is_err(), "reject stale query fields");
+    }
 
     #[test]
     fn javascript_request_shape_round_trips_camel_case_fields_and_actions() {
