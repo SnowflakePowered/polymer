@@ -262,24 +262,10 @@ impl PreparedEmulatorLaunch {
         let assignments = topology
             .port_assignments()
             .map_err(PluginInvocationError::worker)?;
-        let mut configuration = plugin
+        let configuration = plugin
             .materialize(&console, assignments)
             .map_err(PluginInvocationError::worker)?;
-        let settings = object
-            .remove("settings")
-            .unwrap_or_else(|| serde_json::json!({}));
         object.remove("storage");
-        let settings = settings.as_object().ok_or_else(|| {
-            PluginInvocationError::new(
-                "TypeError",
-                "INVALID_ARGUMENTS",
-                "onLaunch settings must be an object",
-            )
-        })?;
-        for (path, value) in settings {
-            crate::configuration::set_value(&mut configuration, path, value.clone())
-                .map_err(PluginInvocationError::worker)?;
-        }
         Ok(Self {
             invocation: EmulatorLaunchInvocation {
                 plugin,
@@ -344,6 +330,63 @@ impl PluginRuntimeHandle {
         PluginCancellationToken {
             control: Arc::new(InvocationControl::new()),
         }
+    }
+
+    pub async fn configure(
+        &self,
+        plugin_id: &str,
+        game: Value,
+        user_configuration: Option<Value>,
+    ) -> Result<Option<serde_json::Value>, PluginInvocationError> {
+        let plugin = self
+            .state
+            .registry
+            .plugin::<dyn EmulatorPluginInstance>(plugin_id)
+            .ok_or_else(|| {
+                PluginInvocationError::new(
+                    "NotFoundError",
+                    "UNKNOWN_PLUGIN",
+                    format!("unknown plugin '{plugin_id}'"),
+                )
+            })?;
+        let mut arguments = vec![game];
+        if let Some(configuration) = user_configuration {
+            arguments.push(configuration);
+        }
+        let cancellation = self.cancellation_token();
+        let entrypoint = plugin.entrypoint().to_string();
+        let invocation_entrypoint = entrypoint.clone();
+        let loader = plugin.module_loader().clone();
+        let filesystem = filesystem_options(plugin.as_ref(), BTreeMap::new())
+            .map_err(PluginInvocationError::worker)?;
+        let result = self
+            .run_with_control(cancellation.control, move |control| {
+                run_worker(
+                    entrypoint,
+                    loader,
+                    filesystem,
+                    control,
+                    move |runtime| async move {
+                        let mut runtime = runtime;
+                        invoke_optional_export(
+                            runtime.js_runtime_mut(),
+                            &invocation_entrypoint,
+                            "onConfigure",
+                            arguments,
+                        )
+                        .await
+                    },
+                )
+            })
+            .await?;
+        let Some(value) = result else {
+            return Ok(None);
+        };
+        plugin
+            .configuration_definition()
+            .expand_layout(value)
+            .map(Some)
+            .map_err(PluginInvocationError::worker)
     }
 
     /// Invokes a callable export using JSON-compatible structured data.
@@ -1045,6 +1088,50 @@ async fn invoke_export(
     serde_v8::from_v8(scope, value).map_err(PluginInvocationError::worker)
 }
 
+async fn invoke_optional_export(
+    runtime: &mut deno_core::JsRuntime,
+    entrypoint: &str,
+    name: &str,
+    arguments: Vec<Value>,
+) -> Result<Option<Value>, PluginInvocationError> {
+    let entrypoint = serde_json::to_string(entrypoint).map_err(PluginInvocationError::worker)?;
+    let name = serde_json::to_string(name).map_err(PluginInvocationError::worker)?;
+    let arguments = serde_json::to_string(&arguments).map_err(PluginInvocationError::worker)?;
+    let script = format!(
+        r#"(async () => {{
+          const namespace = await import({entrypoint});
+          const name = {name};
+          let receiver = namespace;
+          let value = namespace[name];
+          if (value === undefined) {{ receiver = namespace.default; value = receiver?.[name]; }}
+          if (value === undefined) return {{ found: false, value: null }};
+          if (typeof value !== "function") {{
+            throw new TypeError(`plugin export '${{name}}' is not a function`);
+          }}
+          return {{ found: true, value: await Reflect.apply(value, receiver, {arguments}) }};
+        }})()"#
+    );
+    let promise = runtime
+        .execute_script("snowglass:pluginhost/invoke-optional.js", script)
+        .map_err(PluginInvocationError::worker)?;
+    #[allow(deprecated)]
+    let resolved = runtime
+        .resolve_value(promise)
+        .await
+        .map_err(PluginInvocationError::worker)?;
+    deno_core::scope!(scope, runtime);
+    let value = v8::Local::new(scope, resolved);
+    let value: OptionalExportResult =
+        serde_v8::from_v8(scope, value).map_err(PluginInvocationError::worker)?;
+    Ok(value.found.then_some(value.value))
+}
+
+#[derive(Deserialize)]
+struct OptionalExportResult {
+    found: bool,
+    value: Value,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1119,7 +1206,27 @@ mod tests {
         std::fs::write(
             root.path().join("plugin.js"),
             r#"
+                import runtime from "resources:runtime";
                 let isolateCounter = 0;
+                export async function onConfigure(game, userConfiguration) {
+                  const entries = [];
+                  for await (const entry of runtime) {
+                    entries.push(entry.name);
+                    if (entry.kind === "file") await entry.bytes();
+                  }
+                  return {
+                    schema: "worker/v1",
+                    key: game.launchPath,
+                    groups: [{
+                      key: "general",
+                      title: entries.join(","),
+                      options: [{ key: "enabled", source: "general.enabled" }],
+                    }],
+                    values: {
+                      general: { enabled: userConfiguration?.general?.enabled === true },
+                    },
+                  };
+                }
                 export function named(value) {
                   isolateCounter++;
                   return { value, isolateCounter };

@@ -4,13 +4,9 @@ use deno_core::ModuleSpecifier;
 use serde::Deserialize;
 use snowglass_config::{
     ConfigurationToml,
-    ast::{
-        ConfigurationDefinition, ConfigurationInstance, DefaultDefinition, DomainDefinition,
-        PortAssignments, RealizedDomain, RealizedOption, Value, ValueKind,
-    },
+    ast::{ConfigurationDefinition, ConfigurationInstance, PortAssignments},
 };
 use std::{
-    convert::Infallible,
     fs,
     path::{Path, PathBuf},
     sync::Arc,
@@ -197,23 +193,7 @@ impl EmulatorPlugin {
         console: &str,
         assignments: PortAssignments,
     ) -> Result<ConfigurationInstance, PackageError> {
-        let realized = self
-            .definition
-            .resolve_with(|_, option| -> Result<_, Infallible> {
-                let domain = match &option.value.kind {
-                    ValueKind::Select {
-                        domain: DomainDefinition::Static(_),
-                    } => RealizedDomain::Static,
-                    _ => RealizedDomain::None,
-                };
-                let default = match &option.value.default {
-                    DefaultDefinition::Literal(value) => value.clone(),
-                    DefaultDefinition::None | DefaultDefinition::Resolver(_) => Value::Null,
-                };
-                Ok(RealizedOption { default, domain })
-            })
-            .unwrap();
-        Ok(realized.instantiate(console, assignments)?)
+        Ok(self.definition.instantiate(console, assignments)?)
     }
 }
 
@@ -248,6 +228,10 @@ impl EmulatorPluginInstance for EmulatorPlugin {
         self.entrypoint()
     }
 
+    fn configuration_definition(&self) -> &ConfigurationDefinition {
+        &self.definition
+    }
+
     fn platforms(&self) -> &[String] {
         self.platforms()
     }
@@ -272,4 +256,3 @@ impl EmulatorPluginInstance for EmulatorPlugin {
         self.materialize(console, assignments)
     }
 }
-

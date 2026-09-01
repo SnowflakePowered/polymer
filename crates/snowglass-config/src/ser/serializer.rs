@@ -3,17 +3,21 @@ use std::{
     sync::Arc,
 };
 
+use indexmap::IndexMap;
+
 use crate::{
     Handle,
     ast::{
         BoolStyleDefinition, ConfigurationDefinition, ConfigurationInstance, EmitDefinition,
         OptionDefinition, OwnedTargetPath, SettingPath, TargetDefinition, TargetGraph,
-        TargetOutputDefinition, Value, family,
+        TargetOutputDefinition, Value,
     },
     error::{Error, Result},
 };
 
-use super::{DocumentRef, EmittedBinding, EmittedValue, Emitter, ScalarValue, SectionRef};
+use super::{
+    DocumentRef, EmittedAttribute, EmittedBinding, EmittedValue, Emitter, ScalarValue, SectionRef,
+};
 use crate::input::{
     gamepad::SdlGamepadIdentity,
     projection::{Projection, Target as ProjectionTarget},
@@ -24,9 +28,8 @@ pub struct Serializer<'a> {
     instance: &'a ConfigurationInstance,
     definition: &'a ConfigurationDefinition,
     target_graph: &'a TargetGraph,
-    writes: Vec<Vec<WritePlan<'a>>>,
+    writes: Vec<IndexMap<Option<Box<str>>, Vec<WritePlan<'a>>>>,
     bindings: Vec<Vec<BindingPlan>>,
-    active: Vec<bool>,
     gamepad_bindings: BTreeMap<(Box<str>, usize), usize>,
 }
 
@@ -63,6 +66,7 @@ struct WritePlan<'a> {
     source: WriteSource<'a>,
     bool_style: Option<&'a BoolStyleDefinition>,
     int_style: Option<&'a str>,
+    attribute: bool,
 }
 
 enum WriteSource<'a> {
@@ -104,18 +108,20 @@ impl<'a> Serializer<'a> {
                 });
             }
         }
-        let definition = instance.definition().definition();
+        let definition = instance.definition();
         let target_graph = definition.target_graph()?;
 
         let mut serializer = Self {
             instance,
             definition,
             target_graph,
-            writes: (0..definition.targets.len()).map(|_| Vec::new()).collect(),
+            writes: (0..definition.targets.len())
+                .map(|_| IndexMap::new())
+                .collect(),
             bindings: (0..definition.targets.len()).map(|_| Vec::new()).collect(),
-            active: vec![false; definition.targets.len()],
             gamepad_bindings,
         };
+        serializer.validate_repetition()?;
         serializer.plan_section_writes()?;
         serializer.plan_input_writes()?;
         serializer.plan_port_writes()?;
@@ -126,7 +132,6 @@ impl<'a> Serializer<'a> {
                 index: *index,
             });
         }
-        serializer.compute_active_targets(target_graph.topological_order());
         Ok(serializer)
     }
 
@@ -166,10 +171,10 @@ impl<'a> Serializer<'a> {
             output: document.output,
         };
         emitter.begin_document(document_ref)?;
-        self.write_values(document.target, emitter.as_mut())?;
+        self.write_values(document.target, None, emitter.as_mut())?;
         for child in self.target_graph.children(document.target) {
-            if self.active[child.index()] {
-                self.write_section(child, emitter.as_mut())?;
+            if self.is_active(child, None) {
+                self.write_section(child, None, emitter.as_mut())?;
             }
         }
         emitter.end_document(document_ref)?;
@@ -185,7 +190,7 @@ impl<'a> Serializer<'a> {
     ) -> Result<BTreeMap<Box<str>, Vec<u8>>> {
         let mut outputs = BTreeMap::new();
         for document in self.documents() {
-            if !self.active[document.target.index()] {
+            if !self.is_active(document.target, None) {
                 continue;
             }
             if outputs.contains_key(document.output.path.as_ref()) {
@@ -200,23 +205,90 @@ impl<'a> Serializer<'a> {
     }
 
     fn plan_section_writes(&mut self) -> Result<()> {
-        for (_, section) in self.definition.sections.iter() {
-            for option_handle in section.options.iter().copied() {
-                let option = &self.definition.options[option_handle];
-                let setting_path = section.path.join::<family::Setting>(&option.key);
-                let Some(value) = self.instance.get(setting_path.as_str()) else {
-                    continue;
-                };
-                let source = option.emit.value.as_ref().map_or(
-                    WriteSource::Setting {
-                        path: setting_path.as_str().into(),
-                        value,
-                        option: option_handle,
-                    },
-                    WriteSource::Literal,
-                );
-                self.add_emit(section.target.as_ref(), &option.emit, source)?;
+        for section in self.definition.root_sections() {
+            self.plan_section(section, None, None)?;
+        }
+        Ok(())
+    }
+
+    fn plan_section(
+        &mut self,
+        handle: Handle<crate::ast::SectionDefinition>,
+        concrete_parent: Option<&str>,
+        instance_prefix: Option<&str>,
+    ) -> Result<()> {
+        let section = &self.definition.sections[handle];
+        let local = section
+            .path
+            .components()
+            .last()
+            .unwrap_or(section.path.as_str());
+        let concrete = concrete_parent.map_or_else(
+            || section.path.as_str().to_owned(),
+            |parent| format!("{parent}.{local}"),
+        );
+        if section.repeat {
+            let count = self
+                .instance
+                .repeated_instances()
+                .get(concrete.as_str())
+                .copied()
+                .unwrap_or(0);
+            for index in 0..count {
+                let prefix = format!("{concrete}.{index}");
+                self.plan_section_options(handle, &prefix, Some(prefix.as_str()))?;
+                for child in section.children.iter().copied() {
+                    self.plan_section(child, Some(&prefix), Some(&prefix))?;
+                }
             }
+        } else {
+            self.plan_section_options(handle, &concrete, instance_prefix)?;
+            for child in section.children.iter().copied() {
+                self.plan_section(child, Some(&concrete), instance_prefix)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn plan_section_options(
+        &mut self,
+        handle: Handle<crate::ast::SectionDefinition>,
+        concrete: &str,
+        instance_prefix: Option<&str>,
+    ) -> Result<()> {
+        let section = &self.definition.sections[handle];
+        if section.repeat
+            && let Some(target) = section.target.as_ref()
+        {
+            let target = self
+                .target_graph
+                .resolve(target.as_str())
+                .ok_or_else(|| Error::UnknownTarget(target.as_str().into()))?;
+            self.writes[target.index()]
+                .entry(instance_prefix.map(Into::into))
+                .or_default();
+        }
+        for option_handle in section.options.iter().copied() {
+            let option = &self.definition.options[option_handle];
+            let setting_path =
+                SettingPath::from_key(Arc::from(format!("{concrete}.{}", option.key)));
+            let Some(value) = self.instance.get(setting_path.as_str()) else {
+                continue;
+            };
+            let source = option.emit.value.as_ref().map_or(
+                WriteSource::Setting {
+                    path: setting_path.as_str().into(),
+                    value,
+                    option: option_handle,
+                },
+                WriteSource::Literal,
+            );
+            self.add_emit(
+                section.target.as_ref(),
+                &option.emit,
+                instance_prefix.map(Into::into),
+                source,
+            )?;
         }
         Ok(())
     }
@@ -239,7 +311,7 @@ impl<'a> Serializer<'a> {
                 },
                 WriteSource::Literal,
             );
-            self.add_emit(None, &option.emit, source)?;
+            self.add_emit(None, &option.emit, None, source)?;
         }
         Ok(())
     }
@@ -284,7 +356,7 @@ impl<'a> Serializer<'a> {
                             ),
                             _ => WriteSource::Literal(value),
                         };
-                        self.add_emit(Some(&port.target), emit, source)?;
+                        self.add_emit(Some(&port.target), emit, None, source)?;
                     }
                 }
 
@@ -339,7 +411,7 @@ impl<'a> Serializer<'a> {
                         },
                         WriteSource::Literal,
                     );
-                    self.add_emit(Some(&port.target), &option.emit, source)?;
+                    self.add_emit(Some(&port.target), &option.emit, None, source)?;
                 }
             }
         }
@@ -354,7 +426,12 @@ impl<'a> Serializer<'a> {
             let Some(value) = emit.value.as_ref() else {
                 continue;
             };
-            self.add_emit(Some(&actions.target), emit, WriteSource::Literal(value))?;
+            self.add_emit(
+                Some(&actions.target),
+                emit,
+                None,
+                WriteSource::Literal(value),
+            )?;
         }
         for action in actions.map.values() {
             self.add_binding(&actions.target, &action.name, &action.expression)?;
@@ -378,6 +455,7 @@ impl<'a> Serializer<'a> {
         &mut self,
         inherited_target: Option<&'a OwnedTargetPath>,
         emit: &'a EmitDefinition,
+        instance: Option<Box<str>>,
         source: WriteSource<'a>,
     ) -> Result<()> {
         let Some(target) = emit.target.as_ref().or(inherited_target) else {
@@ -387,6 +465,7 @@ impl<'a> Serializer<'a> {
             .target_graph
             .resolve(target.as_str())
             .ok_or_else(|| Error::UnknownTarget(target.as_str().into()))?;
+        let target_definition = &self.definition.targets[handle];
         let bool_style = emit
             .bool_style
             .as_ref()
@@ -397,21 +476,65 @@ impl<'a> Serializer<'a> {
                     .ok_or_else(|| Error::UnknownBoolStyle(name.clone()))
             })
             .transpose()?;
-        self.writes[handle.index()].push(WritePlan {
-            key: &emit.key,
-            source,
-            bool_style,
-            int_style: emit.int_style.as_deref(),
-        });
+        self.validate_attribute(target_definition, handle, emit)?;
+        self.writes[handle.index()]
+            .entry(instance)
+            .or_default()
+            .push(WritePlan {
+                key: &emit.key,
+                source,
+                bool_style,
+                int_style: emit.int_style.as_deref(),
+                attribute: emit.xml_attribute,
+            });
         Ok(())
     }
 
     fn write_section(
         &self,
         handle: Handle<TargetDefinition>,
+        parent_instance: Option<&str>,
         emitter: &mut dyn Emitter,
     ) -> Result<()> {
         let target = &self.definition.targets[handle];
+        if target.repeat {
+            for instance in self.writes[handle.index()]
+                .keys()
+                .filter_map(Option::as_deref)
+                .filter(|instance| Self::belongs_to(*instance, parent_instance))
+            {
+                self.write_section_instance(handle, Some(instance), emitter)?;
+            }
+        } else {
+            self.write_section_instance(handle, parent_instance, emitter)?;
+        }
+        Ok(())
+    }
+
+    fn write_section_instance(
+        &self,
+        handle: Handle<TargetDefinition>,
+        instance: Option<&str>,
+        emitter: &mut dyn Emitter,
+    ) -> Result<()> {
+        let target = &self.definition.targets[handle];
+        let attributes = self
+            .plans(handle, instance)
+            .into_iter()
+            .flatten()
+            .filter(|plan| plan.attribute)
+            .map(|plan| {
+                self.scalar_for_plan(plan).map(|value| {
+                    value.map(|value| EmittedAttribute {
+                        key: plan.key,
+                        value,
+                    })
+                })
+            })
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
         let section = SectionRef {
             path: target.path.as_str(),
             name: target
@@ -419,12 +542,13 @@ impl<'a> Serializer<'a> {
                 .components()
                 .last()
                 .unwrap_or(target.path.as_str()),
+            attributes: &attributes,
         };
         emitter.enter_section(section)?;
-        self.write_values(handle, emitter)?;
+        self.write_values(handle, instance, emitter)?;
         for child in self.target_graph.children(handle) {
-            if self.active[child.index()] {
-                self.write_section(child, emitter)?;
+            if self.is_active(child, instance) {
+                self.write_section(child, instance, emitter)?;
             }
         }
         emitter.exit_section(section)?;
@@ -434,9 +558,13 @@ impl<'a> Serializer<'a> {
     fn write_values(
         &self,
         handle: Handle<TargetDefinition>,
+        instance: Option<&str>,
         emitter: &mut dyn Emitter,
     ) -> Result<()> {
-        for plan in &self.writes[handle.index()] {
+        for plan in self.plans(handle, instance).into_iter().flatten() {
+            if plan.attribute {
+                continue;
+            }
             if let WriteSource::OwnedString(value) = &plan.source {
                 emitter.write_value(EmittedValue {
                     key: plan.key,
@@ -444,16 +572,7 @@ impl<'a> Serializer<'a> {
                 })?;
                 continue;
             }
-            let (value, path, option) = match &plan.source {
-                WriteSource::Setting {
-                    path,
-                    value,
-                    option,
-                } => (*value, path.as_ref(), Some(*option)),
-                WriteSource::Literal(value) => (*value, "<literal>", None),
-                WriteSource::OwnedString(_) => unreachable!(),
-            };
-            let Some(value) = self.scalar(value, path, option, plan)? else {
+            let Some(value) = self.scalar_for_plan(plan)? else {
                 continue;
             };
             emitter.write_value(EmittedValue {
@@ -461,22 +580,48 @@ impl<'a> Serializer<'a> {
                 value,
             })?;
         }
-        for binding in &self.bindings[handle.index()] {
-            emitter.write_binding(EmittedBinding {
-                key: &binding.key,
-                value: std::borrow::Cow::Borrowed(&binding.value),
-            })?;
+        if instance.is_none() {
+            for binding in &self.bindings[handle.index()] {
+                emitter.write_binding(EmittedBinding {
+                    key: &binding.key,
+                    value: std::borrow::Cow::Borrowed(&binding.value),
+                })?;
+            }
         }
         Ok(())
     }
 
-    fn scalar(
+    fn scalar_for_plan<'b>(&'b self, plan: &'b WritePlan<'a>) -> Result<Option<ScalarValue<'b>>> {
+        let (value, path, option) = match &plan.source {
+            WriteSource::Setting {
+                path,
+                value,
+                option,
+            } => (*value, path.as_ref(), Some(*option)),
+            WriteSource::Literal(value) => (*value, "<literal>", None),
+            WriteSource::OwnedString(value) => return Ok(Some(ScalarValue::String(value))),
+        };
+        self.scalar(value, path, option, plan)
+    }
+
+    fn plans(
         &self,
+        handle: Handle<TargetDefinition>,
+        instance: Option<&str>,
+    ) -> Option<&[WritePlan<'a>]> {
+        self.writes[handle.index()]
+            .iter()
+            .find(|(key, _)| key.as_deref() == instance)
+            .map(|(_, plans)| plans.as_slice())
+    }
+
+    fn scalar<'b>(
+        &'b self,
         value: &'a Value,
         path: &str,
         option: Option<Handle<OptionDefinition>>,
-        plan: &WritePlan<'a>,
-    ) -> Result<Option<ScalarValue<'a>>> {
+        plan: &'b WritePlan<'a>,
+    ) -> Result<Option<ScalarValue<'b>>> {
         let value = match value {
             Value::Null => return Ok(None),
             Value::Choice(choice) => {
@@ -517,22 +662,115 @@ impl<'a> Serializer<'a> {
         }))
     }
 
-    fn compute_active_targets(&mut self, target_order: &[Handle<TargetDefinition>]) {
-        for handle in target_order.iter().rev().copied() {
-            self.active[handle.index()] = !self.bindings[handle.index()].is_empty()
-                || self.writes[handle.index()]
-                    .iter()
-                    .any(|write| match &write.source {
-                        WriteSource::Setting { value, .. } | WriteSource::Literal(value) => {
-                            !matches!(value, Value::Null)
-                        }
-                        WriteSource::OwnedString(_) => true,
-                    })
-                || self
-                    .target_graph
-                    .children(handle)
-                    .any(|child| self.active[child.index()]);
+    fn validate_repetition(&self) -> Result<()> {
+        let mut repeated_sections = HashSet::new();
+        for (_, target) in self.definition.targets.iter() {
+            if target.repeat && target.parent.is_none() && target.additional_parents.is_empty() {
+                return Err(Error::RepeatWithoutParent(target.path.as_str().into()));
+            }
         }
+        for (_, section) in self.definition.sections.iter() {
+            let Some(target_path) = section.target.as_ref() else {
+                if section.repeat {
+                    return Err(Error::RepeatMismatch {
+                        section: section.path.as_str().into(),
+                        target: "<none>".into(),
+                    });
+                }
+                continue;
+            };
+            let target = self
+                .target_graph
+                .resolve(target_path.as_str())
+                .ok_or_else(|| Error::UnknownTarget(target_path.as_str().into()))?;
+            if section.repeat != self.definition.targets[target].repeat {
+                return Err(Error::RepeatMismatch {
+                    section: section.path.as_str().into(),
+                    target: target_path.as_str().into(),
+                });
+            }
+            if section.repeat {
+                repeated_sections.insert(target);
+            }
+            for option in section.options.iter().copied() {
+                let emit = &self.definition.options[option].emit;
+                let emit_target = emit.target.as_ref().unwrap_or(target_path);
+                let emit_handle = self
+                    .target_graph
+                    .resolve(emit_target.as_str())
+                    .ok_or_else(|| Error::UnknownTarget(emit_target.as_str().into()))?;
+                self.validate_attribute(&self.definition.targets[emit_handle], emit_handle, emit)?;
+            }
+        }
+        for (handle, target) in self.definition.targets.iter() {
+            if target.repeat && !repeated_sections.contains(&handle) {
+                return Err(Error::RepeatMismatch {
+                    section: "<none>".into(),
+                    target: target.path.as_str().into(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_attribute(
+        &self,
+        target: &TargetDefinition,
+        handle: Handle<TargetDefinition>,
+        emit: &EmitDefinition,
+    ) -> Result<()> {
+        if !emit.xml_attribute {
+            return Ok(());
+        }
+        if target.parent.is_none() && target.additional_parents.is_empty() {
+            return Err(Error::AttributeOnDocumentRoot(target.path.as_str().into()));
+        }
+        if let Some(format) = self
+            .target_graph
+            .output_formats(handle)
+            .iter()
+            .find(|format| format.as_ref() != "xml")
+        {
+            return Err(Error::AttributeUnsupportedFormat {
+                target: target.path.as_str().into(),
+                format: format.clone(),
+            });
+        }
+        Ok(())
+    }
+
+    fn is_active(&self, handle: Handle<TargetDefinition>, instance: Option<&str>) -> bool {
+        let target = &self.definition.targets[handle];
+        let own_writes = if target.repeat {
+            self.writes[handle.index()]
+                .keys()
+                .filter_map(Option::as_deref)
+                .any(|candidate| Self::belongs_to(candidate, instance))
+        } else {
+            self.plans(handle, instance).is_some_and(|plans| {
+                plans.iter().any(|plan| match &plan.source {
+                    WriteSource::Setting { value, .. } | WriteSource::Literal(value) => {
+                        !matches!(value, Value::Null)
+                    }
+                    WriteSource::OwnedString(_) => true,
+                })
+            }) || instance.is_none() && !self.bindings[handle.index()].is_empty()
+        };
+        own_writes
+            || self
+                .target_graph
+                .children(handle)
+                .any(|child| self.is_active(child, instance))
+    }
+
+    fn belongs_to(instance: &str, parent: Option<&str>) -> bool {
+        parent.is_none_or(|parent| {
+            instance.starts_with(parent)
+                && instance
+                    .as_bytes()
+                    .get(parent.len())
+                    .is_some_and(|byte| *byte == b'.')
+        })
     }
 }
 
@@ -560,14 +798,11 @@ fn reject_unknown_template(original: &str, expanded: String) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::{convert::Infallible, fmt::Write as FmtWrite, io::Write as IoWrite, sync::Arc};
+    use std::{fmt::Write as FmtWrite, io::Write as IoWrite, sync::Arc};
 
     use crate::{
         ConfigurationToml,
-        ast::{
-            ConfigurationDefinition, DefaultDefinition, DomainDefinition, RealizedDomain,
-            RealizedOption, Value, ValueKind,
-        },
+        ast::{ConfigurationDefinition, Value},
         ser::{BmlEmitter, EmitResult, IniEmitter, XmlEmitter},
     };
 
@@ -696,25 +931,7 @@ mod tests {
             let parsed = ConfigurationToml::try_from_tomls(&arena, [source].into_iter()).unwrap();
             Arc::new(ConfigurationDefinition::from(parsed))
         };
-        let realized = definition
-            .resolve_with(|_, option| -> std::result::Result<_, Infallible> {
-                let domain = match &option.value.kind {
-                    ValueKind::Select { domain } => {
-                        if matches!(domain, DomainDefinition::Static(_)) {
-                            RealizedDomain::Static
-                        } else {
-                            RealizedDomain::None
-                        }
-                    }
-                    _ => RealizedDomain::None,
-                };
-                Ok(RealizedOption {
-                    default: literal(&option.value.default),
-                    domain,
-                })
-            })
-            .unwrap();
-        let mut instance = realized.instantiate("example", BTreeMap::new()).unwrap();
+        let mut instance = definition.instantiate("example", BTreeMap::new()).unwrap();
         instance["general.enabled"] = Value::Boolean(true);
         assert_eq!(
             instance["general.data_path"],
@@ -848,26 +1065,8 @@ mod tests {
         let arena = toml_spanner::Arena::new();
         let parsed = ConfigurationToml::try_from_tomls(&arena, sources.iter().copied()).unwrap();
         let definition = Arc::new(ConfigurationDefinition::from(parsed));
-        let realized = definition
-            .resolve_with(|_, option| -> std::result::Result<_, Infallible> {
-                let domain = match &option.value.kind {
-                    ValueKind::Select { domain } => {
-                        if matches!(domain, DomainDefinition::Static(_)) {
-                            RealizedDomain::Static
-                        } else {
-                            RealizedDomain::None
-                        }
-                    }
-                    _ => RealizedDomain::None,
-                };
-                Ok(RealizedOption {
-                    default: literal(&option.value.default),
-                    domain,
-                })
-            })
-            .unwrap();
         let assignments = BTreeMap::from([(group.into(), vec![layout.into()].into_boxed_slice())]);
-        let instance = realized.instantiate(console, assignments).unwrap();
+        let instance = definition.instantiate(console, assignments).unwrap();
         Serializer::new(
             &instance,
             [GamepadBinding {
@@ -888,12 +1087,5 @@ mod tests {
 
     fn text(bytes: &[u8]) -> &str {
         std::str::from_utf8(bytes).unwrap()
-    }
-
-    fn literal(default: &DefaultDefinition) -> Value {
-        match default {
-            DefaultDefinition::Literal(value) => value.clone(),
-            DefaultDefinition::None | DefaultDefinition::Resolver(_) => Value::Null,
-        }
     }
 }

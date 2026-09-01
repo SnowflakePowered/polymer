@@ -15,10 +15,9 @@ mod ui;
 
 pub use capture::ConsumerPreference;
 pub use configuration::{
-    ChoiceDescriptor, ConfigurationDefaults, ConfigurationRequest, DefaultGamepad, DetectedGame,
-    EmulatorDescriptor, GameDescriptor, LaunchGroupRequest, LaunchPortRequest, OptionDescriptor,
-    PortDescriptor, PortGroupDescriptor, PreparedGame, describe_api as describe_configuration,
-    prepare_api as prepare_configuration,
+    ConfigurationDefaults, ConfigurationRequest, DefaultGamepad, DetectedGame, EmulatorDescriptor,
+    GameDescriptor, LaunchGroupRequest, LaunchPortRequest, PortDescriptor, PortGroupDescriptor,
+    PreparedGame, describe_api as describe_configuration, prepare_api as prepare_configuration,
 };
 pub use consolestorage::{manager as console_storage_manager, serve as serve_console_storage};
 pub use frontend::{

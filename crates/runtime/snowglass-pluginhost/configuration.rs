@@ -1,8 +1,8 @@
 use snowglass_config::{
-    ast::{ConfigurationInstance, OptionRange, Value, ValueKind},
+    ast::{ConfigurationInstance, Value},
     ser::{BmlEmitter, Emitter, GamepadBinding, IniEmitter, Serializer, XmlEmitter},
 };
-use std::{collections::BTreeMap, path::PathBuf};
+use std::collections::BTreeMap;
 use thiserror::Error;
 
 pub type SerializedConfiguration = BTreeMap<String, Vec<u8>>;
@@ -36,7 +36,6 @@ impl ConfigurationInstances {
             .ok_or(ConfigurationAccessError::UnknownConfiguration(id))?;
         Ok(entry
             .instance
-            .definition()
             .definition()
             .actions
             .as_ref()
@@ -83,7 +82,7 @@ impl ConfigurationInstances {
             .instances
             .get(&id)
             .ok_or(ConfigurationAccessError::UnknownConfiguration(id))?;
-        Ok(instance.instance.get(path).map(value_to_json))
+        Ok(instance.instance.get(path).map(Value::to_json))
     }
 
     pub(crate) fn set(
@@ -96,8 +95,32 @@ impl ConfigurationInstances {
             .instances
             .get_mut(&id)
             .ok_or(ConfigurationAccessError::UnknownConfiguration(id))?;
-        set_value(&mut instance.instance, path, value)?;
+        instance.instance.set_json(path, value)?;
         Ok(())
+    }
+
+    pub(crate) fn repeats(
+        &self,
+        id: ConfigurationId,
+        path: &str,
+    ) -> Result<bool, ConfigurationAccessError> {
+        let entry = self
+            .instances
+            .get(&id)
+            .ok_or(ConfigurationAccessError::UnknownConfiguration(id))?;
+        Ok(entry.instance.repeats(path))
+    }
+
+    pub(crate) fn append(
+        &mut self,
+        id: ConfigurationId,
+        path: &str,
+    ) -> Result<Box<str>, ConfigurationAccessError> {
+        let entry = self
+            .instances
+            .get_mut(&id)
+            .ok_or(ConfigurationAccessError::UnknownConfiguration(id))?;
+        Ok(entry.instance.append(path)?)
     }
 
     pub(crate) fn entries(
@@ -111,12 +134,7 @@ impl ConfigurationInstances {
         Ok(instance
             .instance
             .iter()
-            .map(|(_, setting)| {
-                (
-                    setting.path.as_str().to_owned(),
-                    value_to_json(&setting.value),
-                )
-            })
+            .map(|(_, setting)| (setting.path.as_str().to_owned(), setting.value.to_json()))
             .collect())
     }
 
@@ -163,16 +181,11 @@ impl ConfigurationInstances {
         let values = current
             .instance
             .iter()
-            .map(|(_, setting)| {
-                (
-                    setting.path.as_str().to_owned(),
-                    value_to_json(&setting.value),
-                )
-            })
+            .map(|(_, setting)| (setting.path.as_str().to_owned(), setting.value.to_json()))
             .collect::<Vec<_>>();
         for (path, value) in values {
             if replacement.setting(&path).is_some() {
-                set_value(&mut replacement, &path, value)?;
+                replacement.set_json(&path, value)?;
             }
         }
         self.instances.insert(
@@ -221,23 +234,6 @@ pub(crate) fn serialize(
         .collect())
 }
 
-pub(crate) fn set_value(
-    instance: &mut ConfigurationInstance,
-    path: &str,
-    value: serde_json::Value,
-) -> Result<(), ConfigurationAccessError> {
-    let option = instance
-        .setting(path)
-        .ok_or_else(|| ConfigurationAccessError::UnknownSetting(path.to_owned()))?
-        .option;
-    let value = value_from_json(instance, path, option, value)?;
-    let setting = instance
-        .get_mut(path)
-        .ok_or_else(|| ConfigurationAccessError::UnknownSetting(path.to_owned()))?;
-    *setting = value;
-    Ok(())
-}
-
 fn emitter_for(format: &str) -> Option<Box<dyn Emitter>> {
     match format {
         "bml" => Some(Box::new(BmlEmitter::new())),
@@ -247,132 +243,10 @@ fn emitter_for(format: &str) -> Option<Box<dyn Emitter>> {
     }
 }
 
-fn value_to_json(value: &Value) -> serde_json::Value {
-    match value {
-        Value::Null => serde_json::Value::Null,
-        Value::Boolean(value) => (*value).into(),
-        Value::Integer(value) => (*value).into(),
-        Value::Float(value) => serde_json::Value::from(*value),
-        Value::String(value) | Value::Choice(value) => value.as_ref().into(),
-        Value::Path(value) => value.to_string_lossy().into_owned().into(),
-    }
-}
-
-fn value_from_json(
-    instance: &ConfigurationInstance,
-    path: &str,
-    option: snowglass_config::Handle<snowglass_config::ast::OptionDefinition>,
-    value: serde_json::Value,
-) -> Result<Value, ConfigurationAccessError> {
-    if value.is_null() {
-        return Ok(Value::Null);
-    }
-
-    let option_ref = instance.definition().option(option);
-    let invalid = |expected| ConfigurationAccessError::InvalidSettingValue {
-        path: path.to_owned(),
-        expected,
-        actual: json_kind(&value),
-    };
-
-    match &option_ref.definition.value.kind {
-        ValueKind::Boolean => value
-            .as_bool()
-            .map(Value::Boolean)
-            .ok_or_else(|| invalid("a boolean")),
-        ValueKind::Integer { range } => {
-            let value = value.as_i64().ok_or_else(|| invalid("an integer"))?;
-            if let Some(OptionRange::Integer { min, max }) = range
-                && !(*min..=*max).contains(&value)
-            {
-                return Err(ConfigurationAccessError::OutOfRange {
-                    path: path.to_owned(),
-                    value: value.to_string(),
-                    min: min.to_string(),
-                    max: max.to_string(),
-                });
-            }
-            Ok(Value::Integer(value))
-        }
-        ValueKind::Float { range } => {
-            let value = value
-                .as_f64()
-                .filter(|value| value.is_finite())
-                .ok_or_else(|| invalid("a finite number"))?;
-            if let Some(OptionRange::Float { min, max }) = range
-                && !(*min..=*max).contains(&value)
-            {
-                return Err(ConfigurationAccessError::OutOfRange {
-                    path: path.to_owned(),
-                    value: value.to_string(),
-                    min: min.to_string(),
-                    max: max.to_string(),
-                });
-            }
-            Ok(Value::Float(value))
-        }
-        ValueKind::String => value
-            .as_str()
-            .map(|value| Value::String(value.into()))
-            .ok_or_else(|| invalid("a string")),
-        ValueKind::Path => value
-            .as_str()
-            .map(|value| Value::Path(PathBuf::from(value)))
-            .ok_or_else(|| invalid("a path string")),
-        ValueKind::Select { .. } => {
-            let choice = value.as_str().ok_or_else(|| invalid("a choice key"))?;
-            let known = instance
-                .definition()
-                .choices(option)
-                .is_some_and(|choices| {
-                    choices
-                        .iter()
-                        .any(|candidate| candidate.key.as_str() == choice)
-                });
-            if !known {
-                return Err(ConfigurationAccessError::UnknownChoice {
-                    path: path.to_owned(),
-                    choice: choice.to_owned(),
-                });
-            }
-            Ok(Value::Choice(choice.into()))
-        }
-    }
-}
-
-fn json_kind(value: &serde_json::Value) -> &'static str {
-    match value {
-        serde_json::Value::Null => "null",
-        serde_json::Value::Bool(_) => "a boolean",
-        serde_json::Value::Number(number) if number.is_i64() || number.is_u64() => "an integer",
-        serde_json::Value::Number(_) => "a number",
-        serde_json::Value::String(_) => "a string",
-        serde_json::Value::Array(_) => "an array",
-        serde_json::Value::Object(_) => "an object",
-    }
-}
-
 #[derive(Debug, Error)]
 pub enum ConfigurationAccessError {
     #[error("plugin configuration invocation {0} does not exist")]
     UnknownConfiguration(ConfigurationId),
-    #[error("configuration setting '{0}' does not exist")]
-    UnknownSetting(String),
-    #[error("configuration setting '{path}' expects {expected}, got {actual}")]
-    InvalidSettingValue {
-        path: String,
-        expected: &'static str,
-        actual: &'static str,
-    },
-    #[error("configuration setting '{path}' value {value} is outside {min}..={max}")]
-    OutOfRange {
-        path: String,
-        value: String,
-        min: String,
-        max: String,
-    },
-    #[error("configuration setting '{path}' has no choice '{choice}'")]
-    UnknownChoice { path: String, choice: String },
     #[error(transparent)]
     Configuration(#[from] snowglass_config::error::Error),
 }

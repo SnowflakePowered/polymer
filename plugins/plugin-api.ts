@@ -1,14 +1,30 @@
 /** Shared host-owned values exposed to emulator plugins. */
 export type Resource = Readonly<{
-    kind: "tree" | "file",
+    kind: "tree" | "directory" | "file",
     path?: string,
 }>;
+
+export type DirectoryEntry = Readonly<{
+    name: string,
+    kind: "directory",
+    [Symbol.asyncIterator](): AsyncIterator<DirEntry>,
+}>;
+
+export type FileEntry = Readonly<{
+    name: string,
+    kind: "file",
+    bytes(): Promise<Uint8Array>,
+    text(): Promise<string>,
+}>;
+
+export type DirEntry = DirectoryEntry | FileEntry;
+export type DirectoryResource = DirectoryEntry;
 
 export type Filesystem = {
     mountCache(cacheKey: string): Resource,
     mountHostTree(target: string, source: string, options: { mode: string }): void,
     mountHostFile(target: string, source: string, options: { mode: string }): void,
-    mountTree(target: string, source: Resource | URL | string, options: { mode: string }): void,
+    mountTree(target: string, source: Resource | DirectoryResource | URL | string, options: { mode: string }): void,
     mountFile(target: string, source: Resource | URL | string | Uint8Array, options: { mode: string }): void,
     mountConfiguration(target: string, configuration: Configuration, options: { mode: string }): void,
     mountStorage(target: string, source: Resource, options: { mode: string, format?: string }): void,
@@ -27,6 +43,43 @@ export type Configuration<Options = unknown> = {
     options(): Options,
     render(): Readonly<Record<string, Uint8Array>>,
 };
+
+export type RepeatedSection<Options> = Readonly<{
+    append(): Options,
+}>;
+
+export type ConfigureGame = Readonly<{
+    launchPath: string,
+    name: string,
+    platform: string,
+    serial?: string,
+    titleId?: string,
+}>;
+
+export type {
+    ConfigurationChoice,
+    UserConfiguration,
+} from "../js/configuration.ts";
+import type {
+    ConfigurationGroup as SharedConfigurationGroup,
+    ConfigurationLayout as SharedConfigurationLayout,
+    ConfigurationLayoutOption as ExpandedConfigurationLayoutOption,
+    UserConfiguration,
+} from "../js/configuration.ts";
+
+export type ConfigurationLayoutOption =
+    | Readonly<{ key: string, source: string }>
+    | ExpandedConfigurationLayoutOption;
+export type ConfigurationGroup = SharedConfigurationGroup<ConfigurationLayoutOption>;
+export type ConfigurationLayout = SharedConfigurationLayout<ConfigurationLayoutOption>;
+export type ConfigurationResult = ConfigurationLayout & Readonly<{
+    values: UserConfiguration,
+}>;
+
+export type OnConfigure = (
+    game: ConfigureGame,
+    userConfiguration?: UserConfiguration,
+) => ConfigurationResult | Promise<ConfigurationResult>;
 
 export type InputSourceSelector =
     | Readonly<{ kind: "keyboardMouse" }>

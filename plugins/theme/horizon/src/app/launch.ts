@@ -45,15 +45,6 @@ export function applyFrontendDefaults(game: PackageConfiguration) {
   return game;
 }
 
-export function activeOptions(emulator: EmulatorConfiguration, platform: string) {
-  const activePorts = emulator.groups.flatMap((group) =>
-    group.ports.slice(0, group.connected).map((port) => `ports.${platform}.${group.name}.${port.index}.`),
-  );
-  return emulator.options.filter((option) =>
-    !option.path.startsWith("ports.") || activePorts.some((prefix) => option.path.startsWith(prefix)),
-  );
-}
-
 async function defaultVolume(kind: ConsoleStorageKind, platform: string) {
   const key = `${kind}:${platform}`;
   let pending = volumeCache.get(key);
@@ -89,11 +80,7 @@ export async function createSelection(game: PackageConfiguration): Promise<Confi
         layout: port.selectedLayout,
       })),
     })),
-    settings: Object.fromEntries(
-      activeOptions(emulator, game.platform)
-        .filter((option) => option.value != null)
-        .map((option) => [option.path, option.value]),
-    ),
+    userConfiguration: emulator.userConfiguration,
   };
 
   if (game.platform === WII || game.platform === WII_U) {

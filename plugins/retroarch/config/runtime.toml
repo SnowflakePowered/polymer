@@ -1,6 +1,10 @@
 [meta]
 emulator = "retroarch-lrps2"
 
+[bool_style.lower]
+true = "true"
+false = "false"
+
 [targets.generated]
 output = { format = "ini", path = "generated.ini" }
 
@@ -15,4 +19,4 @@ key = "placeholder"
 title = "Placeholder"
 type = "bool"
 default = false
-emit = { key = "Placeholder" }
+emit = { key = "Placeholder", bool_style = "lower" }

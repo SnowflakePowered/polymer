@@ -9,6 +9,14 @@ pub struct Emit<'de> {
     pub(crate) value: Option<OptionValue<'de>>,
     pub(crate) bool_style: Option<&'de str>,
     pub(crate) int_style: Option<&'de str>,
+    pub(crate) xml: Option<XmlStyle>,
+}
+
+#[derive(Debug, Toml)]
+#[toml(FromToml)]
+pub struct XmlStyle {
+    #[toml(default)]
+    pub(crate) attribute: bool,
 }
 
 #[derive(Debug, Toml)]
@@ -20,15 +28,8 @@ pub struct OptionDefinition<'de> {
     pub kind: &'de str,
     pub range: Option<OptionRange>,
     pub default: Option<OptionValue<'de>>,
-    pub domain: Option<OptionDomain<'de>>,
+    pub domain: Option<Vec<SelectDefinition<'de>>>,
     pub emit: Emit<'de>,
-}
-
-#[derive(Debug, Toml)]
-#[toml(FromToml, untagged)]
-pub enum OptionDomain<'de> {
-    Select(Vec<SelectDefinition<'de>>),
-    Resolve { source: &'de str },
 }
 
 #[derive(Debug, Toml)]

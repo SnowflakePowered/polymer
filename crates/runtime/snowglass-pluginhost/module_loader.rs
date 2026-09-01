@@ -10,6 +10,7 @@ use std::{path::PathBuf, sync::Arc};
 
 const PLUGIN_SCHEME: &str = "snowglass-pkg";
 const PLUGIN_HOST: &str = "plugin";
+const RESOURCE_SCHEME: &str = "snowglass-resource";
 
 /// Module resolver and source transformer bound permanently to one package.
 #[derive(Clone, Debug)]
@@ -40,6 +41,31 @@ impl PluginModuleLoader {
 
     pub fn owns(&self, specifier: &ModuleSpecifier) -> bool {
         specifier.as_str().starts_with(self.base.as_str())
+    }
+
+    fn resource_specifier(&self, specifier: &str) -> Result<ModuleSpecifier, ModuleLoaderError> {
+        let name = specifier
+            .strip_prefix("resources:")
+            .expect("resource resolution is only called for resources: specifiers");
+        if name.is_empty()
+            || name.chars().any(|character| {
+                !(character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+            })
+        {
+            return Err(ModuleLoaderError::type_error(format!(
+                "resources: import requires a declared resource name: {specifier}"
+            )));
+        }
+        ModuleSpecifier::parse(&format!(
+            "{RESOURCE_SCHEME}://{PLUGIN_HOST}/{}/{name}",
+            self.id
+        ))
+        .map_err(ModuleLoaderError::from_err)
+    }
+
+    fn resource_name<'a>(&self, specifier: &'a ModuleSpecifier) -> Option<&'a str> {
+        let prefix = format!("{RESOURCE_SCHEME}://{PLUGIN_HOST}/{}/", self.id);
+        specifier.as_str().strip_prefix(&prefix)
     }
 
     pub fn specifier(&self, path: &std::path::Path) -> Result<ModuleSpecifier, ModuleLoaderError> {
@@ -183,12 +209,14 @@ impl ModuleLoader for PluginModuleLoader {
         referrer: &str,
         _kind: ResolutionKind,
     ) -> Result<ModuleSpecifier, ModuleLoaderError> {
-        let resolved = if specifier.starts_with("pkg:") {
+        let resolved = if specifier.starts_with("resources:") {
+            self.resource_specifier(specifier)?
+        } else if specifier.starts_with("pkg:") {
             self.resolve_package(specifier)?
         } else {
             resolve_import(specifier, referrer).map_err(ModuleLoaderError::from_err)?
         };
-        if !self.owns(&resolved) {
+        if !self.owns(&resolved) && self.resource_name(&resolved).is_none() {
             return Err(ModuleLoaderError::type_error(format!(
                 "plugin '{}' import escapes its package: {resolved}",
                 self.id
@@ -203,9 +231,21 @@ impl ModuleLoader for PluginModuleLoader {
         _maybe_referrer: Option<&ModuleLoadReferrer>,
         options: ModuleLoadOptions,
     ) -> ModuleLoadResponse {
-        ModuleLoadResponse::Sync(
-            self.load_source(module_specifier, requested_module_type(&options)),
-        )
+        let source = if let Some(name) = self.resource_name(module_specifier) {
+            let code = format!(
+                "export default globalThis.__snowglassFilesystem.importResource({});",
+                serde_json::to_string(name).expect("resource name is JSON-compatible")
+            );
+            Ok(ModuleSource::new(
+                ModuleType::JavaScript,
+                ModuleSourceCode::String(code.into()),
+                module_specifier,
+                None,
+            ))
+        } else {
+            self.load_source(module_specifier, requested_module_type(&options))
+        };
+        ModuleLoadResponse::Sync(source)
     }
 }
 

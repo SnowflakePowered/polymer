@@ -2,14 +2,14 @@ import { Collapsible } from "@ark-ui/solid";
 import { For } from "solid-js";
 import type { EmulatorConfiguration, PackageConfiguration } from "../../../../../../js/snowglass";
 import { ChoiceControl, OptionControl } from "../../components/FormControls";
-import { activeOptions, friendly } from "../../app/launch";
+import { friendly } from "../../app/launch";
 import "./SettingsSection.css";
 
 export function SettingsSection(props: {
   game: PackageConfiguration;
   emulator: EmulatorConfiguration;
   selectEmulator(value: string): void;
-  update(change: (emulator: EmulatorConfiguration) => void): void;
+  updateConfiguration(group: string, option: string, value: boolean | number | string | null): void;
 }) {
   return <aside class="horizon-settings-section">
     <p class="horizon-settings-kicker">Game setup</p>
@@ -18,7 +18,14 @@ export function SettingsSection(props: {
     <Collapsible.Root defaultOpen>
       <Collapsible.Trigger class="horizon-settings-trigger">Advanced settings <Collapsible.Indicator>⌄</Collapsible.Indicator></Collapsible.Trigger>
       <Collapsible.Content class="horizon-settings-list">
-        <For each={activeOptions(props.emulator, props.game.platform)}>{(option) => <OptionControl option={option} onChange={(value) => props.update((emulator) => { const target = emulator.options.find((item) => item.path === option.path); if (target) target.value = value; })} />}</For>
+        <For each={props.emulator.configuration?.groups || []}>{(group) => <section>
+          <h3>{group.title}</h3>
+          <For each={group.options}>{(option) => <OptionControl
+            option={option}
+            value={props.emulator.userConfiguration?.[group.key]?.[option.key] ?? option.default}
+            onChange={(value) => props.updateConfiguration(group.key, option.key, value)}
+          />}</For>
+        </section>}</For>
       </Collapsible.Content>
     </Collapsible.Root>
   </aside>;

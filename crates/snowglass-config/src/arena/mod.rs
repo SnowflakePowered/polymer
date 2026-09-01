@@ -132,15 +132,6 @@ impl<T> Arena<T> {
             Err(Error::bad_handle::<T, ()>(handle.index()))
         }
     }
-
-    pub(crate) fn retain_mut(&mut self, mut predicate: impl FnMut(Handle<T>, &mut T) -> bool) {
-        let mut index = 0;
-        self.data.retain_mut(|value| {
-            let keep = predicate(Handle::from_usize(index), value);
-            index += 1;
-            keep
-        });
-    }
 }
 
 impl<'a, T> IntoIterator for &'a Arena<T> {

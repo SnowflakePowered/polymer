@@ -190,4 +190,3 @@ impl DeviceDescriptor {
         Some(Uuid::new_v5(&Uuid::NAMESPACE_URL, name.as_bytes()))
     }
 }
-

@@ -1,6 +1,8 @@
 import {
   op_configuration_entries,
+  op_configuration_append,
   op_configuration_get,
+  op_configuration_repeats,
   op_configuration_render,
   op_configuration_set,
 } from "ext:core/ops";
@@ -23,7 +25,13 @@ function configuration(id) {
         }
         const child = path === "" ? property : `${path}.${property}`;
         const lookup = op_configuration_get(id, child);
-        return lookup.found ? lookup.value : options(child);
+        if (lookup.found) {
+          return lookup.value;
+        }
+        if (property === "append" && op_configuration_repeats(id, path)) {
+          return () => options(op_configuration_append(id, path));
+        }
+        return options(child);
       },
       set(_target, property, value) {
         if (typeof property !== "string") {

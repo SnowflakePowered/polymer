@@ -755,17 +755,30 @@ impl SnowglassHost for FrontendServices {
         &self,
         package: Value,
         preferred_emulator: Option<String>,
-    ) -> Result<Value, String> {
-        let defaults = self
-            .configuration
-            .clone()
-            .ok_or_else(|| "configuration service is unavailable".to_owned())?;
-        crate::describe_configuration(
-            self.plugins.handle().registry().clone(),
-            defaults,
-            package,
-            preferred_emulator,
-        )
+    ) -> ApiFuture<Result<Value, String>> {
+        let defaults = match self.configuration.clone() {
+            Some(defaults) => defaults,
+            None => {
+                return Box::pin(async { Err("configuration service is unavailable".to_owned()) });
+            }
+        };
+        let plugins = self.plugins.handle();
+        Box::pin(async move {
+            crate::describe_configuration(plugins, defaults, package, preferred_emulator).await
+        })
+    }
+
+    fn configure(
+        &self,
+        package: Value,
+        emulator: String,
+        user_configuration: Option<Value>,
+    ) -> ApiFuture<Result<Value, String>> {
+        let plugins = self.plugins.handle();
+        Box::pin(async move {
+            crate::configuration::configure_api(plugins, package, emulator, user_configuration)
+                .await
+        })
     }
 
     fn prepare_configuration(&self, package: Value, request: Value) -> Result<Value, String> {

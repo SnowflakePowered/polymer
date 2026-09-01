@@ -23,4 +23,3 @@ definitions = [
     "config/sections/gfx.toml",
     "config/sections/gfx/*.toml",
 ]
-resolver = "config/resolvers.ts"

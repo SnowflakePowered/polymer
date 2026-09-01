@@ -31,6 +31,14 @@ pub enum Error {
     UnknownTarget(Box<str>),
     #[error("target graph contains a cycle at `{0}`")]
     TargetCycle(Box<str>),
+    #[error("section `{section}` and target `{target}` disagree about repetition")]
+    RepeatMismatch { section: Box<str>, target: Box<str> },
+    #[error("repeated target `{0}` has no parent to contain it")]
+    RepeatWithoutParent(Box<str>),
+    #[error("target `{target}` writes format `{format}`, which has no attributes")]
+    AttributeUnsupportedFormat { target: Box<str>, format: Box<str> },
+    #[error("target `{0}` is a document root and has no element to hold an attribute")]
+    AttributeOnDocumentRoot(Box<str>),
     #[error("the definition has no input configuration")]
     NoInputDefinition,
     #[error("unknown console `{0}`")]
@@ -66,6 +74,23 @@ pub enum Error {
     },
     #[error("more than one setting materialized at `{0}`")]
     DuplicateSetting(SettingPath),
+    #[error("configuration setting `{0}` does not exist")]
+    UnknownSetting(Box<str>),
+    #[error("section `{0}` does not repeat and cannot receive an instance")]
+    NotRepeatable(Box<str>),
+    #[error("configuration setting `{path}` expects {expected}, got {actual}")]
+    InvalidSettingValue {
+        path: Box<str>,
+        expected: &'static str,
+        actual: &'static str,
+    },
+    #[error("configuration setting `{path}` value {value} is outside {min}..={max}")]
+    OutOfRange {
+        path: Box<str>,
+        value: String,
+        min: String,
+        max: String,
+    },
     #[error("unknown boolean style `{0}`")]
     UnknownBoolStyle(Box<str>),
     #[error("setting `{path}` selects unknown choice `{choice}`")]

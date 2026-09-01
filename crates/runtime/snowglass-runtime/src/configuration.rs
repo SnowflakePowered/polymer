@@ -1,15 +1,15 @@
 //! Native configuration and launch-selection services.
 
 use serde::{Deserialize, Serialize};
-use snowglass_config::ast::{
-    ConfigurationInstance, OptionRange, PortAssignments, Value, ValueKind,
-};
+use snowglass_config::ast::PortAssignments;
 use snowglass_config::input::{ControllerBindings, ProjectionMode, SourceSelector, VirtualPort};
 use snowglass_controllers::{
     ControllerAssignmentSnapshot, ControllerMapping, ControllerTarget, ControllerTopology,
 };
 use snowglass_input::InputHub;
-use snowglass_pluginhost::{EmulatorPluginInstance, EmulatorPort, PackageError};
+use snowglass_pluginhost::{
+    EmulatorPluginInstance, EmulatorPort, PackageError, PluginRuntimeHandle,
+};
 use std::{
     collections::{BTreeMap, HashMap},
     path::PathBuf,
@@ -66,7 +66,7 @@ pub struct GameDescriptor {
 pub struct EmulatorDescriptor {
     pub id: String,
     pub groups: Vec<PortGroupDescriptor>,
-    pub options: Vec<OptionDescriptor>,
+    pub configuration: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -86,27 +86,6 @@ pub struct PortDescriptor {
     pub pointer: snowglass_input_layout::topology::PointerMode,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OptionDescriptor {
-    pub path: String,
-    pub title: String,
-    pub kind: String,
-    pub value: serde_json::Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub min: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub choices: Vec<ChoiceDescriptor>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct ChoiceDescriptor {
-    pub key: String,
-    pub label: String,
-}
-
 pub struct PreparedGame {
     descriptor: GameDescriptor,
     viewer: ConfigurationDefaults,
@@ -118,7 +97,7 @@ pub struct ConfigurationRequest {
     pub emulator: String,
     pub groups: Vec<LaunchGroupRequest>,
     #[serde(default)]
-    pub settings: BTreeMap<String, serde_json::Value>,
+    pub user_configuration: BTreeMap<String, BTreeMap<String, serde_json::Value>>,
     #[serde(default)]
     pub storage: BTreeMap<String, serde_json::Value>,
 }
@@ -154,26 +133,73 @@ struct PreparedConfiguration {
     webrtc_targets: Vec<u32>,
 }
 
-pub fn describe_api(
-    plugins: snowglass_pluginhost::PluginRegistry,
+pub async fn describe_api(
+    plugins: PluginRuntimeHandle,
     viewer: ConfigurationDefaults,
     package: serde_json::Value,
     preferred_emulator: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let package: crate::ScrapedPackage =
         serde_json::from_value(package).map_err(|error| error.to_string())?;
-    let descriptor = PreparedGame::new(
+    let mut prepared = PreparedGame::new(
         DetectedGame {
-            path: package.path,
-            platform: package.platform,
-            preferred_emulator,
+            path: package.path.clone(),
+            platform: package.platform.clone(),
+            preferred_emulator: preferred_emulator.clone(),
         },
-        plugins.plugins::<dyn EmulatorPluginInstance>(),
+        plugins.registry().plugins::<dyn EmulatorPluginInstance>(),
         viewer,
-    )?
-    .descriptor()
-    .clone();
-    serde_json::to_value(descriptor).map_err(|error| error.to_string())
+    )?;
+    let game = configure_game(&package);
+    let mut errors = Vec::new();
+    let mut retained = Vec::new();
+    for mut candidate in prepared.descriptor.candidates.drain(..) {
+        match plugins.configure(&candidate.id, game.clone(), None).await {
+            Ok(configuration) => {
+                candidate.configuration = configuration;
+                retained.push(candidate);
+            }
+            Err(error) if preferred_emulator.as_deref() == Some(candidate.id.as_str()) => {
+                return Err(format!("{}: {error}", candidate.id));
+            }
+            Err(error) => errors.push(format!("{}: {error}", candidate.id)),
+        }
+    }
+    if retained.is_empty() {
+        return Err(format!(
+            "No compatible emulator could be configured for {}: {}",
+            package.platform,
+            errors.join("; ")
+        ));
+    }
+    prepared.descriptor.selected_emulator = retained[0].id.clone();
+    prepared.descriptor.candidates = retained;
+    serde_json::to_value(prepared.descriptor).map_err(|error| error.to_string())
+}
+
+pub async fn configure_api(
+    plugins: PluginRuntimeHandle,
+    package: serde_json::Value,
+    emulator: String,
+    user_configuration: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    let package: crate::ScrapedPackage =
+        serde_json::from_value(package).map_err(|error| error.to_string())?;
+    let plugin = plugins
+        .registry()
+        .plugin::<dyn EmulatorPluginInstance>(&emulator)
+        .ok_or_else(|| format!("unknown emulator plugin '{emulator}'"))?;
+    if !plugin.platforms().contains(&package.platform) {
+        return Err(format!(
+            "Emulator plugin '{emulator}' does not support detected platform {}.",
+            package.platform
+        ));
+    }
+    let layout = plugins
+        .configure(&emulator, configure_game(&package), user_configuration)
+        .await
+        .map_err(|error| error.to_string())?;
+    serde_json::to_value(layout).map_err(|error| error.to_string())
 }
 
 pub fn prepare_api(
@@ -208,7 +234,7 @@ pub(crate) fn prepare_api_with_sources(
         serde_json::from_value(package).map_err(|error| error.to_string())?;
     let request: ConfigurationRequest =
         serde_json::from_value(request).map_err(|error| error.to_string())?;
-    let settings = request.settings.clone();
+    let user_configuration = request.user_configuration.clone();
     let emulator = request.emulator.clone();
     let storage = request.storage.clone();
     let mut prepared = PreparedGame::new(
@@ -245,7 +271,7 @@ pub(crate) fn prepare_api_with_sources(
         "package": package,
         "console": prepared.machine,
         "controllerTopology": &topology,
-        "settings": settings,
+        "userConfiguration": user_configuration,
     });
     if !storage.is_empty() {
         arguments["storage"] =
@@ -435,14 +461,10 @@ fn describe_emulator(
         Err(error) => return Err(error.to_string()),
     };
     let groups = default_groups(ports, viewer, plugin, platform);
-    let assignments = descriptor_assignments(&groups);
-    let configuration = plugin
-        .materialize(platform, assignments)
-        .map_err(|error| error.to_string())?;
     Ok(EmulatorDescriptor {
         id: plugin.id().to_owned(),
         groups,
-        options: describe_options(&configuration),
+        configuration: None,
     })
 }
 
@@ -514,91 +536,6 @@ fn default_groups(
     groups
 }
 
-fn descriptor_assignments(groups: &[PortGroupDescriptor]) -> PortAssignments {
-    groups
-        .iter()
-        .filter(|group| group.connected != 0)
-        .map(|group| {
-            (
-                group.name.clone().into_boxed_str(),
-                group.ports[..group.connected]
-                    .iter()
-                    .map(|port| port.selected_layout.clone().into_boxed_str())
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice(),
-            )
-        })
-        .collect()
-}
-
-fn describe_options(configuration: &ConfigurationInstance) -> Vec<OptionDescriptor> {
-    configuration
-        .into_iter()
-        .map(|setting| {
-            let option = configuration.definition().option(setting.option);
-            let (kind, min, max, choices) = match &option.definition.value.kind {
-                ValueKind::Boolean => ("boolean", None, None, Vec::new()),
-                ValueKind::Integer { range } => {
-                    let range: Option<(serde_json::Value, serde_json::Value)> =
-                        range.map(|range| {
-                            let OptionRange::Integer { min, max } = range else {
-                                unreachable!()
-                            };
-                            (min.into(), max.into())
-                        });
-                    (
-                        "integer",
-                        range.as_ref().map(|value| value.0.clone()),
-                        range.map(|value| value.1),
-                        Vec::new(),
-                    )
-                }
-                ValueKind::Float { range } => {
-                    let range: Option<(serde_json::Value, serde_json::Value)> =
-                        range.map(|range| {
-                            let OptionRange::Float { min, max } = range else {
-                                unreachable!()
-                            };
-                            (serde_json::json!(min), serde_json::json!(max))
-                        });
-                    (
-                        "float",
-                        range.as_ref().map(|value| value.0.clone()),
-                        range.map(|value| value.1),
-                        Vec::new(),
-                    )
-                }
-                ValueKind::String => ("string", None, None, Vec::new()),
-                ValueKind::Path => ("path", None, None, Vec::new()),
-                ValueKind::Select { .. } => (
-                    "select",
-                    None,
-                    None,
-                    configuration
-                        .definition()
-                        .choices(setting.option)
-                        .unwrap_or_default()
-                        .iter()
-                        .map(|choice| ChoiceDescriptor {
-                            key: choice.key.as_str().to_owned(),
-                            label: choice.label.to_string(),
-                        })
-                        .collect(),
-                ),
-            };
-            OptionDescriptor {
-                path: setting.path.as_str().to_owned(),
-                title: option.definition.title.to_string(),
-                kind: kind.to_owned(),
-                value: value_to_json(&setting.value),
-                min,
-                max,
-                choices,
-            }
-        })
-        .collect()
-}
-
 fn validate_assignments(
     descriptor: &EmulatorDescriptor,
     groups: Vec<LaunchGroupRequest>,
@@ -661,15 +598,22 @@ fn validate_assignments(
     Ok((assignments, gamepads))
 }
 
-fn value_to_json(value: &Value) -> serde_json::Value {
-    match value {
-        Value::Null => serde_json::Value::Null,
-        Value::Boolean(value) => (*value).into(),
-        Value::Integer(value) => (*value).into(),
-        Value::Float(value) => serde_json::json!(value),
-        Value::String(value) | Value::Choice(value) => value.as_ref().into(),
-        Value::Path(value) => value.to_string_lossy().into_owned().into(),
+fn configure_game(package: &crate::ScrapedPackage) -> serde_json::Value {
+    let mut game = serde_json::Map::from_iter([
+        (
+            "launchPath".to_owned(),
+            package.path.to_string_lossy().into_owned().into(),
+        ),
+        ("name".to_owned(), package.name.clone().into()),
+        ("platform".to_owned(), package.platform.clone().into()),
+    ]);
+    if let Some(serial) = &package.serial {
+        game.insert("serial".to_owned(), serial.clone().into());
     }
+    if let Some(title_id) = &package.title_id {
+        game.insert("titleId".to_owned(), title_id.clone().into());
+    }
+    game.into()
 }
 
 fn display_name(path: &std::path::Path) -> String {

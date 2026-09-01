@@ -306,13 +306,8 @@ mod tests {
         );
     }
 
-    /// Both spellings of a domain survive the round trip. `OptionDomain` needs
-    /// `untagged`; without it neither variant matches and `Option<_>` turns
-    /// that into a silent `None`.
     #[test]
-    fn parses_both_domain_forms() {
-        use crate::toml::config::OptionDomain;
-
+    fn parses_static_domains_and_rejects_resolvers() {
         let arena = Arena::new();
         let configuration = ConfigurationToml::try_from_tomls(
             &arena,
@@ -326,29 +321,27 @@ mod tests {
                 type = "select"
                 domain = [{ key = "A", label = "A", value = "0" }]
                 emit = { key = "K" }
-
-                [[sections.s.options]]
-                key = "resolved"
-                title = "Resolved"
-                type = "select"
-                domain = { source = "resolver:x" }
-                emit = { key = "L" }
             "#]
             .into_iter(),
         )
         .expect("configuration to parse");
 
         let options = &configuration.sections["s"].options;
-        assert!(matches!(
-            options[0].domain,
-            Some(OptionDomain::Select(ref choices)) if choices.len() == 1
-        ));
-        assert!(matches!(
-            options[1].domain,
-            Some(OptionDomain::Resolve {
-                source: "resolver:x"
-            })
-        ));
+        assert_eq!(options[0].domain.as_ref().unwrap().len(), 1);
+
+        let error = reject(
+            r#"
+                [sections.s]
+                title = "S"
+                [[sections.s.options]]
+                key = "resolved"
+                title = "Resolved"
+                type = "select"
+                domain = { source = "resolver:x" }
+                emit = { key = "L" }
+            "#,
+        );
+        assert!(!error.diagnostics().is_empty());
     }
 }
 
@@ -437,8 +430,6 @@ mod packages {
     #[toml(FromToml)]
     struct ManifestConfiguration<'de> {
         definitions: Vec<&'de str>,
-        #[expect(dead_code)]
-        resolver: Option<&'de str>,
     }
 
     /// Expands one `definitions` entry, which is either a literal path or a

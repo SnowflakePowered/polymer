@@ -14,13 +14,35 @@ export function GameDetailsPage() {
   const shell = useShell();
   const game = () => shell.model.draft;
   const emulator = () => game()?.candidates.find((item) => item.id === game()?.selectedEmulator) || game()?.candidates[0];
-  const updateEmulator = (change: (emulator: EmulatorConfiguration) => void) => {
+  const updateEmulatorById = (id: string, change: (emulator: EmulatorConfiguration) => void) => {
     const current = game();
     if (!current) return;
-    const index = current.candidates.findIndex((item) => item.id === current.selectedEmulator);
-    const target = index < 0 ? 0 : index;
-    if (!current.candidates[target]) return;
-    shell.setModel("draft", "candidates", target, produce(change));
+    const index = current.candidates.findIndex((item) => item.id === id);
+    if (index < 0) return;
+    shell.setModel("draft", "candidates", index, produce(change));
+  };
+  const updateEmulator = (change: (emulator: EmulatorConfiguration) => void) => {
+    const current = emulator();
+    if (current) updateEmulatorById(current.id, change);
+  };
+  const updateConfiguration = (group: string, option: string, value: boolean | number | string | null) => {
+    const packageValue = shell.model.package;
+    const current = emulator();
+    if (!packageValue || !current) return;
+    const values = structuredClone(current.userConfiguration) as Record<string, Record<string, boolean | number | string | null>>;
+    (values[group] ||= {})[option] = value;
+    updateEmulator((candidate) => {
+      candidate.userConfiguration = values;
+    });
+    void window.Snowglass.configuration.configure(packageValue, current.id, values)
+      .then((result) => {
+        if (!result) return;
+        updateEmulatorById(current.id, (candidate) => {
+          candidate.configuration = result.configuration;
+          candidate.userConfiguration = result.userConfiguration;
+        });
+      })
+      .catch((error) => shell.setModel("error", error instanceof Error ? error.message : String(error)));
   };
   onMount(() => {
     const keydown = (event: KeyboardEvent) => {
@@ -42,7 +64,7 @@ export function GameDetailsPage() {
         </header>
         <div class="horizon-details-columns">
           <ControllerSection game={game()!} emulator={emulator()!} update={updateEmulator} />
-          <SettingsSection game={game()!} emulator={emulator()!} selectEmulator={(value) => shell.setModel("draft", "selectedEmulator", value)} update={updateEmulator} />
+          <SettingsSection game={game()!} emulator={emulator()!} selectEmulator={(value) => shell.setModel("draft", "selectedEmulator", value)} updateConfiguration={updateConfiguration} />
         </div>
         <ControlHintBar hints={[{ key: "Esc", label: "Back" }, { key: "Enter", label: "Start" }]} />
       </section>

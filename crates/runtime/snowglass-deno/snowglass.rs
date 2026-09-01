@@ -30,7 +30,13 @@ pub trait SnowglassHost: Send + Sync {
         &self,
         package: Value,
         preferred_emulator: Option<String>,
-    ) -> Result<Value, String>;
+    ) -> ApiFuture<Result<Value, String>>;
+    fn configure(
+        &self,
+        package: Value,
+        emulator: String,
+        user_configuration: Option<Value>,
+    ) -> ApiFuture<Result<Value, String>>;
     fn prepare_configuration(&self, package: Value, request: Value) -> Result<Value, String>;
     fn list_plugins(&self) -> Value;
     fn invoke_plugin(
@@ -239,14 +245,28 @@ async fn op_consolestorage_set_label(
 
 #[op2]
 #[serde]
-fn op_configuration_describe(
-    state: &mut OpState,
+async fn op_configuration_describe(
+    state: Rc<RefCell<OpState>>,
     #[serde] package: serde_json::Value,
     #[string] preferred_emulator: Option<String>,
 ) -> Result<serde_json::Value, JsErrorBox> {
-    state
-        .borrow::<Arc<dyn SnowglassHost>>()
-        .describe_configuration(package, preferred_emulator)
+    let host = state.borrow().borrow::<Arc<dyn SnowglassHost>>().clone();
+    host.describe_configuration(package, preferred_emulator)
+        .await
+        .map_err(JsErrorBox::generic)
+}
+
+#[op2]
+#[serde]
+async fn op_configuration_configure(
+    state: Rc<RefCell<OpState>>,
+    #[serde] package: serde_json::Value,
+    #[string] emulator: String,
+    #[serde] user_configuration: Option<serde_json::Value>,
+) -> Result<serde_json::Value, JsErrorBox> {
+    let host = state.borrow().borrow::<Arc<dyn SnowglassHost>>().clone();
+    host.configure(package, emulator, user_configuration)
+        .await
         .map_err(JsErrorBox::generic)
 }
 
@@ -435,6 +455,7 @@ deno_core::extension!(
     ops = [
         op_scraping_package_from_path,
         op_configuration_describe,
+        op_configuration_configure,
         op_configuration_prepare,
         op_plugin_list,
         op_plugin_invoke,

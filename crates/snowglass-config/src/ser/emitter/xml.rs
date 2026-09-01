@@ -56,8 +56,12 @@ impl Emitter for XmlEmitter {
                 ));
             }
         }
-        self.document
-            .write_event(Event::Start(BytesStart::new(section.name)))?;
+        let mut start = BytesStart::new(section.name);
+        for attribute in section.attributes {
+            let rendered = attribute.value.render()?;
+            start.push_attribute((attribute.key, rendered.as_ref()));
+        }
+        self.document.write_event(Event::Start(start))?;
         self.sections.push(section.name.into());
         Ok(())
     }
@@ -146,10 +150,12 @@ mod tests {
         let content = SectionRef {
             path: "settings.content",
             name: "content",
+            attributes: &[],
         };
         let graphic = SectionRef {
             path: "settings.content.Graphic",
             name: "Graphic",
+            attributes: &[],
         };
         emitter.enter_section(content).unwrap();
         emitter.enter_section(graphic).unwrap();

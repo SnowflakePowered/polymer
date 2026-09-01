@@ -14,6 +14,8 @@ pub use path::TargetPath;
 pub struct Target<'de> {
     pub output: Option<TargetOutput<'de>>,
     #[toml(default)]
+    pub repeat: bool,
+    #[toml(default)]
     pub parent: Vec<TargetPath<'de>>,
     #[toml(flatten)]
     pub children: BTreeMap<&'de str, Target<'de>>,
@@ -40,6 +42,8 @@ pub struct BoolStyle<'de> {
 pub struct Section<'de> {
     pub title: &'de str,
     pub target: Option<TargetPath<'de>>,
+    #[toml(default)]
+    pub repeat: bool,
     #[toml(default)]
     pub options: Vec<OptionDefinition<'de>>,
     #[toml(flatten)]

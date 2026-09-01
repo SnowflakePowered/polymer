@@ -58,10 +58,29 @@ pub struct DocumentRef<'a> {
 }
 
 /// A target node represented as a section in the output format.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub struct SectionRef<'a> {
     pub path: &'a str,
     pub name: &'a str,
+    pub attributes: &'a [EmittedAttribute<'a>],
+}
+
+impl SectionRef<'_> {
+    pub fn reject_attributes(&self, format: &str) -> EmitResult<()> {
+        if self.attributes.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::emitter_message(format!(
+                "{format} sections do not support attributes"
+            )))
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct EmittedAttribute<'a> {
+    pub key: &'a str,
+    pub value: ScalarValue<'a>,
 }
 
 #[derive(Clone, Copy, Debug)]

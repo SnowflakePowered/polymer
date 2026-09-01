@@ -5,10 +5,11 @@ use deno_error::JsErrorBox;
 use serde::Serialize;
 use serde_bytes::ByteBuf;
 use snowglass_vfs::{
-    AsarVolumeFactory, FilesystemEndpoint, FilesystemPlan, HostDirectoryFactory, HostFileFactory,
-    MemoryFileFactory, PackageDirectoryFactory, Permissions, PreparedFilesystemLaunch,
-    ProfileLayout, Resource, ResourceFactory, ResourceOrigin, ScratchBacking, ScratchVolumeFactory,
-    VfsError, VfsPathBuf, Volume,
+    AsarVolumeFactory, DirectoryNode, FileKind, FileNode, FilesystemEndpoint, FilesystemPlan,
+    HostDirectoryFactory, HostFileFactory, MemoryFileFactory, Node, OpenOptions,
+    PackageDirectoryFactory, Permissions, PreparedFilesystemLaunch, ProfileLayout, Resource,
+    ResourceFactory, ResourceOrigin, ScratchBacking, ScratchVolumeFactory, VfsComponent, VfsError,
+    VfsPathBuf, Volume,
 };
 use std::{
     collections::{BTreeMap, HashMap},
@@ -337,6 +338,125 @@ impl FilesystemState {
         }
     }
 
+    fn resource_entries(
+        &self,
+        kind: &str,
+        token: &str,
+        components: &[String],
+    ) -> Result<Vec<JsDirectoryEntry>, VfsError> {
+        let ResourceHandle::Tree(handle) = self.handle(kind, token)? else {
+            return Err(VfsError::Unsupported(
+                "directory iteration requires a tree resource".into(),
+            ));
+        };
+        let resource = self.volume(handle)?;
+        if !resource.authority().can_read() || !resource.authority().can_execute() {
+            return Err(VfsError::PermissionDenied(VfsPathBuf::root()));
+        }
+        let materialized = resource.materialize()?;
+        let directory = Self::directory_at(materialized.backend.root()?, components)?;
+        let mut entries = directory
+            .read_dir()?
+            .map(|entry| {
+                let entry = entry?;
+                Ok(JsDirectoryEntry {
+                    name: entry.name.to_string(),
+                    kind: match entry.kind() {
+                        FileKind::Directory => "directory",
+                        FileKind::File => "file",
+                    },
+                })
+            })
+            .collect::<Result<Vec<_>, VfsError>>()?;
+        entries.sort_by(|left, right| left.name.cmp(&right.name));
+        Ok(entries)
+    }
+
+    fn resource_bytes(
+        &self,
+        kind: &str,
+        token: &str,
+        components: &[String],
+    ) -> Result<Vec<u8>, VfsError> {
+        match self.handle(kind, token)? {
+            ResourceHandle::File(handle) if components.is_empty() => {
+                let resource = self.file(handle)?;
+                if !resource.authority().can_read() {
+                    return Err(VfsError::PermissionDenied(VfsPathBuf::root()));
+                }
+                let materialized = resource.materialize()?;
+                Self::read_file(materialized.backend)
+            }
+            ResourceHandle::Tree(handle) => {
+                let resource = self.volume(handle)?;
+                if !resource.authority().can_read() || !resource.authority().can_execute() {
+                    return Err(VfsError::PermissionDenied(VfsPathBuf::root()));
+                }
+                let (name, parents) = components.split_last().ok_or_else(|| {
+                    VfsError::Unsupported("cannot read a directory resource as bytes".into())
+                })?;
+                let materialized = resource.materialize()?;
+                let directory = Self::directory_at(materialized.backend.root()?, parents)?;
+                let component = VfsComponent::new(name)?;
+                match directory.lookup(&component)? {
+                    Some(Node::File(file)) => Self::read_file(file),
+                    Some(Node::Directory(_) | Node::SyntheticDirectory) => {
+                        Err(VfsError::IsDirectory(VfsPathBuf::root()))
+                    }
+                    None => Err(VfsError::Unsupported(format!(
+                        "resource entry '{}' does not exist",
+                        components.join("/")
+                    ))),
+                }
+            }
+            ResourceHandle::File(_) => Err(VfsError::Unsupported(
+                "file resources do not contain child paths".into(),
+            )),
+        }
+    }
+
+    fn directory_at(
+        mut directory: Arc<dyn DirectoryNode>,
+        components: &[String],
+    ) -> Result<Arc<dyn DirectoryNode>, VfsError> {
+        for name in components {
+            let component = VfsComponent::new(name)?;
+            directory = match directory.lookup(&component)? {
+                Some(Node::Directory(directory)) => directory,
+                Some(Node::File(_)) => return Err(VfsError::NotDirectory(VfsPathBuf::root())),
+                Some(Node::SyntheticDirectory) => return Err(VfsError::StaleNode),
+                None => {
+                    return Err(VfsError::Unsupported(format!(
+                        "resource directory '{}' does not exist",
+                        components.join("/")
+                    )));
+                }
+            };
+        }
+        Ok(directory)
+    }
+
+    fn read_file(file: Arc<dyn FileNode>) -> Result<Vec<u8>, VfsError> {
+        let open = file.open(OpenOptions {
+            read: true,
+            write: false,
+            truncate: false,
+        })?;
+        let len = usize::try_from(open.metadata()?.len)
+            .map_err(|_| VfsError::Unsupported("resource file is too large to read".into()))?;
+        let mut bytes = vec![0; len];
+        let mut offset = 0;
+        while offset < bytes.len() {
+            let read = open.read(offset as u64, &mut bytes[offset..])?;
+            if read == 0 {
+                bytes.truncate(offset);
+                break;
+            }
+            offset += read;
+        }
+        Ok(bytes)
+    }
+
     fn seal(&mut self) -> Result<Option<PreparedFilesystemLaunch>, VfsError> {
         if !self.used {
             return Ok(None);
@@ -373,6 +493,12 @@ struct JsResource {
     name: Option<String>,
     kind: &'static str,
     handle: String,
+}
+
+#[derive(Serialize)]
+struct JsDirectoryEntry {
+    name: String,
+    kind: &'static str,
 }
 
 impl JsResource {
@@ -431,6 +557,35 @@ fn op_vfs_storage(state: &mut OpState) -> Vec<JsResource> {
         .iter()
         .map(|(name, handle)| JsResource::storage(name.clone(), *handle))
         .collect()
+}
+
+#[op2]
+#[serde]
+fn op_vfs_resource_entries(
+    state: &mut OpState,
+    #[string] kind: String,
+    #[string] token: String,
+    #[serde] components: Vec<String>,
+) -> Result<Vec<JsDirectoryEntry>, JsErrorBox> {
+    state
+        .borrow::<FilesystemState>()
+        .resource_entries(&kind, &token, &components)
+        .map_err(js_error)
+}
+
+#[op2]
+#[serde]
+fn op_vfs_resource_bytes(
+    state: &mut OpState,
+    #[string] kind: String,
+    #[string] token: String,
+    #[serde] components: Vec<String>,
+) -> Result<ByteBuf, JsErrorBox> {
+    state
+        .borrow::<FilesystemState>()
+        .resource_bytes(&kind, &token, &components)
+        .map(ByteBuf::from)
+        .map_err(js_error)
 }
 
 #[op2]
@@ -827,7 +982,8 @@ fn op_vfs_flush(state: &mut OpState) -> Result<(), JsErrorBox> {
 
 deno_core::extension!(snowglass_filesystem,
     ops = [
-        op_vfs_resources, op_vfs_mount_cache, op_vfs_mount_host_tree, op_vfs_mount_host_file,
+        op_vfs_resources, op_vfs_resource_entries, op_vfs_resource_bytes,
+        op_vfs_mount_cache, op_vfs_mount_host_tree, op_vfs_mount_host_file,
         op_vfs_mount_tree_pkg, op_vfs_mount_tree_resource, op_vfs_mount_file_pkg,
         op_vfs_mount_file_text, op_vfs_mount_file_bytes, op_vfs_mount_file_resource,
         op_vfs_mount_scratch, op_vfs_mount_storage, op_vfs_storage, op_vfs_path,

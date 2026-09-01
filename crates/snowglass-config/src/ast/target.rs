@@ -1,6 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
-use petgraph::{Direction::Outgoing, algo::toposort, graphmap::DiGraphMap};
+use petgraph::{
+    Direction::{Incoming, Outgoing},
+    algo::toposort,
+    graphmap::DiGraphMap,
+};
 
 use crate::{
     arena::Handle,
@@ -13,6 +17,7 @@ use super::{ConfigurationDefinition, OwnedTargetPath};
 pub struct TargetDefinition {
     pub path: OwnedTargetPath,
     pub output: Option<TargetOutputDefinition>,
+    pub repeat: bool,
     pub parent: Option<Handle<TargetDefinition>>,
     pub additional_parents: Box<[OwnedTargetPath]>,
 }
@@ -28,8 +33,8 @@ pub struct TargetOutputDefinition {
 pub struct TargetGraph {
     target_by_path: HashMap<OwnedTargetPath, Handle<TargetDefinition>>,
     graph: DiGraphMap<Handle<TargetDefinition>, ()>,
-    topological_order: Box<[Handle<TargetDefinition>]>,
     output_roots: Box<[Handle<TargetDefinition>]>,
+    output_formats: Box<[Box<[Box<str>]>]>,
 }
 
 impl ConfigurationDefinition {
@@ -78,16 +83,40 @@ impl TargetGraph {
             let handle = cycle.node_id();
             Error::TargetCycle(definition.targets[handle].path.as_str().into())
         })?;
+        let output_roots = definition
+            .targets
+            .iter()
+            .filter_map(|(handle, target)| {
+                (target.parent.is_none() && target.output.is_some()).then_some(handle)
+            })
+            .collect::<Box<[_]>>();
+        let mut output_formats = (0..definition.targets.len())
+            .map(|_| BTreeSet::<Box<str>>::new())
+            .collect::<Vec<_>>();
+        for root in output_roots.iter().copied() {
+            output_formats[root.index()].insert(
+                definition.targets[root]
+                    .output
+                    .as_ref()
+                    .expect("output roots have an output")
+                    .format
+                    .clone(),
+            );
+        }
+        for handle in topological_order.iter().copied() {
+            let inherited = graph
+                .neighbors_directed(handle, Incoming)
+                .flat_map(|parent| output_formats[parent.index()].iter().cloned())
+                .collect::<Vec<_>>();
+            output_formats[handle.index()].extend(inherited);
+        }
         Ok(Self {
             target_by_path,
             graph,
-            topological_order: topological_order.into_boxed_slice(),
-            output_roots: definition
-                .targets
-                .iter()
-                .filter_map(|(handle, target)| {
-                    (target.parent.is_none() && target.output.is_some()).then_some(handle)
-                })
+            output_roots,
+            output_formats: output_formats
+                .into_iter()
+                .map(|formats| formats.into_iter().collect())
                 .collect(),
         })
     }
@@ -103,11 +132,11 @@ impl TargetGraph {
         self.graph.neighbors_directed(target, Outgoing)
     }
 
-    pub fn topological_order(&self) -> &[Handle<TargetDefinition>] {
-        &self.topological_order
-    }
-
     pub fn output_roots(&self) -> &[Handle<TargetDefinition>] {
         &self.output_roots
+    }
+
+    pub fn output_formats(&self, target: Handle<TargetDefinition>) -> &[Box<str>] {
+        &self.output_formats[target.index()]
     }
 }
