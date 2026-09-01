@@ -13,8 +13,8 @@ use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::devices::{
-    BondingMode, ConnectOptions, ConnectionPolicy, ControllerDevice, ControllerSession,
-    DeviceIdentity, HostIdentity, MatchConfidence, PairingPolicy, ProfileId, ReconnectPolicy,
+    ConnectOptions, ConnectionPolicy, ControllerDevice, ControllerSession, DeviceIdentity,
+    HostIdentity, MatchConfidence, PairingPolicy, ProfileId, ReconnectPolicy,
 };
 use crate::transport::ble::{BleDevice, GattProfile};
 use crate::{DeviceAddr, Error, Result, Transport, TransportKind};
@@ -290,10 +290,6 @@ where
 
     fn supports_transport(&self, _transport: TransportKind) -> bool {
         true
-    }
-
-    fn bonding_modes(&self) -> Vec<BondingMode> {
-        vec![BondingMode::new("pseudo-oob", "Nintendo pseudo-OOB")]
     }
 
     fn connection_policy(

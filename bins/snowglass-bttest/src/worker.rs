@@ -44,13 +44,13 @@ fn connect_options(slot: usize) -> ConnectOptions {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PinChoice {
+pub enum BondingMode {
     Ssp,
     WiiOneTwo,
     WiiSync,
 }
 
-impl PinChoice {
+impl BondingMode {
     pub fn label(self) -> &'static str {
         match self {
             Self::Ssp => "SSP / automatic",
@@ -111,7 +111,7 @@ pub enum Command {
     EndControllerOrder,
     ConnectBr {
         device: InquiryResult,
-        pin: PinChoice,
+        pin: BondingMode,
         profile_id: Option<ProfileId>,
     },
     ConnectBle {
@@ -1123,14 +1123,14 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                             continue;
                         }
                         let pin_source = match pin {
-                            PinChoice::Ssp if identity.is_switch() => {
+                            BondingMode::Ssp if identity.is_switch() => {
                                 "SSP Just Works; legacy fallback PIN = 0000".to_owned()
                             }
-                            PinChoice::Ssp => "SSP / no legacy PIN".to_owned(),
-                            PinChoice::WiiOneTwo => {
+                            BondingMode::Ssp => "SSP / no legacy PIN".to_owned(),
+                            BondingMode::WiiOneTwo => {
                                 format!("temporary PIN = reverse of Wii address {}", device.addr)
                             }
-                            PinChoice::WiiSync => format!(
+                            BondingMode::WiiSync => format!(
                                 "bonding PIN = reverse of host address {}",
                                 host.info().address
                             ),
@@ -2084,16 +2084,16 @@ async fn stop_ble_recovery(task: &mut Option<(usize, JoinHandle<()>)>) {
 fn configure_pin(
     pairing: &PairingAgent,
     addr: DeviceAddr,
-    choice: PinChoice,
+    choice: BondingMode,
     identity: &BrIdentity,
 ) -> snowglass_bluetooth::Result<()> {
     match choice {
-        PinChoice::Ssp if identity.is_switch() => {
+        BondingMode::Ssp if identity.is_switch() => {
             pairing.set_pin(addr, PinCode::Fixed(b"0000".to_vec()))
         }
-        PinChoice::Ssp => pairing.clear_pin(addr),
-        PinChoice::WiiOneTwo => pairing.set_pin(addr, PinCode::RemoteAddress),
-        PinChoice::WiiSync => pairing.set_pin(addr, PinCode::LocalAddress),
+        BondingMode::Ssp => pairing.clear_pin(addr),
+        BondingMode::WiiOneTwo => pairing.set_pin(addr, PinCode::RemoteAddress),
+        BondingMode::WiiSync => pairing.set_pin(addr, PinCode::LocalAddress),
     }
 }
 

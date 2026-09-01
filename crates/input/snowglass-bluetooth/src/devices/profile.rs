@@ -36,6 +36,21 @@ pub struct PnpIdentity {
     pub version: u16,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VendorProductId {
+    pub vendor_id: u16,
+    pub product_id: u16,
+}
+
+impl VendorProductId {
+    pub const fn new(vendor_id: u16, product_id: u16) -> Self {
+        Self {
+            vendor_id,
+            product_id,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct DeviceIdentity {
     pub address: DeviceAddr,
@@ -48,6 +63,12 @@ pub struct DeviceIdentity {
 }
 
 impl DeviceIdentity {
+    pub fn vendor_product(&self) -> Option<VendorProductId> {
+        self.pnp
+            .as_ref()
+            .map(|pnp| VendorProductId::new(pnp.vendor_id, pnp.product_id))
+    }
+
     pub fn name_is(&self, expected: &str) -> bool {
         self.name
             .as_deref()
@@ -83,21 +104,6 @@ pub enum MatchConfidence {
     Family = 100,
     Model = 200,
     Pnp = 300,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct BondingMode {
-    pub id: String,
-    pub label: String,
-}
-
-impl BondingMode {
-    pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            label: label.into(),
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -162,7 +168,6 @@ impl Default for ConnectionPolicy {
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct ConnectOptions {
-    pub bonding_mode: Option<String>,
     pub player_index: u8,
     pub auto_reconnect: bool,
 }
@@ -170,7 +175,6 @@ pub struct ConnectOptions {
 impl Default for ConnectOptions {
     fn default() -> Self {
         Self {
-            bonding_mode: None,
             player_index: 0,
             auto_reconnect: true,
         }
@@ -280,15 +284,18 @@ pub trait ControllerDevice: Send + Sync {
     fn display_name(&self) -> &'static str;
     fn matches(&self, identity: &DeviceIdentity) -> Option<MatchConfidence>;
 
+    /// The VID/PID exposed to consumers of this controller. Profiles may
+    /// provide canonical identifiers when the transport did not advertise a
+    /// Bluetooth Device ID record.
+    fn vendor_product(&self, identity: &DeviceIdentity) -> Option<VendorProductId> {
+        identity.vendor_product()
+    }
+
     /// Whether this profile can establish its native protocol over a
     /// transport. Classic HID controllers default to BR/EDR; profiles which
     /// implement a BLE GATT data plane opt into BLE explicitly.
     fn supports_transport(&self, transport: TransportKind) -> bool {
         transport == TransportKind::BrEdr
-    }
-
-    fn bonding_modes(&self) -> Vec<BondingMode> {
-        Vec::new()
     }
 
     fn connection_policy(
@@ -452,6 +459,30 @@ mod tests {
             !controller
                 .connection_policy(&identity, &ConnectOptions::default())
                 .controller_opens_hid
+        );
+    }
+
+    #[test]
+    fn controller_identity_prefers_advertised_pnp_over_the_model_default() {
+        let mut identity = wiimote_identity(TransportKind::BrEdr);
+        let controller = ControllerRegistry::standard()
+            .identify(&identity)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            controller.vendor_product(&identity),
+            Some(VendorProductId::new(0x057e, 0x0306))
+        );
+
+        identity.pnp = Some(PnpIdentity {
+            vendor_id_source: 1,
+            vendor_id: 0x1234,
+            product_id: 0x5678,
+            version: 1,
+        });
+        assert_eq!(
+            controller.vendor_product(&identity),
+            Some(VendorProductId::new(0x1234, 0x5678))
         );
     }
 }

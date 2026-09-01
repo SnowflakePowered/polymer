@@ -1,4 +1,5 @@
 use consolespec::input::{BindingKey, Component, Sign};
+use snowglass_config::input::ProjectionMode;
 use snowglass_input::{GamepadButton, GamepadReport, KeyCode};
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
@@ -171,17 +172,17 @@ pub struct Mapping {
 impl Mapping {
     pub fn compile(
         layout: &InputLayout,
-        mode: crate::layout::ProjectionMode,
+        mode: ProjectionMode,
         bindings: &[(BindingKey, Option<BindingKey>)],
     ) -> Result<Self, MappingError> {
         let mut selected = HashMap::new();
-        if mode != crate::layout::ProjectionMode::Custom {
+        if mode != ProjectionMode::Custom {
             selected.extend(
                 layout
                     .default_gamepad_bindings()
                     .map(|(target, source)| (target, Some(source))),
             );
-            if mode == crate::layout::ProjectionMode::Name {
+            if mode == ProjectionMode::Name {
                 selected.extend(Self::named_face_bindings(layout));
             }
         }
@@ -194,13 +195,13 @@ impl Mapping {
         for (target, source) in selected {
             mapping.bind_gamepad(layout, target, source)?;
         }
-        if mode != crate::layout::ProjectionMode::Custom {
+        if mode != ProjectionMode::Custom {
             mapping.bind_keyboard(layout);
         }
         Ok(mapping)
     }
 
-    pub fn identity(layout: &InputLayout, mode: crate::layout::ProjectionMode) -> Self {
+    pub fn identity(layout: &InputLayout, mode: ProjectionMode) -> Self {
         Self::compile(layout, mode, &[]).expect("an input layout's embedded mapping is valid")
     }
 

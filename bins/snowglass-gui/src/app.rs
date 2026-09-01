@@ -17,7 +17,7 @@ use crate::window_manager::{
     EventLoopProxy, InspectorWindowBootstrap, LoopDirective, ShellDeviceEvent, ShellImeEvent,
     ShellWindowEvent, WindowBootstrap, WindowCommand, WindowManager,
 };
-use snowglass_controllers::InputTransaction;
+use snowglass_config::input::InputTransaction;
 use snowglass_protocol::input::PointerPhase;
 use snowglass_renderer::{CompositingPlan, Extent};
 use snowglass_statistics::RecorderHandle;

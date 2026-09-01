@@ -7,7 +7,7 @@ mod profile;
 pub mod sony;
 
 pub use profile::{
-    BondingMode, ConnectOptions, ConnectionPolicy, ControllerDevice, ControllerRegistry,
-    ControllerSession, DeviceIdentity, HostIdentity, IrCameraSetup, IrMode, IrSensitivity,
-    MatchConfidence, PairingPolicy, PnpIdentity, ProfileId, ReconnectPolicy,
+    ConnectOptions, ConnectionPolicy, ControllerDevice, ControllerRegistry, ControllerSession,
+    DeviceIdentity, HostIdentity, IrCameraSetup, IrMode, IrSensitivity, MatchConfidence,
+    PairingPolicy, PnpIdentity, ProfileId, ReconnectPolicy, VendorProductId,
 };

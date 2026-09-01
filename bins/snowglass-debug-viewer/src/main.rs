@@ -1,4 +1,4 @@
-use snowglass_controllers::SourceSelector;
+use snowglass_config::input::SourceSelector;
 use snowglass_input::InputHub;
 use snowglass_input_layout::layout::InputLayout;
 use snowglass_ipc::StreamReady;

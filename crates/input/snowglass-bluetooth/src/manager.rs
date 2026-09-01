@@ -94,6 +94,7 @@ pub struct ConnectedController {
     pub session_id: SessionId,
     pub identity: DeviceIdentity,
     pub profile_id: ProfileId,
+    pub vendor_product: Option<crate::devices::VendorProductId>,
     pub player_index: u8,
 }
 
@@ -879,7 +880,6 @@ impl BluetoothServer {
                         }
                     };
                     let options = ConnectOptions {
-                        bonding_mode: None,
                         player_index: record.player_index,
                         auto_reconnect: true,
                     };
@@ -1359,6 +1359,7 @@ impl BluetoothServer {
             .name
             .get_or_insert_with(|| controller.display_name().to_owned());
         let profile_id = controller.id();
+        let vendor_product = controller.vendor_product(&identity);
         let mut controller_session = controller.connect(&options);
         controller_session.synchronize(transport.as_mut()).await?;
         keys.register(ControllerRecord {
@@ -1395,6 +1396,7 @@ impl BluetoothServer {
             session_id,
             identity,
             profile_id,
+            vendor_product,
             player_index: options.player_index,
         }));
         Ok(session)
@@ -1449,7 +1451,6 @@ impl BluetoothServer {
             |device| device.identity.clone(),
         );
         let options = ConnectOptions {
-            bonding_mode: None,
             player_index: record.player_index,
             auto_reconnect: true,
         };
@@ -1484,6 +1485,7 @@ impl BluetoothServer {
             return Err(error);
         }
         let mut transport: Box<dyn Transport> = Box::new(hid);
+        let vendor_product = controller.vendor_product(&identity);
         let mut controller_session = controller.connect(&options);
         if let Err(error) = controller_session.synchronize(transport.as_mut()).await {
             let _ = transport.disconnect().await;
@@ -1503,6 +1505,7 @@ impl BluetoothServer {
             session_id,
             identity: identity.clone(),
             profile_id: record.profile_id.clone(),
+            vendor_product,
             player_index: record.player_index,
         }));
         Ok(Session {
