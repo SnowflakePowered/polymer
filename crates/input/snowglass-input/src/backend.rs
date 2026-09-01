@@ -29,7 +29,6 @@ impl std::error::Error for BackendError {}
 pub trait RawHidFilter: Send + Sync {
     fn filter_input(&self, report: &mut [u8], capture: bool);
     fn filter_output<'a>(&self, report: &'a [u8], capture: bool) -> Cow<'a, [u8]>;
-    fn buttons_clear(&self, report: &[u8]) -> bool;
 }
 
 pub trait InputBackend: Send + Sync + 'static {

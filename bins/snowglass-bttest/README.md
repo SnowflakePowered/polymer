@@ -68,7 +68,7 @@ and restores dormant bonded Switch 2 wake listeners.
 Dolphin Bluetooth Passthrough, Real Wii Remote mode, and Continuous Scanning
 must remain disabled while this application owns the dedicated adapter.
 
-Wii and Switch report decoding lives in this binary. `WiimoteInputProvider`
+Wii and Switch report decoding lives in this binary. `WiimoteTelemetryDecoder`
 owns the userspace Wii decoder, and the airmouse fusion code is nested beneath
-that provider. The Bluetooth crate supplies only connection-time setup and raw
+that decoder. The Bluetooth crate supplies only connection-time setup and raw
 HID reports.

@@ -2,7 +2,7 @@
 
 use clap::ValueEnum;
 use clap::{ArgAction, ArgMatches, Command, CommandFactory, FromArgMatches, Parser};
-pub use snowglass_runtime::HookBackend;
+pub use snowglass_runtime::GraphicsHook;
 use std::{collections::HashSet, error::Error, net::SocketAddr};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
@@ -24,29 +24,29 @@ enum HookChoice {
 }
 
 impl HookChoice {
-    fn backend(self) -> Option<HookBackend> {
+    fn backend(self) -> Option<GraphicsHook> {
         match self {
             Self::Auto => None,
-            Self::Vulkan => Some(HookBackend::Vulkan),
-            Self::OpenGl => Some(HookBackend::OpenGl),
-            Self::D3d12 => Some(HookBackend::D3d12),
-            Self::D3d11 => Some(HookBackend::D3d11),
-            Self::Gdi => Some(HookBackend::Gdi),
+            Self::Vulkan => Some(GraphicsHook::Vulkan),
+            Self::OpenGl => Some(GraphicsHook::OpenGl),
+            Self::D3d12 => Some(GraphicsHook::D3d12),
+            Self::D3d11 => Some(GraphicsHook::D3d11),
+            Self::Gdi => Some(GraphicsHook::Gdi),
         }
     }
 }
 
 /// The `--hook auto` selection, ordered from most to least likely to be the
 /// application's real renderer.
-pub const AUTO_HOOKS: [HookBackend; 4] = [
-    HookBackend::Vulkan,
-    HookBackend::OpenGl,
-    HookBackend::D3d12,
-    HookBackend::D3d11,
+pub const AUTO_HOOKS: [GraphicsHook; 4] = [
+    GraphicsHook::Vulkan,
+    GraphicsHook::OpenGl,
+    GraphicsHook::D3d12,
+    GraphicsHook::D3d11,
 ];
 
 fn expand_hook_choices(
-    hooks: &mut Vec<HookBackend>,
+    hooks: &mut Vec<GraphicsHook>,
     choices: impl IntoIterator<Item = HookChoice>,
 ) -> Result<(), Box<dyn Error>> {
     for choice in choices {
@@ -90,7 +90,7 @@ pub struct ViewerOptions {
     pub resize: bool,
     pub api: ViewerApi,
     pub force_keyed_mutex: bool,
-    pub hooks: Vec<HookBackend>,
+    pub hooks: Vec<GraphicsHook>,
     pub webrtc: Option<Vec<u32>>,
     pub bind_webrtc: SocketAddr,
 }

@@ -15,11 +15,7 @@ pub struct EmulatorLaunchArguments {
     pub argv: Vec<String>,
     #[serde(default)]
     pub isolate: bool,
-    pub hooks: Vec<GraphicsHook>,
-    #[serde(default)]
-    pub input_hooks: Vec<InputHook>,
-    #[serde(default)]
-    pub input_providers: Vec<InputProvider>,
+    pub hooks: Hooks,
     /// Process-wide presentation dependency-graph traversal requested by the
     /// emulator plugin for its tracked surfaces.
     #[serde(default)]
@@ -37,36 +33,59 @@ pub struct EmulatorLaunchArguments {
     pub controller_topology: Option<snowglass_controllers::ControllerTopology>,
 }
 
+/// A graphics capture hook installed into the target process.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GraphicsHook {
-    Opengl,
+    OpenGl,
     Vulkan,
     D3d11,
     D3d12,
+    Gdi,
 }
 
+impl GraphicsHook {
+    pub const ALL: [Self; 5] = [
+        Self::Vulkan,
+        Self::OpenGl,
+        Self::D3d12,
+        Self::D3d11,
+        Self::Gdi,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Vulkan => "Vulkan",
+            Self::OpenGl => "OpenGL",
+            Self::D3d12 => "D3D12",
+            Self::D3d11 => "D3D11",
+            Self::Gdi => "GDI",
+        }
+    }
+
+    pub const fn class(self) -> u8 {
+        match self {
+            Self::Gdi => 0,
+            Self::D3d11 => 1,
+            Self::D3d12 => 2,
+            Self::OpenGl => 3,
+            Self::Vulkan => 4,
+        }
+    }
+}
+
+/// An input hook installed into the target process.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum InputHook {
+    Sdl3,
     BluetoothApiWin32,
 }
 
-/// An emulator-plugin-selected native input path. The host implements the
-/// transport but does not infer which devices should use it.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-#[serde(
-    tag = "type",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
-pub enum InputProvider {
-    RawHid {
-        source_id: String,
-        target: snowglass_controllers::ControllerTarget,
-        vendor_id: u16,
-        product_id: u16,
-    },
+pub struct Hooks {
+    pub graphics: Vec<GraphicsHook>,
+    pub input: Vec<InputHook>,
 }
 
 /// The plugin-facing description of an emulator surface. Viewer-only state,
@@ -113,30 +132,4 @@ pub enum EmulatorHostError {
     Runtime(String),
     #[error(transparent)]
     Configuration(#[from] crate::ConfigurationAccessError),
-}
-
-#[cfg(test)]
-mod tests {
-    use super::InputProvider;
-
-    #[test]
-    fn native_input_provider_uses_the_plugin_camel_case_contract() {
-        let provider: InputProvider = serde_json::from_value(serde_json::json!({
-            "type": "rawHid",
-            "sourceId": "bt://br-edr/00:11:22:33:44:55",
-            "target": { "group": "wii", "port": 2 },
-            "vendorId": 0x057e,
-            "productId": 0x0330,
-        }))
-        .unwrap();
-        assert!(matches!(
-            provider,
-            InputProvider::RawHid {
-                target: snowglass_controllers::ControllerTarget { port: 2, .. },
-                vendor_id: 0x057e,
-                product_id: 0x0330,
-                ..
-            }
-        ));
-    }
 }

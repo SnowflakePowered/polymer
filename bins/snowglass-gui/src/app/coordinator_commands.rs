@@ -157,10 +157,30 @@ impl ShellCoordinator {
     pub(super) fn finish_input_configuration(
         &mut self,
         pending: PendingInputChange,
-        callback: Result<(), String>,
+        callback: Result<snowglass_controllers::ControllerTopology, String>,
     ) {
         match callback {
-            Ok(()) => self.commit_input_configuration(pending.request_id, pending.prepared),
+            Ok(topology) => {
+                match self
+                    .input
+                    .commit_configuration_transaction(pending.prepared)
+                {
+                    Ok(configuration) => {
+                        let result = self
+                            .input
+                            .apply_controller_topology(topology.clone())
+                            .map(|()| configuration);
+                        if result.is_ok() {
+                            self.game_host.update_controller_topology(topology);
+                            self.publish_input_configuration();
+                        }
+                        self.send_input_configuration_result(pending.request_id, result);
+                    }
+                    Err(error) => {
+                        self.send_input_configuration_result(pending.request_id, Err(error))
+                    }
+                }
+            }
             Err(error) => {
                 if let Some(token) = self.game_host.active_token() {
                     self.emit_instance_event(

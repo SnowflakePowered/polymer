@@ -1700,14 +1700,14 @@ fn spawn_bredr_report_task(
     identity: BrIdentity,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let mut wiimote_provider = wiimote::WiimoteInputProvider;
+        let mut wiimote_decoder = wiimote::WiimoteTelemetryDecoder;
         let mut report_decoder = identity.profile_id.as_ref().and_then(decoder::for_profile);
         loop {
             match reports.recv().await {
                 Ok(report) => {
                     let received_at = Instant::now();
                     if identity.is_wii_remote()
-                        && let Some(telemetry) = wiimote_provider.process(&report)
+                        && let Some(telemetry) = wiimote_decoder.process(&report)
                     {
                         let _ = events.send(Event::WiiTelemetry {
                             addr: addr.to_string(),

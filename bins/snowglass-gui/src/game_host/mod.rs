@@ -33,25 +33,6 @@ use windows::{
     core::{IUnknown, Interface},
 };
 
-fn hook_backend(hook: snowglass_pluginhost::GraphicsHook) -> snowglass_runtime::HookBackend {
-    match hook {
-        snowglass_pluginhost::GraphicsHook::Opengl => snowglass_runtime::HookBackend::OpenGl,
-        snowglass_pluginhost::GraphicsHook::Vulkan => snowglass_runtime::HookBackend::Vulkan,
-        snowglass_pluginhost::GraphicsHook::D3d11 => snowglass_runtime::HookBackend::D3d11,
-        snowglass_pluginhost::GraphicsHook::D3d12 => snowglass_runtime::HookBackend::D3d12,
-    }
-}
-
-fn input_hook_backend(
-    hook: snowglass_pluginhost::InputHook,
-) -> snowglass_runtime::InputHookBackend {
-    match hook {
-        snowglass_pluginhost::InputHook::BluetoothApiWin32 => {
-            snowglass_runtime::InputHookBackend::BluetoothApiWin32
-        }
-    }
-}
-
 /// Capture renderer state local to one D3D12 adapter. Shell rasterization and
 /// WUC composition are owned independently by `ShellCompositor`.
 struct RenderDevice {
@@ -424,7 +405,14 @@ impl GameHost {
     pub fn controller_change(
         &self,
         topology: snowglass_controllers::ControllerTopology,
-    ) -> Result<Option<tokio::sync::oneshot::Receiver<Result<(), String>>>, String> {
+    ) -> Result<
+        Option<
+            tokio::sync::oneshot::Receiver<
+                Result<snowglass_controllers::ControllerTopology, String>,
+            >,
+        >,
+        String,
+    > {
         let Some(active) = &self.active else {
             return Ok(None);
         };
@@ -432,6 +420,15 @@ impl GameHost {
             return Ok(None);
         };
         session.change(topology).map(Some)
+    }
+
+    pub fn update_controller_topology(
+        &mut self,
+        topology: snowglass_controllers::ControllerTopology,
+    ) {
+        if let Some(active) = &mut self.active {
+            active.options.controller_topology = topology;
+        }
     }
 
     pub fn pause_resume(&self, state: snowglass_pluginhost::PauseState) -> Result<(), String> {
@@ -587,13 +584,7 @@ impl GameHost {
             command: options.command.clone(),
             arguments: options.arguments.clone(),
             artifact_root,
-            hooks: options.hook.iter().copied().map(hook_backend).collect(),
-            input_hooks: options
-                .input_hooks
-                .iter()
-                .copied()
-                .map(input_hook_backend)
-                .collect(),
+            hooks: options.hooks.clone(),
             consumer: snowglass_runtime::ConsumerPreference::D3d12,
             isolate: options.isolated,
             tracked_surfaces: options

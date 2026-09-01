@@ -5,7 +5,6 @@ import type {
     ControllerMapping,
     ControllerTopology,
     Filesystem,
-    InputProvider,
     Resource,
     PauseResumeContext,
 } from "../plugin-api.ts";
@@ -94,37 +93,14 @@ function hasAnalogPointer(mapping: Pick<ControllerMapping, "mouse" | "mapping">)
 
 const WIIMOTE_CONFIGURATION = "Config/WiimoteNew.ini";
 
-function rawWiimote(mapping: ControllerMapping): InputProvider | null {
+function usesRealWiimote(mapping: ControllerMapping): boolean {
+    if (!mapping.connected || mapping.target.group !== "wii") return false;
     const device = mapping.device;
-    if (!mapping.connected || !device?.id.startsWith("bt:") || mapping.target.group !== "wii") {
-        return null;
-    }
-    const profile = device.profile ?? "";
-    const recognized = profile.startsWith("nintendo.wiimote.")
+    if (!device?.capabilities.includes("rawHid")) return false;
+    return (device.vendorId === 0x057e
+        && (device.productId === 0x0306 || device.productId === 0x0330))
+        || device.profile?.startsWith("nintendo.wiimote.") === true
         || device.name.startsWith("Nintendo RVL-CNT");
-    if (!recognized || !device.capabilities.includes("rawHid")) return null;
-
-    const reportedProduct = device.productId;
-    const productId = typeof reportedProduct === "number"
-        && (reportedProduct === 0x0306 || reportedProduct === 0x0330)
-        ? reportedProduct
-        : profile === "nintendo.wiimote.plus" || device.name.endsWith("-TR")
-            ? 0x0330
-            : 0x0306;
-    return {
-        type: "rawHid",
-        sourceId: device.id,
-        target: mapping.target,
-        vendorId: device.vendorId ?? 0x057e,
-        productId,
-    };
-}
-
-function rawWiimoteProviders(topology: ControllerTopology): InputProvider[] {
-    return topology.mappings.flatMap(mapping => {
-        const provider = rawWiimote(mapping);
-        return provider ? [provider] : [];
-    });
 }
 
 function pointerTopology(topology: ControllerTopology): ControllerTopology {
@@ -156,7 +132,7 @@ function renderedConfiguration(
             .filter(mapping => mapping.target.group === "wii")
             .map(mapping => [
                 mapping.target.port,
-                rawWiimote(mapping) ? 2 : mapping.connected ? 1 : 0,
+                usesRealWiimote(mapping) ? 2 : mapping.connected ? 1 : 0,
             ] as const),
     );
     let port: number | null = null;
@@ -194,7 +170,7 @@ function mountConfiguration(
 
 async function applyWiiConnectionChanges(context: ControllerChangeContext): Promise<void> {
     const source = (mapping: ControllerMapping): number =>
-        rawWiimote(mapping) ? 2 : mapping.connected ? 1 : 0;
+        usesRealWiimote(mapping) ? 2 : mapping.connected ? 1 : 0;
     const previous = new Map(
         context.previousTopology.mappings
             .filter(mapping => mapping.target.group === "wii")
@@ -345,14 +321,14 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     mountConfiguration(args.filesystem, args.configuration, args.controllerTopology);
 
     const controllerTopology = pointerTopology(args.controllerTopology);
-    const inputProviders = rawWiimoteProviders(controllerTopology);
     return {
         command: args.filesystem.path("/Dolphin/Dolphin.exe"),
         argv,
         isolate: true,
-        hooks: ["d3d11"],
-        inputHooks: isWii ? ["bluetooth-api-win32"] : [],
-        inputProviders,
+        hooks: {
+            graphics: ["d3d11"],
+            input: ["sdl3", "bluetooth-api-win32"],
+        },
         controllerTopology,
         graphTracking: true,
         surfaces: [
@@ -374,7 +350,7 @@ export const onControllerChanged = async (context: ControllerChangeContext) => {
     }
     mountConfiguration(context.filesystem, context.configuration, topology);
     await applyWiiConnectionChanges(context);
-    return { inputProviders: rawWiimoteProviders(topology), controllerTopology: topology };
+    return { controllerTopology: topology };
 };
 
 export const onParseHotkey = (expression: string) => HotkeyParser.dolphin(expression);

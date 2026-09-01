@@ -1,4 +1,3 @@
-use parking_lot::Mutex;
 use snowglass_controllers::{
     ControllerConfiguration, ControllerManager, ControllerManagerEffect, ControllerTopology,
     InputConfiguration, InputTransaction,
@@ -97,10 +96,9 @@ pub(crate) struct InputRouter {
     dom_alt_key: bool,
     next_publish: Instant,
     last_controller_api_revision: u64,
-    native_providers: Arc<Mutex<Vec<snowglass_pluginhost::InputProvider>>>,
-    native_topology: Arc<Mutex<Option<ControllerTopology>>>,
-    applied_native_providers: Vec<snowglass_pluginhost::InputProvider>,
-    native_namespace: String,
+    controller_topology: Option<ControllerTopology>,
+    input_hooks: Vec<snowglass_runtime::InputHook>,
+    input_namespace: String,
     raw_hid: Vec<RawHidChannel>,
 }
 
@@ -166,10 +164,9 @@ impl InputRouter {
             dom_alt_key: false,
             next_publish: Instant::now(),
             last_controller_api_revision: 0,
-            native_providers: Arc::new(Mutex::new(Vec::new())),
-            native_topology: Arc::new(Mutex::new(None)),
-            applied_native_providers: Vec::new(),
-            native_namespace: String::new(),
+            controller_topology: None,
+            input_hooks: Vec::new(),
+            input_namespace: String::new(),
             raw_hid: Vec::new(),
         })
     }
@@ -218,7 +215,7 @@ impl InputRouter {
             let _ = endpoint.listener.publish_topology(topology);
         }
         self.listener = Some(endpoint.listener);
-        let _ = self.rebuild_native_input();
+        let _ = self.rebuild_input_hooks();
     }
 
     pub fn detach(&mut self) {
@@ -413,7 +410,7 @@ impl InputRouter {
             listener.set_forwarding(enabled, &self.hub);
         }
     }
-    pub fn clear_provider_state(&self) {
+    pub fn clear_guest_input_state(&self) {
         self.hub.publish_host(HostInputEvent::FocusLost);
     }
 
@@ -486,44 +483,41 @@ impl InputRouter {
                 .map_err(|error| error.to_string())?;
         }
         self.topology = Some(wire);
-        Ok(())
+        self.controller_topology = Some(topology.clone());
+        self.rebuild_input_hooks()
     }
 
-    pub fn configure_native_input(
+    pub fn configure_input_hooks(
         &mut self,
-        providers: &[snowglass_pluginhost::InputProvider],
+        hooks: &[snowglass_runtime::InputHook],
         namespace: &str,
     ) -> Result<(), String> {
-        *self.native_providers.lock() = providers.to_vec();
-        self.native_namespace = namespace.to_owned();
-        self.rebuild_native_input()
+        self.input_hooks = hooks.to_vec();
+        self.input_namespace = namespace.to_owned();
+        self.rebuild_input_hooks()
     }
 
-    pub fn clear_native_input(&mut self) {
+    pub fn clear_input_hooks(&mut self) {
         self.raw_hid.clear();
         if let Some(listener) = &self.listener {
             listener.clear_raw_hid();
         }
-        self.applied_native_providers.clear();
-        self.native_providers.lock().clear();
+        self.input_hooks.clear();
+        self.controller_topology = None;
         if let Some(topology) = &mut self.topology {
             topology.raw_hid.clear();
         }
     }
 
-    pub fn attach_native_input_session(
+    pub fn apply_controller_topology(
         &mut self,
-        session: &snowglass_pluginhost::ControllerSession,
-        namespace: &str,
+        topology: ControllerTopology,
     ) -> Result<(), String> {
-        self.native_namespace = namespace.to_owned();
-        let providers = self.native_providers.clone();
-        let topology = self.native_topology.clone();
-        session.attach_input_providers(move |next, next_topology| {
-            *providers.lock() = next;
-            *topology.lock() = Some(next_topology);
-            Ok(())
-        })
+        let configuration = self.configuration.snapshot();
+        self.topology =
+            Some(topology.input_topology(configuration.revision as u32, configuration.machine)?);
+        self.controller_topology = Some(topology);
+        self.rebuild_input_hooks()
     }
 
     pub fn prepare_configuration_transaction(
@@ -601,7 +595,6 @@ impl InputRouter {
                 false
             })
         });
-        let _ = self.rebuild_native_input();
         self.publish_controller_api();
         let snapshots = self.hub.snapshot();
         let slots = mappings
@@ -703,68 +696,67 @@ impl InputRouter {
         controllers
     }
 
-    fn rebuild_native_input(&mut self) -> Result<(), String> {
-        let topology_changed = if let Some(topology) = self.native_topology.lock().take() {
-            let configuration = self.configuration.snapshot();
-            let mut wire =
-                topology.input_topology(configuration.revision as u32, configuration.machine)?;
-            if let Some(current) = &self.topology {
-                wire.raw_hid.clone_from(&current.raw_hid);
-            }
-            self.topology = Some(wire);
-            true
-        } else {
-            false
-        };
-        let providers = self.native_providers.lock().clone();
-        if providers == self.applied_native_providers
-            && (!self.raw_hid.is_empty() || providers.is_empty())
-            && !topology_changed
-        {
-            return Ok(());
-        }
-        let Some(topology) = &mut self.topology else {
-            self.applied_native_providers = providers;
+    fn rebuild_input_hooks(&mut self) -> Result<(), String> {
+        let enabled = self
+            .input_hooks
+            .contains(&snowglass_runtime::InputHook::BluetoothApiWin32);
+        let Some(controller_topology) = self.controller_topology.as_ref() else {
             return Ok(());
         };
         let devices = self.hub.devices();
-        topology.raw_hid = providers
-            .iter()
-            .map(|provider| {
-                let snowglass_pluginhost::InputProvider::RawHid {
-                    source_id,
-                    target,
-                    vendor_id,
-                    product_id,
-                } = provider;
-                if !topology.ports.iter().any(|binding| {
-                    binding.group == target.group && usize::from(binding.port) == target.port
-                }) {
-                    return Err(format!(
-                        "raw HID target {}:{} is not in the input topology",
-                        target.group, target.port
-                    ));
-                }
-                let (source_player, _) = devices
-                    .iter()
-                    .find(|(_, device)| device.id.as_str() == source_id)
-                    .ok_or_else(|| format!("raw HID source '{source_id}' is not connected"))?;
-                let source_player = source_player.ok_or_else(|| {
-                    format!("raw HID source '{source_id}' has no input assignment")
-                })?;
-                Ok(snowglass_input_layout::topology::RawHidBinding {
-                    player: source_player.get(),
-                    port: u8::try_from(target.port)
-                        .map_err(|_| format!("raw HID target port {} exceeds 255", target.port))?,
-                    vendor_id: *vendor_id,
-                    product_id: *product_id,
-                    pipe: format!(
-                        r"\\.\pipe\snowglass-{}-hid-{}",
-                        self.native_namespace, target.port
-                    ),
+        let bindings = if enabled {
+            controller_topology
+                .mappings
+                .iter()
+                .filter(|mapping| {
+                    mapping.connected
+                        && mapping.device.as_ref().is_some_and(|device| {
+                            device.capabilities.iter().any(|value| value == "rawHid")
+                        })
                 })
-            })
-            .collect::<Result<Vec<_>, String>>()?;
+                .map(|mapping| {
+                    let source_id = &mapping
+                        .device
+                        .as_ref()
+                        .expect("filtered mappings have a device")
+                        .id;
+                    let (source_player, source_device) = devices
+                        .iter()
+                        .find(|(_, device)| device.id.as_str() == source_id)
+                        .ok_or_else(|| format!("raw HID source '{source_id}' is not connected"))?;
+                    let source_player = (*source_player).ok_or_else(|| {
+                        format!("raw HID source '{source_id}' has no input assignment")
+                    })?;
+                    Ok(snowglass_input_layout::topology::RawHidBinding {
+                        player: source_player.get(),
+                        port: u8::try_from(mapping.target.port).map_err(|_| {
+                            format!("raw HID target port {} exceeds 255", mapping.target.port)
+                        })?,
+                        vendor_id: source_device.vendor_id.ok_or_else(|| {
+                            format!("raw HID source '{source_id}' does not report a vendor ID")
+                        })?,
+                        product_id: source_device.product_id.ok_or_else(|| {
+                            format!("raw HID source '{source_id}' does not report a product ID")
+                        })?,
+                        pipe: format!(
+                            r"\\.\pipe\snowglass-{}-hid-{}",
+                            self.input_namespace, mapping.target.port
+                        ),
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?
+        } else {
+            Vec::new()
+        };
+        let Some(topology) = &mut self.topology else {
+            return Ok(());
+        };
+        if topology.raw_hid == bindings
+            && (self.listener.is_none() || self.raw_hid.len() == bindings.len())
+        {
+            return Ok(());
+        }
+        topology.raw_hid = bindings;
         self.raw_hid.clear();
         if let Some(listener) = &self.listener {
             listener.clear_raw_hid();
@@ -785,7 +777,6 @@ impl InputRouter {
                 .publish_topology(topology)
                 .map_err(|error| error.to_string())?;
         }
-        self.applied_native_providers = providers;
         Ok(())
     }
 }

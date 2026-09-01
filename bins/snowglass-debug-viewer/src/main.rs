@@ -41,7 +41,7 @@ use snowglass_renderer::{
     CompositingPlan, D3d12Compositor, Presentation, RenderWindow, Renderer, SurfaceCapture,
     SurfaceCaptureEvent, VulkanCompositor, WebRtcCompositor,
     cli::{
-        HookBackend, TrackedRenderTarget, ViewerApi, ViewerOptions, parse_target,
+        GraphicsHook, TrackedRenderTarget, ViewerApi, ViewerOptions, parse_target,
         split_command_arguments,
     },
     input::PointerRoutingState,
@@ -1419,8 +1419,10 @@ fn start_target_session(
             command: target[0].clone(),
             arguments: target[1..].to_vec(),
             artifact_root: executable_dir.to_path_buf(),
-            hooks: launcher.hooks.clone(),
-            input_hooks: Vec::new(),
+            hooks: snowglass_runtime::Hooks {
+                graphics: launcher.hooks.clone(),
+                input: vec![snowglass_runtime::InputHook::Sdl3],
+            },
             consumer: match viewer_api {
                 ViewerApi::D3d12 => snowglass_runtime::ConsumerPreference::D3d12,
                 ViewerApi::Vulkan => snowglass_runtime::ConsumerPreference::Vulkan,

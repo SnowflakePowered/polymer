@@ -358,10 +358,11 @@ impl ShellCoordinator {
             self.publish_input_configuration();
         }
         if let Some(state) = publication.api_state {
-            let controller_change = self
-                .input
-                .controller_topology()
-                .and_then(|topology| self.game_host.controller_change(topology).map(|_| ()));
+            let controller_change = self.input.controller_topology().and_then(|topology| {
+                self.input.apply_controller_topology(topology.clone())?;
+                self.game_host.update_controller_topology(topology.clone());
+                self.game_host.controller_change(topology).map(|_| ())
+            });
             if let Err(error) = controller_change
                 && let Some(token) = self.game_host.active_token()
             {

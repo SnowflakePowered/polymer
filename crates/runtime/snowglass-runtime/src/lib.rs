@@ -40,6 +40,7 @@ pub use snowglass_controllers::{
     DeviceMapping,
 };
 pub use snowglass_controllers::{ControllerMapping, ControllerTopology};
+pub use snowglass_pluginhost::{GraphicsHook, Hooks, InputHook};
 pub use storage::launch_storage;
 pub use ui::{UiRequest, UiRequestReceiver};
 
@@ -49,52 +50,4 @@ pub enum RuntimeState {
     Connecting,
     Active,
     ShuttingDown,
-}
-
-/// A graphics capture backend installed into the target process.
-///
-/// Ordering in [`EmulatorLaunchConfig::hooks`] is also the preference order used
-/// when multiple hooks expose the same logical surface.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum HookBackend {
-    Vulkan,
-    OpenGl,
-    D3d12,
-    D3d11,
-    Gdi,
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum InputHookBackend {
-    BluetoothApiWin32,
-}
-
-impl HookBackend {
-    pub const ALL: [Self; 5] = [
-        Self::Vulkan,
-        Self::OpenGl,
-        Self::D3d12,
-        Self::D3d11,
-        Self::Gdi,
-    ];
-
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Vulkan => "Vulkan",
-            Self::OpenGl => "OpenGL",
-            Self::D3d12 => "D3D12",
-            Self::D3d11 => "D3D11",
-            Self::Gdi => "GDI",
-        }
-    }
-
-    pub const fn class(self) -> u8 {
-        match self {
-            Self::Gdi => 0,
-            Self::D3d11 => 1,
-            Self::D3d12 => 2,
-            Self::OpenGl => 3,
-            Self::Vulkan => 4,
-        }
-    }
 }

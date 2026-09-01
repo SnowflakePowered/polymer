@@ -129,7 +129,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
         command: path("/DuckStation/duckstation-qt-x64-ReleaseLTCG.exe"),
         argv: ["-batch", "-fastboot", "--", path(`/Game/${gameName}`)],
         isolate: true,
-        hooks: ["d3d11"],
+        hooks: { graphics: ["d3d11"], input: ["sdl3"] },
         surfaces: [{ index: 0, pattern: "DuckStation|Crash Bandicoot" }],
     };
 };

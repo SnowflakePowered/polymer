@@ -21,7 +21,7 @@ pub(crate) struct LauncherState {
     pub(crate) executable: String,
     pub(crate) arguments: String,
     pub(crate) isolate: bool,
-    pub(crate) hooks: Vec<HookBackend>,
+    pub(crate) hooks: Vec<GraphicsHook>,
     pub(crate) render_targets: Vec<TrackedRenderTarget>,
     pub(crate) graph_tracking: bool,
     pub(crate) gamepads: Vec<LauncherGamepad>,
@@ -289,7 +289,7 @@ pub(crate) fn draw_launcher_window(
             ui.separator();
             ui.strong("Graphics hooks");
             ui.horizontal_wrapped(|ui| {
-                for hook in HookBackend::ALL {
+                for hook in GraphicsHook::ALL {
                     let mut enabled = launcher.hooks.contains(&hook);
                     if ui.checkbox(&mut enabled, hook.label()).changed() {
                         if enabled {

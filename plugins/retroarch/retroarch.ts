@@ -101,7 +101,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
             args.filesystem.path(`/Game/${gameName}`),
         ],
         isolate: true,
-        hooks: ["d3d11"],
+        hooks: { graphics: ["d3d11"], input: ["sdl3"] },
         surfaces: [
             { index: 0, pattern: "RetroArch" },
         ],

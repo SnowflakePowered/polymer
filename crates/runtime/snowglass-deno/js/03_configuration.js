@@ -22,9 +22,10 @@ export function createConfiguration(scraping, pluginApi) {
         command: plugin.command,
         arguments: [...(plugin.argv || [])],
         isolated: Boolean(plugin.isolate),
-        hook: [...(plugin.hooks || [])],
-        inputHooks: [...(plugin.inputHooks || [])],
-        inputProviders: [...(plugin.inputProviders || [])],
+        hooks: {
+          graphics: [...plugin.hooks.graphics],
+          input: [...plugin.hooks.input],
+        },
         graphTracking: Boolean(plugin.graphTracking),
         surfaces: (plugin.surfaces || []).map((surface) => Object.freeze({
           index: surface.index,

@@ -1,4 +1,4 @@
-use crate::{EmulatorLaunchConfig, HookBackend, LaunchError};
+use crate::{EmulatorLaunchConfig, GraphicsHook, InputHook, LaunchError};
 use snowglass_hook::config;
 use snowglass_platform_windows::{
     InjectionLibrary, TargetProcess, architecture_artifact_dir, executable_architecture,
@@ -16,7 +16,8 @@ pub(crate) fn launch(config: &EmulatorLaunchConfig) -> Result<TargetProcess, Lau
         .unwrap_or_else(|| config.artifact_root.clone());
     let vulkan_manifest = config
         .hooks
-        .contains(&HookBackend::Vulkan)
+        .graphics
+        .contains(&GraphicsHook::Vulkan)
         .then(|| {
             create_vulkan_layer_manifest(&artifact_dir.join("snowglass_hook_vulkan_layer.dll"))
         })
@@ -48,7 +49,7 @@ pub(crate) fn launch(config: &EmulatorLaunchConfig) -> Result<TargetProcess, Lau
         ));
     }
 
-    let libraries = hook_libraries(&config.hooks, &config.input_hooks, config.isolate);
+    let libraries = hook_libraries(&config.hooks.graphics, &config.hooks.input, config.isolate);
     let mut process = TargetProcess::launch(
         &command_line,
         &config.artifact_root,
@@ -246,14 +247,14 @@ fn create_vulkan_layer_manifest(layer_dll: &Path) -> std::io::Result<tempfile::T
 }
 
 fn hook_libraries(
-    hooks: &[HookBackend],
-    input_hooks: &[crate::InputHookBackend],
+    hooks: &[GraphicsHook],
+    input_hooks: &[InputHook],
     isolate: bool,
 ) -> Vec<InjectionLibrary> {
     let mut libraries = Vec::new();
     if hooks
         .iter()
-        .any(|hook| matches!(hook, HookBackend::D3d11 | HookBackend::D3d12))
+        .any(|hook| matches!(hook, GraphicsHook::D3d11 | GraphicsHook::D3d12))
     {
         libraries.push(InjectionLibrary::new(
             "DXGI",
@@ -261,28 +262,28 @@ fn hook_libraries(
             c"SnowglassInstallDxgiHook",
         ));
     }
-    if hooks.contains(&HookBackend::D3d11) {
+    if hooks.contains(&GraphicsHook::D3d11) {
         libraries.push(InjectionLibrary::new(
             "D3D11",
             "snowglass_hook_d3d11.dll",
             c"SnowglassInstallD3d11Hook",
         ));
     }
-    if hooks.contains(&HookBackend::D3d12) {
+    if hooks.contains(&GraphicsHook::D3d12) {
         libraries.push(InjectionLibrary::new(
             "D3D12",
             "snowglass_hook_d3d12.dll",
             c"SnowglassInstallD3d12Hook",
         ));
     }
-    if hooks.contains(&HookBackend::OpenGl) {
+    if hooks.contains(&GraphicsHook::OpenGl) {
         libraries.push(InjectionLibrary::new(
             "OpenGL",
             "snowglass_hook_opengl32.dll",
             c"SnowglassInstallOpenGlHook",
         ));
     }
-    if hooks.contains(&HookBackend::Gdi) {
+    if hooks.contains(&GraphicsHook::Gdi) {
         libraries.push(InjectionLibrary::new(
             "GDI",
             "snowglass_hook_gdi.dll",
@@ -299,11 +300,18 @@ fn hook_libraries(
         "snowglass_hook_win32.dll",
         c"SnowglassInstallWin32Hook",
     ));
-    if input_hooks.contains(&crate::InputHookBackend::BluetoothApiWin32) {
+    if input_hooks.contains(&InputHook::BluetoothApiWin32) {
         libraries.push(InjectionLibrary::new(
             "Bluetooth HID API",
             "snowglass_hook_bluetoothapi_win32.dll",
             c"SnowglassInstallBluetoothApiWin32Hook",
+        ));
+    }
+    if input_hooks.contains(&InputHook::Sdl3) {
+        libraries.push(InjectionLibrary::new(
+            "SDL3",
+            "snowglass_hook_sdl3.dll",
+            c"SnowglassInstallSdl3Hook",
         ));
     }
     if isolate {
@@ -317,11 +325,6 @@ fn hook_libraries(
         "SDL2",
         "snowglass_hook_sdl2.dll",
         c"SnowglassInstallSdl2Hook",
-    ));
-    libraries.push(InjectionLibrary::new(
-        "SDL3",
-        "snowglass_hook_sdl3.dll",
-        c"SnowglassInstallSdl3Hook",
     ));
     libraries
 }

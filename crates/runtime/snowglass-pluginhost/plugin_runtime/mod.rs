@@ -717,7 +717,6 @@ struct ControllerSessionWorker {
     console: String,
     configuration_id: crate::configuration::ConfigurationId,
     previous_topology: snowglass_controllers::ControllerTopology,
-    input_provider_sink: Option<crate::controller::InputProviderSink>,
     commands: std::sync::mpsc::Receiver<crate::controller::ControllerSessionCommand>,
     errors: Arc<Mutex<Vec<crate::SessionError>>>,
 }
@@ -790,7 +789,6 @@ impl ControllerSessionWorker {
             console,
             configuration_id,
             previous_topology: applied_topology,
-            input_provider_sink: None,
             commands: args.commands,
             errors: args.errors,
         }))
@@ -804,13 +802,6 @@ impl ControllerSessionWorker {
                     response,
                 ) => {
                     crate::automation::attach(self.runtime.js_runtime_mut(), session);
-                    let _ = response.send(Ok(()));
-                }
-                crate::controller::ControllerSessionCommand::AttachInputProviders(
-                    sink,
-                    response,
-                ) => {
-                    self.input_provider_sink = Some(sink);
                     let _ = response.send(Ok(()));
                 }
                 crate::controller::ControllerSessionCommand::AttachActions(sink, response) => {
@@ -853,13 +844,15 @@ impl ControllerSessionWorker {
     fn change(
         &mut self,
         topology: snowglass_controllers::ControllerTopology,
-        response: tokio::sync::oneshot::Sender<Result<(), String>>,
+        response: tokio::sync::oneshot::Sender<
+            Result<snowglass_controllers::ControllerTopology, String>,
+        >,
     ) {
         let result = self.apply_change(&topology);
         match result {
             Ok(applied) => {
-                self.previous_topology = applied;
-                let _ = response.send(Ok(()));
+                self.previous_topology = applied.clone();
+                let _ = response.send(Ok(applied));
             }
             Err(error) => {
                 crate::filesystem::discard_staged(self.runtime.js_runtime_mut());
@@ -911,10 +904,6 @@ impl ControllerSessionWorker {
         )
         .map_err(PluginInvocationError::worker)?;
         let output = self.execute_callback(topology)?;
-        if let Some(sink) = &self.input_provider_sink {
-            sink(output.input_providers, output.controller_topology.clone())
-                .map_err(PluginInvocationError::worker)?;
-        }
         crate::filesystem::flush_staged(self.runtime.js_runtime_mut())
             .map_err(PluginInvocationError::worker)?;
         Ok(output.controller_topology)
@@ -1178,7 +1167,7 @@ mod tests {
                   return {
                     command,
                     argv,
-                    hooks: ["vulkan"],
+                    hooks: { graphics: ["vulkan"], input: ["sdl3"] },
                     graphTracking: true,
                     surfaces: [{ index: 0 }],
                   };
@@ -1233,7 +1222,7 @@ mod tests {
                   return {
                     command: args.filesystem.path("/Emulator/emulator.exe"),
                     argv: [],
-                    hooks: [],
+                    hooks: { graphics: [], input: ["sdl3"] },
                     graphTracking: false,
                     surfaces: [],
                   };
@@ -1317,7 +1306,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn dolphin_launch_selects_real_wiimote_and_raw_hid_provider() {
+    async fn dolphin_launch_selects_real_wiimote_and_input_hooks() {
         let plugin = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../..")
             .join("plugins/dolphin");
@@ -1370,18 +1359,12 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            result.value["inputHooks"],
-            serde_json::json!(["bluetooth-api-win32"])
+            result.value["hooks"]["input"],
+            serde_json::json!(["sdl3", "bluetooth-api-win32"])
         );
         assert_eq!(
-            result.value["inputProviders"],
-            serde_json::json!([{
-                "type": "rawHid",
-                "sourceId": "bt:br-edr/00:11:22:33:44:55",
-                "target": { "group": "wii", "port": 0 },
-                "vendorId": 0x057e,
-                "productId": 0x0306
-            }])
+            result.value["hooks"]["graphics"],
+            serde_json::json!(["d3d11"])
         );
         let filesystem = result.prepared_filesystem.unwrap();
         filesystem.filesystem().materialize().unwrap();
@@ -1458,7 +1441,6 @@ mod tests {
         let filesystem = result.prepared_filesystem.unwrap();
         let session = result.controller_session.unwrap();
         filesystem.filesystem().materialize().unwrap();
-        session.attach_input_providers(|_, _| Ok(())).unwrap();
         let automation_calls = Arc::new(StdMutex::new(Vec::new()));
         let automation = snowglass_automation::AutomationSession::spawn(RecordingAutomation(
             automation_calls.clone(),
