@@ -1,6 +1,8 @@
+use snowglass_config::input::{
+    InputConfiguration, InputOperation, InputTransaction, SourceAssignment,
+};
 use snowglass_controllers::{
     ControllerConfiguration, ControllerManager, ControllerManagerEffect, ControllerTopology,
-    InputConfiguration, InputTransaction,
 };
 use snowglass_egui::{InputAxisDiagnostics, InputDiagnostics, InputSlotDiagnostics};
 use snowglass_input::{
@@ -658,19 +660,14 @@ impl InputRouter {
         }
     }
 
-    fn replace_assignments(
-        &mut self,
-        assignments: Vec<snowglass_controllers::SourceAssignment>,
-    ) -> Result<bool, String> {
+    fn replace_assignments(&mut self, assignments: Vec<SourceAssignment>) -> Result<bool, String> {
         let current = self.configuration.snapshot();
         if current.assignments == assignments {
             return Ok(false);
         }
         let transaction = InputTransaction {
             expected_revision: current.revision,
-            operations: vec![snowglass_controllers::InputOperation::ReplaceAssignments {
-                assignments,
-            }],
+            operations: vec![InputOperation::ReplaceAssignments { assignments }],
         };
         let configuration = self
             .configuration

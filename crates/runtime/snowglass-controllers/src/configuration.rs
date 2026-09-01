@@ -1,75 +1,17 @@
-//! Revisioned, API-neutral configuration for physical sources and virtual ports.
-//!
-//! This is the control plane for input. Capture providers and virtual-device
-//! sinks remain data-plane implementations: they consume snapshots produced
-//! here, but neither owns user configuration.
-
-use crate::ControllerBindings;
 use consolespec::MachineSpec;
 use consolespec::input::BindingKey;
 use parking_lot::RwLock;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
+use snowglass_config::input::{
+    ControllerBindings, InputConfiguration, InputOperation, InputTransaction, PortConfiguration,
+    SourceAssignment, SourceSelector, VirtualPort,
+};
 use snowglass_input_layout::layout::{InputBinding, InputLayout};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fmt,
     sync::Arc,
 };
-
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct VirtualPort {
-    /// A machinespec `[input]` group name, e.g. `controller`, `gamepad`, `wii`.
-    pub group: String,
-    /// Zero-based index within the group.
-    pub index: u8,
-}
-
-impl VirtualPort {
-    pub fn new(group: impl Into<String>, index: u8) -> Self {
-        Self {
-            group: group.into(),
-            index,
-        }
-    }
-}
-
-impl fmt::Display for VirtualPort {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}.{}", self.group, self.index)
-    }
-}
-
-impl std::str::FromStr for VirtualPort {
-    type Err = String;
-
-    fn from_str(text: &str) -> Result<Self, Self::Err> {
-        let (group, index) = text
-            .rsplit_once('.')
-            .ok_or_else(|| format!("`{text}` is not a port; expected `<group>.<index>`"))?;
-        if group.is_empty() {
-            return Err(format!("`{text}` names no group"));
-        }
-        let index = index
-            .parse()
-            .map_err(|_| format!("`{text}` has no port index"))?;
-        Ok(Self::new(group, index))
-    }
-}
-
-/// The wire form is `"controller.0"`, so the frontend can compare ports with
-/// `===` and use one as an object key, as it did when a port was a bare number.
-impl Serialize for VirtualPort {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_str(self)
-    }
-}
-
-impl<'de> Deserialize<'de> for VirtualPort {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let text = std::borrow::Cow::<'de, str>::deserialize(deserializer)?;
-        text.parse().map_err(serde::de::Error::custom)
-    }
-}
 
 /// A serializable view of a consolespec input group, for the frontend.
 ///
@@ -93,130 +35,6 @@ impl From<consolespec::machine::InputGroup> for InputGroup {
             accessories: group.is_accessory_group(),
         }
     }
-}
-
-/// A source selector persisted independently from a particular SDL connection.
-///
-/// Provider implementation details such as SDL enumeration indices, names,
-/// and GUIDs never enter persisted configuration. A physical device is named
-/// only by its opaque, provider-owned durable ID.
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum SourceSelector {
-    KeyboardMouse,
-    Device {
-        #[serde(rename = "deviceId", alias = "device_id")]
-        device_id: String,
-    },
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PortConfiguration {
-    pub port: VirtualPort,
-    pub layout: String,
-    /// Which virtual gamepad this port drives, if any.
-    ///
-    /// Separate from [`VirtualPort`] on purpose. Ports are numbered per group by
-    /// the machine; virtual pads are numbered by the SDL provider, densely, over
-    /// only the ports that present one. A port in passthrough or left empty
-    /// consumes the former and not the latter, so `controller.3` is routinely
-    /// slot 2. Conflating them is what §6.3 of the config design calls port
-    /// index skew, and it silently binds player 3's config to player 2's pad.
-    pub slot: Option<u8>,
-    /// Prefer pointer input from the host mouse even when the physical source
-    /// is a controller with its own pointer-capable controls.
-    #[serde(default)]
-    pub force_mouse: bool,
-    #[serde(default)]
-    pub overrides: ControllerBindings,
-}
-
-/// A durable physical-source binding for one virtual controller index.
-///
-/// This is deliberately separate from [`PortConfiguration`]. A game decides
-/// which virtual controller feeds each emulator port; the native controller
-/// manager decides which physical source feeds that virtual controller, and
-/// that decision survives provider disconnects.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SourceAssignment {
-    pub index: u8,
-    pub source: SourceSelector,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InputConfiguration {
-    pub revision: u64,
-    /// The machinespec this topology's ports belong to. `None` before any game
-    /// is attached, when there are no ports at all.
-    pub machine: Option<String>,
-    pub ports: Vec<PortConfiguration>,
-    pub assignments: Vec<SourceAssignment>,
-}
-
-impl InputConfiguration {
-    pub fn source_for(&self, index: u8) -> Option<&SourceSelector> {
-        self.assignments
-            .iter()
-            .find(|assignment| assignment.index == index)
-            .map(|assignment| &assignment.source)
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
-pub enum InputOperation {
-    /// Replaces the complete port topology. Hosts use this when attaching a
-    /// game whose declared controller ports differ from the previous game.
-    ///
-    /// The machine comes with it: a port only means something against the
-    /// machinespec that declares its group, so changing the topology and
-    /// changing the machine is one operation, not two.
-    ReplacePorts {
-        machine: String,
-        ports: Vec<PortConfiguration>,
-    },
-    ConfigurePort {
-        port: VirtualPort,
-        layout: String,
-        #[serde(default)]
-        slot: Option<u8>,
-    },
-    SetAssignment {
-        index: u8,
-        source: Option<SourceSelector>,
-    },
-    ReplaceAssignments {
-        assignments: Vec<SourceAssignment>,
-    },
-    SetLayout {
-        port: VirtualPort,
-        layout: String,
-    },
-    SetOverride {
-        port: VirtualPort,
-        target: BindingKey,
-        binding: Option<BindingKey>,
-    },
-    ResetTarget {
-        port: VirtualPort,
-        target: BindingKey,
-    },
-    ResetPortOverrides {
-        port: VirtualPort,
-    },
-    RemovePort {
-        port: VirtualPort,
-    },
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InputTransaction {
-    pub expected_revision: u64,
-    pub operations: Vec<InputOperation>,
 }
 
 #[derive(Clone)]

@@ -1,11 +1,11 @@
 use super::{ControllerManager, DeviceMapping};
-use crate::{
-    ControllerBindings, ControllerDevice, ControllerMapping, ControllerTarget, ControllerTopology,
-    InputConfiguration, SourceSelector,
-};
+use crate::{ControllerDevice, ControllerMapping, ControllerTarget, ControllerTopology};
 use consolespec::input::BindingKey;
+use snowglass_config::input::{
+    ControllerBindings, InputConfiguration, ProjectionMode, SourceSelector,
+};
 use snowglass_input::DeviceDescriptor;
-use snowglass_input_layout::layout::{InputLayout, ProjectionMode};
+use snowglass_input_layout::layout::InputLayout;
 use snowglass_library::{
     InputIdentityScope, InputMappingMode, InputMappingProfile as StoredMappingProfile,
 };
@@ -95,7 +95,7 @@ impl ControllerManager {
                 let layout = InputLayout::get(&port.layout)
                     .ok_or_else(|| format!("unknown input layout {}", port.layout))?;
                 let mapping = profile.as_ref().map_or_else(
-                    || ControllerBindings::defaults(layout),
+                    || layout.default_controller_bindings(),
                     MappingProfile::bindings,
                 );
                 Ok(ControllerMapping {

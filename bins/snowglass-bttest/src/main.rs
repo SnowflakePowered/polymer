@@ -28,7 +28,7 @@ use motion_capture::{
     timing::{TimingExperiment, TimingPacket},
 };
 use snowglass_bluetooth::{DeviceAddr, transport::ble::BleDevice};
-use worker::{Command, DeviceView, Event, PinChoice, RadioKind};
+use worker::{BondingMode, Command, DeviceView, Event, RadioKind};
 
 const DOUBLE_HOME_WINDOW: Duration = Duration::from_millis(700);
 const DUAL_REPORT_PROBE_DURATION: Duration = Duration::from_secs(3);
@@ -77,7 +77,7 @@ struct BluetoothTestApp {
     selected: Option<usize>,
     ble_devices: Vec<BleDevice>,
     ble_selected: Option<usize>,
-    pin: PinChoice,
+    pin: BondingMode,
     output_report: String,
     controller_inputs: BTreeMap<String, ControllerInputView>,
     air_mouse: AirMouse,
@@ -189,7 +189,7 @@ impl BluetoothTestApp {
             selected: None,
             ble_devices: Vec::new(),
             ble_selected: None,
-            pin: PinChoice::Ssp,
+            pin: BondingMode::Ssp,
             output_report: String::new(),
             controller_inputs: BTreeMap::new(),
             air_mouse: AirMouse::new(),
@@ -267,9 +267,9 @@ impl BluetoothTestApp {
                             .map(|profile_id| Command::ConnectBr {
                                 device: device.inquiry.clone(),
                                 pin: if device.is_wii_remote() {
-                                    PinChoice::WiiSync
+                                    BondingMode::WiiSync
                                 } else {
-                                    PinChoice::Ssp
+                                    BondingMode::Ssp
                                 },
                                 profile_id: Some(profile_id.clone()),
                             })
@@ -1594,10 +1594,10 @@ impl BluetoothTestApp {
                         .clicked()
                     {
                         self.selected = Some(index);
-                        if device.is_wii_remote() && self.pin == PinChoice::Ssp {
-                            self.pin = PinChoice::WiiSync;
+                        if device.is_wii_remote() && self.pin == BondingMode::Ssp {
+                            self.pin = BondingMode::WiiSync;
                         } else if device.is_switch() {
-                            self.pin = PinChoice::Ssp;
+                            self.pin = BondingMode::Ssp;
                         }
                     }
                 }
@@ -1677,16 +1677,16 @@ impl BluetoothTestApp {
         egui::ComboBox::from_label("Pairing method")
             .selected_text(self.pin.label())
             .show_ui(ui, |ui| {
-                ui.selectable_value(&mut self.pin, PinChoice::Ssp, PinChoice::Ssp.label());
+                ui.selectable_value(&mut self.pin, BondingMode::Ssp, BondingMode::Ssp.label());
                 ui.selectable_value(
                     &mut self.pin,
-                    PinChoice::WiiOneTwo,
-                    PinChoice::WiiOneTwo.label(),
+                    BondingMode::WiiOneTwo,
+                    BondingMode::WiiOneTwo.label(),
                 );
                 ui.selectable_value(
                     &mut self.pin,
-                    PinChoice::WiiSync,
-                    PinChoice::WiiSync.label(),
+                    BondingMode::WiiSync,
+                    BondingMode::WiiSync.label(),
                 );
             });
         ui.label(self.pin.help());
@@ -1694,7 +1694,7 @@ impl BluetoothTestApp {
             .selected
             .and_then(|index| self.devices.get(index))
             .is_some_and(DeviceView::is_wii_remote)
-            && self.pin == PinChoice::Ssp
+            && self.pin == BondingMode::Ssp
         {
             ui.colored_label(
                 egui::Color32::LIGHT_RED,

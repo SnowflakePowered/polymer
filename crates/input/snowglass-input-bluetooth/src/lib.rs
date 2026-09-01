@@ -250,42 +250,13 @@ impl BluetoothBackend {
         let controller = controller.unwrap_or_else(decoder::unsupported);
         let device = Self::device_id(connected.controller_id);
         let profile = connected.profile_id.as_str();
-        let pnp = connected.identity.pnp.as_ref();
-        let wiimote_product = match profile {
-            "nintendo.wiimote.original" => Some(0x0306),
-            "nintendo.wiimote.plus" => Some(0x0330),
-            "nintendo.wiimote.unknown" => Some(
-                if connected
-                    .identity
-                    .name
-                    .as_deref()
-                    .is_some_and(|name| name.ends_with("-TR"))
-                {
-                    0x0330
-                } else {
-                    0x0306
-                },
-            ),
-            _ => None,
-        };
         if !supported {
             let _ = events.send(DiscoveryEvent::UnsupportedReportFormat {
                 controller_id: connected.controller_id,
                 profile_id: profile.to_owned(),
             });
         }
-        let descriptor = DeviceDescriptor {
-            id: device.clone(),
-            name: Arc::from(connected.identity.name.as_deref().unwrap_or(profile)),
-            profile: Some(Arc::from(profile)),
-            vendor_id: pnp
-                .map(|value| value.vendor_id)
-                .or(wiimote_product.map(|_| 0x057e)),
-            product_id: pnp.map(|value| value.product_id).or(wiimote_product),
-            serial: None,
-            role: controller.role(),
-            capabilities: controller.capabilities(),
-        };
+        let descriptor = controller.descriptor(device.clone(), connected);
         controllers.write().insert(
             connected.controller_id,
             LiveController {

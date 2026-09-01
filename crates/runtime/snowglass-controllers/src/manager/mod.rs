@@ -1,11 +1,13 @@
 mod command;
 mod profile;
 
-use crate::{ControllerDevice, InputConfiguration, SourceAssignment};
+use crate::ControllerDevice;
 use parking_lot::RwLock;
 use profile::MappingProfile;
+use snowglass_config::input::{
+    InputConfiguration, ProjectionMode, SourceAssignment, SourceSelector,
+};
 use snowglass_input::{DeviceDescriptor, DeviceId, DeviceRole, GamepadButton, InputHub};
-use snowglass_input_layout::layout::ProjectionMode;
 use snowglass_library::InputStore;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -15,7 +17,7 @@ use std::{
 
 #[derive(Clone, Debug, Default)]
 pub struct ControllerAssignmentSnapshot {
-    assignments: BTreeMap<usize, crate::SourceSelector>,
+    assignments: BTreeMap<usize, SourceSelector>,
     has_connected_controllers: bool,
 }
 
@@ -30,7 +32,7 @@ impl ControllerAssignmentSnapshot {
                     .map(|(index, device)| {
                         (
                             usize::from(index.get()),
-                            crate::SourceSelector::Device {
+                            SourceSelector::Device {
                                 device_id: device.to_string(),
                             },
                         )
@@ -49,10 +51,9 @@ impl ControllerAssignmentSnapshot {
         }
     }
 
-    pub fn source_for(&self, slot: usize) -> Option<crate::SourceSelector> {
+    pub fn source_for(&self, slot: usize) -> Option<SourceSelector> {
         self.assignments.get(&slot).cloned().or_else(|| {
-            (slot == 0 && !self.has_connected_controllers)
-                .then_some(crate::SourceSelector::KeyboardMouse)
+            (slot == 0 && !self.has_connected_controllers).then_some(SourceSelector::KeyboardMouse)
         })
     }
 }
@@ -230,8 +231,8 @@ impl ControllerManager {
             .assignments
             .iter()
             .filter_map(|assignment| match &assignment.source {
-                crate::SourceSelector::Device { device_id } => Some(device_id.as_str()),
-                crate::SourceSelector::KeyboardMouse => None,
+                SourceSelector::Device { device_id } => Some(device_id.as_str()),
+                SourceSelector::KeyboardMouse => None,
             })
             .collect::<HashSet<_>>();
         for (_, device) in hub.assignments() {
@@ -241,7 +242,7 @@ impl ControllerManager {
             }
         }
         for assignment in &configuration.assignments {
-            let crate::SourceSelector::Device { device_id } = &assignment.source else {
+            let SourceSelector::Device { device_id } = &assignment.source else {
                 continue;
             };
             let device = devices
@@ -322,7 +323,7 @@ impl ControllerManager {
                     .into_iter()
                     .map(|(index, device)| SourceAssignment {
                         index: index.get(),
-                        source: crate::SourceSelector::Device {
+                        source: SourceSelector::Device {
                             device_id: device.to_string(),
                         },
                     })

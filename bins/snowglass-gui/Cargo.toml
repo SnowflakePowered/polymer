@@ -29,6 +29,7 @@ regex.workspace = true
 serde.workspace = true
 serde_bytes = "0.11"
 serde_json.workspace = true
+snowglass-config.workspace = true
 style = { package = "stylo", version = "0.20.0" }
 style_dom = { package = "stylo_dom", version = "0.20.0" }
 snowglass-input.workspace = true

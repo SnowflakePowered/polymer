@@ -4,12 +4,11 @@ use serde::{Deserialize, Serialize};
 use snowglass_config::ast::{
     ConfigurationInstance, OptionRange, PortAssignments, Value, ValueKind,
 };
+use snowglass_config::input::{ControllerBindings, ProjectionMode, SourceSelector, VirtualPort};
 use snowglass_controllers::{
-    ControllerAssignmentSnapshot, ControllerBindings, ControllerMapping, ControllerTarget,
-    ControllerTopology, SourceSelector, VirtualPort,
+    ControllerAssignmentSnapshot, ControllerMapping, ControllerTarget, ControllerTopology,
 };
 use snowglass_input::InputHub;
-use snowglass_input_layout::layout::ProjectionMode;
 use snowglass_pluginhost::{EmulatorPluginInstance, EmulatorPort, PackageError};
 use std::{
     collections::{BTreeMap, HashMap},

@@ -8,6 +8,7 @@ license.workspace = true
 bincode.workspace = true
 consolespec.workspace = true
 parking_lot.workspace = true
+snowglass-config.workspace = true
 snowglass-input.workspace = true
 snowglass-input-layout.workspace = true
 snowglass-ipc.workspace = true

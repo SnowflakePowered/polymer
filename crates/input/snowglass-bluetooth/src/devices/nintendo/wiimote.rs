@@ -6,9 +6,9 @@ use async_trait::async_trait;
 use tokio::sync::broadcast;
 
 use crate::devices::{
-    BondingMode, ConnectOptions, ConnectionPolicy, ControllerDevice, ControllerSession,
-    DeviceIdentity, HostIdentity, IrCameraSetup, IrMode, IrSensitivity, MatchConfidence,
-    PairingPolicy, ProfileId, ReconnectPolicy,
+    ConnectOptions, ConnectionPolicy, ControllerDevice, ControllerSession, DeviceIdentity,
+    HostIdentity, IrCameraSetup, IrMode, IrSensitivity, MatchConfidence, PairingPolicy, ProfileId,
+    ReconnectPolicy, VendorProductId,
 };
 use crate::{Error, ReportReceiver, Result, Transport};
 
@@ -31,6 +31,7 @@ const CAMERA_ENABLE_ADDRESS: u16 = 0x0030;
 const CAMERA_SENSITIVITY_BLOCK_1_ADDRESS: u16 = 0x0000;
 const CAMERA_SENSITIVITY_BLOCK_2_ADDRESS: u16 = 0x001a;
 const CAMERA_MODE_ADDRESS: u16 = 0x0033;
+const NINTENDO_VENDOR_ID: u16 = 0x057e;
 
 impl IrCameraSetup {
     fn sensitivity_blocks(self) -> (&'static [u8; 9], &'static [u8; 2]) {
@@ -60,16 +61,17 @@ impl IrCameraSetup {
 trait WiimoteModel: Send + Sync + 'static {
     const PROFILE_ID: &'static str;
     const DISPLAY_NAME: &'static str;
+    const PRODUCT_ID: u16;
 
     fn matches_wiimote(identity: &DeviceIdentity) -> Option<MatchConfidence>;
 
-    fn policy(options: &ConnectOptions) -> ConnectionPolicy {
-        let pairing = match options.bonding_mode.as_deref() {
-            Some("one-two") => PairingPolicy::RemoteAddressPin,
-            _ => PairingPolicy::LocalAddressPin,
-        };
+    fn product_id(_identity: &DeviceIdentity) -> u16 {
+        Self::PRODUCT_ID
+    }
+
+    fn policy() -> ConnectionPolicy {
         ConnectionPolicy {
-            pairing,
+            pairing: PairingPolicy::LocalAddressPin,
             reconnect: ReconnectPolicy::ControllerInitiated,
             // Fresh Wii Remote pairing follows the host-initiated HID path.
             // Button-wake reconnects are controller-initiated, but those enter
@@ -320,19 +322,21 @@ where
         M::matches_wiimote(identity)
     }
 
-    fn bonding_modes(&self) -> Vec<BondingMode> {
-        vec![
-            BondingMode::new("sync", "Red SYNC button"),
-            BondingMode::new("one-two", "1 + 2 buttons"),
-        ]
+    fn vendor_product(&self, identity: &DeviceIdentity) -> Option<VendorProductId> {
+        identity.vendor_product().or_else(|| {
+            Some(VendorProductId::new(
+                NINTENDO_VENDOR_ID,
+                M::product_id(identity),
+            ))
+        })
     }
 
     fn connection_policy(
         &self,
         _identity: &DeviceIdentity,
-        options: &ConnectOptions,
+        _options: &ConnectOptions,
     ) -> ConnectionPolicy {
-        M::policy(options)
+        M::policy()
     }
 
     fn connect(&self, options: &ConnectOptions) -> Box<dyn ControllerSession> {
@@ -349,6 +353,7 @@ controller_model! {
     WiiRemote = WiimoteDevice<WiiRemoteModel> impl WiimoteModel {
         const PROFILE_ID: &'static str = "nintendo.wiimote.original";
         const DISPLAY_NAME: &'static str = "Wii Remote";
+        const PRODUCT_ID: u16 = 0x0306;
 
         fn matches_wiimote(identity: &DeviceIdentity) -> Option<MatchConfidence> {
             identity
@@ -362,6 +367,7 @@ controller_model! {
     WiiRemotePlus = WiimoteDevice<WiiRemotePlusModel> impl WiimoteModel {
         const PROFILE_ID: &'static str = "nintendo.wiimote.plus";
         const DISPLAY_NAME: &'static str = "Wii Remote Plus";
+        const PRODUCT_ID: u16 = 0x0330;
 
         fn matches_wiimote(identity: &DeviceIdentity) -> Option<MatchConfidence> {
             identity
@@ -375,6 +381,19 @@ controller_model! {
     UnknownWiiRemote = WiimoteDevice<UnknownWiiRemoteModel> impl WiimoteModel {
         const PROFILE_ID: &'static str = "nintendo.wiimote.unknown";
         const DISPLAY_NAME: &'static str = "Unknown Wii Remote";
+        const PRODUCT_ID: u16 = 0x0306;
+
+        fn product_id(identity: &DeviceIdentity) -> u16 {
+            if identity
+                .name
+                .as_deref()
+                .is_some_and(|name| name.ends_with("-TR"))
+            {
+                0x0330
+            } else {
+                Self::PRODUCT_ID
+            }
+        }
 
         fn matches_wiimote(identity: &DeviceIdentity) -> Option<MatchConfidence> {
             identity

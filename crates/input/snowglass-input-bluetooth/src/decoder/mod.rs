@@ -1,7 +1,7 @@
-use snowglass_bluetooth::{BluetoothManager, SessionId, devices::ProfileId};
+use snowglass_bluetooth::{BluetoothManager, ConnectedController, SessionId, devices::ProfileId};
 use snowglass_input::{
-    BackendError, Calibration, Capabilities, DeviceRole, DeviceState, Feedback, GamepadButton,
-    RawHidFilter,
+    BackendError, Calibration, Capabilities, DeviceDescriptor, DeviceId, DeviceRole, DeviceState,
+    Feedback, GamepadButton, RawHidFilter,
 };
 use std::{sync::Arc, time::Instant};
 
@@ -67,6 +67,26 @@ pub trait BluetoothControllerDevice: Send + Sync {
     fn decode(&mut self, report: &[u8], received_at: Instant) -> Option<DecodedInput>;
     fn calibration(&self) -> &Calibration;
     fn calibration_mut(&mut self) -> &mut Calibration;
+
+    fn descriptor(&self, id: DeviceId, connected: &ConnectedController) -> DeviceDescriptor {
+        DeviceDescriptor {
+            id,
+            name: Arc::from(
+                connected
+                    .identity
+                    .name
+                    .as_deref()
+                    .unwrap_or(connected.profile_id.as_str()),
+            ),
+            profile: Some(Arc::from(connected.profile_id.as_str())),
+            vendor_id: connected.vendor_product.map(|ids| ids.vendor_id),
+            product_id: connected.vendor_product.map(|ids| ids.product_id),
+            serial: None,
+            role: self.role(),
+            capabilities: self.capabilities(),
+        }
+    }
+
     fn role(&self) -> DeviceRole {
         DeviceRole::Whole
     }

@@ -1,8 +1,9 @@
 use consolespec::input::BindingKey;
 use parking_lot::{RwLock, RwLockReadGuard};
+use snowglass_config::input::ProjectionMode;
 use snowglass_input::{GamepadReport, PointerFlags, PointerKind, PointerReport};
 use snowglass_input_layout::{
-    layout::{InputLayout, ProjectionMode},
+    layout::InputLayout,
     mapping::{HostSample, Mapping},
     topology::{InputTopology, PointerBinding, PointerMode, PointerSource, RemapMode},
 };

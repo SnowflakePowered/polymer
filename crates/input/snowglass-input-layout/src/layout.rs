@@ -3,20 +3,12 @@ use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 use consolespec::input::{Alignment, AnalogClass, BindingKey, Component, Sign};
+use snowglass_config::input::ControllerBindings;
 
 use crate::model::{self, Control, Sensor};
 use crate::projection::{Projection, Target};
 
 pub const EMBEDDED_DEFAULT_KEYBOARD_MAPPING: &str = include_str!("../keyboard/DEFAULT.kb.toml");
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ProjectionMode {
-    Name,
-    #[default]
-    Position,
-    Custom,
-}
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -173,6 +165,35 @@ impl InputLayout {
             }
             Control::Axis(_) | Control::Sensor(_) => None,
         }
+    }
+
+    pub fn default_controller_bindings(&self) -> ControllerBindings {
+        ControllerBindings::new(
+            self.default_gamepad_bindings()
+                .map(|(target, source)| (target, Some(source))),
+        )
+    }
+
+    pub fn validate_controller_bindings(
+        &self,
+        bindings: &ControllerBindings,
+    ) -> Result<(), String> {
+        for (target, source) in bindings.iter() {
+            if !self.has(*target) {
+                return Err(format!("input layout {} has no element {target}", self.id));
+            }
+            if let Some(source) = source {
+                let binding = self.custom_binding(*target, *source).ok_or_else(|| {
+                    format!("input source '{source}' is not a physical gamepad expression")
+                })?;
+                if matches!(binding, InputBinding::Axis { .. })
+                    && !self.accepts_axis_binding(*target)
+                {
+                    return Err(format!("element {target} does not accept an axis binding"));
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn custom_source(&self, target: BindingKey, binding: &InputBinding) -> Option<BindingKey> {

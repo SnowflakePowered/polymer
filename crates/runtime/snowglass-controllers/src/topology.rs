@@ -1,14 +1,12 @@
 //! Canonical controller topology shared by launch, host, and plugin layers.
 
-use crate::{
-    ControllerBindings,
-    configuration::{
-        ControllerConfiguration, InputOperation, InputTransaction, PortConfiguration,
-        SourceAssignment, SourceSelector, VirtualPort,
-    },
-};
+use crate::configuration::ControllerConfiguration;
 use serde::{Deserialize, Serialize};
-use snowglass_input_layout::layout::{InputLayout, ProjectionMode};
+use snowglass_config::input::{
+    ControllerBindings, InputOperation, InputTransaction, PortConfiguration, ProjectionMode,
+    SourceAssignment, SourceSelector, VirtualPort,
+};
+use snowglass_input_layout::layout::InputLayout;
 use snowglass_input_layout::topology::{
     InputTopology, PointerBinding, PointerMode, PointerSource, PortBinding, RemapMode,
 };
@@ -287,7 +285,7 @@ impl ControllerTopology {
             }
             let layout = InputLayout::get(&mapping.layout)
                 .ok_or_else(|| format!("unknown input layout {}", mapping.layout))?;
-            mapping.mapping.validate(&layout)?;
+            layout.validate_controller_bindings(&mapping.mapping)?;
             let mut binding_targets = HashSet::new();
             for (target, _) in mapping.mapping.iter() {
                 binding_targets.insert(*target);
