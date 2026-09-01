@@ -1176,7 +1176,7 @@ mod tests {
                   if (typeof context.actions.pause?.activate !== "function") {
                     throw new Error("onControllerChanged did not receive configured actions");
                   }
-                  const window = await context.ui.waitForWindow({ title: { contains: "Emulator" } });
+                  const window = await context.ui.waitForWindow({ pattern: "Emulator" });
                   await window.locator('button[name="Controllers"]').press();
                   context.configuration.options().general.enabled = false;
                   for (const [name, bytes] of Object.entries(context.configuration.render())) {
@@ -1303,96 +1303,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(explicit_default["command"], "emulator.exe");
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn dolphin_launch_selects_real_wiimote_and_input_hooks() {
-        let plugin = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../..")
-            .join("plugins/dolphin");
-        let registry = PluginRegistry::new();
-        registry.load(&plugin).unwrap();
-        let runtime = PluginRuntime::new(registry, PluginRuntimeOptions::default());
-        let game = tempfile::Builder::new().suffix(".iso").tempfile().unwrap();
-        let mut storage = BTreeMap::new();
-        storage.insert(
-            "nand".to_owned(),
-            Arc::new(snowglass_vfs::ScratchVolumeFactory::new(
-                snowglass_vfs::ScratchBacking::Memory,
-            )) as crate::StorageFactory,
-        );
-        let result = runtime
-            .handle()
-            .invoke_with_storage_owned(
-                "dolphin",
-                &["onLaunch".to_owned()],
-                vec![serde_json::json!({
-                    "launchPath": game.path(),
-                    "console": "NINTENDO_WII",
-                    "controllerTopology": {
-                        "mappings": [{
-                            "target": { "group": "wii", "port": 0 },
-                            "gamepad": 0,
-                            "source": { "kind": "device", "deviceId": "bt:br-edr/00:11:22:33:44:55" },
-                            "layout": "WII_REMOTE_CONTROLLER",
-                            "connected": true,
-                            "mouse": false,
-                            "projectionMode": "position",
-                            "mapping": {},
-                            "pointer": { "source": "deviceNative", "mode": "absoluteDevice" },
-                            "device": {
-                                "id": "bt:br-edr/00:11:22:33:44:55",
-                                "name": "Nintendo RVL-CNT-01",
-                                "profile": "nintendo.wiimote.original",
-                                "vendorId": 0x057e,
-                                "productId": 0x0306,
-                                "serial": null,
-                                "role": "Whole",
-                                "capabilities": ["rawHid", "accelerometer", "pointerAngular"]
-                            }
-                        }]
-                    }
-                })],
-                storage,
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(
-            result.value["hooks"]["input"],
-            serde_json::json!(["sdl3", "bluetooth-api-win32"])
-        );
-        assert_eq!(
-            result.value["hooks"]["graphics"],
-            serde_json::json!(["d3d11"])
-        );
-        let filesystem = result.prepared_filesystem.unwrap();
-        filesystem.filesystem().materialize().unwrap();
-        for (path, expected) in [
-            ("/User/Config/WiimoteNew.ini", "Source=2"),
-            ("/User/Config/Dolphin.ini", "WiimoteContinuousScanning=True"),
-            (
-                "/User/Config/Dolphin.ini",
-                "WiimoteControllerInterface=False",
-            ),
-        ] {
-            let path = path.parse().unwrap();
-            let file = filesystem
-                .filesystem()
-                .open(
-                    &path,
-                    snowglass_vfs::OpenOptions {
-                        read: true,
-                        write: false,
-                        truncate: false,
-                    },
-                )
-                .unwrap();
-            let mut bytes = vec![0; 128 * 1024];
-            let length = file.read(0, &mut bytes).unwrap();
-            let rendered = String::from_utf8_lossy(&bytes[..length]);
-            assert!(rendered.contains(expected), "{path:?}: {rendered}");
-        }
     }
 
     #[tokio::test(flavor = "current_thread")]

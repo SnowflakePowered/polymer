@@ -10,10 +10,12 @@ use std::{
 
 use snowglass_automation::{
     AutomationDriver, AutomationError, AutomationRequest, AutomationResponse, Bounds, Diagnosis,
-    LocatorAction, NodeSnapshot, TreeOptions, UiEvent, WaitCondition, WindowId, WindowQuery,
-    WindowSnapshot,
+    LocatorAction, NodeSnapshot, TreeOptions, UiEvent, WaitCondition, WindowId, WindowMatcher,
+    WindowQuery, WindowSnapshot,
 };
-use xa11y_core::{ElementData, Error, EventKind, Locator, Provider, RecvStatus, StateFlag};
+use xa11y_core::{
+    ElementData, Error, EventKind, Locator, Provider, RecvStatus, SelectorGroup, StateFlag,
+};
 use xa11y_windows::WindowsProvider;
 
 use super::{catalog::WindowCatalog, input::TargetedWindowInput};
@@ -58,15 +60,51 @@ impl WindowsAutomationDriver {
     }
 
     fn windows(&mut self, query: &WindowQuery) -> Result<Vec<WindowSnapshot>, AutomationError> {
-        query.validate()?;
+        let matcher = query.matcher()?;
+        if let Some(selector) = &query.selector {
+            SelectorGroup::parse(selector).map_err(Self::map_error)?;
+        }
+        self.matching_windows(&matcher, query.selector.as_deref())
+    }
+
+    fn matching_windows(
+        &mut self,
+        matcher: &WindowMatcher,
+        selector: Option<&str>,
+    ) -> Result<Vec<WindowSnapshot>, AutomationError> {
         self.ensure_desktop()?;
-        Ok(self
+        let candidates = self
             .catalog
             .enumerate()?
             .into_iter()
-            .map(|record| record.snapshot)
-            .filter(|window| query.matches(window))
-            .collect())
+            .filter(|record| matcher.matches(&record.snapshot))
+            .collect::<Vec<_>>();
+        let Some(selector) = selector else {
+            return Ok(candidates
+                .into_iter()
+                .map(|record| record.snapshot)
+                .collect());
+        };
+
+        self.ensure_provider()?;
+        let provider = self
+            .provider
+            .as_ref()
+            .expect("provider was attached")
+            .clone();
+        let mut matches = Vec::new();
+        for record in candidates {
+            let root = provider
+                .element_from_native_window(record.hwnd)
+                .map_err(Self::map_error)?;
+            if Locator::new(provider.clone(), Some(root), selector)
+                .exists()
+                .map_err(Self::map_error)?
+            {
+                matches.push(record.snapshot);
+            }
+        }
+        Ok(matches)
     }
 
     fn wait_for_window(
@@ -74,9 +112,13 @@ impl WindowsAutomationDriver {
         query: &WindowQuery,
         timeout: Duration,
     ) -> Result<WindowSnapshot, AutomationError> {
+        let matcher = query.matcher()?;
+        if let Some(selector) = &query.selector {
+            SelectorGroup::parse(selector).map_err(Self::map_error)?;
+        }
         let started = std::time::Instant::now();
         loop {
-            let matches = self.windows(query)?;
+            let matches = self.matching_windows(&matcher, query.selector.as_deref())?;
             match matches.as_slice() {
                 [window] => return Ok(window.clone()),
                 [] if started.elapsed() < timeout => {
@@ -87,6 +129,7 @@ impl WindowsAutomationDriver {
                         kind: "windowNotFound".to_owned(),
                         message: format!("no emulator window matched after {timeout:?}"),
                         diagnosis: Some(Box::new(Diagnosis {
+                            selector: query.selector.clone(),
                             condition: Some("window matching query".to_owned()),
                             last_observed: Some("no matching windows".to_owned()),
                             ..Diagnosis::default()

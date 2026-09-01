@@ -9,7 +9,7 @@ mod session;
 pub use driver::AutomationDriver;
 pub use protocol::{
     AutomationError, AutomationRequest, AutomationResponse, Bounds, Diagnosis, EventFilter,
-    InputCommand, LocatorAction, NodeSnapshot, TextMatch, TreeOptions, UiEvent, WaitCondition,
-    WindowId, WindowQuery, WindowSnapshot,
+    InputCommand, LocatorAction, NodeSnapshot, TreeOptions, UiEvent, WaitCondition, WindowId,
+    WindowMatcher, WindowQuery, WindowSnapshot,
 };
 pub use session::AutomationSession;

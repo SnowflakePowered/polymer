@@ -19,12 +19,14 @@ class PauseRegistry {
   #release(launch: LaunchInstance) {
     const remaining = Math.max(0, (this.#leases.get(launch) ?? 1) - 1);
     this.#leases.set(launch, remaining);
-    queueMicrotask(() => {
+    // Route changes dispose one pause surface before mounting the next. Give
+    // the replacement surface a turn to acquire its lease before resuming.
+    setTimeout(() => {
       if (this.#leases.get(launch) !== 0) return;
       this.#leases.delete(launch);
       launch.setPauseState("resume");
       launch.activateInput();
-    });
+    }, 0);
   }
 }
 

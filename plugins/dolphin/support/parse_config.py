@@ -61,8 +61,9 @@ ACTION_VOCABULARY = {
     "screenshot": {"hotkey": "HK_SCREENSHOT"},
     "toggle_fullscreen": {"hotkey": "HK_FULLSCREEN"},
     # Dolphin's HK_EXIT has no default binding and quits the whole application;
-    # stopping emulation is what the shell means by `exit`.
-    "exit": {"hotkey": "HK_STOP"},
+    # Snowglass runs Dolphin without batch mode so its control window remains
+    # available for live settings automation. Exit must still close Dolphin.
+    "exit": {"hotkey": "HK_EXIT"},
 }
 
 # consolespec binding key → the Dolphin control it drives, per inputspec layout. Each

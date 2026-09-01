@@ -65,10 +65,6 @@ export type ControllerTopology = Readonly<{
 
 export type InputHook = "sdl3" | "bluetooth-api-win32";
 
-export type UiTextMatch =
-    | Readonly<{ equals: string, caseSensitive?: boolean }>
-    | Readonly<{ contains: string, caseSensitive?: boolean }>;
-
 export type UiLocator = {
     nth(index: number): UiLocator,
     press(): Promise<void>,
@@ -88,7 +84,12 @@ export type UiWindow = {
 
 export type UiAutomation = {
     waitForWindow(
-        query: { title?: UiTextMatch, className?: UiTextMatch, visible?: boolean },
+        query: {
+            /** Rust-regex pattern matched against the window title. */
+            pattern?: string,
+            /** Accessibility selector that must match within the window. */
+            selector?: string,
+        },
         options?: { timeoutMs?: number },
     ): Promise<UiWindow>,
 };

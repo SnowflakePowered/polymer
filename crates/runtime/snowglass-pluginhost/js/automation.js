@@ -273,6 +273,12 @@ export const uiAutomation = Object.freeze({
     return Object.freeze(windows.map(window => Object.freeze(new UiWindow(window))));
   },
   async waitForWindow(query, options = {}) {
+    if (typeof query?.pattern !== "string") {
+      throw new TypeError("waitForWindow requires a regex string in query.pattern");
+    }
+    if (query.selector !== undefined && typeof query.selector !== "string") {
+      throw new TypeError("window query.selector must be an accessibility selector string");
+    }
     const window = value(await request({ type: "waitForWindow", query,
       timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT }), "window");
     return Object.freeze(new UiWindow(window));
