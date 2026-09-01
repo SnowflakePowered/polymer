@@ -93,5 +93,5 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         // capture delivery without burning a core between messages.
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
-    application.into_result()
+    application.into_result().await
 }

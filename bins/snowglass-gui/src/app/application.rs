@@ -134,7 +134,10 @@ impl ShellApplication {
         }
     }
 
-    pub(crate) fn into_result(self) -> Result<(), Box<dyn Error>> {
+    pub(crate) async fn into_result(self) -> Result<(), Box<dyn Error>> {
+        if let Some(state) = &self.state {
+            state.input.shutdown().await;
+        }
         self.error.map_or(Ok(()), Err)
     }
 

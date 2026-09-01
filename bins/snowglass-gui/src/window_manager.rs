@@ -198,8 +198,8 @@ impl EventLoopApplication {
         self.inner.run_async_tasks().await;
     }
 
-    pub fn into_result(self) -> Result<(), Box<dyn Error>> {
-        self.inner.into_result()
+    pub async fn into_result(self) -> Result<(), Box<dyn Error>> {
+        self.inner.into_result().await
     }
 }
 
