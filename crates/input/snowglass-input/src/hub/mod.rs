@@ -465,11 +465,13 @@ impl InputHub {
     }
 
     pub fn calibrate(&self, device: &DeviceId, calibration: &Calibration) -> Result<(), HubError> {
-        self.inner.calibrate(device, calibration)
+        self.inner
+            .update_calibration(device, |session| session.merge(calibration))
     }
 
     pub fn reset_calibration(&self, device: &DeviceId) -> Result<(), HubError> {
-        self.inner.set_calibration(device, Calibration::default())
+        self.inner
+            .update_calibration(device, |session| session.replace(Calibration::default()))
     }
 
     pub fn begin_calibration(

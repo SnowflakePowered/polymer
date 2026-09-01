@@ -1,7 +1,7 @@
-use super::{DeviceEntry, HubError, HubInner};
+use super::{CalibrationSession, DeviceEntry, HubError, HubInner};
 use crate::{
-    BackendId, Calibration, DeviceDescriptor, DeviceId, DeviceState, Feedback, FeedbackClass,
-    InputEvent, PlayerIndex, PointerSample,
+    BackendId, DeviceDescriptor, DeviceId, DeviceState, Feedback, FeedbackClass, InputEvent,
+    PlayerIndex, PointerSample,
 };
 
 impl HubInner {
@@ -223,7 +223,7 @@ impl HubInner {
         if let Feedback::Calibrate(calibration) = &feedback {
             let devices = self.devices_for_index(index)?;
             for device in devices {
-                self.calibrate(&device, calibration)?;
+                self.update_calibration(&device, |session| session.merge(calibration))?;
             }
             return Ok(());
         }
@@ -277,39 +277,18 @@ impl HubInner {
         ))
     }
 
-    pub(crate) fn calibrate(
+    pub(crate) fn update_calibration(
         &self,
         device: &DeviceId,
-        update: &Calibration,
+        update: impl FnOnce(&mut CalibrationSession) -> Feedback,
     ) -> Result<(), HubError> {
-        let calibration = {
+        let feedback = {
             let _topology = self.topology.read();
             if !self.devices.contains_key(device) {
                 return Err(HubError::DeviceNotFound(device.clone()));
             }
-            self.calibration_sessions
-                .entry(device.clone())
-                .or_default()
-                .merge(update)
+            update(&mut self.calibration_sessions.entry(device.clone()).or_default())
         };
-        self.apply_feedback(device, &calibration)
-    }
-
-    pub(crate) fn set_calibration(
-        &self,
-        device: &DeviceId,
-        calibration: Calibration,
-    ) -> Result<(), HubError> {
-        let topology = self.topology.read();
-        if !self.devices.contains_key(device) {
-            return Err(HubError::DeviceNotFound(device.clone()));
-        }
-        let feedback = self
-            .calibration_sessions
-            .entry(device.clone())
-            .or_default()
-            .replace(calibration);
-        drop(topology);
         self.apply_feedback(device, &feedback)
     }
 
