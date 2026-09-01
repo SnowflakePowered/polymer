@@ -1252,13 +1252,11 @@ the emulator's vocabulary and is the plugin's business alone:
 "analog.stick.left.x+" = "Main Stick/Right"
 ```
 
-**What snowglass supplies is where the control *is*.** Which SDL control carries
-a device control is the projection's answer — `snowglass-input`'s
-`projection/SDL.proj.toml` — and it is shared, so "which physical button is C-Up"
-is the same in every emulator. Both sides of it are binding keys: the left of the
-device, the right of the SDL virtual gamepad, which `snowglass-input::sdl`
-describes as a device in the same vocabulary. `sdl::wire` then places an SDL
-control at its `SDL_GAMEPAD_BUTTON_*` position.
+**What snowglass supplies is where the control *is*.** Which standard gamepad
+control carries a device control is the projection's answer —
+`projection/SDL.proj.toml` — and it is shared, so "which physical
+button is C-Up" is the same in every emulator. Both sides are consolespec binding
+keys; each backend translates the standard report channels into its own API.
 
 **The emulator's configuration is static.** Once a port's layout is chosen the
 whole of it is determined, written once, and never touched again:

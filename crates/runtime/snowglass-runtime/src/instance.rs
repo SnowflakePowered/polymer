@@ -303,12 +303,12 @@ impl EmulatorActionEndpoint {
             let key = key
                 .parse::<consolespec::input::BindingKey>()
                 .map_err(|error| error.to_string())?;
-            let Some(snowglass_input_layout::sdl::Wire::Button(button)) =
-                snowglass_input_layout::sdl::wire(key)
+            let Some(snowglass_input_layout::model::Control::Button(button)) =
+                snowglass_input_layout::model::Control::from_key(key)
             else {
-                return Err(format!("action binding '{key}' is not an SDL button"));
+                return Err(format!("action binding '{key}' is not a gamepad button"));
             };
-            buttons |= 1 << button.index();
+            buttons |= 1 << button;
         }
         self.lifecycle
             .input

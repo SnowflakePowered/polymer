@@ -1,12 +1,13 @@
 //! SDL3-only ABI and virtual joystick adapter.
 
+use consolespec::input::{Alignment, AnalogClass};
 use snowglass_hook_input_sdl::Runtime;
 use snowglass_hook_input_sdl::{BackendError, SdlBackend};
 use snowglass_hook_input_sdl::{
     ConnectionState, GAMEPAD_AXIS_COUNT, GAMEPAD_BUTTON_COUNT, GamepadFeedback, GamepadFrame,
     GamepadSlot,
 };
-use snowglass_input_layout::{layout::SdlOutputLayout, sdl::SdlSensor};
+use snowglass_input_layout::{layout::OutputLayout, model::Sensor};
 use std::{
     ffi::{CString, c_char, c_void},
     mem,
@@ -36,14 +37,15 @@ const SDL_SENSOR_ACCEL_R: i32 = 5;
 const SDL_SENSOR_GYRO_R: i32 = 6;
 
 /// Snowglass names a sensor by where it sits; SDL names it by number.
-fn sdl_sensor_type(sensor: SdlSensor) -> i32 {
-    match sensor {
-        SdlSensor::Accelerometer => SDL_SENSOR_ACCEL,
-        SdlSensor::Gyroscope => SDL_SENSOR_GYRO,
-        SdlSensor::AccelerometerLeft => SDL_SENSOR_ACCEL_L,
-        SdlSensor::GyroscopeLeft => SDL_SENSOR_GYRO_L,
-        SdlSensor::AccelerometerRight => SDL_SENSOR_ACCEL_R,
-        SdlSensor::GyroscopeRight => SDL_SENSOR_GYRO_R,
+fn sdl_sensor_type(sensor: Sensor) -> i32 {
+    match (sensor.class, sensor.alignment) {
+        (AnalogClass::Accelerometer, None) => SDL_SENSOR_ACCEL,
+        (AnalogClass::Gyroscope, None) => SDL_SENSOR_GYRO,
+        (AnalogClass::Accelerometer, Some(Alignment::Left)) => SDL_SENSOR_ACCEL_L,
+        (AnalogClass::Gyroscope, Some(Alignment::Left)) => SDL_SENSOR_GYRO_L,
+        (AnalogClass::Accelerometer, Some(Alignment::Right)) => SDL_SENSOR_ACCEL_R,
+        (AnalogClass::Gyroscope, Some(Alignment::Right)) => SDL_SENSOR_GYRO_R,
+        _ => unreachable!("output layouts contain only SDL-supported sensors"),
     }
 }
 const SDL_GAMEPAD_AXIS_COUNT: usize = 6;
@@ -91,7 +93,7 @@ struct VirtualJoystickDesc {
 
 impl VirtualJoystickDesc {
     fn new(
-        layout: SdlOutputLayout,
+        layout: OutputLayout,
         name: *const c_char,
         sensors: &[VirtualJoystickSensorDesc],
         userdata: *mut c_void,
@@ -138,7 +140,7 @@ pub(crate) struct Api {
     update_joysticks: UpdateJoysticksFn,
     ids: Vec<JoystickId>,
     handles: Vec<usize>,
-    layouts: Vec<SdlOutputLayout>,
+    layouts: Vec<OutputLayout>,
     names: Vec<CString>,
     sensors: Vec<Box<[VirtualJoystickSensorDesc]>>,
     malloc: MallocFn,
@@ -168,7 +170,7 @@ impl FeedbackContext {
 impl Api {
     pub(crate) unsafe fn load(
         module: HMODULE,
-        layouts: Vec<(SdlOutputLayout, String)>,
+        layouts: Vec<(OutputLayout, String)>,
         runtime: Arc<Runtime>,
     ) -> Option<Self> {
         let (layouts, names): (Vec<_>, Vec<_>) = layouts
@@ -247,7 +249,7 @@ impl Api {
 }
 
 impl SdlBackend for Api {
-    fn rebind(&mut self, layouts: &[SdlOutputLayout]) -> Result<(), BackendError> {
+    fn rebind(&mut self, layouts: &[OutputLayout]) -> Result<(), BackendError> {
         for id in self.ids.drain(..).filter(|id| *id != 0) {
             unsafe { (self.detach_virtual)(id) };
         }
@@ -360,12 +362,15 @@ impl SdlBackend for Api {
             // with a left and a right instance drives both from the same
             // sample until the transport grows a second set.
             let values = match sensor {
-                SdlSensor::Accelerometer
-                | SdlSensor::AccelerometerLeft
-                | SdlSensor::AccelerometerRight => state.accelerometer,
-                SdlSensor::Gyroscope | SdlSensor::GyroscopeLeft | SdlSensor::GyroscopeRight => {
-                    state.gyroscope
-                }
+                Sensor {
+                    class: AnalogClass::Accelerometer,
+                    ..
+                } => state.accelerometer,
+                Sensor {
+                    class: AnalogClass::Gyroscope,
+                    ..
+                } => state.gyroscope,
+                _ => unreachable!("output layouts contain only motion sensors"),
             };
             if !unsafe {
                 (self.send_sensor)(

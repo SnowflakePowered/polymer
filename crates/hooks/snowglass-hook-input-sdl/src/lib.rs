@@ -2,7 +2,7 @@ use parking_lot::{Mutex, RwLock};
 use snowglass_hook_input::HookInput;
 use snowglass_input::{Feedback, GamepadReport};
 use snowglass_input_layout::{
-    layout::{InputLayout, SdlOutputLayout},
+    layout::{InputLayout, OutputLayout},
     projection::Projection,
 };
 use std::sync::{
@@ -83,7 +83,7 @@ pub struct GamepadFeedback {
 pub struct BackendError(pub &'static str);
 
 pub trait SdlBackend {
-    fn rebind(&mut self, layouts: &[SdlOutputLayout]) -> Result<(), BackendError>;
+    fn rebind(&mut self, layouts: &[OutputLayout]) -> Result<(), BackendError>;
     fn ensure_attached(&mut self, count: usize) -> Result<(), BackendError>;
     fn set_connected(&mut self, connection: ConnectionState) -> Result<(), BackendError>;
     fn publish(&mut self, frame: GamepadFrame) -> Result<(), BackendError>;
@@ -216,7 +216,7 @@ impl Runtime {
             .into_iter()
             .map(|id| {
                 InputLayout::get(id)
-                    .map(|layout| layout.sdl_output(&projection))
+                    .map(|layout| layout.output_layout(&projection))
                     .ok_or(BackendError("input topology contains an unknown layout"))
             })
             .collect::<Result<Vec<_>, _>>()?;

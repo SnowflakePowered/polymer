@@ -1,6 +1,6 @@
 use snowglass_controllers::SourceSelector;
 use snowglass_input::InputHub;
-use snowglass_input_layout::layout::{InputBinding, InputLayout, SdlAxis, SdlButton};
+use snowglass_input_layout::layout::InputLayout;
 use snowglass_ipc::StreamReady;
 use snowglass_platform_windows::{
     NativeWindow, forward_character, performance_counter, performance_frequency,

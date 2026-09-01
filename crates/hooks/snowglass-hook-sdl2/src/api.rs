@@ -5,7 +5,7 @@ use snowglass_hook_input_sdl::{
     ConnectionState, GAMEPAD_AXIS_COUNT, GAMEPAD_BUTTON_COUNT, GamepadFeedback, GamepadFrame,
     GamepadSlot,
 };
-use snowglass_input_layout::layout::SdlOutputLayout;
+use snowglass_input_layout::layout::OutputLayout;
 use std::{
     ffi::{c_char, c_void},
     mem,
@@ -143,7 +143,7 @@ impl Api {
 }
 
 impl SdlBackend for Api {
-    fn rebind(&mut self, layouts: &[SdlOutputLayout]) -> Result<(), BackendError> {
+    fn rebind(&mut self, layouts: &[OutputLayout]) -> Result<(), BackendError> {
         for index in self.indices.drain(..).filter(|index| *index >= 0) {
             unsafe { (self.detach_virtual)(index) };
         }

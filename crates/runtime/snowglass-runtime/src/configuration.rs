@@ -300,7 +300,7 @@ fn resolved_controller(
         && let Some(layout) = snowglass_input_layout::layout::InputLayout::get(&gamepad.layout)
     {
         for element in &layout.elements {
-            if let Some(source) = layout.sdl_key(element.key) {
+            if let Some(source) = layout.projected_key(element.key) {
                 mapping.insert(element.key.to_string(), source.to_string());
             }
         }
