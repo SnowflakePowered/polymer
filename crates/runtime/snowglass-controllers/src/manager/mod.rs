@@ -379,8 +379,7 @@ impl ControllerManager {
 mod tests {
     use super::*;
     use snowglass_input::{
-        BackendError, BackendHandle, BackendId, Calibration, Capabilities, DeviceState, Feedback,
-        InputBackend,
+        BackendError, BackendHandle, BackendId, Capabilities, DeviceState, Feedback, InputBackend,
     };
     use std::sync::Mutex;
 
@@ -427,14 +426,6 @@ mod tests {
             _feedback: &Feedback,
         ) -> Result<(), BackendError> {
             Err(BackendError::Unsupported)
-        }
-
-        fn set_calibration(
-            &self,
-            _device: &DeviceId,
-            _calibration: &Calibration,
-        ) -> Result<(), BackendError> {
-            Ok(())
         }
     }
 

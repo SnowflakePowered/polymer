@@ -3,18 +3,17 @@
 pub mod airmouse;
 pub mod decoder;
 
-use decoder::{GamepadState, PointerSource, ReportDecoder};
+use decoder::{BluetoothControllerDevice, GamepadState, PointerSource};
 use parking_lot::{Mutex, RwLock};
 use snowglass_bluetooth::{
     BluetoothManager, ConnectedController, ControllerId, ManagerConfig, ManagerEvent, SessionId,
     TransportKind,
 };
 use snowglass_input::{
-    BackendError, BackendHandle, BackendId, BatteryState, Calibration, Capabilities,
-    DeviceDescriptor, DeviceId, DeviceRole, DeviceState, Feedback, InputBackend, PointerFlags,
-    PointerKind, PointerReport, PointerSample, SensorReport,
+    BackendError, BackendHandle, BackendId, BatteryState, DeviceDescriptor, DeviceId, DeviceState,
+    Feedback, InputBackend, PointerFlags, PointerKind, PointerReport, PointerSample, SensorReport,
 };
-use std::{borrow::Cow, collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 use tokio::{sync::broadcast, task::JoinHandle};
 
 #[derive(Clone, Debug)]
@@ -30,8 +29,7 @@ struct LiveController {
     device: DeviceId,
     session: SessionId,
     descriptor: DeviceDescriptor,
-    decoder: Option<Box<dyn ReportDecoder>>,
-    calibration: Calibration,
+    controller: Box<dyn BluetoothControllerDevice>,
     previous_pointer: [i16; 2],
 }
 
@@ -114,84 +112,15 @@ impl InputBackend for BluetoothBackend {
     }
 
     fn apply_feedback(&self, device: &DeviceId, feedback: &Feedback) -> Result<(), BackendError> {
-        let session = self
-            .session_for(device)
-            .ok_or_else(|| BackendError::Unavailable(device.to_string()))?;
-        let manager = self.manager.clone();
-        match feedback {
-            Feedback::Rumble {
-                low_frequency,
-                high_frequency,
-                ..
-            } => {
-                let low = *low_frequency;
-                let high = *high_frequency;
-                tokio::spawn(async move {
-                    let _ = manager.set_rumble(session, low, high).await;
-                });
-            }
-            Feedback::PlayerLed { index } => {
-                let index = *index;
-                tokio::spawn(async move {
-                    let _ = manager.set_player_index(session, index).await;
-                });
-            }
-            Feedback::Recenter => return self.recenter(device),
-            Feedback::Calibrate(calibration) => return self.set_calibration(device, calibration),
-            Feedback::HdRumble(_) | Feedback::HomeLed { .. } => {
-                return Err(BackendError::Unsupported);
-            }
-        }
-        Ok(())
-    }
-
-    fn set_calibration(
-        &self,
-        device: &DeviceId,
-        calibration: &Calibration,
-    ) -> Result<(), BackendError> {
         let mut controllers = self.controllers.write();
         let controller = controllers
             .values_mut()
             .find(|controller| &controller.device == device)
             .ok_or_else(|| BackendError::Unavailable(device.to_string()))?;
-        controller.calibration = calibration.clone();
         let session = controller.session;
-        let pointer = calibration.pointer;
-        drop(controllers);
-        if let Some(pointer) = pointer {
-            let setup = snowglass_bluetooth::devices::IrCameraSetup {
-                sensitivity: match pointer.sensitivity {
-                    snowglass_input::IrSensitivity::Level1 => {
-                        snowglass_bluetooth::devices::IrSensitivity::Level1
-                    }
-                    snowglass_input::IrSensitivity::Level2 => {
-                        snowglass_bluetooth::devices::IrSensitivity::Level2
-                    }
-                    snowglass_input::IrSensitivity::Level3 => {
-                        snowglass_bluetooth::devices::IrSensitivity::Level3
-                    }
-                    snowglass_input::IrSensitivity::Level4 => {
-                        snowglass_bluetooth::devices::IrSensitivity::Level4
-                    }
-                    snowglass_input::IrSensitivity::Level5 => {
-                        snowglass_bluetooth::devices::IrSensitivity::Level5
-                    }
-                },
-                mode: match pointer.mode {
-                    snowglass_input::IrMode::Basic => snowglass_bluetooth::devices::IrMode::Basic,
-                    snowglass_input::IrMode::Extended => {
-                        snowglass_bluetooth::devices::IrMode::Extended
-                    }
-                    snowglass_input::IrMode::Full => snowglass_bluetooth::devices::IrMode::Full,
-                },
-            };
-            let manager = self.manager.clone();
-            tokio::spawn(async move {
-                let _ = manager.set_ir_camera(session, setup).await;
-            });
-        }
-        Ok(())
+        controller
+            .controller
+            .apply_feedback(&self.manager, session, feedback)
     }
 
     fn send_raw_hid(&self, device: &DeviceId, report: &[u8]) -> Result<(), BackendError> {
@@ -222,33 +151,7 @@ impl InputBackend for BluetoothBackend {
             .read()
             .values()
             .find(|controller| &controller.device == device)
-            .and_then(|controller| {
-                controller
-                    .descriptor
-                    .profile
-                    .as_deref()
-                    .is_some_and(|profile| profile.contains("wiimote"))
-                    .then(|| {
-                        Arc::new(WiimoteRawHidFilter) as Arc<dyn snowglass_input::RawHidFilter>
-                    })
-            })
-    }
-
-    fn recenter(&self, device: &DeviceId) -> Result<(), BackendError> {
-        let mut controllers = self.controllers.write();
-        let controller = controllers
-            .values_mut()
-            .find(|controller| &controller.device == device)
-            .ok_or_else(|| BackendError::Unavailable(device.to_string()))?;
-        if controller
-            .decoder
-            .as_mut()
-            .is_some_and(|decoder| decoder.recenter())
-        {
-            Ok(())
-        } else {
-            Err(BackendError::Unsupported)
-        }
+            .and_then(|controller| controller.controller.raw_hid_filter())
     }
 }
 
@@ -294,22 +197,12 @@ impl BluetoothBackend {
                         let Some(controller) = controllers.get_mut(controller_id) else {
                             continue;
                         };
-                        let Some(decoded) = controller
-                            .decoder
-                            .as_mut()
-                            .and_then(|decoder| decoder.decode(bytes, *received_at))
+                        let Some(decoded) = controller.controller.decode(bytes, *received_at)
                         else {
                             continue;
                         };
                         controller.descriptor.role = decoded.role;
-                        let mut input = decoded.state;
-                        if decoded.pointer_source == Some(PointerSource::IrCamera)
-                            && controller.calibration.pointer.is_some_and(|setup| {
-                                setup.sensor_bar == snowglass_input::SensorBarPosition::Below
-                            })
-                        {
-                            input.pointer[1] = input.pointer[1].saturating_neg();
-                        }
+                        let input = decoded.state;
                         let (mut state, pointer) = Self::state(
                             input,
                             decoded.pointer_source,
@@ -319,8 +212,7 @@ impl BluetoothBackend {
                             controller.previous_pointer,
                         );
                         controller.previous_pointer = input.pointer;
-                        controller.calibration.correct(&mut state);
-                        controller.calibration.shape(&mut state);
+                        controller.controller.apply_calibration(&mut state);
                         (controller.device.clone(), state, pointer)
                     };
                     handle.publish(&published.0, &published.1);
@@ -353,7 +245,9 @@ impl BluetoothBackend {
         controllers: &RwLock<HashMap<ControllerId, LiveController>>,
         handle: &BackendHandle,
     ) {
-        let decoder = decoder::for_profile(&connected.profile_id);
+        let controller = decoder::for_profile(&connected.profile_id);
+        let supported = controller.is_some();
+        let controller = controller.unwrap_or_else(decoder::unsupported);
         let device = Self::device_id(connected.controller_id);
         let profile = connected.profile_id.as_str();
         let pnp = connected.identity.pnp.as_ref();
@@ -374,6 +268,12 @@ impl BluetoothBackend {
             ),
             _ => None,
         };
+        if !supported {
+            let _ = events.send(DiscoveryEvent::UnsupportedReportFormat {
+                controller_id: connected.controller_id,
+                profile_id: profile.to_owned(),
+            });
+        }
         let descriptor = DeviceDescriptor {
             id: device.clone(),
             name: Arc::from(connected.identity.name.as_deref().unwrap_or(profile)),
@@ -383,23 +283,16 @@ impl BluetoothBackend {
                 .or(wiimote_product.map(|_| 0x057e)),
             product_id: pnp.map(|value| value.product_id).or(wiimote_product),
             serial: None,
-            role: Self::role_for_profile(profile),
-            capabilities: Self::capabilities(profile),
+            role: controller.role(),
+            capabilities: controller.capabilities(),
         };
-        if decoder.is_none() {
-            let _ = events.send(DiscoveryEvent::UnsupportedReportFormat {
-                controller_id: connected.controller_id,
-                profile_id: profile.to_owned(),
-            });
-        }
         controllers.write().insert(
             connected.controller_id,
             LiveController {
                 device,
                 session: connected.session_id,
                 descriptor: descriptor.clone(),
-                decoder,
-                calibration: Calibration::default(),
+                controller,
                 previous_pointer: [0; 2],
             },
         );
@@ -506,63 +399,12 @@ impl BluetoothBackend {
             &format!("{transport}/{}", controller.address),
         )
     }
-
-    fn role_for_profile(profile: &str) -> DeviceRole {
-        if profile.ends_with("joycon-left") {
-            DeviceRole::LeftHalf
-        } else if profile.ends_with("joycon-right") {
-            DeviceRole::RightHalf
-        } else {
-            DeviceRole::Whole
-        }
-    }
-
-    fn capabilities(profile: &str) -> Capabilities {
-        let mut capabilities = Capabilities::RUMBLE
-            | Capabilities::PLAYER_LED
-            | Capabilities::BATTERY
-            | Capabilities::RAW_HID
-            | Capabilities::CALIBRATE_STICK_CENTER
-            | Capabilities::CALIBRATE_STICK_RANGE
-            | Capabilities::CALIBRATE_DEAD_ZONE;
-        if profile.contains("wiimote") {
-            capabilities |= Capabilities::ACCELEROMETER
-                | Capabilities::GYROSCOPE
-                | Capabilities::ORIENTATION
-                | Capabilities::RECENTER
-                | Capabilities::POINTER_ANGULAR
-                | Capabilities::CALIBRATE_MOTION_BIAS
-                | Capabilities::CALIBRATE_POINTER;
-        }
-        if profile.contains("switch2.joycon") {
-            capabilities |= Capabilities::POINTER_RELATIVE;
-        }
-        capabilities
-    }
 }
 
 impl Drop for BluetoothBackend {
     fn drop(&mut self) {
         if let Some(task) = self.task.get_mut().take() {
             task.abort();
-        }
-    }
-}
-
-struct WiimoteRawHidFilter;
-
-impl snowglass_input::RawHidFilter for WiimoteRawHidFilter {
-    fn filter_input(&self, report: &mut [u8], capture: bool) {
-        if let Some(metadata) = decoder::wiimote::ReportMetadata::inspect(report) {
-            metadata.filter_for_dolphin(report, capture);
-        }
-    }
-
-    fn filter_output<'a>(&self, report: &'a [u8], capture: bool) -> Cow<'a, [u8]> {
-        if capture && report.first() == Some(&0x18) {
-            Cow::Owned(vec![0x10, report.get(1).copied().unwrap_or_default() & 1])
-        } else {
-            Cow::Borrowed(report)
         }
     }
 }

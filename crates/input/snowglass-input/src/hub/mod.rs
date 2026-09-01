@@ -1,5 +1,9 @@
 mod assignment;
+mod calibration;
 mod registry;
+
+pub use calibration::CalibrationCapture;
+use calibration::CalibrationSession;
 
 use crate::{
     BackendError, BackendHandle, BackendId, Calibration, CalibrationError, CalibrationKind,
@@ -13,7 +17,7 @@ use std::{
     fmt,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
     },
 };
 
@@ -96,9 +100,8 @@ pub(crate) struct HubInner {
     pub(crate) host_listeners: DashMap<ListenerId, HostListener>,
     pub(crate) feedback_priority: RwLock<Option<ListenerId>>,
     pub(crate) next_listener: AtomicU64,
-    pub(crate) calibrations: DashMap<DeviceId, Calibration>,
     pub(crate) home_led: DashMap<DeviceId, u8>,
-    pub(crate) captures: DashMap<DeviceId, CaptureState>,
+    pub(crate) calibration_sessions: DashMap<DeviceId, CalibrationSession>,
     pub(crate) next_pointer_revision: AtomicU64,
     pub(crate) composition_revision: AtomicU64,
 }
@@ -116,53 +119,6 @@ pub(crate) struct DeviceEntry {
 pub(crate) struct Composite {
     pub(crate) members: Vec<DeviceId>,
     pub(crate) mode: CompositionMode,
-}
-
-pub(crate) struct CaptureState {
-    pub(crate) kind: CalibrationKind,
-    pub(crate) samples: u32,
-    pub(crate) stick_sum: [[i64; 2]; 2],
-    pub(crate) stick_min: [[i16; 2]; 2],
-    pub(crate) stick_max: [[i16; 2]; 2],
-    pub(crate) trigger_min: [u16; 2],
-    pub(crate) trigger_max: [u16; 2],
-    pub(crate) gyro_sum: [f64; 3],
-}
-
-impl CaptureState {
-    fn new(kind: CalibrationKind) -> Self {
-        Self {
-            kind,
-            samples: 0,
-            stick_sum: [[0; 2]; 2],
-            stick_min: [[i16::MAX; 2]; 2],
-            stick_max: [[i16::MIN; 2]; 2],
-            trigger_min: [u16::MAX; 2],
-            trigger_max: [u16::MIN; 2],
-            gyro_sum: [0.0; 3],
-        }
-    }
-
-    pub(crate) fn accept(&mut self, state: &DeviceState) {
-        self.samples = self.samples.saturating_add(1);
-        let sticks = [state.gamepad.left_stick, state.gamepad.right_stick];
-        for stick in 0..2 {
-            for axis in 0..2 {
-                let value = sticks[stick][axis];
-                self.stick_sum[stick][axis] += i64::from(value);
-                self.stick_min[stick][axis] = self.stick_min[stick][axis].min(value);
-                self.stick_max[stick][axis] = self.stick_max[stick][axis].max(value);
-            }
-        }
-        let triggers = [state.gamepad.left_trigger, state.gamepad.right_trigger];
-        for trigger in 0..2 {
-            self.trigger_min[trigger] = self.trigger_min[trigger].min(triggers[trigger]);
-            self.trigger_max[trigger] = self.trigger_max[trigger].max(triggers[trigger]);
-        }
-        for axis in 0..3 {
-            self.gyro_sum[axis] += f64::from(state.sensor.gyroscope[axis]);
-        }
-    }
 }
 
 impl InputHub {
@@ -183,9 +139,8 @@ impl InputHub {
                 host_listeners: DashMap::new(),
                 feedback_priority: RwLock::new(None),
                 next_listener: AtomicU64::new(1),
-                calibrations: DashMap::new(),
                 home_led: DashMap::new(),
-                captures: DashMap::new(),
+                calibration_sessions: DashMap::new(),
                 next_pointer_revision: AtomicU64::new(1),
                 composition_revision: AtomicU64::new(0),
             }),
@@ -449,7 +404,7 @@ impl InputHub {
         index: PlayerIndex,
         feedback: Feedback,
     ) -> Result<(), HubError> {
-        self.inner.feedback(listener, index, feedback)
+        self.inner.dispatch_feedback(listener, index, feedback)
     }
 
     pub(crate) fn open_hd_rumble(
@@ -504,9 +459,9 @@ impl InputHub {
 
     pub fn calibration(&self, device: &DeviceId) -> Calibration {
         self.inner
-            .calibrations
+            .calibration_sessions
             .get(device)
-            .map(|value| value.clone())
+            .map(|session| session.calibration())
             .unwrap_or_default()
     }
 
@@ -523,77 +478,31 @@ impl InputHub {
         device: &DeviceId,
         kind: CalibrationKind,
     ) -> Result<CalibrationCapture, HubError> {
-        let calibration = {
+        let feedback = {
             let _topology = self.inner.topology.read();
             if !self.inner.devices.contains_key(device) {
                 return Err(HubError::DeviceNotFound(device.clone()));
             }
-            if self.inner.captures.contains_key(device) {
-                return Err(HubError::Calibration(CalibrationError::Cancelled));
-            }
             self.inner
-                .captures
-                .insert(device.clone(), CaptureState::new(kind));
-            self.inner
-                .calibrations
-                .get(device)
-                .map(|value| value.clone())
-                .unwrap_or_default()
+                .calibration_sessions
+                .entry(device.clone())
+                .or_default()
+                .begin(kind)
+                .map_err(HubError::Calibration)?
         };
-        if let Err(error) = self
-            .inner
-            .apply_calibration(device, &calibration.without_shaping())
-        {
-            self.inner.captures.remove(device);
+        if let Err(error) = self.inner.apply_feedback(device, &feedback) {
+            if let Some(mut session) = self.inner.calibration_sessions.get_mut(device) {
+                session.cancel();
+            }
             return Err(error);
         }
-        Ok(CalibrationCapture {
-            hub: self.clone(),
-            device: device.clone(),
-            active: AtomicBool::new(true),
-        })
+        Ok(CalibrationCapture::new(self.clone(), device.clone()))
     }
 }
 
 impl Default for InputHub {
     fn default() -> Self {
         Self::new(AssignmentPolicy::default())
-    }
-}
-
-pub struct CalibrationCapture {
-    hub: InputHub,
-    device: DeviceId,
-    active: AtomicBool,
-}
-
-impl CalibrationCapture {
-    pub fn progress(&self) -> f32 {
-        let samples = self
-            .hub
-            .inner
-            .captures
-            .get(&self.device)
-            .map_or(0, |capture| capture.samples);
-        (samples as f32 / 120.0).clamp(0.0, 1.0)
-    }
-
-    pub fn finish(self) -> Result<(), CalibrationError> {
-        self.active.store(false, Ordering::Release);
-        self.hub.inner.finish_calibration(&self.device)
-    }
-
-    pub fn cancel(self) {
-        self.active.store(false, Ordering::Release);
-        self.hub.inner.cancel_calibration(&self.device);
-    }
-}
-
-impl Drop for CalibrationCapture {
-    fn drop(&mut self) {
-        if self.active.swap(false, Ordering::AcqRel) {
-            self.hub.inner.cancel_calibration(&self.device);
-        }
     }
 }
 

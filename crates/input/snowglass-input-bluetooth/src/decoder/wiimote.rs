@@ -1,7 +1,20 @@
-use super::{DecodedInput, GamepadState, PointerSource, ReportDecoder, pointer_axis, set_button};
+use super::{
+    BluetoothControllerDevice, DecodedInput, GamepadState, PointerSource, pointer_axis, set_button,
+};
 use crate::airmouse::{AirMouse, PointerPosition};
-use snowglass_input::{DeviceRole, GamepadButton};
-use std::time::{Duration, Instant};
+use snowglass_bluetooth::{
+    BluetoothManager, SessionId,
+    devices::{IrCameraSetup, IrMode, IrSensitivity},
+};
+use snowglass_input::{
+    BackendError, Calibration, Capabilities, DeviceRole, Feedback, GamepadButton,
+    IrMode as InputIrMode, IrSensitivity as InputIrSensitivity, RawHidFilter, SensorBarPosition,
+};
+use std::{
+    borrow::Cow,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
 const BUTTON_MASK: u16 = !0x60e0;
@@ -179,6 +192,7 @@ pub fn parse_report(report: &[u8]) -> Option<Telemetry> {
 #[derive(Default)]
 pub struct WiimoteDecoder {
     air_mouse: AirMouse,
+    calibration: Calibration,
     last_home_press: Option<Instant>,
     home_was_pressed: bool,
     interleaved_ir: [Option<[IrPoint; 2]>; 2],
@@ -272,18 +286,23 @@ impl WiimoteDecoder {
         if let Some(position) = position {
             state.pointer = [pointer_axis(position.x), pointer_axis(position.y)];
         }
-        Some(DecodedInput {
+        let mut input = DecodedInput {
             state,
             role: DeviceRole::Whole,
             battery_level: None,
             charging: false,
             pointer_source,
             motion: None,
-        })
-    }
-
-    pub fn center(&mut self) {
-        self.air_mouse.center();
+        };
+        if input.pointer_source == Some(PointerSource::IrCamera)
+            && self
+                .calibration
+                .pointer
+                .is_some_and(|setup| setup.sensor_bar == SensorBarPosition::Below)
+        {
+            input.state.pointer[1] = input.state.pointer[1].saturating_neg();
+        }
+        Some(input)
     }
 
     pub fn recalibrate(&mut self, accelerometer: Accelerometer, gyroscope: Gyroscope) {
@@ -291,14 +310,110 @@ impl WiimoteDecoder {
     }
 }
 
-impl ReportDecoder for WiimoteDecoder {
+impl BluetoothControllerDevice for WiimoteDecoder {
     fn decode(&mut self, report: &[u8], received_at: Instant) -> Option<DecodedInput> {
         WiimoteDecoder::decode(self, report, received_at)
     }
 
-    fn recenter(&mut self) -> bool {
-        self.center();
-        true
+    fn calibration(&self) -> &Calibration {
+        &self.calibration
+    }
+
+    fn calibration_mut(&mut self) -> &mut Calibration {
+        &mut self.calibration
+    }
+
+    fn role(&self) -> DeviceRole {
+        DeviceRole::Whole
+    }
+
+    fn additional_capabilities(&self) -> Capabilities {
+        Capabilities::ACCELEROMETER
+            | Capabilities::GYROSCOPE
+            | Capabilities::ORIENTATION
+            | Capabilities::RECENTER
+            | Capabilities::POINTER_ANGULAR
+            | Capabilities::CALIBRATE_MOTION_BIAS
+            | Capabilities::CALIBRATE_POINTER
+    }
+
+    fn apply_feedback(
+        &mut self,
+        manager: &BluetoothManager,
+        session: SessionId,
+        feedback: &Feedback,
+    ) -> Result<(), BackendError> {
+        match feedback {
+            Feedback::Rumble {
+                low_frequency,
+                high_frequency,
+                ..
+            } => {
+                let manager = manager.clone();
+                let low = *low_frequency;
+                let high = *high_frequency;
+                tokio::spawn(async move {
+                    let _ = manager.set_rumble(session, low, high).await;
+                });
+            }
+            Feedback::PlayerLed { index } => {
+                let manager = manager.clone();
+                let index = *index;
+                tokio::spawn(async move {
+                    let _ = manager.set_player_index(session, index).await;
+                });
+            }
+            Feedback::Recenter => self.air_mouse.center(),
+            Feedback::Calibrate(calibration) => {
+                self.calibration = calibration.clone();
+                if let Some(pointer) = calibration.pointer {
+                    let setup = IrCameraSetup {
+                        sensitivity: match pointer.sensitivity {
+                            InputIrSensitivity::Level1 => IrSensitivity::Level1,
+                            InputIrSensitivity::Level2 => IrSensitivity::Level2,
+                            InputIrSensitivity::Level3 => IrSensitivity::Level3,
+                            InputIrSensitivity::Level4 => IrSensitivity::Level4,
+                            InputIrSensitivity::Level5 => IrSensitivity::Level5,
+                        },
+                        mode: match pointer.mode {
+                            InputIrMode::Basic => IrMode::Basic,
+                            InputIrMode::Extended => IrMode::Extended,
+                            InputIrMode::Full => IrMode::Full,
+                        },
+                    };
+                    let manager = manager.clone();
+                    tokio::spawn(async move {
+                        let _ = manager.set_ir_camera(session, setup).await;
+                    });
+                }
+            }
+            Feedback::HdRumble(_) | Feedback::HomeLed { .. } => {
+                return Err(BackendError::Unsupported);
+            }
+        }
+        Ok(())
+    }
+
+    fn raw_hid_filter(&self) -> Option<Arc<dyn RawHidFilter>> {
+        Some(Arc::new(WiimoteRawHidFilter))
+    }
+}
+
+struct WiimoteRawHidFilter;
+
+impl RawHidFilter for WiimoteRawHidFilter {
+    fn filter_input(&self, report: &mut [u8], capture: bool) {
+        if let Some(metadata) = ReportMetadata::inspect(report) {
+            metadata.filter_for_dolphin(report, capture);
+        }
+    }
+
+    fn filter_output<'a>(&self, report: &'a [u8], capture: bool) -> Cow<'a, [u8]> {
+        if capture && report.first() == Some(&0x18) {
+            Cow::Owned(vec![0x10, report.get(1).copied().unwrap_or_default() & 1])
+        } else {
+            Cow::Borrowed(report)
+        }
     }
 }
 

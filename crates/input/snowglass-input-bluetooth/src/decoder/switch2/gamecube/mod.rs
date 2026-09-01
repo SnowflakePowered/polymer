@@ -1,12 +1,15 @@
-use super::{DecodedInput, FullReport, GamepadState, ReportDecoder, Switch2ReportModel};
+use super::{
+    BluetoothControllerDevice, DecodedInput, FullReport, GamepadState, Switch2ReportModel,
+};
 use crate::decoder::switch2::motion::{NativeMotionDecoder, NativeMotionLayout};
-use snowglass_input::DeviceRole;
+use snowglass_input::{Calibration, DeviceRole};
 use std::time::Instant;
 use zerocopy::FromBytes;
 
 #[derive(Default)]
 pub struct NsoGameCubeDecoder {
     motion_decoder: NativeMotionDecoder,
+    calibration: Calibration,
 }
 
 impl Switch2ReportModel for NsoGameCubeDecoder {
@@ -25,7 +28,7 @@ impl Switch2ReportModel for NsoGameCubeDecoder {
     }
 }
 
-impl ReportDecoder for NsoGameCubeDecoder {
+impl BluetoothControllerDevice for NsoGameCubeDecoder {
     fn decode(&mut self, report: &[u8], received_at: Instant) -> Option<DecodedInput> {
         let mut input = self.decode_switch2(report)?;
         self.motion_decoder.update_input(
@@ -35,6 +38,18 @@ impl ReportDecoder for NsoGameCubeDecoder {
             &mut input,
         );
         Some(input)
+    }
+
+    fn calibration(&self) -> &Calibration {
+        &self.calibration
+    }
+
+    fn calibration_mut(&mut self) -> &mut Calibration {
+        &mut self.calibration
+    }
+
+    fn role(&self) -> DeviceRole {
+        <Self as Switch2ReportModel>::ROLE
     }
 }
 

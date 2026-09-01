@@ -1,6 +1,9 @@
-use snowglass_bluetooth::devices::ProfileId;
-use snowglass_input::{DeviceRole, GamepadButton};
-use std::time::Instant;
+use snowglass_bluetooth::{BluetoothManager, SessionId, devices::ProfileId};
+use snowglass_input::{
+    BackendError, Calibration, Capabilities, DeviceRole, DeviceState, Feedback, GamepadButton,
+    RawHidFilter,
+};
+use std::{sync::Arc, time::Instant};
 
 pub mod switch;
 pub mod switch2;
@@ -60,31 +63,116 @@ pub struct DecodedInput {
     pub motion: Option<MotionFrame>,
 }
 
-pub trait ReportDecoder: Send + Sync {
+pub trait BluetoothControllerDevice: Send + Sync {
     fn decode(&mut self, report: &[u8], received_at: Instant) -> Option<DecodedInput>;
+    fn calibration(&self) -> &Calibration;
+    fn calibration_mut(&mut self) -> &mut Calibration;
+    fn role(&self) -> DeviceRole {
+        DeviceRole::Whole
+    }
 
-    fn recenter(&mut self) -> bool {
-        false
+    fn additional_capabilities(&self) -> Capabilities {
+        Capabilities::default()
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::RUMBLE
+            | Capabilities::PLAYER_LED
+            | Capabilities::BATTERY
+            | Capabilities::RAW_HID
+            | Capabilities::CALIBRATE_STICK_CENTER
+            | Capabilities::CALIBRATE_STICK_RANGE
+            | Capabilities::CALIBRATE_DEAD_ZONE
+            | self.additional_capabilities()
+    }
+
+    fn apply_feedback(
+        &mut self,
+        manager: &BluetoothManager,
+        session: SessionId,
+        feedback: &Feedback,
+    ) -> Result<(), BackendError> {
+        match feedback {
+            Feedback::Rumble {
+                low_frequency,
+                high_frequency,
+                ..
+            } => {
+                let manager = manager.clone();
+                let low = *low_frequency;
+                let high = *high_frequency;
+                tokio::spawn(async move {
+                    let _ = manager.set_rumble(session, low, high).await;
+                });
+            }
+            Feedback::PlayerLed { index } => {
+                let manager = manager.clone();
+                let index = *index;
+                tokio::spawn(async move {
+                    let _ = manager.set_player_index(session, index).await;
+                });
+            }
+            Feedback::Calibrate(calibration) => {
+                *self.calibration_mut() = calibration.clone();
+            }
+            Feedback::Recenter | Feedback::HdRumble(_) | Feedback::HomeLed { .. } => {
+                return Err(BackendError::Unsupported);
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_calibration(&self, state: &mut DeviceState) {
+        self.calibration().correct(state);
+        self.calibration().shape(state);
+    }
+
+    fn raw_hid_filter(&self) -> Option<Arc<dyn RawHidFilter>> {
+        None
     }
 }
 
-pub fn for_profile(profile: &ProfileId) -> Option<Box<dyn ReportDecoder>> {
+pub fn for_profile(profile: &ProfileId) -> Option<Box<dyn BluetoothControllerDevice>> {
     match profile.as_str() {
         "nintendo.wiimote.original" | "nintendo.wiimote.plus" | "nintendo.wiimote.unknown" => {
             Some(Box::new(wiimote::WiimoteDecoder::default()))
         }
-        "nintendo.switch.pro" => Some(Box::new(switch::SwitchProDecoder)),
-        "nintendo.switch.joycon-left" => Some(Box::new(switch::JoyConLeftDecoder)),
-        "nintendo.switch.joycon-right" => Some(Box::new(switch::JoyConRightDecoder)),
-        "nintendo.switch.nso-nes" => Some(Box::new(switch::NsoNesDecoder)),
-        "nintendo.switch.nso-snes" => Some(Box::new(switch::NsoSnesDecoder)),
-        "nintendo.switch.nso-n64" => Some(Box::new(switch::NsoN64Decoder)),
-        "nintendo.switch.nso-genesis" => Some(Box::new(switch::NsoGenesisDecoder)),
+        "nintendo.switch.pro" => Some(Box::new(switch::SwitchProDecoder::default())),
+        "nintendo.switch.joycon-left" => Some(Box::new(switch::JoyConLeftDecoder::default())),
+        "nintendo.switch.joycon-right" => Some(Box::new(switch::JoyConRightDecoder::default())),
+        "nintendo.switch.nso-nes" => Some(Box::new(switch::NsoNesDecoder::default())),
+        "nintendo.switch.nso-snes" => Some(Box::new(switch::NsoSnesDecoder::default())),
+        "nintendo.switch.nso-n64" => Some(Box::new(switch::NsoN64Decoder::default())),
+        "nintendo.switch.nso-genesis" => Some(Box::new(switch::NsoGenesisDecoder::default())),
         "nintendo.switch2.joycon-left" => Some(Box::new(switch2::JoyCon2LeftDecoder::default())),
         "nintendo.switch2.joycon-right" => Some(Box::new(switch2::JoyCon2RightDecoder::default())),
         "nintendo.switch2.pro" => Some(Box::new(switch2::Switch2ProDecoder::default())),
         "nintendo.switch2.nso-gamecube" => Some(Box::new(switch2::NsoGameCubeDecoder::default())),
         _ => None,
+    }
+}
+
+pub(crate) fn unsupported() -> Box<dyn BluetoothControllerDevice> {
+    Box::new(UnsupportedControllerDevice {
+        calibration: Calibration::default(),
+    })
+}
+
+struct UnsupportedControllerDevice {
+    calibration: Calibration,
+}
+
+impl BluetoothControllerDevice for UnsupportedControllerDevice {
+    fn decode(&mut self, _report: &[u8], _received_at: Instant) -> Option<DecodedInput> {
+        None
+    }
+
+    fn calibration(&self) -> &Calibration {
+        &self.calibration
+    }
+
+    fn calibration_mut(&mut self) -> &mut Calibration {
+        &mut self.calibration
     }
 }
 

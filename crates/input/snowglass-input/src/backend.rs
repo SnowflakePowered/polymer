@@ -1,6 +1,6 @@
 use crate::{
-    BackendId, Calibration, DeviceDescriptor, DeviceId, DeviceState, Feedback, HdRumbleFormat,
-    HdRumbleSink, PointerSample, hub::HubInner,
+    BackendId, DeviceDescriptor, DeviceId, DeviceState, Feedback, HdRumbleFormat, HdRumbleSink,
+    PointerSample, hub::HubInner,
 };
 use std::{
     borrow::Cow,
@@ -36,11 +36,6 @@ pub trait InputBackend: Send + Sync + 'static {
     fn start(&self, handle: BackendHandle) -> Result<(), BackendError>;
     fn shutdown(&self);
     fn apply_feedback(&self, device: &DeviceId, feedback: &Feedback) -> Result<(), BackendError>;
-    fn set_calibration(
-        &self,
-        device: &DeviceId,
-        calibration: &Calibration,
-    ) -> Result<(), BackendError>;
 
     fn open_hd_rumble(
         &self,
@@ -60,10 +55,6 @@ pub trait InputBackend: Send + Sync + 'static {
 
     fn raw_hid_filter(&self, _device: &DeviceId) -> Option<Arc<dyn RawHidFilter>> {
         None
-    }
-
-    fn recenter(&self, _device: &DeviceId) -> Result<(), BackendError> {
-        Err(BackendError::Unsupported)
     }
 }
 
