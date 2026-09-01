@@ -10,9 +10,6 @@ import type {
 } from "../plugin-api.ts";
 import { HotkeyParser } from "./hotkeys.ts";
 
-// Host-backed view of snowglass-config's ConfigurationInstance. This object is
-// deliberately opaque: the plugin may inspect and adjust option values, but it
-// installs the rendered files explicitly into the launch filesystem.
 type Configuration = HostConfiguration<{
         main: {
             analytics: {
@@ -42,6 +39,7 @@ type Configuration = HostConfiguration<{
             NINTENDO_WII: {
                 wii: Record<string, {
                     relative_input: boolean,
+                    source: number,
                 }>,
             },
         },
@@ -91,8 +89,6 @@ function hasAnalogPointer(mapping: Pick<ControllerMapping, "mouse" | "mapping">)
     });
 }
 
-const WIIMOTE_CONFIGURATION = "Config/WiimoteNew.ini";
-
 function usesRealWiimote(mapping: ControllerMapping): boolean {
     if (!mapping.connected || mapping.target.group !== "wii") return false;
     const device = mapping.device;
@@ -101,6 +97,10 @@ function usesRealWiimote(mapping: ControllerMapping): boolean {
         && (device.productId === 0x0306 || device.productId === 0x0330))
         || device.profile?.startsWith("nintendo.wiimote.") === true
         || device.name.startsWith("Nintendo RVL-CNT");
+}
+
+function wiimoteSource(mapping: ControllerMapping): number {
+    return usesRealWiimote(mapping) ? 2 : mapping.connected ? 1 : 0;
 }
 
 function pointerTopology(topology: ControllerTopology): ControllerTopology {
@@ -119,67 +119,16 @@ function pointerTopology(topology: ControllerTopology): ControllerTopology {
     };
 }
 
-function renderedConfiguration(
-    configuration: Configuration,
-    topology: ControllerTopology,
-): Readonly<Record<string, Uint8Array>> {
-    const files = configuration.render();
-    const wiimoteConfiguration = files[WIIMOTE_CONFIGURATION];
-    if (!wiimoteConfiguration) return files;
-
-    const sources = new Map(
-        topology.mappings
-            .filter(mapping => mapping.target.group === "wii")
-            .map(mapping => [
-                mapping.target.port,
-                usesRealWiimote(mapping) ? 2 : mapping.connected ? 1 : 0,
-            ] as const),
-    );
-    let port: number | null = null;
-    const text = new TextDecoder().decode(wiimoteConfiguration);
-    const patched = text.split("\n").map(line => {
-        const section = /^\[Wiimote(\d+)]\r?$/.exec(line);
-        if (section) {
-            port = Number(section[1]) - 1;
-            return line;
-        }
-        if (/^\[.*]\r?$/.test(line)) {
-            port = null;
-            return line;
-        }
-        if (port === null || !/^Source=/.test(line)) return line;
-        const ending = line.endsWith("\r") ? "\r" : "";
-        return `Source=${sources.get(port) ?? 0}${ending}`;
-    }).join("\n");
-
-    return {
-        ...files,
-        [WIIMOTE_CONFIGURATION]: new TextEncoder().encode(patched),
-    };
-}
-
-function mountConfiguration(
-    filesystem: Filesystem,
-    configuration: Configuration,
-    topology: ControllerTopology,
-): void {
-    for (const [name, bytes] of Object.entries(renderedConfiguration(configuration, topology))) {
-        filesystem.mountFile(`/User/${name}`, bytes, { mode: "rw" });
-    }
-}
-
 async function applyWiiConnectionChanges(context: ControllerChangeContext): Promise<void> {
-    const source = (mapping: ControllerMapping): number =>
-        usesRealWiimote(mapping) ? 2 : mapping.connected ? 1 : 0;
     const previous = new Map(
         context.previousTopology.mappings
             .filter(mapping => mapping.target.group === "wii")
-            .map(mapping => [mapping.target.port, source(mapping)] as const),
+            .map(mapping => [mapping.target.port, wiimoteSource(mapping)] as const),
     );
     const changed = context.topology.mappings
         .filter(mapping =>
             mapping.target.group === "wii"
-            && previous.get(mapping.target.port) !== source(mapping)
+            && previous.get(mapping.target.port) !== wiimoteSource(mapping)
         )
         .sort((left, right) => left.target.port - right.target.port);
     if (changed.length === 0) return;
@@ -197,16 +146,16 @@ async function applyWiiConnectionChanges(context: ControllerChangeContext): Prom
     try {
         const sources = settings.locator('group[name="Wii Remotes"] combo_box');
         for (const mapping of context.previousTopology.mappings
-            .filter(mapping => mapping.target.group === "wii" && source(mapping) === 2)
+            .filter(mapping => mapping.target.group === "wii" && wiimoteSource(mapping) === 2)
             .sort((left, right) => left.target.port - right.target.port)) {
             await sources.nth(mapping.target.port + 1).selectOption("None");
         }
         for (const mapping of current) {
             await sources
                 .nth(mapping.target.port + 1)
-                .selectOption(source(mapping) === 2
+                .selectOption(wiimoteSource(mapping) === 2
                     ? "Real Wii Remote"
-                    : source(mapping) === 1
+                    : wiimoteSource(mapping) === 1
                         ? "Emulated Wii Remote"
                         : "None");
         }
@@ -305,6 +254,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
         for (const mapping of args.controllerTopology.mappings) {
             if (mapping.target.group !== "wii") continue;
             wiiOptions[mapping.target.port].relative_input = hasAnalogPointer(mapping);
+            wiiOptions[mapping.target.port].source = wiimoteSource(mapping);
         }
     }
 
@@ -318,7 +268,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     } else {
         argv.push("-e", args.filesystem.path(`/Game/${gameName}`));
     }
-    mountConfiguration(args.filesystem, args.configuration, args.controllerTopology);
+    args.filesystem.mountConfiguration("/User", args.configuration, { mode: "rw" });
 
     const controllerTopology = pointerTopology(args.controllerTopology);
     return {
@@ -346,9 +296,9 @@ export const onControllerChanged = async (context: ControllerChangeContext) => {
         const wiiOptions = context.configuration.options().ports.NINTENDO_WII.wii;
         for (const mapping of wiiMappings) {
             wiiOptions[mapping.target.port].relative_input = hasAnalogPointer(mapping);
+            wiiOptions[mapping.target.port].source = wiimoteSource(mapping);
         }
     }
-    mountConfiguration(context.filesystem, context.configuration, topology);
     await applyWiiConnectionChanges(context);
     return { controllerTopology: topology };
 };

@@ -142,6 +142,14 @@ emit = { key = "Options/Always Connected", bool_style = "upper" }
 "pointer.y+" = "IR/Down"
 
 [[input.layouts.WII_REMOTE_CONTROLLER.options]]
+key = "source"
+title = "Source"
+type = "int"
+range = { min = 0, max = 2 }
+default = 1
+emit = { key = "Source" }
+
+[[input.layouts.WII_REMOTE_CONTROLLER.options]]
 key = "attach_motion_plus"
 title = "Attach MotionPlus"
 type = "bool"
@@ -226,6 +234,14 @@ emit = { key = "IR/Relative Input", bool_style = "upper" }
 "analog.accelerometer.right.z+" = "IMUAccelerometer/Up"
 
 [[input.layouts.WII_REMOTE_NUNCHUCK_CONTROLLER.options]]
+key = "source"
+title = "Source"
+type = "int"
+range = { min = 0, max = 2 }
+default = 1
+emit = { key = "Source" }
+
+[[input.layouts.WII_REMOTE_NUNCHUCK_CONTROLLER.options]]
 key = "attach_motion_plus"
 title = "Attach MotionPlus"
 type = "bool"
@@ -298,32 +314,32 @@ target = "wiipad.Wiimote1"
 layouts = ["WII_REMOTE_CONTROLLER", "WII_REMOTE_NUNCHUCK_CONTROLLER"]
 emit.unplugged = [{ key = "Source", value = "0" }]
 emit.passthrough = [{ key = "Source", value = "2" }]
-emit.WII_REMOTE_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "None" }, { key = "Device", value = "{device}" }]
-emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "Nunchuk" }, { key = "Device", value = "{device}" }]
+emit.WII_REMOTE_CONTROLLER = [{ key = "Extension", value = "None" }, { key = "Device", value = "{device}" }]
+emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ key = "Extension", value = "Nunchuk" }, { key = "Device", value = "{device}" }]
 
 [platforms.NINTENDO_WII.ports.wii.1]
 target = "wiipad.Wiimote2"
 layouts = ["WII_REMOTE_CONTROLLER", "WII_REMOTE_NUNCHUCK_CONTROLLER"]
 emit.unplugged = [{ key = "Source", value = "0" }]
 emit.passthrough = [{ key = "Source", value = "2" }]
-emit.WII_REMOTE_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "None" }, { key = "Device", value = "{device}" }]
-emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "Nunchuk" }, { key = "Device", value = "{device}" }]
+emit.WII_REMOTE_CONTROLLER = [{ key = "Extension", value = "None" }, { key = "Device", value = "{device}" }]
+emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ key = "Extension", value = "Nunchuk" }, { key = "Device", value = "{device}" }]
 
 [platforms.NINTENDO_WII.ports.wii.2]
 target = "wiipad.Wiimote3"
 layouts = ["WII_REMOTE_CONTROLLER", "WII_REMOTE_NUNCHUCK_CONTROLLER"]
 emit.unplugged = [{ key = "Source", value = "0" }]
 emit.passthrough = [{ key = "Source", value = "2" }]
-emit.WII_REMOTE_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "None" }, { key = "Device", value = "{device}" }]
-emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "Nunchuk" }, { key = "Device", value = "{device}" }]
+emit.WII_REMOTE_CONTROLLER = [{ key = "Extension", value = "None" }, { key = "Device", value = "{device}" }]
+emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ key = "Extension", value = "Nunchuk" }, { key = "Device", value = "{device}" }]
 
 [platforms.NINTENDO_WII.ports.wii.3]
 target = "wiipad.Wiimote4"
 layouts = ["WII_REMOTE_CONTROLLER", "WII_REMOTE_NUNCHUCK_CONTROLLER"]
 emit.unplugged = [{ key = "Source", value = "0" }]
 emit.passthrough = [{ key = "Source", value = "2" }]
-emit.WII_REMOTE_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "None" }, { key = "Device", value = "{device}" }]
-emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ key = "Source", value = "1" }, { key = "Extension", value = "Nunchuk" }, { key = "Device", value = "{device}" }]
+emit.WII_REMOTE_CONTROLLER = [{ key = "Extension", value = "None" }, { key = "Device", value = "{device}" }]
+emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ key = "Extension", value = "Nunchuk" }, { key = "Device", value = "{device}" }]
 
 [platforms.NINTENDO_WII.ports.gamecube.0]
 target = "gcpad.GCPad1"
