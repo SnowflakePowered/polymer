@@ -1697,6 +1697,14 @@ response. A missing hook means no UI layout, not no launch configuration: TOML
 materialization and the host-backed `Configuration` passed to `onLaunch` are
 unconditional.
 
+Plugin module initialization is separate from per-game configuration.
+`onPluginLoad()` runs at most once per plugin runtime, before the first lifecycle
+callback. It can populate the process-local `pluginStorage` imported from
+`snowglass:pluginStorage`; every fresh isolate for that plugin receives the same
+store. Values are JSON-compatible serde values, cross the V8 boundary through
+`serde_v8`, and are cloned on each `getItem`. Concurrent first calls share one
+initialization attempt. A failed attempt clears partial values and may be retried.
+
 Two rules cut across options and cannot be written as an option's own
 `enabled_when`: the overlay attaches only to renderers snowglass hooks, and no
 two passthrough ports may claim the same physical device. Neither is expressible

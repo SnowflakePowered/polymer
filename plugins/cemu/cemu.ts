@@ -1,4 +1,5 @@
 import graphicsPacks from "resources:graphicsPacks";
+import { pluginStorage } from "snowglass:pluginStorage";
 import type {
     Configuration as HostConfiguration,
     ConfigurationResult,
@@ -14,6 +15,7 @@ import {
     normalizeTitleId,
     settleGraphicsPacks,
     type GraphicsApi,
+    type GraphicsPack,
 } from "./graphics-packs.ts";
 
 type Configuration = HostConfiguration<{
@@ -48,11 +50,19 @@ type EmulatorLaunchArgs = {
 };
 
 const GRAPHICS_GROUP = "graphics";
+const GRAPHICS_PACKS_STORAGE_KEY = "graphicsPacks";
 
-export async function onConfigure(
+export async function onPluginLoad() {
+    pluginStorage.setItem(
+        GRAPHICS_PACKS_STORAGE_KEY,
+        await loadGraphicsPacks(graphicsPacks),
+    );
+}
+
+export function onConfigure(
     game: ConfigureGame,
     userConfiguration?: UserConfiguration,
-): Promise<ConfigurationResult> {
+): ConfigurationResult {
     const api = selectedApi(userConfiguration);
     const groups: Array<ConfigurationResult["groups"][number]> = [{
         key: GRAPHICS_GROUP,
@@ -72,7 +82,7 @@ export async function onConfigure(
         [GRAPHICS_GROUP]: { api },
     };
     if (normalizeTitleId(game.titleId)) {
-        const packs = await loadGraphicsPacks(graphicsPacks);
+        const packs = loadedGraphicsPacks();
         const settled = settleGraphicsPacks(packs, game.titleId, userConfiguration, api);
         groups.push(...settled.groups);
         Object.assign(values, settled.values);
@@ -85,15 +95,13 @@ export async function onConfigure(
     };
 }
 
-export async function onLaunch(args: EmulatorLaunchArgs) {
+export function onLaunch(args: EmulatorLaunchArgs) {
     const userConfiguration = validUserConfiguration(args.userConfiguration);
     const api = selectedApi(userConfiguration);
     args.configuration.options().content.open_pad = true;
     args.configuration.options()["content-graphic"].api = api === "vulkan" ? 1 : 0;
 
-    const packs = normalizeTitleId(args.package.titleId)
-        ? await loadGraphicsPacks(graphicsPacks)
-        : [];
+    const packs = normalizeTitleId(args.package.titleId) ? loadedGraphicsPacks() : [];
     const selected = settleGraphicsPacks(
         packs,
         args.package.titleId,
@@ -153,6 +161,12 @@ function selectedApi(configuration: UserConfiguration | undefined): GraphicsApi 
     return configuration?.[GRAPHICS_GROUP]?.api === "opengl" ? "opengl" : "vulkan";
 }
 
+function loadedGraphicsPacks(): GraphicsPack[] {
+    const packs = pluginStorage.getItem<GraphicsPack[]>(GRAPHICS_PACKS_STORAGE_KEY);
+    if (packs === null) throw new Error("graphics packs were not loaded");
+    return packs;
+}
+
 function validUserConfiguration(value: unknown): UserConfiguration {
     if (!value || typeof value !== "object" || Array.isArray(value)) return {};
     const result: Record<string, Record<string, boolean | number | string | null>> = {};
@@ -165,4 +179,4 @@ function validUserConfiguration(value: unknown): UserConfiguration {
     return result;
 }
 
-export default { onConfigure, onLaunch };
+export default { onPluginLoad, onConfigure, onLaunch };

@@ -20,6 +20,13 @@ export type FileEntry = Readonly<{
 export type DirEntry = DirectoryEntry | FileEntry;
 export type DirectoryResource = DirectoryEntry;
 
+export type PluginStorage = Readonly<{
+    getItem<T = unknown>(key: string): T | null,
+    setItem(key: string, value: unknown): void,
+}>;
+
+export type OnPluginLoad = () => void | Promise<void>;
+
 export type Filesystem = {
     mountCache(cacheKey: string): Resource,
     mountHostTree(target: string, source: string, options: { mode: string }): void,

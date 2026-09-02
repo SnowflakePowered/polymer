@@ -14,6 +14,8 @@ use serde_bytes::ByteBuf;
 use snowglass_config::ast::ConfigurationInstance;
 use thiserror::Error;
 
+pub(crate) mod plugin_storage;
+
 #[op2]
 #[serde]
 fn op_configuration_get(
