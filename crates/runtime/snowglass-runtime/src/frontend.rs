@@ -26,6 +26,7 @@ use std::{
 };
 
 const CONTROLLER_API_RESPONSE_ATTEMPTS: usize = 3;
+const CONTROLLER_CHANGE_RESPONSE_ATTEMPTS: usize = 13;
 const CONTROLLER_API_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Thread-affine mechanics retained by the native shell.
@@ -325,13 +326,21 @@ impl RuntimePlatform for CommandRuntimePlatform {
         let sink = self.input.clone();
         Box::pin(async move {
             let (result, mut response) = tokio::sync::oneshot::channel();
+            let response_attempts = if command["type"] == "controllers.session.finish" {
+                // Live emulator reconfiguration can include several UIA
+                // operations. Give it enough time to reach the plugin's
+                // 60-second deadline plus one response interval.
+                CONTROLLER_CHANGE_RESPONSE_ATTEMPTS
+            } else {
+                CONTROLLER_API_RESPONSE_ATTEMPTS
+            };
             sink.send(InputCommand::ControllerApi { command, result });
-            for attempt in 1..=CONTROLLER_API_RESPONSE_ATTEMPTS {
+            for attempt in 1..=response_attempts {
                 match tokio::time::timeout(CONTROLLER_API_RESPONSE_TIMEOUT, &mut response).await {
                     Ok(result) => {
                         return result.map_err(|_| "controller host is unavailable".to_owned())?;
                     }
-                    Err(_) if attempt < CONTROLLER_API_RESPONSE_ATTEMPTS => {
+                    Err(_) if attempt < response_attempts => {
                         tracing::warn!(
                             attempt,
                             "controller API response is delayed; continuing to wait"

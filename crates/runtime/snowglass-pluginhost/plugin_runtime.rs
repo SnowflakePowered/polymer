@@ -1096,8 +1096,8 @@ impl ControllerSessionWorker {
         &mut self,
         topology: &snowglass_controllers::ControllerTopology,
     ) -> Result<crate::deno::ControllerChangeOutput, PluginInvocationError> {
-        const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-        const TIMEOUT_ERROR: &str = "onControllerChanged exceeded its 30 second deadline";
+        const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+        const TIMEOUT_ERROR: &str = "onControllerChanged exceeded its 60 second deadline";
         let deadline = IsolateDeadline::start(
             self.runtime
                 .js_runtime_mut()
