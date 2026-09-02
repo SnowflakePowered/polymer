@@ -193,7 +193,7 @@ export interface LaunchInstance extends EventTarget {
   setMuted(muted: boolean): void;
   activateInput(): void;
   deactivateInput(): void;
-  setPauseState(pauseState: "pause" | "resume"): void;
+  setPauseState(pauseState: "pause" | "resume", timeoutMs?: number): Promise<void>;
   close(): void;
 }
 

@@ -176,11 +176,16 @@ export function createEmulator(webrtc) {
       if (this.#canControl()) op_emulator_input(this.id, false);
     }
 
-    setPauseState(pauseState) {
+    async setPauseState(pauseState, timeoutMs = 30_000) {
       if (pauseState !== "pause" && pauseState !== "resume") {
         throw new TypeError("pause state must be 'pause' or 'resume'");
       }
-      if (this.#canControl()) op_emulator_pause_state(this.id, pauseState === "pause");
+      if (!Number.isInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 0xffff_ffff) {
+        throw new TypeError("pause/resume timeout must be a positive 32-bit integer");
+      }
+      if (this.#canControl()) {
+        await op_emulator_pause_state(this.id, pauseState === "pause", timeoutMs);
+      }
     }
 
     close() {

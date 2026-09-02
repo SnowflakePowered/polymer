@@ -12,3 +12,4 @@
 * Use zerocopy for parsing binary structures if possible.
 * Do not write tests that just test the obvious behaviour of a function or existence tests like struct layouts. Prefer static asserts where applicable.
 * Do not write tiny one-off helper functions.
+* For concurrent hashmaps, use `dashmap` rather than a RwLock or Mutex around a std HashMap.

@@ -10,6 +10,7 @@ pub(crate) struct ShellApplication {
     state: Option<ShellCoordinator>,
     pending_input_commands: std::collections::VecDeque<InputCommand>,
     pending_input_change: Option<PendingInputChange>,
+    pending_pause_resume: std::collections::VecDeque<PendingPauseResume>,
     error: Option<Box<dyn Error>>,
     next_runtime_poll: Instant,
 }
@@ -32,6 +33,7 @@ impl ShellApplication {
             state: None,
             pending_input_commands: std::collections::VecDeque::new(),
             pending_input_change: None,
+            pending_pause_resume: std::collections::VecDeque::new(),
             error: None,
             next_runtime_poll: Instant::now(),
         }
@@ -85,7 +87,7 @@ impl ShellApplication {
         let completed_change = self
             .pending_input_change
             .as_mut()
-            .and_then(|pending| match pending.response.try_recv() {
+            .and_then(|pending| match pending.response().try_recv() {
                 Ok(result) => Some(result),
                 Err(tokio::sync::oneshot::error::TryRecvError::Closed) => Some(Err(
                     "controller plugin session closed during topology change".to_owned(),
@@ -96,7 +98,29 @@ impl ShellApplication {
             && let Some(pending) = self.pending_input_change.take()
             && let Some(state) = self.state.as_mut()
         {
-            state.finish_input_configuration(pending, result);
+            state.finish_input_change(pending, result);
+        }
+        loop {
+            let completed = self
+                .pending_pause_resume
+                .front_mut()
+                .and_then(|pending| match pending.response.try_recv() {
+                    Ok(result) => Some(result),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => Some(Err(
+                        "emulator plugin session closed during pause/resume".to_owned(),
+                    )),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => None,
+                });
+            let Some(completed) = completed else {
+                break;
+            };
+            let pending = self
+                .pending_pause_resume
+                .pop_front()
+                .expect("a completed pause/resume callback remains queued");
+            if let Some(state) = self.state.as_mut() {
+                state.finish_pause_resume(pending, completed);
+            }
         }
         while self.pending_input_change.is_none()
             && let Some(command) = self.pending_input_commands.pop_front()
@@ -222,7 +246,9 @@ impl ShellApplication {
                 height,
             }) => state.window.set_ime_cursor_area(x, y, width, height),
             UserEvent::GameHost(GameHostCommand::Emulator(command)) => {
-                state.apply_emulator_command(command)
+                if let Some(pending) = state.apply_emulator_command(command) {
+                    self.pending_pause_resume.push_back(pending);
+                }
             }
             UserEvent::GameHost(GameHostCommand::WebRtc(command)) => {
                 state.apply_webrtc_command(command)

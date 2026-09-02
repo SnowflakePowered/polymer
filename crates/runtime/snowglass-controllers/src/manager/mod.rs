@@ -163,6 +163,10 @@ impl ControllerManager {
         self.hub.as_ref()
     }
 
+    pub fn connection_session_active(&self) -> bool {
+        self.session.is_some()
+    }
+
     pub fn snapshot(&self) -> serde_json::Value {
         let devices = self
             .hub

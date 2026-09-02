@@ -28,6 +28,43 @@
   white-space: nowrap;
 }
 
+.horizon-order-configuring {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-row: 1 / -1;
+  place-content: center;
+  justify-items: center;
+  gap: 1rem;
+  color: #303236;
+  background: #fafafa;
+  text-align: center;
+}
+
+.horizon-order-configuring h2,
+.horizon-order-configuring p {
+  margin: 0;
+}
+
+.horizon-order-configuring h2 {
+  font-size: clamp(1.8rem, 3.5vw, 3.25rem);
+  font-weight: 400;
+}
+
+.horizon-order-configuring p {
+  color: #686b6f;
+  font-size: clamp(0.95rem, 1.5vw, 1.25rem);
+}
+
+.horizon-order-configuring-spinner {
+  width: clamp(3rem, 6vw, 5rem);
+  height: clamp(3rem, 6vw, 5rem);
+  border: 0.4rem solid #d6d8db;
+  border-top-color: #2459dc;
+  border-radius: 50%;
+  animation: horizon-order-pairing-spin 0.75s linear infinite;
+}
+
 .horizon-order-modes {
   display: flex;
   min-height: 0;
@@ -460,7 +497,9 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .horizon-order-configuring-spinner,
   .horizon-order-radio-status i {
+    animation: none;
     box-shadow: none;
   }
 }

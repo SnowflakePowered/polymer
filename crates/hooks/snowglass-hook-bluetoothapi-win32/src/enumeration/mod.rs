@@ -23,15 +23,12 @@ impl Default for SyntheticEnumeration {
 
 impl SyntheticEnumeration {
     pub(crate) fn rebind(&self, session: &str, bindings: &[RawHidBinding]) {
-        *self.devices.write() = bindings
-            .iter()
-            .filter(|binding| binding.port < 4)
-            .map(|binding| SyntheticWiimote::for_port(session, binding.port, Some(binding)))
+        *self.devices.write() = (0..4)
+            .map(|port| {
+                let binding = bindings.iter().find(|binding| binding.port == port);
+                SyntheticWiimote::for_port(session, port, binding)
+            })
             .collect();
-    }
-
-    pub(crate) fn has_devices(&self) -> bool {
-        !self.devices.read().is_empty()
     }
 
     pub(crate) unsafe fn supports(&self, interface: *const GUID) -> bool {
@@ -45,10 +42,6 @@ impl SyntheticEnumeration {
             }
     }
 
-    pub(crate) unsafe fn extends(&self, interface: *const GUID) -> bool {
-        !self.devices.read().is_empty() && unsafe { self.supports(interface) }
-    }
-
     pub(crate) fn additional_len(&self) -> u32 {
         self.devices
             .read()
@@ -57,21 +50,40 @@ impl SyntheticEnumeration {
             .sum()
     }
 
-    pub(crate) unsafe fn append(&self, buffer: *mut u16, buffer_len: u32) -> CONFIGRET {
+    pub(crate) unsafe fn filter_and_append(
+        &self,
+        buffer: *mut u16,
+        buffer_len: u32,
+        mut retain: impl FnMut(&[u16]) -> bool,
+    ) -> CONFIGRET {
         if buffer.is_null() {
             return CR_BUFFER_SMALL;
         }
         let buffer = unsafe { std::slice::from_raw_parts_mut(buffer, buffer_len as usize) };
-        let end = buffer
-            .windows(2)
-            .position(|pair| pair == [0, 0])
-            .or_else(|| buffer.iter().position(|value| *value == 0))
-            .unwrap_or(buffer.len());
-        let required = end + self.additional_len() as usize + 1;
+        let mut retained = Vec::<Vec<u16>>::new();
+        let mut offset = 0;
+        while offset < buffer.len() && buffer[offset] != 0 {
+            let Some(length) = buffer[offset..].iter().position(|value| *value == 0) else {
+                return CR_BUFFER_SMALL;
+            };
+            let path = &buffer[offset..offset + length];
+            if retain(path) {
+                retained.push(path.to_vec());
+            }
+            offset += length + 1;
+        }
+        let required = retained.iter().map(|path| path.len() + 1).sum::<usize>()
+            + self.additional_len() as usize
+            + 1;
         if required > buffer.len() {
             return CR_BUFFER_SMALL;
         }
-        let mut offset = end;
+        buffer.fill(0);
+        let mut offset = 0usize;
+        for path in retained {
+            buffer[offset..offset + path.len()].copy_from_slice(&path);
+            offset += path.len() + 1;
+        }
         for device in self.devices.read().iter() {
             buffer[offset..offset + device.path.len()].copy_from_slice(&device.path);
             offset += device.path.len();
@@ -87,21 +99,20 @@ impl SyntheticEnumeration {
         let length = (0..32_768).find(|offset| unsafe { *path.add(*offset) == 0 })?;
         let path = unsafe { std::slice::from_raw_parts(path, length) };
         let devices = self.devices.read();
-        devices
-            .iter()
-            .find(|device| device.path_matches(path))
-            .or_else(|| {
-                let path = String::from_utf16_lossy(path).to_ascii_lowercase();
-                let port = path
-                    .split("snowglass-")
-                    .nth(1)?
-                    .split('#')
-                    .next()?
-                    .parse::<u8>()
-                    .ok()?;
-                devices.iter().find(|device| device.port == port)
-            })
-            .cloned()
+        if let Some(device) = devices.iter().find(|device| device.path_matches(path)) {
+            return Some(device.clone());
+        }
+        let path = String::from_utf16_lossy(path).to_ascii_lowercase();
+        if let Some(port) = path
+            .split("snowglass-")
+            .nth(1)
+            .and_then(|suffix| suffix.split('#').next())
+            .and_then(|port| port.parse::<u8>().ok())
+            && let Some(device) = devices.iter().find(|device| device.port == port)
+        {
+            return Some(device.clone());
+        }
+        None
     }
 }
 
@@ -130,8 +141,57 @@ mod tests {
         .chain(Some(0))
         .collect::<Vec<_>>();
 
-        let device = unsafe { enumeration.find_path(path.as_ptr()) }.unwrap();
+        let device =
+            unsafe { enumeration.find_path(path.as_ptr()) }.expect("synthetic path should match");
         assert_eq!(device.port, 0);
         assert!(device.active);
+    }
+
+    #[test]
+    fn removes_filtered_native_devices_and_appends_snowglass_devices() {
+        let enumeration = SyntheticEnumeration::default();
+        enumeration.rebind("test-session", &[]);
+        let mut list = [r"\\?\hid#bluetooth-device", r"\\?\hid#usb-device"]
+            .into_iter()
+            .flat_map(|path| OsStr::new(path).encode_wide().chain(Some(0)))
+            .chain(Some(0))
+            .chain(std::iter::repeat_n(
+                0,
+                enumeration.additional_len() as usize,
+            ))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            unsafe {
+                enumeration.filter_and_append(list.as_mut_ptr(), list.len() as u32, |path| {
+                    !String::from_utf16_lossy(path).contains("bluetooth")
+                })
+            },
+            CR_SUCCESS
+        );
+        let rendered = String::from_utf16_lossy(&list);
+        assert!(!rendered.contains("bluetooth-device"));
+        assert!(rendered.contains("usb-device"));
+        for port in 0..4 {
+            assert!(rendered.contains(&format!("snowglass-{port}")));
+        }
+    }
+
+    #[test]
+    fn keeps_inactive_port_paths_stable_for_live_additions() {
+        let enumeration = SyntheticEnumeration::default();
+        enumeration.rebind("test-session", &[]);
+        let path = OsStr::new(
+            r"\\?\hid#vid_057e&pid_0306#snowglass-3#{4d1e55b2-f16f-11cf-88cb-001111000030}",
+        )
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+
+        let Some(device) = (unsafe { enumeration.find_path(path.as_ptr()) }) else {
+            panic!("inactive synthetic port should remain discoverable");
+        };
+        assert_eq!(device.port, 3);
+        assert!(!device.active);
     }
 }

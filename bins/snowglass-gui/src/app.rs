@@ -72,11 +72,45 @@ struct ShellCoordinator {
     _theme: crate::theme::SelectedTheme,
 }
 
-struct PendingInputChange {
-    request_id: u64,
-    prepared: PreparedInputTransaction,
-    response:
-        tokio::sync::oneshot::Receiver<Result<snowglass_controllers::ControllerTopology, String>>,
+enum PendingInputChange {
+    Configuration {
+        request_id: u64,
+        prepared: PreparedInputTransaction,
+        previous_topology: snowglass_controllers::ControllerTopology,
+        response: tokio::sync::oneshot::Receiver<
+            Result<snowglass_controllers::ControllerTopology, String>,
+        >,
+    },
+    ConnectionSession {
+        value: serde_json::Value,
+        result: tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
+        previous_topology: snowglass_controllers::ControllerTopology,
+        response: tokio::sync::oneshot::Receiver<
+            Result<snowglass_controllers::ControllerTopology, String>,
+        >,
+    },
+}
+
+struct PendingPauseResume {
+    token: InstanceToken,
+    state: snowglass_pluginhost::PauseState,
+    started: Instant,
+    result: tokio::sync::oneshot::Sender<Result<(), String>>,
+    response: tokio::sync::oneshot::Receiver<Result<(), String>>,
+}
+
+impl PendingInputChange {
+    fn response(
+        &mut self,
+    ) -> &mut tokio::sync::oneshot::Receiver<
+        Result<snowglass_controllers::ControllerTopology, String>,
+    > {
+        match self {
+            Self::Configuration { response, .. } | Self::ConnectionSession { response, .. } => {
+                response
+            }
+        }
+    }
 }
 
 impl ShellCoordinator {

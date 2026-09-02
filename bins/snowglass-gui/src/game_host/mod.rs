@@ -395,6 +395,12 @@ impl GameHost {
             .is_some_and(|active| active.controller_session.is_none())
     }
 
+    pub fn supports_controller_changes(&self) -> bool {
+        self.active
+            .as_ref()
+            .is_some_and(|active| active.controller_session.is_some())
+    }
+
     pub fn controller_mappings(&self) -> &[snowglass_controllers::ControllerMapping] {
         self.active
             .as_ref()
@@ -419,6 +425,11 @@ impl GameHost {
         let Some(session) = &active.controller_session else {
             return Ok(None);
         };
+        tracing::info!(
+            token = active.token.0,
+            requested = %topology.assignment_diagnostics(),
+            "snowglass: host queued controller topology for plugin"
+        );
         session.change(topology).map(Some)
     }
 
@@ -431,14 +442,18 @@ impl GameHost {
         }
     }
 
-    pub fn pause_resume(&self, state: snowglass_pluginhost::PauseState) -> Result<(), String> {
+    pub fn pause_resume(
+        &self,
+        state: snowglass_pluginhost::PauseState,
+        timeout: std::time::Duration,
+    ) -> Result<Option<tokio::sync::oneshot::Receiver<Result<(), String>>>, String> {
         let Some(active) = &self.active else {
-            return Ok(());
+            return Ok(None);
         };
         let Some(session) = &active.controller_session else {
-            return Ok(());
+            return Ok(None);
         };
-        session.pause_resume(state)
+        session.pause_resume(state, Some(timeout)).map(Some)
     }
 
     pub fn take_plugin_errors(

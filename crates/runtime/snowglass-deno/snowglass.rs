@@ -15,6 +15,7 @@ use std::{
     pin::Pin,
     rc::Rc,
     sync::Arc,
+    time::Duration,
 };
 
 pub type ApiFuture<T> = Pin<Box<dyn Future<Output = T> + 'static>>;
@@ -57,7 +58,12 @@ pub trait SnowglassHost: Send + Sync {
     fn emulator_set_muted(&self, token: InstanceToken, muted: bool);
     fn emulator_message(&self, token: InstanceToken, name: String, args: Value);
     fn emulator_input(&self, token: InstanceToken, active: bool);
-    fn emulator_pause_state(&self, token: InstanceToken, pause: bool);
+    fn emulator_pause_state(
+        &self,
+        token: InstanceToken,
+        pause: bool,
+        timeout: Duration,
+    ) -> ApiFuture<Result<(), String>>;
     fn input_configure(&self, request_id: u32, transaction: Value);
     fn controller_api_snapshot(&self) -> Value;
     fn controller_api_command(&self, command: Value) -> ApiFuture<Result<Value, String>>;
@@ -360,11 +366,21 @@ fn op_emulator_input(state: &mut OpState, token: u32, active: bool) {
         .emulator_input(InstanceToken(token), active);
 }
 
-#[op2(fast)]
-fn op_emulator_pause_state(state: &mut OpState, token: u32, pause: bool) {
-    state
-        .borrow::<Arc<dyn SnowglassHost>>()
-        .emulator_pause_state(InstanceToken(token), pause);
+#[op2]
+async fn op_emulator_pause_state(
+    state: Rc<RefCell<OpState>>,
+    token: u32,
+    pause: bool,
+    timeout_ms: u32,
+) -> Result<(), JsErrorBox> {
+    let host = state.borrow().borrow::<Arc<dyn SnowglassHost>>().clone();
+    host.emulator_pause_state(
+        InstanceToken(token),
+        pause,
+        Duration::from_millis(u64::from(timeout_ms)),
+    )
+    .await
+    .map_err(JsErrorBox::generic)
 }
 
 #[op2]

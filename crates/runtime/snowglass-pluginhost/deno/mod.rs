@@ -511,6 +511,18 @@ pub(crate) fn restore_configuration(
         .restore(id, checkpoint);
 }
 
+pub(crate) fn refresh_configuration_mounts(
+    runtime: &mut JsRuntime,
+) -> Result<(), EmulatorHostError> {
+    runtime
+        .execute_script(
+            "snowglass:pluginhost/refresh-configurations.js",
+            "__snowglassFilesystem.refreshConfigurations()",
+        )
+        .map(|_| ())
+        .map_err(|error| EmulatorHostError::Runtime(error.to_string()))
+}
+
 pub(crate) fn discard_configuration(runtime: &mut JsRuntime, id: ConfigurationId) {
     runtime
         .op_state()

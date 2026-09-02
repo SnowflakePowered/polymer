@@ -882,6 +882,12 @@ impl ControllerSessionWorker {
             .controller_topology
             .clone()
             .unwrap_or_else(|| args.topology.clone());
+        tracing::info!(
+            plugin = %plugin.id(),
+            thread = std::thread::current().name().unwrap_or("unnamed"),
+            applied = %applied_topology.assignment_diagnostics(),
+            "snowglass: controller plugin session initialized"
+        );
         launch.controller_topology = Some(applied_topology.clone());
         if args
             .started
@@ -924,8 +930,12 @@ impl ControllerSessionWorker {
                 crate::controller::ControllerSessionCommand::Changed(topology, response) => {
                     self.change(topology, response);
                 }
-                crate::controller::ControllerSessionCommand::PauseResume(state, response) => {
-                    let _ = response.send(self.pause_resume(state));
+                crate::controller::ControllerSessionCommand::PauseResume(
+                    state,
+                    timeout,
+                    response,
+                ) => {
+                    let _ = response.send(self.pause_resume(state, timeout));
                 }
                 crate::controller::ControllerSessionCommand::Stop => break,
             }
@@ -935,15 +945,31 @@ impl ControllerSessionWorker {
         crate::deno::discard_configuration(self.runtime.js_runtime_mut(), self.configuration_id);
     }
 
-    fn pause_resume(&mut self, state: crate::PauseState) -> Result<(), String> {
-        const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+    fn pause_resume(
+        &mut self,
+        state: crate::PauseState,
+        timeout: std::time::Duration,
+    ) -> Result<(), String> {
+        let started = std::time::Instant::now();
+        let thread = std::thread::current();
+        tracing::info!(
+            plugin = %self.plugin.id(),
+            ?state,
+            thread = thread.name().unwrap_or("unnamed"),
+            "snowglass: pause/resume plugin callback started"
+        );
         let result = self.tokio.block_on(async {
             tokio::time::timeout(
-                TIMEOUT,
+                timeout,
                 crate::deno::execute_pause_resume(self.runtime.js_runtime_mut(), state),
             )
             .await
-            .map_err(|_| "onPauseResume exceeded its 30 second deadline".to_owned())?
+            .map_err(|_| {
+                format!(
+                    "onPauseResume exceeded its {}ms deadline",
+                    timeout.as_millis()
+                )
+            })?
             .map_err(|error| error.to_string())
         });
         if let Err(error) = &result {
@@ -951,6 +977,14 @@ impl ControllerSessionWorker {
             self.errors
                 .lock()
                 .push(crate::SessionError::PauseResume(error.clone()));
+        } else {
+            tracing::info!(
+                plugin = %self.plugin.id(),
+                ?state,
+                thread = thread.name().unwrap_or("unnamed"),
+                elapsed_ms = started.elapsed().as_millis(),
+                "snowglass: pause/resume plugin callback completed"
+            );
         }
         result
     }
@@ -962,15 +996,37 @@ impl ControllerSessionWorker {
             Result<snowglass_controllers::ControllerTopology, String>,
         >,
     ) {
+        let started = std::time::Instant::now();
+        let thread = std::thread::current();
+        tracing::info!(
+            plugin = %self.plugin.id(),
+            thread = thread.name().unwrap_or("unnamed"),
+            previous = %self.previous_topology.assignment_diagnostics(),
+            requested = %topology.assignment_diagnostics(),
+            "snowglass: controller plugin callback started"
+        );
         let result = self.apply_change(&topology);
         match result {
             Ok(applied) => {
+                tracing::info!(
+                    plugin = %self.plugin.id(),
+                    thread = thread.name().unwrap_or("unnamed"),
+                    elapsed_ms = started.elapsed().as_millis(),
+                    applied = %applied.assignment_diagnostics(),
+                    "snowglass: controller plugin callback completed"
+                );
                 self.previous_topology = applied.clone();
                 let _ = response.send(Ok(applied));
             }
             Err(error) => {
                 crate::filesystem::discard_staged(self.runtime.js_runtime_mut());
-                tracing::error!("snowglass: onControllerChanged failed: {error}");
+                tracing::error!(
+                    plugin = %self.plugin.id(),
+                    thread = thread.name().unwrap_or("unnamed"),
+                    elapsed_ms = started.elapsed().as_millis(),
+                    requested = %topology.assignment_diagnostics(),
+                    "snowglass: onControllerChanged failed: {error}"
+                );
                 self.errors
                     .lock()
                     .push(crate::SessionError::ControllerChanged(error.to_string()));
@@ -995,6 +1051,19 @@ impl ControllerSessionWorker {
                 self.configuration_id,
                 checkpoint,
             );
+            if let Err(error) =
+                crate::deno::refresh_configuration_mounts(self.runtime.js_runtime_mut())
+                    .map_err(PluginInvocationError::worker)
+                    .and_then(|()| {
+                        crate::filesystem::flush_staged(self.runtime.js_runtime_mut())
+                            .map_err(PluginInvocationError::worker)
+                    })
+            {
+                tracing::error!(
+                    plugin = %self.plugin.id(),
+                    "snowglass: restoring controller configuration files failed: {error}"
+                );
+            }
         }
         result
     }
@@ -1629,8 +1698,18 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        session.pause_resume(crate::PauseState::Pause).unwrap();
-        session.pause_resume(crate::PauseState::Resume).unwrap();
+        session
+            .pause_resume(crate::PauseState::Pause, None)
+            .unwrap()
+            .await
+            .unwrap()
+            .unwrap();
+        session
+            .pause_resume(crate::PauseState::Resume, None)
+            .unwrap()
+            .await
+            .unwrap()
+            .unwrap();
 
         let deadline = std::time::Instant::now() + Duration::from_secs(1);
         while activated.lock().unwrap().len() != 2 && std::time::Instant::now() < deadline {

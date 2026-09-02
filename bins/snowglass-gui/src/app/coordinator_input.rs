@@ -358,19 +358,28 @@ impl ShellCoordinator {
             self.publish_input_configuration();
         }
         if let Some(state) = publication.api_state {
-            let controller_change = self.input.controller_topology().and_then(|topology| {
-                self.input.apply_controller_topology(topology.clone())?;
-                self.game_host.update_controller_topology(topology.clone());
-                self.game_host.controller_change(topology).map(|_| ())
-            });
-            if let Err(error) = controller_change
-                && let Some(token) = self.game_host.active_token()
-            {
-                self.emit_instance_event(
-                    token,
-                    "controllerchangeerror",
-                    &instance_events::error(error),
-                );
+            // A grip/order session intentionally clears and rebuilds player
+            // assignments. Keep the paused game's topology stable while that
+            // session is active, then apply its final ordering once finish()
+            // publishes the settled controller state.
+            if !publication.connection_session_active {
+                let controller_change = self.input.controller_topology().and_then(|topology| {
+                    if self.input.applied_controller_topology() == Some(&topology) {
+                        return Ok(());
+                    }
+                    self.input.apply_controller_topology(topology.clone())?;
+                    self.game_host.update_controller_topology(topology.clone());
+                    self.game_host.controller_change(topology).map(|_| ())
+                });
+                if let Err(error) = controller_change
+                    && let Some(token) = self.game_host.active_token()
+                {
+                    self.emit_instance_event(
+                        token,
+                        "controllerchangeerror",
+                        &instance_events::error(error),
+                    );
+                }
             }
             self.notify_snowglass(SnowglassNotification::ControllerApiStateChanged(state));
         }
