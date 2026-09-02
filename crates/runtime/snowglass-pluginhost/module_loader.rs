@@ -11,6 +11,7 @@ use std::{path::PathBuf, sync::Arc};
 const PLUGIN_SCHEME: &str = "snowglass-pkg";
 const PLUGIN_HOST: &str = "plugin";
 const RESOURCE_SCHEME: &str = "snowglass-resource";
+const PLUGIN_STORAGE_MODULE: &str = "snowglass:pluginStorage";
 
 /// Module resolver and source transformer bound permanently to one package.
 #[derive(Clone, Debug)]
@@ -209,14 +210,19 @@ impl ModuleLoader for PluginModuleLoader {
         referrer: &str,
         _kind: ResolutionKind,
     ) -> Result<ModuleSpecifier, ModuleLoaderError> {
-        let resolved = if specifier.starts_with("resources:") {
+        let resolved = if specifier == PLUGIN_STORAGE_MODULE {
+            ModuleSpecifier::parse(PLUGIN_STORAGE_MODULE).map_err(ModuleLoaderError::from_err)?
+        } else if specifier.starts_with("resources:") {
             self.resource_specifier(specifier)?
         } else if specifier.starts_with("pkg:") {
             self.resolve_package(specifier)?
         } else {
             resolve_import(specifier, referrer).map_err(ModuleLoaderError::from_err)?
         };
-        if !self.owns(&resolved) && self.resource_name(&resolved).is_none() {
+        if resolved.as_str() != PLUGIN_STORAGE_MODULE
+            && !self.owns(&resolved)
+            && self.resource_name(&resolved).is_none()
+        {
             return Err(ModuleLoaderError::type_error(format!(
                 "plugin '{}' import escapes its package: {resolved}",
                 self.id
@@ -231,7 +237,18 @@ impl ModuleLoader for PluginModuleLoader {
         _maybe_referrer: Option<&ModuleLoadReferrer>,
         options: ModuleLoadOptions,
     ) -> ModuleLoadResponse {
-        let source = if let Some(name) = self.resource_name(module_specifier) {
+        let source = if module_specifier.as_str() == PLUGIN_STORAGE_MODULE {
+            Ok(ModuleSource::new(
+                ModuleType::JavaScript,
+                ModuleSourceCode::String(
+                    "export const pluginStorage = globalThis.__snowglassPluginStorage;"
+                        .to_owned()
+                        .into(),
+                ),
+                module_specifier,
+                None,
+            ))
+        } else if let Some(name) = self.resource_name(module_specifier) {
             let code = format!(
                 "export default globalThis.__snowglassFilesystem.importResource({});",
                 serde_json::to_string(name).expect("resource name is JSON-compatible")

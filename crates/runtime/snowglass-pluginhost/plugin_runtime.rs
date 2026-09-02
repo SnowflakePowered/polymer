@@ -16,8 +16,7 @@ use std::{
     thread,
 };
 use thiserror::Error;
-use tokio::sync::Notify;
-use tokio::sync::Semaphore;
+use tokio::sync::{Notify, OnceCell, Semaphore};
 
 /// Scheduling policy for plugin workers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -178,7 +177,45 @@ struct RuntimeState {
     permits: Arc<Semaphore>,
     next_call: AtomicU64,
     active: Mutex<HashMap<u64, Arc<InvocationControl>>>,
+    plugins: Mutex<HashMap<Box<str>, Arc<PluginLifecycle>>>,
     shutdown: AtomicBool,
+}
+
+struct PluginLifecycle {
+    storage: Arc<crate::deno::plugin_storage::PluginStorage>,
+    loaded: OnceCell<()>,
+}
+
+impl PluginLifecycle {
+    fn new() -> Self {
+        Self {
+            storage: Arc::new(crate::deno::plugin_storage::PluginStorage::default()),
+            loaded: OnceCell::new(),
+        }
+    }
+
+    async fn load(
+        &self,
+        runtime: &mut snowglass_deno::Runtime,
+        entrypoint: &str,
+    ) -> Result<(), PluginInvocationError> {
+        self.loaded
+            .get_or_try_init(|| async {
+                let result = invoke_optional_export(
+                    runtime.js_runtime_mut(),
+                    entrypoint,
+                    "onPluginLoad",
+                    Vec::new(),
+                )
+                .await;
+                if result.is_err() {
+                    self.storage.clear();
+                }
+                result.map(|_| ())
+            })
+            .await
+            .map(|_| ())
+    }
 }
 
 enum ExportInvocation {
@@ -296,6 +333,7 @@ impl PluginRuntime {
                     permits: Arc::new(Semaphore::new(options.max_concurrent_calls)),
                     next_call: AtomicU64::new(1),
                     active: Mutex::new(HashMap::new()),
+                    plugins: Mutex::new(HashMap::new()),
                     shutdown: AtomicBool::new(false),
                 }),
             },
@@ -332,6 +370,15 @@ impl PluginRuntimeHandle {
         }
     }
 
+    fn lifecycle(&self, plugin_id: &str) -> Arc<PluginLifecycle> {
+        self.state
+            .plugins
+            .lock()
+            .entry(plugin_id.into())
+            .or_insert_with(|| Arc::new(PluginLifecycle::new()))
+            .clone()
+    }
+
     pub async fn configure(
         &self,
         plugin_id: &str,
@@ -359,12 +406,14 @@ impl PluginRuntimeHandle {
         let loader = plugin.module_loader().clone();
         let filesystem = filesystem_options(plugin.as_ref(), BTreeMap::new())
             .map_err(PluginInvocationError::worker)?;
+        let lifecycle = self.lifecycle(plugin_id);
         let result = self
             .run_with_control(cancellation.control, move |control| {
                 run_worker(
                     entrypoint,
                     loader,
                     filesystem,
+                    lifecycle,
                     control,
                     move |runtime| async move {
                         let mut runtime = runtime;
@@ -519,6 +568,7 @@ impl PluginRuntimeHandle {
         let loader = plugin.module_loader().clone();
         let filesystem = filesystem_options(plugin.as_ref(), BTreeMap::new())
             .map_err(PluginInvocationError::worker)?;
+        let lifecycle = self.lifecycle(plugin.id());
         let path = export_path.to_vec();
         let value = self
             .run_with_control(cancellation.control, move |control| {
@@ -526,6 +576,7 @@ impl PluginRuntimeHandle {
                     entrypoint,
                     loader,
                     filesystem,
+                    lifecycle,
                     control,
                     move |runtime| async move {
                         let mut runtime = runtime;
@@ -557,11 +608,13 @@ impl PluginRuntimeHandle {
     {
         let filesystem = filesystem_options(invocation.plugin.as_ref(), invocation.storage.clone())
             .map_err(PluginInvocationError::worker)?;
+        let lifecycle = self.lifecycle(invocation.plugin.id());
         self.run_with_control(cancellation.control, move |control| {
             start_controller_session_worker(
                 invocation,
                 explicit_default,
                 filesystem,
+                lifecycle,
                 control,
                 topology,
             )
@@ -647,6 +700,7 @@ fn run_worker<T, F, Fut>(
     entrypoint: String,
     loader: crate::PluginModuleLoader,
     filesystem: crate::filesystem::FilesystemOptions,
+    lifecycle: Arc<PluginLifecycle>,
     control: Arc<InvocationControl>,
     operation: F,
 ) -> Result<T, PluginInvocationError>
@@ -659,11 +713,13 @@ where
         .build()
         .map_err(PluginInvocationError::worker)?;
     tokio.block_on(async move {
-        let mut runtime = create_worker_runtime(&entrypoint, loader, filesystem)?;
+        let mut runtime =
+            create_worker_runtime(&entrypoint, loader, filesystem, lifecycle.storage.clone())?;
         let isolate = runtime.js_runtime_mut().v8_isolate().thread_safe_handle();
         if control.install_isolate(isolate) {
             return Err(PluginInvocationError::cancelled());
         }
+        lifecycle.load(&mut runtime, &entrypoint).await?;
         operation(runtime).await
     })
 }
@@ -672,6 +728,7 @@ fn create_worker_runtime(
     entrypoint: &str,
     loader: crate::PluginModuleLoader,
     filesystem: crate::filesystem::FilesystemOptions,
+    storage: Arc<crate::deno::plugin_storage::PluginStorage>,
 ) -> Result<snowglass_deno::Runtime, PluginInvocationError> {
     let main_module =
         deno_core::ModuleSpecifier::parse(entrypoint).map_err(PluginInvocationError::worker)?;
@@ -682,6 +739,7 @@ fn create_worker_runtime(
             extensions: vec![
                 crate::deno::extension(),
                 crate::filesystem::extension(filesystem),
+                crate::deno::plugin_storage::extension(storage),
             ],
             user_agent: format!("SnowglassPluginHost/{}", env!("CARGO_PKG_VERSION")),
             local_storage: None,
@@ -694,6 +752,7 @@ fn start_controller_session_worker(
     invocation: EmulatorLaunchInvocation,
     explicit_default: bool,
     filesystem: crate::filesystem::FilesystemOptions,
+    lifecycle: Arc<PluginLifecycle>,
     control: Arc<InvocationControl>,
     topology: snowglass_controllers::ControllerTopology,
 ) -> Result<(EmulatorLaunchArguments, Option<crate::ControllerSession>), PluginInvocationError> {
@@ -713,6 +772,7 @@ fn start_controller_session_worker(
                 entrypoint,
                 loader,
                 filesystem,
+                lifecycle,
                 control,
                 invocation,
                 explicit_default,
@@ -744,6 +804,7 @@ struct ControllerSessionWorkerArgs {
     entrypoint: String,
     loader: crate::PluginModuleLoader,
     filesystem: crate::filesystem::FilesystemOptions,
+    lifecycle: Arc<PluginLifecycle>,
     control: Arc<InvocationControl>,
     invocation: EmulatorLaunchInvocation,
     explicit_default: bool,
@@ -781,11 +842,20 @@ impl ControllerSessionWorker {
             .map_err(PluginInvocationError::worker)?;
         let mut runtime = {
             let _runtime_context = tokio.enter();
-            create_worker_runtime(&args.entrypoint, args.loader, args.filesystem)?
+            create_worker_runtime(
+                &args.entrypoint,
+                args.loader,
+                args.filesystem,
+                args.lifecycle.storage.clone(),
+            )?
         };
         let isolate = runtime.js_runtime_mut().v8_isolate().thread_safe_handle();
         if args.control.install_isolate(isolate) {
             let _ = args.started.send(Err(PluginInvocationError::cancelled()));
+            return Ok(None);
+        }
+        if let Err(error) = tokio.block_on(args.lifecycle.load(&mut runtime, &args.entrypoint)) {
+            let _ = args.started.send(Err(error));
             return Ok(None);
         }
         let plugin = args.invocation.plugin.clone();
@@ -854,8 +924,8 @@ impl ControllerSessionWorker {
                 crate::controller::ControllerSessionCommand::Changed(topology, response) => {
                     self.change(topology, response);
                 }
-                crate::controller::ControllerSessionCommand::PauseResume(state) => {
-                    self.pause_resume(state);
+                crate::controller::ControllerSessionCommand::PauseResume(state, response) => {
+                    let _ = response.send(self.pause_resume(state));
                 }
                 crate::controller::ControllerSessionCommand::Stop => break,
             }
@@ -865,7 +935,7 @@ impl ControllerSessionWorker {
         crate::deno::discard_configuration(self.runtime.js_runtime_mut(), self.configuration_id);
     }
 
-    fn pause_resume(&mut self, state: crate::PauseState) {
+    fn pause_resume(&mut self, state: crate::PauseState) -> Result<(), String> {
         const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
         let result = self.tokio.block_on(async {
             tokio::time::timeout(
@@ -876,12 +946,13 @@ impl ControllerSessionWorker {
             .map_err(|_| "onPauseResume exceeded its 30 second deadline".to_owned())?
             .map_err(|error| error.to_string())
         });
-        if let Err(error) = result {
+        if let Err(error) = &result {
             tracing::error!("snowglass: onPauseResume failed: {error}");
             self.errors
                 .lock()
-                .push(crate::SessionError::PauseResume(error));
+                .push(crate::SessionError::PauseResume(error.clone()));
         }
+        result
     }
 
     fn change(
@@ -1108,7 +1179,8 @@ async fn invoke_optional_export(
           if (typeof value !== "function") {{
             throw new TypeError(`plugin export '${{name}}' is not a function`);
           }}
-          return {{ found: true, value: await Reflect.apply(value, receiver, {arguments}) }};
+          const result = await Reflect.apply(value, receiver, {arguments});
+          return {{ found: true, value: result === undefined ? null : result }};
         }})()"#
     );
     let promise = runtime
@@ -1207,7 +1279,13 @@ mod tests {
             root.path().join("plugin.js"),
             r#"
                 import runtime from "resources:runtime";
+                import { pluginStorage } from "snowglass:pluginStorage";
                 let isolateCounter = 0;
+                export function onPluginLoad() {
+                  const loads = pluginStorage.getItem("loads") ?? 0;
+                  pluginStorage.setItem("loads", loads + 1);
+                  pluginStorage.setItem("cached", { names: ["graphics-pack"] });
+                }
                 export async function onConfigure(game, userConfiguration) {
                   const entries = [];
                   for await (const entry of runtime) {
@@ -1230,6 +1308,11 @@ mod tests {
                 export function named(value) {
                   isolateCounter++;
                   return { value, isolateCounter };
+                }
+                export function cached() {
+                  const value = pluginStorage.getItem("cached");
+                  value.names.push("isolate");
+                  return { loads: pluginStorage.getItem("loads"), value };
                 }
                 export async function asyncResult(value) {
                   await Promise.resolve();
@@ -1410,6 +1493,27 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(explicit_default["command"], "emulator.exe");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn plugin_storage_is_shared_between_fresh_isolates() {
+        let (_root, registry) = package();
+        let runtime = PluginRuntime::new(registry, PluginRuntimeOptions::default());
+        let handle = runtime.handle();
+        let path = ["cached".to_owned()];
+
+        for _ in 0..2 {
+            assert_eq!(
+                handle
+                    .invoke("worker-test", &path, Vec::new())
+                    .await
+                    .unwrap(),
+                serde_json::json!({
+                    "loads": 1,
+                    "value": { "names": ["graphics-pack", "isolate"] },
+                })
+            );
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]

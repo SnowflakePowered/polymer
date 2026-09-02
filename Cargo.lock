@@ -11621,6 +11621,7 @@ name = "snowglass-pluginhost"
 version = "0.1.0"
 dependencies = [
  "consolespec",
+ "dashmap",
  "deno_ast",
  "deno_core",
  "deno_error",
