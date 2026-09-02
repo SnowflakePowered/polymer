@@ -45,7 +45,12 @@ pub trait RuntimePlatform: Send + Sync {
     fn emulator_set_muted(&self, token: InstanceToken, muted: bool);
     fn emulator_message(&self, token: InstanceToken, name: String, args: Value);
     fn emulator_input(&self, token: InstanceToken, active: bool);
-    fn emulator_pause_state(&self, token: InstanceToken, pause: bool);
+    fn emulator_pause_state(
+        &self,
+        token: InstanceToken,
+        pause: bool,
+        timeout: Duration,
+    ) -> ApiFuture<Result<(), String>>;
     fn input_configure(&self, request_id: u32, transaction: Value);
     fn controller_api_snapshot(&self) -> Value;
     fn controller_api_command(&self, command: Value) -> ApiFuture<Result<Value, String>>;
@@ -88,6 +93,8 @@ pub enum EmulatorCommand {
     PauseState {
         token: InstanceToken,
         pause: bool,
+        timeout: Duration,
+        result: tokio::sync::oneshot::Sender<Result<(), String>>,
     },
 }
 
@@ -282,9 +289,25 @@ impl RuntimePlatform for CommandRuntimePlatform {
         self.emulator.send(EmulatorCommand::Input { token, active });
     }
 
-    fn emulator_pause_state(&self, token: InstanceToken, pause: bool) {
-        self.emulator
-            .send(EmulatorCommand::PauseState { token, pause });
+    fn emulator_pause_state(
+        &self,
+        token: InstanceToken,
+        pause: bool,
+        timeout: Duration,
+    ) -> ApiFuture<Result<(), String>> {
+        let sink = self.emulator.clone();
+        Box::pin(async move {
+            let (result, response) = tokio::sync::oneshot::channel();
+            sink.send(EmulatorCommand::PauseState {
+                token,
+                pause,
+                timeout,
+                result,
+            });
+            response
+                .await
+                .map_err(|_| "emulator host is unavailable".to_owned())?
+        })
     }
 
     fn input_configure(&self, request_id: u32, transaction: Value) {
@@ -938,8 +961,13 @@ impl SnowglassHost for FrontendServices {
         self.platform.emulator_input(token, active);
     }
 
-    fn emulator_pause_state(&self, token: InstanceToken, pause: bool) {
-        self.platform.emulator_pause_state(token, pause);
+    fn emulator_pause_state(
+        &self,
+        token: InstanceToken,
+        pause: bool,
+        timeout: Duration,
+    ) -> ApiFuture<Result<(), String>> {
+        self.platform.emulator_pause_state(token, pause, timeout)
     }
 
     fn input_configure(&self, request_id: u32, transaction: Value) {

@@ -118,7 +118,18 @@ impl WindowsAutomationDriver {
         }
         let started = std::time::Instant::now();
         loop {
-            let matches = self.matching_windows(&matcher, query.selector.as_deref())?;
+            let matches = match self.matching_windows(&matcher, query.selector.as_deref()) {
+                Ok(matches) => matches,
+                Err(error) if error.kind == "platform" && started.elapsed() < timeout => {
+                    // Qt can invalidate its UIA provider while a settings
+                    // window is being destroyed. Recreate the client and retry
+                    // instead of permanently failing the next window query.
+                    self.provider = None;
+                    std::thread::sleep(Duration::from_millis(100));
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             match matches.as_slice() {
                 [window] => return Ok(window.clone()),
                 [] if started.elapsed() < timeout => {

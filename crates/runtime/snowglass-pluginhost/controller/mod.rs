@@ -34,7 +34,11 @@ pub(crate) enum ControllerSessionCommand {
         snowglass_controllers::ControllerTopology,
         tokio::sync::oneshot::Sender<Result<snowglass_controllers::ControllerTopology, String>>,
     ),
-    PauseResume(PauseState),
+    PauseResume(
+        PauseState,
+        std::time::Duration,
+        tokio::sync::oneshot::Sender<Result<(), String>>,
+    ),
     Stop,
 }
 
@@ -54,10 +58,21 @@ impl PauseState {
 }
 
 impl ControllerSession {
-    pub fn pause_resume(&self, state: PauseState) -> Result<(), String> {
+    pub fn pause_resume(
+        &self,
+        state: PauseState,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<tokio::sync::oneshot::Receiver<Result<(), String>>, String> {
+        const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+        let (result, response) = tokio::sync::oneshot::channel();
         self.commands
-            .send(ControllerSessionCommand::PauseResume(state))
-            .map_err(|_| "emulator plugin session is closed".to_owned())
+            .send(ControllerSessionCommand::PauseResume(
+                state,
+                timeout.unwrap_or(DEFAULT_TIMEOUT),
+                result,
+            ))
+            .map_err(|_| "emulator plugin session is closed".to_owned())?;
+        Ok(response)
     }
 
     pub fn attach_actions(

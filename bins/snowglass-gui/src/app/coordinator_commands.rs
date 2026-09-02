@@ -10,7 +10,10 @@ impl ShellCoordinator {
         }
     }
 
-    pub(super) fn apply_emulator_command(&mut self, command: EmulatorCommand) {
+    pub(super) fn apply_emulator_command(
+        &mut self,
+        command: EmulatorCommand,
+    ) -> Option<PendingPauseResume> {
         match command {
             EmulatorCommand::Launch {
                 token,
@@ -42,22 +45,73 @@ impl ShellCoordinator {
                 });
             }
             EmulatorCommand::Input { .. } => {}
-            EmulatorCommand::PauseState { token, pause } if self.game_host.is_active(token) => {
+            EmulatorCommand::PauseState {
+                token,
+                pause,
+                timeout,
+                result,
+            } if self.game_host.is_active(token) => {
                 let state = if pause {
                     snowglass_pluginhost::PauseState::Pause
                 } else {
                     snowglass_pluginhost::PauseState::Resume
                 };
-                if let Err(error) = self.game_host.pause_resume(state) {
-                    self.emit_instance_event(
-                        token,
-                        "pauseresumeerror",
-                        &instance_events::error(error),
-                    );
+                match self.game_host.pause_resume(state, timeout) {
+                    Ok(Some(response)) => {
+                        tracing::info!(
+                            ?state,
+                            timeout_ms = timeout.as_millis(),
+                            thread = ?std::thread::current().id(),
+                            "snowglass: dispatched pause/resume plugin callback"
+                        );
+                        return Some(PendingPauseResume {
+                            token,
+                            state,
+                            started: Instant::now(),
+                            result,
+                            response,
+                        });
+                    }
+                    Ok(None) => {
+                        let _ = result.send(Ok(()));
+                    }
+                    Err(error) => {
+                        self.emit_instance_event(
+                            token,
+                            "pauseresumeerror",
+                            &instance_events::error(&error),
+                        );
+                        let _ = result.send(Err(error));
+                    }
                 }
             }
-            EmulatorCommand::PauseState { .. } => {}
+            EmulatorCommand::PauseState { result, .. } => {
+                let _ = result.send(Err("emulator is no longer active".to_owned()));
+            }
         }
+        None
+    }
+
+    pub(super) fn finish_pause_resume(
+        &mut self,
+        pending: PendingPauseResume,
+        callback: Result<(), String>,
+    ) {
+        tracing::info!(
+            state = ?pending.state,
+            elapsed_ms = pending.started.elapsed().as_millis(),
+            success = callback.is_ok(),
+            thread = ?std::thread::current().id(),
+            "snowglass: pause/resume plugin callback completed"
+        );
+        if let Err(error) = &callback {
+            self.emit_instance_event(
+                pending.token,
+                "pauseresumeerror",
+                &instance_events::error(error),
+            );
+        }
+        let _ = pending.result.send(callback);
     }
 
     pub(super) async fn apply_input_command(
@@ -78,17 +132,73 @@ impl ShellCoordinator {
                 ),
             },
             InputCommand::ControllerApi { command, result } => {
+                let finishes_session = command["type"] == "controllers.session.finish";
                 let response = self
                     .input
                     .controller_command(command, self.game_host.controller_topology_locked())
                     .await;
-                let response = response.map(|(value, configuration_changed)| {
-                    if configuration_changed {
-                        self.publish_input_configuration();
+                let (value, configuration_changed) = match response {
+                    Ok(response) => response,
+                    Err(error) => {
+                        let _ = result.send(Err(error));
+                        return None;
                     }
-                    value
-                });
-                let _ = result.send(response);
+                };
+                if configuration_changed {
+                    self.publish_input_configuration();
+                }
+                if !finishes_session || !self.game_host.supports_controller_changes() {
+                    let _ = result.send(Ok(value));
+                    return None;
+                }
+                let topology = match self.input.controller_topology() {
+                    Ok(topology) => topology,
+                    Err(error) => {
+                        let _ = result.send(Err(error));
+                        return None;
+                    }
+                };
+                if self.input.applied_controller_topology() == Some(&topology) {
+                    let _ = result.send(Ok(value));
+                    return None;
+                }
+                let configuration = self.input.configuration_snapshot();
+                let previous_topology = match self
+                    .input
+                    .stage_controller_change(&configuration, topology.clone())
+                {
+                    Ok(previous) => previous,
+                    Err(error) => {
+                        let _ = result.send(Err(error));
+                        return None;
+                    }
+                };
+                match self.game_host.controller_change(topology) {
+                    Ok(Some(response)) => {
+                        return Some(PendingInputChange::ConnectionSession {
+                            value,
+                            result,
+                            previous_topology,
+                            response,
+                        });
+                    }
+                    Ok(None) => {
+                        let error =
+                            "controller plugin session closed before topology change".to_owned();
+                        let error = match self.input.rollback_controller_change(previous_topology) {
+                            Ok(()) => error,
+                            Err(rollback) => format!("{error}; rollback failed: {rollback}"),
+                        };
+                        let _ = result.send(Err(error));
+                    }
+                    Err(error) => {
+                        let error = match self.input.rollback_controller_change(previous_topology) {
+                            Ok(()) => error,
+                            Err(rollback) => format!("{error}; rollback failed: {rollback}"),
+                        };
+                        let _ = result.send(Err(error));
+                    }
+                }
             }
         }
         None
@@ -137,60 +247,128 @@ impl ShellCoordinator {
                 return None;
             }
         };
+        if !self.game_host.supports_controller_changes() {
+            self.commit_input_configuration(request_id, prepared);
+            return None;
+        }
+        let previous_topology = match self
+            .input
+            .stage_controller_change(prepared.candidate(), topology.clone())
+        {
+            Ok(previous) => previous,
+            Err(error) => {
+                self.send_input_configuration_result(request_id, Err(error));
+                return None;
+            }
+        };
         match self.game_host.controller_change(topology) {
-            Ok(Some(response)) => Some(PendingInputChange {
+            Ok(Some(response)) => Some(PendingInputChange::Configuration {
                 request_id,
                 prepared,
+                previous_topology,
                 response,
             }),
             Ok(None) => {
-                self.commit_input_configuration(request_id, prepared);
+                let error = "controller plugin session closed before topology change".to_owned();
+                let error = match self.input.rollback_controller_change(previous_topology) {
+                    Ok(()) => error,
+                    Err(rollback) => format!("{error}; rollback failed: {rollback}"),
+                };
+                self.send_input_configuration_result(request_id, Err(error));
                 None
             }
             Err(error) => {
+                let error = match self.input.rollback_controller_change(previous_topology) {
+                    Ok(()) => error,
+                    Err(rollback) => format!("{error}; rollback failed: {rollback}"),
+                };
                 self.send_input_configuration_result(request_id, Err(error));
                 None
             }
         }
     }
 
-    pub(super) fn finish_input_configuration(
+    pub(super) fn finish_input_change(
         &mut self,
         pending: PendingInputChange,
         callback: Result<snowglass_controllers::ControllerTopology, String>,
     ) {
-        match callback {
-            Ok(topology) => {
-                match self
-                    .input
-                    .commit_configuration_transaction(pending.prepared)
-                {
-                    Ok(configuration) => {
-                        let result = self
-                            .input
-                            .apply_controller_topology(topology.clone())
-                            .map(|()| configuration);
-                        if result.is_ok() {
-                            self.game_host.update_controller_topology(topology);
-                            self.publish_input_configuration();
-                        }
-                        self.send_input_configuration_result(pending.request_id, result);
-                    }
-                    Err(error) => {
-                        self.send_input_configuration_result(pending.request_id, Err(error))
-                    }
-                }
-            }
-            Err(error) => {
-                if let Some(token) = self.game_host.active_token() {
-                    self.emit_instance_event(
-                        token,
-                        "controllerchangeerror",
-                        &instance_events::error(&error),
+        match pending {
+            PendingInputChange::Configuration {
+                request_id,
+                prepared,
+                previous_topology,
+                ..
+            } => match callback {
+                Ok(topology) => {
+                    tracing::info!(
+                        origin = "configuration",
+                        applied = %topology.assignment_diagnostics(),
+                        "snowglass: host received controller plugin result"
                     );
+                    match self.input.commit_configuration_transaction(prepared) {
+                        Ok(configuration) => {
+                            let result = self
+                                .input
+                                .apply_controller_topology(topology.clone())
+                                .map(|()| configuration);
+                            if result.is_ok() {
+                                self.game_host.update_controller_topology(topology);
+                                self.publish_input_configuration();
+                            }
+                            self.send_input_configuration_result(request_id, result);
+                        }
+                        Err(error) => self.send_input_configuration_result(request_id, Err(error)),
+                    }
                 }
-                self.send_input_configuration_result(pending.request_id, Err(error));
-            }
+                Err(error) => {
+                    let error = match self.input.rollback_controller_change(previous_topology) {
+                        Ok(()) => error,
+                        Err(rollback) => format!("{error}; rollback failed: {rollback}"),
+                    };
+                    if let Some(token) = self.game_host.active_token() {
+                        self.emit_instance_event(
+                            token,
+                            "controllerchangeerror",
+                            &instance_events::error(&error),
+                        );
+                    }
+                    self.send_input_configuration_result(request_id, Err(error));
+                }
+            },
+            PendingInputChange::ConnectionSession {
+                value,
+                result,
+                previous_topology,
+                ..
+            } => match callback {
+                Ok(topology) => {
+                    tracing::info!(
+                        origin = "connection-session",
+                        applied = %topology.assignment_diagnostics(),
+                        "snowglass: host received controller plugin result"
+                    );
+                    let applied = self.input.apply_controller_topology(topology.clone());
+                    if applied.is_ok() {
+                        self.game_host.update_controller_topology(topology);
+                    }
+                    let _ = result.send(applied.map(|()| value));
+                }
+                Err(error) => {
+                    let error = match self.input.rollback_controller_change(previous_topology) {
+                        Ok(()) => error,
+                        Err(rollback) => format!("{error}; rollback failed: {rollback}"),
+                    };
+                    if let Some(token) = self.game_host.active_token() {
+                        self.emit_instance_event(
+                            token,
+                            "controllerchangeerror",
+                            &instance_events::error(&error),
+                        );
+                    }
+                    let _ = result.send(Err(error));
+                }
+            },
         }
     }
 

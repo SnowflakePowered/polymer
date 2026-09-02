@@ -157,11 +157,51 @@ pub struct ControllerTopology {
 }
 
 impl ControllerTopology {
-    /// Completes a partial selection with disconnected mappings for every port.
+    /// Compact, stable assignment data for cross-layer diagnostics. Input
+    /// bindings are intentionally omitted because they make topology-change
+    /// logs too large to compare by eye.
+    pub fn assignment_diagnostics(&self) -> serde_json::Value {
+        self.mappings
+            .iter()
+            .map(|mapping| {
+                serde_json::json!({
+                    "target": {
+                        "group": mapping.target.group,
+                        "port": mapping.target.port,
+                    },
+                    "gamepad": mapping.gamepad,
+                    "connected": mapping.connected,
+                    "source": mapping.source,
+                    "layout": mapping.layout,
+                    "device": mapping.device.as_ref().map(|device| serde_json::json!({
+                        "id": device.id,
+                        "name": device.name,
+                        "profile": device.profile,
+                        "vendorId": device.vendor_id,
+                        "productId": device.product_id,
+                        "serial": device.serial,
+                        "role": device.role,
+                        "capabilities": device.capabilities,
+                    })),
+                })
+            })
+            .collect()
+    }
+
+    /// Completes each selected port group with disconnected mappings for its
+    /// remaining ports. Alternative groups do not consume virtual gamepads.
     pub fn complete(
         ports: Vec<ControllerPort>,
         selected: Vec<ControllerMapping>,
     ) -> Result<Self, String> {
+        let selected_groups = selected
+            .iter()
+            .map(|mapping| mapping.target.group.as_str())
+            .collect::<HashSet<_>>();
+        let ports = ports
+            .into_iter()
+            .filter(|port| selected_groups.contains(port.group.as_str()))
+            .collect::<Vec<_>>();
         if ports.len() > 8 {
             return Err("an emulator cannot expose more than 8 virtual gamepads".to_owned());
         }
@@ -476,6 +516,54 @@ impl ControllerTopology {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completion_fills_only_the_selected_port_group() {
+        let port = |group: &str, index| ControllerPort {
+            group: group.to_owned(),
+            index,
+            layouts: vec!["WII_REMOTE_CONTROLLER".to_owned()],
+            pointer: PointerMode::Relative,
+        };
+        let selected = ControllerMapping {
+            target: ControllerTarget {
+                group: "wii".to_owned(),
+                port: 0,
+            },
+            gamepad: 0,
+            source: None,
+            layout: "WII_REMOTE_CONTROLLER".to_owned(),
+            connected: true,
+            device: None,
+            mouse: false,
+            projection_mode: ProjectionMode::Position,
+            mapping: ControllerBindings::default(),
+            pointer: PointerBinding::default(),
+        };
+        let topology = ControllerTopology::complete(
+            (0..4)
+                .flat_map(|index| [port("gamecube", index), port("wii", index)])
+                .collect(),
+            vec![selected],
+        )
+        .unwrap();
+
+        assert_eq!(topology.mappings.len(), 4);
+        assert!(
+            topology
+                .mappings
+                .iter()
+                .all(|mapping| mapping.target.group == "wii")
+        );
+        assert_eq!(
+            topology
+                .mappings
+                .iter()
+                .map(|mapping| (mapping.target.port, mapping.gamepad))
+                .collect::<Vec<_>>(),
+            vec![(0, 0), (1, 1), (2, 2), (3, 3)]
+        );
+    }
 
     #[test]
     fn bindings_reject_ambiguous_or_invalid_expressions() {

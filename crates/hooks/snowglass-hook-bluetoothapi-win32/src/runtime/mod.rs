@@ -15,6 +15,10 @@ use windows_sys::{
             },
             DeviceAndDriverInstallation::{CONFIGRET, CR_SUCCESS},
             HumanInterfaceDevice::HIDD_ATTRIBUTES,
+            Properties::{
+                DEVPKEY_Device_EnumeratorName, DEVPKEY_Device_InstanceId, DEVPROP_TYPE_STRING,
+                DEVPROPTYPE,
+            },
         },
         Foundation::{
             ERROR_FILE_NOT_FOUND, GetLastError, HANDLE, INVALID_HANDLE_VALUE, SetLastError,
@@ -86,10 +90,102 @@ impl Runtime {
             generation = topology.generation(),
             bindings = topology.document().raw_hid.len(),
             raw_hid = ?topology.document().raw_hid,
-            "updated synthetic Wii Remote topology"
+            "updated Snowglass virtual Bluetooth HID topology"
         );
         self.topology_generation
             .store(topology.generation(), Ordering::Release);
+    }
+
+    fn is_bluetooth_interface(path: &[u16]) -> bool {
+        use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
+            CM_Get_DevNode_PropertyW, CM_Get_Device_Interface_PropertyW, CM_Get_Parent,
+            CM_LOCATE_DEVNODE_NORMAL, CM_Locate_DevNodeW, CR_BUFFER_SMALL,
+        };
+
+        let path = path.iter().copied().chain(Some(0)).collect::<Vec<_>>();
+        let mut property_type: DEVPROPTYPE = 0;
+        let mut byte_len = 0u32;
+        let result = unsafe {
+            CM_Get_Device_Interface_PropertyW(
+                path.as_ptr(),
+                &DEVPKEY_Device_InstanceId,
+                &mut property_type,
+                std::ptr::null_mut(),
+                &mut byte_len,
+                0,
+            )
+        };
+        if result != CR_BUFFER_SMALL || byte_len < 2 {
+            return false;
+        }
+        let mut instance_id = vec![0u16; byte_len.div_ceil(2) as usize];
+        if unsafe {
+            CM_Get_Device_Interface_PropertyW(
+                path.as_ptr(),
+                &DEVPKEY_Device_InstanceId,
+                &mut property_type,
+                instance_id.as_mut_ptr().cast(),
+                &mut byte_len,
+                0,
+            )
+        } != CR_SUCCESS
+            || property_type != DEVPROP_TYPE_STRING
+        {
+            return false;
+        }
+
+        let mut device = 0u32;
+        if unsafe {
+            CM_Locate_DevNodeW(
+                &mut device,
+                instance_id.as_mut_ptr(),
+                CM_LOCATE_DEVNODE_NORMAL,
+            )
+        } != CR_SUCCESS
+        {
+            return false;
+        }
+        for _ in 0..16 {
+            property_type = 0;
+            byte_len = 0;
+            if unsafe {
+                CM_Get_DevNode_PropertyW(
+                    device,
+                    &DEVPKEY_Device_EnumeratorName,
+                    &mut property_type,
+                    std::ptr::null_mut(),
+                    &mut byte_len,
+                    0,
+                )
+            } == CR_BUFFER_SMALL
+                && byte_len >= 2
+            {
+                let mut enumerator = vec![0u16; byte_len.div_ceil(2) as usize];
+                if unsafe {
+                    CM_Get_DevNode_PropertyW(
+                        device,
+                        &DEVPKEY_Device_EnumeratorName,
+                        &mut property_type,
+                        enumerator.as_mut_ptr().cast(),
+                        &mut byte_len,
+                        0,
+                    )
+                } == CR_SUCCESS
+                    && property_type == DEVPROP_TYPE_STRING
+                {
+                    let name = String::from_utf16_lossy(&enumerator).to_ascii_uppercase();
+                    if name.starts_with("BTH") || name.starts_with("BLUETOOTH") {
+                        return true;
+                    }
+                }
+            }
+            let mut parent = 0u32;
+            if unsafe { CM_Get_Parent(&mut parent, device, 0) } != CR_SUCCESS {
+                break;
+            }
+            device = parent;
+        }
+        false
     }
 }
 
@@ -100,14 +196,14 @@ pub(crate) unsafe fn bluetooth_find_first_device(
 ) -> HBLUETOOTH_DEVICE_FIND {
     let state = next.state.clone();
     state.synchronize_topology(true);
-    if !state.enumeration.has_devices() {
+    if state.session.is_none() {
         return snowglass_hook::next!(next, search, device);
     }
     if !state
         .logged_bluetooth_suppression
         .swap(true, Ordering::AcqRel)
     {
-        tracing::info!("suppressed Dolphin's Windows Bluetooth discovery for raw HID forwarding");
+        tracing::info!("isolated the emulator from native Windows Bluetooth discovery");
     }
     unsafe { SetLastError(windows_sys::Win32::Foundation::ERROR_NO_MORE_ITEMS) };
     std::ptr::null_mut()
@@ -127,11 +223,11 @@ pub(crate) unsafe fn interface_list_size(
     let result = snowglass_hook::next!(next, length, interface, device_id, flags);
     if result == CR_SUCCESS
         && device_id.is_null()
-        && unsafe { state.enumeration.extends(interface) }
+        && unsafe { state.enumeration.supports(interface) }
         && !length.is_null()
     {
         if !state.logged_enumeration.swap(true, Ordering::AcqRel) {
-            tracing::info!("Dolphin enumerated the synthetic Wii Remote HID interfaces");
+            tracing::info!("filtered native Bluetooth HID discovery behind Snowglass devices");
         }
         unsafe { *length = (*length).saturating_add(state.enumeration.additional_len()) };
     }
@@ -153,9 +249,15 @@ pub(crate) unsafe fn interface_list(
     let result = snowglass_hook::next!(next, interface, device_id, buffer, buffer_len, flags);
     if result == CR_SUCCESS
         && device_id.is_null()
-        && unsafe { state.enumeration.extends(interface) }
+        && unsafe { state.enumeration.supports(interface) }
     {
-        return unsafe { state.enumeration.append(buffer, buffer_len) };
+        return unsafe {
+            state
+                .enumeration
+                .filter_and_append(buffer, buffer_len, |path| {
+                    !Runtime::is_bluetooth_interface(path)
+                })
+        };
     }
     result
 }
@@ -185,14 +287,6 @@ pub(crate) unsafe fn create_file(
             template
         );
     };
-    // Placeholder paths keep enumeration identity deterministic, but an
-    // unbound placeholder must never qualify as a Nintendo HID device. If it
-    // does, Dolphin can spend the real-Wiimote slot probing a device that has
-    // no pipe while the active port is left unopened.
-    if !device.active {
-        unsafe { SetLastError(ERROR_FILE_NOT_FOUND) };
-        return INVALID_HANDLE_VALUE;
-    }
     let pipe = device.pipe.clone();
     let product_id = device.product_id;
     let handle = if desired_access == 0 {
@@ -205,6 +299,13 @@ pub(crate) unsafe fn create_file(
         }
         unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) }
     } else {
+        // Qualification keeps all four stable paths in Dolphin's cache. An
+        // inactive placeholder still refuses the real data handle until a
+        // live topology update binds its named pipe.
+        if !device.active {
+            unsafe { SetLastError(ERROR_FILE_NOT_FOUND) };
+            return INVALID_HANDLE_VALUE;
+        }
         unsafe { WaitNamedPipeW(pipe.as_ptr(), 250) };
         let handle = snowglass_hook::next!(
             next,

@@ -151,19 +151,22 @@ class UiLocator {
         type: "windows",
         query: {},
       }), "windows");
-      for (const snapshot of windows) {
-        if (!snapshot.visible) continue;
+      const candidates = windows
+        .filter(snapshot => snapshot.visible)
+        .sort((left, right) =>
+          Number(left.id === this.#window) - Number(right.id === this.#window));
+      for (const snapshot of candidates) {
         const window = new UiWindow(snapshot);
         const options = window.locator("list_item");
-        let candidates;
+        let items;
         try {
-          candidates = await options.all({ limit: 1_000 });
+          items = await options.all({ limit: 100 });
         } catch (error) {
           if (!(error instanceof UiAutomationError)) throw error;
           lastLookupError = error;
           continue;
         }
-        for (const option of candidates) {
+        for (const option of items) {
           if (option.name === name
             && option.bounds != null
             && option.states.visible !== false
@@ -171,9 +174,8 @@ class UiLocator {
             matches.push({ window, windowSnapshot: snapshot, option });
           }
         }
+        if (matches.length !== 0) break;
       }
-      const popupMatches = matches.filter(match => match.window.id !== this.#window);
-      if (popupMatches.length !== 0) matches = popupMatches;
       const unique = new Map();
       for (const match of matches) {
         const bounds = match.option.bounds;

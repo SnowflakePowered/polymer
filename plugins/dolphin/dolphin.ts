@@ -7,6 +7,7 @@ import type {
     Filesystem,
     Resource,
     PauseResumeContext,
+    UiNodeSnapshot,
 } from "../plugin-api.ts";
 import { HotkeyParser } from "./hotkeys.ts";
 
@@ -78,20 +79,9 @@ function isDiscImage(path: string): boolean {
     return DISC_IMAGE_EXTENSIONS.some(extension => lowerPath.endsWith(extension));
 }
 
-const WII_POINTER_AXES = [
-    ["pointer.x-", /^analog\.stick\.(?:left|right)\.x[+-]$/],
-    ["pointer.x+", /^analog\.stick\.(?:left|right)\.x[+-]$/],
-    ["pointer.y-", /^analog\.stick\.(?:left|right)\.y[+-]$/],
-    ["pointer.y+", /^analog\.stick\.(?:left|right)\.y[+-]$/],
-] as const;
-
-function hasAnalogPointer(mapping: Pick<ControllerMapping, "mouse" | "mapping">): boolean {
-    if (mapping.mouse) return false;
-    return WII_POINTER_AXES.every(([target, expectedAxis]) => {
-        const source = mapping.mapping[target]?.trim().toLowerCase();
-        return source !== undefined && expectedAxis.test(source);
-    });
-}
+const WII_REMOTE_SLOT_COUNT = 4;
+const WII_REMOTE_SOURCE_NAMES = ["None", "Emulated Wii Remote", "Real Wii Remote"] as const;
+const DOLPHIN_WINDOW_CLOSE_SELECTOR = 'button[name="Close"][stable_id="Close"]';
 
 function usesRealWiimote(mapping: ControllerMapping): boolean {
     if (!mapping.connected || mapping.target.group !== "wii") return false;
@@ -103,8 +93,68 @@ function usesRealWiimote(mapping: ControllerMapping): boolean {
         || device.name.startsWith("Nintendo RVL-CNT");
 }
 
-function wiimoteSource(mapping: ControllerMapping): number {
+function wiimoteSource(mapping: ControllerMapping): 0 | 1 | 2 {
     return usesRealWiimote(mapping) ? 2 : mapping.connected ? 1 : 0;
+}
+
+function usesRelativeInput(mapping: ControllerMapping): boolean {
+    // This configures the persistent emulated mapping for the slot. Keep it
+    // while the source is None so reconnecting a gamepad cannot reset it.
+    return mapping.pointer.mode === "relative";
+}
+
+function checkedState(snapshot: UiNodeSnapshot): boolean {
+    const checked = snapshot.states.checked;
+    if (checked === true || checked === "On") return true;
+    if (checked === false || checked === "Off") return false;
+    throw new TypeError(`UIA checkbox reported invalid checked state ${JSON.stringify(checked)}`);
+}
+
+function wiimoteMappings(topology: ControllerTopology): Array<ControllerMapping | undefined> {
+    const slots = Array<ControllerMapping | undefined>(WII_REMOTE_SLOT_COUNT).fill(undefined);
+    for (const mapping of topology.mappings.filter(mapping => mapping.target.group === "wii")) {
+        const port = mapping.target.port;
+        if (!Number.isInteger(port) || port < 0 || port >= WII_REMOTE_SLOT_COUNT) {
+            throw new RangeError(`invalid Wii Remote port ${port}`);
+        }
+        if (slots[port]) throw new TypeError(`Wii Remote port ${port} is mapped more than once`);
+        slots[port] = mapping;
+    }
+    return slots;
+}
+
+function wiimoteDiagnostics(topology: ControllerTopology) {
+    return wiimoteMappings(topology).map((mapping, port) => mapping
+        ? {
+            port,
+            gamepad: mapping.gamepad,
+            connected: mapping.connected,
+            requestedSource: WII_REMOTE_SOURCE_NAMES[wiimoteSource(mapping)],
+            relativeInput: usesRelativeInput(mapping),
+            pointer: mapping.pointer,
+            source: mapping.source ?? null,
+            device: mapping.device
+                ? {
+                    id: mapping.device.id,
+                    name: mapping.device.name,
+                    profile: mapping.device.profile,
+                    vendorId: mapping.device.vendorId,
+                    productId: mapping.device.productId,
+                    role: mapping.device.role,
+                    capabilities: mapping.device.capabilities,
+                }
+                : null,
+        }
+        : {
+            port,
+            gamepad: null,
+            connected: false,
+            requestedSource: "None",
+            relativeInput: false,
+            pointer: null,
+            source: null,
+            device: null,
+        });
 }
 
 function pointerTopology(topology: ControllerTopology): ControllerTopology {
@@ -123,23 +173,15 @@ function pointerTopology(topology: ControllerTopology): ControllerTopology {
     };
 }
 
-async function applyWiiConnectionChanges(context: ControllerChangeContext): Promise<void> {
-    const previous = new Map(
-        context.previousTopology.mappings
-            .filter(mapping => mapping.target.group === "wii")
-            .map(mapping => [mapping.target.port, wiimoteSource(mapping)] as const),
-    );
-    const changed = context.topology.mappings
-        .filter(mapping =>
-            mapping.target.group === "wii"
-            && previous.get(mapping.target.port) !== wiimoteSource(mapping)
-        )
-        .sort((left, right) => left.target.port - right.target.port);
-    if (changed.length === 0) return;
-
-    const current = context.topology.mappings
-        .filter(mapping => mapping.target.group === "wii")
-        .sort((left, right) => left.target.port - right.target.port);
+async function applyWiiConnectionChanges(
+    context: ControllerChangeContext,
+    topology: ControllerTopology,
+): Promise<void> {
+    const mappings = wiimoteMappings(topology);
+    if (mappings.every(mapping => mapping === undefined)) return;
+    const current = mappings
+        .map(mapping => mapping ? wiimoteSource(mapping) : 0);
+    console.info(`snowglass dolphin: controller topology previous=${JSON.stringify(wiimoteDiagnostics(context.previousTopology))} requested=${JSON.stringify(wiimoteDiagnostics(topology))}`);
 
     // The control window title is Dolphin's source revision. The render window
     // appends pipe-delimited CPU, graphics, audio, and optional game details.
@@ -157,30 +199,130 @@ async function applyWiiConnectionChanges(context: ControllerChangeContext): Prom
         const sources = settings.locator(
             'group[name="Wii Remotes"] combo_box[enabled="true"]',
         );
-        for (const mapping of context.previousTopology.mappings
-            .filter(mapping => mapping.target.group === "wii" && wiimoteSource(mapping) === 2)
-            .sort((left, right) => left.target.port - right.target.port)) {
-            await sources.nth(mapping.target.port + 1).selectOption("None");
+        const before = (await sources.all({ limit: WII_REMOTE_SLOT_COUNT }))
+            .map((snapshot, port) => ({
+                port,
+                name: snapshot.name,
+                value: snapshot.value,
+                stableId: snapshot.stableId,
+            }));
+        if (before.length < WII_REMOTE_SLOT_COUNT) {
+            throw new RangeError(`Dolphin exposed ${before.length} enabled Wii Remote source controls, expected at least ${WII_REMOTE_SLOT_COUNT}`);
         }
-        for (const mapping of current) {
-            await sources
-                .nth(mapping.target.port + 1)
-                .selectOption(wiimoteSource(mapping) === 2
-                    ? "Real Wii Remote"
-                    : wiimoteSource(mapping) === 1
-                        ? "Emulated Wii Remote"
-                        : "None");
+        console.info(`snowglass dolphin: UIA Wii sources before=${JSON.stringify(before)} desired=${JSON.stringify(current.map(source => WII_REMOTE_SOURCE_NAMES[source]))}`);
+        const observed = before.map(snapshot => snapshot.value ?? snapshot.name);
+        const initial = [...observed];
+        // Arm destination real slots before releasing their old slots. Dolphin
+        // moves a released remote through a pool that expires after five
+        // seconds; arming first lets HandleWiimoteSourceChange transfer it
+        // immediately instead of leaving it in the pool while UIA configures
+        // an emulated slot.
+        for (let port = 0; port < WII_REMOTE_SLOT_COUNT; port++) {
+            if (current[port] === 2 && observed[port] !== "Real Wii Remote") {
+                await sources.nth(port + 1).selectOption("Real Wii Remote");
+                observed[port] = "Real Wii Remote";
+            }
         }
+        for (let port = 0; port < WII_REMOTE_SLOT_COUNT; port++) {
+            if (current[port] !== 2 && initial[port] === "Real Wii Remote") {
+                await sources.nth(port + 1).selectOption("None");
+                observed[port] = "None";
+            }
+        }
+        for (const [port, source] of current.entries()) {
+            const desired = WII_REMOTE_SOURCE_NAMES[source];
+            if (observed[port] !== desired) {
+                await sources.nth(port + 1).selectOption(desired);
+                observed[port] = desired;
+            }
+        }
+
+        // Changing a Wii source only updates Dolphin.ini. It does not reload
+        // WiimoteNew.ini, where device mappings and IR/Relative Input live.
+        // Open each emulated slot to reload that file, then set the live
+        // Relative Input control explicitly so the running controller cannot
+        // retain its pre-change value.
+        const configure = settings.locator(
+            'group[name="Wii Remotes"] button[name="Configure"]',
+        );
+        for (const [port, source] of current.entries()) {
+            if (source !== 1) continue;
+            const pattern = `^Wii Remote ${port + 1}$`;
+            const staleWindows = await context.ui.windows({ pattern });
+            for (const stale of staleWindows) {
+                await stale.locator(DOLPHIN_WINDOW_CLOSE_SELECTOR).press();
+            }
+            const cleanupStarted = Date.now();
+            while ((await context.ui.windows({ pattern })).length !== 0) {
+                if (Date.now() - cleanupStarted >= 2_000) {
+                    throw new Error(`Dolphin Wii Remote ${port + 1} configuration did not close`);
+                }
+                await new Promise(resolve => setTimeout(resolve, 25));
+            }
+            await configure.nth(port + 1).press();
+            const mapping = await context.ui.waitForWindow({
+                pattern,
+            });
+            try {
+                await mapping.locator('tab[name="Motion Simulation"]').click();
+                // Dolphin puts empty QCheckBoxes beside separate QFormLayout
+                // labels. Qt UIA consequently names both Cursor bool settings
+                // "Point". Cursor defines Relative Input before Auto-Hide, so
+                // the first of the two Point checkboxes is deterministic.
+                const pointSettings = mapping.locator('check_box[name="Point"]');
+                const pointSettingSnapshots = await pointSettings.all({ limit: 3 });
+                if (pointSettingSnapshots.length !== 2) {
+                    throw new Error(`Dolphin Wii Remote ${port + 1} exposed ${pointSettingSnapshots.length} Point checkboxes, expected Relative Input and Auto-Hide`);
+                }
+                const relativeInput = pointSettings.nth(1);
+                const desired = mappings[port] ? usesRelativeInput(mappings[port]) : false;
+                let snapshot = await relativeInput.snapshot();
+                const previousRelativeInput = checkedState(snapshot);
+                let observed = previousRelativeInput;
+                if (observed !== desired) {
+                    await relativeInput.toggle();
+                    const toggleStarted = Date.now();
+                    do {
+                        snapshot = await relativeInput.snapshot();
+                        observed = checkedState(snapshot);
+                        if (observed === desired) break;
+                        await new Promise(resolve => setTimeout(resolve, 25));
+                    } while (Date.now() - toggleStarted < 1_000);
+                }
+                if (observed !== desired) {
+                    throw new Error(`Dolphin Wii Remote ${port + 1} Relative Input is ${JSON.stringify(snapshot.states.checked)}, expected ${desired}`);
+                }
+                console.info(`snowglass dolphin: reloaded Wii Remote ${port + 1} mappings relativeInput=${JSON.stringify(previousRelativeInput)}->${desired}`);
+            } finally {
+                await mapping.locator(DOLPHIN_WINDOW_CLOSE_SELECTOR).press();
+            }
+        }
+        const after = (await sources.all({ limit: WII_REMOTE_SLOT_COUNT }))
+            .map((snapshot, port) => ({
+                port,
+                name: snapshot.name,
+                value: snapshot.value,
+                stableId: snapshot.stableId,
+            }));
+        if (after.length < WII_REMOTE_SLOT_COUNT) {
+            throw new RangeError(`Dolphin exposed ${after.length} enabled Wii Remote source controls after applying changes, expected at least ${WII_REMOTE_SLOT_COUNT}`);
+        }
+        for (const [port, snapshot] of after.entries()) {
+            const observed = snapshot.value ?? snapshot.name;
+            if (observed !== WII_REMOTE_SOURCE_NAMES[current[port]]) {
+                throw new Error(`Dolphin Wii Remote ${port + 1} source is ${JSON.stringify(observed)}, expected ${JSON.stringify(WII_REMOTE_SOURCE_NAMES[current[port]])}`);
+            }
+        }
+        console.info(`snowglass dolphin: UIA Wii sources applied=${JSON.stringify(after)}`);
     } finally {
-        await settings
-            .locator('button[name="Close"][stable_id="Close"]')
-            .press();
+        await settings.locator(DOLPHIN_WINDOW_CLOSE_SELECTOR).press();
     }
 }
 
 export const onLaunch = (args: EmulatorLaunchArgs) => {
     const gameName = basename(args.launchPath);
     const isWii = args.console === "NINTENDO_WII";
+    const controllerTopology = pointerTopology(args.controllerTopology);
     // Wii WADs are installed into the selected NAND before onLaunch and
     // must continue to boot by title ID. Disc images instead need to remain
     // visible as files and be passed to Dolphin with -e.
@@ -262,6 +404,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     options.interface.skip_n_kit_warning = true;
 
     if (isWii) {
+        console.info(`snowglass dolphin: launch Wii assignments=${JSON.stringify(wiimoteDiagnostics(controllerTopology))}`);
         // The synthetic HID topology can arrive just after Dolphin's first
         // scanner pass and can change while a mixed-controller session is live.
         // Keep the Real Wiimote scanner active, but do not expose its devices
@@ -269,10 +412,11 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
         options.core.wiimote_continuous_scanning = true;
         options.core.wiimote_controller_interface = false;
         const wiiOptions = args.configuration.options().ports.NINTENDO_WII.wii;
-        for (const mapping of args.controllerTopology.mappings) {
-            if (mapping.target.group !== "wii") continue;
-            wiiOptions[mapping.target.port].relative_input = hasAnalogPointer(mapping);
-            wiiOptions[mapping.target.port].source = wiimoteSource(mapping);
+        for (const [port, mapping] of wiimoteMappings(controllerTopology).entries()) {
+            const slot = wiiOptions[port];
+            if (!slot) throw new TypeError(`configuration omits Wii Remote port ${port}`);
+            slot.relative_input = mapping ? usesRelativeInput(mapping) : false;
+            slot.source = mapping ? wiimoteSource(mapping) : 0;
         }
     }
 
@@ -290,7 +434,6 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     }
     args.filesystem.mountConfiguration("/User", args.configuration, { mode: "rw" });
 
-    const controllerTopology = pointerTopology(args.controllerTopology);
     return {
         command: args.filesystem.path("/Dolphin/Dolphin.exe"),
         argv,
@@ -310,16 +453,23 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
 type ControllerChangeContext = HostControllerChangeContext<ReturnType<Configuration["options"]>>;
 
 export const onControllerChanged = async (context: ControllerChangeContext) => {
+    const started = Date.now();
     const topology = pointerTopology(context.topology);
-    const wiiMappings = topology.mappings.filter(mapping => mapping.target.group === "wii");
-    if (wiiMappings.length > 0) {
-        const wiiOptions = context.configuration.options().ports.NINTENDO_WII.wii;
-        for (const mapping of wiiMappings) {
-            wiiOptions[mapping.target.port].relative_input = hasAnalogPointer(mapping);
-            wiiOptions[mapping.target.port].source = wiimoteSource(mapping);
-        }
+    const mappings = wiimoteMappings(topology);
+    if (mappings.every(mapping => mapping === undefined)) {
+        return { controllerTopology: topology };
     }
-    await applyWiiConnectionChanges(context);
+    const wiiOptions = context.configuration.options().ports.NINTENDO_WII.wii;
+    for (const [port, mapping] of mappings.entries()) {
+        const slot = wiiOptions[port];
+        if (!slot) throw new TypeError(`configuration omits Wii Remote port ${port}`);
+        slot.relative_input = mapping ? usesRelativeInput(mapping) : false;
+        slot.source = mapping ? wiimoteSource(mapping) : 0;
+    }
+    context.filesystem.flush();
+    console.info("snowglass dolphin: published controller configuration before UI automation");
+    await applyWiiConnectionChanges(context, topology);
+    console.info(`snowglass dolphin: onControllerChanged completed in ${Date.now() - started}ms applied=${JSON.stringify(wiimoteDiagnostics(topology))}`);
     return { controllerTopology: topology };
 };
 

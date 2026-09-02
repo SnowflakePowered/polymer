@@ -158,6 +158,11 @@ const filesystem = Object.freeze({
     configurationMounts.push({ root, configuration, permissions, names });
   },
 
+  flush() {
+    refreshConfigurations();
+    op_vfs_flush();
+  },
+
   mountStorage(target, source, options) {
     target = String(target);
     const permissions = mode(options);

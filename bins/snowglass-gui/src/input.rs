@@ -60,6 +60,7 @@ pub(crate) struct InputPublication {
     pub diagnostics: InputDiagnostics,
     pub api_state: Option<serde_json::Value>,
     pub configuration_changed: bool,
+    pub connection_session_active: bool,
 }
 
 pub(crate) struct InputConfigurationPublication {
@@ -185,6 +186,10 @@ impl InputRouter {
 
     pub fn controller_topology(&self) -> Result<ControllerTopology, String> {
         self.manager.topology_for(&self.configuration.snapshot())
+    }
+
+    pub fn applied_controller_topology(&self) -> Option<&ControllerTopology> {
+        self.controller_topology.as_ref()
     }
 
     pub fn controller_topology_for(
@@ -522,10 +527,64 @@ impl InputRouter {
         topology: ControllerTopology,
     ) -> Result<(), String> {
         let configuration = self.configuration.snapshot();
-        self.topology =
-            Some(topology.input_topology(configuration.revision as u32, configuration.machine)?);
+        let mut input_topology =
+            topology.input_topology(configuration.revision as u32, configuration.machine)?;
+        if let Some(previous) = &self.topology {
+            // Raw HID bindings describe live channels rather than the projected
+            // controller layout. Preserve them until rebuild_input_hooks has
+            // compared them with the requested bindings, so an unrelated
+            // topology change does not disconnect and reopen a Wii Remote.
+            input_topology.raw_hid.clone_from(&previous.raw_hid);
+        }
+        self.topology = Some(input_topology);
         self.controller_topology = Some(topology);
         self.rebuild_input_hooks()
+    }
+
+    pub fn stage_controller_change(
+        &mut self,
+        configuration: &InputConfiguration,
+        topology: ControllerTopology,
+    ) -> Result<ControllerTopology, String> {
+        let previous_topology = self
+            .controller_topology
+            .clone()
+            .ok_or_else(|| "an active game has no applied controller topology".to_owned())?;
+        tracing::info!(
+            configuration_revision = configuration.revision,
+            previous = %previous_topology.assignment_diagnostics(),
+            requested = %topology.assignment_diagnostics(),
+            "snowglass: host staging controller topology"
+        );
+        let previous_configuration = self.configuration.snapshot();
+        let staged = self
+            .manager
+            .sync_configuration(configuration)
+            .and_then(|()| self.apply_controller_topology(topology));
+        if let Err(error) = staged {
+            let configuration_restore = self.manager.sync_configuration(&previous_configuration);
+            let topology_restore = self.apply_controller_topology(previous_topology.clone());
+            return match (configuration_restore, topology_restore) {
+                (Ok(()), Ok(())) => Err(error),
+                (configuration, topology) => Err(format!(
+                    "{error}; restoring input after staging failed: configuration={configuration:?}, topology={topology:?}"
+                )),
+            };
+        }
+        Ok(previous_topology)
+    }
+
+    pub fn rollback_controller_change(
+        &mut self,
+        topology: ControllerTopology,
+    ) -> Result<(), String> {
+        tracing::warn!(
+            restored = %topology.assignment_diagnostics(),
+            "snowglass: host rolling back controller topology"
+        );
+        let configuration = self.configuration.snapshot();
+        self.manager.sync_configuration(&configuration)?;
+        self.apply_controller_topology(topology)
     }
 
     pub fn prepare_configuration_transaction(
@@ -663,6 +722,7 @@ impl InputRouter {
             },
             api_state,
             configuration_changed,
+            connection_session_active: self.manager.connection_session_active(),
         }
     }
 
@@ -754,9 +814,21 @@ impl InputRouter {
         let Some(topology) = &mut self.topology else {
             return Ok(());
         };
+        tracing::info!(
+            hook_enabled = enabled,
+            previous = ?topology.raw_hid,
+            requested = ?bindings,
+            open_channels = self.raw_hid.len(),
+            "snowglass: host resolved raw HID controller bindings"
+        );
         if topology.raw_hid == bindings
             && (self.listener.is_none() || self.raw_hid.len() == bindings.len())
         {
+            if let Some(listener) = &self.listener {
+                listener
+                    .publish_topology(topology)
+                    .map_err(|error| error.to_string())?;
+            }
             return Ok(());
         }
         topology.raw_hid = bindings;

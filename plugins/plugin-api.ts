@@ -34,6 +34,8 @@ export type Filesystem = {
     mountTree(target: string, source: Resource | DirectoryResource | URL | string, options: { mode: string }): void,
     mountFile(target: string, source: Resource | URL | string | Uint8Array, options: { mode: string }): void,
     mountConfiguration(target: string, configuration: Configuration, options: { mode: string }): void,
+    /** Publishes staged mounted-file and configuration changes to the running emulator. */
+    flush(): void,
     mountStorage(target: string, source: Resource, options: { mode: string, format?: string }): void,
     mountScratch(target: string, options: { mode: string, backing: "memory" | "temporary" }): void,
     path(path: string): string,
@@ -125,13 +127,27 @@ export type ControllerTopology = Readonly<{
 
 export type InputHook = "sdl3" | "bluetooth-api-win32";
 
+export type UiNodeSnapshot = Readonly<{
+    role: string,
+    name: string | null,
+    value: string | null,
+    stableId: string | null,
+    states: Readonly<Record<string, unknown>>,
+}>;
+
 export type UiLocator = {
     nth(index: number): UiLocator,
+    all(options?: { limit?: number }): Promise<readonly UiNodeSnapshot[]>,
+    snapshot(): Promise<UiNodeSnapshot>,
+    click(options?: { button?: string, count?: number }): Promise<void>,
     press(): Promise<void>,
+    select(): Promise<void>,
+    toggle(): Promise<void>,
     selectOption(name: string): Promise<void>,
 };
 
 export type UiWindow = {
+    readonly id: number,
     readonly keyboard: {
         press(
             code: string,
@@ -143,6 +159,12 @@ export type UiWindow = {
 };
 
 export type UiAutomation = {
+    windows(query?: {
+        /** Rust-regex pattern matched against the window title. */
+        pattern?: string,
+        /** Accessibility selector that must match within the window. */
+        selector?: string,
+    }): Promise<readonly UiWindow[]>,
     waitForWindow(
         query: {
             /** Rust-regex pattern matched against the window title. */

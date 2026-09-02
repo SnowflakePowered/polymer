@@ -13,7 +13,7 @@ import joyconLeft from "../../assets/switch/joycon-left-horizontal.svg";
 import joyconRight from "../../assets/switch/joycon-right-horizontal.svg";
 import { useShell } from "../../app/ShellProvider";
 import { OverlayPortal } from "../../components/OverlayPortal";
-import { PauseDecorator } from "./PauseDecorator";
+import { PauseDecorator, type PauseRelease } from "./PauseDecorator";
 import "./ControllerReorder.css";
 
 const DISCOVERED_CONTROLLER_LIMIT = 8;
@@ -23,9 +23,11 @@ export function ControllerReorder(props: { onClose?: () => void }) {
   const [session, setSession] = createSignal<ConnectionSession | null>(null);
   const [revision, setRevision] = createSignal(0);
   const [pending, setPending] = createSignal(false);
+  const [configuring, setConfiguring] = createSignal(false);
   const [error, setError] = createSignal("");
   let leaving = false;
   let disposed = false;
+  let releasePause: PauseRelease | undefined;
   let content: HTMLDivElement | undefined;
 
   const players = createMemo(() => {
@@ -52,7 +54,7 @@ export function ControllerReorder(props: { onClose?: () => void }) {
   const closeOverlay = () => {
     if (props.onClose) props.onClose();
     else {
-      shell.setModel("pauseOpen", true);
+      shell.setModel("pauseOpen", false);
       shell.navigate("/game/play", true);
     }
   };
@@ -61,12 +63,18 @@ export function ControllerReorder(props: { onClose?: () => void }) {
     if (leaving) return;
     leaving = true;
     setPending(true);
+    setConfiguring(true);
     try {
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => setTimeout(resolve, 0));
+      });
       if (session()?.active) await session()!.finish();
+      await releasePause?.();
       closeOverlay();
     } catch (reason) {
       leaving = false;
       setPending(false);
+      setConfiguring(false);
       setError(reason instanceof Error ? reason.message : String(reason));
     }
   };
@@ -110,7 +118,7 @@ export function ControllerReorder(props: { onClose?: () => void }) {
     });
   });
 
-  return <PauseDecorator>
+  return <PauseDecorator releaseRef={(release) => { releasePause = release; }}>
     <Dialog.Root open modal={false} closeOnEscape={false} preventScroll={false}>
       <OverlayPortal><Dialog.Positioner class="horizon-order-positioner">
         <Dialog.Content ref={content} class="horizon-order-screen horizon-input-scope" onKeyDown={(event: KeyboardEvent) => {
@@ -123,6 +131,13 @@ export function ControllerReorder(props: { onClose?: () => void }) {
           <Dialog.Title class="horizon-order-visually-hidden">Change Grip / Order</Dialog.Title>
           <Dialog.Description class="horizon-order-visually-hidden">Connect controllers in player order.</Dialog.Description>
 
+          <Show when={!configuring()} fallback={
+            <section class="horizon-order-configuring" role="status" aria-live="polite">
+              <i class="horizon-order-configuring-spinner" aria-hidden="true" />
+              <h2>Configuring Controllers</h2>
+              <p>Applying the new controller configuration…</p>
+            </section>
+          }>
           <header class="horizon-order-modes" aria-hidden="true">
             <div class="horizon-order-mode"><img src={controllerSwitch} alt="" /></div>
             <div class="horizon-order-mode selected">
@@ -178,6 +193,7 @@ export function ControllerReorder(props: { onClose?: () => void }) {
             <div class="horizon-order-help"><span><img src={buttonMinus} alt="Minus" /><img src={buttonPlus} alt="Plus" /></span> Controller not connecting?</div>
             <button type="button" class="horizon-order-back" onClick={() => void finish()}><img src={buttonB} alt="B" /> Back</button>
           </footer>
+          </Show>
         </Dialog.Content>
       </Dialog.Positioner></OverlayPortal>
     </Dialog.Root>
