@@ -954,39 +954,39 @@ impl ControllerSessionWorker {
     fn run(mut self) {
         while let Ok(command) = self.commands.recv() {
             match command {
-                crate::controller::ControllerSessionCommand::AttachAutomation(
+                crate::controller::ControllerSessionCommand::AttachAutomation {
                     session,
                     response,
-                ) => {
+                } => {
                     crate::automation::attach(self.runtime.js_runtime_mut(), session);
                     let _ = response.send(Ok(()));
                 }
-                crate::controller::ControllerSessionCommand::AttachActions(sink, response) => {
+                crate::controller::ControllerSessionCommand::AttachActions { sink, response } => {
                     crate::actions::attach(self.runtime.js_runtime_mut(), sink);
                     let _ = response.send(Ok(()));
                 }
-                crate::controller::ControllerSessionCommand::Changed(change, response) => {
+                crate::controller::ControllerSessionCommand::Changed { change, response } => {
                     self.change(&change, response);
                 }
-                crate::controller::ControllerSessionCommand::PauseResume(
+                crate::controller::ControllerSessionCommand::PauseResume {
                     state,
                     timeout,
                     response,
-                ) => {
+                } => {
                     let _ = response.send(self.pause_resume(state, timeout));
                 }
-                crate::controller::ControllerSessionCommand::StateAction(
+                crate::controller::ControllerSessionCommand::StateAction {
                     slot,
                     save,
                     timeout,
                     response,
-                ) => {
+                } => {
                     let _ = response.send(self.state_action(slot, save, timeout));
                 }
-                crate::controller::ControllerSessionCommand::Quit(timeout, response) => {
+                crate::controller::ControllerSessionCommand::Quit { timeout, response } => {
                     let _ = response.send(self.quit(timeout));
                 }
-                crate::controller::ControllerSessionCommand::Stop => break,
+                crate::controller::ControllerSessionCommand::Stop {} => break,
             }
         }
         crate::automation::close(self.runtime.js_runtime_mut());

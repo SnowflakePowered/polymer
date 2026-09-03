@@ -6,6 +6,7 @@
 use crate::ConfigurationDefaults;
 use parking_lot::{Mutex, RwLock};
 use serde_json::Value;
+use snowglass_command::CommandSink;
 use snowglass_controllers::ControllerProfiles;
 use snowglass_deno::snowglass::{
     ApiFuture, ConsoleStorageRequest, InstanceToken, SnowglassHost, SnowglassNotificationSender,
@@ -34,118 +35,78 @@ const CONTROLLER_CHANGE_RESPONSE_ATTEMPTS: usize =
         / CONTROLLER_API_RESPONSE_TIMEOUT.as_secs() as usize
         + 1;
 
-/// Thread-affine mechanics retained by the native shell.
-///
-/// Implementations must not interpret JavaScript APIs; they receive validated
-/// native requests from [`FrontendServices`].
-pub trait RuntimePlatform: Send + Sync {
-    fn emulator_launch(
-        &self,
-        token: InstanceToken,
-        options: Value,
-        prepared_filesystem: Option<snowglass_vfs::PreparedFilesystemLaunch>,
-        controller_session: Option<snowglass_pluginhost::ControllerSession>,
-    ) -> ApiFuture<Result<(), String>>;
-    fn emulator_close(&self, token: InstanceToken);
-    fn emulator_set_volume(&self, token: InstanceToken, volume: f64);
-    fn emulator_set_muted(&self, token: InstanceToken, muted: bool);
-    fn emulator_message(&self, token: InstanceToken, name: String, args: Value);
-    fn emulator_input(&self, token: InstanceToken, active: bool);
-    fn emulator_pause_state(
-        &self,
-        token: InstanceToken,
-        pause: bool,
-        timeout: Duration,
-    ) -> ApiFuture<Result<(), String>>;
-    fn emulator_save_state(
-        &self,
-        token: InstanceToken,
-        timeout: Duration,
-    ) -> ApiFuture<Result<Value, String>>;
-    fn emulator_resume_state(
-        &self,
-        token: InstanceToken,
-        slot: u32,
-        timeout: Duration,
-    ) -> ApiFuture<Result<Value, String>>;
-    fn emulator_state_screenshot(
-        &self,
-        token: InstanceToken,
-        record_id: String,
-    ) -> ApiFuture<Result<Option<Vec<u8>>, String>>;
-    fn input_configure(&self, request_id: u32, transaction: Value);
-    fn controller_api_snapshot(&self) -> Value;
-    fn controller_api_command(&self, command: Value) -> ApiFuture<Result<Value, String>>;
-    fn webrtc_start(
-        &self,
-        token: InstanceToken,
-        bind: SocketAddr,
-        targets: Vec<u32>,
-    ) -> ApiFuture<Result<(), String>>;
-    fn webrtc_stop(&self, token: InstanceToken) -> ApiFuture<Result<(), String>>;
+snowglass_command::command_client! {
+    pub client Emulator {
+        closed: "emulator host is unavailable".to_owned();
+
+        #[args(Launch)]
+        pub async fn launch(
+            token: InstanceToken,
+            options: Value,
+            prepared_filesystem: Option<snowglass_vfs::PreparedFilesystemLaunch>,
+            controller_session: Option<snowglass_pluginhost::ControllerSession>,
+        ) -> Result<(), String>;
+
+        #[oneshot]
+        #[args(Close)]
+        pub fn close(token: InstanceToken);
+
+        #[oneshot]
+        #[args(SetVolume)]
+        pub fn set_volume(token: InstanceToken, volume: f64);
+
+        #[oneshot]
+        #[args(SetMuted)]
+        pub fn set_muted(token: InstanceToken, muted: bool);
+
+        #[oneshot]
+        #[args(Message)]
+        pub fn message(token: InstanceToken, name: String, args: Value);
+
+        #[oneshot]
+        #[args(Input)]
+        pub fn input(token: InstanceToken, active: bool);
+
+        #[args(PauseState)]
+        pub async fn pause_state(
+            token: InstanceToken,
+            pause: bool,
+            timeout: Duration,
+        ) -> Result<(), String>;
+
+        #[args(SaveState)]
+        pub async fn save_state(
+            token: InstanceToken,
+            timeout: Duration,
+        ) -> Result<Value, String>;
+
+        #[args(ResumeState)]
+        pub async fn resume_state(
+            token: InstanceToken,
+            slot: u32,
+            timeout: Duration,
+        ) -> Result<Value, String>;
+
+        #[args(StateScreenshot)]
+        pub async fn state_screenshot(
+            token: InstanceToken,
+            record_id: String,
+        ) -> Result<Option<Vec<u8>>, String>;
+    }
 }
 
-#[derive(Debug)]
-pub enum EmulatorCommand {
-    Launch {
-        token: InstanceToken,
-        options: Value,
-        prepared_filesystem: Option<snowglass_vfs::PreparedFilesystemLaunch>,
-        controller_session: Option<snowglass_pluginhost::ControllerSession>,
-        result: tokio::sync::oneshot::Sender<Result<(), String>>,
-    },
-    Close(InstanceToken),
-    SetVolume {
-        token: InstanceToken,
-        volume: f64,
-    },
-    SetMuted {
-        token: InstanceToken,
-        muted: bool,
-    },
-    Message {
-        token: InstanceToken,
-        name: String,
-        args: Value,
-    },
-    Input {
-        token: InstanceToken,
-        active: bool,
-    },
-    PauseState {
-        token: InstanceToken,
-        pause: bool,
-        timeout: Duration,
-        result: tokio::sync::oneshot::Sender<Result<(), String>>,
-    },
-    SaveState {
-        token: InstanceToken,
-        timeout: Duration,
-        result: tokio::sync::oneshot::Sender<Result<Value, String>>,
-    },
-    ResumeState {
-        token: InstanceToken,
-        slot: u32,
-        timeout: Duration,
-        result: tokio::sync::oneshot::Sender<Result<Value, String>>,
-    },
-    StateScreenshot {
-        token: InstanceToken,
-        record_id: String,
-        result: tokio::sync::oneshot::Sender<Result<Option<Vec<u8>>, String>>,
-    },
-}
+snowglass_command::command_client! {
+    pub client Input {
+        closed: "input host is unavailable".to_owned();
 
-#[derive(Debug)]
-pub enum InputCommand {
-    Configure {
-        request_id: u32,
-        transaction: Value,
-    },
-    ControllerApi {
-        command: Value,
-        result: tokio::sync::oneshot::Sender<Result<Value, String>>,
-    },
+        #[oneshot]
+        #[args(Configure)]
+        pub fn configure(request_id: u32, transaction: Value);
+
+        #[deferred]
+        #[args(ControllerApi)]
+        fn controller_api_response(command: Value) -> Result<Value, String>;
+    }
 }
 
 #[derive(Clone)]
@@ -215,41 +176,19 @@ impl ControllerApiState {
     }
 }
 
-#[derive(Debug)]
-pub enum WebRtcCommand {
-    Start {
-        token: InstanceToken,
-        bind: SocketAddr,
-        targets: Vec<u32>,
-        result: tokio::sync::oneshot::Sender<Result<(), String>>,
-    },
-    Stop {
-        token: InstanceToken,
-        result: tokio::sync::oneshot::Sender<Result<(), String>>,
-    },
-}
+snowglass_command::command_client! {
+    pub client WebRtc {
+        closed: "WebRTC host is unavailable".to_owned();
 
-pub struct CommandSink<T>(Arc<dyn Fn(T) + Send + Sync>);
+        #[args(Start)]
+        pub async fn start(
+            token: InstanceToken,
+            bind: SocketAddr,
+            targets: Vec<u32>,
+        ) -> Result<(), String>;
 
-impl<T> Clone for CommandSink<T> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
-
-impl<T> CommandSink<T> {
-    pub fn new(send: impl Fn(T) + Send + Sync + 'static) -> Self {
-        Self(Arc::new(send))
-    }
-
-    pub fn send(&self, command: T) {
-        (self.0)(command);
-    }
-}
-
-impl<T> Default for CommandSink<T> {
-    fn default() -> Self {
-        Self::new(|_| {})
+        #[args(Stop)]
+        pub async fn stop(token: InstanceToken) -> Result<(), String>;
     }
 }
 
@@ -257,174 +196,31 @@ pub type EmulatorCommandSink = CommandSink<EmulatorCommand>;
 pub type InputCommandSink = CommandSink<InputCommand>;
 pub type WebRtcCommandSink = CommandSink<WebRtcCommand>;
 
-/// Transitional adapter for hosts whose platform state is confined to an
-/// existing native event loop. Snowglass ops still target `RuntimePlatform`;
-/// the event-loop transport is a runtime implementation detail.
-pub struct CommandRuntimePlatform {
-    emulator: EmulatorCommandSink,
-    input: InputCommandSink,
-    controller_api: ControllerApiState,
-    webrtc: WebRtcCommandSink,
+/// Thread-affine native mechanics exposed through typed command clients.
+pub struct RuntimePlatform {
+    emulator: Emulator,
+    input: Input,
+    web_rtc: WebRtc,
 }
 
-impl CommandRuntimePlatform {
+impl RuntimePlatform {
     pub fn new(
         emulator: EmulatorCommandSink,
         input: InputCommandSink,
-        controller_api: ControllerApiState,
         webrtc: WebRtcCommandSink,
     ) -> Self {
         Self {
-            emulator,
-            input,
-            controller_api,
-            webrtc,
+            emulator: Emulator::new(emulator),
+            input: Input::new(input),
+            web_rtc: WebRtc::new(webrtc),
         }
     }
 }
 
-impl RuntimePlatform for CommandRuntimePlatform {
-    fn emulator_launch(
-        &self,
-        token: InstanceToken,
-        options: Value,
-        prepared_filesystem: Option<snowglass_vfs::PreparedFilesystemLaunch>,
-        controller_session: Option<snowglass_pluginhost::ControllerSession>,
-    ) -> ApiFuture<Result<(), String>> {
-        let sink = self.emulator.clone();
+impl Input {
+    fn controller_api(&self, command: Value) -> ApiFuture<Result<Value, String>> {
+        let client = self.clone();
         Box::pin(async move {
-            let (result, response) = tokio::sync::oneshot::channel();
-            sink.send(EmulatorCommand::Launch {
-                token,
-                options,
-                prepared_filesystem,
-                controller_session,
-                result,
-            });
-            response
-                .await
-                .map_err(|_| "emulator host is unavailable".to_owned())?
-        })
-    }
-
-    fn emulator_close(&self, token: InstanceToken) {
-        self.emulator.send(EmulatorCommand::Close(token));
-    }
-
-    fn emulator_set_volume(&self, token: InstanceToken, volume: f64) {
-        self.emulator
-            .send(EmulatorCommand::SetVolume { token, volume });
-    }
-
-    fn emulator_set_muted(&self, token: InstanceToken, muted: bool) {
-        self.emulator
-            .send(EmulatorCommand::SetMuted { token, muted });
-    }
-
-    fn emulator_message(&self, token: InstanceToken, name: String, args: Value) {
-        self.emulator
-            .send(EmulatorCommand::Message { token, name, args });
-    }
-
-    fn emulator_input(&self, token: InstanceToken, active: bool) {
-        self.emulator.send(EmulatorCommand::Input { token, active });
-    }
-
-    fn emulator_pause_state(
-        &self,
-        token: InstanceToken,
-        pause: bool,
-        timeout: Duration,
-    ) -> ApiFuture<Result<(), String>> {
-        let sink = self.emulator.clone();
-        Box::pin(async move {
-            let (result, response) = tokio::sync::oneshot::channel();
-            sink.send(EmulatorCommand::PauseState {
-                token,
-                pause,
-                timeout,
-                result,
-            });
-            response
-                .await
-                .map_err(|_| "emulator host is unavailable".to_owned())?
-        })
-    }
-
-    fn emulator_save_state(
-        &self,
-        token: InstanceToken,
-        timeout: Duration,
-    ) -> ApiFuture<Result<Value, String>> {
-        let sink = self.emulator.clone();
-        Box::pin(async move {
-            let (result, response) = tokio::sync::oneshot::channel();
-            sink.send(EmulatorCommand::SaveState {
-                token,
-                timeout,
-                result,
-            });
-            response
-                .await
-                .map_err(|_| "emulator host is unavailable".to_owned())?
-        })
-    }
-
-    fn emulator_resume_state(
-        &self,
-        token: InstanceToken,
-        slot: u32,
-        timeout: Duration,
-    ) -> ApiFuture<Result<Value, String>> {
-        let sink = self.emulator.clone();
-        Box::pin(async move {
-            let (result, response) = tokio::sync::oneshot::channel();
-            sink.send(EmulatorCommand::ResumeState {
-                token,
-                slot,
-                timeout,
-                result,
-            });
-            response
-                .await
-                .map_err(|_| "emulator host is unavailable".to_owned())?
-        })
-    }
-
-    fn emulator_state_screenshot(
-        &self,
-        token: InstanceToken,
-        record_id: String,
-    ) -> ApiFuture<Result<Option<Vec<u8>>, String>> {
-        let sink = self.emulator.clone();
-        Box::pin(async move {
-            let (result, response) = tokio::sync::oneshot::channel();
-            sink.send(EmulatorCommand::StateScreenshot {
-                token,
-                record_id,
-                result,
-            });
-            response
-                .await
-                .map_err(|_| "emulator host is unavailable".to_owned())?
-        })
-    }
-
-    fn input_configure(&self, request_id: u32, transaction: Value) {
-        self.input.send(InputCommand::Configure {
-            request_id,
-            transaction,
-        });
-    }
-
-    fn controller_api_snapshot(&self) -> Value {
-        self.controller_api.snapshot()
-    }
-
-    fn controller_api_command(&self, command: Value) -> ApiFuture<Result<Value, String>> {
-        let sink = self.input.clone();
-        Box::pin(async move {
-            let (result, mut response) = tokio::sync::oneshot::channel();
             let response_attempts =
                 if command["type"] == snowglass_controllers::CONTROLLER_SESSION_COMMIT_COMMAND {
                     // Live emulator reconfiguration can include several UIA
@@ -434,7 +230,7 @@ impl RuntimePlatform for CommandRuntimePlatform {
                 } else {
                     CONTROLLER_API_RESPONSE_ATTEMPTS
                 };
-            sink.send(InputCommand::ControllerApi { command, result });
+            let mut response = client.controller_api_response(command)?;
             for attempt in 1..=response_attempts {
                 match tokio::time::timeout(CONTROLLER_API_RESPONSE_TIMEOUT, &mut response).await {
                     Ok(result) => {
@@ -452,40 +248,7 @@ impl RuntimePlatform for CommandRuntimePlatform {
             unreachable!("controller API response attempts are nonzero")
         })
     }
-
-    fn webrtc_start(
-        &self,
-        token: InstanceToken,
-        bind: SocketAddr,
-        targets: Vec<u32>,
-    ) -> ApiFuture<Result<(), String>> {
-        let sink = self.webrtc.clone();
-        Box::pin(async move {
-            let (result, response) = tokio::sync::oneshot::channel();
-            sink.send(WebRtcCommand::Start {
-                token,
-                bind,
-                targets,
-                result,
-            });
-            response
-                .await
-                .map_err(|_| "WebRTC host is unavailable".to_owned())?
-        })
-    }
-
-    fn webrtc_stop(&self, token: InstanceToken) -> ApiFuture<Result<(), String>> {
-        let sink = self.webrtc.clone();
-        Box::pin(async move {
-            let (result, response) = tokio::sync::oneshot::channel();
-            sink.send(WebRtcCommand::Stop { token, result });
-            response
-                .await
-                .map_err(|_| "WebRTC host is unavailable".to_owned())?
-        })
-    }
 }
-
 #[derive(Clone, Default)]
 struct PreparedFilesystemStore(Arc<PreparedFilesystemStoreInner>);
 
@@ -543,7 +306,7 @@ pub struct FrontendServices {
     controller_sessions: ControllerSessionStore,
     input_sources: InputHub,
     controller_api: ControllerApiState,
-    platform: Arc<dyn RuntimePlatform>,
+    platform: Arc<RuntimePlatform>,
     notifications: SnowglassNotificationSender,
     deno_input: Arc<DenoInputListener>,
     input_listener: ListenerHandle,
@@ -845,7 +608,7 @@ impl FrontendServices {
         configuration: Option<ConfigurationDefaults>,
         input_sources: InputHub,
         controller_api: ControllerApiState,
-        platform: Arc<dyn RuntimePlatform>,
+        platform: Arc<RuntimePlatform>,
         notifications: SnowglassNotificationSender,
     ) -> Self {
         let deno_input = Arc::new(DenoInputListener::new(
@@ -932,11 +695,11 @@ impl SnowglassHost for FrontendServices {
     }
 
     fn controller_api_snapshot(&self) -> Value {
-        self.platform.controller_api_snapshot()
+        self.controller_api.snapshot()
     }
 
     fn controller_api_command(&self, command: Value) -> ApiFuture<Result<Value, String>> {
-        self.platform.controller_api_command(command)
+        self.platform.input.controller_api(command)
     }
 
     fn input_get(&self, index: u8) -> Option<Value> {
@@ -1060,27 +823,28 @@ impl SnowglassHost for FrontendServices {
             None => None,
         };
         self.platform
-            .emulator_launch(token, options, prepared, controller_session)
+            .emulator
+            .launch(token, options, prepared, controller_session)
     }
 
     fn emulator_close(&self, token: InstanceToken) {
-        self.platform.emulator_close(token);
+        self.platform.emulator.close(token);
     }
 
     fn emulator_set_volume(&self, token: InstanceToken, volume: f64) {
-        self.platform.emulator_set_volume(token, volume);
+        self.platform.emulator.set_volume(token, volume);
     }
 
     fn emulator_set_muted(&self, token: InstanceToken, muted: bool) {
-        self.platform.emulator_set_muted(token, muted);
+        self.platform.emulator.set_muted(token, muted);
     }
 
     fn emulator_message(&self, token: InstanceToken, name: String, args: Value) {
-        self.platform.emulator_message(token, name, args);
+        self.platform.emulator.message(token, name, args);
     }
 
     fn emulator_input(&self, token: InstanceToken, active: bool) {
-        self.platform.emulator_input(token, active);
+        self.platform.emulator.input(token, active);
     }
 
     fn emulator_pause_state(
@@ -1089,7 +853,7 @@ impl SnowglassHost for FrontendServices {
         pause: bool,
         timeout: Duration,
     ) -> ApiFuture<Result<(), String>> {
-        self.platform.emulator_pause_state(token, pause, timeout)
+        self.platform.emulator.pause_state(token, pause, timeout)
     }
 
     fn emulator_save_state(
@@ -1097,7 +861,7 @@ impl SnowglassHost for FrontendServices {
         token: InstanceToken,
         timeout: Duration,
     ) -> ApiFuture<Result<Value, String>> {
-        self.platform.emulator_save_state(token, timeout)
+        self.platform.emulator.save_state(token, timeout)
     }
 
     fn emulator_resume_state(
@@ -1106,7 +870,7 @@ impl SnowglassHost for FrontendServices {
         slot: u32,
         timeout: Duration,
     ) -> ApiFuture<Result<Value, String>> {
-        self.platform.emulator_resume_state(token, slot, timeout)
+        self.platform.emulator.resume_state(token, slot, timeout)
     }
 
     fn emulator_state_screenshot(
@@ -1114,11 +878,11 @@ impl SnowglassHost for FrontendServices {
         token: InstanceToken,
         record_id: String,
     ) -> ApiFuture<Result<Option<Vec<u8>>, String>> {
-        self.platform.emulator_state_screenshot(token, record_id)
+        self.platform.emulator.state_screenshot(token, record_id)
     }
 
     fn input_configure(&self, request_id: u32, transaction: Value) {
-        self.platform.input_configure(request_id, transaction);
+        self.platform.input.configure(request_id, transaction);
     }
 
     fn webrtc_start(
@@ -1127,11 +891,11 @@ impl SnowglassHost for FrontendServices {
         bind: SocketAddr,
         targets: Vec<u32>,
     ) -> ApiFuture<Result<(), String>> {
-        self.platform.webrtc_start(token, bind, targets)
+        self.platform.web_rtc.start(token, bind, targets)
     }
 
     fn webrtc_stop(&self, token: InstanceToken) -> ApiFuture<Result<(), String>> {
-        self.platform.webrtc_stop(token)
+        self.platform.web_rtc.stop(token)
     }
 }
 

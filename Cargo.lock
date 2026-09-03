@@ -10999,6 +10999,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "snowglass-command",
  "thiserror 2.0.20",
  "tokio",
 ]
@@ -11038,6 +11039,14 @@ dependencies = [
  "snowglass-library",
  "tokio",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "snowglass-command"
+version = "0.1.0"
+dependencies = [
+ "paste",
+ "tokio",
 ]
 
 [[package]]
@@ -11653,6 +11662,7 @@ dependencies = [
  "serde_bytes",
  "serde_json",
  "snowglass-automation",
+ "snowglass-command",
  "snowglass-config",
  "snowglass-controllers",
  "snowglass-deno",
@@ -11793,6 +11803,7 @@ dependencies = [
  "parking_lot",
  "serde",
  "serde_json",
+ "snowglass-command",
  "snowglass-config",
  "snowglass-consolestorage",
  "snowglass-controllers",

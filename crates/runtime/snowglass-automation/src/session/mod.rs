@@ -1,25 +1,21 @@
-use std::sync::Arc;
-
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 
 use crate::{AutomationDriver, AutomationError, AutomationRequest, AutomationResponse};
 
-enum SessionCommand {
-    Execute {
-        request: AutomationRequest,
-        response: oneshot::Sender<Result<AutomationResponse, AutomationError>>,
-    },
-    Stop,
-}
+// Cloneable asynchronous access to one process-scoped automation actor.
+snowglass_command::command_client! {
+    pub client AutomationSession {
+        closed: AutomationError::process_exited();
 
-struct SessionState {
-    commands: mpsc::UnboundedSender<SessionCommand>,
-}
+        #[args(Execute)]
+        pub async fn execute(
+            request: AutomationRequest,
+        ) -> Result<AutomationResponse, AutomationError>;
 
-/// Cloneable asynchronous access to one process-scoped automation actor.
-#[derive(Clone)]
-pub struct AutomationSession {
-    state: Arc<SessionState>,
+        #[oneshot]
+        #[args(Stop)]
+        fn stop();
+    }
 }
 
 impl AutomationSession {
@@ -30,41 +26,27 @@ impl AutomationSession {
             .spawn(move || {
                 while let Some(command) = receiver.blocking_recv() {
                     match command {
-                        SessionCommand::Execute { request, response } => {
+                        AutomationSessionCommand::Execute { request, response } => {
                             let _ = response.send(driver.execute(request));
                         }
-                        SessionCommand::Stop => break,
+                        AutomationSessionCommand::Stop {} => break,
                     }
                 }
                 driver.shutdown();
             })
             .map_err(|error| AutomationError::platform(error.to_string()))?;
-        Ok(Self {
-            state: Arc::new(SessionState { commands }),
-        })
-    }
-
-    pub async fn execute(
-        &self,
-        request: AutomationRequest,
-    ) -> Result<AutomationResponse, AutomationError> {
-        let (response, receiver) = oneshot::channel();
-        self.state
-            .commands
-            .send(SessionCommand::Execute { request, response })
-            .map_err(|_| AutomationError::process_exited())?;
-        receiver
-            .await
-            .map_err(|_| AutomationError::process_exited())?
+        Ok(Self::new(commands))
     }
 
     pub fn close(&self) {
-        let _ = self.state.commands.send(SessionCommand::Stop);
+        self.stop();
     }
 }
 
-impl Drop for SessionState {
+impl Drop for AutomationSession {
     fn drop(&mut self) {
-        let _ = self.commands.send(SessionCommand::Stop);
+        if self.sender.is_unique() {
+            self.stop();
+        }
     }
 }

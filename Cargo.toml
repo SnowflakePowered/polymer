@@ -120,6 +120,7 @@ gix = { version = "0.86", features = ["tree-editor"] }
 phf = "0.14"
 phf_codegen = "0.14"
 snowglass-runtime = { path = "crates/runtime/snowglass-runtime" }
+snowglass-command = { path = "crates/runtime/snowglass-command" }
 snowglass-controllers = { path = "crates/runtime/snowglass-controllers" }
 snowglass-library = { path = "crates/runtime/snowglass-library" }
 snowglass-vfs = { path = "crates/filesystem/snowglass-vfs" }

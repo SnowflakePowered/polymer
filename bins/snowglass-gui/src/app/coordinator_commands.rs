@@ -20,7 +20,7 @@ impl ShellCoordinator {
                 options,
                 prepared_filesystem,
                 controller_session,
-                result,
+                response: result,
             } => {
                 let options = serde_json::from_value::<AttachedLaunchPlan>(options)
                     .map_err(|error| format!("invalid emulator launch options: {error}"))
@@ -33,7 +33,7 @@ impl ShellCoordinator {
                 });
                 let _ = result.send(launched);
             }
-            EmulatorCommand::Close(token) => {
+            EmulatorCommand::Close { token } => {
                 match self.game_host.begin_quit(token, Duration::from_secs(30)) {
                     Ok(Some((cache, screenshot, response))) => {
                         return Some(PendingEmulatorCallback::Quit(PendingQuit {
@@ -69,7 +69,7 @@ impl ShellCoordinator {
                 token,
                 pause,
                 timeout,
-                result,
+                response: result,
             } if self.game_host.is_active(token) => {
                 let state = if pause {
                     snowglass_pluginhost::PauseState::Pause
@@ -105,13 +105,15 @@ impl ShellCoordinator {
                     }
                 }
             }
-            EmulatorCommand::PauseState { result, .. } => {
+            EmulatorCommand::PauseState {
+                response: result, ..
+            } => {
                 let _ = result.send(Err("emulator is no longer active".to_owned()));
             }
             EmulatorCommand::SaveState {
                 token,
                 timeout,
-                result,
+                response: result,
             } if self.game_host.is_active(token) => match self.game_host.save_state(timeout) {
                 Ok((slot, response)) => {
                     return Some(PendingEmulatorCallback::State(PendingStateAction {
@@ -129,7 +131,7 @@ impl ShellCoordinator {
                 token,
                 slot,
                 timeout,
-                result,
+                response: result,
             } if self.game_host.is_active(token) => {
                 match self.game_host.resume_state(slot, timeout) {
                     Ok(response) => {
@@ -145,18 +147,24 @@ impl ShellCoordinator {
                     }
                 }
             }
-            EmulatorCommand::SaveState { result, .. }
-            | EmulatorCommand::ResumeState { result, .. } => {
+            EmulatorCommand::SaveState {
+                response: result, ..
+            }
+            | EmulatorCommand::ResumeState {
+                response: result, ..
+            } => {
                 let _ = result.send(Err("emulator is no longer active".to_owned()));
             }
             EmulatorCommand::StateScreenshot {
                 token,
                 record_id,
-                result,
+                response: result,
             } if self.game_host.is_active(token) => {
                 let _ = result.send(self.game_host.save_state_screenshot(&record_id));
             }
-            EmulatorCommand::StateScreenshot { result, .. } => {
+            EmulatorCommand::StateScreenshot {
+                response: result, ..
+            } => {
                 let _ = result.send(Err("emulator is no longer active".to_owned()));
             }
         }
@@ -257,7 +265,10 @@ impl ShellCoordinator {
                     Err(format!("invalid input transaction: {error}")),
                 ),
             },
-            InputCommand::ControllerApi { command, result } => {
+            InputCommand::ControllerApi {
+                command,
+                response: result,
+            } => {
                 let response = self.input.controller_command(command).await;
                 let response = match response {
                     Ok(response) => response,
@@ -316,11 +327,14 @@ impl ShellCoordinator {
                 token,
                 bind,
                 targets,
-                result,
+                response: result,
             } => {
                 let _ = result.send(self.game_host.start_webrtc(token, bind, &targets));
             }
-            WebRtcCommand::Stop { token, result } => {
+            WebRtcCommand::Stop {
+                token,
+                response: result,
+            } => {
                 let stopped = self.game_host.stop_webrtc(token);
                 let _ = result.send(if stopped {
                     Ok(())
