@@ -1,7 +1,7 @@
 use crate::cli::ShellOptions;
 use crate::commands::ShellDocumentSource;
 use crate::game_host::{GameHost, GameHostCaptureEvent, GameHostCommand};
-use crate::input::{InputPriority, InputRouter, KeyboardTarget, PreparedInputTransaction};
+use crate::input::{InputPriority, InputRouter, KeyboardTarget};
 use crate::inspector::InspectorWindow;
 use crate::instance_events;
 use crate::launch::AttachedLaunchPlan;
@@ -72,23 +72,25 @@ struct ShellCoordinator {
     _theme: crate::theme::SelectedTheme,
 }
 
-enum PendingInputChange {
+enum PendingInputChangeCompletion {
     Configuration {
         request_id: u64,
-        prepared: PreparedInputTransaction,
-        previous_topology: snowglass_controllers::ControllerTopology,
-        response: tokio::sync::oneshot::Receiver<
-            Result<snowglass_controllers::ControllerTopology, String>,
-        >,
     },
     ConnectionSession {
+        session_id: String,
+        result: tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
+    },
+    ControllerApi {
         value: serde_json::Value,
         result: tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
-        previous_topology: snowglass_controllers::ControllerTopology,
-        response: tokio::sync::oneshot::Receiver<
-            Result<snowglass_controllers::ControllerTopology, String>,
-        >,
     },
+}
+
+struct PendingInputChange {
+    transaction: snowglass_controllers::ControllerTopologyTransaction,
+    completion: PendingInputChangeCompletion,
+    response:
+        tokio::sync::oneshot::Receiver<Result<snowglass_controllers::ControllerTopology, String>>,
 }
 
 struct PendingPauseResume {
@@ -97,20 +99,6 @@ struct PendingPauseResume {
     started: Instant,
     result: tokio::sync::oneshot::Sender<Result<(), String>>,
     response: tokio::sync::oneshot::Receiver<Result<(), String>>,
-}
-
-impl PendingInputChange {
-    fn response(
-        &mut self,
-    ) -> &mut tokio::sync::oneshot::Receiver<
-        Result<snowglass_controllers::ControllerTopology, String>,
-    > {
-        match self {
-            Self::Configuration { response, .. } | Self::ConnectionSession { response, .. } => {
-                response
-            }
-        }
-    }
 }
 
 impl ShellCoordinator {

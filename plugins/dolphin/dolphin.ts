@@ -528,6 +528,14 @@ export const onPauseResume = (context: PauseResumeContext) => {
     context.actions.pause?.activate();
 };
 
+export const onStateSave = () => {
+
+}
+
+export const onResumeState = () => {
+
+}
+
 export default {
     onLaunch,
     onPauseResume,

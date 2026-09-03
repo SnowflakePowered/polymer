@@ -74,8 +74,8 @@ class ConnectionSession extends EventTarget {
     return this.#controllers.sessionCommand("connect", this.#id, { id: String(id) });
   }
 
-  finish() {
-    return this.#controllers.sessionCommand("finish", this.#id);
+  commit() {
+    return this.#controllers.sessionCommand("commit", this.#id);
   }
 }
 

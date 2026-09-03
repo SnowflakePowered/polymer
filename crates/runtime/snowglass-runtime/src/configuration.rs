@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 use snowglass_config::ast::PortAssignments;
 use snowglass_config::input::{ControllerBindings, ProjectionMode, SourceSelector, VirtualPort};
 use snowglass_controllers::{
-    ControllerAssignmentSnapshot, ControllerMapping, ControllerTarget, ControllerTopology,
+    ControllerAssignmentSnapshot, ControllerManager, ControllerMapping, ControllerProfiles,
+    ControllerTarget, ControllerTopology,
 };
 use snowglass_input::InputHub;
 use snowglass_pluginhost::{
@@ -208,7 +209,7 @@ pub fn prepare_api(
     package: serde_json::Value,
     request: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let controller_profiles = crate::ControllerProfiles::default();
+    let controller_profiles = ControllerProfiles::default();
     let controller_assignments = ControllerAssignmentSnapshot::default();
     prepare_api_with_sources(
         plugins,
@@ -227,7 +228,7 @@ pub(crate) fn prepare_api_with_sources(
     package: serde_json::Value,
     request: serde_json::Value,
     sources: &InputHub,
-    controller_profiles: &crate::ControllerProfiles,
+    controller_profiles: &ControllerProfiles,
     controller_assignments: &ControllerAssignmentSnapshot,
 ) -> Result<serde_json::Value, String> {
     let package: crate::ScrapedPackage =
@@ -252,7 +253,7 @@ pub(crate) fn prepare_api_with_sources(
         gamepad.force_mouse = matches!(gamepad.source, Some(SourceSelector::KeyboardMouse));
     }
     let webrtc_targets = prepared.viewer.webrtc_targets.clone().unwrap_or_default();
-    let controller_manager = crate::ControllerManager::with_profiles(controller_profiles.clone());
+    let controller_manager = ControllerManager::with_profiles(controller_profiles.clone());
     let selected = prepared
         .viewer
         .gamepads
@@ -298,7 +299,7 @@ pub(crate) fn prepare_api_with_sources(
 fn resolved_controller(
     gamepad: &DefaultGamepad,
     sources: &InputHub,
-    controllers: &crate::ControllerManager,
+    controllers: &ControllerManager,
 ) -> Result<ControllerMapping, String> {
     let port = gamepad
         .port

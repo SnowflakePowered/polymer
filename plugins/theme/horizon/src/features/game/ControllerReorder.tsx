@@ -59,7 +59,7 @@ export function ControllerReorder(props: { onClose?: () => void }) {
     }
   };
 
-  const finish = async () => {
+  const commit = async () => {
     if (leaving) return;
     leaving = true;
     setPending(true);
@@ -68,7 +68,7 @@ export function ControllerReorder(props: { onClose?: () => void }) {
       await new Promise<void>((resolve) => {
         requestAnimationFrame(() => setTimeout(resolve, 0));
       });
-      if (session()?.active) await session()!.finish();
+      if (session()?.active) await session()!.commit();
       await releasePause?.();
       closeOverlay();
     } catch (reason) {
@@ -99,7 +99,7 @@ export function ControllerReorder(props: { onClose?: () => void }) {
         const active = window.Snowglass.controllers.activeConnectionSession
           ?? await window.Snowglass.controllers.startConnectionSession();
         if (disposed) {
-          if (active.active) await active.finish();
+          if (active.active) await active.commit();
           return;
         }
         setSession(active);
@@ -114,7 +114,7 @@ export function ControllerReorder(props: { onClose?: () => void }) {
       disposed = true;
       window.Snowglass.controllers.removeEventListener("statechange", changed);
       session()?.removeEventListener("change", changed);
-      if (!leaving && session()?.active) void session()!.finish();
+      if (!leaving && session()?.active) void session()!.commit();
     });
   });
 
@@ -125,7 +125,7 @@ export function ControllerReorder(props: { onClose?: () => void }) {
           if (event.key === "Escape" || event.key === "Enter") {
             event.preventDefault();
             event.stopPropagation();
-            void finish();
+            void commit();
           }
         }}>
           <Dialog.Title class="horizon-order-visually-hidden">Change Grip / Order</Dialog.Title>
@@ -179,7 +179,7 @@ export function ControllerReorder(props: { onClose?: () => void }) {
 
             <Show when={!session()}><p class="horizon-order-loading">{error() || "Preparing controllers…"}</p></Show>
             <Show when={error() && session()}><p class="horizon-order-error" role="alert">{error()}</p></Show>
-            <button type="button" class="horizon-order-ready" data-input-default disabled={!session() || pending()} onClick={() => void finish()}>
+            <button type="button" class="horizon-order-ready" data-input-default disabled={!session() || pending()} onClick={() => void commit()}>
               Press <img src={buttonA} alt="A" /> when you're ready.
             </button>
           </main>
@@ -191,7 +191,7 @@ export function ControllerReorder(props: { onClose?: () => void }) {
               <Show when={discoveryActive()}><strong><i /> Searching</strong></Show>
             </div>
             <div class="horizon-order-help"><span><img src={buttonMinus} alt="Minus" /><img src={buttonPlus} alt="Plus" /></span> Controller not connecting?</div>
-            <button type="button" class="horizon-order-back" onClick={() => void finish()}><img src={buttonB} alt="B" /> Back</button>
+            <button type="button" class="horizon-order-back" onClick={() => void commit()}><img src={buttonB} alt="B" /> Back</button>
           </footer>
           </Show>
         </Dialog.Content>

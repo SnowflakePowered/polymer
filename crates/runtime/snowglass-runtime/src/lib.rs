@@ -34,11 +34,6 @@ pub use instance::{
 };
 pub use scraping::{ScrapedPackage, ScrapingError};
 pub use session::{SessionController, mount_prepared_filesystem};
-pub use snowglass_controllers::{
-    ControllerCommandOutcome, ControllerManager, ControllerManagerEffect, ControllerProfiles,
-    DeviceMapping,
-};
-pub use snowglass_controllers::{ControllerMapping, ControllerTopology};
 pub use snowglass_pluginhost::{GraphicsHook, Hooks, InputHook};
 pub use storage::launch_storage;
 pub use ui::{UiRequest, UiRequestReceiver};

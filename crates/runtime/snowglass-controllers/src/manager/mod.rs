@@ -1,11 +1,14 @@
 mod command;
 mod profile;
 
-use crate::ControllerDevice;
+use crate::{
+    ControllerConfiguration, ControllerDevice, ControllerTopology, ControllerTopologyTransaction,
+};
 use parking_lot::RwLock;
 use profile::MappingProfile;
 use snowglass_config::input::{
-    InputConfiguration, ProjectionMode, SourceAssignment, SourceSelector,
+    InputConfiguration, InputOperation, InputTransaction, ProjectionMode, SourceAssignment,
+    SourceSelector,
 };
 use snowglass_input::{DeviceDescriptor, DeviceId, DeviceRole, GamepadButton, InputHub};
 use snowglass_library::InputStore;
@@ -22,7 +25,7 @@ pub struct ControllerAssignmentSnapshot {
 }
 
 impl ControllerAssignmentSnapshot {
-    pub fn from_manager(manager: &ControllerManager) -> Self {
+    pub(crate) fn from_manager(manager: &ControllerManager) -> Self {
         let assignments = manager
             .hub
             .as_ref()
@@ -64,13 +67,19 @@ pub enum ControllerManagerEffect {
     DisconnectSources(Vec<String>),
     Connect(String),
     Forget(String),
-    ReapplyMappings,
 }
 
 pub struct ControllerCommandOutcome {
     pub response: serde_json::Value,
-    pub assignments: Option<Vec<SourceAssignment>>,
+    pub session_commit: Option<ControllerSessionCommit>,
+    pub reapply_topology: bool,
     pub effects: Vec<ControllerManagerEffect>,
+}
+
+#[derive(Debug)]
+pub struct ControllerSessionCommit {
+    pub session_id: String,
+    pub assignments: Vec<SourceAssignment>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -117,16 +126,27 @@ impl ControllerProfiles {
 }
 
 pub struct ControllerManager {
+    configuration: ControllerConfiguration,
+    applied: Option<ControllerTopology>,
     hub: Option<InputHub>,
-    session: Option<String>,
+    session: Option<ControllerConnectionSession>,
     join_neutral: HashSet<DeviceId>,
     mappings: ControllerProfiles,
     mapping_store: Option<InputStore>,
 }
 
+struct ControllerConnectionSession {
+    id: String,
+    committing: bool,
+    assignments: Vec<SourceAssignment>,
+}
+
 impl ControllerManager {
     pub fn with_profiles(mappings: ControllerProfiles) -> Self {
         Self {
+            configuration: ControllerConfiguration::new(None, [])
+                .expect("an empty controller configuration is valid"),
+            applied: None,
             hub: None,
             session: None,
             join_neutral: HashSet::new(),
@@ -151,6 +171,9 @@ impl ControllerManager {
             mappings.put(identity, layout, MappingProfile::from_stored(profile));
         }
         Ok(Self {
+            configuration: ControllerConfiguration::new(None, [])
+                .expect("an empty controller configuration is valid"),
+            applied: None,
             hub: Some(hub),
             session: None,
             join_neutral: HashSet::new(),
@@ -163,8 +186,112 @@ impl ControllerManager {
         self.hub.as_ref()
     }
 
-    pub fn connection_session_active(&self) -> bool {
-        self.session.is_some()
+    pub fn configuration(&self) -> InputConfiguration {
+        self.configuration.snapshot()
+    }
+
+    pub fn applied(&self) -> Option<&ControllerTopology> {
+        self.applied.as_ref()
+    }
+
+    pub fn initialize(&mut self, topology: ControllerTopology) -> Result<(), String> {
+        topology.validate()?;
+        self.applied = Some(topology);
+        Ok(())
+    }
+
+    pub fn clear_applied(&mut self) {
+        self.applied = None;
+    }
+
+    pub fn apply_configuration(
+        &self,
+        transaction: InputTransaction,
+    ) -> Result<InputConfiguration, String> {
+        let configuration = self
+            .configuration
+            .apply(transaction)
+            .map_err(|error| error.to_string())?;
+        self.sync_configuration(&configuration)?;
+        Ok(configuration)
+    }
+
+    pub fn transaction(
+        &self,
+        input: InputTransaction,
+    ) -> Result<ControllerTopologyTransaction, String> {
+        let previous_configuration = self.configuration();
+        let candidate_configuration = self
+            .configuration
+            .preview(&input)
+            .map_err(|error| error.to_string())?;
+        let previous_topology = match &self.applied {
+            Some(topology) => topology.clone(),
+            None => self.topology_for(&previous_configuration)?,
+        };
+        let requested_topology = self.topology_for(&candidate_configuration)?;
+        Ok(ControllerTopologyTransaction::new(
+            input,
+            previous_configuration,
+            candidate_configuration,
+            previous_topology,
+            requested_topology,
+        ))
+    }
+
+    pub fn connection_transaction(
+        &self,
+        commit: &ControllerSessionCommit,
+    ) -> Result<ControllerTopologyTransaction, String> {
+        self.transaction(InputTransaction {
+            expected_revision: self.configuration().revision,
+            operations: vec![InputOperation::ReplaceAssignments {
+                assignments: commit.assignments.clone(),
+            }],
+        })
+    }
+
+    pub fn commit(
+        &mut self,
+        transaction: ControllerTopologyTransaction,
+        applied: ControllerTopology,
+    ) -> Result<InputConfiguration, String> {
+        applied.validate()?;
+        let configuration = self
+            .configuration
+            .apply(transaction.input)
+            .map_err(|error| error.to_string())?;
+        self.applied = Some(applied);
+        Ok(configuration)
+    }
+
+    pub fn assignment_snapshot(&self) -> ControllerAssignmentSnapshot {
+        ControllerAssignmentSnapshot::from_manager(self)
+    }
+
+    pub fn settle_connection_session(
+        &mut self,
+        session_id: &str,
+        committed: bool,
+    ) -> Result<ControllerManagerEffect, String> {
+        let session = self
+            .session
+            .as_mut()
+            .filter(|session| session.id == session_id)
+            .ok_or_else(|| "unknown controller connection session".to_owned())?;
+        if !session.committing {
+            return Err("controller connection session is not committing".to_owned());
+        }
+        if committed {
+            self.session = None;
+            self.finish_assignment_session();
+            Ok(ControllerManagerEffect::SessionDiscovery(false))
+        } else {
+            let assignments = session.assignments.clone();
+            session.committing = false;
+            self.sync_assignments(&assignments)?;
+            Ok(ControllerManagerEffect::SessionDiscovery(true))
+        }
     }
 
     pub fn snapshot(&self) -> serde_json::Value {
@@ -216,9 +343,10 @@ impl ControllerManager {
             "availability": { "osBle": "unknown", "winUsb": "unknown" },
             "devices": devices,
             "players": players,
-            "activeConnectionSession": self.session.as_ref().map(|id| serde_json::json!({
-                "id": id,
+            "activeConnectionSession": self.session.as_ref().map(|session| serde_json::json!({
+                "id": session.id,
                 "active": true,
+                "committing": session.committing,
                 "discovery": { "active": false },
                 "candidates": [],
             })),
@@ -227,12 +355,15 @@ impl ControllerManager {
     }
 
     pub fn sync_configuration(&self, configuration: &InputConfiguration) -> Result<(), String> {
+        self.sync_assignments(&configuration.assignments)
+    }
+
+    fn sync_assignments(&self, assignments: &[SourceAssignment]) -> Result<(), String> {
         let Some(hub) = &self.hub else {
             return Ok(());
         };
         let devices = hub.devices();
-        let configured = configuration
-            .assignments
+        let configured = assignments
             .iter()
             .filter_map(|assignment| match &assignment.source {
                 SourceSelector::Device { device_id } => Some(device_id.as_str()),
@@ -245,7 +376,7 @@ impl ControllerManager {
                     .map_err(|error| error.to_string())?;
             }
         }
-        for assignment in &configuration.assignments {
+        for assignment in assignments {
             let SourceSelector::Device { device_id } = &assignment.source else {
                 continue;
             };
@@ -263,9 +394,16 @@ impl ControllerManager {
         Ok(())
     }
 
-    pub fn observe_session(&mut self) -> Option<Vec<SourceAssignment>> {
-        self.session.as_ref()?;
-        let hub = self.hub.as_ref()?;
+    pub fn observe_session(&mut self) -> bool {
+        let Some(session) = self.session.as_ref() else {
+            return false;
+        };
+        let Some(hub) = self.hub.as_ref() else {
+            return false;
+        };
+        if session.committing {
+            return false;
+        }
         let mut changed = false;
         for (index, descriptor, state, connected) in hub.device_snapshots() {
             if !connected || index.is_some() {
@@ -289,7 +427,7 @@ impl ControllerManager {
                 changed = true;
             }
         }
-        changed.then(|| self.source_assignments())
+        changed
     }
 
     fn clear_assignments(&mut self) -> Result<(), String> {
@@ -463,18 +601,24 @@ mod tests {
         assert_eq!(hub.assignments().len(), 1);
 
         let mut manager = ControllerManager {
+            configuration: ControllerConfiguration::new(None, []).unwrap(),
+            applied: None,
             hub: Some(hub.clone()),
-            session: Some("session".to_owned()),
+            session: Some(ControllerConnectionSession {
+                id: "session".to_owned(),
+                committing: false,
+                assignments: Vec::new(),
+            }),
             join_neutral: HashSet::new(),
             mappings: ControllerProfiles::default(),
             mapping_store: None,
         };
         manager.clear_assignments().unwrap();
         assert!(hub.assignments().is_empty());
-        assert!(manager.observe_session().is_none());
+        assert!(!manager.observe_session());
 
         backend.publish(&device, DeviceState::default());
-        assert!(manager.observe_session().is_none());
+        assert!(!manager.observe_session());
         backend.publish(
             &device,
             DeviceState {
@@ -485,9 +629,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let assignments = manager.observe_session().unwrap();
-        assert_eq!(assignments.len(), 1);
-        assert_eq!(assignments[0].index, 0);
+        assert!(manager.observe_session());
         assert_eq!(hub.assignments()[0].1, device);
     }
 }

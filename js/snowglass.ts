@@ -95,7 +95,7 @@ export interface ConnectionSession extends EventTarget {
   readonly candidates: readonly ManagedControllerDevice[];
   readonly players: readonly ControllerPlayer[];
   connect(id: string): Promise<void>;
-  finish(): Promise<void>;
+  commit(): Promise<void>;
 }
 
 export interface ControllersApi extends EventTarget {

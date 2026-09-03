@@ -87,7 +87,7 @@ impl ShellApplication {
         let completed_change = self
             .pending_input_change
             .as_mut()
-            .and_then(|pending| match pending.response().try_recv() {
+            .and_then(|pending| match pending.response.try_recv() {
                 Ok(result) => Some(result),
                 Err(tokio::sync::oneshot::error::TryRecvError::Closed) => Some(Err(
                     "controller plugin session closed during topology change".to_owned(),

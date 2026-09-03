@@ -1,8 +1,7 @@
-use snowglass_config::input::{
-    InputConfiguration, InputOperation, InputTransaction, SourceAssignment,
-};
+use snowglass_config::input::{InputConfiguration, InputTransaction};
 use snowglass_controllers::{
-    ControllerConfiguration, ControllerManager, ControllerManagerEffect, ControllerTopology,
+    ControllerCommandOutcome, ControllerManager, ControllerManagerEffect, ControllerSessionCommit,
+    ControllerTopology, ControllerTopologyTransaction,
 };
 use snowglass_egui::{InputAxisDiagnostics, InputDiagnostics, InputSlotDiagnostics};
 use snowglass_input::{
@@ -59,8 +58,6 @@ impl GameInputEndpoint {
 pub(crate) struct InputPublication {
     pub diagnostics: InputDiagnostics,
     pub api_state: Option<serde_json::Value>,
-    pub configuration_changed: bool,
-    pub connection_session_active: bool,
 }
 
 pub(crate) struct InputConfigurationPublication {
@@ -68,21 +65,9 @@ pub(crate) struct InputConfigurationPublication {
     pub layouts: serde_json::Value,
 }
 
-pub(crate) struct PreparedInputTransaction {
-    transaction: InputTransaction,
-    next: InputConfiguration,
-}
-
-impl PreparedInputTransaction {
-    pub(crate) fn candidate(&self) -> &InputConfiguration {
-        &self.next
-    }
-}
-
 pub(crate) struct InputRouter {
     hub: InputHub,
-    configuration: ControllerConfiguration,
-    manager: ControllerManager,
+    controllers: ControllerManager,
     controller_api: snowglass_runtime::ControllerApiState,
     listener: Option<InputIpcListener>,
     sdl: Arc<snowglass_input_sdl3::Sdl3Backend>,
@@ -99,7 +84,6 @@ pub(crate) struct InputRouter {
     dom_alt_key: bool,
     next_publish: Instant,
     last_controller_api_revision: u64,
-    controller_topology: Option<ControllerTopology>,
     input_hooks: Vec<snowglass_runtime::InputHook>,
     input_namespace: String,
     raw_hid: Vec<RawHidChannel>,
@@ -134,21 +118,18 @@ impl InputRouter {
         let mut bluetooth_ui = BluetoothUi::new(&bluetooth);
         hub.register_backend(bluetooth.clone())
             .map_err(|error| error.to_string())?;
-        let manager = ControllerManager::open(
+        let controller_manager = ControllerManager::open(
             directories.storage().join("input.db"),
             controller_api.controller_profiles(),
             hub.clone(),
         )
         .await?;
-        let configuration =
-            ControllerConfiguration::new(None, []).map_err(|error| error.to_string())?;
-        let mut controllers = manager.snapshot();
+        let mut controllers = controller_manager.snapshot();
         bluetooth_ui.merge(&mut controllers);
-        controller_api.publish(controllers, &manager);
+        controller_api.publish(controllers, controller_manager.assignment_snapshot());
         Ok(Self {
             hub,
-            configuration,
-            manager,
+            controllers: controller_manager,
             controller_api,
             listener: None,
             sdl,
@@ -167,7 +148,6 @@ impl InputRouter {
             dom_alt_key: false,
             next_publish: Instant::now(),
             last_controller_api_revision: 0,
-            controller_topology: None,
             input_hooks: Vec::new(),
             input_namespace: String::new(),
             raw_hid: Vec::new(),
@@ -175,7 +155,7 @@ impl InputRouter {
     }
 
     pub fn configuration_snapshot(&self) -> InputConfiguration {
-        self.configuration.snapshot()
+        self.controllers.configuration()
     }
 
     pub async fn shutdown(&self) {
@@ -184,23 +164,12 @@ impl InputRouter {
         }
     }
 
-    pub fn controller_topology(&self) -> Result<ControllerTopology, String> {
-        self.manager.topology_for(&self.configuration.snapshot())
-    }
-
-    pub fn applied_controller_topology(&self) -> Option<&ControllerTopology> {
-        self.controller_topology.as_ref()
-    }
-
-    pub fn controller_topology_for(
-        &self,
-        configuration: &InputConfiguration,
-    ) -> Result<ControllerTopology, String> {
-        self.manager.topology_for(configuration)
+    pub fn applied_controller_topology(&self) -> Option<ControllerTopology> {
+        self.controllers.applied().cloned()
     }
 
     pub fn layouts(&self) -> &'static [snowglass_input_layout::layout::InputLayout] {
-        self.configuration.layouts()
+        snowglass_input_layout::layout::InputLayout::all()
     }
 
     pub fn configuration_publication(&self) -> InputConfigurationPublication {
@@ -480,23 +449,17 @@ impl InputRouter {
         topology: &ControllerTopology,
     ) -> Result<(), String> {
         let transaction =
-            topology.input_transaction(machine, self.configuration.snapshot().revision)?;
-        self.configuration
-            .apply(transaction)
-            .map_err(|error| error.to_string())?;
-        self.manager
-            .sync_configuration(&self.configuration.snapshot())?;
-        let wire = topology.input_topology(
-            self.configuration.snapshot().revision as u32,
-            Some(machine.to_owned()),
-        )?;
+            topology.input_transaction(machine, self.configuration_snapshot().revision)?;
+        let configuration = self.controllers.apply_configuration(transaction)?;
+        let wire =
+            topology.input_topology(configuration.revision as u32, Some(machine.to_owned()))?;
         if let Some(listener) = &self.listener {
             listener
                 .publish_topology(&wire)
                 .map_err(|error| error.to_string())?;
         }
         self.topology = Some(wire);
-        self.controller_topology = Some(topology.clone());
+        self.controllers.initialize(topology.clone())?;
         self.rebuild_input_hooks()
     }
 
@@ -516,19 +479,19 @@ impl InputRouter {
             listener.clear_raw_hid();
         }
         self.input_hooks.clear();
-        self.controller_topology = None;
+        self.controllers.clear_applied();
         if let Some(topology) = &mut self.topology {
             topology.raw_hid.clear();
         }
     }
 
-    pub fn apply_controller_topology(
+    fn apply_controller_topology_effects(
         &mut self,
-        topology: ControllerTopology,
+        topology: &ControllerTopology,
+        configuration: &InputConfiguration,
     ) -> Result<(), String> {
-        let configuration = self.configuration.snapshot();
-        let mut input_topology =
-            topology.input_topology(configuration.revision as u32, configuration.machine)?;
+        let mut input_topology = topology
+            .input_topology(configuration.revision as u32, configuration.machine.clone())?;
         if let Some(previous) = &self.topology {
             // Raw HID bindings describe live channels rather than the projected
             // controller layout. Preserve them until rebuild_input_hooks has
@@ -537,131 +500,142 @@ impl InputRouter {
             input_topology.raw_hid.clone_from(&previous.raw_hid);
         }
         self.topology = Some(input_topology);
-        self.controller_topology = Some(topology);
         self.rebuild_input_hooks()
     }
 
-    pub fn stage_controller_change(
+    fn apply_controller_topology(
         &mut self,
+        topology: &ControllerTopology,
         configuration: &InputConfiguration,
-        topology: ControllerTopology,
-    ) -> Result<ControllerTopology, String> {
-        let previous_topology = self
-            .controller_topology
-            .clone()
-            .ok_or_else(|| "an active game has no applied controller topology".to_owned())?;
-        tracing::info!(
-            configuration_revision = configuration.revision,
-            previous = %previous_topology.assignment_diagnostics(),
-            requested = %topology.assignment_diagnostics(),
-            "snowglass: host staging controller topology"
-        );
-        let previous_configuration = self.configuration.snapshot();
-        let staged = self
-            .manager
-            .sync_configuration(configuration)
-            .and_then(|()| self.apply_controller_topology(topology));
-        if let Err(error) = staged {
-            let configuration_restore = self.manager.sync_configuration(&previous_configuration);
-            let topology_restore = self.apply_controller_topology(previous_topology.clone());
-            return match (configuration_restore, topology_restore) {
-                (Ok(()), Ok(())) => Err(error),
-                (configuration, topology) => Err(format!(
-                    "{error}; restoring input after staging failed: configuration={configuration:?}, topology={topology:?}"
-                )),
-            };
-        }
-        Ok(previous_topology)
-    }
-
-    pub fn rollback_controller_change(
-        &mut self,
-        topology: ControllerTopology,
     ) -> Result<(), String> {
-        tracing::warn!(
-            restored = %topology.assignment_diagnostics(),
-            "snowglass: host rolling back controller topology"
+        self.controllers.sync_configuration(configuration)?;
+        self.apply_controller_topology_effects(topology, configuration)
+    }
+
+    pub fn prepare_controller_transaction(
+        &self,
+        input: InputTransaction,
+    ) -> Result<ControllerTopologyTransaction, String> {
+        self.controllers.transaction(input)
+    }
+
+    pub fn prepare_controller_session_transaction(
+        &self,
+        commit: &ControllerSessionCommit,
+    ) -> Result<ControllerTopologyTransaction, String> {
+        self.controllers.connection_transaction(commit)
+    }
+
+    pub fn stage_controller_transaction(
+        &mut self,
+        transaction: &ControllerTopologyTransaction,
+    ) -> Result<(), String> {
+        tracing::info!(
+            configuration_revision = transaction.candidate_configuration().revision,
+            previous = %transaction.previous_topology().assignment_diagnostics(),
+            requested = %transaction.requested_topology().assignment_diagnostics(),
+            "snowglass: staging controller topology transaction"
         );
-        let configuration = self.configuration.snapshot();
-        self.manager.sync_configuration(&configuration)?;
-        self.apply_controller_topology(topology)
+        self.apply_controller_topology(
+            transaction.requested_topology(),
+            transaction.candidate_configuration(),
+        )
+        .map_err(|error| self.rollback_controller_transaction(transaction, error))
     }
 
-    pub fn prepare_configuration_transaction(
+    pub fn finish_controller_transaction(
         &mut self,
-        transaction: InputTransaction,
-        _topology_locked: bool,
-    ) -> Result<PreparedInputTransaction, String> {
-        let next = self
-            .configuration
-            .preview(&transaction)
-            .map_err(|error| error.to_string())?;
-        self.manager.topology_for(&next)?;
-        Ok(PreparedInputTransaction { transaction, next })
-    }
-
-    pub fn commit_configuration_transaction(
-        &mut self,
-        prepared: PreparedInputTransaction,
+        transaction: ControllerTopologyTransaction,
+        callback: Result<ControllerTopology, String>,
     ) -> Result<InputConfiguration, String> {
-        let configuration = self
-            .configuration
-            .apply(prepared.transaction)
-            .map_err(|error| error.to_string())?;
-        self.manager.sync_configuration(&configuration)?;
-        Ok(configuration)
+        let applied = match callback {
+            Ok(applied) => applied,
+            Err(error) => return Err(self.rollback_controller_transaction(&transaction, error)),
+        };
+        if &applied != transaction.requested_topology()
+            && let Err(error) =
+                self.apply_controller_topology(&applied, transaction.candidate_configuration())
+        {
+            return Err(self.rollback_controller_transaction(&transaction, error));
+        }
+        self.controllers.commit(transaction, applied)
+    }
+
+    fn rollback_controller_transaction(
+        &mut self,
+        transaction: &ControllerTopologyTransaction,
+        error: String,
+    ) -> String {
+        tracing::warn!(
+            restored = %transaction.previous_topology().assignment_diagnostics(),
+            "snowglass: rolling back controller topology transaction"
+        );
+        match self.apply_controller_topology(
+            transaction.previous_topology(),
+            transaction.previous_configuration(),
+        ) {
+            Ok(()) => error,
+            Err(rollback) => format!("{error}; rollback failed: {rollback}"),
+        }
     }
 
     pub async fn controller_command(
         &mut self,
         command: serde_json::Value,
-        _topology_locked: bool,
-    ) -> Result<(serde_json::Value, bool), String> {
-        let outcome = self.manager.command(command).await?;
+    ) -> Result<ControllerCommandOutcome, String> {
+        let mut outcome = self.controllers.command(command).await?;
         let state_response = outcome.response.get("devices").is_some();
-        let mut configuration_changed = outcome
-            .assignments
-            .map(|assignments| self.replace_assignments(assignments))
-            .transpose()?
-            .unwrap_or(false);
-        for effect in outcome.effects {
-            match effect {
-                ControllerManagerEffect::SessionDiscovery(active) => {
-                    self.bluetooth_ui.set_session_active(active);
-                }
-                ControllerManagerEffect::DisconnectSources(sources) => {
-                    for source in sources {
-                        self.bluetooth_ui.disconnect(&source);
-                    }
-                }
-                ControllerManagerEffect::Connect(id) => self.bluetooth_ui.connect(&id)?,
-                ControllerManagerEffect::Forget(id) => self.bluetooth_ui.forget(&id)?,
-                ControllerManagerEffect::ReapplyMappings => configuration_changed = true,
-            }
+        for effect in std::mem::take(&mut outcome.effects) {
+            self.apply_controller_manager_effect(effect)?;
         }
         let controllers = self.publish_controller_api();
-        Ok((
-            if state_response {
-                controllers
-            } else {
-                outcome.response
-            },
-            configuration_changed,
-        ))
+        if state_response {
+            outcome.response = controllers;
+        }
+        Ok(outcome)
+    }
+
+    pub fn settle_controller_session(
+        &mut self,
+        session_id: &str,
+        committed: bool,
+    ) -> Result<serde_json::Value, String> {
+        let effect = self
+            .controllers
+            .settle_connection_session(session_id, committed)?;
+        self.apply_controller_manager_effect(effect)?;
+        Ok(self.publish_controller_api())
+    }
+
+    fn apply_controller_manager_effect(
+        &mut self,
+        effect: ControllerManagerEffect,
+    ) -> Result<(), String> {
+        match effect {
+            ControllerManagerEffect::SessionDiscovery(active) => {
+                self.bluetooth_ui.set_session_active(active);
+            }
+            ControllerManagerEffect::DisconnectSources(sources) => {
+                for source in sources {
+                    self.bluetooth_ui.disconnect(&source);
+                }
+            }
+            ControllerManagerEffect::Connect(id) => {
+                self.bluetooth_ui.connect(&id)?;
+            }
+            ControllerManagerEffect::Forget(id) => {
+                self.bluetooth_ui.forget(&id)?;
+            }
+        }
+        Ok(())
     }
 
     pub fn build_publication(
         &mut self,
         mappings: &[snowglass_controllers::ControllerMapping],
         game_active: bool,
-        _topology_locked: bool,
     ) -> InputPublication {
-        let configuration_changed = self.manager.observe_session().is_some_and(|assignments| {
-            self.replace_assignments(assignments).unwrap_or_else(|error| {
-                tracing::error!(%error, "snowglass: updating controller session assignments failed");
-                false
-            })
-        });
+        self.controllers.observe_session();
         self.publish_controller_api();
         let snapshots = self.hub.snapshot();
         let slots = mappings
@@ -721,26 +695,7 @@ impl InputRouter {
                 slots,
             },
             api_state,
-            configuration_changed,
-            connection_session_active: self.manager.connection_session_active(),
         }
-    }
-
-    fn replace_assignments(&mut self, assignments: Vec<SourceAssignment>) -> Result<bool, String> {
-        let current = self.configuration.snapshot();
-        if current.assignments == assignments {
-            return Ok(false);
-        }
-        let transaction = InputTransaction {
-            expected_revision: current.revision,
-            operations: vec![InputOperation::ReplaceAssignments { assignments }],
-        };
-        let configuration = self
-            .configuration
-            .apply(transaction)
-            .map_err(|error| error.to_string())?;
-        self.manager.sync_configuration(&configuration)?;
-        Ok(true)
     }
 
     fn set_flag(flags: &mut u32, flag: u32, enabled: bool) {
@@ -752,10 +707,10 @@ impl InputRouter {
     }
 
     fn publish_controller_api(&mut self) -> serde_json::Value {
-        let mut controllers = self.manager.snapshot();
+        let mut controllers = self.controllers.snapshot();
         self.bluetooth_ui.merge(&mut controllers);
         self.controller_api
-            .publish(controllers.clone(), &self.manager);
+            .publish(controllers.clone(), self.controllers.assignment_snapshot());
         controllers
     }
 
@@ -763,7 +718,7 @@ impl InputRouter {
         let enabled = self
             .input_hooks
             .contains(&snowglass_runtime::InputHook::BluetoothApiWin32);
-        let Some(controller_topology) = self.controller_topology.as_ref() else {
+        let Some(controller_topology) = self.controllers.applied() else {
             return Ok(());
         };
         let devices = self.hub.devices();

@@ -22,7 +22,7 @@ pub mod toml;
 
 pub use actions::ParsedHotkey;
 pub use configuration::{ConfigurationAccessError, SerializedConfiguration};
-pub use controller::{ControllerSession, PauseState, SessionError};
+pub use controller::{ControllerSession, PauseState};
 pub(crate) use emulator::EmulatorLaunchInvocation;
 pub use emulator::{
     EmulatorHostError, EmulatorLaunchArguments, EmulatorPluginInstance, EmulatorPort, GraphicsHook,
