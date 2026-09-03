@@ -181,10 +181,9 @@ impl Runtime {
             executor.block_on(async move {
                 let document_url = ModuleSpecifier::parse(&source_name)?;
                 let browser_loader = Rc::new(BrowserModuleLoader::new());
-                let platform = Arc::new(snowglass_runtime::CommandRuntimePlatform::new(
+                let platform = Arc::new(snowglass_runtime::RuntimePlatform::new(
                     emulator_commands,
                     input_commands,
-                    controller_api.clone(),
                     webrtc_commands,
                 ));
                 let (snowglass_extension, notifications) =

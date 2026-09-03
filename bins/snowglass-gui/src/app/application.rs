@@ -356,7 +356,8 @@ impl ShellApplication {
                 return true;
             };
             if self.pending_quit.is_none()
-                && let Some(pending) = state.apply_emulator_command(EmulatorCommand::Close(token))
+                && let Some(pending) =
+                    state.apply_emulator_command(EmulatorCommand::Close { token })
                 && let PendingEmulatorCallback::Quit(pending) = pending
             {
                 self.pending_quit = Some(pending);

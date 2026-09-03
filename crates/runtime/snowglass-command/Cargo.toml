@@ -1,0 +1,12 @@
+[package]
+name = "snowglass-command"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+paste = "1.0.15"
+tokio = { version = "1.53.0", features = ["sync"] }
+
+[lints]
+workspace = true

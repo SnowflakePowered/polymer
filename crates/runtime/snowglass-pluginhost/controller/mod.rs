@@ -1,39 +1,48 @@
-use std::sync::Arc;
+snowglass_command::command_client! {
+    pub client ControllerSession {
+        closed: "controller plugin session is closed".to_owned();
 
-#[derive(Clone, Debug)]
-pub struct ControllerSession {
-    commands: Arc<std::sync::mpsc::Sender<ControllerSessionCommand>>,
-}
+        #[args(AttachAutomation)]
+        fn attach_automation_session(
+            session: snowglass_automation::AutomationSession,
+        ) -> Result<(), String>;
 
-pub(crate) enum ControllerSessionCommand {
-    AttachAutomation(
-        snowglass_automation::AutomationSession,
-        std::sync::mpsc::SyncSender<Result<(), String>>,
-    ),
-    AttachActions(
-        crate::actions::ActionSink,
-        std::sync::mpsc::SyncSender<Result<(), String>>,
-    ),
-    Changed(
-        snowglass_controllers::ControllerTopologyChange,
-        tokio::sync::oneshot::Sender<Result<snowglass_controllers::ControllerTopology, String>>,
-    ),
-    PauseResume(
-        PauseState,
-        std::time::Duration,
-        tokio::sync::oneshot::Sender<Result<(), String>>,
-    ),
-    StateAction(
-        u32,
-        bool,
-        std::time::Duration,
-        tokio::sync::oneshot::Sender<Result<(), String>>,
-    ),
-    Quit(
-        std::time::Duration,
-        tokio::sync::oneshot::Sender<Result<Option<Vec<u8>>, String>>,
-    ),
-    Stop,
+        #[args(AttachActions)]
+        fn attach_action_sink(
+            sink: crate::actions::ActionSink,
+        ) -> Result<(), String>;
+
+        #[deferred]
+        #[args(Changed)]
+        pub fn change(
+            change: snowglass_controllers::ControllerTopologyChange,
+        ) -> Result<snowglass_controllers::ControllerTopology, String>;
+
+        #[deferred]
+        #[args(PauseResume)]
+        fn pause_resume_with_timeout(
+            state: PauseState,
+            timeout: std::time::Duration,
+        ) -> Result<(), String>;
+
+        #[deferred]
+        #[args(StateAction)]
+        fn dispatch_state_action(
+            slot: u32,
+            save: bool,
+            timeout: std::time::Duration,
+        ) -> Result<(), String>;
+
+        #[deferred]
+        #[args(Quit)]
+        fn quit_with_timeout(
+            timeout: std::time::Duration,
+        ) -> Result<Option<Vec<u8>>, String>;
+
+        #[oneshot]
+        #[args(Stop)]
+        fn stop();
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -58,15 +67,7 @@ impl ControllerSession {
         timeout: Option<std::time::Duration>,
     ) -> Result<tokio::sync::oneshot::Receiver<Result<(), String>>, String> {
         const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-        let (result, response) = tokio::sync::oneshot::channel();
-        self.commands
-            .send(ControllerSessionCommand::PauseResume(
-                state,
-                timeout.unwrap_or(DEFAULT_TIMEOUT),
-                result,
-            ))
-            .map_err(|_| "emulator plugin session is closed".to_owned())?;
-        Ok(response)
+        self.pause_resume_with_timeout(state, timeout.unwrap_or(DEFAULT_TIMEOUT))
     }
 
     pub fn save_state(
@@ -92,16 +93,7 @@ impl ControllerSession {
         timeout: Option<std::time::Duration>,
     ) -> Result<tokio::sync::oneshot::Receiver<Result<(), String>>, String> {
         const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-        let (result, response) = tokio::sync::oneshot::channel();
-        self.commands
-            .send(ControllerSessionCommand::StateAction(
-                slot,
-                save,
-                timeout.unwrap_or(DEFAULT_TIMEOUT),
-                result,
-            ))
-            .map_err(|_| "emulator plugin session is closed".to_owned())?;
-        Ok(response)
+        self.dispatch_state_action(slot, save, timeout.unwrap_or(DEFAULT_TIMEOUT))
     }
 
     pub fn quit(
@@ -109,70 +101,28 @@ impl ControllerSession {
         timeout: Option<std::time::Duration>,
     ) -> Result<tokio::sync::oneshot::Receiver<Result<Option<Vec<u8>>, String>>, String> {
         const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-        let (result, response) = tokio::sync::oneshot::channel();
-        self.commands
-            .send(ControllerSessionCommand::Quit(
-                timeout.unwrap_or(DEFAULT_TIMEOUT),
-                result,
-            ))
-            .map_err(|_| "emulator plugin session is closed".to_owned())?;
-        Ok(response)
+        self.quit_with_timeout(timeout.unwrap_or(DEFAULT_TIMEOUT))
     }
 
     pub fn attach_actions(
         &self,
         sink: impl Fn(&crate::ParsedHotkey) -> Result<(), String> + Send + Sync + 'static,
     ) -> Result<(), String> {
-        let (result, response) = std::sync::mpsc::sync_channel(1);
-        self.commands
-            .send(ControllerSessionCommand::AttachActions(
-                Arc::new(sink),
-                result,
-            ))
-            .map_err(|_| "emulator plugin session is closed while attaching actions".to_owned())?;
-        response
-            .recv()
-            .map_err(|_| "emulator plugin session closed while attaching actions".to_owned())?
-    }
-
-    pub(crate) fn new(commands: std::sync::mpsc::Sender<ControllerSessionCommand>) -> Self {
-        Self {
-            commands: Arc::new(commands),
-        }
-    }
-
-    pub fn change(
-        &self,
-        change: snowglass_controllers::ControllerTopologyChange,
-    ) -> Result<
-        tokio::sync::oneshot::Receiver<Result<snowglass_controllers::ControllerTopology, String>>,
-        String,
-    > {
-        let (response, receiver) = tokio::sync::oneshot::channel();
-        self.commands
-            .send(ControllerSessionCommand::Changed(change, response))
-            .map_err(|_| "controller plugin session is closed".to_owned())?;
-        Ok(receiver)
+        self.attach_action_sink(std::sync::Arc::new(sink))
     }
 
     pub fn attach_automation(
         &self,
         session: snowglass_automation::AutomationSession,
     ) -> Result<(), String> {
-        let (result, response) = std::sync::mpsc::sync_channel(1);
-        self.commands
-            .send(ControllerSessionCommand::AttachAutomation(session, result))
-            .map_err(|_| "controller plugin session is closed".to_owned())?;
-        response
-            .recv()
-            .map_err(|_| "controller plugin session closed while attaching automation".to_owned())?
+        self.attach_automation_session(session)
     }
 }
 
 impl Drop for ControllerSession {
     fn drop(&mut self) {
-        if Arc::strong_count(&self.commands) == 1 {
-            let _ = self.commands.send(ControllerSessionCommand::Stop);
+        if self.sender.is_unique() {
+            self.stop();
         }
     }
 }

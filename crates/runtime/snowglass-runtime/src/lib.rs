@@ -22,9 +22,8 @@ pub use configuration::{
 };
 pub use consolestorage::{manager as console_storage_manager, serve as serve_console_storage};
 pub use frontend::{
-    CommandRuntimePlatform, CommandSink, ControllerApiState, EmulatorCommand, EmulatorCommandSink,
-    FrontendServices, InputCommand, InputCommandSink, RuntimePlatform, WebRtcCommand,
-    WebRtcCommandSink,
+    ControllerApiState, Emulator, EmulatorCommand, EmulatorCommandSink, FrontendServices, Input,
+    InputCommand, InputCommandSink, RuntimePlatform, WebRtc, WebRtcCommand, WebRtcCommandSink,
 };
 pub use instance::{
     AudioState, EmulatorActionEndpoint, EmulatorInstance, EmulatorLaunchConfig, HotkeyChord,
@@ -36,6 +35,7 @@ pub use instance::{
 pub use savestates::{RgbaScreenshot, SaveStateManager, SaveStateMetadata};
 pub use scraping::{ScrapedPackage, ScrapingError};
 pub use session::{SessionController, mount_prepared_filesystem};
+pub use snowglass_command::CommandSink;
 pub use snowglass_pluginhost::{GraphicsHook, Hooks, InputHook};
 pub use storage::launch_storage;
 pub use ui::{UiRequest, UiRequestReceiver};
