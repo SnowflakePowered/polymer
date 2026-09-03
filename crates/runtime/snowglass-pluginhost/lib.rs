@@ -26,7 +26,7 @@ pub use controller::{ControllerSession, PauseState};
 pub(crate) use emulator::EmulatorLaunchInvocation;
 pub use emulator::{
     EmulatorHostError, EmulatorLaunchArguments, EmulatorPluginInstance, EmulatorPort, GraphicsHook,
-    Hooks, InputHook, TrackedSurface,
+    Hooks, InputHook, QuickResumeData, TrackedSurface,
 };
 pub use filesystem::{StorageFactories, StorageFactory};
 pub use module_loader::PluginModuleLoader;
@@ -37,7 +37,7 @@ pub use plugin_runtime::{
 pub use runtime::{PluginInstance, PluginRegistry, PluginRegistryError, ThemePluginInstance};
 pub use toml::{
     EmulatorPlugin, PackageError, PluginCache, PluginPackage, PluginResource, PluginResourceFormat,
-    ThemeDebug, ThemePlugin,
+    SaveStateConfig, ThemeDebug, ThemePlugin,
 };
 
 #[cfg(test)]
@@ -107,6 +107,10 @@ mod tests {
 
         fn platforms(&self) -> &[String] {
             &[]
+        }
+
+        fn save_states(&self) -> Option<&SaveStateConfig> {
+            None
         }
 
         fn ports(&self, _console: &str) -> Result<Vec<EmulatorPort>, PackageError> {

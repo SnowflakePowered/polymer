@@ -36,6 +36,10 @@ impl Directories {
         self.cache.join(plugin)
     }
 
+    pub fn quick_resume(&self) -> PathBuf {
+        self.cache.join("quick-resume")
+    }
+
     pub fn consolestorage(&self) -> PathBuf {
         self.storage.clone()
     }

@@ -19,6 +19,16 @@ struct EmulatorBlock {
     platforms: Vec<String>,
     main: PathBuf,
     configuration: ConfigurationBlock,
+    #[serde(default)]
+    savestates: Option<SaveStateConfig>,
+}
+
+#[derive(Clone, Debug, Deserialize, serde::Serialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveStateConfig {
+    pub max: std::num::NonZeroU32,
+    #[serde(default)]
+    pub revision: Option<String>,
 }
 
 /// Keys owned by the `[emulator.configuration]` block.
@@ -47,6 +57,14 @@ impl EmulatorPlugin {
             });
         }
         let emulator = package.block();
+        if emulator
+            .savestates
+            .as_ref()
+            .and_then(|states| states.revision.as_deref())
+            .is_some_and(|revision| revision.trim().is_empty())
+        {
+            return Err(PackageError::InvalidSaveStateRevision);
+        }
         let entrypoint_path = confined_path(package.root(), &emulator.main)?;
         let module_loader = package.module_loader();
         let entrypoint = module_loader
@@ -114,6 +132,10 @@ impl EmulatorPlugin {
 
     pub fn platforms(&self) -> &[String] {
         &self.package.block().platforms
+    }
+
+    pub fn save_states(&self) -> Option<&SaveStateConfig> {
+        self.package.block().savestates.as_ref()
     }
 
     pub fn ports(&self, console: &str) -> Result<Vec<EmulatorPort>, PackageError> {
@@ -234,6 +256,10 @@ impl EmulatorPluginInstance for EmulatorPlugin {
 
     fn platforms(&self) -> &[String] {
         self.platforms()
+    }
+
+    fn save_states(&self) -> Option<&SaveStateConfig> {
+        self.save_states()
     }
 
     fn ports(&self, console: &str) -> Result<Vec<EmulatorPort>, PackageError> {

@@ -12,6 +12,7 @@ crossfire.workspace = true
 consolespec.workspace = true
 dashmap.workspace = true
 gumshoe.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
 parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true

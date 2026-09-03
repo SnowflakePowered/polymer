@@ -23,6 +23,16 @@ pub(crate) enum ControllerSessionCommand {
         std::time::Duration,
         tokio::sync::oneshot::Sender<Result<(), String>>,
     ),
+    StateAction(
+        u32,
+        bool,
+        std::time::Duration,
+        tokio::sync::oneshot::Sender<Result<(), String>>,
+    ),
+    Quit(
+        std::time::Duration,
+        tokio::sync::oneshot::Sender<Result<Option<Vec<u8>>, String>>,
+    ),
     Stop,
 }
 
@@ -52,6 +62,56 @@ impl ControllerSession {
         self.commands
             .send(ControllerSessionCommand::PauseResume(
                 state,
+                timeout.unwrap_or(DEFAULT_TIMEOUT),
+                result,
+            ))
+            .map_err(|_| "emulator plugin session is closed".to_owned())?;
+        Ok(response)
+    }
+
+    pub fn save_state(
+        &self,
+        slot: u32,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<tokio::sync::oneshot::Receiver<Result<(), String>>, String> {
+        self.state_action(slot, true, timeout)
+    }
+
+    pub fn resume_state(
+        &self,
+        slot: u32,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<tokio::sync::oneshot::Receiver<Result<(), String>>, String> {
+        self.state_action(slot, false, timeout)
+    }
+
+    fn state_action(
+        &self,
+        slot: u32,
+        save: bool,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<tokio::sync::oneshot::Receiver<Result<(), String>>, String> {
+        const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+        let (result, response) = tokio::sync::oneshot::channel();
+        self.commands
+            .send(ControllerSessionCommand::StateAction(
+                slot,
+                save,
+                timeout.unwrap_or(DEFAULT_TIMEOUT),
+                result,
+            ))
+            .map_err(|_| "emulator plugin session is closed".to_owned())?;
+        Ok(response)
+    }
+
+    pub fn quit(
+        &self,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<tokio::sync::oneshot::Receiver<Result<Option<Vec<u8>>, String>>, String> {
+        const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+        let (result, response) = tokio::sync::oneshot::channel();
+        self.commands
+            .send(ControllerSessionCommand::Quit(
                 timeout.unwrap_or(DEFAULT_TIMEOUT),
                 result,
             ))

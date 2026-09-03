@@ -63,8 +63,18 @@ ACTION_VOCABULARY = {
     # Dolphin's HK_EXIT has no default binding and quits the whole application;
     # Snowglass runs Dolphin without batch mode so its control window remains
     # available for live settings automation. Exit must still close Dolphin.
-    "exit": {"hotkey": "HK_EXIT"},
+    "exit": {"hotkey": "HK_EXIT", "fallback": ("escape", "ESCAPE"), "allow_collision": True},
 }
+for slot in range(1, 11):
+    key = str(slot % 10)
+    ACTION_VOCABULARY[f"load_state_{slot}"] = {
+        "hotkey": f"HK_LOAD_STATE_SLOT_{slot}",
+        "fallback": (f"ctrl+alt+{key}", f"@(Ctrl+Alt+{key})"),
+    }
+    ACTION_VOCABULARY[f"save_state_{slot}"] = {
+        "hotkey": f"HK_SAVE_STATE_SLOT_{slot}",
+        "fallback": (f"ctrl+shift+{key}", f"@(Ctrl+Shift+{key})"),
+    }
 
 # consolespec binding key → the Dolphin control it drives, per inputspec layout. Each
 # entry is validated twice: against the group/input tables parsed out of Dolphin's
@@ -895,7 +905,7 @@ def build_actions(root: Path, revision: str | None, report: Report) -> str:
                 report.error(f"action `{action}`: {hotkey} has no default and no fallback")
                 continue
             chord, expression = fallback
-            if chord in taken:
+            if chord in taken and not spec.get("allow_collision", False):
                 report.error(
                     f"action `{action}`: fallback `{expression}` collides with a Dolphin default"
                 )

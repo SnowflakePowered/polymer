@@ -101,6 +101,25 @@ struct PendingPauseResume {
     response: tokio::sync::oneshot::Receiver<Result<(), String>>,
 }
 
+struct PendingStateAction {
+    slot: u32,
+    save: bool,
+    result: tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
+    response: tokio::sync::oneshot::Receiver<Result<(), String>>,
+}
+
+struct PendingQuit {
+    token: InstanceToken,
+    cache: crate::launch::QuickResumeCache,
+    response: tokio::sync::oneshot::Receiver<Result<Option<Vec<u8>>, String>>,
+}
+
+enum PendingEmulatorCallback {
+    PauseResume(PendingPauseResume),
+    State(PendingStateAction),
+    Quit(PendingQuit),
+}
+
 impl ShellCoordinator {
     async fn new(
         window: WindowBootstrap,

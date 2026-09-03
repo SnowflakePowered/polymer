@@ -8,9 +8,13 @@ rust-version.workspace = true
 
 [dependencies]
 directories = "6.0.0"
+blake3.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 snowglass-consolestorage = { version = "0.1.0", path = "../../filesystem/snowglass-consolestorage" }
 thiserror.workspace = true
 tokio = { version = "1.53.1", features = ["fs", "rt"] }
+tracing.workspace = true
 turso.workspace = true
 uuid = "1.24.1"
 

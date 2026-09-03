@@ -4,6 +4,9 @@ import {
   op_emulator_launch,
   op_emulator_message,
   op_emulator_pause_state,
+  op_emulator_save_state,
+  op_emulator_resume_state,
+  op_emulator_state_screenshot,
   op_emulator_set_muted,
   op_emulator_set_volume,
 } from "ext:core/ops";
@@ -70,6 +73,8 @@ export function createEmulator(webrtc) {
       machine: options.machine,
       preparedFilesystem: options.preparedFilesystem,
       controllerSession: options.controllerSession,
+      saveStates: options.saveStates ?? null,
+      quickResumeCache: options.quickResumeCache ?? null,
     };
   }
 
@@ -87,9 +92,11 @@ export function createEmulator(webrtc) {
       super();
       this.id = id;
       this.request = Object.freeze(options);
+      this.quickResume = options.quickResume ?? null;
       this.requested = Object.freeze([...options.surfaces]);
       this.surfaces = Object.freeze([]);
       this.audio = Object.freeze({ available: false, volume: 1, muted: false });
+      this.saveStates = Object.freeze([]);
       this.ready = this.#ready.promise;
       this.closed = this.#closed.promise;
     }
@@ -188,6 +195,54 @@ export function createEmulator(webrtc) {
       }
     }
 
+    #validateStateTimeout(timeoutMs) {
+      if (!Number.isInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 0xffff_ffff) {
+        throw new TypeError("save-state timeout must be a positive 32-bit integer");
+      }
+    }
+
+    #saveStateRecord(metadata) {
+      const launch = this;
+      let screenshot;
+      return Object.freeze({
+        slot: metadata.slot,
+        timestamp: new Date(metadata.timestamp),
+        async screenshot() {
+          if (!metadata.hasScreenshot) return null;
+          if (screenshot === undefined) {
+            screenshot = (async () => {
+              const bytes = await op_emulator_state_screenshot(launch.id, metadata.recordId);
+              return bytes == null ? null : new Blob([bytes], { type: "image/png" });
+            })();
+          }
+          return screenshot;
+        },
+      });
+    }
+
+    async saveState(timeoutMs = 30_000) {
+      this.#validateStateTimeout(timeoutMs);
+      if (!this.#canControl()) throw new DOMException("The launch is closing", "InvalidStateError");
+      const state = this.#saveStateRecord(await op_emulator_save_state(this.id, timeoutMs));
+      this.saveStates = Object.freeze([
+        state,
+        ...this.saveStates.filter(candidate => candidate.slot !== state.slot),
+      ]);
+      this.#publish("statesave", state);
+      return state;
+    }
+
+    async resumeState(slot, timeoutMs = 30_000) {
+      if (!Number.isInteger(slot) || slot < 0 || slot > 0xffff_ffff) {
+        throw new TypeError("save-state slot must be a non-negative 32-bit integer");
+      }
+      this.#validateStateTimeout(timeoutMs);
+      if (!this.#canControl()) throw new DOMException("The launch is closing", "InvalidStateError");
+      const state = this.#saveStateRecord(await op_emulator_resume_state(this.id, slot, timeoutMs));
+      this.#publish("stateresume", state);
+      return state;
+    }
+
     close() {
       if (!this.#canControl()) return;
       this.#closeRequested = true;
@@ -244,6 +299,7 @@ export function createEmulator(webrtc) {
           this.#rejectReady(this.#error || new Error("Emulator closed before becoming ready"));
         }
         this.#state = "closed";
+        this.saveStates = Object.freeze([]);
         this.surfaces = Object.freeze([]);
         webrtc.instanceClosed(this);
         if (activeLaunch === this) publishActiveLaunch(null);

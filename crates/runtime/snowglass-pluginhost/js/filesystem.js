@@ -14,14 +14,18 @@ import {
   op_vfs_path,
   op_vfs_resource_bytes,
   op_vfs_resource_entries,
+  op_vfs_resource_remove,
+  op_vfs_scratch_resource,
   op_vfs_resources,
   op_vfs_storage,
+  op_vfs_quick_resume,
   op_vfs_set_profile,
   op_vfs_set_working_directory,
   op_vfs_flush,
 } from "ext:core/ops";
 
 const handles = new WeakMap();
+const saveStateEntries = new WeakSet();
 const storageHandles = new WeakSet();
 const configurationMounts = [];
 
@@ -32,20 +36,30 @@ function resource(description) {
   return value;
 }
 
-function readableEntry(description, path, entry, root = false) {
+function readableEntry(description, path, entry, root = false, saveState = false) {
   const current = root ? path : [...path, entry.name];
   if (entry.kind === "directory") {
-    return Object.freeze({
+    const value = Object.freeze({
       name: entry.name,
       kind: "directory",
       async *[Symbol.asyncIterator]() {
         for (const child of op_vfs_resource_entries(description.kind, description.handle, current)) {
-          yield readableEntry(description, current, child);
+          yield readableEntry(description, current, child, false, saveState);
         }
       },
+      async remove(name) {
+        name = String(name);
+        if (!name || name.includes("/") || name.includes("\\") || name === "." || name === "..") {
+          throw new TypeError("resource entry name must be one plain path component");
+        }
+        op_vfs_resource_remove(description.kind, description.handle, [...current, name]);
+      },
     });
+    if (saveState) saveStateEntries.add(value);
+    handles.set(value, { ...description, components: current });
+    return value;
   }
-  return Object.freeze({
+  const value = Object.freeze({
     name: entry.name,
     kind: "file",
     async bytes() {
@@ -55,13 +69,16 @@ function readableEntry(description, path, entry, root = false) {
       return new TextDecoder().decode(op_vfs_resource_bytes(description.kind, description.handle, current));
     },
   });
+  if (saveState) saveStateEntries.add(value);
+  handles.set(value, { ...description, components: current });
+  return value;
 }
 
-function readableResource(description) {
+function readableResource(description, saveState = false) {
   const value = readableEntry(description, [], {
     name: description.name,
     kind: description.kind === "tree" ? "directory" : "file",
-  }, true);
+  }, true, saveState);
   handles.set(value, description);
   return value;
 }
@@ -83,6 +100,14 @@ for (const description of op_vfs_storage()) {
   });
 }
 Object.freeze(storageResources);
+
+const quickResumeDescription = op_vfs_quick_resume();
+const quickResume = quickResumeDescription == null ? null : Object.freeze({
+  state: readableResource(quickResumeDescription.state),
+  screenshot: quickResumeDescription.screenshot == null
+    ? null
+    : readableResource(quickResumeDescription.screenshot),
+});
 
 function mode(options) {
   if (options == null || typeof options.mode !== "string") {
@@ -129,6 +154,9 @@ const filesystem = Object.freeze({
     const permissions = mode(options);
     const handle = handles.get(source);
     if (handle !== undefined) {
+      if (handle.components?.length) {
+        throw new TypeError("mountFile does not yet support child file entries");
+      }
       op_vfs_mount_file_resource(target, handle.kind, handle.handle, permissions);
       return;
     }
@@ -216,6 +244,16 @@ Object.defineProperty(globalThis, "__snowglassFilesystem", {
       return namedResources[name];
     },
     storage: storageResources,
+    quickResume,
+    createSaveStateDirectory() {
+      return readableResource(op_vfs_scratch_resource("temporary"), true);
+    },
+    async returnedFile(value) {
+      if (!saveStateEntries.has(value) || value?.kind !== "file") {
+        throw new TypeError("onQuit must return a FileEntry from the managed save-state directory");
+      }
+      return value.bytes();
+    },
     flush: op_vfs_flush,
     hasConfigurationMounts: () => configurationMounts.length !== 0,
     refreshConfigurations,

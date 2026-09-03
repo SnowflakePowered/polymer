@@ -31,6 +31,12 @@ pub struct EmulatorLaunchArguments {
     pub session: Option<crate::ControllerSession>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub controller_topology: Option<snowglass_controllers::ControllerTopology>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub save_states: Option<crate::SaveStateConfig>,
+    #[serde(default)]
+    pub quick_resume_accepted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quick_resume_screenshot: Option<Vec<u8>>,
 }
 
 /// A graphics capture hook installed into the target process.
@@ -105,6 +111,13 @@ pub struct EmulatorLaunchInvocation {
     pub arguments: Value,
     pub configuration: ConfigurationInstance,
     pub storage: crate::filesystem::StorageFactories,
+    pub quick_resume: Option<QuickResumeData>,
+}
+
+#[derive(Clone, Debug)]
+pub struct QuickResumeData {
+    pub state: Vec<u8>,
+    pub screenshot: Option<Vec<u8>>,
 }
 
 pub type EmulatorPort = snowglass_controllers::ControllerPort;
@@ -114,6 +127,7 @@ pub trait EmulatorPluginInstance: PluginInstance {
     fn entrypoint(&self) -> &ModuleSpecifier;
     fn configuration_definition(&self) -> &ConfigurationDefinition;
     fn platforms(&self) -> &[String];
+    fn save_states(&self) -> Option<&crate::toml::SaveStateConfig>;
     fn ports(&self, console: &str) -> Result<Vec<EmulatorPort>, PackageError>;
     fn port_assignments(
         &self,

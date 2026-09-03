@@ -27,6 +27,16 @@ pub struct AttachedLaunchPlan {
     pub prepared_filesystem: Option<String>,
     #[serde(default)]
     pub controller_session: Option<String>,
+    #[serde(default)]
+    pub save_states: Option<snowglass_pluginhost::SaveStateConfig>,
+    #[serde(default)]
+    pub quick_resume_cache: Option<QuickResumeCache>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct QuickResumeCache {
+    pub key: String,
+    pub revision: String,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]

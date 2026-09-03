@@ -13,7 +13,7 @@ impl ShellCoordinator {
     pub(super) fn apply_emulator_command(
         &mut self,
         command: EmulatorCommand,
-    ) -> Option<PendingPauseResume> {
+    ) -> Option<PendingEmulatorCallback> {
         match command {
             EmulatorCommand::Launch {
                 token,
@@ -33,7 +33,26 @@ impl ShellCoordinator {
                 });
                 let _ = result.send(launched);
             }
-            EmulatorCommand::Close(token) => self.close_game(token),
+            EmulatorCommand::Close(token) => {
+                match self.game_host.begin_quit(token, Duration::from_secs(30)) {
+                    Ok(Some((cache, response))) => {
+                        return Some(PendingEmulatorCallback::Quit(PendingQuit {
+                            token,
+                            cache,
+                            response,
+                        }));
+                    }
+                    Ok(None) => self.close_game(token),
+                    Err(error) => {
+                        self.emit_instance_event(
+                            token,
+                            "quickresumeerror",
+                            &instance_events::error(&error),
+                        );
+                        self.close_game(token);
+                    }
+                }
+            }
             EmulatorCommand::SetVolume { token, volume } => self.set_game_volume(token, volume),
             EmulatorCommand::SetMuted { token, muted } => self.set_game_muted(token, muted),
             EmulatorCommand::Message { token, name, args } => self.game_message(token, &name, args),
@@ -64,13 +83,13 @@ impl ShellCoordinator {
                             thread = ?std::thread::current().id(),
                             "snowglass: dispatched pause/resume plugin callback"
                         );
-                        return Some(PendingPauseResume {
+                        return Some(PendingEmulatorCallback::PauseResume(PendingPauseResume {
                             token,
                             state,
                             started: Instant::now(),
                             result,
                             response,
-                        });
+                        }));
                     }
                     Ok(None) => {
                         let _ = result.send(Ok(()));
@@ -88,8 +107,119 @@ impl ShellCoordinator {
             EmulatorCommand::PauseState { result, .. } => {
                 let _ = result.send(Err("emulator is no longer active".to_owned()));
             }
+            EmulatorCommand::SaveState {
+                token,
+                timeout,
+                result,
+            } if self.game_host.is_active(token) => match self.game_host.save_state(timeout) {
+                Ok((slot, response)) => {
+                    return Some(PendingEmulatorCallback::State(PendingStateAction {
+                        slot,
+                        save: true,
+                        result,
+                        response,
+                    }));
+                }
+                Err(error) => {
+                    let _ = result.send(Err(error));
+                }
+            },
+            EmulatorCommand::ResumeState {
+                token,
+                slot,
+                timeout,
+                result,
+            } if self.game_host.is_active(token) => {
+                match self.game_host.resume_state(slot, timeout) {
+                    Ok(response) => {
+                        return Some(PendingEmulatorCallback::State(PendingStateAction {
+                            slot,
+                            save: false,
+                            result,
+                            response,
+                        }));
+                    }
+                    Err(error) => {
+                        let _ = result.send(Err(error));
+                    }
+                }
+            }
+            EmulatorCommand::SaveState { result, .. }
+            | EmulatorCommand::ResumeState { result, .. } => {
+                let _ = result.send(Err("emulator is no longer active".to_owned()));
+            }
+            EmulatorCommand::StateScreenshot {
+                token,
+                record_id,
+                result,
+            } if self.game_host.is_active(token) => {
+                let _ = result.send(self.game_host.save_state_screenshot(&record_id));
+            }
+            EmulatorCommand::StateScreenshot { result, .. } => {
+                let _ = result.send(Err("emulator is no longer active".to_owned()));
+            }
         }
         None
+    }
+
+    pub(super) fn finish_state_action(
+        &mut self,
+        pending: PendingStateAction,
+        callback: Result<(), String>,
+    ) {
+        let metadata = callback.and_then(|()| {
+            if pending.save {
+                self.game_host.commit_save_state(pending.slot)
+            } else {
+                self.game_host
+                    .save_state_metadata(pending.slot)
+                    .ok_or_else(|| format!("save-state slot {} no longer exists", pending.slot))
+            }
+        });
+        let value = metadata
+            .and_then(|metadata| serde_json::to_value(metadata).map_err(|error| error.to_string()));
+        let _ = pending.result.send(value);
+    }
+
+    pub(super) fn finish_quit(
+        &mut self,
+        pending: PendingQuit,
+        callback: Result<Option<Vec<u8>>, String>,
+    ) {
+        let screenshot = self
+            .game_host
+            .capture_primary_screenshot()
+            .and_then(|screenshot| match screenshot.encode_png() {
+                Ok(png) => Some(png),
+                Err(error) => {
+                    tracing::warn!("snowglass: Quick Resume screenshot encoding failed: {error}");
+                    None
+                }
+            });
+        let key = snowglass_library::QuickResumeKey::from_storage_key(&pending.cache.key);
+        let store = snowglass_library::QuickResumeStore::discover();
+        let persisted = match (store, key, callback) {
+            (Ok(store), Some(key), Ok(Some(state))) => store
+                .commit(&key, &pending.cache.revision, &state, screenshot.as_deref())
+                .map_err(|error| error.to_string()),
+            (Ok(store), Some(key), Ok(None)) => {
+                store.remove(&key).map_err(|error| error.to_string())
+            }
+            (Ok(store), Some(key), Err(error)) => {
+                let _ = store.remove(&key);
+                Err(error)
+            }
+            (Err(error), _, _) => Err(error.to_string()),
+            (_, None, _) => Err("Quick Resume cache key is invalid".to_owned()),
+        };
+        if let Err(error) = persisted {
+            self.emit_instance_event(
+                pending.token,
+                "quickresumeerror",
+                &instance_events::error(&error),
+            );
+        }
+        self.close_game(pending.token);
     }
 
     pub(super) fn finish_pause_resume(
