@@ -7,6 +7,7 @@ import { createWebRtc } from "./05_webrtc.js";
 import { createEmulator } from "./06_emulator.js";
 import { createConsoleStorage } from "./08_consolestorage.js";
 import { createControllers } from "./07_controllers.js";
+import { createLibrary } from "./09_library.js";
 import { op_controller_api_snapshot, op_snowglass_next_notification } from "ext:core/ops";
 
 const scraping = createScraping();
@@ -18,6 +19,7 @@ const controllers = createControllers(initialControllerApi.controllers);
 const webrtc = createWebRtc();
 const emulator = createEmulator(webrtc);
 const consolestorage = createConsoleStorage();
+const library = createLibrary();
 
 const Snowglass = Object.freeze({
   input: input.snowglassInput,
@@ -28,6 +30,7 @@ const Snowglass = Object.freeze({
   emulator: emulator.Emulator,
   webrtc: webrtc.WebRTC,
   consolestorage: consolestorage.ConsoleStorage,
+  library,
 });
 
 function dispatch(event) {

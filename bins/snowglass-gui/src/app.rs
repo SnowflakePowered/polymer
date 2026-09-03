@@ -137,6 +137,7 @@ impl ShellCoordinator {
             theme,
             plugins: _,
             local_storage: _,
+            library: _,
         } = options;
 
         let window = WindowManager::new(window, statistics_recorder, proxy.clone())?;

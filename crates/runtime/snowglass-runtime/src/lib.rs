@@ -8,6 +8,7 @@ mod consolestorage;
 mod frontend;
 mod instance;
 mod launch;
+mod library;
 mod savestates;
 mod scraping;
 mod session;
@@ -33,6 +34,7 @@ pub use instance::{
     SurfaceFrameUpdate, SurfaceOffer, SurfacePointerUpdate, TrackedSurfaceConfig,
     TrackedSurfaceHandle, TrackedSurfaceId,
 };
+pub use library::LibraryService;
 pub use savestates::{RgbaScreenshot, SaveStateManager, SaveStateMetadata};
 pub use scraping::{ScrapedPackage, ScrapingError};
 pub use session::{SessionController, mount_prepared_filesystem};

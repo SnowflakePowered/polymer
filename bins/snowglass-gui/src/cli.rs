@@ -18,6 +18,7 @@ pub struct ShellOptions {
     pub theme: crate::theme::SelectedTheme,
     pub plugins: PluginRegistry,
     pub local_storage: Option<snowglass_deno::webstorage::LocalStorage>,
+    pub library: Option<snowglass_runtime::LibraryService>,
 }
 
 pub async fn parse() -> Result<ShellOptions, Box<dyn Error>> {
@@ -34,19 +35,34 @@ pub async fn parse() -> Result<ShellOptions, Box<dyn Error>> {
             }
         }
     }
-    let local_storage = match snowglass_library::Directories::discover() {
-        Ok(directories) => match snowglass_deno::webstorage::LocalStorage::open(&directories).await
-        {
-            Ok(storage) => Some(storage),
-            Err(error) => {
-                eprintln!("snowglass: could not open local storage: {error}");
-                None
-            }
-        },
+    let directories = match snowglass_library::Directories::discover() {
+        Ok(directories) => Some(directories),
         Err(error) => {
             eprintln!("snowglass: could not locate local storage: {error}");
             None
         }
+    };
+    let local_storage = match directories.as_ref() {
+        Some(directories) => {
+            match snowglass_deno::webstorage::LocalStorage::open(directories).await {
+                Ok(storage) => Some(storage),
+                Err(error) => {
+                    eprintln!("snowglass: could not open local storage: {error}");
+                    None
+                }
+            }
+        }
+        None => None,
+    };
+    let library = match directories.as_ref() {
+        Some(directories) => match snowglass_runtime::LibraryService::open(directories).await {
+            Ok(library) => Some(library),
+            Err(error) => {
+                eprintln!("snowglass: could not open games library: {error}");
+                None
+            }
+        },
+        None => None,
     };
     let saved_theme = saved_theme(local_storage.as_ref()).await;
     let theme = select_theme(&plugins, arguments.theme.as_deref(), saved_theme.as_deref())?;
@@ -55,6 +71,7 @@ pub async fn parse() -> Result<ShellOptions, Box<dyn Error>> {
         theme,
         plugins,
         local_storage,
+        library,
     })
 }
 

@@ -1,9 +1,14 @@
 pub mod directories;
+pub mod games;
 pub mod inputstore;
 pub mod quickresume;
 pub mod storage;
 
 pub use directories::Directories;
+pub use games::{
+    Game, GameCatalog, GameCatalogError, IdentifiedLaunchable, Launchable, MediaData,
+    MediaResource, Metadata, MetadataData, MetadataInput, Relation,
+};
 pub use inputstore::{
     InputIdentityScope, InputMappingMode, InputMappingProfile, InputStore, InputStoreError,
 };

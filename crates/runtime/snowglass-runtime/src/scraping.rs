@@ -66,6 +66,69 @@ impl ScrapedPackage {
     }
 
     fn binary_digest(package: &dyn gumshoe::Package, path: &Path) -> Result<String, ScrapingError> {
+        let digest = Self::binary_digest_bytes(package, path)?;
+        let mut encoded = String::with_capacity(digest.len() * 2);
+        for byte in digest {
+            write!(&mut encoded, "{byte:02x}").expect("writing to a string cannot fail");
+        }
+        Ok(encoded)
+    }
+
+    pub(crate) fn identify_launchable(
+        path: impl AsRef<Path>,
+        platform_hint: Option<&str>,
+        parent_binary_id: Option<uuid::Uuid>,
+    ) -> Result<snowglass_library::IdentifiedLaunchable, ScrapingError> {
+        let requested = path.as_ref();
+        let path = requested
+            .canonicalize()
+            .map_err(|source| ScrapingError::Open {
+                path: requested.to_path_buf(),
+                source,
+            })?;
+        let package =
+            GeneralIdentifier
+                .identify_path(&path)
+                .map_err(|source| ScrapingError::Identify {
+                    path: path.clone(),
+                    reason: source.to_string(),
+                })?;
+        let inferred = consolespec_platform(package.platform());
+        let hinted = platform_hint
+            .map(|platform| {
+                consolespec::MachineSpec::try_from(platform)
+                    .map(|machine| machine.id())
+                    .map_err(|_| ScrapingError::InvalidPlatformHint(platform.to_owned()))
+            })
+            .transpose()?;
+        if let (Some(inferred), Some(hinted)) = (inferred, hinted)
+            && inferred != hinted
+        {
+            return Err(ScrapingError::PlatformMismatch {
+                inferred: inferred.to_owned(),
+                supplied: hinted.to_owned(),
+            });
+        }
+        let platform = inferred
+            .or(hinted)
+            .ok_or_else(|| ScrapingError::UnsupportedPlatform {
+                path: path.clone(),
+                platform: format!("{:?}", package.platform()),
+            })?;
+        Ok(snowglass_library::IdentifiedLaunchable {
+            path,
+            binary_blake3: Self::binary_digest_bytes(package.as_ref(), requested)?,
+            serial: package.serial().map(str::to_owned),
+            title_id: package.titleid(),
+            parent_binary_id,
+            platform: platform.to_owned(),
+        })
+    }
+
+    fn binary_digest_bytes(
+        package: &dyn gumshoe::Package,
+        path: &Path,
+    ) -> Result<[u8; 32], ScrapingError> {
         let binary = package
             .binaries(NormalizationOptions::decrypt_common())
             .next()
@@ -84,11 +147,7 @@ impl ScrapedPackage {
                     path: path.to_path_buf(),
                     reason: source.to_string(),
                 })?;
-        let mut encoded = String::with_capacity(digest.len() * 2);
-        for byte in digest {
-            write!(&mut encoded, "{byte:02x}").expect("writing to a string cannot fail");
-        }
-        Ok(encoded)
+        Ok(digest.into())
     }
 }
 
@@ -108,28 +167,12 @@ pub enum ScrapingError {
         "{path} was identified as {platform}, which Snowglass does not map to a consolespec platform"
     )]
     UnsupportedPlatform { path: PathBuf, platform: String },
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn battery_fallback_digests_gumshoes_binary_instead_of_the_rom_file() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("headered.nes");
-        let payload = [0x42; 32];
-        let mut image = vec![0; 16];
-        image[..4].copy_from_slice(b"NES\x1a");
-        image.extend_from_slice(&payload);
-        std::fs::write(&path, image).unwrap();
-
-        let package = ScrapedPackage::from_path(path).unwrap();
-        let expected = blake3::hash(&payload).to_hex();
-
-        assert_eq!(package.platform, "NINTENDO_NES");
-        assert_eq!(package.binary_digest.as_deref(), Some(expected.as_str()));
-    }
+    #[error("unknown consolespec platform '{0}'")]
+    InvalidPlatformHint(String),
+    #[error(
+        "Gumshoe inferred platform {inferred}, which does not match supplied platform {supplied}"
+    )]
+    PlatformMismatch { inferred: String, supplied: String },
 }
 
 fn consolespec_platform(platform: PlatformIdentifier) -> Option<&'static str> {
@@ -190,4 +233,32 @@ fn consolespec_platform(platform: PlatformIdentifier) -> Option<&'static str> {
         WataraSupervision => "WATARA_SUPERVISION",
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn battery_fallback_digests_gumshoes_binary_instead_of_the_rom_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("headered.nes");
+        let payload = [0x42; 32];
+        let mut image = vec![0; 16];
+        image[..4].copy_from_slice(b"NES\x1a");
+        image.extend_from_slice(&payload);
+        std::fs::write(&path, image).unwrap();
+
+        let package = ScrapedPackage::from_path(&path).unwrap();
+        let launchable = ScrapedPackage::identify_launchable(&path, None, None).unwrap();
+        let expected = blake3::hash(&payload).to_hex();
+
+        assert_eq!(package.platform, "NINTENDO_NES");
+        assert_eq!(package.binary_digest.as_deref(), Some(expected.as_str()));
+        assert_eq!(launchable.binary_blake3, *blake3::hash(&payload).as_bytes());
+        assert!(matches!(
+            ScrapedPackage::identify_launchable(&path, Some("NINTENDO_SNES"), None),
+            Err(ScrapingError::PlatformMismatch { .. })
+        ));
+    }
 }
