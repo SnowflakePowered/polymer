@@ -578,24 +578,41 @@ impl GameHost {
     ) -> Result<
         Option<(
             crate::launch::QuickResumeCache,
+            Option<Vec<u8>>,
             tokio::sync::oneshot::Receiver<Result<Option<Vec<u8>>, String>>,
         )>,
         String,
     > {
-        let Some(active) = self.active.as_mut().filter(|active| active.token == token) else {
+        let cache = {
+            let Some(active) = self.active.as_mut().filter(|active| active.token == token) else {
+                return Ok(None);
+            };
+            if active.closing {
+                return Err("emulator is already closing".to_owned());
+            }
+            active.closing = true;
+            active.options.quick_resume_cache.clone()
+        };
+        let Some(cache) = cache else {
             return Ok(None);
         };
-        if active.closing {
-            return Err("emulator is already closing".to_owned());
-        }
-        active.closing = true;
-        let Some(cache) = active.options.quick_resume_cache.clone() else {
-            return Ok(None);
-        };
-        let Some(session) = active.controller_session.as_ref() else {
+        let screenshot = self
+            .capture_primary_screenshot()
+            .and_then(|screenshot| match screenshot.encode_png() {
+                Ok(png) => Some(png),
+                Err(error) => {
+                    tracing::warn!("snowglass: Quick Resume screenshot encoding failed: {error}");
+                    None
+                }
+            });
+        let Some(session) = self
+            .active
+            .as_ref()
+            .and_then(|active| active.controller_session.as_ref())
+        else {
             return Err("Quick Resume plugin session is unavailable".to_owned());
         };
-        Ok(Some((cache, session.quit(Some(timeout))?)))
+        Ok(Some((cache, screenshot, session.quit(Some(timeout))?)))
     }
 
     pub fn surface_targets(&self) -> Vec<GameSurfaceTarget> {
