@@ -35,10 +35,11 @@ impl ShellCoordinator {
             }
             EmulatorCommand::Close(token) => {
                 match self.game_host.begin_quit(token, Duration::from_secs(30)) {
-                    Ok(Some((cache, response))) => {
+                    Ok(Some((cache, screenshot, response))) => {
                         return Some(PendingEmulatorCallback::Quit(PendingQuit {
                             token,
                             cache,
+                            screenshot,
                             response,
                         }));
                     }
@@ -186,21 +187,16 @@ impl ShellCoordinator {
         pending: PendingQuit,
         callback: Result<Option<Vec<u8>>, String>,
     ) {
-        let screenshot = self
-            .game_host
-            .capture_primary_screenshot()
-            .and_then(|screenshot| match screenshot.encode_png() {
-                Ok(png) => Some(png),
-                Err(error) => {
-                    tracing::warn!("snowglass: Quick Resume screenshot encoding failed: {error}");
-                    None
-                }
-            });
         let key = snowglass_library::QuickResumeKey::from_storage_key(&pending.cache.key);
         let store = snowglass_library::QuickResumeStore::discover();
         let persisted = match (store, key, callback) {
             (Ok(store), Some(key), Ok(Some(state))) => store
-                .commit(&key, &pending.cache.revision, &state, screenshot.as_deref())
+                .commit(
+                    &key,
+                    &pending.cache.revision,
+                    &state,
+                    pending.screenshot.as_deref(),
+                )
                 .map_err(|error| error.to_string()),
             (Ok(store), Some(key), Ok(None)) => {
                 store.remove(&key).map_err(|error| error.to_string())

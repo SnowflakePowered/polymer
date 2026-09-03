@@ -111,6 +111,7 @@ struct PendingStateAction {
 struct PendingQuit {
     token: InstanceToken,
     cache: crate::launch::QuickResumeCache,
+    screenshot: Option<Vec<u8>>,
     response: tokio::sync::oneshot::Receiver<Result<Option<Vec<u8>>, String>>,
 }
 
