@@ -22,8 +22,9 @@ pub use configuration::{
 };
 pub use consolestorage::{manager as console_storage_manager, serve as serve_console_storage};
 pub use frontend::{
-    ControllerApiState, Emulator, EmulatorCommand, EmulatorCommandSink, FrontendServices, Input,
-    InputCommand, InputCommandSink, RuntimePlatform, WebRtc, WebRtcCommand, WebRtcCommandSink,
+    ControllerApiState, Emulator, EmulatorCommand, EmulatorCommandHandler, EmulatorCommandSink,
+    FrontendServices, Input, InputCommand, InputCommandHandler, InputCommandSink, WebRtc,
+    WebRtcCommand, WebRtcCommandHandler, WebRtcCommandSink,
 };
 pub use instance::{
     AudioState, EmulatorActionEndpoint, EmulatorInstance, EmulatorLaunchConfig, HotkeyChord,

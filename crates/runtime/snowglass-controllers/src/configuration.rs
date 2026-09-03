@@ -39,11 +39,7 @@ impl From<consolespec::machine::InputGroup> for InputGroup {
 
 #[derive(Clone)]
 pub struct ControllerConfiguration {
-    inner: Arc<HubInner>,
-}
-
-struct HubInner {
-    state: RwLock<HubState>,
+    inner: Arc<RwLock<HubState>>,
 }
 
 #[derive(Clone)]
@@ -255,32 +251,30 @@ impl ControllerConfiguration {
         let ports = collect_ports(ports)?;
         validate_ports(machine.as_deref(), &ports)?;
         Ok(Self {
-            inner: Arc::new(HubInner {
-                state: RwLock::new(HubState {
-                    revision: 0,
-                    machine,
-                    ports,
-                    assignments: BTreeMap::new(),
-                }),
-            }),
+            inner: Arc::new(RwLock::new(HubState {
+                revision: 0,
+                machine,
+                ports,
+                assignments: BTreeMap::new(),
+            })),
         })
     }
 
     pub fn snapshot(&self) -> InputConfiguration {
-        let state = self.inner.state.read();
+        let state = self.inner.read();
         state.configuration()
     }
 
     /// The attached machine's consolespec entry, for a caller that needs to ask
     /// it something the hub does not expose — which group accepts a layout, say.
     pub fn machine(&self) -> Option<MachineSpec> {
-        machine_spec(self.inner.state.read().machine.as_deref())
+        machine_spec(self.inner.read().machine.as_deref())
     }
 
     /// The input groups of the attached machine, in declaration order. Empty
     /// before a machine is declared.
     pub fn groups(&self) -> Vec<InputGroup> {
-        let state = self.inner.state.read();
+        let state = self.inner.read();
         state
             .machine
             .as_deref()
@@ -298,7 +292,7 @@ impl ControllerConfiguration {
         &self,
         transaction: &InputTransaction,
     ) -> Result<InputConfiguration, InputConfigurationError> {
-        let state = self.inner.state.read();
+        let state = self.inner.read();
         state.prepare(transaction).map(|next| next.configuration())
     }
 
@@ -307,7 +301,7 @@ impl ControllerConfiguration {
         &self,
         transaction: InputTransaction,
     ) -> Result<InputConfiguration, InputConfigurationError> {
-        let mut state = self.inner.state.write();
+        let mut state = self.inner.write();
         let next = state.prepare(&transaction)?;
         *state = next;
         Ok(state.configuration())

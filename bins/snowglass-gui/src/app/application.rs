@@ -6,7 +6,7 @@ pub(crate) struct ShellApplication {
     statistics_recorder: Option<RecorderHandle>,
     shell_factory: Option<ShellSessionFactory>,
     shell_rasterizer: Option<ShellRasterizer>,
-    pending_window: Option<WindowBootstrap>,
+    pending_window: Option<Window>,
     state: Option<ShellCoordinator>,
     pending_input_commands: std::collections::VecDeque<InputCommand>,
     pending_input_change: Option<PendingInputChange>,
@@ -165,7 +165,7 @@ impl ShellApplication {
         if self.pending_state_action.is_none()
             && let Some(command) = self.pending_state_commands.pop_front()
             && let Some(state) = self.state.as_mut()
-            && let Some(pending) = state.apply_emulator_command(command)
+            && let Some(pending) = command.dispatch(state)
         {
             match pending {
                 PendingEmulatorCallback::PauseResume(pending) => {
@@ -183,7 +183,7 @@ impl ShellApplication {
             let Some(state) = self.state.as_mut() else {
                 break;
             };
-            self.pending_input_change = state.apply_input_command(command).await;
+            self.pending_input_change = command.dispatch(state).await;
         }
         let now = Instant::now();
         let poll_runtime = now >= self.next_runtime_poll;
@@ -224,7 +224,7 @@ impl ShellApplication {
         self.pending_window.is_none() && self.state.is_none() && self.error.is_none()
     }
 
-    pub(crate) fn accept_native_window(&mut self, window: WindowBootstrap) {
+    pub(crate) fn accept_native_window(&mut self, window: Window) {
         self.pending_window = Some(window);
     }
 
@@ -238,7 +238,7 @@ impl ShellApplication {
 
     pub(crate) fn accept_inspector_window(
         &mut self,
-        window: InspectorWindowBootstrap,
+        window: Window,
         address: std::net::SocketAddr,
     ) {
         if let Some(state) = self.state.as_mut() {
@@ -310,7 +310,7 @@ impl ShellApplication {
                     self.pending_state_commands.push_back(command);
                     return;
                 }
-                if let Some(pending) = state.apply_emulator_command(command) {
+                if let Some(pending) = command.dispatch(state) {
                     match pending {
                         PendingEmulatorCallback::PauseResume(pending) => {
                             self.pending_pause_resume.push_back(pending)
@@ -322,13 +322,11 @@ impl ShellApplication {
                     }
                 }
             }
-            UserEvent::GameHost(GameHostCommand::WebRtc(command)) => {
-                state.apply_webrtc_command(command)
-            }
+            UserEvent::GameHost(GameHostCommand::WebRtc(command)) => command.dispatch(state),
             UserEvent::GameHost(GameHostCommand::Input(_)) => unreachable!(),
             UserEvent::InspectorWindowRequested { .. } => {}
             UserEvent::Inspector(command) => {
-                command.handle(&state.shell_dom);
+                command.dispatch(&mut state.shell_dom);
             }
         }
     }
@@ -356,8 +354,7 @@ impl ShellApplication {
                 return true;
             };
             if self.pending_quit.is_none()
-                && let Some(pending) =
-                    state.apply_emulator_command(EmulatorCommand::Close { token })
+                && let Some(pending) = (EmulatorCommand::Close { token }).dispatch(state)
                 && let PendingEmulatorCallback::Quit(pending) = pending
             {
                 self.pending_quit = Some(pending);

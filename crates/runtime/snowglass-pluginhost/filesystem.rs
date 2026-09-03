@@ -18,22 +18,7 @@ use std::{
     sync::Arc,
 };
 
-use crate::handle::Handle;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum NamedResourceKind {
-    Directory,
-    Asar,
-    File,
-}
-
-#[derive(Clone, Debug)]
-pub struct NamedResource {
-    pub name: String,
-    pub path: PathBuf,
-    pub kind: NamedResourceKind,
-    pub permissions: Permissions,
-}
+use crate::{PluginResource, PluginResourceFormat, handle::Handle};
 
 #[derive(Clone, Debug)]
 pub struct NamedCache {
@@ -47,7 +32,7 @@ pub type StorageFactories = BTreeMap<String, StorageFactory>;
 #[derive(Clone)]
 pub struct FilesystemOptions {
     pub package_root: PathBuf,
-    pub resources: Vec<NamedResource>,
+    pub resources: Vec<PluginResource>,
     pub caches: Vec<NamedCache>,
     pub storage: StorageFactories,
     pub quick_resume: Option<crate::QuickResumeData>,
@@ -168,7 +153,7 @@ impl FilesystemState {
                 )));
             }
             let handle =
-                state.insert_path_resource(resource.path, resource.kind, resource.permissions)?;
+                state.insert_path_resource(resource.path, resource.format, resource.permissions)?;
             state.named.insert(resource.name, handle);
         }
         for cache in options.caches {
@@ -247,23 +232,23 @@ impl FilesystemState {
     fn insert_path_resource(
         &mut self,
         path: PathBuf,
-        kind: NamedResourceKind,
+        kind: PluginResourceFormat,
         permissions: Permissions,
     ) -> Result<ResourceHandle, VfsError> {
         Ok(match kind {
-            NamedResourceKind::Directory => {
+            PluginResourceFormat::Directory => {
                 ResourceHandle::Tree(self.insert_volume(Resource::new(
                     Arc::new(PackageDirectoryFactory::new(path.clone())),
                     permissions,
                     ResourceOrigin::Package(path.display().to_string()),
                 )))
             }
-            NamedResourceKind::Asar => ResourceHandle::Tree(self.insert_volume(Resource::new(
+            PluginResourceFormat::Asar => ResourceHandle::Tree(self.insert_volume(Resource::new(
                 Arc::new(AsarVolumeFactory::new(path.clone())),
                 permissions,
                 ResourceOrigin::Asar(path.display().to_string()),
             ))),
-            NamedResourceKind::File => ResourceHandle::File(self.insert_file(Resource::new(
+            PluginResourceFormat::File => ResourceHandle::File(self.insert_file(Resource::new(
                 Arc::new(HostFileFactory::new(path.clone(), false)),
                 permissions,
                 ResourceOrigin::Package(path.display().to_string()),
@@ -839,12 +824,12 @@ fn op_vfs_mount_tree_pkg(
         .map_err(js_error)?;
     let metadata = std::fs::metadata(&path).map_err(js_error)?;
     let kind = if metadata.is_dir() {
-        NamedResourceKind::Directory
+        PluginResourceFormat::Directory
     } else if path
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("asar"))
     {
-        NamedResourceKind::Asar
+        PluginResourceFormat::Asar
     } else {
         return Err(js_error(
             "mountTree pkg: source must be a directory or .asar file",
@@ -943,7 +928,7 @@ fn op_vfs_mount_file_pkg(
     }
     let vfs = state.borrow_mut::<FilesystemState>();
     let ResourceHandle::File(handle) = vfs
-        .insert_path_resource(path, NamedResourceKind::File, authority)
+        .insert_path_resource(path, PluginResourceFormat::File, authority)
         .map_err(js_error)?
     else {
         unreachable!()

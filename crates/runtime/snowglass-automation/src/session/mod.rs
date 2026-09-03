@@ -1,6 +1,7 @@
 use tokio::sync::mpsc;
 
 use crate::{AutomationDriver, AutomationError, AutomationRequest, AutomationResponse};
+use snowglass_command::command_handler;
 
 // Cloneable asynchronous access to one process-scoped automation actor.
 snowglass_command::command_client! {
@@ -20,16 +21,13 @@ snowglass_command::command_client! {
 
 impl AutomationSession {
     pub fn spawn(mut driver: impl AutomationDriver) -> Result<Self, AutomationError> {
-        let (commands, mut receiver) = mpsc::unbounded_channel();
+        let (commands, mut receiver) = mpsc::unbounded_channel::<AutomationSessionCommand>();
         std::thread::Builder::new()
             .name("snowglass-ui-automation".to_owned())
             .spawn(move || {
                 while let Some(command) = receiver.blocking_recv() {
-                    match command {
-                        AutomationSessionCommand::Execute { request, response } => {
-                            let _ = response.send(driver.execute(request));
-                        }
-                        AutomationSessionCommand::Stop {} => break,
+                    if command.dispatch(&mut driver) {
+                        break;
                     }
                 }
                 driver.shutdown();
@@ -40,6 +38,25 @@ impl AutomationSession {
 
     pub fn close(&self) {
         self.stop();
+    }
+}
+
+#[command_handler]
+impl<Driver: AutomationDriver> AutomationSessionCommandHandler for Driver {
+    type Output<'handler>
+        = bool
+    where
+        Self: 'handler;
+
+    fn execute(
+        &mut self,
+        request: AutomationRequest,
+    ) -> Result<AutomationResponse, AutomationError> {
+        AutomationDriver::execute(self, request)
+    }
+
+    fn stop<'handler>(&'handler mut self) -> Self::Output<'handler> {
+        true
     }
 }
 

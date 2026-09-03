@@ -164,18 +164,12 @@ pub enum SnowglassNotification {
 /// and runtime ownership layers.
 pub type SnowglassNotificationSender = tokio::sync::mpsc::UnboundedSender<SnowglassNotification>;
 
-struct SnowglassNotificationInbox {
-    receiver: RefCell<tokio::sync::mpsc::UnboundedReceiver<SnowglassNotification>>,
-}
+type SnowglassNotificationInbox =
+    RefCell<tokio::sync::mpsc::UnboundedReceiver<SnowglassNotification>>;
 
 fn notification_channel() -> (SnowglassNotificationSender, SnowglassNotificationInbox) {
     let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
-    (
-        sender,
-        SnowglassNotificationInbox {
-            receiver: RefCell::new(receiver),
-        },
-    )
+    (sender, RefCell::new(receiver))
 }
 
 #[op2]
@@ -187,7 +181,7 @@ async fn op_snowglass_next_notification(
         .borrow()
         .borrow::<Rc<SnowglassNotificationInbox>>()
         .clone();
-    poll_fn(|context| inbox.receiver.borrow_mut().poll_recv(context)).await
+    poll_fn(|context| inbox.borrow_mut().poll_recv(context)).await
 }
 
 #[op2]

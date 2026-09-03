@@ -5,9 +5,7 @@
 
 use crate::{
     launch::AttachedLaunchPlan, shell_document::GameViewStyle, shell_dom::TrackedSurfaceLayout,
-};
-use raw_window_handle::{
-    DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle,
+    window_manager::SurfaceWindow,
 };
 use snowglass_platform_windows::performance_counter;
 use snowglass_protocol::{AdapterLuid, PresentationMappingKind, PresentationTransform};
@@ -171,34 +169,6 @@ impl Drop for SurfacePresentationWorker {
     }
 }
 
-/// Delegates native handles while overriding only the composition swapchain
-/// extent. Tracked surfaces render in local coordinates and WUC owns their
-/// screen-space offset and size.
-struct LocalRenderWindow<'a, W> {
-    window: &'a W,
-    extent: Extent,
-}
-
-impl<W: HasWindowHandle> HasWindowHandle for LocalRenderWindow<'_, W> {
-    fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
-        self.window.window_handle()
-    }
-}
-
-impl<W: HasDisplayHandle> HasDisplayHandle for LocalRenderWindow<'_, W> {
-    fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
-        self.window.display_handle()
-    }
-}
-
-impl<W: snowglass_renderer::RenderWindow> snowglass_renderer::RenderWindow
-    for LocalRenderWindow<'_, W>
-{
-    fn render_extent(&self) -> Extent {
-        self.extent
-    }
-}
-
 impl RenderDevice {
     fn new((adapter, device): (AdapterLuid, IUnknown)) -> Self {
         Self {
@@ -223,10 +193,7 @@ impl RenderDevice {
         width: u32,
         height: u32,
     ) -> Result<D3d12Compositor, Box<dyn Error>> {
-        let local = LocalRenderWindow {
-            window,
-            extent: Extent::new(width.max(1), height.max(1)),
-        };
+        let local = SurfaceWindow::new(window, width.max(1), height.max(1));
         D3d12Compositor::new_for_stream_composition(&local, self.adapter, connection)
     }
 }
@@ -274,13 +241,9 @@ pub(crate) struct ConnectedSurface {
     pub backend: String,
 }
 
-pub(crate) struct AcceptedSurface {
-    pub surface: Option<ConnectedSurface>,
-}
-
 pub(crate) enum GameHostCaptureEvent {
     AdapterRequired(AdapterLuid),
-    Connected(AcceptedSurface),
+    Connected(Option<ConnectedSurface>),
     Frame {
         connection: u64,
         frame: snowglass_protocol::FrameReady,
@@ -897,10 +860,8 @@ impl GameHost {
         active.webrtc.take().is_some()
     }
 
-    pub fn input_endpoint(&self) -> Option<crate::input::GameInputEndpoint> {
-        self.session
-            .instance()
-            .map(|instance| crate::input::GameInputEndpoint::new(instance.input()))
+    pub fn input_endpoint(&self) -> Option<snowglass_input_ipc::InputIpcListener> {
+        self.session.instance().map(|instance| instance.input())
     }
 
     pub fn request_close(&mut self, token: crate::shell_runtime::InstanceToken) -> bool {
@@ -1010,14 +971,14 @@ impl GameHost {
         &mut self,
         window: &impl snowglass_renderer::RenderWindow,
         offer: snowglass_runtime::SurfaceOffer,
-    ) -> Result<AcceptedSurface, Box<dyn Error>> {
+    ) -> Result<Option<ConnectedSurface>, Box<dyn Error>> {
         let Some(surface_capacity) = self
             .active
             .as_ref()
             .map(|active| active.options.surfaces.len())
         else {
             self.capture.reject(offer);
-            return Ok(AcceptedSurface { surface: None });
+            return Ok(None);
         };
         let connection = offer.connection_id();
         let surface_id = offer.stream().surface_id.0;
@@ -1026,7 +987,7 @@ impl GameHost {
             .filter(|connection| self.surfaces.contains_key(connection));
         if replaced_connection.is_none() && self.surfaces.len() >= surface_capacity {
             self.capture.reject(offer);
-            return Ok(AcceptedSurface { surface: None });
+            return Ok(None);
         }
 
         let (surface, target_index, quarter_turns) = if let Some(previous) = replaced_connection {
@@ -1159,15 +1120,13 @@ impl GameHost {
             }
         }
         self.mark_composition_dirty();
-        Ok(AcceptedSurface {
-            surface: Some(ConnectedSurface {
-                connection,
-                surface_id,
-                target_index,
-                replaced_connection,
-                backend,
-            }),
-        })
+        Ok(Some(ConnectedSurface {
+            connection,
+            surface_id,
+            target_index,
+            replaced_connection,
+            backend,
+        }))
     }
 
     pub(crate) fn replace_render_device(

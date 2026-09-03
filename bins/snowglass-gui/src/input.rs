@@ -45,16 +45,6 @@ pub(crate) struct PointerPosition {
     pub y: i32,
 }
 
-pub(crate) struct GameInputEndpoint {
-    listener: InputIpcListener,
-}
-
-impl GameInputEndpoint {
-    pub fn new(listener: InputIpcListener) -> Self {
-        Self { listener }
-    }
-}
-
 pub(crate) struct InputPublication {
     pub diagnostics: InputDiagnostics,
     pub api_state: Option<serde_json::Value>,
@@ -191,12 +181,12 @@ impl InputRouter {
         (result, command)
     }
 
-    pub fn attach(&mut self, endpoint: GameInputEndpoint) {
-        endpoint.listener.attach(&self.hub);
+    pub fn attach(&mut self, listener: InputIpcListener) {
+        listener.attach(&self.hub);
         if let Some(topology) = &self.topology {
-            let _ = endpoint.listener.publish_topology(topology);
+            let _ = listener.publish_topology(topology);
         }
-        self.listener = Some(endpoint.listener);
+        self.listener = Some(listener);
         let _ = self.rebuild_input_hooks();
     }
 

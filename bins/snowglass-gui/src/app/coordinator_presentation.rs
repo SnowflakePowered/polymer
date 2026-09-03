@@ -60,8 +60,8 @@ impl ShellCoordinator {
                         }
                     }
                 }
-                GameHostCaptureEvent::Connected(accepted) => {
-                    let Some(surface) = accepted.surface else {
+                GameHostCaptureEvent::Connected(surface) => {
+                    let Some(surface) = surface else {
                         continue;
                     };
                     if let Some(previous) = surface.replaced_connection {

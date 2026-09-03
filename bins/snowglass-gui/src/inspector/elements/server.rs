@@ -1,9 +1,10 @@
 //! WebSocket proxy and inspector bridge lifetime.
 
-use super::protocol::{Command, ProtocolError, Reply};
+use super::protocol::{InspectorProtocol, ProtocolError, Reply};
 use crate::{app::UserEvent, window_manager::EventLoopProxy};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
+use snowglass_command::{CommandSink, CommandUnavailable};
 use std::{
     error::Error,
     net::{SocketAddr, TcpListener},
@@ -105,10 +106,16 @@ impl Server {
                 _ = &mut self.shutdown => break,
                 accepted = listener.accept() => match accepted {
                     Ok((stream, _)) => {
+                        let proxy = self.proxy.clone();
+                        let protocol = InspectorProtocol::new(CommandSink::try_new(move |command| {
+                            proxy
+                                .send_event(UserEvent::Inspector(command))
+                                .map_err(|_| CommandUnavailable)
+                        }));
                         let session = Session {
                             upstream: self.upstream.clone(),
                             target_url: self.target_url.clone(),
-                            proxy: self.proxy.clone(),
+                            protocol,
                         };
                         let receiver = self.events.subscribe();
                         tokio::spawn(async move {
@@ -127,7 +134,7 @@ impl Server {
 struct Session {
     upstream: String,
     target_url: String,
-    proxy: EventLoopProxy<UserEvent>,
+    protocol: InspectorProtocol,
 }
 
 impl Session {
@@ -198,23 +205,9 @@ impl Session {
 
     async fn dispatch(&self, request: Value, include_whitespace: bool) -> Vec<Value> {
         let id = request.get("id").cloned().unwrap_or(Value::Null);
-        let (respond_to, response) = oneshot::channel();
-        let command = Command {
-            request,
-            target_url: self.target_url.clone(),
-            include_whitespace,
-            respond_to,
-        };
-        if self
-            .proxy
-            .send_event(UserEvent::Inspector(command))
-            .is_err()
-        {
-            return vec![Self::protocol_error(
-                id,
-                ProtocolError::unavailable("Snowglass event loop is closed"),
-            )];
-        }
+        let response = self
+            .protocol
+            .dispatch(request, self.target_url.clone(), include_whitespace);
         match tokio::time::timeout(std::time::Duration::from_secs(2), response).await {
             Ok(Ok(Reply { result, events })) => {
                 let mut messages = vec![match result {
@@ -224,10 +217,7 @@ impl Session {
                 messages.extend(events);
                 messages
             }
-            Ok(Err(_)) => vec![Self::protocol_error(
-                id,
-                ProtocolError::unavailable("Elements inspector was closed"),
-            )],
+            Ok(Err(error)) => vec![Self::protocol_error(id, error)],
             Err(_) => vec![Self::protocol_error(
                 id,
                 ProtocolError::unavailable("Elements inspector timed out"),

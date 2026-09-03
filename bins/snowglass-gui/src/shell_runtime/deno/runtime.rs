@@ -1,5 +1,5 @@
+use std::collections::HashMap;
 use std::rc::Rc;
-use std::{collections::HashMap, sync::Arc};
 
 use blitz_dom::BaseDocument;
 use deno_core::ModuleSpecifier;
@@ -181,11 +181,6 @@ impl Runtime {
             executor.block_on(async move {
                 let document_url = ModuleSpecifier::parse(&source_name)?;
                 let browser_loader = Rc::new(BrowserModuleLoader::new());
-                let platform = Arc::new(snowglass_runtime::RuntimePlatform::new(
-                    emulator_commands,
-                    input_commands,
-                    webrtc_commands,
-                ));
                 let (snowglass_extension, notifications) =
                     snowglass_deno::snowglass::init_with_notifications(|notifications| {
                         snowglass_runtime::FrontendServices::new(
@@ -193,7 +188,9 @@ impl Runtime {
                             Some(snowglass_runtime::ConfigurationDefaults::default()),
                             input_sources.clone(),
                             controller_api.clone(),
-                            platform,
+                            emulator_commands,
+                            input_commands,
+                            webrtc_commands,
                             notifications,
                         )
                     });

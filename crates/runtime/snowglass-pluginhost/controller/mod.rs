@@ -3,7 +3,7 @@ snowglass_command::command_client! {
         closed: "controller plugin session is closed".to_owned();
 
         #[args(AttachAutomation)]
-        fn attach_automation_session(
+        pub fn attach_automation(
             session: snowglass_automation::AutomationSession,
         ) -> Result<(), String>;
 
@@ -109,13 +109,6 @@ impl ControllerSession {
         sink: impl Fn(&crate::ParsedHotkey) -> Result<(), String> + Send + Sync + 'static,
     ) -> Result<(), String> {
         self.attach_action_sink(std::sync::Arc::new(sink))
-    }
-
-    pub fn attach_automation(
-        &self,
-        session: snowglass_automation::AutomationSession,
-    ) -> Result<(), String> {
-        self.attach_automation_session(session)
     }
 }
 

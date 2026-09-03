@@ -14,7 +14,7 @@ use std::{
 };
 
 type RequestTx = MTx<mpmc::List<UiRequest>>;
-type RequestRx = MRx<mpmc::List<UiRequest>>;
+pub type UiRequestReceiver = MRx<mpmc::List<UiRequest>>;
 
 pub struct UiRequest {
     pub request: snowglass_ipc::ui::MessageBoxRequest,
@@ -31,23 +31,6 @@ impl UiRequest {
         }
         self.response.send(response);
         Ok(())
-    }
-}
-
-#[derive(Clone)]
-pub struct UiRequestReceiver(RequestRx);
-
-impl UiRequestReceiver {
-    pub(crate) fn new(receiver: RequestRx) -> Self {
-        Self(receiver)
-    }
-
-    pub fn try_recv(&self) -> Result<UiRequest, crossfire::TryRecvError> {
-        self.0.try_recv()
-    }
-
-    pub fn recv(&self) -> Result<UiRequest, crossfire::RecvError> {
-        self.0.recv()
     }
 }
 
@@ -80,7 +63,7 @@ impl UiTransport {
                 shared,
                 worker: Mutex::new(Some(worker)),
             },
-            UiRequestReceiver::new(receiver),
+            receiver,
         ))
     }
 

@@ -9,5 +9,5 @@ mod geometry;
 mod protocol;
 mod server;
 
-pub(crate) use protocol::Command;
+pub(crate) use protocol::InspectorProtocolCommand;
 pub(crate) use server::Bridge;

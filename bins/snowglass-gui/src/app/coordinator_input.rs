@@ -20,10 +20,10 @@ impl ShellCoordinator {
 
     pub(super) fn accept_inspector_window(
         &mut self,
-        window: InspectorWindowBootstrap,
+        window: Window,
         address: std::net::SocketAddr,
     ) {
-        let result = InspectorWindow::open(window.into_inner(), address, self.proxy.clone());
+        let result = InspectorWindow::open(window, address, self.proxy.clone());
         match result {
             Ok(inspector) => self.inspector = Some(inspector),
             Err(error) => tracing::error!(%error, "snowglass: opening the Deno inspector failed"),

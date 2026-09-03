@@ -47,6 +47,7 @@ snowglass-platform-windows.workspace = true
 snowglass-pluginhost = { path = "../../crates/runtime/snowglass-pluginhost" }
 snowglass-protocol.workspace = true
 snowglass-runtime.workspace = true 
+snowglass-command.workspace = true
 snowglass-vfs.workspace = true
 snowglass-vfs-winfsp.workspace = true
 snowglass-renderer = { path = "../../crates/consumer/snowglass-renderer" }
