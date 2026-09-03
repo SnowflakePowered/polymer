@@ -166,6 +166,7 @@ impl Runtime {
         webrtc_commands: WebRtcCommandSink,
         plugin_runtime: std::sync::Arc<snowglass_pluginhost::PluginRuntime>,
         local_storage: Option<snowglass_deno::webstorage::LocalStorage>,
+        library: Option<snowglass_runtime::LibraryService>,
         input_sources: snowglass_input::InputHub,
         controller_api: snowglass_runtime::ControllerApiState,
     ) -> Result<(Self, SnowglassNotificationSender), Box<dyn std::error::Error>> {
@@ -186,12 +187,13 @@ impl Runtime {
                         snowglass_runtime::FrontendServices::new(
                             plugin_runtime.clone(),
                             Some(snowglass_runtime::ConfigurationDefaults::default()),
+                            library.clone(),
                             input_sources.clone(),
                             controller_api.clone(),
                             emulator_commands,
                             input_commands,
                             webrtc_commands,
- n                            notifications,
+                            notifications,
                         )
                     });
                 let mut worker = snowglass_deno::Runtime::new(snowglass_deno::RuntimeOptions {

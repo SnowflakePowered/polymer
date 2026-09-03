@@ -338,6 +338,83 @@ export interface ConsoleStorageApi {
   };
 }
 
+export type LibraryMetadataRelation =
+  | "title"
+  | "description"
+  | "releasedate"
+  | "publisher"
+  | "boxartfront"
+  | "boxartback"
+  | "boxartspine"
+  | "boxartfull"
+  | "screenshot"
+  | "logo"
+  | "video"
+  | "icon"
+  | "banner"
+  | "media";
+
+export type LibraryMetadataInput = Readonly<{
+  relation: LibraryMetadataRelation;
+  language?: string;
+  source?: string;
+  data:
+    | Readonly<{ kind: "text"; value: string }>
+    | Readonly<{ kind: "year"; value: number }>
+    | Readonly<{ kind: "inline"; mediaType: string; bytes: Uint8Array }>
+    | Readonly<{ kind: "object"; mediaType: string; path: string }>;
+}>;
+
+export type LibraryLaunchable = Readonly<{
+  id: string;
+  binaryId: string;
+  path: string;
+  binaryBlake3: string;
+  serial: string | null;
+  titleId: string | null;
+  parentBinaryId: string | null;
+  platform: string;
+}>;
+
+export type LibraryMetadata = Readonly<{
+  id: string;
+  parentBinaryId: string;
+  relation: LibraryMetadataRelation;
+  language: string | null;
+  source: string;
+  data:
+    | Readonly<{ kind: "text" }>
+    | Readonly<{ kind: "year" }>
+    | Readonly<{ kind: "media"; mediaType: string; storage: "inline" | "object" }>;
+}>;
+
+export type LibraryGame = Readonly<{
+  id: string;
+  platform: string;
+  launchables: readonly LibraryLaunchable[];
+  metadata: readonly LibraryMetadata[];
+}>;
+
+export interface LibraryApi {
+  readonly games: Readonly<{
+    list(options?: { platform?: string }): Promise<LibraryGame[]>;
+    get(rootBinaryId: string): Promise<LibraryGame | null>;
+    delete(rootBinaryId: string): Promise<void>;
+  }>;
+  readonly launchables: Readonly<{
+    add(input: { path: string; platform?: string; parentBinaryId?: string }): Promise<LibraryLaunchable>;
+    delete(id: string): Promise<void>;
+  }>;
+  readonly metadata: Readonly<{
+    add(rootBinaryId: string, input: LibraryMetadataInput & { source: string }): Promise<LibraryMetadata>;
+    update(id: string, input: LibraryMetadataInput & { source: string }): Promise<LibraryMetadata>;
+    delete(id: string): Promise<void>;
+    replace(rootBinaryId: string, source: string, inputs: readonly LibraryMetadataInput[]): Promise<LibraryMetadata[]>;
+    text(id: string): Promise<string>;
+    url(id: string): Promise<string>;
+  }>;
+}
+
 export type WebRtcPublicationState = "starting" | "active" | "closing" | "closed" | "error";
 
 export interface WebRtcPublication extends EventTarget {
@@ -369,6 +446,7 @@ declare global {
       readonly webrtc: WebRtcApi;
       readonly input: InputApi;
       readonly controllers: ControllersApi;
+      readonly library: LibraryApi;
     }>;
   }
 

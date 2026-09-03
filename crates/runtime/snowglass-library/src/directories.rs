@@ -47,4 +47,12 @@ impl Directories {
     pub fn webstorage(&self) -> PathBuf {
         self.storage.join("webstorage.db")
     }
+
+    pub fn library_database(&self) -> PathBuf {
+        self.storage.join("library.db")
+    }
+
+    pub fn object_storage(&self) -> PathBuf {
+        self.storage.join("objects")
+    }
 }

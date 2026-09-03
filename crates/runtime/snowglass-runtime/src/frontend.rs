@@ -3,13 +3,14 @@
 //! Domain policy lives here. The shell supplies only thread-affine platform
 //! mechanics such as presentation, input routing, and window attachment.
 
-use crate::ConfigurationDefaults;
+use crate::{ConfigurationDefaults, LibraryService};
 use parking_lot::{Mutex, RwLock};
 use serde_json::Value;
 use snowglass_command::CommandSink;
 use snowglass_controllers::ControllerProfiles;
 use snowglass_deno::snowglass::{
-    ApiFuture, ConsoleStorageRequest, InstanceToken, SnowglassHost, SnowglassNotificationSender,
+    ApiFuture, ConsoleStorageRequest, InstanceToken, Library, SnowglassHost,
+    SnowglassNotificationSender,
 };
 use snowglass_input::{
     Calibration, CalibrationCapture, CalibrationKind, DeviceId, Feedback, InputEvent, InputHub,
@@ -280,6 +281,7 @@ impl PreparedFilesystemStore {
 pub struct FrontendServices {
     plugins: Arc<snowglass_pluginhost::PluginRuntime>,
     configuration: Option<ConfigurationDefaults>,
+    library: Option<LibraryService>,
     storage: Option<Arc<StorageManager>>,
     prepared_filesystems: PreparedFilesystemStore,
     controller_sessions: ControllerSessionStore,
@@ -584,9 +586,11 @@ impl ControllerDeviceCommandDecoder {
 }
 
 impl FrontendServices {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         plugins: Arc<snowglass_pluginhost::PluginRuntime>,
         configuration: Option<ConfigurationDefaults>,
+        library: Option<LibraryService>,
         input_sources: InputHub,
         controller_api: ControllerApiState,
         emulator: EmulatorCommandSink,
@@ -602,6 +606,7 @@ impl FrontendServices {
         Self {
             plugins,
             configuration,
+            library,
             storage: crate::console_storage_manager(),
             prepared_filesystems: PreparedFilesystemStore::default(),
             controller_sessions: ControllerSessionStore::default(),
@@ -772,6 +777,10 @@ impl SnowglassHost for FrontendServices {
     fn consolestorage(&self, request: ConsoleStorageRequest) -> ApiFuture<Result<Value, String>> {
         let storage = self.storage.clone();
         Box::pin(async move { crate::serve_console_storage(storage, request).await })
+    }
+
+    fn library(&self) -> Option<Library> {
+        self.library.as_ref().map(LibraryService::client)
     }
 
     fn emulator_launch(

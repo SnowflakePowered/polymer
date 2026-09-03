@@ -65,6 +65,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let shell_factory = shell_dom::ShellSessionFactory::new(
         options.plugins.clone(),
         options.local_storage.clone(),
+        options.library.clone(),
         proxy.clone(),
     );
     tracing::debug!("snowglass: shell renderers are ready");

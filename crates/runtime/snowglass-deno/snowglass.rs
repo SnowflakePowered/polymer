@@ -18,6 +18,16 @@ use std::{
     time::Duration,
 };
 
+mod library;
+
+pub use library::{Library, LibraryCommand, LibraryCommandHandler};
+use library::{
+    op_library_games_delete, op_library_games_get, op_library_games_list,
+    op_library_launchables_add, op_library_launchables_delete, op_library_metadata_add,
+    op_library_metadata_delete, op_library_metadata_replace, op_library_metadata_text,
+    op_library_metadata_update, op_library_metadata_url,
+};
+
 pub type ApiFuture<T> = Pin<Box<dyn Future<Output = T> + 'static>>;
 
 /// Native capabilities exposed to the application-facing Snowglass realm.
@@ -48,6 +58,7 @@ pub trait SnowglassHost: Send + Sync {
     ) -> ApiFuture<Value>;
     fn release_prepared_filesystem(&self, token: String) -> bool;
     fn consolestorage(&self, request: ConsoleStorageRequest) -> ApiFuture<Result<Value, String>>;
+    fn library(&self) -> Option<Library>;
     fn emulator_launch(
         &self,
         token: InstanceToken,
@@ -552,6 +563,17 @@ deno_core::extension!(
         op_consolestorage_create,
         op_consolestorage_delete,
         op_consolestorage_set_label,
+        op_library_games_list,
+        op_library_games_get,
+        op_library_games_delete,
+        op_library_launchables_add,
+        op_library_launchables_delete,
+        op_library_metadata_add,
+        op_library_metadata_update,
+        op_library_metadata_delete,
+        op_library_metadata_replace,
+        op_library_metadata_text,
+        op_library_metadata_url,
         op_emulator_launch,
         op_emulator_close,
         op_emulator_set_volume,
@@ -580,6 +602,7 @@ deno_core::extension!(
         "06_emulator.js",
         "07_controllers.js",
         "08_consolestorage.js",
+        "09_library.js",
         "99_main.js",
     ],
     options = {

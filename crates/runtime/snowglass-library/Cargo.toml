@@ -9,18 +9,22 @@ rust-version.workspace = true
 [dependencies]
 directories = "6.0.0"
 blake3.workspace = true
+futures-util = "0.3.32"
+language-tags = "0.3.2"
+mime = "0.3.17"
+object_store.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 snowglass-consolestorage = { version = "0.1.0", path = "../../filesystem/snowglass-consolestorage" }
 thiserror.workspace = true
-tokio = { version = "1.53.1", features = ["fs", "rt"] }
+tokio = { version = "1.53.1", features = ["fs", "io-util", "rt"] }
 tracing.workspace = true
 turso.workspace = true
-uuid = "1.24.1"
+uuid = { version = "1.24.1", features = ["v5", "v7"] }
 
 [lints]
 workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-tokio = { version = "1.53.1", features = ["macros"] }
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread"] }
