@@ -7,7 +7,7 @@ pub(crate) enum UserEvent {
     Window(WindowCommand),
     GameHost(GameHostCommand),
     InspectorWindowRequested { address: std::net::SocketAddr },
-    Inspector(crate::inspector::elements::Command),
+    Inspector(crate::inspector::elements::InspectorProtocolCommand),
 }
 
 #[derive(Debug)]

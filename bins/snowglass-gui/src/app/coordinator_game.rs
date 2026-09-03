@@ -116,29 +116,6 @@ impl ShellCoordinator {
         self.emit_instance_event(finished.token, "closed", &serde_json::Value::Null);
     }
 
-    pub(super) fn game_message(
-        &mut self,
-        token: InstanceToken,
-        name: &str,
-        args: serde_json::Value,
-    ) {
-        if self.game_host.is_active(token) {
-            self.emit_instance_event(token, "message", &instance_events::message(name, args));
-        }
-    }
-
-    pub(super) fn set_game_volume(&mut self, token: InstanceToken, volume: f64) {
-        if self.game_host.set_volume(token, volume) {
-            self.publish_audio_state(false);
-        }
-    }
-
-    pub(super) fn set_game_muted(&mut self, token: InstanceToken, muted: bool) {
-        if self.game_host.set_muted(token, muted) {
-            self.publish_audio_state(false);
-        }
-    }
-
     pub(super) fn publish_audio_state(&mut self, force: bool) {
         let Some((token, audio)) = self.game_host.audio_change(force) else {
             return;

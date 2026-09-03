@@ -11,20 +11,23 @@ use crate::shell_document::{DomKeyboardEvent, DomMouseEvent, DomWheelEvent};
 use crate::shell_dom::{ShellSession, ShellSessionFactory};
 use crate::shell_runtime::{
     EmulatorCommand, EmulatorCommandSink, InputCommand, InputCommandSink, InstanceToken,
-    SnowglassNotification, SnowglassNotificationSender, WebRtcCommand, WebRtcCommandSink,
+    SnowglassNotification, SnowglassNotificationSender, WebRtcCommandSink,
 };
 use crate::window_manager::{
-    EventLoopProxy, InspectorWindowBootstrap, LoopDirective, ShellDeviceEvent, ShellImeEvent,
-    ShellWindowEvent, WindowBootstrap, WindowCommand, WindowManager,
+    EventLoopProxy, LoopDirective, ShellDeviceEvent, ShellImeEvent, ShellWindowEvent,
+    WindowCommand, WindowManager,
 };
+use snowglass_command::{CommandResponse, command_handler};
 use snowglass_config::input::InputTransaction;
 use snowglass_protocol::input::PointerPhase;
 use snowglass_renderer::{CompositingPlan, Extent};
+use snowglass_runtime::{EmulatorCommandHandler, InputCommandHandler, WebRtcCommandHandler};
 use snowglass_statistics::RecorderHandle;
 use std::{
     error::Error,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+use winit::window::Window;
 
 mod application;
 mod coordinator_commands;
@@ -78,11 +81,11 @@ enum PendingInputChangeCompletion {
     },
     ConnectionSession {
         session_id: String,
-        result: tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
+        result: CommandResponse<Result<serde_json::Value, String>>,
     },
     ControllerApi {
         value: serde_json::Value,
-        result: tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
+        result: CommandResponse<Result<serde_json::Value, String>>,
     },
 }
 
@@ -97,14 +100,14 @@ struct PendingPauseResume {
     token: InstanceToken,
     state: snowglass_pluginhost::PauseState,
     started: Instant,
-    result: tokio::sync::oneshot::Sender<Result<(), String>>,
+    result: CommandResponse<Result<(), String>>,
     response: tokio::sync::oneshot::Receiver<Result<(), String>>,
 }
 
 struct PendingStateAction {
     slot: u32,
     save: bool,
-    result: tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
+    result: CommandResponse<Result<serde_json::Value, String>>,
     response: tokio::sync::oneshot::Receiver<Result<(), String>>,
 }
 
@@ -123,7 +126,7 @@ enum PendingEmulatorCallback {
 
 impl ShellCoordinator {
     async fn new(
-        window: WindowBootstrap,
+        window: Window,
         proxy: EventLoopProxy<UserEvent>,
         options: ShellOptions,
         statistics_recorder: RecorderHandle,

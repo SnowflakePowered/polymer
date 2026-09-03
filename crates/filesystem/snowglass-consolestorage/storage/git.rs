@@ -1265,9 +1265,7 @@ impl Storage for GitVolumeStorage {
 
     fn watch(&self) -> Result<Option<Box<dyn ChangeSignal>>, Error> {
         self.ensure_checkout()?;
-        Ok(Some(Box::new(GitVolumeSignal {
-            changes: self.inner.changes.clone(),
-        })))
+        Ok(Some(Box::new(self.inner.changes.clone())))
     }
 
     fn install_file<'a>(
@@ -1356,13 +1354,9 @@ impl MountableStorage for GitVolumeStorage {
     }
 }
 
-struct GitVolumeSignal {
-    changes: Arc<Notify>,
-}
-
-impl ChangeSignal for GitVolumeSignal {
+impl ChangeSignal for Arc<Notify> {
     fn changed(&self) -> BoxFuture<'_, ()> {
-        Box::pin(self.changes.notified())
+        Box::pin(self.notified())
     }
 }
 

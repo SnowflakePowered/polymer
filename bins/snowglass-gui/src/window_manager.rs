@@ -164,21 +164,6 @@ pub(crate) enum LoopDirective {
     WaitUntil(Instant),
 }
 
-/// Opaque ownership transfer used between winit's resume callback and the
-/// asynchronous construction turn. No other subsystem can inspect the native
-/// window representation.
-pub(crate) struct WindowBootstrap(Window);
-
-/// Winit-owned secondary window passed into the inspector after creation from
-/// an `ActiveEventLoop` callback.
-pub(crate) struct InspectorWindowBootstrap(Window);
-
-impl InspectorWindowBootstrap {
-    pub(crate) fn into_inner(self) -> Window {
-        self.0
-    }
-}
-
 /// Raw winit integration. The coordinated application receives only neutral
 /// shell/device events and an abstract loop directive.
 pub(crate) struct EventLoopApplication {
@@ -216,7 +201,7 @@ impl ApplicationHandler<crate::app::UserEvent> for EventLoopApplication {
                 .with_title("Snowglass")
                 .with_inner_size(LogicalSize::new(1280.0, 720.0)),
         ) {
-            Ok(window) => self.inner.accept_native_window(WindowBootstrap(window)),
+            Ok(window) => self.inner.accept_native_window(window),
             Err(error) => {
                 self.inner.fail(error);
                 event_loop.exit();
@@ -243,9 +228,7 @@ impl ApplicationHandler<crate::app::UserEvent> for EventLoopApplication {
                 attributes = attributes.with_owner_window(owner);
             }
             match event_loop.create_window(attributes) {
-                Ok(window) => self
-                    .inner
-                    .accept_inspector_window(InspectorWindowBootstrap(window), address),
+                Ok(window) => self.inner.accept_inspector_window(window, address),
                 Err(error) => {
                     tracing::error!(%error, "snowglass: creating inspector window failed")
                 }
@@ -281,9 +264,9 @@ impl ApplicationHandler<crate::app::UserEvent> for EventLoopApplication {
         if window_id != manager.id() {
             return;
         }
-        let response = manager.handle_window_event(&event);
+        let overlay_consumed = manager.handle_window_event(&event);
         let event = translate_window_event(event);
-        if self.inner.handle_window_event(event, response.consumed) {
+        if self.inner.handle_window_event(event, overlay_consumed) {
             event_loop.exit();
         }
     }
@@ -763,17 +746,6 @@ impl EguiOverlay {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct WindowEventResponse {
-    pub consumed: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct WindowSize {
-    pub width: u32,
-    pub height: u32,
-}
-
 /// Sole owner of the native shell window and all window-attached composition,
 /// overlay, and pacing resources.
 pub(crate) struct WindowManager {
@@ -785,11 +757,10 @@ pub(crate) struct WindowManager {
 
 impl WindowManager {
     pub fn new(
-        window: WindowBootstrap,
+        window: Window,
         recorder: RecorderHandle,
         proxy: EventLoopProxy<crate::app::UserEvent>,
     ) -> Result<Self, Box<dyn Error>> {
-        let WindowBootstrap(window) = window;
         let composition = CompositionTree::new(&window)?;
         let mut overlay = EguiOverlay::new(&window, recorder)?;
         composition.set_egui_overlay_content(&overlay.content()?)?;
@@ -811,12 +782,8 @@ impl WindowManager {
         Ok(WindowTarget::new(&self.window)?.0)
     }
 
-    pub fn size(&self) -> WindowSize {
-        let size = self.window.inner_size();
-        WindowSize {
-            width: size.width,
-            height: size.height,
-        }
+    pub fn size(&self) -> winit::dpi::PhysicalSize<u32> {
+        self.window.inner_size()
     }
 
     pub fn scale_factor(&self) -> f32 {
@@ -867,14 +834,12 @@ impl WindowManager {
         self.composition.focus_host();
     }
 
-    pub fn handle_window_event(&mut self, event: &WindowEvent) -> WindowEventResponse {
+    pub fn handle_window_event(&mut self, event: &WindowEvent) -> bool {
         let response = self.overlay.on_window_event(&self.window, event);
         if response.repaint {
             self.window.request_redraw();
         }
-        WindowEventResponse {
-            consumed: response.consumed,
-        }
+        response.consumed
     }
 
     pub fn note_overlay_interaction(&mut self, now: Instant) {
@@ -1044,13 +1009,13 @@ impl CompositionTree {
     }
 }
 
-pub struct SurfaceWindow<'a> {
-    window: &'a Window,
+pub struct SurfaceWindow<'a, W: ?Sized = Window> {
+    window: &'a W,
     extent: Extent,
 }
 
-impl<'a> SurfaceWindow<'a> {
-    pub const fn new(window: &'a Window, width: u32, height: u32) -> Self {
+impl<'a, W: ?Sized> SurfaceWindow<'a, W> {
+    pub const fn new(window: &'a W, width: u32, height: u32) -> Self {
         Self {
             window,
             extent: Extent::new(width, height),
@@ -1058,7 +1023,9 @@ impl<'a> SurfaceWindow<'a> {
     }
 }
 
-impl raw_window_handle::HasWindowHandle for SurfaceWindow<'_> {
+impl<W: raw_window_handle::HasWindowHandle + ?Sized> raw_window_handle::HasWindowHandle
+    for SurfaceWindow<'_, W>
+{
     fn window_handle(
         &self,
     ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
@@ -1066,7 +1033,9 @@ impl raw_window_handle::HasWindowHandle for SurfaceWindow<'_> {
     }
 }
 
-impl raw_window_handle::HasDisplayHandle for SurfaceWindow<'_> {
+impl<W: raw_window_handle::HasDisplayHandle + ?Sized> raw_window_handle::HasDisplayHandle
+    for SurfaceWindow<'_, W>
+{
     fn display_handle(
         &self,
     ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
@@ -1074,7 +1043,9 @@ impl raw_window_handle::HasDisplayHandle for SurfaceWindow<'_> {
     }
 }
 
-impl snowglass_renderer::RenderWindow for SurfaceWindow<'_> {
+impl<W: raw_window_handle::HasWindowHandle + raw_window_handle::HasDisplayHandle + ?Sized>
+    snowglass_renderer::RenderWindow for SurfaceWindow<'_, W>
+{
     fn render_extent(&self) -> Extent {
         self.extent
     }

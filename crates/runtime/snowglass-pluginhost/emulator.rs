@@ -21,21 +21,21 @@ pub struct EmulatorLaunchArguments {
     #[serde(default)]
     pub graph_tracking: bool,
     pub surfaces: Vec<TrackedSurface>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub prepared_filesystem: Option<String>,
     #[serde(skip)]
     pub filesystem: Option<snowglass_vfs::PreparedFilesystemLaunch>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub controller_session: Option<String>,
     #[serde(skip)]
     pub session: Option<crate::ControllerSession>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub controller_topology: Option<snowglass_controllers::ControllerTopology>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub save_states: Option<crate::SaveStateConfig>,
-    #[serde(default)]
+    #[serde(default, skip_deserializing)]
     pub quick_resume_accepted: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub quick_resume_screenshot: Option<Vec<u8>>,
 }
 
@@ -112,6 +112,8 @@ pub struct EmulatorLaunchInvocation {
     pub configuration: ConfigurationInstance,
     pub storage: crate::filesystem::StorageFactories,
     pub quick_resume: Option<QuickResumeData>,
+    pub topology: snowglass_controllers::ControllerTopology,
+    pub explicit_default: bool,
 }
 
 #[derive(Clone, Debug)]

@@ -196,27 +196,6 @@ pub type EmulatorCommandSink = CommandSink<EmulatorCommand>;
 pub type InputCommandSink = CommandSink<InputCommand>;
 pub type WebRtcCommandSink = CommandSink<WebRtcCommand>;
 
-/// Thread-affine native mechanics exposed through typed command clients.
-pub struct RuntimePlatform {
-    emulator: Emulator,
-    input: Input,
-    web_rtc: WebRtc,
-}
-
-impl RuntimePlatform {
-    pub fn new(
-        emulator: EmulatorCommandSink,
-        input: InputCommandSink,
-        webrtc: WebRtcCommandSink,
-    ) -> Self {
-        Self {
-            emulator: Emulator::new(emulator),
-            input: Input::new(input),
-            web_rtc: WebRtc::new(webrtc),
-        }
-    }
-}
-
 impl Input {
     fn controller_api(&self, command: Value) -> ApiFuture<Result<Value, String>> {
         let client = self.clone();
@@ -306,7 +285,9 @@ pub struct FrontendServices {
     controller_sessions: ControllerSessionStore,
     input_sources: InputHub,
     controller_api: ControllerApiState,
-    platform: Arc<RuntimePlatform>,
+    emulator: Emulator,
+    input: Input,
+    web_rtc: WebRtc,
     notifications: SnowglassNotificationSender,
     deno_input: Arc<DenoInputListener>,
     input_listener: ListenerHandle,
@@ -608,7 +589,9 @@ impl FrontendServices {
         configuration: Option<ConfigurationDefaults>,
         input_sources: InputHub,
         controller_api: ControllerApiState,
-        platform: Arc<RuntimePlatform>,
+        emulator: EmulatorCommandSink,
+        input: InputCommandSink,
+        web_rtc: WebRtcCommandSink,
         notifications: SnowglassNotificationSender,
     ) -> Self {
         let deno_input = Arc::new(DenoInputListener::new(
@@ -624,7 +607,9 @@ impl FrontendServices {
             controller_sessions: ControllerSessionStore::default(),
             input_sources,
             controller_api,
-            platform,
+            emulator: Emulator::new(emulator),
+            input: Input::new(input),
+            web_rtc: WebRtc::new(web_rtc),
             notifications,
             deno_input,
             input_listener,
@@ -699,7 +684,7 @@ impl SnowglassHost for FrontendServices {
     }
 
     fn controller_api_command(&self, command: Value) -> ApiFuture<Result<Value, String>> {
-        self.platform.input.controller_api(command)
+        self.input.controller_api(command)
     }
 
     fn input_get(&self, index: u8) -> Option<Value> {
@@ -822,29 +807,28 @@ impl SnowglassHost for FrontendServices {
             },
             None => None,
         };
-        self.platform
-            .emulator
+        self.emulator
             .launch(token, options, prepared, controller_session)
     }
 
     fn emulator_close(&self, token: InstanceToken) {
-        self.platform.emulator.close(token);
+        self.emulator.close(token);
     }
 
     fn emulator_set_volume(&self, token: InstanceToken, volume: f64) {
-        self.platform.emulator.set_volume(token, volume);
+        self.emulator.set_volume(token, volume);
     }
 
     fn emulator_set_muted(&self, token: InstanceToken, muted: bool) {
-        self.platform.emulator.set_muted(token, muted);
+        self.emulator.set_muted(token, muted);
     }
 
     fn emulator_message(&self, token: InstanceToken, name: String, args: Value) {
-        self.platform.emulator.message(token, name, args);
+        self.emulator.message(token, name, args);
     }
 
     fn emulator_input(&self, token: InstanceToken, active: bool) {
-        self.platform.emulator.input(token, active);
+        self.emulator.input(token, active);
     }
 
     fn emulator_pause_state(
@@ -853,7 +837,7 @@ impl SnowglassHost for FrontendServices {
         pause: bool,
         timeout: Duration,
     ) -> ApiFuture<Result<(), String>> {
-        self.platform.emulator.pause_state(token, pause, timeout)
+        self.emulator.pause_state(token, pause, timeout)
     }
 
     fn emulator_save_state(
@@ -861,7 +845,7 @@ impl SnowglassHost for FrontendServices {
         token: InstanceToken,
         timeout: Duration,
     ) -> ApiFuture<Result<Value, String>> {
-        self.platform.emulator.save_state(token, timeout)
+        self.emulator.save_state(token, timeout)
     }
 
     fn emulator_resume_state(
@@ -870,7 +854,7 @@ impl SnowglassHost for FrontendServices {
         slot: u32,
         timeout: Duration,
     ) -> ApiFuture<Result<Value, String>> {
-        self.platform.emulator.resume_state(token, slot, timeout)
+        self.emulator.resume_state(token, slot, timeout)
     }
 
     fn emulator_state_screenshot(
@@ -878,11 +862,11 @@ impl SnowglassHost for FrontendServices {
         token: InstanceToken,
         record_id: String,
     ) -> ApiFuture<Result<Option<Vec<u8>>, String>> {
-        self.platform.emulator.state_screenshot(token, record_id)
+        self.emulator.state_screenshot(token, record_id)
     }
 
     fn input_configure(&self, request_id: u32, transaction: Value) {
-        self.platform.input.configure(request_id, transaction);
+        self.input.configure(request_id, transaction);
     }
 
     fn webrtc_start(
@@ -891,11 +875,11 @@ impl SnowglassHost for FrontendServices {
         bind: SocketAddr,
         targets: Vec<u32>,
     ) -> ApiFuture<Result<(), String>> {
-        self.platform.web_rtc.start(token, bind, targets)
+        self.web_rtc.start(token, bind, targets)
     }
 
     fn webrtc_stop(&self, token: InstanceToken) -> ApiFuture<Result<(), String>> {
-        self.platform.web_rtc.stop(token)
+        self.web_rtc.stop(token)
     }
 }
 

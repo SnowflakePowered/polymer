@@ -4,37 +4,52 @@ use super::{css::Stylesheets, geometry::NodeGeometry};
 use crate::shell_dom::ShellSession;
 use blitz_dom::{BaseDocument, Node, NodeData, NodeId};
 use serde_json::{Value, json};
-use tokio::sync::oneshot;
+use snowglass_command::command_handler;
 
 const DOCUMENT_NODE: u64 = 9;
 const ELEMENT_NODE: u64 = 1;
 const TEXT_NODE: u64 = 3;
 const COMMENT_NODE: u64 = 8;
 
-#[derive(Debug)]
-pub(crate) struct Command {
-    pub(super) request: Value,
-    pub(super) target_url: String,
-    pub(super) include_whitespace: bool,
-    pub(super) respond_to: oneshot::Sender<Reply>,
+snowglass_command::command_client! {
+    pub(crate) client InspectorProtocol {
+        closed: ProtocolError::unavailable("Elements inspector was closed");
+
+        #[args(Dispatch)]
+        pub(crate) async fn dispatch(
+            request: Value,
+            target_url: String,
+            include_whitespace: bool,
+        ) -> Result<Reply, ProtocolError>;
+    }
 }
 
-impl Command {
-    pub(crate) fn handle(self, session: &ShellSession) {
-        let document = session.inspector_document();
+#[command_handler]
+impl InspectorProtocolCommandHandler for ShellSession {
+    type Output<'handler>
+        = ()
+    where
+        Self: 'handler;
+
+    fn dispatch(
+        &mut self,
+        request: Value,
+        target_url: String,
+        include_whitespace: bool,
+    ) -> Result<Reply, ProtocolError> {
+        let document = self.inspector_document();
         let result = document
             .ok_or_else(|| ProtocolError::unavailable("The Blitz document is not active"))
             .and_then(|document| {
-                DocumentProtocol::new(document, &self.target_url, self.include_whitespace)
-                    .handle(&self.request)
+                DocumentProtocol::new(document, &target_url, include_whitespace).handle(&request)
             });
         let events = document
             .map(|document| {
-                DocumentProtocol::new(document, &self.target_url, self.include_whitespace)
-                    .events_for(&self.request)
+                DocumentProtocol::new(document, &target_url, include_whitespace)
+                    .events_for(&request)
             })
             .unwrap_or_default();
-        let _ = self.respond_to.send(Reply { result, events });
+        Ok(Reply { result, events })
     }
 }
 

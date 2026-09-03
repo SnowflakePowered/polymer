@@ -31,7 +31,6 @@ use std::{
 use watchable::{TimeoutError, Watchable, Watcher};
 
 type SurfaceEventSender = MTx<mpmc::List<SurfaceEvent>>;
-type SurfaceEventChannel = MRx<mpmc::List<SurfaceEvent>>;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct TrackedSurfaceId(pub u32);
@@ -530,18 +529,7 @@ pub enum SurfaceEvent {
     },
 }
 
-#[derive(Clone)]
-pub struct SurfaceEventReceiver(SurfaceEventChannel);
-
-impl SurfaceEventReceiver {
-    pub fn try_recv(&self) -> Result<SurfaceEvent, crossfire::TryRecvError> {
-        self.0.try_recv()
-    }
-
-    pub fn recv(&self) -> Result<SurfaceEvent, crossfire::RecvError> {
-        self.0.recv()
-    }
-}
+pub type SurfaceEventReceiver = MRx<mpmc::List<SurfaceEvent>>;
 
 pub struct SurfaceOffer {
     offer: u64,
@@ -719,7 +707,7 @@ impl EmulatorInstance {
         Ok(Self {
             process_id,
             lifecycle,
-            events: SurfaceEventReceiver(event_receiver),
+            events: event_receiver,
             ui_requests,
         })
     }

@@ -4,7 +4,6 @@ use crate::actions::ActionsState;
 use crate::automation::{AutomationState, op_ui_automation_request};
 use crate::{
     ConfigurationAccessError, EmulatorHostError, EmulatorLaunchArguments, EmulatorLaunchInvocation,
-    Hooks, TrackedSurface,
     configuration::{ConfigurationCheckpoint, ConfigurationId, ConfigurationInstances},
 };
 use deno_core::{JsRuntime, OpState, op2, serde_v8, v8};
@@ -160,11 +159,10 @@ impl<'runtime> EmulatorWorker<'runtime> {
     pub async fn execute_retained(
         &mut self,
         invocation: EmulatorLaunchInvocation,
-        explicit_default: bool,
     ) -> Result<RetainedEmulator, EmulatorHostError> {
         let save_states = invocation.plugin.save_states().cloned();
         let pending = self
-            .launch(invocation, explicit_default)
+            .launch(invocation)
             .await
             .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
         self.validate_pending_configuration(&pending)
@@ -206,11 +204,7 @@ impl<'runtime> EmulatorWorker<'runtime> {
         Ok(RetainedEmulator {
             launch,
             configuration_id,
-            controller_changes,
-            pause_resume,
-            state_save,
-            state_resume,
-            quit,
+            retained: controller_changes || pause_resume || state_save || state_resume || quit,
         })
     }
 
@@ -236,7 +230,6 @@ impl<'runtime> EmulatorWorker<'runtime> {
     async fn launch(
         &mut self,
         invocation: EmulatorLaunchInvocation,
-        explicit_default: bool,
     ) -> Result<PendingDenoLaunch, DenoPluginError> {
         let EmulatorLaunchInvocation {
             plugin,
@@ -244,22 +237,14 @@ impl<'runtime> EmulatorWorker<'runtime> {
             configuration,
             storage: _,
             quick_resume: _,
+            topology,
+            explicit_default,
         } = invocation;
         if !arguments.is_object() {
             return Err(DenoPluginError::Adapter(
                 "onLaunch arguments must be an object".to_owned(),
             ));
         }
-        let topology = serde_json::from_value::<snowglass_controllers::ControllerTopology>(
-            arguments
-                .get("controllerTopology")
-                .cloned()
-                .ok_or_else(|| {
-                    DenoPluginError::Adapter(
-                        "onLaunch arguments require controllerTopology".to_owned(),
-                    )
-                })?,
-        )?;
         let entrypoint = serde_json::to_string(plugin.entrypoint().as_str())?;
         let arguments = serde_json::to_string(&arguments)?;
         let configuration_id = self.insert_configuration(configuration, &topology);
@@ -428,17 +413,17 @@ impl<'runtime> EmulatorWorker<'runtime> {
 
     fn finish(
         &mut self,
-        launch: PendingDenoLaunch,
+        pending: PendingDenoLaunch,
     ) -> Result<EmulatorLaunchArguments, DenoPluginError> {
-        let plan: EmulatorLaunchPlan = {
+        let mut launch: EmulatorLaunchArguments = {
             deno_core::scope!(scope, self.runtime);
-            let wrapper = local_object(scope, &launch.value, "pluginhost launch result")?;
+            let wrapper = local_object(scope, &pending.value, "pluginhost launch result")?;
             let value = property(scope, wrapper, "result")?;
             serde_v8::from_v8(scope, value)?
         };
         let (quick_resume_accepted, quick_resume_screenshot) = {
             deno_core::scope!(scope, self.runtime);
-            let wrapper = local_object(scope, &launch.value, "pluginhost launch result")?;
+            let wrapper = local_object(scope, &pending.value, "pluginhost launch result")?;
             let accepted = property(scope, wrapper, "quickResumeAccepted")?.boolean_value(scope);
             let screenshot = property(scope, wrapper, "quickResumeScreenshot")?;
             let screenshot = if screenshot.is_null_or_undefined() {
@@ -452,49 +437,30 @@ impl<'runtime> EmulatorWorker<'runtime> {
             .map_err(|error| DenoPluginError::Adapter(error.to_string()))?;
         if let Some(filesystem) = &filesystem {
             filesystem
-                .validate_command(&plan.command)
+                .validate_command(&launch.command)
                 .map_err(|error| DenoPluginError::Adapter(error.to_string()))?;
         }
-        Ok(EmulatorLaunchArguments {
-            command: plan.command,
-            argv: plan.argv,
-            isolate: plan.isolate,
-            hooks: plan.hooks,
-            graph_tracking: plan.graph_tracking,
-            surfaces: plan.surfaces,
-            prepared_filesystem: None,
-            filesystem,
-            controller_session: None,
-            session: None,
-            controller_topology: plan.controller_topology,
-            save_states: None,
-            quick_resume_accepted,
-            quick_resume_screenshot,
-        })
+        launch.filesystem = filesystem;
+        launch.quick_resume_accepted = quick_resume_accepted;
+        launch.quick_resume_screenshot = quick_resume_screenshot;
+        Ok(launch)
     }
 }
 
 pub(crate) async fn execute_retained_emulator(
     runtime: &mut JsRuntime,
     invocation: EmulatorLaunchInvocation,
-    explicit_default: bool,
 ) -> Result<RetainedEmulator, EmulatorHostError> {
     EmulatorWorker::new(runtime)
-        .execute_retained(invocation, explicit_default)
+        .execute_retained(invocation)
         .await
-}
-
-#[derive(serde::Deserialize)]
-pub(crate) struct ControllerChangeOutput {
-    #[serde(rename = "controllerTopology")]
-    pub controller_topology: snowglass_controllers::ControllerTopology,
 }
 
 pub(crate) async fn execute_controller_change(
     runtime: &mut JsRuntime,
     topology: &snowglass_controllers::ControllerTopology,
     previous_topology: &snowglass_controllers::ControllerTopology,
-) -> Result<ControllerChangeOutput, EmulatorHostError> {
+) -> Result<snowglass_controllers::ControllerTopology, EmulatorHostError> {
     let topology = serde_json::to_string(topology)
         .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
     let previous = serde_json::to_string(previous_topology)
@@ -515,9 +481,7 @@ pub(crate) async fn execute_controller_change(
             ? await Reflect.apply(active.onControllerChanged, active.controllerReceiver, [context])
             : undefined;
           __snowglassFilesystem.refreshConfigurations();
-          return {{
-            controllerTopology: result?.controllerTopology ?? inputTopology,
-          }};
+          return result?.controllerTopology ?? inputTopology;
         }})()"#
     );
     let promise = runtime
@@ -621,11 +585,7 @@ pub(crate) async fn execute_quit(
 pub(crate) struct RetainedEmulator {
     pub launch: EmulatorLaunchArguments,
     pub configuration_id: ConfigurationId,
-    pub controller_changes: bool,
-    pub pause_resume: bool,
-    pub state_save: bool,
-    pub state_resume: bool,
-    pub quit: bool,
+    pub retained: bool,
 }
 
 pub(crate) fn rematerialize_configuration(
@@ -683,22 +643,6 @@ pub(crate) fn discard_configuration(runtime: &mut JsRuntime, id: ConfigurationId
         .borrow_mut()
         .borrow_mut::<ConfigurationInstances>()
         .discard(id);
-}
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct EmulatorLaunchPlan {
-    command: String,
-    #[serde(default)]
-    argv: Vec<String>,
-    #[serde(default)]
-    isolate: bool,
-    hooks: Hooks,
-    #[serde(default)]
-    controller_topology: Option<snowglass_controllers::ControllerTopology>,
-    #[serde(default)]
-    graph_tracking: bool,
-    surfaces: Vec<TrackedSurface>,
 }
 
 struct PendingDenoLaunch {

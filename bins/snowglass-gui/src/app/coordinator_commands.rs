@@ -10,167 +10,6 @@ impl ShellCoordinator {
         }
     }
 
-    pub(super) fn apply_emulator_command(
-        &mut self,
-        command: EmulatorCommand,
-    ) -> Option<PendingEmulatorCallback> {
-        match command {
-            EmulatorCommand::Launch {
-                token,
-                options,
-                prepared_filesystem,
-                controller_session,
-                response: result,
-            } => {
-                let options = serde_json::from_value::<AttachedLaunchPlan>(options)
-                    .map_err(|error| format!("invalid emulator launch options: {error}"))
-                    .and_then(|options| {
-                        options.validate()?;
-                        Ok(options)
-                    });
-                let launched = options.and_then(|options| {
-                    self.launch_game(token, options, prepared_filesystem, controller_session)
-                });
-                let _ = result.send(launched);
-            }
-            EmulatorCommand::Close { token } => {
-                match self.game_host.begin_quit(token, Duration::from_secs(30)) {
-                    Ok(Some((cache, screenshot, response))) => {
-                        return Some(PendingEmulatorCallback::Quit(PendingQuit {
-                            token,
-                            cache,
-                            screenshot,
-                            response,
-                        }));
-                    }
-                    Ok(None) => self.close_game(token),
-                    Err(error) => {
-                        self.emit_instance_event(
-                            token,
-                            "quickresumeerror",
-                            &instance_events::error(&error),
-                        );
-                        self.close_game(token);
-                    }
-                }
-            }
-            EmulatorCommand::SetVolume { token, volume } => self.set_game_volume(token, volume),
-            EmulatorCommand::SetMuted { token, muted } => self.set_game_muted(token, muted),
-            EmulatorCommand::Message { token, name, args } => self.game_message(token, &name, args),
-            EmulatorCommand::Input { token, active } if self.game_host.is_active(token) => {
-                self.set_input_priority(if active {
-                    InputPriority::Game
-                } else {
-                    InputPriority::Ui
-                });
-            }
-            EmulatorCommand::Input { .. } => {}
-            EmulatorCommand::PauseState {
-                token,
-                pause,
-                timeout,
-                response: result,
-            } if self.game_host.is_active(token) => {
-                let state = if pause {
-                    snowglass_pluginhost::PauseState::Pause
-                } else {
-                    snowglass_pluginhost::PauseState::Resume
-                };
-                match self.game_host.pause_resume(state, timeout) {
-                    Ok(Some(response)) => {
-                        tracing::info!(
-                            ?state,
-                            timeout_ms = timeout.as_millis(),
-                            thread = ?std::thread::current().id(),
-                            "snowglass: dispatched pause/resume plugin callback"
-                        );
-                        return Some(PendingEmulatorCallback::PauseResume(PendingPauseResume {
-                            token,
-                            state,
-                            started: Instant::now(),
-                            result,
-                            response,
-                        }));
-                    }
-                    Ok(None) => {
-                        let _ = result.send(Ok(()));
-                    }
-                    Err(error) => {
-                        self.emit_instance_event(
-                            token,
-                            "pauseresumeerror",
-                            &instance_events::error(&error),
-                        );
-                        let _ = result.send(Err(error));
-                    }
-                }
-            }
-            EmulatorCommand::PauseState {
-                response: result, ..
-            } => {
-                let _ = result.send(Err("emulator is no longer active".to_owned()));
-            }
-            EmulatorCommand::SaveState {
-                token,
-                timeout,
-                response: result,
-            } if self.game_host.is_active(token) => match self.game_host.save_state(timeout) {
-                Ok((slot, response)) => {
-                    return Some(PendingEmulatorCallback::State(PendingStateAction {
-                        slot,
-                        save: true,
-                        result,
-                        response,
-                    }));
-                }
-                Err(error) => {
-                    let _ = result.send(Err(error));
-                }
-            },
-            EmulatorCommand::ResumeState {
-                token,
-                slot,
-                timeout,
-                response: result,
-            } if self.game_host.is_active(token) => {
-                match self.game_host.resume_state(slot, timeout) {
-                    Ok(response) => {
-                        return Some(PendingEmulatorCallback::State(PendingStateAction {
-                            slot,
-                            save: false,
-                            result,
-                            response,
-                        }));
-                    }
-                    Err(error) => {
-                        let _ = result.send(Err(error));
-                    }
-                }
-            }
-            EmulatorCommand::SaveState {
-                response: result, ..
-            }
-            | EmulatorCommand::ResumeState {
-                response: result, ..
-            } => {
-                let _ = result.send(Err("emulator is no longer active".to_owned()));
-            }
-            EmulatorCommand::StateScreenshot {
-                token,
-                record_id,
-                response: result,
-            } if self.game_host.is_active(token) => {
-                let _ = result.send(self.game_host.save_state_screenshot(&record_id));
-            }
-            EmulatorCommand::StateScreenshot {
-                response: result, ..
-            } => {
-                let _ = result.send(Err("emulator is no longer active".to_owned()));
-            }
-        }
-        None
-    }
-
     pub(super) fn finish_state_action(
         &mut self,
         pending: PendingStateAction,
@@ -246,121 +85,6 @@ impl ShellCoordinator {
             );
         }
         let _ = pending.result.send(callback);
-    }
-
-    pub(super) async fn apply_input_command(
-        &mut self,
-        command: InputCommand,
-    ) -> Option<PendingInputChange> {
-        match command {
-            InputCommand::Configure {
-                request_id,
-                transaction,
-            } => match serde_json::from_value::<InputTransaction>(transaction) {
-                Ok(transaction) => {
-                    return self.configure_input(u64::from(request_id), transaction);
-                }
-                Err(error) => self.send_input_configuration_result(
-                    u64::from(request_id),
-                    Err(format!("invalid input transaction: {error}")),
-                ),
-            },
-            InputCommand::ControllerApi {
-                command,
-                response: result,
-            } => {
-                let response = self.input.controller_command(command).await;
-                let response = match response {
-                    Ok(response) => response,
-                    Err(error) => {
-                        let _ = result.send(Err(error));
-                        return None;
-                    }
-                };
-                let Some(commit) = response.session_commit else {
-                    if response.reapply_topology {
-                        let transaction = InputTransaction {
-                            expected_revision: self.input.configuration_snapshot().revision,
-                            operations: Vec::new(),
-                        };
-                        return match self.input.prepare_controller_transaction(transaction) {
-                            Ok(transaction) => self.dispatch_controller_transaction(
-                                transaction,
-                                PendingInputChangeCompletion::ControllerApi {
-                                    value: response.response,
-                                    result,
-                                },
-                            ),
-                            Err(error) => {
-                                let _ = result.send(Err(error));
-                                None
-                            }
-                        };
-                    }
-                    let _ = result.send(Ok(response.response));
-                    return None;
-                };
-                let transaction = match self.input.prepare_controller_session_transaction(&commit) {
-                    Ok(transaction) => transaction,
-                    Err(error) => {
-                        let error =
-                            self.settle_controller_session_failure(&commit.session_id, error);
-                        let _ = result.send(Err(error));
-                        return None;
-                    }
-                };
-                return self.dispatch_controller_transaction(
-                    transaction,
-                    PendingInputChangeCompletion::ConnectionSession {
-                        session_id: commit.session_id,
-                        result,
-                    },
-                );
-            }
-        }
-        None
-    }
-
-    pub(super) fn apply_webrtc_command(&mut self, command: WebRtcCommand) {
-        match command {
-            WebRtcCommand::Start {
-                token,
-                bind,
-                targets,
-                response: result,
-            } => {
-                let _ = result.send(self.game_host.start_webrtc(token, bind, &targets));
-            }
-            WebRtcCommand::Stop {
-                token,
-                response: result,
-            } => {
-                let stopped = self.game_host.stop_webrtc(token);
-                let _ = result.send(if stopped {
-                    Ok(())
-                } else {
-                    Err("the WebRTC publication is not active".to_owned())
-                });
-            }
-        }
-    }
-
-    pub(super) fn configure_input(
-        &mut self,
-        request_id: u64,
-        transaction: InputTransaction,
-    ) -> Option<PendingInputChange> {
-        let transaction = match self.input.prepare_controller_transaction(transaction) {
-            Ok(transaction) => transaction,
-            Err(error) => {
-                self.send_input_configuration_result(request_id, Err(error));
-                return None;
-            }
-        };
-        self.dispatch_controller_transaction(
-            transaction,
-            PendingInputChangeCompletion::Configuration { request_id },
-        )
     }
 
     pub(super) fn finish_input_change(
@@ -505,5 +229,338 @@ impl ShellCoordinator {
             request_id,
             result,
         });
+    }
+}
+
+#[command_handler]
+impl EmulatorCommandHandler for ShellCoordinator {
+    type Output<'handler>
+        = Option<PendingEmulatorCallback>
+    where
+        Self: 'handler;
+
+    fn launch(
+        &mut self,
+        token: InstanceToken,
+        options: serde_json::Value,
+        prepared_filesystem: Option<snowglass_vfs::PreparedFilesystemLaunch>,
+        controller_session: Option<snowglass_pluginhost::ControllerSession>,
+    ) -> Result<(), String> {
+        let options = serde_json::from_value::<AttachedLaunchPlan>(options)
+            .map_err(|error| format!("invalid emulator launch options: {error}"))
+            .and_then(|options| {
+                options.validate()?;
+                Ok(options)
+            });
+        options.and_then(|options| {
+            self.launch_game(token, options, prepared_filesystem, controller_session)
+        })
+    }
+
+    fn close<'handler>(&'handler mut self, token: InstanceToken) -> Self::Output<'handler> {
+        match self.game_host.begin_quit(token, Duration::from_secs(30)) {
+            Ok(Some((cache, screenshot, response))) => {
+                Some(PendingEmulatorCallback::Quit(PendingQuit {
+                    token,
+                    cache,
+                    screenshot,
+                    response,
+                }))
+            }
+            Ok(None) => {
+                self.close_game(token);
+                None
+            }
+            Err(error) => {
+                self.emit_instance_event(
+                    token,
+                    "quickresumeerror",
+                    &instance_events::error(&error),
+                );
+                self.close_game(token);
+                None
+            }
+        }
+    }
+
+    fn set_volume<'handler>(
+        &'handler mut self,
+        token: InstanceToken,
+        volume: f64,
+    ) -> Self::Output<'handler> {
+        if self.game_host.set_volume(token, volume) {
+            self.publish_audio_state(false);
+        }
+        None
+    }
+
+    fn set_muted<'handler>(
+        &'handler mut self,
+        token: InstanceToken,
+        muted: bool,
+    ) -> Self::Output<'handler> {
+        if self.game_host.set_muted(token, muted) {
+            self.publish_audio_state(false);
+        }
+        None
+    }
+
+    fn message<'handler>(
+        &'handler mut self,
+        token: InstanceToken,
+        name: String,
+        args: serde_json::Value,
+    ) -> Self::Output<'handler> {
+        if self.game_host.is_active(token) {
+            self.emit_instance_event(token, "message", &instance_events::message(&name, args));
+        }
+        None
+    }
+
+    fn input<'handler>(
+        &'handler mut self,
+        token: InstanceToken,
+        active: bool,
+    ) -> Self::Output<'handler> {
+        if self.game_host.is_active(token) {
+            self.set_input_priority(if active {
+                InputPriority::Game
+            } else {
+                InputPriority::Ui
+            });
+        }
+        None
+    }
+
+    fn pause_state<'handler>(
+        &'handler mut self,
+        token: InstanceToken,
+        pause: bool,
+        timeout: Duration,
+        response: CommandResponse<Result<(), String>>,
+    ) -> Self::Output<'handler> {
+        if !self.game_host.is_active(token) {
+            let _ = response.send(Err("emulator is no longer active".to_owned()));
+            return None;
+        }
+        let state = if pause {
+            snowglass_pluginhost::PauseState::Pause
+        } else {
+            snowglass_pluginhost::PauseState::Resume
+        };
+        match self.game_host.pause_resume(state, timeout) {
+            Ok(Some(callback)) => {
+                tracing::info!(
+                    ?state,
+                    timeout_ms = timeout.as_millis(),
+                    thread = ?std::thread::current().id(),
+                    "snowglass: dispatched pause/resume plugin callback"
+                );
+                Some(PendingEmulatorCallback::PauseResume(PendingPauseResume {
+                    token,
+                    state,
+                    started: Instant::now(),
+                    result: response,
+                    response: callback,
+                }))
+            }
+            Ok(None) => {
+                let _ = response.send(Ok(()));
+                None
+            }
+            Err(error) => {
+                self.emit_instance_event(
+                    token,
+                    "pauseresumeerror",
+                    &instance_events::error(&error),
+                );
+                let _ = response.send(Err(error));
+                None
+            }
+        }
+    }
+
+    fn save_state<'handler>(
+        &'handler mut self,
+        token: InstanceToken,
+        timeout: Duration,
+        response: CommandResponse<Result<serde_json::Value, String>>,
+    ) -> Self::Output<'handler> {
+        if !self.game_host.is_active(token) {
+            let _ = response.send(Err("emulator is no longer active".to_owned()));
+            return None;
+        }
+        match self.game_host.save_state(timeout) {
+            Ok((slot, callback)) => Some(PendingEmulatorCallback::State(PendingStateAction {
+                slot,
+                save: true,
+                result: response,
+                response: callback,
+            })),
+            Err(error) => {
+                let _ = response.send(Err(error));
+                None
+            }
+        }
+    }
+
+    fn resume_state<'handler>(
+        &'handler mut self,
+        token: InstanceToken,
+        slot: u32,
+        timeout: Duration,
+        response: CommandResponse<Result<serde_json::Value, String>>,
+    ) -> Self::Output<'handler> {
+        if !self.game_host.is_active(token) {
+            let _ = response.send(Err("emulator is no longer active".to_owned()));
+            return None;
+        }
+        match self.game_host.resume_state(slot, timeout) {
+            Ok(callback) => Some(PendingEmulatorCallback::State(PendingStateAction {
+                slot,
+                save: false,
+                result: response,
+                response: callback,
+            })),
+            Err(error) => {
+                let _ = response.send(Err(error));
+                None
+            }
+        }
+    }
+
+    fn state_screenshot(
+        &mut self,
+        token: InstanceToken,
+        record_id: String,
+    ) -> Result<Option<Vec<u8>>, String> {
+        if self.game_host.is_active(token) {
+            self.game_host.save_state_screenshot(&record_id)
+        } else {
+            Err("emulator is no longer active".to_owned())
+        }
+    }
+}
+
+#[command_handler]
+impl InputCommandHandler for ShellCoordinator {
+    type Output<'handler>
+        =
+        std::pin::Pin<Box<dyn std::future::Future<Output = Option<PendingInputChange>> + 'handler>>
+    where
+        Self: 'handler;
+
+    fn configure<'handler>(
+        &'handler mut self,
+        request_id: u32,
+        transaction: serde_json::Value,
+    ) -> Self::Output<'handler> {
+        Box::pin(async move {
+            match serde_json::from_value::<InputTransaction>(transaction) {
+                Ok(transaction) => {
+                    let transaction = match self.input.prepare_controller_transaction(transaction) {
+                        Ok(transaction) => transaction,
+                        Err(error) => {
+                            self.send_input_configuration_result(u64::from(request_id), Err(error));
+                            return None;
+                        }
+                    };
+                    self.dispatch_controller_transaction(
+                        transaction,
+                        PendingInputChangeCompletion::Configuration {
+                            request_id: u64::from(request_id),
+                        },
+                    )
+                }
+                Err(error) => {
+                    self.send_input_configuration_result(
+                        u64::from(request_id),
+                        Err(format!("invalid input transaction: {error}")),
+                    );
+                    None
+                }
+            }
+        })
+    }
+
+    fn controller_api_response<'handler>(
+        &'handler mut self,
+        command: serde_json::Value,
+        response: CommandResponse<Result<serde_json::Value, String>>,
+    ) -> Self::Output<'handler> {
+        Box::pin(async move {
+            let command_result = self.input.controller_command(command).await;
+            let command_result = match command_result {
+                Ok(command_result) => command_result,
+                Err(error) => {
+                    let _ = response.send(Err(error));
+                    return None;
+                }
+            };
+            let Some(commit) = command_result.session_commit else {
+                if command_result.reapply_topology {
+                    let transaction = InputTransaction {
+                        expected_revision: self.input.configuration_snapshot().revision,
+                        operations: Vec::new(),
+                    };
+                    return match self.input.prepare_controller_transaction(transaction) {
+                        Ok(transaction) => self.dispatch_controller_transaction(
+                            transaction,
+                            PendingInputChangeCompletion::ControllerApi {
+                                value: command_result.response,
+                                result: response,
+                            },
+                        ),
+                        Err(error) => {
+                            let _ = response.send(Err(error));
+                            None
+                        }
+                    };
+                }
+                let _ = response.send(Ok(command_result.response));
+                return None;
+            };
+            let transaction = match self.input.prepare_controller_session_transaction(&commit) {
+                Ok(transaction) => transaction,
+                Err(error) => {
+                    let error = self.settle_controller_session_failure(&commit.session_id, error);
+                    let _ = response.send(Err(error));
+                    return None;
+                }
+            };
+            self.dispatch_controller_transaction(
+                transaction,
+                PendingInputChangeCompletion::ConnectionSession {
+                    session_id: commit.session_id,
+                    result: response,
+                },
+            )
+        })
+    }
+}
+
+#[command_handler]
+impl WebRtcCommandHandler for ShellCoordinator {
+    type Output<'handler>
+        = ()
+    where
+        Self: 'handler;
+
+    fn start(
+        &mut self,
+        token: InstanceToken,
+        bind: std::net::SocketAddr,
+        targets: Vec<u32>,
+    ) -> Result<(), String> {
+        self.game_host.start_webrtc(token, bind, &targets)
+    }
+
+    fn stop(&mut self, token: InstanceToken) -> Result<(), String> {
+        let stopped = self.game_host.stop_webrtc(token);
+        if stopped {
+            Ok(())
+        } else {
+            Err("the WebRTC publication is not active".to_owned())
+        }
     }
 }

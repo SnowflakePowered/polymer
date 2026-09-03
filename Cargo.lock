@@ -11046,7 +11046,17 @@ name = "snowglass-command"
 version = "0.1.0"
 dependencies = [
  "paste",
+ "snowglass-command-macros",
  "tokio",
+]
+
+[[package]]
+name = "snowglass-command-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -11256,6 +11266,7 @@ dependencies = [
  "serde_json",
  "snowglass-automation",
  "snowglass-bluetooth",
+ "snowglass-command",
  "snowglass-config",
  "snowglass-controllers",
  "snowglass-deno",
