@@ -132,73 +132,53 @@ impl ShellCoordinator {
                 ),
             },
             InputCommand::ControllerApi { command, result } => {
-                let finishes_session = command["type"] == "controllers.session.finish";
-                let response = self
-                    .input
-                    .controller_command(command, self.game_host.controller_topology_locked())
-                    .await;
-                let (value, configuration_changed) = match response {
+                let response = self.input.controller_command(command).await;
+                let response = match response {
                     Ok(response) => response,
                     Err(error) => {
                         let _ = result.send(Err(error));
                         return None;
                     }
                 };
-                if configuration_changed {
-                    self.publish_input_configuration();
-                }
-                if !finishes_session || !self.game_host.supports_controller_changes() {
-                    let _ = result.send(Ok(value));
+                let Some(commit) = response.session_commit else {
+                    if response.reapply_topology {
+                        let transaction = InputTransaction {
+                            expected_revision: self.input.configuration_snapshot().revision,
+                            operations: Vec::new(),
+                        };
+                        return match self.input.prepare_controller_transaction(transaction) {
+                            Ok(transaction) => self.dispatch_controller_transaction(
+                                transaction,
+                                PendingInputChangeCompletion::ControllerApi {
+                                    value: response.response,
+                                    result,
+                                },
+                            ),
+                            Err(error) => {
+                                let _ = result.send(Err(error));
+                                None
+                            }
+                        };
+                    }
+                    let _ = result.send(Ok(response.response));
                     return None;
-                }
-                let topology = match self.input.controller_topology() {
-                    Ok(topology) => topology,
-                    Err(error) => {
-                        let _ = result.send(Err(error));
-                        return None;
-                    }
                 };
-                if self.input.applied_controller_topology() == Some(&topology) {
-                    let _ = result.send(Ok(value));
-                    return None;
-                }
-                let configuration = self.input.configuration_snapshot();
-                let previous_topology = match self
-                    .input
-                    .stage_controller_change(&configuration, topology.clone())
-                {
-                    Ok(previous) => previous,
+                let transaction = match self.input.prepare_controller_session_transaction(&commit) {
+                    Ok(transaction) => transaction,
                     Err(error) => {
-                        let _ = result.send(Err(error));
-                        return None;
-                    }
-                };
-                match self.game_host.controller_change(topology) {
-                    Ok(Some(response)) => {
-                        return Some(PendingInputChange::ConnectionSession {
-                            value,
-                            result,
-                            previous_topology,
-                            response,
-                        });
-                    }
-                    Ok(None) => {
                         let error =
-                            "controller plugin session closed before topology change".to_owned();
-                        let error = match self.input.rollback_controller_change(previous_topology) {
-                            Ok(()) => error,
-                            Err(rollback) => format!("{error}; rollback failed: {rollback}"),
-                        };
+                            self.settle_controller_session_failure(&commit.session_id, error);
                         let _ = result.send(Err(error));
+                        return None;
                     }
-                    Err(error) => {
-                        let error = match self.input.rollback_controller_change(previous_topology) {
-                            Ok(()) => error,
-                            Err(rollback) => format!("{error}; rollback failed: {rollback}"),
-                        };
-                        let _ = result.send(Err(error));
-                    }
-                }
+                };
+                return self.dispatch_controller_transaction(
+                    transaction,
+                    PendingInputChangeCompletion::ConnectionSession {
+                        session_id: commit.session_id,
+                        result,
+                    },
+                );
             }
         }
         None
@@ -230,62 +210,17 @@ impl ShellCoordinator {
         request_id: u64,
         transaction: InputTransaction,
     ) -> Option<PendingInputChange> {
-        let prepared = match self.input.prepare_configuration_transaction(
+        let transaction = match self.input.prepare_controller_transaction(transaction) {
+            Ok(transaction) => transaction,
+            Err(error) => {
+                self.send_input_configuration_result(request_id, Err(error));
+                return None;
+            }
+        };
+        self.dispatch_controller_transaction(
             transaction,
-            self.game_host.controller_topology_locked(),
-        ) {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                self.send_input_configuration_result(request_id, Err(error));
-                return None;
-            }
-        };
-        let topology = match self.input.controller_topology_for(prepared.candidate()) {
-            Ok(topology) => topology,
-            Err(error) => {
-                self.send_input_configuration_result(request_id, Err(error));
-                return None;
-            }
-        };
-        if !self.game_host.supports_controller_changes() {
-            self.commit_input_configuration(request_id, prepared);
-            return None;
-        }
-        let previous_topology = match self
-            .input
-            .stage_controller_change(prepared.candidate(), topology.clone())
-        {
-            Ok(previous) => previous,
-            Err(error) => {
-                self.send_input_configuration_result(request_id, Err(error));
-                return None;
-            }
-        };
-        match self.game_host.controller_change(topology) {
-            Ok(Some(response)) => Some(PendingInputChange::Configuration {
-                request_id,
-                prepared,
-                previous_topology,
-                response,
-            }),
-            Ok(None) => {
-                let error = "controller plugin session closed before topology change".to_owned();
-                let error = match self.input.rollback_controller_change(previous_topology) {
-                    Ok(()) => error,
-                    Err(rollback) => format!("{error}; rollback failed: {rollback}"),
-                };
-                self.send_input_configuration_result(request_id, Err(error));
-                None
-            }
-            Err(error) => {
-                let error = match self.input.rollback_controller_change(previous_topology) {
-                    Ok(()) => error,
-                    Err(rollback) => format!("{error}; rollback failed: {rollback}"),
-                };
-                self.send_input_configuration_result(request_id, Err(error));
-                None
-            }
-        }
+            PendingInputChangeCompletion::Configuration { request_id },
+        )
     }
 
     pub(super) fn finish_input_change(
@@ -293,92 +228,122 @@ impl ShellCoordinator {
         pending: PendingInputChange,
         callback: Result<snowglass_controllers::ControllerTopology, String>,
     ) {
-        match pending {
-            PendingInputChange::Configuration {
-                request_id,
-                prepared,
-                previous_topology,
-                ..
-            } => match callback {
-                Ok(topology) => {
-                    tracing::info!(
-                        origin = "configuration",
-                        applied = %topology.assignment_diagnostics(),
-                        "snowglass: host received controller plugin result"
-                    );
-                    match self.input.commit_configuration_transaction(prepared) {
-                        Ok(configuration) => {
-                            let result = self
-                                .input
-                                .apply_controller_topology(topology.clone())
-                                .map(|()| configuration);
-                            if result.is_ok() {
-                                self.game_host.update_controller_topology(topology);
-                                self.publish_input_configuration();
-                            }
-                            self.send_input_configuration_result(request_id, result);
-                        }
-                        Err(error) => self.send_input_configuration_result(request_id, Err(error)),
-                    }
-                }
-                Err(error) => {
-                    let error = match self.input.rollback_controller_change(previous_topology) {
-                        Ok(()) => error,
-                        Err(rollback) => format!("{error}; rollback failed: {rollback}"),
-                    };
-                    if let Some(token) = self.game_host.active_token() {
-                        self.emit_instance_event(
-                            token,
-                            "controllerchangeerror",
-                            &instance_events::error(&error),
-                        );
-                    }
-                    self.send_input_configuration_result(request_id, Err(error));
-                }
-            },
-            PendingInputChange::ConnectionSession {
-                value,
-                result,
-                previous_topology,
-                ..
-            } => match callback {
-                Ok(topology) => {
-                    tracing::info!(
-                        origin = "connection-session",
-                        applied = %topology.assignment_diagnostics(),
-                        "snowglass: host received controller plugin result"
-                    );
-                    let applied = self.input.apply_controller_topology(topology.clone());
-                    if applied.is_ok() {
-                        self.game_host.update_controller_topology(topology);
-                    }
-                    let _ = result.send(applied.map(|()| value));
-                }
-                Err(error) => {
-                    let error = match self.input.rollback_controller_change(previous_topology) {
-                        Ok(()) => error,
-                        Err(rollback) => format!("{error}; rollback failed: {rollback}"),
-                    };
-                    if let Some(token) = self.game_host.active_token() {
-                        self.emit_instance_event(
-                            token,
-                            "controllerchangeerror",
-                            &instance_events::error(&error),
-                        );
-                    }
-                    let _ = result.send(Err(error));
-                }
-            },
+        let PendingInputChange {
+            transaction,
+            completion,
+            ..
+        } = pending;
+        if let Ok(applied) = &callback {
+            tracing::info!(
+                applied = %applied.assignment_diagnostics(),
+                "snowglass: host received controller plugin result"
+            );
+        }
+        let result = self
+            .input
+            .finish_controller_transaction(transaction, callback);
+        self.complete_controller_transaction(completion, result);
+    }
+
+    fn dispatch_controller_transaction(
+        &mut self,
+        transaction: snowglass_controllers::ControllerTopologyTransaction,
+        completion: PendingInputChangeCompletion,
+    ) -> Option<PendingInputChange> {
+        if !transaction.topology_changed() {
+            let applied = transaction.requested_topology().clone();
+            let result = self
+                .input
+                .stage_controller_transaction(&transaction)
+                .and_then(|()| {
+                    self.input
+                        .finish_controller_transaction(transaction, Ok(applied))
+                });
+            self.complete_controller_transaction(completion, result);
+            return None;
+        }
+
+        if let Err(error) = self.input.stage_controller_transaction(&transaction) {
+            self.complete_controller_transaction(completion, Err(error));
+            return None;
+        }
+        let requested = transaction.requested_topology().clone();
+        match self.game_host.controller_change(transaction.change()) {
+            Ok(Some(response)) => Some(PendingInputChange {
+                transaction,
+                completion,
+                response,
+            }),
+            Ok(None) => {
+                let result = self
+                    .input
+                    .finish_controller_transaction(transaction, Ok(requested));
+                self.complete_controller_transaction(completion, result);
+                None
+            }
+            Err(error) => {
+                let result = self
+                    .input
+                    .finish_controller_transaction(transaction, Err(error));
+                self.complete_controller_transaction(completion, result);
+                None
+            }
         }
     }
 
-    fn commit_input_configuration(&mut self, request_id: u64, prepared: PreparedInputTransaction) {
-        match self.input.commit_configuration_transaction(prepared) {
-            Ok(configuration) => {
-                self.publish_input_configuration();
-                self.send_input_configuration_result(request_id, Ok(configuration));
+    fn complete_controller_transaction(
+        &mut self,
+        completion: PendingInputChangeCompletion,
+        result: Result<snowglass_config::input::InputConfiguration, String>,
+    ) {
+        if let Err(error) = &result
+            && let Some(token) = self.game_host.active_token()
+        {
+            self.emit_instance_event(
+                token,
+                "controllerchangeerror",
+                &instance_events::error(error),
+            );
+        }
+        match completion {
+            PendingInputChangeCompletion::Configuration { request_id } => {
+                let configuration = result.inspect(|_| {
+                    self.publish_input_configuration();
+                });
+                self.send_input_configuration_result(request_id, configuration);
             }
-            Err(error) => self.send_input_configuration_result(request_id, Err(error)),
+            PendingInputChangeCompletion::ConnectionSession {
+                session_id,
+                result: response,
+            } => {
+                let settled = match result {
+                    Ok(_configuration) => self
+                        .input
+                        .settle_controller_session(&session_id, true)
+                        .inspect(|_| {
+                            self.publish_input_configuration();
+                        }),
+                    Err(error) => Err(self.settle_controller_session_failure(&session_id, error)),
+                };
+                let _ = response.send(settled);
+            }
+            PendingInputChangeCompletion::ControllerApi {
+                value,
+                result: response,
+            } => {
+                let settled = result.map(|_| {
+                    self.publish_input_configuration();
+                    value
+                });
+                let _ = response.send(settled);
+            }
+        }
+    }
+
+    fn settle_controller_session_failure(&mut self, session_id: &str, error: String) -> String {
+        match self.input.settle_controller_session(session_id, false) {
+            Ok(_) => error,
+            Err(settle) => format!("{error}; restoring controller session failed: {settle}"),
         }
     }
 

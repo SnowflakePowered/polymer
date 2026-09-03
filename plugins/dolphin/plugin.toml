@@ -23,3 +23,7 @@ definitions = [
     "config/sections/gfx.toml",
     "config/sections/gfx/*.toml",
 ]
+
+[emulator.savestates]
+max = 10
+revision = "2606"

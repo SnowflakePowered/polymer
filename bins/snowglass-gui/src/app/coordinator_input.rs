@@ -348,51 +348,13 @@ impl ShellCoordinator {
         let (presentation, plan) = self.pointer_presentation();
         self.input
             .route_device_pointers(&presentation, &plan, self.game_host.pointer_sender());
-        let publication = self.input.build_publication(
-            self.game_host.controller_mappings(),
-            self.game_host.has_active_game(),
-            self.game_host.controller_topology_locked(),
-        );
+        let applied_topology = self.input.applied_controller_topology().unwrap_or_default();
+        let publication = self
+            .input
+            .build_publication(&applied_topology.mappings, self.game_host.has_active_game());
         self.window.set_input_diagnostics(publication.diagnostics);
-        if publication.configuration_changed {
-            self.publish_input_configuration();
-        }
         if let Some(state) = publication.api_state {
-            // A grip/order session intentionally clears and rebuilds player
-            // assignments. Keep the paused game's topology stable while that
-            // session is active, then apply its final ordering once finish()
-            // publishes the settled controller state.
-            if !publication.connection_session_active {
-                let controller_change = self.input.controller_topology().and_then(|topology| {
-                    if self.input.applied_controller_topology() == Some(&topology) {
-                        return Ok(());
-                    }
-                    self.input.apply_controller_topology(topology.clone())?;
-                    self.game_host.update_controller_topology(topology.clone());
-                    self.game_host.controller_change(topology).map(|_| ())
-                });
-                if let Err(error) = controller_change
-                    && let Some(token) = self.game_host.active_token()
-                {
-                    self.emit_instance_event(
-                        token,
-                        "controllerchangeerror",
-                        &instance_events::error(error),
-                    );
-                }
-            }
             self.notify_snowglass(SnowglassNotification::ControllerApiStateChanged(state));
-        }
-        if let Some((token, errors)) = self.game_host.take_plugin_errors() {
-            for error in errors {
-                let event = match &error {
-                    snowglass_pluginhost::SessionError::ControllerChanged(_) => {
-                        "controllerchangeerror"
-                    }
-                    snowglass_pluginhost::SessionError::PauseResume(_) => "pauseresumeerror",
-                };
-                self.emit_instance_event(token, event, &instance_events::error(error.message()));
-            }
         }
         self.window.request_overlay_repaint();
     }

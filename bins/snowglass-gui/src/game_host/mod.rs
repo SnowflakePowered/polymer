@@ -389,28 +389,9 @@ impl GameHost {
         self.session.has_active_session()
     }
 
-    pub fn controller_topology_locked(&self) -> bool {
-        self.active
-            .as_ref()
-            .is_some_and(|active| active.controller_session.is_none())
-    }
-
-    pub fn supports_controller_changes(&self) -> bool {
-        self.active
-            .as_ref()
-            .is_some_and(|active| active.controller_session.is_some())
-    }
-
-    pub fn controller_mappings(&self) -> &[snowglass_controllers::ControllerMapping] {
-        self.active
-            .as_ref()
-            .map(|active| active.options.controller_topology.mappings.as_slice())
-            .unwrap_or_default()
-    }
-
     pub fn controller_change(
         &self,
-        topology: snowglass_controllers::ControllerTopology,
+        change: snowglass_controllers::ControllerTopologyChange,
     ) -> Result<
         Option<
             tokio::sync::oneshot::Receiver<
@@ -427,19 +408,11 @@ impl GameHost {
         };
         tracing::info!(
             token = active.token.0,
-            requested = %topology.assignment_diagnostics(),
+            previous = %change.previous.assignment_diagnostics(),
+            requested = %change.requested.assignment_diagnostics(),
             "snowglass: host queued controller topology for plugin"
         );
-        session.change(topology).map(Some)
-    }
-
-    pub fn update_controller_topology(
-        &mut self,
-        topology: snowglass_controllers::ControllerTopology,
-    ) {
-        if let Some(active) = &mut self.active {
-            active.options.controller_topology = topology;
-        }
+        session.change(change).map(Some)
     }
 
     pub fn pause_resume(
@@ -454,18 +427,6 @@ impl GameHost {
             return Ok(None);
         };
         session.pause_resume(state, Some(timeout)).map(Some)
-    }
-
-    pub fn take_plugin_errors(
-        &self,
-    ) -> Option<(
-        crate::shell_runtime::InstanceToken,
-        Vec<snowglass_pluginhost::SessionError>,
-    )> {
-        let active = self.active.as_ref()?;
-        let session = active.controller_session.as_ref()?;
-        let errors = session.take_errors();
-        (!errors.is_empty()).then_some((active.token, errors))
     }
 
     pub fn surface_targets(&self) -> Vec<GameSurfaceTarget> {

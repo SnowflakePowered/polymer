@@ -6,6 +6,7 @@
 use crate::ConfigurationDefaults;
 use parking_lot::{Mutex, RwLock};
 use serde_json::Value;
+use snowglass_controllers::ControllerProfiles;
 use snowglass_deno::snowglass::{
     ApiFuture, ConsoleStorageRequest, InstanceToken, SnowglassHost, SnowglassNotificationSender,
 };
@@ -26,8 +27,11 @@ use std::{
 };
 
 const CONTROLLER_API_RESPONSE_ATTEMPTS: usize = 3;
-const CONTROLLER_CHANGE_RESPONSE_ATTEMPTS: usize = 13;
 const CONTROLLER_API_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
+const CONTROLLER_CHANGE_RESPONSE_ATTEMPTS: usize =
+    snowglass_controllers::DEFAULT_CONTROLLER_TOPOLOGY_TRANSACTION_TIMEOUT.as_secs() as usize
+        / CONTROLLER_API_RESPONSE_TIMEOUT.as_secs() as usize
+        + 1;
 
 /// Thread-affine mechanics retained by the native shell.
 ///
@@ -114,7 +118,7 @@ pub enum InputCommand {
 #[derive(Clone)]
 pub struct ControllerApiState {
     state: Arc<RwLock<Value>>,
-    controller_profiles: crate::ControllerProfiles,
+    controller_profiles: ControllerProfiles,
     controller_assignments: Arc<RwLock<snowglass_controllers::ControllerAssignmentSnapshot>>,
 }
 
@@ -136,7 +140,7 @@ impl Default for ControllerApiState {
                     "layouts": []
                 }
             }))),
-            controller_profiles: crate::ControllerProfiles::default(),
+            controller_profiles: ControllerProfiles::default(),
             controller_assignments: Arc::new(RwLock::new(Default::default())),
         }
     }
@@ -147,7 +151,7 @@ impl ControllerApiState {
         self.state.read().clone()
     }
 
-    pub fn controller_profiles(&self) -> crate::ControllerProfiles {
+    pub fn controller_profiles(&self) -> ControllerProfiles {
         self.controller_profiles.clone()
     }
 
@@ -157,13 +161,16 @@ impl ControllerApiState {
         self.controller_assignments.read().clone()
     }
 
-    pub fn publish(&self, controllers: Value, manager: &crate::ControllerManager) {
+    pub fn publish(
+        &self,
+        controllers: Value,
+        assignments: snowglass_controllers::ControllerAssignmentSnapshot,
+    ) {
         let mut state = self.state.write();
         if state["controllers"] == controllers {
             return;
         }
-        *self.controller_assignments.write() =
-            snowglass_controllers::ControllerAssignmentSnapshot::from_manager(manager);
+        *self.controller_assignments.write() = assignments;
         let revision = state["revision"]
             .as_u64()
             .unwrap_or_default()
@@ -326,14 +333,15 @@ impl RuntimePlatform for CommandRuntimePlatform {
         let sink = self.input.clone();
         Box::pin(async move {
             let (result, mut response) = tokio::sync::oneshot::channel();
-            let response_attempts = if command["type"] == "controllers.session.finish" {
-                // Live emulator reconfiguration can include several UIA
-                // operations. Give it enough time to reach the plugin's
-                // 60-second deadline plus one response interval.
-                CONTROLLER_CHANGE_RESPONSE_ATTEMPTS
-            } else {
-                CONTROLLER_API_RESPONSE_ATTEMPTS
-            };
+            let response_attempts =
+                if command["type"] == snowglass_controllers::CONTROLLER_SESSION_COMMIT_COMMAND {
+                    // Live emulator reconfiguration can include several UIA
+                    // operations. Give it enough time to reach the plugin's
+                    // 60-second deadline plus one response interval.
+                    CONTROLLER_CHANGE_RESPONSE_ATTEMPTS
+                } else {
+                    CONTROLLER_API_RESPONSE_ATTEMPTS
+                };
             sink.send(InputCommand::ControllerApi { command, result });
             for attempt in 1..=response_attempts {
                 match tokio::time::timeout(CONTROLLER_API_RESPONSE_TIMEOUT, &mut response).await {

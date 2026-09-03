@@ -1,24 +1,8 @@
-use parking_lot::Mutex;
 use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub struct ControllerSession {
-    pub(crate) commands: std::sync::mpsc::Sender<ControllerSessionCommand>,
-    errors: Arc<Mutex<Vec<SessionError>>>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum SessionError {
-    ControllerChanged(String),
-    PauseResume(String),
-}
-
-impl SessionError {
-    pub fn message(&self) -> &str {
-        match self {
-            Self::ControllerChanged(message) | Self::PauseResume(message) => message,
-        }
-    }
+    commands: Arc<std::sync::mpsc::Sender<ControllerSessionCommand>>,
 }
 
 pub(crate) enum ControllerSessionCommand {
@@ -31,7 +15,7 @@ pub(crate) enum ControllerSessionCommand {
         std::sync::mpsc::SyncSender<Result<(), String>>,
     ),
     Changed(
-        snowglass_controllers::ControllerTopology,
+        snowglass_controllers::ControllerTopologyChange,
         tokio::sync::oneshot::Sender<Result<snowglass_controllers::ControllerTopology, String>>,
     ),
     PauseResume(
@@ -91,23 +75,22 @@ impl ControllerSession {
             .map_err(|_| "emulator plugin session closed while attaching actions".to_owned())?
     }
 
-    pub(crate) fn new(
-        commands: std::sync::mpsc::Sender<ControllerSessionCommand>,
-        errors: Arc<Mutex<Vec<SessionError>>>,
-    ) -> Self {
-        Self { commands, errors }
+    pub(crate) fn new(commands: std::sync::mpsc::Sender<ControllerSessionCommand>) -> Self {
+        Self {
+            commands: Arc::new(commands),
+        }
     }
 
     pub fn change(
         &self,
-        topology: snowglass_controllers::ControllerTopology,
+        change: snowglass_controllers::ControllerTopologyChange,
     ) -> Result<
         tokio::sync::oneshot::Receiver<Result<snowglass_controllers::ControllerTopology, String>>,
         String,
     > {
         let (response, receiver) = tokio::sync::oneshot::channel();
         self.commands
-            .send(ControllerSessionCommand::Changed(topology, response))
+            .send(ControllerSessionCommand::Changed(change, response))
             .map_err(|_| "controller plugin session is closed".to_owned())?;
         Ok(receiver)
     }
@@ -124,15 +107,11 @@ impl ControllerSession {
             .recv()
             .map_err(|_| "controller plugin session closed while attaching automation".to_owned())?
     }
-
-    pub fn take_errors(&self) -> Vec<SessionError> {
-        std::mem::take(&mut *self.errors.lock())
-    }
 }
 
 impl Drop for ControllerSession {
     fn drop(&mut self) {
-        if Arc::strong_count(&self.errors) == 1 {
+        if Arc::strong_count(&self.commands) == 1 {
             let _ = self.commands.send(ControllerSessionCommand::Stop);
         }
     }

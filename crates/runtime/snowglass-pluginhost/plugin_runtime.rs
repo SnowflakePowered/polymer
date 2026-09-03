@@ -759,8 +759,6 @@ fn start_controller_session_worker(
     let entrypoint = invocation.plugin.entrypoint().to_string();
     let loader = invocation.plugin.module_loader().clone();
     let (commands, command_receiver) = std::sync::mpsc::channel();
-    let errors = Arc::new(Mutex::new(Vec::new()));
-    let worker_errors = errors.clone();
     let (started, startup) = std::sync::mpsc::sync_channel(1);
     thread::Builder::new()
         .name(format!(
@@ -778,7 +776,6 @@ fn start_controller_session_worker(
                 explicit_default,
                 topology,
                 commands: command_receiver,
-                errors: worker_errors,
                 started,
             });
             if let Err(error) = result {
@@ -791,7 +788,7 @@ fn start_controller_session_worker(
     })??;
     let session = startup
         .retained
-        .then(|| crate::ControllerSession::new(commands, errors));
+        .then(|| crate::ControllerSession::new(commands));
     Ok((startup.launch, session))
 }
 
@@ -810,7 +807,6 @@ struct ControllerSessionWorkerArgs {
     explicit_default: bool,
     topology: snowglass_controllers::ControllerTopology,
     commands: std::sync::mpsc::Receiver<crate::controller::ControllerSessionCommand>,
-    errors: Arc<Mutex<Vec<crate::SessionError>>>,
     started: std::sync::mpsc::SyncSender<Result<ControllerWorkerStartup, PluginInvocationError>>,
 }
 
@@ -820,9 +816,7 @@ struct ControllerSessionWorker {
     plugin: Arc<dyn EmulatorPluginInstance>,
     console: String,
     configuration_id: crate::configuration::ConfigurationId,
-    previous_topology: snowglass_controllers::ControllerTopology,
     commands: std::sync::mpsc::Receiver<crate::controller::ControllerSessionCommand>,
-    errors: Arc<Mutex<Vec<crate::SessionError>>>,
 }
 
 fn controller_session_worker(
@@ -907,9 +901,7 @@ impl ControllerSessionWorker {
             plugin,
             console,
             configuration_id,
-            previous_topology: applied_topology,
             commands: args.commands,
-            errors: args.errors,
         }))
     }
 
@@ -927,8 +919,8 @@ impl ControllerSessionWorker {
                     crate::actions::attach(self.runtime.js_runtime_mut(), sink);
                     let _ = response.send(Ok(()));
                 }
-                crate::controller::ControllerSessionCommand::Changed(topology, response) => {
-                    self.change(topology, response);
+                crate::controller::ControllerSessionCommand::Changed(change, response) => {
+                    self.change(&change, response);
                 }
                 crate::controller::ControllerSessionCommand::PauseResume(
                     state,
@@ -974,9 +966,6 @@ impl ControllerSessionWorker {
         });
         if let Err(error) = &result {
             tracing::error!("snowglass: onPauseResume failed: {error}");
-            self.errors
-                .lock()
-                .push(crate::SessionError::PauseResume(error.clone()));
         } else {
             tracing::info!(
                 plugin = %self.plugin.id(),
@@ -991,7 +980,7 @@ impl ControllerSessionWorker {
 
     fn change(
         &mut self,
-        topology: snowglass_controllers::ControllerTopology,
+        change: &snowglass_controllers::ControllerTopologyChange,
         response: tokio::sync::oneshot::Sender<
             Result<snowglass_controllers::ControllerTopology, String>,
         >,
@@ -1001,11 +990,11 @@ impl ControllerSessionWorker {
         tracing::info!(
             plugin = %self.plugin.id(),
             thread = thread.name().unwrap_or("unnamed"),
-            previous = %self.previous_topology.assignment_diagnostics(),
-            requested = %topology.assignment_diagnostics(),
+            previous = %change.previous.assignment_diagnostics(),
+            requested = %change.requested.assignment_diagnostics(),
             "snowglass: controller plugin callback started"
         );
-        let result = self.apply_change(&topology);
+        let result = self.apply_change(change);
         match result {
             Ok(applied) => {
                 tracing::info!(
@@ -1015,7 +1004,6 @@ impl ControllerSessionWorker {
                     applied = %applied.assignment_diagnostics(),
                     "snowglass: controller plugin callback completed"
                 );
-                self.previous_topology = applied.clone();
                 let _ = response.send(Ok(applied));
             }
             Err(error) => {
@@ -1024,12 +1012,9 @@ impl ControllerSessionWorker {
                     plugin = %self.plugin.id(),
                     thread = thread.name().unwrap_or("unnamed"),
                     elapsed_ms = started.elapsed().as_millis(),
-                    requested = %topology.assignment_diagnostics(),
+                    requested = %change.requested.assignment_diagnostics(),
                     "snowglass: onControllerChanged failed: {error}"
                 );
-                self.errors
-                    .lock()
-                    .push(crate::SessionError::ControllerChanged(error.to_string()));
                 let _ = response.send(Err(error.to_string()));
             }
         }
@@ -1037,14 +1022,14 @@ impl ControllerSessionWorker {
 
     fn apply_change(
         &mut self,
-        topology: &snowglass_controllers::ControllerTopology,
+        change: &snowglass_controllers::ControllerTopologyChange,
     ) -> Result<snowglass_controllers::ControllerTopology, PluginInvocationError> {
         let checkpoint = crate::deno::checkpoint_configuration(
             self.runtime.js_runtime_mut(),
             self.configuration_id,
         )
         .map_err(PluginInvocationError::worker)?;
-        let result = self.apply_change_inner(topology);
+        let result = self.apply_change_inner(change);
         if result.is_err() {
             crate::deno::restore_configuration(
                 self.runtime.js_runtime_mut(),
@@ -1070,9 +1055,10 @@ impl ControllerSessionWorker {
 
     fn apply_change_inner(
         &mut self,
-        topology: &snowglass_controllers::ControllerTopology,
+        change: &snowglass_controllers::ControllerTopologyChange,
     ) -> Result<snowglass_controllers::ControllerTopology, PluginInvocationError> {
-        let assignments = topology
+        let assignments = change
+            .requested
             .port_assignments()
             .map_err(PluginInvocationError::worker)?;
         let configuration = self
@@ -1083,10 +1069,10 @@ impl ControllerSessionWorker {
             self.runtime.js_runtime_mut(),
             self.configuration_id,
             configuration,
-            topology,
+            &change.requested,
         )
         .map_err(PluginInvocationError::worker)?;
-        let output = self.execute_callback(topology)?;
+        let output = self.execute_callback(change)?;
         crate::filesystem::flush_staged(self.runtime.js_runtime_mut())
             .map_err(PluginInvocationError::worker)?;
         Ok(output.controller_topology)
@@ -1094,9 +1080,10 @@ impl ControllerSessionWorker {
 
     fn execute_callback(
         &mut self,
-        topology: &snowglass_controllers::ControllerTopology,
+        change: &snowglass_controllers::ControllerTopologyChange,
     ) -> Result<crate::deno::ControllerChangeOutput, PluginInvocationError> {
-        const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+        const TIMEOUT: std::time::Duration =
+            snowglass_controllers::DEFAULT_CONTROLLER_TOPOLOGY_TRANSACTION_TIMEOUT;
         const TIMEOUT_ERROR: &str = "onControllerChanged exceeded its 60 second deadline";
         let deadline = IsolateDeadline::start(
             self.runtime
@@ -1110,8 +1097,8 @@ impl ControllerSessionWorker {
                 TIMEOUT,
                 crate::deno::execute_controller_change(
                     self.runtime.js_runtime_mut(),
-                    topology,
-                    &self.previous_topology,
+                    &change.requested,
+                    &change.previous,
                 ),
             )
             .await
@@ -1638,7 +1625,10 @@ mod tests {
         .unwrap();
         session.attach_automation(automation).unwrap();
         session
-            .change(snowglass_controllers::ControllerTopology::default())
+            .change(snowglass_controllers::ControllerTopologyChange {
+                previous: snowglass_controllers::ControllerTopology::default(),
+                requested: snowglass_controllers::ControllerTopology::default(),
+            })
             .unwrap()
             .await
             .unwrap()
@@ -1668,7 +1658,6 @@ mod tests {
         };
         assert!(rendered.contains("Enabled=false"), "{rendered}");
         assert_eq!(*automation_calls.lock().unwrap(), ["window", "action"]);
-        assert!(session.take_errors().is_empty());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1728,7 +1717,6 @@ mod tests {
                 },
             ]
         );
-        assert!(session.take_errors().is_empty());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1753,7 +1741,10 @@ mod tests {
         let session = result.controller_session.unwrap();
         filesystem.filesystem().materialize().unwrap();
         session
-            .change(snowglass_controllers::ControllerTopology::default())
+            .change(snowglass_controllers::ControllerTopologyChange {
+                previous: snowglass_controllers::ControllerTopology::default(),
+                requested: snowglass_controllers::ControllerTopology::default(),
+            })
             .unwrap()
             .await
             .unwrap()
@@ -1774,7 +1765,6 @@ mod tests {
         let mut bytes = [0; 128];
         let length = file.read(0, &mut bytes).unwrap();
         assert!(String::from_utf8_lossy(&bytes[..length]).contains("Enabled=false"));
-        assert!(session.take_errors().is_empty());
     }
 
     #[tokio::test(flavor = "current_thread")]
