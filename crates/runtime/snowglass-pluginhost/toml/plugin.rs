@@ -322,6 +322,8 @@ pub enum PackageError {
     InvalidCacheLabel(String),
     #[error("duplicate plugin cache '{0}'")]
     DuplicateCache(String),
+    #[error("emulator save-state revision must not be empty")]
+    InvalidSaveStateRevision,
     #[error("theme main document must be a confined package-relative path: {}", .0.display())]
     InvalidThemeMain(PathBuf),
     #[error("theme debug serve command must not be empty")]

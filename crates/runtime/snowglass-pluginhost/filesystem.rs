@@ -6,10 +6,10 @@ use serde::Serialize;
 use serde_bytes::ByteBuf;
 use snowglass_vfs::{
     AsarVolumeFactory, DirectoryNode, FileKind, FileNode, FilesystemEndpoint, FilesystemPlan,
-    HostDirectoryFactory, HostFileFactory, MemoryFileFactory, Node, OpenOptions,
-    PackageDirectoryFactory, Permissions, PreparedFilesystemLaunch, ProfileLayout, Resource,
-    ResourceFactory, ResourceOrigin, ScratchBacking, ScratchVolumeFactory, VfsComponent, VfsError,
-    VfsPathBuf, Volume,
+    HostDirectoryFactory, HostFileFactory, Materialized, MemoryFileFactory, Node, OpenOptions,
+    PackageDirectoryFactory, Permissions, PreparedFilesystemLaunch, ProfileLayout, RemoveKind,
+    Resource, ResourceFactory, ResourceLease, ResourceOrigin, ScratchBacking, ScratchVolumeFactory,
+    VfsComponent, VfsError, VfsPathBuf, Volume,
 };
 use std::{
     collections::{BTreeMap, HashMap},
@@ -50,6 +50,7 @@ pub struct FilesystemOptions {
     pub resources: Vec<NamedResource>,
     pub caches: Vec<NamedCache>,
     pub storage: StorageFactories,
+    pub quick_resume: Option<crate::QuickResumeData>,
 }
 
 impl std::fmt::Debug for FilesystemOptions {
@@ -71,6 +72,7 @@ impl FilesystemOptions {
             resources: Vec::new(),
             caches: Vec::new(),
             storage: BTreeMap::new(),
+            quick_resume: None,
         }
     }
 }
@@ -84,6 +86,35 @@ enum ResourceHandle {
 struct CacheResource {
     path: PathBuf,
     handle: Option<Handle<Resource<dyn snowglass_vfs::Volume>>>,
+}
+
+struct SharedVolumeFactory {
+    source: Arc<dyn ResourceFactory<dyn Volume>>,
+    materialized: parking_lot::Mutex<Option<(Arc<dyn Volume>, Arc<dyn ResourceLease>)>>,
+}
+
+impl SharedVolumeFactory {
+    fn new(source: Arc<dyn ResourceFactory<dyn Volume>>) -> Self {
+        Self {
+            source,
+            materialized: parking_lot::Mutex::new(None),
+        }
+    }
+}
+
+impl ResourceFactory<dyn Volume> for SharedVolumeFactory {
+    fn materialize(&self) -> Result<Materialized<dyn Volume>, VfsError> {
+        let mut shared = self.materialized.lock();
+        if shared.is_none() {
+            let value = self.source.materialize()?;
+            *shared = Some((value.backend, value.lease));
+        }
+        let (backend, lease) = shared.as_ref().expect("shared resource was initialized");
+        Ok(Materialized {
+            backend: backend.clone(),
+            lease: lease.clone(),
+        })
+    }
 }
 
 struct FilesystemState {
@@ -106,6 +137,7 @@ struct FilesystemState {
     profile_set: bool,
     prepared: Option<Arc<snowglass_vfs::PreparedFilesystem>>,
     staged_files: Vec<(VfsPathBuf, Vec<u8>)>,
+    quick_resume: Option<(ResourceHandle, Option<ResourceHandle>)>,
 }
 
 impl FilesystemState {
@@ -126,6 +158,7 @@ impl FilesystemState {
             profile_set: false,
             prepared: None,
             staged_files: Vec::new(),
+            quick_resume: None,
         };
         for resource in options.resources {
             if state.named.contains_key(&resource.name) {
@@ -170,6 +203,21 @@ impl FilesystemState {
                 origin,
             )));
             state.storage.insert(name, handle);
+        }
+        if let Some(quick_resume) = options.quick_resume {
+            let state_file = ResourceHandle::File(state.insert_file(Resource::new(
+                Arc::new(MemoryFileFactory::immutable(quick_resume.state)),
+                Permissions::READ,
+                ResourceOrigin::Memory,
+            )));
+            let screenshot = quick_resume.screenshot.map(|bytes| {
+                ResourceHandle::File(state.insert_file(Resource::new(
+                    Arc::new(MemoryFileFactory::immutable(bytes)),
+                    Permissions::READ,
+                    ResourceOrigin::Memory,
+                )))
+            });
+            state.quick_resume = Some((state_file, screenshot));
         }
         Ok(state)
     }
@@ -415,6 +463,54 @@ impl FilesystemState {
         }
     }
 
+    fn remove_resource_entry(
+        &self,
+        kind: &str,
+        token: &str,
+        components: &[String],
+    ) -> Result<(), VfsError> {
+        let ResourceHandle::Tree(handle) = self.handle(kind, token)? else {
+            return Err(VfsError::Unsupported(
+                "entry removal requires a tree resource".into(),
+            ));
+        };
+        let resource = self.volume(handle)?;
+        if !resource.authority().can_write() || !resource.authority().can_execute() {
+            return Err(VfsError::PermissionDenied(VfsPathBuf::root()));
+        }
+        let (name, parents) = components
+            .split_last()
+            .ok_or_else(|| VfsError::Unsupported("cannot remove a resource root".into()))?;
+        let materialized = resource.materialize()?;
+        let directory = Self::directory_at(materialized.backend.root()?, parents)?;
+        let component = VfsComponent::new(name)?;
+        let kind = match directory.lookup(&component)? {
+            Some(Node::File(_)) => RemoveKind::File,
+            Some(Node::Directory(_) | Node::SyntheticDirectory) => RemoveKind::Directory,
+            None => return Ok(()),
+        };
+        directory.remove(&component, kind)
+    }
+
+    fn scratch_resource(&mut self, backing: &str) -> Result<ResourceHandle, VfsError> {
+        let backing = match backing {
+            "memory" => ScratchBacking::Memory,
+            "temporary" => ScratchBacking::Temporary,
+            _ => {
+                return Err(VfsError::Unsupported(
+                    "scratch backing must be 'memory' or 'temporary'".into(),
+                ));
+            }
+        };
+        Ok(ResourceHandle::Tree(self.insert_volume(Resource::new(
+            Arc::new(SharedVolumeFactory::new(Arc::new(
+                ScratchVolumeFactory::new(backing),
+            ))),
+            Permissions::ALL,
+            ResourceOrigin::Scratch,
+        ))))
+    }
+
     fn directory_at(
         mut directory: Arc<dyn DirectoryNode>,
         components: &[String],
@@ -501,6 +597,13 @@ struct JsDirectoryEntry {
     kind: &'static str,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JsQuickResume {
+    state: JsResource,
+    screenshot: Option<JsResource>,
+}
+
 impl JsResource {
     fn new(name: Option<String>, handle: ResourceHandle) -> Self {
         match handle {
@@ -561,6 +664,18 @@ fn op_vfs_storage(state: &mut OpState) -> Vec<JsResource> {
 
 #[op2]
 #[serde]
+fn op_vfs_quick_resume(state: &mut OpState) -> Option<JsQuickResume> {
+    state
+        .borrow::<FilesystemState>()
+        .quick_resume
+        .map(|(file, screenshot)| JsQuickResume {
+            state: JsResource::new(None, file),
+            screenshot: screenshot.map(|file| JsResource::new(None, file)),
+        })
+}
+
+#[op2]
+#[serde]
 fn op_vfs_resource_entries(
     state: &mut OpState,
     #[string] kind: String,
@@ -585,6 +700,32 @@ fn op_vfs_resource_bytes(
         .borrow::<FilesystemState>()
         .resource_bytes(&kind, &token, &components)
         .map(ByteBuf::from)
+        .map_err(js_error)
+}
+
+#[op2]
+fn op_vfs_resource_remove(
+    state: &mut OpState,
+    #[string] kind: String,
+    #[string] token: String,
+    #[serde] components: Vec<String>,
+) -> Result<(), JsErrorBox> {
+    state
+        .borrow::<FilesystemState>()
+        .remove_resource_entry(&kind, &token, &components)
+        .map_err(js_error)
+}
+
+#[op2]
+#[serde]
+fn op_vfs_scratch_resource(
+    state: &mut OpState,
+    #[string] backing: String,
+) -> Result<JsResource, JsErrorBox> {
+    state
+        .borrow_mut::<FilesystemState>()
+        .scratch_resource(&backing)
+        .map(|handle| JsResource::new(None, handle))
         .map_err(js_error)
 }
 
@@ -982,11 +1123,13 @@ fn op_vfs_flush(state: &mut OpState) -> Result<(), JsErrorBox> {
 
 deno_core::extension!(snowglass_filesystem,
     ops = [
-        op_vfs_resources, op_vfs_resource_entries, op_vfs_resource_bytes,
+        op_vfs_resources, op_vfs_storage, op_vfs_quick_resume,
+        op_vfs_resource_entries, op_vfs_resource_bytes,
+        op_vfs_resource_remove, op_vfs_scratch_resource,
         op_vfs_mount_cache, op_vfs_mount_host_tree, op_vfs_mount_host_file,
         op_vfs_mount_tree_pkg, op_vfs_mount_tree_resource, op_vfs_mount_file_pkg,
         op_vfs_mount_file_text, op_vfs_mount_file_bytes, op_vfs_mount_file_resource,
-        op_vfs_mount_scratch, op_vfs_mount_storage, op_vfs_storage, op_vfs_path,
+        op_vfs_mount_scratch, op_vfs_mount_storage, op_vfs_path,
         op_vfs_set_working_directory, op_vfs_set_profile, op_vfs_flush,
     ],
     esm_entry_point = "ext:snowglass_filesystem/filesystem.js",

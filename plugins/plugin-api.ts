@@ -11,6 +11,7 @@ export type DirectoryEntry = Readonly<{
     name: string,
     kind: "directory",
     [Symbol.asyncIterator](): AsyncIterator<DirEntry>,
+    remove(name: string): Promise<void>,
 }>;
 
 export type FileEntry = Readonly<{
@@ -193,6 +194,25 @@ export type PauseResumeContext = Readonly<{
     pauseState: "pause" | "resume",
     actions: Actions,
     ui: UiAutomation,
+}>;
+
+export type StateContext = Readonly<{
+    slot: number,
+    actions: Actions,
+    ui: UiAutomation,
+    filesystem: Filesystem,
+    directory: DirectoryResource,
+}>;
+
+export type QuitContext = Readonly<{
+    actions: Actions,
+    ui: UiAutomation,
+    filesystem: Filesystem,
+    directory: DirectoryResource,
+    launchPath: string,
+    console: string,
+    package: ConfigureGame,
+    userConfiguration?: UserConfiguration,
 }>;
 
 export type ControllerChangeContext<Options = unknown> = Readonly<{

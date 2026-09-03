@@ -64,6 +64,22 @@ pub trait SnowglassHost: Send + Sync {
         pause: bool,
         timeout: Duration,
     ) -> ApiFuture<Result<(), String>>;
+    fn emulator_save_state(
+        &self,
+        token: InstanceToken,
+        timeout: Duration,
+    ) -> ApiFuture<Result<Value, String>>;
+    fn emulator_resume_state(
+        &self,
+        token: InstanceToken,
+        slot: u32,
+        timeout: Duration,
+    ) -> ApiFuture<Result<Value, String>>;
+    fn emulator_state_screenshot(
+        &self,
+        token: InstanceToken,
+        record_id: String,
+    ) -> ApiFuture<Result<Option<Vec<u8>>, String>>;
     fn input_configure(&self, request_id: u32, transaction: Value);
     fn controller_api_snapshot(&self) -> Value;
     fn controller_api_command(&self, command: Value) -> ApiFuture<Result<Value, String>>;
@@ -398,6 +414,53 @@ async fn op_emulator_pause_state(
 }
 
 #[op2]
+#[serde]
+async fn op_emulator_save_state(
+    state: Rc<RefCell<OpState>>,
+    token: u32,
+    timeout_ms: u32,
+) -> Result<serde_json::Value, JsErrorBox> {
+    let host = state.borrow().borrow::<Arc<dyn SnowglassHost>>().clone();
+    host.emulator_save_state(
+        InstanceToken(token),
+        Duration::from_millis(u64::from(timeout_ms)),
+    )
+    .await
+    .map_err(JsErrorBox::generic)
+}
+
+#[op2]
+#[serde]
+async fn op_emulator_resume_state(
+    state: Rc<RefCell<OpState>>,
+    token: u32,
+    slot: u32,
+    timeout_ms: u32,
+) -> Result<serde_json::Value, JsErrorBox> {
+    let host = state.borrow().borrow::<Arc<dyn SnowglassHost>>().clone();
+    host.emulator_resume_state(
+        InstanceToken(token),
+        slot,
+        Duration::from_millis(u64::from(timeout_ms)),
+    )
+    .await
+    .map_err(JsErrorBox::generic)
+}
+
+#[op2]
+#[buffer]
+async fn op_emulator_state_screenshot(
+    state: Rc<RefCell<OpState>>,
+    token: u32,
+    #[string] record_id: String,
+) -> Result<Option<Vec<u8>>, JsErrorBox> {
+    let host = state.borrow().borrow::<Arc<dyn SnowglassHost>>().clone();
+    host.emulator_state_screenshot(InstanceToken(token), record_id)
+        .await
+        .map_err(JsErrorBox::generic)
+}
+
+#[op2]
 fn op_input_configure(
     state: &mut OpState,
     request_id: u32,
@@ -502,6 +565,7 @@ deno_core::extension!(
         op_emulator_message,
         op_emulator_input,
         op_emulator_pause_state,
+        op_emulator_save_state, op_emulator_resume_state, op_emulator_state_screenshot,
         op_input_configure,
         op_controller_api_snapshot,
         op_controller_api_command,

@@ -162,6 +162,7 @@ impl<'runtime> EmulatorWorker<'runtime> {
         invocation: EmulatorLaunchInvocation,
         explicit_default: bool,
     ) -> Result<RetainedEmulator, EmulatorHostError> {
+        let save_states = invocation.plugin.save_states().cloned();
         let pending = self
             .launch(invocation, explicit_default)
             .await
@@ -174,15 +175,42 @@ impl<'runtime> EmulatorWorker<'runtime> {
         let pause_resume = self
             .supports_pause_resume(&pending)
             .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
+        let state_save = self
+            .supports(&pending, "stateSave")
+            .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
+        let state_resume = self
+            .supports(&pending, "stateResume")
+            .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
+        let quit = self
+            .supports(&pending, "quit")
+            .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
+        if save_states.is_some() && (!state_save || !state_resume) {
+            return Err(EmulatorHostError::Runtime(
+                "emulator.savestates requires onStateSave and onStateResume".to_owned(),
+            ));
+        }
+        if save_states
+            .as_ref()
+            .is_some_and(|states| states.revision.is_some())
+            && !quit
+        {
+            return Err(EmulatorHostError::Runtime(
+                "emulator.savestates.revision requires onQuit".to_owned(),
+            ));
+        }
         let configuration_id = pending.configuration_id;
-        let launch = self
+        let mut launch = self
             .finish(pending)
             .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
+        launch.save_states = save_states;
         Ok(RetainedEmulator {
             launch,
             configuration_id,
             controller_changes,
             pause_resume,
+            state_save,
+            state_resume,
+            quit,
         })
     }
 
@@ -215,6 +243,7 @@ impl<'runtime> EmulatorWorker<'runtime> {
             arguments,
             configuration,
             storage: _,
+            quick_resume: _,
         } = invocation;
         if !arguments.is_object() {
             return Err(DenoPluginError::Adapter(
@@ -259,6 +288,10 @@ impl<'runtime> EmulatorWorker<'runtime> {
                       parserReceiver?.onParseHotkey,
                     );
                     args.actions = actions;
+                    args.saveStates = Object.freeze({{
+                      directory: __snowglassFilesystem.createSaveStateDirectory(),
+                      quickResume: __snowglassFilesystem.quickResume,
+                    }});
                     const controllerReceiver = typeof module.onControllerChanged === "function"
                       ? module
                       : receiver;
@@ -267,17 +300,45 @@ impl<'runtime> EmulatorWorker<'runtime> {
                       ? module
                       : receiver;
                     const onPauseResume = pauseReceiver?.onPauseResume;
+                    const stateSaveReceiver = typeof module.onStateSave === "function" ? module : receiver;
+                    const onStateSave = stateSaveReceiver?.onStateSave;
+                    const stateResumeReceiver = typeof module.onStateResume === "function" ? module : receiver;
+                    const onStateResume = stateResumeReceiver?.onStateResume;
+                    const quitReceiver = typeof module.onQuit === "function" ? module : receiver;
+                    const onQuit = quitReceiver?.onQuit;
                     const result = await Reflect.apply(onLaunch, receiver, [args]);
+                    const quickResumeAccepted = args.saveStates.quickResume !== null
+                      && result?.quickResume === args.saveStates.quickResume;
+                    const quickResumeScreenshot = quickResumeAccepted
+                      && args.saveStates.quickResume.screenshot !== null
+                      ? await args.saveStates.quickResume.screenshot.bytes()
+                      : null;
                     const controllerChanges = typeof onControllerChanged === "function"
                       || __snowglassFilesystem.hasConfigurationMounts();
                     const pauseResume = typeof onPauseResume === "function";
-                    if (controllerChanges || pauseResume) {{
+                    const stateSave = typeof onStateSave === "function";
+                    const stateResume = typeof onStateResume === "function";
+                    const quit = typeof onQuit === "function";
+                    if (controllerChanges || pauseResume || stateSave || stateResume || quit) {{
                       Object.defineProperty(globalThis, "__snowglassActiveEmulator", {{
                         value: Object.freeze({{
                           controllerReceiver,
                           onControllerChanged,
                           pauseReceiver,
                           onPauseResume,
+                          stateSaveReceiver,
+                          onStateSave,
+                          stateResumeReceiver,
+                          onStateResume,
+                          quitReceiver,
+                          onQuit,
+                          saveStateDirectory: args.saveStates.directory,
+                          launch: Object.freeze({{
+                            launchPath: args.launchPath,
+                            console: args.console,
+                            package: args.package,
+                            userConfiguration: args.userConfiguration,
+                          }}),
                           configuration,
                           actions,
                         }}),
@@ -291,6 +352,11 @@ impl<'runtime> EmulatorWorker<'runtime> {
                       configuration,
                       controllerChanges,
                       pauseResume,
+                      stateSave,
+                      stateResume,
+                      quit,
+                      quickResumeAccepted,
+                      quickResumeScreenshot,
                     }};
                 }})()"#,
             entrypoint = entrypoint,
@@ -350,6 +416,16 @@ impl<'runtime> EmulatorWorker<'runtime> {
         Ok(property(scope, wrapper, "pauseResume")?.boolean_value(scope))
     }
 
+    fn supports(
+        &mut self,
+        launch: &PendingDenoLaunch,
+        name: &str,
+    ) -> Result<bool, DenoPluginError> {
+        deno_core::scope!(scope, self.runtime);
+        let wrapper = local_object(scope, &launch.value, "pluginhost launch result")?;
+        Ok(property(scope, wrapper, name)?.boolean_value(scope))
+    }
+
     fn finish(
         &mut self,
         launch: PendingDenoLaunch,
@@ -359,6 +435,18 @@ impl<'runtime> EmulatorWorker<'runtime> {
             let wrapper = local_object(scope, &launch.value, "pluginhost launch result")?;
             let value = property(scope, wrapper, "result")?;
             serde_v8::from_v8(scope, value)?
+        };
+        let (quick_resume_accepted, quick_resume_screenshot) = {
+            deno_core::scope!(scope, self.runtime);
+            let wrapper = local_object(scope, &launch.value, "pluginhost launch result")?;
+            let accepted = property(scope, wrapper, "quickResumeAccepted")?.boolean_value(scope);
+            let screenshot = property(scope, wrapper, "quickResumeScreenshot")?;
+            let screenshot = if screenshot.is_null_or_undefined() {
+                None
+            } else {
+                Some(serde_v8::from_v8::<ByteBuf>(scope, screenshot)?.into_vec())
+            };
+            (accepted, screenshot)
         };
         let filesystem = crate::filesystem::take_prepared(self.runtime)
             .map_err(|error| DenoPluginError::Adapter(error.to_string()))?;
@@ -379,6 +467,9 @@ impl<'runtime> EmulatorWorker<'runtime> {
             controller_session: None,
             session: None,
             controller_topology: plan.controller_topology,
+            save_states: None,
+            quick_resume_accepted,
+            quick_resume_screenshot,
         })
     }
 }
@@ -467,11 +558,74 @@ pub(crate) async fn execute_pause_resume(
     Ok(())
 }
 
+pub(crate) async fn execute_state_action(
+    runtime: &mut JsRuntime,
+    slot: u32,
+    save: bool,
+) -> Result<(), EmulatorHostError> {
+    let callback = if save { "onStateSave" } else { "onStateResume" };
+    let receiver = if save {
+        "stateSaveReceiver"
+    } else {
+        "stateResumeReceiver"
+    };
+    let script = format!(
+        r#"(async () => {{
+          const active = globalThis.__snowglassActiveEmulator;
+          if (active == null || typeof active.{callback} !== "function") {{
+            throw new DOMException("emulator does not support this save-state action", "NotSupportedError");
+          }}
+          const context = __snowglassControllerChange.stateContext(
+            {slot}, active.actions, __snowglassFilesystem.filesystem, active.saveStateDirectory);
+          await Reflect.apply(active.{callback}, active.{receiver}, [context]);
+        }})()"#
+    );
+    let promise = runtime
+        .execute_script("snowglass:pluginhost/state-action.js", script)
+        .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
+    #[allow(deprecated)]
+    runtime
+        .resolve_value(promise)
+        .await
+        .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
+    Ok(())
+}
+
+pub(crate) async fn execute_quit(
+    runtime: &mut JsRuntime,
+) -> Result<Option<Vec<u8>>, EmulatorHostError> {
+    let script = r#"(async () => {
+      const active = globalThis.__snowglassActiveEmulator;
+      if (active == null || typeof active.onQuit !== "function") return null;
+      const value = await Reflect.apply(
+        active.onQuit, active.quitReceiver,
+        [__snowglassControllerChange.quitContext(active)]);
+      if (value == null) return null;
+      return await __snowglassFilesystem.returnedFile(value);
+    })()"#;
+    let promise = runtime
+        .execute_script("snowglass:pluginhost/quit.js", script)
+        .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
+    #[allow(deprecated)]
+    let value = runtime
+        .resolve_value(promise)
+        .await
+        .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
+    deno_core::scope!(scope, runtime);
+    let value = v8::Local::new(scope, value);
+    serde_v8::from_v8::<Option<ByteBuf>>(scope, value)
+        .map(|value| value.map(ByteBuf::into_vec))
+        .map_err(|error| EmulatorHostError::Runtime(error.to_string()))
+}
+
 pub(crate) struct RetainedEmulator {
     pub launch: EmulatorLaunchArguments,
     pub configuration_id: ConfigurationId,
     pub controller_changes: bool,
     pub pause_resume: bool,
+    pub state_save: bool,
+    pub state_resume: bool,
+    pub quit: bool,
 }
 
 pub(crate) fn rematerialize_configuration(

@@ -171,6 +171,9 @@ export type LaunchOptions = {
   webrtcBind?: string;
   preparedFilesystem?: string;
   controllerSession?: string;
+  saveStates?: Readonly<{ max: number; revision?: string }> | null;
+  quickResume?: Readonly<{ screenshot: Blob | null }> | null;
+  quickResumeCache?: Readonly<{ key: string; revision: string }> | null;
 };
 
 export type LaunchRequest = Omit<LaunchOptions, "surfaces"> & {
@@ -188,12 +191,16 @@ export interface LaunchInstance extends EventTarget {
   readonly closed: Promise<void>;
   readonly surfaces: readonly TrackedSurface[];
   readonly audio: Readonly<{ available: boolean; volume: number; muted: boolean }>;
+  readonly saveStates: readonly SaveState[];
+  readonly quickResume: Readonly<{ screenshot: Blob | null }> | null;
   send(messageName: string, args?: unknown): void;
   setVolume(volume: number): void;
   setMuted(muted: boolean): void;
   activateInput(): void;
   deactivateInput(): void;
   setPauseState(pauseState: "pause" | "resume", timeoutMs?: number): Promise<void>;
+  saveState(timeoutMs?: number): Promise<SaveState>;
+  resumeState(slot: number, timeoutMs?: number): Promise<SaveState>;
   close(): void;
 }
 
@@ -227,6 +234,12 @@ export interface ScrapedPackage {
     titleId: string | null;
     binaryDigest: string | null;
   }>;
+}
+
+export interface SaveState {
+  readonly slot: number;
+  readonly timestamp: Date;
+  screenshot(): Promise<Blob | null>;
 }
 
 export interface ScrapingApi extends EventTarget {

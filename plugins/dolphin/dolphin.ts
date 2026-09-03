@@ -4,10 +4,17 @@ import type {
     ControllerChangeContext as HostControllerChangeContext,
     ControllerMapping,
     ControllerTopology,
+    ConfigurationResult,
+    ConfigureGame,
+    DirectoryResource,
+    FileEntry,
     Filesystem,
+    QuitContext,
     Resource,
     PauseResumeContext,
+    StateContext,
     UiNodeSnapshot,
+    UserConfiguration,
 } from "../plugin-api.ts";
 import { HotkeyParser } from "./hotkeys.ts";
 
@@ -51,7 +58,8 @@ type Configuration = HostConfiguration<{
 }>;
 
 type Package = Readonly<{
-    titleId: string | null,
+    titleId?: string | null,
+    serial?: string | null,
 }>;
 
 type EmulatorLaunchArgs = {
@@ -64,6 +72,11 @@ type EmulatorLaunchArgs = {
     filesystem: Filesystem,
     resources: { runtime: Resource },
     storage: Readonly<{ nand?: Resource, slotA?: Resource, slotB?: Resource }>,
+    userConfiguration?: UserConfiguration,
+    saveStates: Readonly<{
+        directory: DirectoryResource,
+        quickResume: Readonly<{ state: FileEntry, screenshot: FileEntry | null }> | null,
+    }>,
 }
 
 function basename(path: string): string {
@@ -72,12 +85,44 @@ function basename(path: string): string {
     return name;
 }
 
-const DISC_IMAGE_EXTENSIONS = [".iso", ".rvz", ".wbfs"];
+const DISC_IMAGE_EXTENSIONS = [".iso", ".rvz", ".wbfs", ".gcz"];
 
 function isDiscImage(path: string): boolean {
     const lowerPath = path.toLowerCase();
     return DISC_IMAGE_EXTENSIONS.some(extension => lowerPath.endsWith(extension));
 }
+
+function isNKit(path: string): boolean {
+    return /\.nkit\.(?:iso|gcz)$/i.test(path);
+}
+
+function quickResumeEnabled(configuration?: UserConfiguration): boolean {
+    return configuration?.snowglass?.quickResume !== false;
+}
+
+export const onConfigure = (
+    game: ConfigureGame,
+    userConfiguration?: UserConfiguration,
+): ConfigurationResult => ({
+    schema: "dolphin/v1",
+    key: game.titleId ?? game.serial ?? game.launchPath,
+    groups: [{
+        key: "snowglass",
+        title: "Snowglass",
+        options: [{
+            key: "quickResume",
+            title: "Quick Resume",
+            description: "Resume this game where you left off on its next launch.",
+            type: "bool",
+            default: true,
+        }],
+    }],
+    values: {
+        snowglass: {
+            quickResume: !isNKit(game.launchPath) && quickResumeEnabled(userConfiguration),
+        },
+    },
+});
 
 const WII_REMOTE_SLOT_COUNT = 4;
 const WII_REMOTE_SOURCE_NAMES = ["None", "Emulated Wii Remote", "Real Wii Remote"] as const;
@@ -379,6 +424,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
 
     args.filesystem.mountTree("/Dolphin", args.resources.runtime, { mode: "rx" });
     args.filesystem.mountScratch("/User", { mode: "rwx", backing: "temporary" });
+    args.filesystem.mountTree("/User/StateSaves", args.saveStates.directory, { mode: "rwx" });
     args.filesystem.mountFile(
         "/User/Config/Logger.ini",
         new TextEncoder().encode([
@@ -471,6 +517,9 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
 
     // Batch mode never shows Dolphin's control window. Snowglass already
     // isolates that UI on a private desktop and owns process termination.
+    const quickResume = quickResumeEnabled(args.userConfiguration) && !isNKit(args.launchPath)
+        ? args.saveStates.quickResume
+        : null;
     const argv = ["-u", args.filesystem.path("/User")];
     if (launchesNandTitle) {
         const titleId = args.package.titleId?.replace(/^0x/i, "").toLowerCase();
@@ -480,6 +529,10 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
         argv.push("--nand_title", titleId);
     } else {
         argv.push("-e", args.filesystem.path(`/Game/${gameName}`));
+    }
+    if (quickResume) {
+        args.filesystem.mountFile("/QuickResume/state.sav", quickResume.state, { mode: "r" });
+        argv.push("--save_state", args.filesystem.path("/QuickResume/state.sav"));
     }
     args.filesystem.mountConfiguration("/User", args.configuration, { mode: "rw" });
 
@@ -495,7 +548,8 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
         graphTracking: true,
         surfaces: [
             { index: 0, pattern: "Dolphin" },
-        ]
+        ],
+        quickResume,
     }
 }
 
@@ -528,17 +582,68 @@ export const onPauseResume = (context: PauseResumeContext) => {
     context.actions.pause?.activate();
 };
 
-export const onStateSave = () => {
-
+function nativeSlot(slot: number): number {
+    if (!Number.isInteger(slot) || slot < 0 || slot >= 10) {
+        throw new RangeError(`Dolphin save-state slot ${slot} is outside the supported range`);
+    }
+    return slot + 1;
 }
 
-export const onResumeState = () => {
+async function removeNativeState(directory: DirectoryResource, slot: number): Promise<void> {
+    const suffix = `.s${slot.toString().padStart(2, "0")}`;
+    for await (const entry of directory) {
+        if (entry.kind === "file" && entry.name.toLowerCase().endsWith(suffix)) {
+            await directory.remove(entry.name);
+        }
+    }
+}
 
+async function awaitNativeState(directory: DirectoryResource, slot: number): Promise<FileEntry> {
+    const suffix = `.s${slot.toString().padStart(2, "0")}`;
+    const deadline = Date.now() + 25_000;
+    do {
+        for await (const entry of directory) {
+            if (entry.kind === "file" && entry.name.toLowerCase().endsWith(suffix)) return entry;
+        }
+        await new Promise(resolve => setTimeout(resolve, 50));
+    } while (Date.now() < deadline);
+    throw new Error(`Dolphin did not create save-state slot ${slot}`);
+}
+
+function activateStateAction(actions: Actions, operation: "load" | "save", slot: number): void {
+    const name = `${operation}_state_${slot}`;
+    const action = actions[name];
+    if (!action) throw new Error(`Dolphin action '${name}' is unavailable`);
+    action.activate();
+}
+
+export const onStateSave = async (context: StateContext) => {
+    const slot = nativeSlot(context.slot);
+    await removeNativeState(context.directory, slot);
+    activateStateAction(context.actions, "save", slot);
+    await awaitNativeState(context.directory, slot);
+}
+
+export const onStateResume = (context: StateContext) => {
+    const slot = nativeSlot(context.slot);
+    activateStateAction(context.actions, "load", slot);
+}
+
+export const onQuit = async (context: QuitContext): Promise<FileEntry | null> => {
+    if (!quickResumeEnabled(context.userConfiguration) || isNKit(context.launchPath)) return null;
+    const slot = 10;
+    await removeNativeState(context.directory, slot);
+    activateStateAction(context.actions, "save", slot);
+    return await awaitNativeState(context.directory, slot);
 }
 
 export default {
+    onConfigure,
     onLaunch,
     onPauseResume,
+    onStateSave,
+    onStateResume,
+    onQuit,
     onControllerChanged,
     onParseHotkey,
 }

@@ -44,10 +44,6 @@ struct RenderDevice {
 struct SurfaceCompositor {
     compositor: Option<D3d12Compositor>,
     content: IUnknown,
-    #[expect(
-        dead_code,
-        reason = "retains and joins the surface presentation thread"
-    )]
     worker: Option<SurfacePresentationWorker>,
     latest_frame: Option<snowglass_protocol::FrameReady>,
     surface_id: u64,
@@ -64,12 +60,16 @@ struct SurfaceWorkerFrame {
     observed_qpc: u64,
 }
 
+type SurfaceSnapshotResult = Result<Option<snowglass_runtime::RgbaScreenshot>, String>;
+type SurfaceSnapshotRequest = mpsc::SyncSender<SurfaceSnapshotResult>;
+
 /// Owns one captured stream and its opaque WUC swapchain on a presentation
 /// thread. The compositor copies a producer slot into its private cache and
 /// signals that slot's release without waiting for Blitz/Deno to finish a UI
 /// turn.
 struct SurfacePresentationWorker {
     stopping: Arc<AtomicBool>,
+    snapshots: mpsc::Sender<SurfaceSnapshotRequest>,
     worker: Option<thread::JoinHandle<()>>,
 }
 
@@ -87,6 +87,7 @@ impl SurfacePresentationWorker {
     ) -> Self {
         let stopping = Arc::new(AtomicBool::new(false));
         let worker_stopping = Arc::clone(&stopping);
+        let (snapshot_sender, snapshot_requests) = mpsc::channel::<SurfaceSnapshotRequest>();
         let worker = thread::Builder::new()
             .name(format!("snowglass-surface-{connection}"))
             .spawn(move || {
@@ -98,6 +99,19 @@ impl SurfacePresentationWorker {
                     CompositingPlan::new([0.0, 0.0, 0.0, 1.0], vec![placement]);
 
                 while !worker_stopping.load(Ordering::Acquire) {
+                    while let Ok(response) = snapshot_requests.try_recv() {
+                        let snapshot = compositor
+                            .snapshot_rgba()
+                            .map(|snapshot| {
+                                snapshot.map(|(width, height, pixels)| snowglass_runtime::RgbaScreenshot {
+                                    width,
+                                    height,
+                                    pixels,
+                                })
+                            })
+                            .map_err(|error| error.to_string());
+                        let _ = response.send(snapshot);
+                    }
                     let timeout = if Renderer::has_pending_frame(&compositor) {
                         Duration::from_millis(1)
                     } else {
@@ -132,8 +146,19 @@ impl SurfacePresentationWorker {
             .expect("failed to create a captured-surface presentation worker");
         Self {
             stopping,
+            snapshots: snapshot_sender,
             worker: Some(worker),
         }
+    }
+
+    fn snapshot(&self) -> SurfaceSnapshotResult {
+        let (result, response) = mpsc::sync_channel(1);
+        self.snapshots
+            .send(result)
+            .map_err(|_| "surface presentation worker stopped".to_owned())?;
+        response
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|_| "surface screenshot timed out".to_owned())?
     }
 }
 
@@ -237,6 +262,8 @@ struct ActivePresentation {
     webrtc: Option<snowglass_renderer::webrtc::Publication>,
     controller_session: Option<snowglass_pluginhost::ControllerSession>,
     automation: Option<snowglass_automation::AutomationSession>,
+    save_states: Option<snowglass_runtime::SaveStateManager>,
+    closing: bool,
 }
 
 pub(crate) struct ConnectedSurface {
@@ -427,6 +454,148 @@ impl GameHost {
             return Ok(None);
         };
         session.pause_resume(state, Some(timeout)).map(Some)
+    }
+
+    pub fn save_state(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Result<(u32, tokio::sync::oneshot::Receiver<Result<(), String>>), String> {
+        let active = self
+            .active
+            .as_ref()
+            .ok_or_else(|| "emulator is no longer active".to_owned())?;
+        if active.closing {
+            return Err("emulator is closing".to_owned());
+        }
+        let states = active
+            .save_states
+            .as_ref()
+            .ok_or_else(|| "emulator does not support save states".to_owned())?;
+        let session = active
+            .controller_session
+            .as_ref()
+            .ok_or_else(|| "emulator plugin session is unavailable".to_owned())?;
+        let slot = states.next_slot();
+        Ok((slot, session.save_state(slot, Some(timeout))?))
+    }
+
+    pub fn resume_state(
+        &self,
+        slot: u32,
+        timeout: std::time::Duration,
+    ) -> Result<tokio::sync::oneshot::Receiver<Result<(), String>>, String> {
+        let active = self
+            .active
+            .as_ref()
+            .ok_or_else(|| "emulator is no longer active".to_owned())?;
+        if active.closing {
+            return Err("emulator is closing".to_owned());
+        }
+        let states = active
+            .save_states
+            .as_ref()
+            .ok_or_else(|| "emulator does not support save states".to_owned())?;
+        if !states.contains(slot) {
+            return Err(format!("save-state slot {slot} does not exist"));
+        }
+        active
+            .controller_session
+            .as_ref()
+            .ok_or_else(|| "emulator plugin session is unavailable".to_owned())?
+            .resume_state(slot, Some(timeout))
+    }
+
+    pub fn commit_save_state(
+        &mut self,
+        slot: u32,
+    ) -> Result<snowglass_runtime::SaveStateMetadata, String> {
+        let screenshot = self.capture_primary_screenshot();
+        let states = self
+            .active
+            .as_mut()
+            .and_then(|active| active.save_states.as_mut())
+            .ok_or_else(|| "emulator does not support save states".to_owned())?;
+        Ok(states.commit(slot, std::time::SystemTime::now(), screenshot))
+    }
+
+    pub fn capture_primary_screenshot(&mut self) -> Option<snowglass_runtime::RgbaScreenshot> {
+        let connection = self
+            .surfaces
+            .iter()
+            .find_map(|(&connection, surface)| (surface.index == 0).then_some(connection))?;
+        let output = self
+            .render_device
+            .surface_compositors
+            .get_mut(&connection)?;
+        let captured = if let Some(worker) = output.worker.as_ref() {
+            worker.snapshot()
+        } else if let Some(compositor) = output.compositor.as_mut() {
+            compositor
+                .snapshot_rgba()
+                .map(|snapshot| {
+                    snapshot.map(
+                        |(width, height, pixels)| snowglass_runtime::RgbaScreenshot {
+                            width,
+                            height,
+                            pixels,
+                        },
+                    )
+                })
+                .map_err(|error| error.to_string())
+        } else {
+            Ok(None)
+        };
+        match captured {
+            Ok(screenshot) => screenshot,
+            Err(error) => {
+                tracing::warn!("snowglass: primary-surface screenshot failed: {error}");
+                None
+            }
+        }
+    }
+
+    pub fn save_state_metadata(&self, slot: u32) -> Option<snowglass_runtime::SaveStateMetadata> {
+        self.active
+            .as_ref()?
+            .save_states
+            .as_ref()?
+            .metadata_for_slot(slot)
+    }
+
+    pub fn save_state_screenshot(&self, record_id: &str) -> Result<Option<Vec<u8>>, String> {
+        let states = self
+            .active
+            .as_ref()
+            .and_then(|active| active.save_states.as_ref())
+            .ok_or_else(|| "emulator does not support save states".to_owned())?;
+        Ok(states.screenshot(record_id).map(<[u8]>::to_vec))
+    }
+
+    pub fn begin_quit(
+        &mut self,
+        token: crate::shell_runtime::InstanceToken,
+        timeout: std::time::Duration,
+    ) -> Result<
+        Option<(
+            crate::launch::QuickResumeCache,
+            tokio::sync::oneshot::Receiver<Result<Option<Vec<u8>>, String>>,
+        )>,
+        String,
+    > {
+        let Some(active) = self.active.as_mut().filter(|active| active.token == token) else {
+            return Ok(None);
+        };
+        if active.closing {
+            return Err("emulator is already closing".to_owned());
+        }
+        active.closing = true;
+        let Some(cache) = active.options.quick_resume_cache.clone() else {
+            return Ok(None);
+        };
+        let Some(session) = active.controller_session.as_ref() else {
+            return Err("Quick Resume plugin session is unavailable".to_owned());
+        };
+        Ok(Some((cache, session.quit(Some(timeout))?)))
     }
 
     pub fn surface_targets(&self) -> Vec<GameSurfaceTarget> {
@@ -645,12 +814,18 @@ impl GameHost {
                 .instance()
                 .expect("a successful session launch owns an emulator instance"),
         );
+        let save_states = options
+            .save_states
+            .as_ref()
+            .map(|states| snowglass_runtime::SaveStateManager::new(states.max));
         self.active = Some(ActivePresentation {
             token,
             options,
             webrtc: None,
             controller_session,
             automation,
+            save_states,
+            closing: false,
         });
         Ok(())
     }

@@ -11,6 +11,10 @@ pub(crate) struct ShellApplication {
     pending_input_commands: std::collections::VecDeque<InputCommand>,
     pending_input_change: Option<PendingInputChange>,
     pending_pause_resume: std::collections::VecDeque<PendingPauseResume>,
+    pending_state_commands: std::collections::VecDeque<EmulatorCommand>,
+    pending_state_action: Option<PendingStateAction>,
+    pending_quit: Option<PendingQuit>,
+    exit_requested: bool,
     error: Option<Box<dyn Error>>,
     next_runtime_poll: Instant,
 }
@@ -34,6 +38,10 @@ impl ShellApplication {
             pending_input_commands: std::collections::VecDeque::new(),
             pending_input_change: None,
             pending_pause_resume: std::collections::VecDeque::new(),
+            pending_state_commands: std::collections::VecDeque::new(),
+            pending_state_action: None,
+            pending_quit: None,
+            exit_requested: false,
             error: None,
             next_runtime_poll: Instant::now(),
         }
@@ -120,6 +128,53 @@ impl ShellApplication {
                 .expect("a completed pause/resume callback remains queued");
             if let Some(state) = self.state.as_mut() {
                 state.finish_pause_resume(pending, completed);
+            }
+        }
+        let completed_state = self
+            .pending_state_action
+            .as_mut()
+            .and_then(|pending| match pending.response.try_recv() {
+                Ok(result) => Some(result),
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => Some(Err(
+                    "emulator plugin session closed during save-state action".to_owned(),
+                )),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => None,
+            });
+        if let Some(result) = completed_state
+            && let Some(pending) = self.pending_state_action.take()
+            && let Some(state) = self.state.as_mut()
+        {
+            state.finish_state_action(pending, result);
+        }
+        let completed_quit =
+            self.pending_quit
+                .as_mut()
+                .and_then(|pending| match pending.response.try_recv() {
+                    Ok(result) => Some(result),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => Some(Err(
+                        "emulator plugin session closed during onQuit".to_owned(),
+                    )),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => None,
+                });
+        if let Some(result) = completed_quit
+            && let Some(pending) = self.pending_quit.take()
+            && let Some(state) = self.state.as_mut()
+        {
+            state.finish_quit(pending, result);
+        }
+        if self.pending_state_action.is_none()
+            && let Some(command) = self.pending_state_commands.pop_front()
+            && let Some(state) = self.state.as_mut()
+            && let Some(pending) = state.apply_emulator_command(command)
+        {
+            match pending {
+                PendingEmulatorCallback::PauseResume(pending) => {
+                    self.pending_pause_resume.push_back(pending)
+                }
+                PendingEmulatorCallback::State(pending) => {
+                    self.pending_state_action = Some(pending)
+                }
+                PendingEmulatorCallback::Quit(pending) => self.pending_quit = Some(pending),
             }
         }
         while self.pending_input_change.is_none()
@@ -246,8 +301,25 @@ impl ShellApplication {
                 height,
             }) => state.window.set_ime_cursor_area(x, y, width, height),
             UserEvent::GameHost(GameHostCommand::Emulator(command)) => {
+                if self.pending_state_action.is_some()
+                    && matches!(
+                        command,
+                        EmulatorCommand::SaveState { .. } | EmulatorCommand::ResumeState { .. }
+                    )
+                {
+                    self.pending_state_commands.push_back(command);
+                    return;
+                }
                 if let Some(pending) = state.apply_emulator_command(command) {
-                    self.pending_pause_resume.push_back(pending);
+                    match pending {
+                        PendingEmulatorCallback::PauseResume(pending) => {
+                            self.pending_pause_resume.push_back(pending)
+                        }
+                        PendingEmulatorCallback::State(pending) => {
+                            self.pending_state_action = Some(pending)
+                        }
+                        PendingEmulatorCallback::Quit(pending) => self.pending_quit = Some(pending),
+                    }
                 }
             }
             UserEvent::GameHost(GameHostCommand::WebRtc(command)) => {
@@ -275,6 +347,22 @@ impl ShellApplication {
         event: ShellWindowEvent,
         overlay_consumed: bool,
     ) -> bool {
+        if matches!(event, ShellWindowEvent::CloseRequested) {
+            self.exit_requested = true;
+            let Some(state) = self.state.as_mut() else {
+                return true;
+            };
+            let Some(token) = state.game_host.active_token() else {
+                return true;
+            };
+            if self.pending_quit.is_none()
+                && let Some(pending) = state.apply_emulator_command(EmulatorCommand::Close(token))
+                && let PendingEmulatorCallback::Quit(pending) = pending
+            {
+                self.pending_quit = Some(pending);
+            }
+            return false;
+        }
         let Some(state) = self.state.as_mut() else {
             return false;
         };
@@ -320,7 +408,7 @@ impl ShellApplication {
             consumed = ui_prevented;
         }
         match event {
-            ShellWindowEvent::CloseRequested => return true,
+            ShellWindowEvent::CloseRequested => unreachable!(),
             ShellWindowEvent::DroppedFile(path) => {
                 state.notify_snowglass(SnowglassNotification::DropActiveChanged(false));
                 state.handle_dropped_file(path);
@@ -389,6 +477,15 @@ impl ShellApplication {
 
     pub(crate) fn about_to_wait(&mut self) -> LoopDirective {
         if self.error.is_some() {
+            return LoopDirective::Exit;
+        }
+        if self.exit_requested
+            && self.pending_quit.is_none()
+            && self
+                .state
+                .as_ref()
+                .is_none_or(|state| !state.game_host.has_active_game())
+        {
             return LoopDirective::Exit;
         }
         let now = Instant::now();

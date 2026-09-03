@@ -16,6 +16,7 @@ use snowglass_input::{
     SensorBarPosition, StickCalibration, TriggerCalibration,
 };
 use snowglass_library::StorageManager;
+use snowglass_pluginhost::EmulatorPluginInstance;
 use std::{
     collections::HashMap,
     net::SocketAddr,
@@ -56,6 +57,22 @@ pub trait RuntimePlatform: Send + Sync {
         pause: bool,
         timeout: Duration,
     ) -> ApiFuture<Result<(), String>>;
+    fn emulator_save_state(
+        &self,
+        token: InstanceToken,
+        timeout: Duration,
+    ) -> ApiFuture<Result<Value, String>>;
+    fn emulator_resume_state(
+        &self,
+        token: InstanceToken,
+        slot: u32,
+        timeout: Duration,
+    ) -> ApiFuture<Result<Value, String>>;
+    fn emulator_state_screenshot(
+        &self,
+        token: InstanceToken,
+        record_id: String,
+    ) -> ApiFuture<Result<Option<Vec<u8>>, String>>;
     fn input_configure(&self, request_id: u32, transaction: Value);
     fn controller_api_snapshot(&self) -> Value;
     fn controller_api_command(&self, command: Value) -> ApiFuture<Result<Value, String>>;
@@ -100,6 +117,22 @@ pub enum EmulatorCommand {
         pause: bool,
         timeout: Duration,
         result: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
+    SaveState {
+        token: InstanceToken,
+        timeout: Duration,
+        result: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
+    ResumeState {
+        token: InstanceToken,
+        slot: u32,
+        timeout: Duration,
+        result: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
+    StateScreenshot {
+        token: InstanceToken,
+        record_id: String,
+        result: tokio::sync::oneshot::Sender<Result<Option<Vec<u8>>, String>>,
     },
 }
 
@@ -310,6 +343,65 @@ impl RuntimePlatform for CommandRuntimePlatform {
                 token,
                 pause,
                 timeout,
+                result,
+            });
+            response
+                .await
+                .map_err(|_| "emulator host is unavailable".to_owned())?
+        })
+    }
+
+    fn emulator_save_state(
+        &self,
+        token: InstanceToken,
+        timeout: Duration,
+    ) -> ApiFuture<Result<Value, String>> {
+        let sink = self.emulator.clone();
+        Box::pin(async move {
+            let (result, response) = tokio::sync::oneshot::channel();
+            sink.send(EmulatorCommand::SaveState {
+                token,
+                timeout,
+                result,
+            });
+            response
+                .await
+                .map_err(|_| "emulator host is unavailable".to_owned())?
+        })
+    }
+
+    fn emulator_resume_state(
+        &self,
+        token: InstanceToken,
+        slot: u32,
+        timeout: Duration,
+    ) -> ApiFuture<Result<Value, String>> {
+        let sink = self.emulator.clone();
+        Box::pin(async move {
+            let (result, response) = tokio::sync::oneshot::channel();
+            sink.send(EmulatorCommand::ResumeState {
+                token,
+                slot,
+                timeout,
+                result,
+            });
+            response
+                .await
+                .map_err(|_| "emulator host is unavailable".to_owned())?
+        })
+    }
+
+    fn emulator_state_screenshot(
+        &self,
+        token: InstanceToken,
+        record_id: String,
+    ) -> ApiFuture<Result<Option<Vec<u8>>, String>> {
+        let sink = self.emulator.clone();
+        Box::pin(async move {
+            let (result, response) = tokio::sync::oneshot::channel();
+            sink.send(EmulatorCommand::StateScreenshot {
+                token,
+                record_id,
                 result,
             });
             response
@@ -876,6 +968,8 @@ impl SnowglassHost for FrontendServices {
         let controller_sessions = self.controller_sessions.clone();
         let notifications = self.notifications.clone();
         Box::pin(async move {
+            let (quick_resume, quick_resume_cache) =
+                prepare_quick_resume(&handle, &plugin, &path, &arguments).await;
             let storage =
                 match crate::launch_storage(storage, &path, &arguments, notifications).await {
                     Ok(storage) => storage,
@@ -889,7 +983,13 @@ impl SnowglassHost for FrontendServices {
                     }
                 };
             match handle
-                .invoke_with_storage_owned(&plugin, &path, arguments, storage)
+                .invoke_emulator_with_storage_owned(
+                    &plugin,
+                    &path,
+                    arguments,
+                    storage,
+                    quick_resume,
+                )
                 .await
             {
                 Ok(mut result) => {
@@ -904,6 +1004,11 @@ impl SnowglassHost for FrontendServices {
                         if let Some(object) = result.value.as_object_mut() {
                             object.insert("controllerSession".to_owned(), Value::String(token));
                         }
+                    }
+                    if let Some(cache) = quick_resume_cache
+                        && let Some(object) = result.value.as_object_mut()
+                    {
+                        object.insert("quickResumeCache".to_owned(), cache);
                     }
                     serde_json::json!({ "ok": true, "value": result.value })
                 }
@@ -987,6 +1092,31 @@ impl SnowglassHost for FrontendServices {
         self.platform.emulator_pause_state(token, pause, timeout)
     }
 
+    fn emulator_save_state(
+        &self,
+        token: InstanceToken,
+        timeout: Duration,
+    ) -> ApiFuture<Result<Value, String>> {
+        self.platform.emulator_save_state(token, timeout)
+    }
+
+    fn emulator_resume_state(
+        &self,
+        token: InstanceToken,
+        slot: u32,
+        timeout: Duration,
+    ) -> ApiFuture<Result<Value, String>> {
+        self.platform.emulator_resume_state(token, slot, timeout)
+    }
+
+    fn emulator_state_screenshot(
+        &self,
+        token: InstanceToken,
+        record_id: String,
+    ) -> ApiFuture<Result<Option<Vec<u8>>, String>> {
+        self.platform.emulator_state_screenshot(token, record_id)
+    }
+
     fn input_configure(&self, request_id: u32, transaction: Value) {
         self.platform.input_configure(request_id, transaction);
     }
@@ -1003,6 +1133,90 @@ impl SnowglassHost for FrontendServices {
     fn webrtc_stop(&self, token: InstanceToken) -> ApiFuture<Result<(), String>> {
         self.platform.webrtc_stop(token)
     }
+}
+
+async fn prepare_quick_resume(
+    plugins: &snowglass_pluginhost::PluginRuntimeHandle,
+    plugin_id: &str,
+    path: &[String],
+    arguments: &[Value],
+) -> (Option<snowglass_pluginhost::QuickResumeData>, Option<Value>) {
+    if !matches!(path, [name] if name == "onLaunch")
+        && !matches!(path, [root, name] if root == "default" && name == "onLaunch")
+    {
+        return (None, None);
+    }
+    let Some(plugin) = plugins
+        .registry()
+        .plugin::<dyn EmulatorPluginInstance>(plugin_id)
+    else {
+        return (None, None);
+    };
+    let Some(revision) = plugin
+        .save_states()
+        .and_then(|states| states.revision.as_deref())
+        .map(str::to_owned)
+    else {
+        return (None, None);
+    };
+    let Some(argument) = arguments.first() else {
+        return (None, None);
+    };
+    let package = &argument["package"];
+    let platform = package["platform"]
+        .as_str()
+        .or_else(|| argument["console"].as_str())
+        .unwrap_or_default();
+    let identity = package["titleId"]
+        .as_str()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            package["serial"]
+                .as_str()
+                .filter(|value| !value.trim().is_empty())
+        })
+        .map(|value| value.trim().to_ascii_lowercase())
+        .or_else(|| {
+            package["path"].as_str().map(|path| {
+                std::fs::canonicalize(path)
+                    .unwrap_or_else(|_| std::path::PathBuf::from(path))
+                    .to_string_lossy()
+                    .to_ascii_lowercase()
+            })
+        })
+        .unwrap_or_default();
+    let key = snowglass_library::QuickResumeKey::new(plugin_id, platform, &identity);
+    let cache = serde_json::json!({ "key": key.as_str(), "revision": revision });
+    let loaded = tokio::task::spawn_blocking({
+        let key = key.clone();
+        let revision = revision.clone();
+        move || snowglass_library::QuickResumeStore::discover()?.take(&key, &revision)
+    })
+    .await;
+    let entry = match loaded {
+        Ok(Ok(entry)) => entry,
+        Ok(Err(error)) => {
+            tracing::warn!(
+                plugin = plugin_id,
+                "snowglass: loading Quick Resume failed: {error}"
+            );
+            None
+        }
+        Err(error) => {
+            tracing::warn!(
+                plugin = plugin_id,
+                "snowglass: Quick Resume task failed: {error}"
+            );
+            None
+        }
+    };
+    (
+        entry.map(|entry| snowglass_pluginhost::QuickResumeData {
+            state: entry.state,
+            screenshot: entry.screenshot,
+        }),
+        Some(cache),
+    )
 }
 
 #[cfg(test)]

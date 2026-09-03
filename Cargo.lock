@@ -11607,11 +11607,15 @@ dependencies = [
 name = "snowglass-library"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "directories",
+ "serde",
+ "serde_json",
  "snowglass-consolestorage",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "tracing",
  "turso",
  "uuid",
 ]
@@ -11785,6 +11789,7 @@ dependencies = [
  "crossfire",
  "dashmap",
  "gumshoe",
+ "image 0.25.6",
  "parking_lot",
  "serde",
  "serde_json",

@@ -183,6 +183,15 @@ export function createConfiguration(scraping, pluginApi) {
         webrtcBind: prepared.webrtcBind,
         preparedFilesystem: plugin.preparedFilesystem,
         controllerSession: plugin.controllerSession,
+        saveStates: plugin.saveStates ?? null,
+        quickResume: plugin.quickResumeAccepted
+          ? Object.freeze({
+              screenshot: plugin.quickResumeScreenshot == null
+                ? null
+                : new Blob([new Uint8Array(plugin.quickResumeScreenshot)], { type: "image/png" }),
+            })
+          : null,
+        quickResumeCache: plugin.quickResumeCache ?? null,
       });
       return launch;
     },

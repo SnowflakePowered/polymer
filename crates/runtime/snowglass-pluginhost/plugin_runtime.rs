@@ -254,6 +254,7 @@ impl PreparedEmulatorLaunch {
         plugin: Arc<dyn EmulatorPluginInstance>,
         arguments: Vec<Value>,
         storage: StorageFactories,
+        quick_resume: Option<crate::QuickResumeData>,
     ) -> Result<Self, PluginInvocationError> {
         let [mut arguments]: [Value; 1] = arguments.try_into().map_err(|_| {
             PluginInvocationError::new(
@@ -309,6 +310,7 @@ impl PreparedEmulatorLaunch {
                 arguments,
                 configuration,
                 storage,
+                quick_resume,
             },
             topology,
         })
@@ -404,7 +406,7 @@ impl PluginRuntimeHandle {
         let entrypoint = plugin.entrypoint().to_string();
         let invocation_entrypoint = entrypoint.clone();
         let loader = plugin.module_loader().clone();
-        let filesystem = filesystem_options(plugin.as_ref(), BTreeMap::new())
+        let filesystem = filesystem_options(plugin.as_ref(), BTreeMap::new(), None)
             .map_err(PluginInvocationError::worker)?;
         let lifecycle = self.lifecycle(plugin_id);
         let result = self
@@ -460,7 +462,14 @@ impl PluginRuntimeHandle {
     ) -> Result<Value, PluginInvocationError> {
         let cancellation = self.cancellation_token();
         let result = self
-            .invoke_inner(plugin_id, export_path, arguments, storage, cancellation)
+            .invoke_inner(
+                plugin_id,
+                export_path,
+                arguments,
+                storage,
+                None,
+                cancellation,
+            )
             .await?;
         Ok(result.value)
     }
@@ -473,8 +482,35 @@ impl PluginRuntimeHandle {
         storage: StorageFactories,
     ) -> Result<PluginInvocationResult, PluginInvocationError> {
         let cancellation = self.cancellation_token();
-        self.invoke_inner(plugin_id, export_path, arguments, storage, cancellation)
-            .await
+        self.invoke_inner(
+            plugin_id,
+            export_path,
+            arguments,
+            storage,
+            None,
+            cancellation,
+        )
+        .await
+    }
+
+    pub async fn invoke_emulator_with_storage_owned(
+        &self,
+        plugin_id: &str,
+        export_path: &[String],
+        arguments: Vec<Value>,
+        storage: StorageFactories,
+        quick_resume: Option<crate::QuickResumeData>,
+    ) -> Result<PluginInvocationResult, PluginInvocationError> {
+        let cancellation = self.cancellation_token();
+        self.invoke_inner(
+            plugin_id,
+            export_path,
+            arguments,
+            storage,
+            quick_resume,
+            cancellation,
+        )
+        .await
     }
 
     pub async fn invoke_with_cancellation(
@@ -490,6 +526,7 @@ impl PluginRuntimeHandle {
                 export_path,
                 arguments,
                 BTreeMap::new(),
+                None,
                 cancellation,
             )
             .await?;
@@ -502,6 +539,7 @@ impl PluginRuntimeHandle {
         export_path: &[String],
         arguments: Vec<Value>,
         storage: StorageFactories,
+        quick_resume: Option<crate::QuickResumeData>,
         cancellation: PluginCancellationToken,
     ) -> Result<PluginInvocationResult, PluginInvocationError> {
         let plugin = self
@@ -517,7 +555,7 @@ impl PluginRuntimeHandle {
             })?;
         match ExportInvocation::parse(export_path)? {
             ExportInvocation::EmulatorLaunch { explicit_default } => {
-                let setup = PreparedEmulatorLaunch::new(plugin, arguments, storage)?;
+                let setup = PreparedEmulatorLaunch::new(plugin, arguments, storage, quick_resume)?;
                 return self
                     .invoke_emulator_launch(setup, cancellation, explicit_default)
                     .await;
@@ -566,7 +604,7 @@ impl PluginRuntimeHandle {
         let entrypoint = plugin.entrypoint().to_string();
         let invocation_entrypoint = entrypoint.clone();
         let loader = plugin.module_loader().clone();
-        let filesystem = filesystem_options(plugin.as_ref(), BTreeMap::new())
+        let filesystem = filesystem_options(plugin.as_ref(), BTreeMap::new(), None)
             .map_err(PluginInvocationError::worker)?;
         let lifecycle = self.lifecycle(plugin.id());
         let path = export_path.to_vec();
@@ -606,8 +644,12 @@ impl PluginRuntimeHandle {
         topology: snowglass_controllers::ControllerTopology,
     ) -> Result<(EmulatorLaunchArguments, Option<crate::ControllerSession>), PluginInvocationError>
     {
-        let filesystem = filesystem_options(invocation.plugin.as_ref(), invocation.storage.clone())
-            .map_err(PluginInvocationError::worker)?;
+        let filesystem = filesystem_options(
+            invocation.plugin.as_ref(),
+            invocation.storage.clone(),
+            invocation.quick_resume.clone(),
+        )
+        .map_err(PluginInvocationError::worker)?;
         let lifecycle = self.lifecycle(invocation.plugin.id());
         self.run_with_control(cancellation.control, move |control| {
             start_controller_session_worker(
@@ -869,7 +911,11 @@ impl ControllerSessionWorker {
             }
         };
         let controller_changes = retained.controller_changes;
-        let retained_session = controller_changes || retained.pause_resume;
+        let retained_session = controller_changes
+            || retained.pause_resume
+            || retained.state_save
+            || retained.state_resume
+            || retained.quit;
         let configuration_id = retained.configuration_id;
         let mut launch = retained.launch;
         let applied_topology = launch
@@ -929,6 +975,17 @@ impl ControllerSessionWorker {
                 ) => {
                     let _ = response.send(self.pause_resume(state, timeout));
                 }
+                crate::controller::ControllerSessionCommand::StateAction(
+                    slot,
+                    save,
+                    timeout,
+                    response,
+                ) => {
+                    let _ = response.send(self.state_action(slot, save, timeout));
+                }
+                crate::controller::ControllerSessionCommand::Quit(timeout, response) => {
+                    let _ = response.send(self.quit(timeout));
+                }
                 crate::controller::ControllerSessionCommand::Stop => break,
             }
         }
@@ -974,6 +1031,72 @@ impl ControllerSessionWorker {
                 elapsed_ms = started.elapsed().as_millis(),
                 "snowglass: pause/resume plugin callback completed"
             );
+        }
+        result
+    }
+
+    fn state_action(
+        &mut self,
+        slot: u32,
+        save: bool,
+        timeout: std::time::Duration,
+    ) -> Result<(), String> {
+        let callback = if save { "onStateSave" } else { "onStateResume" };
+        let timeout_error = format!("{callback} exceeded its {}ms deadline", timeout.as_millis());
+        let deadline = IsolateDeadline::start(
+            self.runtime
+                .js_runtime_mut()
+                .v8_isolate()
+                .thread_safe_handle(),
+            timeout,
+        )
+        .map_err(|error| error.to_string())?;
+        let result = self.tokio.block_on(async {
+            tokio::time::timeout(
+                timeout,
+                crate::deno::execute_state_action(self.runtime.js_runtime_mut(), slot, save),
+            )
+            .await
+            .map_err(|_| timeout_error.clone())?
+            .map_err(|error| error.to_string())
+        });
+        let result = if deadline.finish(self.runtime.js_runtime_mut()) {
+            Err(timeout_error)
+        } else {
+            result
+        };
+        if let Err(error) = &result {
+            tracing::error!(plugin = %self.plugin.id(), slot, "snowglass: {callback} failed: {error}");
+        }
+        result
+    }
+
+    fn quit(&mut self, timeout: std::time::Duration) -> Result<Option<Vec<u8>>, String> {
+        let timeout_error = format!("onQuit exceeded its {}ms deadline", timeout.as_millis());
+        let deadline = IsolateDeadline::start(
+            self.runtime
+                .js_runtime_mut()
+                .v8_isolate()
+                .thread_safe_handle(),
+            timeout,
+        )
+        .map_err(|error| error.to_string())?;
+        let result = self.tokio.block_on(async {
+            tokio::time::timeout(
+                timeout,
+                crate::deno::execute_quit(self.runtime.js_runtime_mut()),
+            )
+            .await
+            .map_err(|_| timeout_error.clone())?
+            .map_err(|error| error.to_string())
+        });
+        let result = if deadline.finish(self.runtime.js_runtime_mut()) {
+            Err(timeout_error)
+        } else {
+            result
+        };
+        if let Err(error) = &result {
+            tracing::error!(plugin = %self.plugin.id(), "snowglass: onQuit failed: {error}");
         }
         result
     }
@@ -1115,10 +1238,12 @@ impl ControllerSessionWorker {
 fn filesystem_options(
     plugin: &dyn EmulatorPluginInstance,
     storage: StorageFactories,
+    quick_resume: Option<crate::QuickResumeData>,
 ) -> Result<crate::filesystem::FilesystemOptions, crate::PackageError> {
     let mut options =
         crate::filesystem::FilesystemOptions::new(plugin.module_loader().root().to_owned());
     options.storage = storage;
+    options.quick_resume = quick_resume;
     options.resources = plugin
         .resources()?
         .into_iter()
