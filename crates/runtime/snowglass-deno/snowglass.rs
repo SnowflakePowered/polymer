@@ -85,6 +85,10 @@ pub trait SnowglassHost: Send + Sync {
 #[derive(Debug)]
 pub enum ConsoleStorageRequest {
     List,
+    Supports {
+        kind: String,
+        platform: String,
+    },
     Create {
         kind: String,
         platform: String,
@@ -196,6 +200,16 @@ async fn op_consolestorage_list(
     state: Rc<RefCell<OpState>>,
 ) -> Result<serde_json::Value, JsErrorBox> {
     consolestorage(&state, ConsoleStorageRequest::List).await
+}
+
+#[op2]
+#[serde]
+async fn op_consolestorage_supports(
+    state: Rc<RefCell<OpState>>,
+    #[string] kind: String,
+    #[string] platform: String,
+) -> Result<serde_json::Value, JsErrorBox> {
+    consolestorage(&state, ConsoleStorageRequest::Supports { kind, platform }).await
 }
 
 #[op2]
@@ -477,6 +491,7 @@ deno_core::extension!(
         op_plugin_invoke,
         op_prepared_filesystem_release,
         op_consolestorage_list,
+        op_consolestorage_supports,
         op_consolestorage_create,
         op_consolestorage_delete,
         op_consolestorage_set_label,

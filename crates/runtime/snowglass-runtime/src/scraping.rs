@@ -1,4 +1,8 @@
-use gumshoe::{GeneralIdentifier, IdentifyPackage, PlatformIdentifier};
+use gumshoe::{
+    GeneralIdentifier, IdentifyPackage, PlatformIdentifier, binary::NormalizationOptions,
+};
+use snowglass_consolestorage::BatterySaveRepo;
+use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -11,6 +15,7 @@ pub struct ScrapedPackage {
     pub platform: String,
     pub serial: Option<String>,
     pub title_id: Option<String>,
+    pub binary_digest: Option<String>,
 }
 
 impl ScrapedPackage {
@@ -37,6 +42,14 @@ impl ScrapedPackage {
         })?;
         let serial = package.serial().map(str::to_owned);
         let title_id = package.titleid();
+        let binary_digest = if BatterySaveRepo::supports(platform)
+            && title_id.as_deref().is_none_or(str::is_empty)
+            && serial.as_deref().is_none_or(str::is_empty)
+        {
+            Some(Self::binary_digest(package.as_ref(), &path)?)
+        } else {
+            None
+        };
         let name = path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
@@ -48,7 +61,34 @@ impl ScrapedPackage {
             platform: platform.to_owned(),
             serial,
             title_id,
+            binary_digest,
         })
+    }
+
+    fn binary_digest(package: &dyn gumshoe::Package, path: &Path) -> Result<String, ScrapingError> {
+        let binary = package
+            .binaries(NormalizationOptions::decrypt_common())
+            .next()
+            .ok_or_else(|| ScrapingError::Binary {
+                path: path.to_path_buf(),
+                reason: "Gumshoe did not return a package binary".to_owned(),
+            })?
+            .map_err(|source| ScrapingError::Binary {
+                path: path.to_path_buf(),
+                reason: source.to_string(),
+            })?;
+        let digest =
+            binary
+                .digest::<blake3::Hasher>(None)
+                .map_err(|source| ScrapingError::Binary {
+                    path: path.to_path_buf(),
+                    reason: source.to_string(),
+                })?;
+        let mut encoded = String::with_capacity(digest.len() * 2);
+        for byte in digest {
+            write!(&mut encoded, "{byte:02x}").expect("writing to a string cannot fail");
+        }
+        Ok(encoded)
     }
 }
 
@@ -62,10 +102,34 @@ pub enum ScrapingError {
     },
     #[error("could not identify {path}: {reason}")]
     Identify { path: PathBuf, reason: String },
+    #[error("could not digest Gumshoe binary for {path}: {reason}")]
+    Binary { path: PathBuf, reason: String },
     #[error(
         "{path} was identified as {platform}, which Snowglass does not map to a consolespec platform"
     )]
     UnsupportedPlatform { path: PathBuf, platform: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn battery_fallback_digests_gumshoes_binary_instead_of_the_rom_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("headered.nes");
+        let payload = [0x42; 32];
+        let mut image = vec![0; 16];
+        image[..4].copy_from_slice(b"NES\x1a");
+        image.extend_from_slice(&payload);
+        std::fs::write(&path, image).unwrap();
+
+        let package = ScrapedPackage::from_path(path).unwrap();
+        let expected = blake3::hash(&payload).to_hex();
+
+        assert_eq!(package.platform, "NINTENDO_NES");
+        assert_eq!(package.binary_digest.as_deref(), Some(expected.as_str()));
+    }
 }
 
 fn consolespec_platform(platform: PlatformIdentifier) -> Option<&'static str> {

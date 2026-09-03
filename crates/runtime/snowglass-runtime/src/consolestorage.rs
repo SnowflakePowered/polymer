@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 use snowglass_deno::snowglass::ConsoleStorageRequest;
-use snowglass_library::{Directories, StorageKind, StorageManager, VolumeInfo};
+use snowglass_library::{ConsoleStorage, Directories, StorageKind, StorageManager, VolumeInfo};
 use uuid::Uuid;
 
 pub fn manager() -> Option<Arc<StorageManager>> {
@@ -15,6 +15,12 @@ pub async fn serve(
     manager: Option<Arc<StorageManager>>,
     request: ConsoleStorageRequest,
 ) -> Result<Value, String> {
+    if let ConsoleStorageRequest::Supports { kind, platform } = &request {
+        let kind = kind
+            .parse::<StorageKind>()
+            .map_err(|error| error.to_string())?;
+        return Ok(Value::Bool(ConsoleStorage::supports(kind, platform)));
+    }
     let manager = manager.ok_or_else(|| "console storage is unavailable".to_owned())?;
 
     match request {
@@ -27,6 +33,7 @@ pub async fn serve(
                     .collect(),
             ))
         }
+        ConsoleStorageRequest::Supports { .. } => unreachable!("handled without a manager"),
         ConsoleStorageRequest::Create {
             kind,
             platform,

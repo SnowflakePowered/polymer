@@ -32,6 +32,11 @@ impl StorageManager {
         platform: &str,
         label: Option<String>,
     ) -> Result<ConsoleStorage, Error> {
+        if kind == StorageKind::Battery {
+            return Err(Error::Unsupported(
+                "battery profiles are created automatically for each game".to_owned(),
+            ));
+        }
         if !ConsoleStorage::supports(kind, platform) {
             return Err(Error::Unsupported(format!(
                 "no {} layout for `{platform}`",
@@ -42,6 +47,29 @@ impl StorageManager {
         let id = Uuid::now_v7();
         let storage = self.repository(platform)?.volume(kind, id);
         ConsoleStorage::create(kind, platform, storage, id, label).await
+    }
+
+    /// Opens the deterministic battery profile for a game, creating it on its
+    /// first launch. The caller derives `id` from the game's stable identity.
+    pub async fn open_battery(
+        &self,
+        platform: &str,
+        id: Uuid,
+        label: Option<String>,
+    ) -> Result<ConsoleStorage, Error> {
+        if !ConsoleStorage::supports(StorageKind::Battery, platform) {
+            return Err(Error::Unsupported(format!(
+                "no battery layout for `{platform}`"
+            )));
+        }
+
+        let repository = self.repository(platform)?;
+        let storage = repository.volume(StorageKind::Battery, id);
+        if repository.contains(StorageKind::Battery, id)? {
+            ConsoleStorage::open(StorageKind::Battery, storage).await
+        } else {
+            ConsoleStorage::create(StorageKind::Battery, platform, storage, id, label).await
+        }
     }
 
     pub async fn open(
@@ -74,9 +102,10 @@ impl StorageManager {
         label: Option<String>,
     ) -> Result<ConsoleStorage, Error> {
         if kind == StorageKind::Nand {
-            return Err(Error::Unsupported(
-                "NAND volumes are not save profiles".to_owned(),
-            ));
+            return Err(Error::Unsupported(format!(
+                "{} volumes cannot be forked",
+                kind.as_str()
+            )));
         }
         let destination = Uuid::now_v7();
         self.repository(platform)?
@@ -164,5 +193,53 @@ mod tests {
             Some("Wii saves")
         );
         assert!(path.join(".git").join("objects").is_dir());
+    }
+
+    #[tokio::test]
+    async fn battery_profiles_are_resolved_by_game_with_separate_platform_repositories() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = StorageManager::new(root.path());
+        let gb_id = Uuid::from_u128(1);
+        let gba_id = Uuid::from_u128(2);
+        manager
+            .open_battery("NINTENDO_GB", gb_id, Some("GB game".to_owned()))
+            .await
+            .unwrap();
+        manager
+            .open_battery("NINTENDO_GBA", gba_id, Some("GBA game".to_owned()))
+            .await
+            .unwrap();
+
+        let fork = manager
+            .fork(
+                StorageKind::Battery,
+                "NINTENDO_GB",
+                gb_id,
+                Some("GB game copy".to_owned()),
+            )
+            .await
+            .unwrap();
+        let fork = fork.metadata().await.unwrap();
+        assert_ne!(fork.id, gb_id);
+        assert_eq!(fork.label.as_deref(), Some("GB game copy"));
+
+        assert_eq!(
+            manager
+                .open_battery("NINTENDO_GB", gb_id, Some("ignored".to_owned()))
+                .await
+                .unwrap()
+                .metadata()
+                .await
+                .unwrap()
+                .label
+                .as_deref(),
+            Some("GB game")
+        );
+
+        let gb = manager.platform_path("NINTENDO_GB");
+        let gba = manager.platform_path("NINTENDO_GBA");
+        assert_ne!(gb, gba);
+        assert!(gb.join(".git").join("objects").is_dir());
+        assert!(gba.join(".git").join("objects").is_dir());
     }
 }

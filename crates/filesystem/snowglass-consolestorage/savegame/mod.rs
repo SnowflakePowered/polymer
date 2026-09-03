@@ -42,11 +42,21 @@ pub struct SaveWatcher {
 pub struct Package {
     serial: Option<String>,
     title_id: Option<String>,
+    binary_digest: Option<String>,
 }
 
 impl Package {
     pub fn new(serial: Option<String>, title_id: Option<String>) -> Self {
-        Self { serial, title_id }
+        Self {
+            serial,
+            title_id,
+            binary_digest: None,
+        }
+    }
+
+    pub fn with_binary_digest(mut self, binary_digest: impl Into<String>) -> Self {
+        self.binary_digest = Some(binary_digest.into());
+        self
     }
 
     pub fn serial(&self) -> Option<&str> {
@@ -55,6 +65,10 @@ impl Package {
 
     pub fn title_id(&self) -> Option<&str> {
         self.title_id.as_deref()
+    }
+
+    pub fn binary_digest(&self) -> Option<&str> {
+        self.binary_digest.as_deref()
     }
 }
 

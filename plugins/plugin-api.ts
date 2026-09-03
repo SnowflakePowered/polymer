@@ -4,6 +4,9 @@ export type Resource = Readonly<{
     path?: string,
 }>;
 
+/** Host-provided storage for a ROM-adjacent battery save file. */
+export type BatteryStorage = Readonly<{ battery?: Resource }>;
+
 export type DirectoryEntry = Readonly<{
     name: string,
     kind: "directory",

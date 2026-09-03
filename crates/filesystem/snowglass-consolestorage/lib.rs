@@ -17,6 +17,9 @@ pub use history::{
     AttachmentInfo, DeletedSaveInfo, Save, SaveAttachmentKind, SaveCommit, SaveCommitId,
     SaveCommitInfo, SaveCommitOperation, SaveVersioning, VersionedStorage,
 };
+pub use impls::battery::{
+    BatteryIdentity, BatteryIdentitySource, BatterySaveRepo, BatterySaveView,
+};
 
 pub use save_repo::SaveRepo;
 pub use storage::manifest::{ArtifactRegistry, ArtifactSummary, VolumeInfo};
