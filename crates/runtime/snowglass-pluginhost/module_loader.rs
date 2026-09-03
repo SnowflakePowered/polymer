@@ -308,6 +308,7 @@ mod tests {
             "dolphin",
             "duckstation",
             "flycast",
+            "mgba",
             "pcsx2",
             "retroarch",
         ] {

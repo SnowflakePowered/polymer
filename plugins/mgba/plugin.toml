@@ -3,10 +3,6 @@ id = "mgba"
 version = "0.0.1"
 class = "emulator"
 
-[plugin.config]
-bios = "D:\\bios\\dreamcast\\dc_boot.bin"
-flash = "D:\\bios\\dreamcast\\dc_flash.bin"
-
 [[plugin.resources]]
 name = "runtime"
 target = "x86_64-pc-windows-msvc"

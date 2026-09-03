@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
+use crate::impls::battery::BatterySaveRepo;
 use crate::impls::dreamcast::DreamcastMemoryCard;
 use crate::impls::gamecube::GameCubeMemoryCard;
 use crate::impls::ps1::PlaystationMemoryCard;
@@ -19,16 +20,18 @@ pub enum StorageKind {
     Nand,
     SaveRepo,
     MemoryCard,
+    Battery,
 }
 
 impl StorageKind {
-    pub const ALL: [Self; 3] = [Self::Nand, Self::SaveRepo, Self::MemoryCard];
+    pub const ALL: [Self; 4] = [Self::Nand, Self::SaveRepo, Self::MemoryCard, Self::Battery];
 
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Nand => "nand",
             Self::SaveRepo => "saveRepo",
             Self::MemoryCard => "memoryCard",
+            Self::Battery => "battery",
         }
     }
 }
@@ -41,6 +44,7 @@ impl FromStr for StorageKind {
             "nand" => Ok(Self::Nand),
             "saveRepo" => Ok(Self::SaveRepo),
             "memoryCard" => Ok(Self::MemoryCard),
+            "battery" => Ok(Self::Battery),
             other => Err(Error::Unsupported(format!(
                 "unknown console storage kind `{other}`"
             ))),
@@ -52,6 +56,7 @@ pub enum ConsoleStorage {
     Nand(Nand),
     SaveRepo(Arc<dyn SaveRepo>),
     MemoryCard(Arc<dyn SaveRepo>),
+    Battery(Arc<dyn SaveRepo>),
 }
 
 impl ConsoleStorage {
@@ -67,6 +72,7 @@ impl ConsoleStorage {
                     | PlaystationMemoryCard::PLATFORM
                     | Playstation2MemoryCard::PLATFORM
             ),
+            StorageKind::Battery => BatterySaveRepo::supports(platform),
         }
     }
 
@@ -114,6 +120,12 @@ impl ConsoleStorage {
                         .await?,
                 )))
             }
+            (StorageKind::Battery, platform) if BatterySaveRepo::supports(platform) => {
+                Ok(Self::Battery(
+                    BatterySaveRepo::create(VersionedStorage::new(storage)?, id, platform, label)
+                        .await?,
+                ))
+            }
             (kind, platform) => Err(Error::Unsupported(format!(
                 "no {} layout for `{platform}`",
                 kind.as_str()
@@ -148,6 +160,9 @@ impl ConsoleStorage {
             (StorageKind::MemoryCard, Playstation2MemoryCard::PLATFORM) => Ok(Self::MemoryCard(
                 Arc::new(Playstation2MemoryCard::open(VersionedStorage::new(storage)?).await?),
             )),
+            (StorageKind::Battery, platform) if BatterySaveRepo::supports(platform) => Ok(
+                Self::Battery(BatterySaveRepo::open(VersionedStorage::new(storage)?).await?),
+            ),
             (other_kind, other_platform) => Err(Error::Unsupported(format!(
                 "no {} layout for `{other_platform}`",
                 other_kind.as_str()
@@ -158,7 +173,7 @@ impl ConsoleStorage {
     pub fn save_repo(&self) -> Option<&Arc<dyn SaveRepo>> {
         match self {
             Self::Nand(_) => None,
-            Self::SaveRepo(repo) | Self::MemoryCard(repo) => Some(repo),
+            Self::SaveRepo(repo) | Self::MemoryCard(repo) | Self::Battery(repo) => Some(repo),
         }
     }
 
@@ -171,13 +186,14 @@ impl ConsoleStorage {
             Self::Nand(_) => StorageKind::Nand,
             Self::SaveRepo(_) => StorageKind::SaveRepo,
             Self::MemoryCard(_) => StorageKind::MemoryCard,
+            Self::Battery(_) => StorageKind::Battery,
         }
     }
 
     pub async fn metadata(&self) -> Result<VolumeInfo, Error> {
         match self {
             Self::Nand(nand) => nand.metadata().await,
-            Self::SaveRepo(repo) | Self::MemoryCard(repo) => {
+            Self::SaveRepo(repo) | Self::MemoryCard(repo) | Self::Battery(repo) => {
                 repo.volumeinfo().await?.ok_or(Error::UnclaimedNand)
             }
         }
@@ -186,7 +202,7 @@ impl ConsoleStorage {
     pub async fn set_label(&self, label: Option<&str>) -> Result<(), Error> {
         match self {
             Self::Nand(nand) => nand.set_label(label).await,
-            Self::SaveRepo(repo) | Self::MemoryCard(repo) => {
+            Self::SaveRepo(repo) | Self::MemoryCard(repo) | Self::Battery(repo) => {
                 VolumeStorage::set_label(&**repo, label).await
             }
         }
@@ -206,6 +222,18 @@ mod tests {
         ));
         assert!(!ConsoleStorage::supports(
             StorageKind::MemoryCard,
+            "NINTENDO_WII"
+        ));
+    }
+
+    #[test]
+    fn battery_support_is_platform_specific() {
+        assert!(ConsoleStorage::supports(
+            StorageKind::Battery,
+            "NINTENDO_GBA"
+        ));
+        assert!(!ConsoleStorage::supports(
+            StorageKind::Battery,
             "NINTENDO_WII"
         ));
     }

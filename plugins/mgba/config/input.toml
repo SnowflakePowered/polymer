@@ -1,0 +1,37 @@
+[targets.input]
+output = { format = "ini", path = "input.ini" }
+
+[targets.input.controller]
+
+[input]
+driver = "sdl3"
+device = "{guid}/{index}"
+
+[input.mapping]
+"button.a" = "{device}/3/0"
+"button.b" = "{device}/3/1"
+"button.select" = "{device}/3/4"
+"button.start" = "{device}/3/6"
+"button.l" = "{device}/3/9"
+"button.r" = "{device}/3/10"
+"directional.n" = "{device}/3/11"
+"directional.s" = "{device}/3/12"
+"directional.w" = "{device}/3/13"
+"directional.e" = "{device}/3/14"
+
+[input.layouts.GBA_LAYOUT]
+"button.a" = "A..South"
+"button.b" = "B..East"
+"button.l" = "L-Bumper"
+"button.r" = "R-Bumper"
+"button.select" = "Select"
+"button.start" = "Start"
+"directional.e" = "Pad.Right"
+"directional.n" = "Pad.Up"
+"directional.s" = "Pad.Down"
+"directional.w" = "Pad.Left"
+
+[platforms.NINTENDO_GBA.ports.layout.0]
+target = "input.controller"
+layouts = ["GBA_LAYOUT"]
+emit = {}

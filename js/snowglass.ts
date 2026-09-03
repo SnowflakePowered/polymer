@@ -218,12 +218,14 @@ export interface ScrapedPackage {
   readonly platform: string;
   readonly serial: string | null;
   readonly titleId: string | null;
+  readonly binaryDigest: string | null;
   toJSON(): Readonly<{
     path: string;
     name: string;
     platform: string;
     serial: string | null;
     titleId: string | null;
+    binaryDigest: string | null;
   }>;
 }
 
@@ -300,7 +302,8 @@ export interface ConfigurationApi {
   onLaunch(packageValue: ScrapedPackage, selection: ConfigurationSelection): Promise<LaunchRequest>;
 }
 
-export type ConsoleStorageKind = "nand" | "saveRepo" | "memoryCard";
+export type ConsoleStorageKind = "nand" | "saveRepo" | "memoryCard" | "battery";
+export type CreatableConsoleStorageKind = Exclude<ConsoleStorageKind, "battery">;
 
 export interface ConsoleStorageVolume extends EventTarget {
   readonly kind: ConsoleStorageKind;
@@ -316,7 +319,8 @@ export interface ConsoleStorageVolume extends EventTarget {
 export interface ConsoleStorageApi {
   readonly Storage: {
     readonly prototype: ConsoleStorageVolume;
-    create(kind: ConsoleStorageKind, platform: string, options?: { label?: string }): Promise<ConsoleStorageVolume>;
+    supports(kind: ConsoleStorageKind, platform: string): Promise<boolean>;
+    create(kind: CreatableConsoleStorageKind, platform: string, options?: { label?: string }): Promise<ConsoleStorageVolume>;
     list(options?: { kind?: ConsoleStorageKind }): Promise<ConsoleStorageVolume[]>;
   };
 }

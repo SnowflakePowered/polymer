@@ -3,6 +3,7 @@ import {
   op_consolestorage_delete,
   op_consolestorage_list,
   op_consolestorage_set_label,
+  op_consolestorage_supports,
 } from "ext:core/ops";
 
 export function createConsoleStorage() {
@@ -20,6 +21,9 @@ export function createConsoleStorage() {
     }
 
     static async create(kind, platform, options = undefined) {
+      if (kind === "battery") {
+        throw new TypeError("Battery profiles are created automatically for each game");
+      }
       if (!["nand", "saveRepo", "memoryCard"].includes(kind)) {
         throw new TypeError("Unknown console storage kind");
       }
@@ -28,6 +32,16 @@ export function createConsoleStorage() {
       }
       const label = options?.label === undefined ? null : String(options.label);
       return new Storage(internal, await op_consolestorage_create(kind, platform, label));
+    }
+
+    static async supports(kind, platform) {
+      if (!["nand", "saveRepo", "memoryCard", "battery"].includes(kind)) {
+        throw new TypeError("Unknown console storage kind");
+      }
+      if (typeof platform !== "string" || platform.length === 0) {
+        throw new TypeError("Console storage requires a platform id");
+      }
+      return await op_consolestorage_supports(kind, platform);
     }
 
     static async list(options = undefined) {

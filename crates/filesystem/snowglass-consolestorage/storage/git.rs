@@ -30,7 +30,7 @@ impl StorageKind {
     fn ref_name(self, id: Uuid) -> String {
         let namespace = match self {
             Self::Nand => "nands",
-            Self::SaveRepo | Self::MemoryCard => "profiles",
+            Self::SaveRepo | Self::MemoryCard | Self::Battery => "profiles",
         };
         format!(
             "refs/snowglass/{namespace}/v{SCHEMA_VERSION}/{}",
@@ -43,6 +43,7 @@ impl StorageKind {
             Self::Nand => "nand",
             Self::SaveRepo => "save-repo",
             Self::MemoryCard => "memory-card",
+            Self::Battery => "battery",
         }
     }
 
@@ -51,6 +52,7 @@ impl StorageKind {
             Self::Nand => "nands",
             Self::SaveRepo => "save-repos",
             Self::MemoryCard => "memory-cards",
+            Self::Battery => "battery-profiles",
         }
     }
 }
@@ -170,7 +172,7 @@ impl PlatformRepository {
         let repo = self.0.repository.to_thread_local();
         let namespace = match kind {
             StorageKind::Nand => "nands",
-            StorageKind::SaveRepo | StorageKind::MemoryCard => "profiles",
+            StorageKind::SaveRepo | StorageKind::MemoryCard | StorageKind::Battery => "profiles",
         };
         let prefix = format!("refs/snowglass/{namespace}/v{SCHEMA_VERSION}/");
         let mut ids = Vec::new();
@@ -286,7 +288,8 @@ impl PlatformRepository {
     ) -> Result<GitVolumeStorage, Error> {
         if kind == StorageKind::Nand {
             return Err(Error::Unsupported(
-                "only save profiles and memory cards can be forked".to_owned(),
+                "only save repositories, memory cards, and battery profiles can be forked"
+                    .to_owned(),
             ));
         }
         let _guard = self.0.operation.lock();

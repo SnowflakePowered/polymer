@@ -28,6 +28,7 @@ export function createScraping() {
     get platform() { return packageData.get(this).platform; }
     get serial() { return packageData.get(this).serial; }
     get titleId() { return packageData.get(this).titleId; }
+    get binaryDigest() { return packageData.get(this).binaryDigest; }
     toJSON() { return { ...packageData.get(this) }; }
   }
 

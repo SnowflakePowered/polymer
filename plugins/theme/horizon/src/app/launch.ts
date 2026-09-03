@@ -1,8 +1,8 @@
 import { unwrap } from "solid-js/store";
 import type {
   ConfigurationSelection,
-  ConsoleStorageKind,
   ConsoleStorageVolume,
+  CreatableConsoleStorageKind,
   EmulatorConfiguration,
   PackageConfiguration,
   ScrapedPackage,
@@ -45,7 +45,7 @@ export function applyFrontendDefaults(game: PackageConfiguration) {
   return game;
 }
 
-async function defaultVolume(kind: ConsoleStorageKind, platform: string) {
+async function defaultVolume(kind: CreatableConsoleStorageKind, platform: string) {
   const key = `${kind}:${platform}`;
   let pending = volumeCache.get(key);
   if (!pending) {
@@ -97,7 +97,9 @@ export async function createSelection(game: PackageConfiguration): Promise<Confi
       [PS2]: "mem1",
     };
     const slot = slots[game.platform];
-    if (slot) selection.storage = { [slot]: (await defaultVolume("memoryCard", game.platform)).id };
+    if (slot) {
+      selection.storage = { [slot]: (await defaultVolume("memoryCard", game.platform)).id };
+    }
   }
   return selection;
 }

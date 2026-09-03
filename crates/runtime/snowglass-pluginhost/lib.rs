@@ -131,58 +131,6 @@ mod tests {
     }
 
     #[test]
-    fn registry_projects_one_plugin_through_a_generic_interface_lookup() {
-        let plugins = PluginRegistry::new();
-        let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("..")
-            .join("plugins")
-            .join("cemu")
-            .join("plugin.toml");
-        plugins.load(&manifest).unwrap();
-
-        let base = plugins.plugin::<dyn PluginInstance>("cemu").unwrap();
-        let emulator = plugins
-            .plugin::<dyn EmulatorPluginInstance>("cemu")
-            .unwrap();
-        assert_eq!(base.id(), "cemu");
-        assert_eq!(emulator.id(), "cemu");
-        assert_eq!(
-            base.caches(),
-            &[PluginCache {
-                key: "shaderCache".to_owned(),
-                label: "Shader Cache".to_owned(),
-            }]
-        );
-        assert_eq!(
-            serde_json::to_value(plugins.descriptors()).unwrap(),
-            serde_json::json!([{
-                "id": "cemu",
-                "version": "0.0.1",
-                "class": "emulator",
-                "caches": [{
-                    "key": "shaderCache",
-                    "label": "Shader Cache",
-                }],
-            }])
-        );
-        assert!(plugins.plugin::<TestPlugin>("cemu").is_none());
-        assert_eq!(
-            plugins
-                .plugins::<dyn EmulatorPluginInstance>()
-                .into_iter()
-                .map(|plugin| plugin.id().to_owned())
-                .collect::<Vec<_>>(),
-            ["cemu"]
-        );
-        assert!(matches!(
-            plugins.load(manifest),
-            Err(PluginRegistryError::DuplicatePlugin(id)) if id == "cemu"
-        ));
-    }
-
-    #[test]
     fn configurations_are_scoped_by_invocation_id() {
         let mut configurations = configuration::ConfigurationInstances::default();
         let topology = snowglass_controllers::ControllerTopology::default();

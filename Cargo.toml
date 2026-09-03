@@ -26,6 +26,7 @@ ash = { version = "0.38.0", default-features = false, features = ["loaded", "std
 ash-window = "0.13.0"
 bcast = "0.0.29"
 bincode = { version = "2", features = ["serde"] }
+blake3 = "1"
 crossfire = "3.1.19"
 dashmap = "6.1.0"
 exe = "0.5.7"

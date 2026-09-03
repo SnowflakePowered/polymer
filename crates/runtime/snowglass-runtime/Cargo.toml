@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 # pin to force prebuild nasm feature
 aws-lc-rs = { version = "=1.16.3", features = ["prebuilt-nasm"] }
+blake3 = { workspace = true, features = ["traits-preview"] }
 crossfire.workspace = true
 consolespec.workspace = true
 dashmap.workspace = true

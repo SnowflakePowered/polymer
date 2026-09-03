@@ -3,24 +3,26 @@ use std::{collections::BTreeMap, sync::Arc};
 use consolespec::MachineSpec;
 use parking_lot::Mutex;
 use serde_json::Value;
-use snowglass_consolestorage::SaveRepo;
 use snowglass_consolestorage::impls::dreamcast::DreamcastMemoryCard;
 use snowglass_consolestorage::impls::gamecube::GameCubeMemoryCard;
 use snowglass_consolestorage::impls::ps1::PlaystationMemoryCard;
 use snowglass_consolestorage::impls::ps2::Playstation2MemoryCard;
 use snowglass_consolestorage::savegame::{Package, SaveGameSink};
+use snowglass_consolestorage::{BatteryIdentity, BatterySaveRepo, SaveRepo};
 use snowglass_deno::snowglass::{SnowglassNotification, SnowglassNotificationSender};
 use snowglass_library::{ConsoleStorage, StorageKind, StorageManager};
 use snowglass_pluginhost::StorageFactories;
 use snowglass_vfs::{
-    CompositeResourceLease, FinalizationReason, Materialized, MemoryCardStorageFactory,
-    NandVolumeFactory, ResourceFactory, ResourceLease, VfsError, VfsResult, Volume,
+    BatteryStorageFactory, CompositeResourceLease, ExclusiveResourceKey, FinalizationReason,
+    Materialized, MemoryCardStorageFactory, NandVolumeFactory, ResourceFactory, ResourceLease,
+    VfsError, VfsResult, Volume,
 };
 use uuid::Uuid;
 
 struct SaveWatchFactory {
     inner: Arc<dyn ResourceFactory<dyn Volume>>,
     saves: Arc<dyn SaveRepo>,
+    exclusive: Option<Uuid>,
     notification: GameSavedNotification,
 }
 
@@ -28,11 +30,13 @@ impl SaveWatchFactory {
     fn new(
         inner: Arc<dyn ResourceFactory<dyn Volume>>,
         saves: Arc<dyn SaveRepo>,
+        exclusive: Option<Uuid>,
         notification: GameSavedNotification,
     ) -> Self {
         Self {
             inner,
             saves,
+            exclusive,
             notification,
         }
     }
@@ -61,13 +65,53 @@ impl GameSavedNotification {
 
 impl ResourceFactory<dyn Volume> for SaveWatchFactory {
     fn materialize(&self) -> VfsResult<Materialized<dyn Volume>> {
+        let ownership = self
+            .exclusive
+            .map(|id| ExclusiveResourceKey::Resource(id).acquire())
+            .transpose()?;
         // Register before the emulator can access the mount so no save write
         // can race watcher creation.
         let watcher = self.saves.watch_saves(&[]).map_err(console_storage_error)?;
+        let baseline_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_time()
             .build()?;
         let materialized = self.inner.materialize()?;
+        // Establish a silent baseline before the mounted file becomes visible
+        // to the emulator. This also recovers canonical state left uncommitted
+        // by an interrupted session.
+        let baseline_saves = self.saves.clone();
+        let baseline = match std::thread::Builder::new()
+            .name("snowglass-save-baseline".to_owned())
+            .spawn(move || baseline_runtime.block_on(baseline_saves.checkpoint_saves()))
+        {
+            Ok(baseline) => baseline,
+            Err(source) => {
+                materialized
+                    .lease
+                    .finalize(FinalizationReason::LaunchFailed)?;
+                return Err(VfsError::Io(source));
+            }
+        };
+        match baseline.join() {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => {
+                materialized
+                    .lease
+                    .finalize(FinalizationReason::LaunchFailed)?;
+                return Err(console_storage_error(error));
+            }
+            Err(_) => {
+                materialized
+                    .lease
+                    .finalize(FinalizationReason::LaunchFailed)?;
+                return Err(VfsError::Unsupported(
+                    "save history baseline panicked".to_owned(),
+                ));
+            }
+        }
         let saves = self.saves.clone();
         let notification = self.notification.clone();
         let (stop, mut stopped) = tokio::sync::oneshot::channel();
@@ -75,9 +119,6 @@ impl ResourceFactory<dyn Volume> for SaveWatchFactory {
             .name("snowglass-save-history".to_owned())
             .spawn(move || {
                 runtime.block_on(async move {
-                    // Reconcile once on mount as well. This recovers a save
-                    // left canonical but uncommitted by an interrupted session.
-                    checkpoint_saves_logged(&*saves).await;
                     loop {
                         tokio::select! {
                             _ = &mut stopped => {
@@ -111,11 +152,15 @@ impl ResourceFactory<dyn Volume> for SaveWatchFactory {
             }),
         });
 
+        let mut leases = ownership.into_iter().collect::<Vec<_>>();
+        leases.push(history_lease);
+        leases.push(materialized.lease);
         Ok(Materialized {
             backend: materialized.backend,
             // Composite leases finalize in reverse: flush the mounted storage,
-            // then stop the watcher after one final synchronous checkpoint.
-            lease: CompositeResourceLease::new(vec![history_lease, materialized.lease]),
+            // stop the watcher after one final synchronous checkpoint, then
+            // release any outer profile lock.
+            lease: CompositeResourceLease::new(leases),
         })
     }
 }
@@ -180,9 +225,15 @@ fn console_storage_error(error: snowglass_consolestorage::Error) -> VfsError {
 fn watch_save_history(
     factory: Arc<dyn ResourceFactory<dyn Volume>>,
     saves: Arc<dyn SaveRepo>,
+    exclusive: Option<Uuid>,
     notification: GameSavedNotification,
 ) -> Arc<dyn ResourceFactory<dyn Volume>> {
-    Arc::new(SaveWatchFactory::new(factory, saves, notification))
+    Arc::new(SaveWatchFactory::new(
+        factory,
+        saves,
+        exclusive,
+        notification,
+    ))
 }
 
 fn is_emulator_launch(export_path: &[String]) -> bool {
@@ -203,20 +254,24 @@ pub async fn launch_storage(
     let Some(arguments) = arguments.first() else {
         return Ok(BTreeMap::new());
     };
-    let Some(requested) = arguments.get("storage") else {
-        return Ok(BTreeMap::new());
+    let requested = arguments
+        .get("storage")
+        .map(|storage| {
+            storage
+                .as_object()
+                .ok_or_else(|| "launch storage must be an object".to_owned())
+        })
+        .transpose()?;
+    let Some(console) = arguments.get("console").and_then(Value::as_str) else {
+        if requested.is_none_or(serde_json::Map::is_empty) {
+            return Ok(BTreeMap::new());
+        }
+        return Err("launch storage requires a string console".to_owned());
     };
-    let requested = requested
-        .as_object()
-        .ok_or_else(|| "launch storage must be an object".to_owned())?;
-    if requested.is_empty() {
+    let battery_supported = BatterySaveRepo::supports(console);
+    if requested.is_none_or(serde_json::Map::is_empty) && !battery_supported {
         return Ok(BTreeMap::new());
     }
-
-    let console = arguments
-        .get("console")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "launch storage requires a string console".to_owned())?;
     let machine = MachineSpec::try_from(console).map_err(|error| error.to_string())?;
     let declared = machine
         .storage_devices()
@@ -224,7 +279,7 @@ pub async fn launch_storage(
         .collect::<std::collections::BTreeSet<_>>();
     let manager = manager.ok_or_else(|| "console storage is unavailable".to_owned())?;
     let package = arguments.get("package").map(|package| {
-        Package::new(
+        let identified = Package::new(
             package
                 .get("serial")
                 .and_then(Value::as_str)
@@ -233,11 +288,77 @@ pub async fn launch_storage(
                 .get("titleId")
                 .and_then(Value::as_str)
                 .map(str::to_owned),
-        )
+        );
+        match package.get("binaryDigest").and_then(Value::as_str) {
+            Some(binary_digest) => identified.with_binary_digest(binary_digest),
+            None => identified,
+        }
     });
 
     let mut storage = StorageFactories::new();
-    for (name, selection) in requested {
+    if battery_supported {
+        let selection = requested.and_then(|requested| requested.get("battery"));
+        let (id, volume) = match selection {
+            Some(selection) => {
+                let id = parse_id("battery", selection)?;
+                let volume = manager
+                    .open(StorageKind::Battery, console, id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                (id, volume)
+            }
+            None => {
+                let package = package
+                    .as_ref()
+                    .ok_or_else(|| format!("{console} battery saves require a launch package"))?;
+                let rom = arguments
+                    .get("launchPath")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| format!("{console} battery saves require a launch path"))?;
+                let title = arguments
+                    .get("package")
+                    .and_then(|package| package.get("name"))
+                    .and_then(Value::as_str)
+                    .filter(|title| !title.is_empty())
+                    .or_else(|| {
+                        std::path::Path::new(rom)
+                            .file_stem()
+                            .and_then(|name| name.to_str())
+                    })
+                    .unwrap_or("Battery save");
+                let identity = BatteryIdentity::from_package(console, title, package)
+                    .map_err(|error| error.to_string())?;
+                let id = identity.profile_id();
+                let volume = manager
+                    .open_battery(console, id, Some(identity.title().to_owned()))
+                    .await
+                    .map_err(|error| error.to_string())?;
+                (id, volume)
+            }
+        };
+        let battery = volume
+            .downcast::<BatterySaveRepo>()
+            .ok_or_else(|| format!("storage `{id}` is not a {console} battery save profile"))?;
+        let saves: Arc<dyn SaveRepo> = battery.clone();
+        storage.insert(
+            "battery".to_owned(),
+            watch_save_history(
+                Arc::new(BatteryStorageFactory::with_managed_lease(battery)),
+                saves,
+                Some(id),
+                GameSavedNotification {
+                    sender: notifications.clone(),
+                    kind: StorageKind::Battery,
+                    platform: console.to_owned(),
+                    id,
+                },
+            ),
+        );
+    }
+    for (name, selection) in requested.into_iter().flatten() {
+        if name == "battery" && battery_supported {
+            continue;
+        }
         if !declared.contains(name.as_str()) {
             return Err(format!(
                 "storage device '{name}' is not declared by console '{console}'"
@@ -272,6 +393,7 @@ pub async fn launch_storage(
                         vec![save_id, nand_id],
                     )),
                     save,
+                    None,
                     GameSavedNotification {
                         sender: notifications.clone(),
                         kind: StorageKind::SaveRepo,
@@ -328,6 +450,7 @@ pub async fn launch_storage(
                             watch_save_history(
                                 Arc::new(MemoryCardStorageFactory::new(card, primary, id)),
                                 saves,
+                                None,
                                 GameSavedNotification {
                                     sender: notifications.clone(),
                                     kind: StorageKind::MemoryCard,
@@ -346,6 +469,11 @@ pub async fn launch_storage(
                     Playstation2MemoryCard::PLATFORM => mount_card!(Playstation2MemoryCard),
                     _ => return Err(format!("unsupported memory-card platform `{console}`")),
                 }
+            }
+            ConsoleStorage::Battery(_) => {
+                return Err(format!(
+                    "battery save profile `{id}` must use the reserved 'battery' key"
+                ));
             }
         }
     }
@@ -373,6 +501,119 @@ mod tests {
         ResourceOrigin, VfsError,
     };
     use std::io::Read;
+
+    #[tokio::test]
+    async fn battery_launch_mounts_one_file_and_checkpoints_its_history() {
+        let root = tempfile::tempdir().unwrap();
+        let rom = root.path().join("game.gba");
+        std::fs::write(&rom, b"test rom").unwrap();
+        let manager = Arc::new(StorageManager::new(root.path().join("storage")));
+        let package = Package::new(None, None).with_binary_digest("0123456789abcdef".repeat(4));
+        let identity =
+            BatteryIdentity::from_package("NINTENDO_GBA", "Test Game", &package).unwrap();
+        let profile_id = identity.profile_id();
+        let mut arguments = serde_json::json!({
+            "launchPath": rom,
+            "console": "NINTENDO_GBA",
+            "package": {
+                "name": "Test Game",
+                "binaryDigest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            }
+        });
+        let (notifications, mut saved) = tokio::sync::mpsc::unbounded_channel();
+        let factories = launch_storage(
+            Some(manager.clone()),
+            &["onLaunch".to_owned()],
+            &[arguments.clone()],
+            notifications,
+        )
+        .await
+        .unwrap();
+        let resource = Arc::new(Resource::new(
+            factories.get("battery").unwrap().clone(),
+            Permissions::ALL,
+            ResourceOrigin::Other("test:battery".into()),
+        ));
+        let mut plan = FilesystemPlan::default();
+        plan.mount_storage(
+            "/Game/game.sav".parse().unwrap(),
+            resource,
+            Permissions::ALL,
+            None,
+        );
+        let filesystem = plan.seal().unwrap();
+        filesystem.materialize().unwrap();
+
+        let path = "/Game/game.sav".parse().unwrap();
+        assert_eq!(
+            filesystem.metadata(&path).unwrap().kind,
+            snowglass_vfs::FileKind::File
+        );
+        filesystem
+            .open(
+                &path,
+                OpenOptions {
+                    read: true,
+                    write: true,
+                    ..OpenOptions::default()
+                },
+            )
+            .unwrap()
+            .write(0, b"save data")
+            .unwrap();
+        filesystem
+            .finalize(FinalizationReason::ProcessExited)
+            .unwrap();
+
+        assert!(matches!(
+            saved.try_recv().unwrap(),
+            SnowglassNotification::GameSaved {
+                kind,
+                platform,
+                id,
+            } if kind == "battery"
+                && platform == "NINTENDO_GBA"
+                && id == profile_id.simple().to_string()
+        ));
+        let reopened = manager
+            .open(StorageKind::Battery, "NINTENDO_GBA", profile_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            reopened.metadata().await.unwrap().label.as_deref(),
+            Some("Test Game")
+        );
+        let reopened = reopened.downcast::<BatterySaveRepo>().unwrap();
+        assert_eq!(
+            Save::new(reopened.as_ref(), BatterySaveRepo::SAVE_DEPOT)
+                .history()
+                .unwrap()
+                .len(),
+            2
+        );
+
+        let fork = manager
+            .fork(
+                StorageKind::Battery,
+                "NINTENDO_GBA",
+                profile_id,
+                Some("Alternate".to_owned()),
+            )
+            .await
+            .unwrap();
+        let fork_id = fork.metadata().await.unwrap().id;
+        arguments["storage"] = serde_json::json!({ "battery": fork_id });
+        let (notifications, _) = tokio::sync::mpsc::unbounded_channel();
+        let selected = launch_storage(
+            Some(manager),
+            &["onLaunch".to_owned()],
+            &[arguments],
+            notifications,
+        )
+        .await
+        .unwrap();
+        assert!(selected.contains_key("battery"));
+    }
 
     #[tokio::test]
     async fn wiiu_launch_composes_save_before_immutable_nand() {
