@@ -13,7 +13,8 @@ use syn::{
 ///
 /// Methods returning `Self::Output` keep their explicit dispatch control flow.
 /// Every other method returns its response normally; the generated adapter sends
-/// that value to the caller and produces the default dispatch output.
+/// that value to the caller and produces the default dispatch output. Async
+/// methods are boxed into the handler's `Self::Output` future.
 #[proc_macro_attribute]
 pub fn command_handler(arguments: TokenStream, item: TokenStream) -> TokenStream {
     if !arguments.is_empty() {
@@ -49,12 +50,7 @@ fn returns_dispatch_output(method: &ImplItemFn) -> bool {
 }
 
 fn rewrite(method: &mut ImplItemFn) -> syn::Result<()> {
-    if let Some(asyncness) = method.sig.asyncness {
-        return Err(syn::Error::new_spanned(
-            asyncness,
-            "async command handlers are not supported",
-        ));
-    }
+    let asynchronous = method.sig.asyncness.take().is_some();
     let ReturnType::Type(_, response_type) = &method.sig.output else {
         return Err(syn::Error::new_spanned(
             &method.sig,
@@ -93,11 +89,21 @@ fn rewrite(method: &mut ImplItemFn) -> syn::Result<()> {
     method.sig.output = syn::parse_quote!(-> Self::Output<#lifetime>);
 
     let body = method.block.clone();
-    method.block = syn::parse_quote!({
-        let command_response = (|| -> #response_type #body)();
-        let _ = response.send(command_response);
-        ::core::default::Default::default()
-    });
+    method.block = if asynchronous {
+        syn::parse_quote!({
+            ::std::boxed::Box::pin(async move {
+                let command_response: #response_type = (async move #body).await;
+                let _ = response.send(command_response);
+                ::core::default::Default::default()
+            })
+        })
+    } else {
+        syn::parse_quote!({
+            let command_response = (|| -> #response_type #body)();
+            let _ = response.send(command_response);
+            ::core::default::Default::default()
+        })
+    };
     Ok(())
 }
 

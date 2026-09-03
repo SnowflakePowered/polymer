@@ -2,7 +2,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 
 pub use snowglass_command_macros::command_handler;
 
@@ -15,6 +15,12 @@ pub type CommandFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CommandUnavailable;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ActorCommandUnavailable {
+    Closed,
+    Timeout,
+}
 
 /// Type-erased response sender used by generated command handlers.
 pub enum CommandResponse<T> {
@@ -98,6 +104,78 @@ impl<C: Send + 'static> From<tokio::sync::mpsc::UnboundedSender<C>> for CommandS
     }
 }
 
+pub struct ActorCommandSink<C>(
+    Arc<dyn Fn(C) -> CommandFuture<Result<(), ActorCommandUnavailable>> + Send + Sync>,
+);
+
+impl<C> Clone for ActorCommandSink<C> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<C> std::fmt::Debug for ActorCommandSink<C> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ActorCommandSink")
+    }
+}
+
+impl<C> ActorCommandSink<C> {
+    pub fn try_new<SendFn, SendFuture>(send: SendFn) -> Self
+    where
+        SendFn: Fn(C) -> SendFuture + Send + Sync + 'static,
+        SendFuture: Future<Output = Result<(), ActorCommandUnavailable>> + Send + 'static,
+    {
+        Self(Arc::new(move |command| Box::pin(send(command))))
+    }
+
+    pub fn bounded(sender: tokio::sync::mpsc::Sender<C>, attempts: usize, timeout: Duration) -> Self
+    where
+        C: Send + 'static,
+    {
+        Self::bounded_map(sender, |command| command, attempts, timeout)
+    }
+
+    pub fn bounded_map<Message>(
+        sender: tokio::sync::mpsc::Sender<Message>,
+        map: impl Fn(C) -> Message + Send + Sync + 'static,
+        attempts: usize,
+        timeout: Duration,
+    ) -> Self
+    where
+        C: Send + 'static,
+        Message: Send + 'static,
+    {
+        let map = Arc::new(map);
+        Self::try_new(move |command| {
+            let sender = sender.clone();
+            let map = map.clone();
+            async move {
+                for attempt in 1..=attempts.max(1) {
+                    match tokio::time::timeout(timeout, sender.reserve()).await {
+                        Ok(Ok(permit)) => {
+                            permit.send(map(command));
+                            return Ok(());
+                        }
+                        Ok(Err(_)) => return Err(ActorCommandUnavailable::Closed),
+                        Err(_) if attempt < attempts.max(1) => tokio::task::yield_now().await,
+                        Err(_) => return Err(ActorCommandUnavailable::Timeout),
+                    }
+                }
+                unreachable!("actor command send attempts are nonzero")
+            }
+        })
+    }
+
+    pub fn send(&self, command: C) -> CommandFuture<Result<(), ActorCommandUnavailable>> {
+        (self.0)(command)
+    }
+
+    pub fn is_unique(&self) -> bool {
+        Arc::strong_count(&self.0) == 1
+    }
+}
+
 /// Declares a typed command enum, its sending client, and its handler trait.
 ///
 /// Request/reply is the default. `async fn` waits asynchronously, a plain
@@ -114,8 +192,50 @@ macro_rules! command_client {
             $($methods:tt)*
         }
     ) => {
-        $crate::__command_client_parse! {
-            @parse [$visibility] [$client] [$closed] []
+        $crate::__command_methods_parse! {
+            @parse [immediate [$closed]] [$visibility] [$client] []
+            $($methods)*
+        }
+    };
+}
+
+/// Declares a typed command client backed by a bounded asynchronous actor queue.
+///
+/// Queue admission is retried according to `queue_timeout`; request/reply methods
+/// additionally wait up to `response_timeout` for the handler response.
+#[macro_export]
+macro_rules! actor_client {
+    (
+        $visibility:vis client $client:ident
+        $(
+            (
+                $($field_visibility:vis $field:ident : $field_type:ty),* $(,)?
+            )
+        )?
+        {
+            closed: $closed:expr;
+            queue_timeout:
+                $queue_attempts:expr,
+                $queue_timeout:expr
+                => $queue_timeout_error:expr;
+            response_timeout:
+                $response_timeout:expr
+                => $response_timeout_error:expr;
+            $($methods:tt)*
+        }
+    ) => {
+        $crate::__command_methods_parse! {
+            @parse
+            [actor
+                [$closed]
+                [$queue_attempts]
+                [$queue_timeout]
+                [$queue_timeout_error]
+                [$response_timeout]
+                [$response_timeout_error]
+                [fields $($([$field_visibility] [$field] [$field_type])*)?]
+            ]
+            [$visibility] [$client] []
             $($methods)*
         }
     };
@@ -123,101 +243,203 @@ macro_rules! command_client {
 
 #[doc(hidden)]
 #[macro_export]
-macro_rules! __command_client_parse {
+macro_rules! __command_methods_parse {
     (
         @parse
-        [$visibility:vis] [$client:ident] [$closed:expr]
+        [$backend:ident $($backend_configuration:tt)*]
+        [$visibility:vis] [$client:ident]
         [$($commands:tt)*]
     ) => {
         $crate::__command_client_generate! {
-            [$visibility] [$client] [$closed]
+            [$backend $($backend_configuration)*]
+            [$visibility] [$client]
             $($commands)*
         }
     };
 
     (
         @parse
-        [$visibility:vis] [$client:ident] [$closed:expr]
+        [$backend:ident $($backend_configuration:tt)*]
+        [$visibility:vis] [$client:ident]
         [$($commands:tt)*]
         #[oneshot]
         #[args($variant:ident)]
-        $method_visibility:vis fn $method:ident(
-            $($argument:ident : $argument_type:ty),* $(,)?
-        );
+        $method_visibility:vis async fn $method:ident($($arguments:tt)*);
         $($remaining:tt)*
     ) => {
-        $crate::__command_client_parse! {
-            @parse [$visibility] [$client] [$closed]
-            [
-                $($commands)*
-                [oneshot] [sync] [$variant] [$method_visibility] [$method]
-                [$($argument : $argument_type),*] []
-            ]
-            $($remaining)*
+        $crate::__command_arguments_parse! {
+            @parse
+            [$backend $($backend_configuration)*] [$visibility] [$client]
+            [$($commands)*]
+            [oneshot] [asynchronous] [$variant] [$method_visibility] [$method] []
+            [$($remaining)*] []
+            $($arguments)*
         }
     };
 
     (
         @parse
-        [$visibility:vis] [$client:ident] [$closed:expr]
+        [$backend:ident $($backend_configuration:tt)*]
+        [$visibility:vis] [$client:ident]
+        [$($commands:tt)*]
+        #[oneshot]
+        #[args($variant:ident)]
+        $method_visibility:vis fn $method:ident($($arguments:tt)*);
+        $($remaining:tt)*
+    ) => {
+        $crate::__command_arguments_parse! {
+            @parse
+            [$backend $($backend_configuration)*] [$visibility] [$client]
+            [$($commands)*]
+            [oneshot] [sync] [$variant] [$method_visibility] [$method] []
+            [$($remaining)*] []
+            $($arguments)*
+        }
+    };
+
+    (
+        @parse
+        [$backend:ident $($backend_configuration:tt)*]
+        [$visibility:vis] [$client:ident]
         [$($commands:tt)*]
         #[deferred]
         #[args($variant:ident)]
-        $method_visibility:vis fn $method:ident(
-            $($argument:ident : $argument_type:ty),* $(,)?
-        ) -> Result<$response:ty, $error:ty>;
+        $method_visibility:vis fn $method:ident($($arguments:tt)*)
+            -> Result<$response:ty, $error:ty>;
         $($remaining:tt)*
     ) => {
-        $crate::__command_client_parse! {
-            @parse [$visibility] [$client] [$closed]
-            [
-                $($commands)*
-                [deferred] [sync] [$variant] [$method_visibility] [$method]
-                [$($argument : $argument_type),*] [response: $response, $error]
-            ]
-            $($remaining)*
+        $crate::__command_arguments_parse! {
+            @parse
+            [$backend $($backend_configuration)*] [$visibility] [$client]
+            [$($commands)*]
+            [deferred] [sync] [$variant] [$method_visibility] [$method]
+            [response: $response, $error]
+            [$($remaining)*] []
+            $($arguments)*
         }
     };
 
     (
         @parse
-        [$visibility:vis] [$client:ident] [$closed:expr]
+        [$backend:ident $($backend_configuration:tt)*]
+        [$visibility:vis] [$client:ident]
         [$($commands:tt)*]
         #[args($variant:ident)]
-        $method_visibility:vis async fn $method:ident(
-            $($argument:ident : $argument_type:ty),* $(,)?
-        ) -> Result<$response:ty, $error:ty>;
+        $method_visibility:vis async fn $method:ident($($arguments:tt)*)
+            -> Result<$response:ty, $error:ty>;
         $($remaining:tt)*
     ) => {
-        $crate::__command_client_parse! {
-            @parse [$visibility] [$client] [$closed]
-            [
-                $($commands)*
-                [request] [asynchronous] [$variant] [$method_visibility] [$method]
-                [$($argument : $argument_type),*] [response: $response, $error]
-            ]
-            $($remaining)*
+        $crate::__command_arguments_parse! {
+            @parse
+            [$backend $($backend_configuration)*] [$visibility] [$client]
+            [$($commands)*]
+            [request] [asynchronous] [$variant] [$method_visibility] [$method]
+            [response: $response, $error]
+            [$($remaining)*] []
+            $($arguments)*
         }
     };
 
     (
         @parse
-        [$visibility:vis] [$client:ident] [$closed:expr]
+        [$backend:ident $($backend_configuration:tt)*]
+        [$visibility:vis] [$client:ident]
         [$($commands:tt)*]
         #[args($variant:ident)]
-        $method_visibility:vis fn $method:ident(
-            $($argument:ident : $argument_type:ty),* $(,)?
-        ) -> Result<$response:ty, $error:ty>;
+        $method_visibility:vis fn $method:ident($($arguments:tt)*)
+            -> Result<$response:ty, $error:ty>;
         $($remaining:tt)*
     ) => {
-        $crate::__command_client_parse! {
-            @parse [$visibility] [$client] [$closed]
+        $crate::__command_arguments_parse! {
+            @parse
+            [$backend $($backend_configuration)*] [$visibility] [$client]
+            [$($commands)*]
+            [request] [blocking] [$variant] [$method_visibility] [$method]
+            [response: $response, $error]
+            [$($remaining)*] []
+            $($arguments)*
+        }
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __command_arguments_parse {
+    (
+        @parse
+        [$backend:ident $($backend_configuration:tt)*]
+        [$visibility:vis] [$client:ident] [$($commands:tt)*]
+        [$mode:ident] [$waiting:ident] [$variant:ident]
+        [$method_visibility:vis] [$method:ident] [$($response:tt)*]
+        [$($remaining_methods:tt)*]
+        [$($arguments:tt)*]
+    ) => {
+        $crate::__command_methods_parse! {
+            @parse [$backend $($backend_configuration)*] [$visibility] [$client]
             [
                 $($commands)*
-                [request] [blocking] [$variant] [$method_visibility] [$method]
-                [$($argument : $argument_type),*] [response: $response, $error]
+                [$mode] [$waiting] [$variant] [$method_visibility] [$method]
+                [$($arguments)*] [$($response)*]
             ]
+            $($remaining_methods)*
+        }
+    };
+
+    (
+        @parse $backend:tt $visibility:tt $client:tt $commands:tt
+        $mode:tt $waiting:tt $variant:tt $method_visibility:tt $method:tt $response:tt
+        $remaining_methods:tt [$($arguments:tt)*]
+        $argument:ident : impl Into<$argument_type:ty>, $($remaining:tt)*
+    ) => {
+        $crate::__command_arguments_parse! {
+            @parse $backend $visibility $client $commands
+            $mode $waiting $variant $method_visibility $method $response
+            $remaining_methods
+            [$($arguments)* [into] [$argument] [$argument_type]]
             $($remaining)*
+        }
+    };
+
+    (
+        @parse $backend:tt $visibility:tt $client:tt $commands:tt
+        $mode:tt $waiting:tt $variant:tt $method_visibility:tt $method:tt $response:tt
+        $remaining_methods:tt [$($arguments:tt)*]
+        $argument:ident : impl Into<$argument_type:ty>
+    ) => {
+        $crate::__command_arguments_parse! {
+            @parse $backend $visibility $client $commands
+            $mode $waiting $variant $method_visibility $method $response
+            $remaining_methods
+            [$($arguments)* [into] [$argument] [$argument_type]]
+        }
+    };
+
+    (
+        @parse $backend:tt $visibility:tt $client:tt $commands:tt
+        $mode:tt $waiting:tt $variant:tt $method_visibility:tt $method:tt $response:tt
+        $remaining_methods:tt [$($arguments:tt)*]
+        $argument:ident : $argument_type:ty, $($remaining:tt)*
+    ) => {
+        $crate::__command_arguments_parse! {
+            @parse $backend $visibility $client $commands
+            $mode $waiting $variant $method_visibility $method $response
+            $remaining_methods
+            [$($arguments)* [plain] [$argument] [$argument_type]]
+            $($remaining)*
+        }
+    };
+
+    (
+        @parse $backend:tt $visibility:tt $client:tt $commands:tt
+        $mode:tt $waiting:tt $variant:tt $method_visibility:tt $method:tt $response:tt
+        $remaining_methods:tt [$($arguments:tt)*]
+        $argument:ident : $argument_type:ty
+    ) => {
+        $crate::__command_arguments_parse! {
+            @parse $backend $visibility $client $commands
+            $mode $waiting $variant $method_visibility $method $response
+            $remaining_methods
+            [$($arguments)* [plain] [$argument] [$argument_type]]
         }
     };
 }
@@ -226,11 +448,143 @@ macro_rules! __command_client_parse {
 #[macro_export]
 macro_rules! __command_client_generate {
     (
-        [$visibility:vis] [$client:ident] [$closed:expr]
+        [immediate [$closed:expr]]
+        [$visibility:vis] [$client:ident]
         $(
             [$mode:ident] [$waiting:ident] [$variant:ident]
             [$method_visibility:vis] [$method:ident]
-            [$($argument:ident : $argument_type:ty),*]
+            [$([$argument_mode:ident] [$argument:ident] [$argument_type:ty])*]
+            [$($response_field:ident : $response:ty, $error:ty)?]
+        )*
+    ) => {
+        $crate::__command_protocol_generate! {
+            [$visibility] [$client]
+            $(
+                [$mode] [$waiting] [$variant]
+                [$method_visibility] [$method]
+                [$([$argument_mode] [$argument] [$argument_type])*]
+                [$($response_field : $response, $error)?]
+            )*
+        }
+        $crate::__paste! {
+            #[derive(Clone, Debug)]
+            #[doc = concat!("Typed client for [`", stringify!([<$client Command>]), "`].")]
+            $visibility struct $client {
+                sender: $crate::CommandSink<[<$client Command>]>,
+            }
+
+            impl $client {
+                pub(crate) fn new(
+                    sender: impl Into<$crate::CommandSink<[<$client Command>]>>,
+                ) -> Self {
+                    Self { sender: sender.into() }
+                }
+
+                $(
+                    $crate::__command_client_method! {
+                        [$mode] [$waiting] [[<$client Command>]] [$closed]
+                        [$method_visibility] [$method] [$variant]
+                        [$([$argument_mode] [$argument] [$argument_type])*]
+                        [$($response, $error)?]
+                    }
+                )*
+            }
+        }
+    };
+
+    (
+        [actor
+            [$closed:expr]
+            [$queue_attempts:expr]
+            [$queue_timeout:expr]
+            [$queue_timeout_error:expr]
+            [$response_timeout:expr]
+            [$response_timeout_error:expr]
+            [fields $([$field_visibility:vis] [$field:ident] [$field_type:ty])*]
+        ]
+        [$visibility:vis] [$client:ident]
+        $(
+            [$mode:ident] [$waiting:ident] [$variant:ident]
+            [$method_visibility:vis] [$method:ident]
+            [$([$argument_mode:ident] [$argument:ident] [$argument_type:ty])*]
+            [$($response_field:ident : $response:ty, $error:ty)?]
+        )*
+    ) => {
+        $crate::__command_protocol_generate! {
+            [$visibility] [$client]
+            $(
+                [$mode] [$waiting] [$variant]
+                [$method_visibility] [$method]
+                [$([$argument_mode] [$argument] [$argument_type])*]
+                [$($response_field : $response, $error)?]
+            )*
+        }
+        $crate::__paste! {
+            #[derive(Clone, Debug)]
+            #[doc = concat!("Typed bounded actor client for [`", stringify!([<$client Command>]), "`].")]
+            $visibility struct $client {
+                sender: $crate::ActorCommandSink<[<$client Command>]>,
+                $($field_visibility $field: $field_type,)*
+            }
+
+            impl $client {
+                pub(crate) fn new(
+                    sender: $crate::__tokio::sync::mpsc::Sender<[<$client Command>]>,
+                    $($field: $field_type,)*
+                ) -> Self {
+                    Self {
+                        sender: $crate::ActorCommandSink::bounded(
+                            sender,
+                            $queue_attempts,
+                            $queue_timeout,
+                        ),
+                        $($field,)*
+                    }
+                }
+
+                pub(crate) fn new_mapped<Message>(
+                    sender: $crate::__tokio::sync::mpsc::Sender<Message>,
+                    map: impl Fn([<$client Command>]) -> Message + Send + Sync + 'static,
+                    $($field: $field_type,)*
+                ) -> Self
+                where
+                    Message: Send + 'static,
+                {
+                    Self {
+                        sender: $crate::ActorCommandSink::bounded_map(
+                            sender,
+                            map,
+                            $queue_attempts,
+                            $queue_timeout,
+                        ),
+                        $($field,)*
+                    }
+                }
+
+                $(
+                    $crate::__actor_client_method! {
+                        [$mode] [$waiting] [[<$client Command>]]
+                        [$closed] [$queue_timeout_error]
+                        [$response_timeout] [$response_timeout_error]
+                        [$method_visibility] [$method] [$variant]
+                        [$([$argument_mode] [$argument] [$argument_type])*]
+                        [$($response, $error)?]
+                    }
+                )*
+            }
+        }
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __command_protocol_generate {
+    (
+        [$visibility:vis] [$client:ident]
+        $(
+            [$mode:ident] [$waiting:ident] [$variant:ident]
+            [$method_visibility:vis] [$method:ident]
+            [$([$argument_mode:ident] [$argument:ident] [$argument_type:ty])*]
             [$($response_field:ident : $response:ty, $error:ty)?]
         )*
     ) => {
@@ -286,29 +640,6 @@ macro_rules! __command_client_generate {
                     }
                 }
             }
-
-            #[derive(Clone, Debug)]
-            #[doc = concat!("Typed client for [`", stringify!([<$client Command>]), "`].")]
-            $visibility struct $client {
-                sender: $crate::CommandSink<[<$client Command>]>,
-            }
-
-            impl $client {
-                pub(crate) fn new(
-                    sender: impl Into<$crate::CommandSink<[<$client Command>]>>,
-                ) -> Self {
-                    Self { sender: sender.into() }
-                }
-
-                $(
-                    $crate::__command_client_method! {
-                        [$mode] [$waiting] [[<$client Command>]] [$closed]
-                        [$method_visibility] [$method] [$variant]
-                        [$($argument : $argument_type),*]
-                        [$($response, $error)?]
-                    }
-                )*
-            }
         }
     };
 }
@@ -319,9 +650,13 @@ macro_rules! __command_client_method {
     (
         [oneshot] [sync] [$command:ident] [$closed:expr]
         [$method_visibility:vis] [$method:ident] [$variant:ident]
-        [$($argument:ident : $argument_type:ty),*] []
+        [$([$argument_mode:ident] [$argument:ident] [$argument_type:ty])*] []
     ) => {
-        $method_visibility fn $method(&self, $($argument: $argument_type),*) {
+        $method_visibility fn $method(
+            &self,
+            $($argument: $crate::__command_argument_type!([$argument_mode] [$argument_type])),*
+        ) {
+            $($crate::__command_argument_convert!([$argument_mode] [$argument] [$argument_type]);)*
             let _ = self.sender.send($command::$variant { $($argument,)* });
         }
     };
@@ -329,15 +664,17 @@ macro_rules! __command_client_method {
     (
         [deferred] [sync] [$command:ident] [$closed:expr]
         [$method_visibility:vis] [$method:ident] [$variant:ident]
-        [$($argument:ident : $argument_type:ty),*] [$response:ty, $error:ty]
+        [$([$argument_mode:ident] [$argument:ident] [$argument_type:ty])*]
+        [$response:ty, $error:ty]
     ) => {
         $method_visibility fn $method(
             &self,
-            $($argument: $argument_type),*
+            $($argument: $crate::__command_argument_type!([$argument_mode] [$argument_type])),*
         ) -> Result<
             $crate::__tokio::sync::oneshot::Receiver<Result<$response, $error>>,
             $error,
         > {
+            $($crate::__command_argument_convert!([$argument_mode] [$argument] [$argument_type]);)*
             let (response, receiver) = $crate::__tokio::sync::oneshot::channel();
             self.sender
                 .send($command::$variant {
@@ -352,12 +689,14 @@ macro_rules! __command_client_method {
     (
         [request] [asynchronous] [$command:ident] [$closed:expr]
         [$method_visibility:vis] [$method:ident] [$variant:ident]
-        [$($argument:ident : $argument_type:ty),*] [$response:ty, $error:ty]
+        [$([$argument_mode:ident] [$argument:ident] [$argument_type:ty])*]
+        [$response:ty, $error:ty]
     ) => {
         $method_visibility fn $method(
             &self,
-            $($argument: $argument_type),*
+            $($argument: $crate::__command_argument_type!([$argument_mode] [$argument_type])),*
         ) -> $crate::CommandFuture<Result<$response, $error>> {
+            $($crate::__command_argument_convert!([$argument_mode] [$argument] [$argument_type]);)*
             let sender = self.sender.clone();
             Box::pin(async move {
                 let (response, receiver) = $crate::__tokio::sync::oneshot::channel();
@@ -375,12 +714,14 @@ macro_rules! __command_client_method {
     (
         [request] [blocking] [$command:ident] [$closed:expr]
         [$method_visibility:vis] [$method:ident] [$variant:ident]
-        [$($argument:ident : $argument_type:ty),*] [$response:ty, $error:ty]
+        [$([$argument_mode:ident] [$argument:ident] [$argument_type:ty])*]
+        [$response:ty, $error:ty]
     ) => {
         $method_visibility fn $method(
             &self,
-            $($argument: $argument_type),*
+            $($argument: $crate::__command_argument_type!([$argument_mode] [$argument_type])),*
         ) -> Result<$response, $error> {
+            $($crate::__command_argument_convert!([$argument_mode] [$argument] [$argument_type]);)*
             let (response, receiver) = std::sync::mpsc::sync_channel(1);
             self.sender
                 .send($command::$variant {
@@ -390,5 +731,94 @@ macro_rules! __command_client_method {
                 .map_err(|_| $closed)?;
             receiver.recv().map_err(|_| $closed)?
         }
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __actor_client_method {
+    (
+        [request] [asynchronous] [$command:ident]
+        [$closed:expr] [$queue_timeout_error:expr]
+        [$response_timeout:expr] [$response_timeout_error:expr]
+        [$method_visibility:vis] [$method:ident] [$variant:ident]
+        [$([$argument_mode:ident] [$argument:ident] [$argument_type:ty])*]
+        [$response:ty, $error:ty]
+    ) => {
+        $method_visibility fn $method(
+            &self,
+            $($argument: $crate::__command_argument_type!([$argument_mode] [$argument_type])),*
+        ) -> $crate::CommandFuture<Result<$response, $error>> {
+            $($crate::__command_argument_convert!([$argument_mode] [$argument] [$argument_type]);)*
+            let sender = self.sender.clone();
+            Box::pin(async move {
+                let (response, receiver) = $crate::__tokio::sync::oneshot::channel();
+                match sender
+                    .send($command::$variant {
+                        $($argument,)*
+                        response: response.into(),
+                    })
+                    .await
+                {
+                    Ok(()) => {}
+                    Err($crate::ActorCommandUnavailable::Closed) => return Err($closed),
+                    Err($crate::ActorCommandUnavailable::Timeout) => {
+                        return Err($queue_timeout_error);
+                    }
+                }
+                $crate::__tokio::time::timeout($response_timeout, receiver)
+                    .await
+                    .map_err(|_| $response_timeout_error)?
+                    .map_err(|_| $closed)?
+            })
+        }
+    };
+
+    (
+        [oneshot] [asynchronous] [$command:ident]
+        [$closed:expr] [$queue_timeout_error:expr]
+        [$response_timeout:expr] [$response_timeout_error:expr]
+        [$method_visibility:vis] [$method:ident] [$variant:ident]
+        [$([$argument_mode:ident] [$argument:ident] [$argument_type:ty])*] []
+    ) => {
+        $method_visibility fn $method(
+            &self,
+            $($argument: $crate::__command_argument_type!([$argument_mode] [$argument_type])),*
+        ) -> $crate::CommandFuture<()> {
+            $($crate::__command_argument_convert!([$argument_mode] [$argument] [$argument_type]);)*
+            let sender = self.sender.clone();
+            Box::pin(async move {
+                let _ = sender
+                    .send($command::$variant { $($argument,)* })
+                    .await;
+            })
+        }
+    };
+
+    (
+        [$mode:ident] [$waiting:ident] [$command:ident]
+        [$closed:expr] [$queue_timeout_error:expr]
+        [$response_timeout:expr] [$response_timeout_error:expr]
+        [$method_visibility:vis] [$method:ident] [$variant:ident]
+        [$([$argument_mode:ident] [$argument:ident] [$argument_type:ty])*]
+        [$($response:ty, $error:ty)?]
+    ) => {
+        compile_error!("actor_client! methods must be async");
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __command_argument_type {
+    ([plain] [$argument_type:ty]) => { $argument_type };
+    ([into] [$argument_type:ty]) => { impl Into<$argument_type> };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __command_argument_convert {
+    ([plain] [$argument:ident] [$argument_type:ty]) => {};
+    ([into] [$argument:ident] [$argument_type:ty]) => {
+        let $argument: $argument_type = $argument.into();
     };
 }
