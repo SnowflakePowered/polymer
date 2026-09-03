@@ -27,6 +27,7 @@ type Configuration = HostConfiguration<{
             core: {
                 gfx_backend: string,
                 gci_folder_a_path: string,
+                enable_save_states: boolean,
                 slot_a: string,
                 slot_b: string,
                 wiimote_continuous_scanning: boolean,
@@ -479,6 +480,9 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     options.analytics.permission_asked = true;
     options.core.gfx_backend = "D3D";
     options.core.gci_folder_a_path = args.filesystem.path("/MemoryCard/USA");
+    // Dolphin disables save states by default in current development builds.
+    // Snowglass uses them for both explicit state slots and quick resume.
+    options.core.enable_save_states = true;
     options.core.slot_a = "MemoryCardFolder";
     options.core.slot_b = "None";
 
