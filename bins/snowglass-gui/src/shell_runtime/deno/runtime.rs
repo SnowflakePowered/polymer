@@ -191,7 +191,7 @@ impl Runtime {
                             emulator_commands,
                             input_commands,
                             webrtc_commands,
-                            notifications,
+ n                            notifications,
                         )
                     });
                 let mut worker = snowglass_deno::Runtime::new(snowglass_deno::RuntimeOptions {

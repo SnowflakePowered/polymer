@@ -130,7 +130,7 @@ impl InputBackend for BluetoothBackend {
         let manager = self.manager.clone();
         let report = report.to_vec();
         tokio::spawn(async move {
-            let _ = manager.send_raw(session, &report).await;
+            let _ = manager.send_raw(session, report.as_slice()).await;
         });
         Ok(())
     }

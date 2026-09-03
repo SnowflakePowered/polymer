@@ -11019,6 +11019,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "snowglass-command",
  "tempfile",
  "tokio",
  "tracing",
