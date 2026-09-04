@@ -1,0 +1,53 @@
+[package]
+name = "polymer-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# pin to force prebuild nasm feature
+aws-lc-rs = { version = "=1.16.3", features = ["prebuilt-nasm"] }
+axum = "0.8.8"
+base64.workspace = true
+blake3 = { workspace = true, features = ["traits-preview"] }
+crossfire.workspace = true
+consolespec.workspace = true
+dashmap.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
+object_store.workspace = true
+parking_lot.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+polymer-config.workspace = true
+polymer-command.workspace = true
+polymer-consolestorage = { path = "../../filesystem/polymer-consolestorage" }
+polymer-deno = { path = "../polymer-deno" }
+polymer-hook.workspace = true
+polymer-input.workspace = true
+polymer-input-layout.workspace = true
+polymer-input-ipc.workspace = true
+polymer-controllers.workspace = true
+polymer-input-bluetooth = { path = "../../input/polymer-input-bluetooth" }
+polymer-library.workspace = true
+polymer-scraping.workspace = true
+polymer-ipc.workspace = true
+polymer-platform-windows.workspace = true
+polymer-pluginhost = { path = "../polymer-pluginhost" }
+polymer-protocol.workspace = true
+polymer-statistics.workspace = true
+polymer-vfs.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio = { version = "1.53.0", features = ["macros", "net", "rt", "sync", "time"] }
+tracing.workspace = true
+url = "2"
+uuid = "1.24.1"
+watchable.workspace = true
+winapi = { version = "0.3.9", features = ["errhandlingapi"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+reqwest = { version = "0.13.1", default-features = false }

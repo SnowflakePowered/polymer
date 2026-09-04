@@ -222,7 +222,7 @@ def check_group(machine: MachineSpec, group: str, layouts, ports: int,
 
     A layout the group does not accept is an error: the plugin is offering a
     device that cannot be plugged in there. Exceeding the declared port count
-    is also an error because Snowglass validates plugin ports against that
+    is also an error because Polymer validates plugin ports against that
     topology. Multitap slots must therefore be represented by the machine
     specification before a plugin can expose them.
     """

@@ -1,0 +1,19 @@
+[package]
+name = "polymer-controllers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+consolespec.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+polymer-config.workspace = true
+polymer-input.workspace = true
+polymer-input-bluetooth = { path = "../../input/polymer-input-bluetooth" }
+polymer-input-layout.workspace = true
+polymer-library.workspace = true
+
+[lints]
+workspace = true

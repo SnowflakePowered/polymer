@@ -1,0 +1,17 @@
+[package]
+name = "polymer-hook-input"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bincode.workspace = true
+consolespec.workspace = true
+parking_lot.workspace = true
+polymer-config.workspace = true
+polymer-input.workspace = true
+polymer-input-layout.workspace = true
+polymer-ipc.workspace = true
+
+[lints]
+workspace = true

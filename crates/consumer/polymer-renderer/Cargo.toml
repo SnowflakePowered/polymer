@@ -1,0 +1,38 @@
+[package]
+name = "polymer-renderer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ash.workspace = true
+ash-window.workspace = true
+clap = { version = "4.6.1", features = ["derive"] }
+crossfire.workspace = true
+dashmap.workspace = true
+openh264 = "0.9.7"
+parking_lot.workspace = true
+raw-window-handle.workspace = true
+regex.workspace = true
+serde_json.workspace = true
+polymer-consumer-d3d12 = { path = "../polymer-consumer-d3d12" }
+polymer-consumer-vulkan = { path = "../polymer-consumer-vulkan" }
+polymer-input.workspace = true
+polymer-ipc.workspace = true
+polymer-protocol.workspace = true
+polymer-runtime.workspace = true
+polymer-statistics.workspace = true
+tokio = { version = "1.32", features = ["rt-multi-thread", "sync", "time"] }
+tracing.workspace = true
+webrtc = "0.14.0"
+webrtc-ice = "0.14.0"
+windows = { workspace = true, features = [
+    "Foundation",
+    "UI_Composition",
+    "Win32_System_WinRT_Composition",
+] }
+windows-sys.workspace = true
+winit = "0.30.13"
+
+[lints]
+workspace = true

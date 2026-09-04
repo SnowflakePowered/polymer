@@ -1,0 +1,13 @@
+[package]
+name = "polymer-command"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+paste = "1.0.15"
+polymer-command-macros = { path = "../polymer-command-macros" }
+tokio = { version = "1.53.0", features = ["rt", "sync", "time"] }
+
+[lints]
+workspace = true

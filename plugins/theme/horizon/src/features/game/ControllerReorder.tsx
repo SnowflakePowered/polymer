@@ -1,6 +1,6 @@
 import { Dialog } from "@ark-ui/solid";
 import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js";
-import type { ConnectionSession, ManagedControllerDevice } from "../../../../../../js/snowglass";
+import type { ConnectionSession, ManagedControllerDevice } from "../../../../../../js/polymer";
 import buttonA from "../../assets/switch/button-a.svg";
 import buttonB from "../../assets/switch/button-b.svg";
 import buttonL from "../../assets/switch/button-l.svg";
@@ -32,7 +32,7 @@ export function ControllerReorder(props: { onClose?: () => void }) {
 
   const players = createMemo(() => {
     revision();
-    return session()?.players ?? window.Snowglass.controllers.players;
+    return session()?.players ?? window.Polymer.controllers.players;
   });
   const candidates = createMemo(() => {
     revision();
@@ -43,7 +43,7 @@ export function ControllerReorder(props: { onClose?: () => void }) {
   });
   const availability = () => {
     revision();
-    return window.Snowglass.controllers.availability;
+    return window.Polymer.controllers.availability;
   };
   const discoveryActive = () => {
     revision();
@@ -93,11 +93,11 @@ export function ControllerReorder(props: { onClose?: () => void }) {
 
   onMount(() => {
     const changed = () => setRevision((value) => value + 1);
-    window.Snowglass.controllers.addEventListener("statechange", changed);
+    window.Polymer.controllers.addEventListener("statechange", changed);
     void (async () => {
       try {
-        const active = window.Snowglass.controllers.activeConnectionSession
-          ?? await window.Snowglass.controllers.startConnectionSession();
+        const active = window.Polymer.controllers.activeConnectionSession
+          ?? await window.Polymer.controllers.startConnectionSession();
         if (disposed) {
           if (active.active) await active.commit();
           return;
@@ -112,7 +112,7 @@ export function ControllerReorder(props: { onClose?: () => void }) {
     })();
     onCleanup(() => {
       disposed = true;
-      window.Snowglass.controllers.removeEventListener("statechange", changed);
+      window.Polymer.controllers.removeEventListener("statechange", changed);
       session()?.removeEventListener("change", changed);
       if (!leaving && session()?.active) void session()!.commit();
     });

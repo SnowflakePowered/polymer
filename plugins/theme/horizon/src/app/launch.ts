@@ -6,7 +6,7 @@ import type {
   EmulatorConfiguration,
   Package,
   PackageConfiguration,
-} from "../../../../../js/snowglass";
+} from "../../../../../js/polymer";
 
 const WII = "NINTENDO_WII";
 const WII_U = "NINTENDO_WIIU";
@@ -49,11 +49,11 @@ async function defaultVolume(kind: CreatableConsoleStorageKind, platform: string
   const key = `${kind}:${platform}`;
   let pending = volumeCache.get(key);
   if (!pending) {
-    pending = window.Snowglass.consolestorage.Storage.list({ kind }).then((items) =>
+    pending = window.Polymer.consolestorage.Storage.list({ kind }).then((items) =>
       items
         .filter((item) => item.platform === platform && item.label === "Default")
         .sort((left, right) => right.created.getTime() - left.created.getTime())[0]
-        ?? window.Snowglass.consolestorage.Storage.create(kind, platform, { label: "Default" }),
+        ?? window.Polymer.consolestorage.Storage.create(kind, platform, { label: "Default" }),
     );
     volumeCache.set(key, pending);
     pending.catch(() => volumeCache.delete(key));
@@ -62,8 +62,8 @@ async function defaultVolume(kind: CreatableConsoleStorageKind, platform: string
 }
 
 export async function resolveGame(path: string, emulator?: string, signal?: AbortSignal) {
-  const packageValue = await window.Snowglass.scraping.Package.fromPath(path, { signal });
-  const draft = applyFrontendDefaults(await window.Snowglass.configuration.describe(packageValue, { emulator }));
+  const packageValue = await window.Polymer.scraping.Package.fromPath(path, { signal });
+  const draft = applyFrontendDefaults(await window.Polymer.configuration.describe(packageValue, { emulator }));
   return { packageValue, draft };
 }
 
@@ -105,5 +105,5 @@ export async function createSelection(game: PackageConfiguration): Promise<Confi
 }
 
 export async function onLaunch(packageValue: Package, game: PackageConfiguration) {
-  return window.Snowglass.configuration.onLaunch(packageValue, await createSelection(game));
+  return window.Polymer.configuration.onLaunch(packageValue, await createSelection(game));
 }

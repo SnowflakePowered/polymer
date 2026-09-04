@@ -2,6 +2,6 @@
 <project version="4">
   <component name="VcsDirectoryMappings">
     <mapping directory="" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/crates/input/snowglass-input-sdl3/SDL_GameControllerDB" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/crates/input/polymer-input-sdl3/SDL_GameControllerDB" vcs="Git" />
   </component>
 </project>

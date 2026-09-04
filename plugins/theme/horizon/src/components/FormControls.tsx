@@ -1,6 +1,6 @@
 import { Field, NumberInput, Select, Slider, Switch, createListCollection } from "@ark-ui/solid";
 import { For, Show, createMemo } from "solid-js";
-import type { ConfigurationLayoutOption } from "../../../../../js/snowglass";
+import type { ConfigurationLayoutOption } from "../../../../../js/polymer";
 import { OverlayPortal } from "./OverlayPortal";
 import "./FormControls.css";
 

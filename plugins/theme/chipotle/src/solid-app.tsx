@@ -25,12 +25,12 @@ import type {
   LaunchRequest,
   Package,
   PackageConfiguration,
-} from "../../../../js/snowglass";
+} from "../../../../js/polymer";
 import { InputRemapping } from "./input-remapping";
 
 type RecentGame = { path: string; name: string; platform: string; emulator: string; playedAt: number };
 type AudioState = { available: boolean; volume: number; muted: boolean };
-const RECENT_KEY = "snowglass.recentGames.v2";
+const RECENT_KEY = "polymer.recentGames.v2";
 const RECENT_LIMIT = 8;
 const WII_PLATFORM = "NINTENDO_WII";
 const WIIU_PLATFORM = "NINTENDO_WIIU";
@@ -54,7 +54,7 @@ type StartupRequest =
   | { kind: "launch"; options: LaunchRequest };
 let startupHandler: ((request: StartupRequest) => void) | null = null;
 const queuedStartup: StartupRequest[] = [];
-window.Snowglass.scraping.addEventListener("request", (event: Event) => {
+window.Polymer.scraping.addEventListener("request", (event: Event) => {
   const request = (event as CustomEvent<StartupRequest>).detail;
   if (startupHandler) startupHandler(request); else queuedStartup.push(request);
 });
@@ -94,9 +94,9 @@ function applyFrontendDefaults(game: PackageConfiguration) {
 
 function ensureDefaultWiiUNand() {
   if (!defaultWiiUNand) {
-    const pending = window.Snowglass.consolestorage.Storage.list({ kind: "nand" }).then((nands) =>
+    const pending = window.Polymer.consolestorage.Storage.list({ kind: "nand" }).then((nands) =>
       nands.find((nand) => nand.platform === WIIU_PLATFORM)
-        ?? window.Snowglass.consolestorage.Storage.create("nand", WIIU_PLATFORM, { label: "Default" })
+        ?? window.Polymer.consolestorage.Storage.create("nand", WIIU_PLATFORM, { label: "Default" })
     );
     defaultWiiUNand = pending.catch((error) => {
       defaultWiiUNand = null;
@@ -108,9 +108,9 @@ function ensureDefaultWiiUNand() {
 
 function ensureDefaultWiiUSave() {
   if (!defaultWiiUSave) {
-    const pending = window.Snowglass.consolestorage.Storage.list({ kind: "saveRepo" }).then((saves) =>
+    const pending = window.Polymer.consolestorage.Storage.list({ kind: "saveRepo" }).then((saves) =>
       saves.find((save) => save.platform === WIIU_PLATFORM)
-        ?? window.Snowglass.consolestorage.Storage.create("saveRepo", WIIU_PLATFORM, { label: "Default" })
+        ?? window.Polymer.consolestorage.Storage.create("saveRepo", WIIU_PLATFORM, { label: "Default" })
     );
     defaultWiiUSave = pending.catch((error) => {
       defaultWiiUSave = null;
@@ -122,9 +122,9 @@ function ensureDefaultWiiUSave() {
 
 function ensureDefaultWiiNand() {
   if (!defaultWiiNand) {
-    const pending = window.Snowglass.consolestorage.Storage.list({ kind: "nand" }).then((nands) =>
+    const pending = window.Polymer.consolestorage.Storage.list({ kind: "nand" }).then((nands) =>
       nands.find((nand) => nand.platform === WII_PLATFORM)
-        ?? window.Snowglass.consolestorage.Storage.create("nand", WII_PLATFORM, { label: "Default" })
+        ?? window.Polymer.consolestorage.Storage.create("nand", WII_PLATFORM, { label: "Default" })
     );
     defaultWiiNand = pending.catch((error) => {
       defaultWiiNand = null;
@@ -136,9 +136,9 @@ function ensureDefaultWiiNand() {
 
 function ensureDefaultWiiSave() {
   if (!defaultWiiSave) {
-    const pending = window.Snowglass.consolestorage.Storage.list({ kind: "saveRepo" }).then((saves) =>
+    const pending = window.Polymer.consolestorage.Storage.list({ kind: "saveRepo" }).then((saves) =>
       saves.find((save) => save.platform === WII_PLATFORM)
-        ?? window.Snowglass.consolestorage.Storage.create("saveRepo", WII_PLATFORM, { label: "Default" })
+        ?? window.Polymer.consolestorage.Storage.create("saveRepo", WII_PLATFORM, { label: "Default" })
     );
     defaultWiiSave = pending.catch((error) => {
       defaultWiiSave = null;
@@ -150,11 +150,11 @@ function ensureDefaultWiiSave() {
 
 function ensureDefaultPs1Card() {
   if (!defaultPs1Card) {
-    const pending = window.Snowglass.consolestorage.Storage.list({ kind: "memoryCard" }).then((volumes) =>
+    const pending = window.Polymer.consolestorage.Storage.list({ kind: "memoryCard" }).then((volumes) =>
       volumes
         .filter((volume) => volume.platform === PSX_PLATFORM && volume.label === "Default")
         .sort((left, right) => right.created.getTime() - left.created.getTime())[0]
-        ?? window.Snowglass.consolestorage.Storage.create("memoryCard", PSX_PLATFORM, { label: "Default" })
+        ?? window.Polymer.consolestorage.Storage.create("memoryCard", PSX_PLATFORM, { label: "Default" })
     );
     defaultPs1Card = pending.catch((error) => {
       defaultPs1Card = null;
@@ -166,11 +166,11 @@ function ensureDefaultPs1Card() {
 
 function ensureDefaultGameCubeCard() {
   if (!defaultGameCubeCard) {
-    const pending = window.Snowglass.consolestorage.Storage.list({ kind: "memoryCard" }).then((volumes) =>
+    const pending = window.Polymer.consolestorage.Storage.list({ kind: "memoryCard" }).then((volumes) =>
       volumes
         .filter((volume) => volume.platform === GAMECUBE_PLATFORM && volume.label === "Default")
         .sort((left, right) => right.created.getTime() - left.created.getTime())[0]
-        ?? window.Snowglass.consolestorage.Storage.create("memoryCard", GAMECUBE_PLATFORM, { label: "Default" })
+        ?? window.Polymer.consolestorage.Storage.create("memoryCard", GAMECUBE_PLATFORM, { label: "Default" })
     );
     defaultGameCubeCard = pending.catch((error) => {
       defaultGameCubeCard = null;
@@ -182,11 +182,11 @@ function ensureDefaultGameCubeCard() {
 
 function ensureDefaultDreamcastCard() {
   if (!defaultDreamcastCard) {
-    const pending = window.Snowglass.consolestorage.Storage.list({ kind: "memoryCard" }).then((volumes) =>
+    const pending = window.Polymer.consolestorage.Storage.list({ kind: "memoryCard" }).then((volumes) =>
       volumes
         .filter((volume) => volume.platform === DREAMCAST_PLATFORM && volume.label === "Default")
         .sort((left, right) => right.created.getTime() - left.created.getTime())[0]
-        ?? window.Snowglass.consolestorage.Storage.create("memoryCard", DREAMCAST_PLATFORM, { label: "Default" })
+        ?? window.Polymer.consolestorage.Storage.create("memoryCard", DREAMCAST_PLATFORM, { label: "Default" })
     );
     defaultDreamcastCard = pending.catch((error) => {
       defaultDreamcastCard = null;
@@ -198,11 +198,11 @@ function ensureDefaultDreamcastCard() {
 
 function ensureDefaultPs2Card() {
   if (!defaultPs2Card) {
-    const pending = window.Snowglass.consolestorage.Storage.list({ kind: "memoryCard" }).then((volumes) =>
+    const pending = window.Polymer.consolestorage.Storage.list({ kind: "memoryCard" }).then((volumes) =>
       volumes
         .filter((volume) => volume.platform === PS2_PLATFORM && volume.label === "Default")
         .sort((left, right) => right.created.getTime() - left.created.getTime())[0]
-        ?? window.Snowglass.consolestorage.Storage.create("memoryCard", PS2_PLATFORM, { label: "Default" })
+        ?? window.Polymer.consolestorage.Storage.create("memoryCard", PS2_PLATFORM, { label: "Default" })
     );
     defaultPs2Card = pending.catch((error) => {
       defaultPs2Card = null;
@@ -258,7 +258,7 @@ function ShellProvider(props: ParentProps) {
     draft: null,
     request: null,
     surfaces: [],
-    launch: window.Snowglass.emulator.activeLaunch,
+    launch: window.Polymer.emulator.activeLaunch,
     audio: DEFAULT_AUDIO,
     error: "",
     recent: [],
@@ -284,7 +284,7 @@ function ShellProvider(props: ParentProps) {
   };
 
   const open = (path: string, emulator?: string) => {
-    if (window.Snowglass.emulator.activeLaunch) {
+    if (window.Polymer.emulator.activeLaunch) {
       fail(new DOMException("Close the active game before opening another one", "InvalidStateError"));
       return;
     }
@@ -296,8 +296,8 @@ function ShellProvider(props: ParentProps) {
     navigateMemory("/", true);
     void (async () => {
       try {
-        const packageValue = await window.Snowglass.scraping.Package.fromPath(path, { signal });
-        const description = await window.Snowglass.configuration.describe(packageValue, { emulator });
+        const packageValue = await window.Polymer.scraping.Package.fromPath(path, { signal });
+        const description = await window.Polymer.configuration.describe(packageValue, { emulator });
         if (signal.aborted) return;
         setModel("package", packageValue);
         setModel("draft", applyFrontendDefaults(cloneGame(description)));
@@ -368,7 +368,7 @@ function ShellProvider(props: ParentProps) {
         } else if (game.platform === PS2_PLATFORM) {
           selection.storage = { mem1: (await ensureDefaultPs2Card()).id };
         }
-        const request = await window.Snowglass.configuration.onLaunch(packageValue, selection);
+        const request = await window.Polymer.configuration.onLaunch(packageValue, selection);
         setModel("request", request);
         setModel("surfaces", structuredClone(request.surfaces));
         navigateMemory("/game/launching", true);
@@ -429,14 +429,14 @@ function OptionControl(props: { option: ConfigurationLayoutOption; value: boolea
 
 function LibraryPage() {
   const shell = useShell();
-  const [dropActive, setDropActive] = createSignal(window.Snowglass.scraping.dropActive);
+  const [dropActive, setDropActive] = createSignal(window.Polymer.scraping.dropActive);
   onMount(() => {
     const changed = (event: Event) => setDropActive((event as CustomEvent<boolean>).detail);
-    window.Snowglass.scraping.addEventListener("dropactivechange", changed);
-    onCleanup(() => window.Snowglass.scraping.removeEventListener("dropactivechange", changed));
+    window.Polymer.scraping.addEventListener("dropactivechange", changed);
+    onCleanup(() => window.Polymer.scraping.removeEventListener("dropactivechange", changed));
   });
   return <main class="min-h-screen bg-snow-950 p-10 text-snow-100">
-    <header class="mb-8"><p class="text-ice-300"><span class="symbol-glyph">◇</span> Snowglass</p><h1 class="text-4xl font-semibold">Your games, one drop away.</h1></header>
+    <header class="mb-8"><p class="text-ice-300"><span class="symbol-glyph">◇</span> Polymer</p><h1 class="text-4xl font-semibold">Your games, one drop away.</h1></header>
     <section class="rounded-2xl border-2 border-dashed border-snow-300 p-16 text-center data-[active=true]:border-ice-500 data-[active=true]:bg-snow-900" data-active={dropActive()}>
       <p class="symbol-glyph text-4xl">＋</p><h2 class="mt-3 text-2xl">{shell.model.launcher.kind === "detecting" ? `Detecting ${shell.model.launcher.name}` : dropActive() ? "Release to add" : "Drop a game or game folder here"}</h2>
     </section>
@@ -466,7 +466,7 @@ function ConfigurePage() {
     updateEmulator((target) => {
       target.userConfiguration = values;
     });
-    void window.Snowglass.configuration.configure(packageValue, current.id, values).then((stable) => {
+    void window.Polymer.configuration.configure(packageValue, current.id, values).then((stable) => {
       if (!stable) return;
       updateEmulatorById(current.id, (target) => {
         target.configuration = stable.configuration;
@@ -641,7 +641,7 @@ function GameLayout(props: ParentProps) {
         const launch = () => {
           if (sequence !== launchSequence || shell.model.request !== request) return;
           try {
-            const instance = window.Snowglass.emulator.launch({ ...unwrap(request), surfaces } as LaunchOptions);
+            const instance = window.Polymer.emulator.launch({ ...unwrap(request), surfaces } as LaunchOptions);
             shell.setModel("launch", instance); bindInstance(instance);
           } catch (error) { shell.setModel("error", error instanceof Error ? error.message : String(error)); shell.navigate("/"); }
         };

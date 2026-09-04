@@ -1,0 +1,19 @@
+[package]
+name = "polymer-hook-dxgi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+parking_lot.workspace = true
+polymer-hook.workspace = true
+polymer-platform-windows.workspace = true
+tracing.workspace = true
+windows.workspace = true
+windows-sys.workspace = true
+
+[lints]
+workspace = true

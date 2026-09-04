@@ -1,5 +1,5 @@
 import graphicsPacks from "resources:graphicsPacks";
-import { pluginStorage } from "snowglass:pluginStorage";
+import { pluginStorage } from "polymer:pluginStorage";
 import type {
     Configuration as HostConfiguration,
     ConfigurationResult,

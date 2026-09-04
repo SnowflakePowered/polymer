@@ -1,4 +1,4 @@
-import type { LaunchInstance, LaunchRequest, Package, PackageConfiguration } from "../../../../../js/snowglass";
+import type { LaunchInstance, LaunchRequest, Package, PackageConfiguration } from "../../../../../js/polymer";
 
 export type RecentGame = {
   path: string;

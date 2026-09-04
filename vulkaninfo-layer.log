@@ -1,2 +1,2 @@
-snowglass: vkCreateInstance entered
-snowglass: downstream vkCreateInstance returned Command completed successfully
+polymer: vkCreateInstance entered
+polymer: downstream vkCreateInstance returned Command completed successfully

@@ -61,9 +61,9 @@ export function InputProvider(props: ParentProps) {
     const previousButtons = new Map<number, number>();
     const controllerInput = (event: Event) => {
       const { index } = (event as CustomEvent<{ index: number }>).detail;
-      const state = window.Snowglass.input.get(index);
+      const state = window.Polymer.input.get(index);
       if (!state) return;
-      const sourceId = window.Snowglass.controllers.players.find((player) => player.index === index)?.controller?.id || null;
+      const sourceId = window.Polymer.controllers.players.find((player) => player.index === index)?.controller?.id || null;
       const prior = previousButtons.get(index) || 0;
       previousButtons.set(index, state.buttons);
       const buttons = [
@@ -105,10 +105,10 @@ export function InputProvider(props: ParentProps) {
       else if (event.key === "Escape") emit({ type: "back", origin: "keyboard", sourceId: null, event });
       else if (event.key === "Shift") emit({ type: "details", origin: "keyboard", sourceId: null, event });
     };
-    window.Snowglass.input.addEventListener("input", controllerInput);
+    window.Polymer.input.addEventListener("input", controllerInput);
     window.addEventListener("keydown", keyboardInput);
     onCleanup(() => {
-      window.Snowglass.input.removeEventListener("input", controllerInput);
+      window.Polymer.input.removeEventListener("input", controllerInput);
       window.removeEventListener("keydown", keyboardInput);
     });
   });

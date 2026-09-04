@@ -1,6 +1,6 @@
 import { Tabs } from "@ark-ui/solid";
 import { For, Show } from "solid-js";
-import type { EmulatorConfiguration, PackageConfiguration } from "../../../../../../js/snowglass";
+import type { EmulatorConfiguration, PackageConfiguration } from "../../../../../../js/polymer";
 import { ChoiceControl } from "../../components/FormControls";
 import { friendly } from "../../app/launch";
 import "./ControllerSection.css";

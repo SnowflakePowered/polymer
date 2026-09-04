@@ -1,0 +1,29 @@
+[package]
+name = "polymer-hook-d3d11"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "polymer_hook_d3d11"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+dashmap.workspace = true
+parking_lot.workspace = true
+polymer-hook.workspace = true
+polymer-hook-dxgi = { path = "../polymer-hook-dxgi" }
+polymer-platform-windows.workspace = true
+polymer-producer-d3d11 = { path = "../../producers/polymer-producer-d3d11" }
+polymer-protocol.workspace = true
+tracing.workspace = true
+windows-sys.workspace = true
+windows.workspace = true
+
+[dev-dependencies]
+polymer-consumer-d3d12 = { path = "../../consumer/polymer-consumer-d3d12" }
+polymer-consumer-vulkan = { path = "../../consumer/polymer-consumer-vulkan" }
+polymer-ipc.workspace = true
+
+[lints]
+workspace = true

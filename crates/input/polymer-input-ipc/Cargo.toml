@@ -1,0 +1,17 @@
+[package]
+name = "polymer-input-ipc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bincode.workspace = true
+parking_lot.workspace = true
+polymer-input.workspace = true
+polymer-input-layout.workspace = true
+polymer-ipc.workspace = true
+tracing.workspace = true
+tokio = { version = "1.53", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+
+[lints]
+workspace = true

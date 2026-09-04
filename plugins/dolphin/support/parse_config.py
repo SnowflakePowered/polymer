@@ -47,7 +47,7 @@ FILESYSTEM_OPTION_KEYS = {
 }
 
 
-# Snowglass's global action vocabulary → the Dolphin hotkey that implements it.
+# Polymer's global action vocabulary → the Dolphin hotkey that implements it.
 # `fallback` is used when Dolphin ships no default binding for that hotkey; the
 # script rejects a fallback that collides with any binding it parsed, so this
 # table cannot silently double-bind a key.
@@ -61,7 +61,7 @@ ACTION_VOCABULARY = {
     "screenshot": {"hotkey": "HK_SCREENSHOT"},
     "toggle_fullscreen": {"hotkey": "HK_FULLSCREEN"},
     # Dolphin's HK_EXIT has no default binding and quits the whole application;
-    # Snowglass runs Dolphin without batch mode so its control window remains
+    # Polymer runs Dolphin without batch mode so its control window remains
     # available for live settings automation. Exit must still close Dolphin.
     "exit": {"hotkey": "HK_EXIT", "fallback": ("escape", "ESCAPE"), "allow_collision": True},
 }
@@ -185,7 +185,7 @@ GAMECUBE_BINDINGS = {
 }
 
 
-# The Dolphin backends snowglass has a capture hook for, by the CONFIG_NAME each
+# The Dolphin backends polymer has a capture hook for, by the CONFIG_NAME each
 # one writes into Dolphin.ini. Nothing in the generated document depends on this:
 # mapping a backend onto hooks — and rejecting one that maps to nothing — is the
 # TS module's job. It is reported so the author knows which names to cover.
@@ -540,7 +540,7 @@ def build_gfx_backend_option(option: dict, backends: list[str], report: Report) 
     """
     supported = [name for name in backends if name in SUPPORTED_BACKENDS]
     if not supported:
-        raise Bail("no Dolphin video backend has a snowglass capture hook")
+        raise Bail("no Dolphin video backend has a polymer capture hook")
     option["type"] = "select"
     option["domain"] = [
         {"key": name, "label": BACKEND_LABELS[name], "value": name}
@@ -851,7 +851,7 @@ def evaluate_binding(expression: str, bindings: dict[str, int]) -> str | None:
 
 
 def canonical_chord(expression: str) -> str:
-    """Dolphin expression → the snowglass key spec the shell synthesizes."""
+    """Dolphin expression → the polymer key spec the shell synthesizes."""
     text = expression.strip()
     if text.startswith("@(") and text.endswith(")"):
         text = text[2:-1]

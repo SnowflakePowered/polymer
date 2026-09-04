@@ -22,7 +22,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# Dolphin is compiled per platform and snowglass targets Windows first, so the
+# Dolphin is compiled per platform and polymer targets Windows first, so the
 # Windows branch of every #ifdef is the one that describes the config we write.
 DEFINES = {"_WIN32": True, "WIN32": True, "HAS_LIBMGBA": True}
 

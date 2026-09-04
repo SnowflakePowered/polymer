@@ -1,6 +1,6 @@
 """The SDL virtual gamepad, as our controls are named on it.
 
-The authority is `crates/input/snowglass-input/src/sdl.rs`; this is the same
+The authority is `crates/input/polymer-input/src/sdl.rs`; this is the same
 pairing. It is a pairing and not an ordering on purpose: which of our controls is
 SDL's south is the one choice that is ours, and SDL's numbering is a consequence
 of it. Emulator sources annotate every entry of their own name tables with the

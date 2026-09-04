@@ -1,6 +1,4 @@
-# Snowglass
+# ⌬ Polymer
 
-Snowglass is the successor to snowflake-ingame.
-
-It is a complete solution for gamescope-like recomposition of games and emulator swapchains,
-allowing swapchain effects,
+Polymer started off as the successor to snowflake-ingame, beginning as a way to inject swapchain effects into emulators via gamescope-like recomposition.
+It has evolved into the complete successor to Snowflake, implementing all of its promised features internally.

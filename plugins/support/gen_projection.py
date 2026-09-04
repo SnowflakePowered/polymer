@@ -222,7 +222,7 @@ if over:
     for name, overflow in over:
         lines += [f"# {name}: {overflow} unplaced", ""]
 
-out = Path("crates/snowglass-config/projection/SDL.proj.toml")
+out = Path("crates/polymer-config/projection/SDL.proj.toml")
 out.parent.mkdir(parents=True, exist_ok=True)
 out.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8", newline="\n")
 need_spare = [name for name, _, spares in entries if spares]

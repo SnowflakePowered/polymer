@@ -1,5 +1,5 @@
 import { createEffect, onCleanup, onMount } from "solid-js";
-import type { HTMLTrackedSurfaceElement } from "../../../../../../js/snowglass";
+import type { HTMLTrackedSurfaceElement } from "../../../../../../js/polymer";
 import "./ClassicSurfaceBackdrop.css";
 
 export function ClassicSurfaceBackdrop(props: { surface?: () => HTMLElement | undefined; revision?: number }) {

@@ -1,6 +1,6 @@
 import { createEffect, createMemo, createSignal, onCleanup, type ParentProps } from "solid-js";
 import { unwrap } from "solid-js/store";
-import type { LaunchInstance, LaunchOptions } from "../../../../../../js/snowglass";
+import type { LaunchInstance, LaunchOptions } from "../../../../../../js/polymer";
 import { useShell } from "../../app/ShellProvider";
 import { SurfaceStage } from "./SurfaceStage";
 import "./GameLayout.css";
@@ -74,7 +74,7 @@ export function GameLayout(props: ParentProps) {
           if (!attach?.isConnected || attach.localName !== "tracked-surface") throw new Error(`Surface ${surface.index} is not ready`);
           return { ...surface, attach };
         });
-        const instance = window.Snowglass.emulator.launch({ ...unwrap(request), surfaces: attached } as LaunchOptions);
+        const instance = window.Polymer.emulator.launch({ ...unwrap(request), surfaces: attached } as LaunchOptions);
         shell.setModel("launch", instance);
         bind(instance);
       } catch (error) {

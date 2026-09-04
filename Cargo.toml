@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/snowglass-config",
+    "crates/polymer-config",
     "crates/producers/*",
     "crates/hooks/*",
     "crates/consumer/*",
@@ -15,7 +15,7 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/snowglass/snowglass"
+repository = "https://github.com/polymer/polymer"
 rust-version = "1.94"
 
 [workspace.dependencies]
@@ -100,36 +100,36 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_UI_Input_KeyboardAndMouse",
 ] }
 zerocopy = { version = "0.8.55", features = ["derive"] }
-snowglass-api = { path = "crates/snowglass-api" }
-snowglass-protocol = { path = "crates/runtime/snowglass-protocol" }
-snowglass-ipc = { path = "crates/runtime/snowglass-ipc" }
-snowglass-egui = { path = "crates/consumer/snowglass-egui" }
-snowglass-statistics = { path = "crates/runtime/snowglass-statistics" }
-snowglass-ui = { path = "crates/runtime/snowglass-ui" }
-snowglass-platform-windows = { path = "crates/runtime/snowglass-platform-windows" }
-snowglass-automation = { path = "crates/runtime/snowglass-automation" }
-snowglass-input = { path = "crates/input/snowglass-input" }
-snowglass-input-layout = { path = "crates/input/snowglass-input-layout" }
-snowglass-input-ipc = { path = "crates/input/snowglass-input-ipc" }
-snowglass-config = { path = "crates/snowglass-config" }
-snowglass-hook-input-dinput = { path = "crates/hooks/snowglass-hook-input-dinput" }
-snowglass-hook-input-sdl = { path = "crates/hooks/snowglass-hook-input-sdl" }
-snowglass-hook-input-win32 = { path = "crates/hooks/snowglass-hook-input-win32" }
-snowglass-hook-input = { path = "crates/hooks/snowglass-hook-input" }
+polymer-api = { path = "crates/polymer-api" }
+polymer-protocol = { path = "crates/runtime/polymer-protocol" }
+polymer-ipc = { path = "crates/runtime/polymer-ipc" }
+polymer-egui = { path = "crates/consumer/polymer-egui" }
+polymer-statistics = { path = "crates/runtime/polymer-statistics" }
+polymer-ui = { path = "crates/runtime/polymer-ui" }
+polymer-platform-windows = { path = "crates/runtime/polymer-platform-windows" }
+polymer-automation = { path = "crates/runtime/polymer-automation" }
+polymer-input = { path = "crates/input/polymer-input" }
+polymer-input-layout = { path = "crates/input/polymer-input-layout" }
+polymer-input-ipc = { path = "crates/input/polymer-input-ipc" }
+polymer-config = { path = "crates/polymer-config" }
+polymer-hook-input-dinput = { path = "crates/hooks/polymer-hook-input-dinput" }
+polymer-hook-input-sdl = { path = "crates/hooks/polymer-hook-input-sdl" }
+polymer-hook-input-win32 = { path = "crates/hooks/polymer-hook-input-win32" }
+polymer-hook-input = { path = "crates/hooks/polymer-hook-input" }
 consolespec = { version = "0.0.1" }
 gumshoe = { version = "0.0.4-beta" }
 gix = { version = "0.86", features = ["tree-editor"] }
 phf = "0.14"
 phf_codegen = "0.14"
-snowglass-runtime = { path = "crates/runtime/snowglass-runtime" }
-snowglass-command = { path = "crates/runtime/snowglass-command" }
-snowglass-controllers = { path = "crates/runtime/snowglass-controllers" }
-snowglass-library = { path = "crates/runtime/snowglass-library" }
-snowglass-scraping = { path = "crates/runtime/snowglass-scraping" }
-snowglass-vfs = { path = "crates/filesystem/snowglass-vfs" }
-snowglass-vfs-winfsp = { path = "crates/filesystem/snowglass-vfs-winfsp" }
+polymer-runtime = { path = "crates/runtime/polymer-runtime" }
+polymer-command = { path = "crates/runtime/polymer-command" }
+polymer-controllers = { path = "crates/runtime/polymer-controllers" }
+polymer-library = { path = "crates/runtime/polymer-library" }
+polymer-scraping = { path = "crates/runtime/polymer-scraping" }
+polymer-vfs = { path = "crates/filesystem/polymer-vfs" }
+polymer-vfs-winfsp = { path = "crates/filesystem/polymer-vfs-winfsp" }
 
-snowglass-hook = { path = "crates/hooks/snowglass-hook" }
+polymer-hook = { path = "crates/hooks/polymer-hook" }
 
 thiserror = "2"
 arrayref = "=0.3.4"

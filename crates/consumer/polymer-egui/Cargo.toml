@@ -1,0 +1,15 @@
+[package]
+name = "polymer-egui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+egui = "0.29.1"
+egui-ash-renderer = "0.6.0"
+polymer-renderer = { path = "../polymer-renderer" }
+polymer-statistics.workspace = true
+windows.workspace = true
+
+[lints]
+workspace = true

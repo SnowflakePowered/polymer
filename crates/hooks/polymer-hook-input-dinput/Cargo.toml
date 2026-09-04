@@ -1,0 +1,18 @@
+[package]
+name = "polymer-hook-input-dinput"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tracing.workspace = true
+dashmap.workspace = true
+parking_lot.workspace = true
+polymer-input.workspace = true
+polymer-hook-input.workspace = true
+polymer-ipc.workspace = true
+polymer-protocol.workspace = true
+windows-sys.workspace = true
+
+[lints]
+workspace = true

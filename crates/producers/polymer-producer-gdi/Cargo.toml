@@ -1,0 +1,18 @@
+[package]
+name = "polymer-producer-gdi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+parking_lot.workspace = true
+polymer-hook.workspace = true
+polymer-ipc.workspace = true
+polymer-platform-windows.workspace = true
+polymer-protocol.workspace = true
+polymer-producer-d3d11 = { path = "../polymer-producer-d3d11" }
+tracing.workspace = true
+windows.workspace = true
+
+[lints]
+workspace = true

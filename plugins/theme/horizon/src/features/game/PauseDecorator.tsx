@@ -1,5 +1,5 @@
 import { createEffect, onCleanup, type ParentProps } from "solid-js";
-import type { LaunchInstance } from "../../../../../../js/snowglass";
+import type { LaunchInstance } from "../../../../../../js/polymer";
 import { useShell } from "../../app/ShellProvider";
 
 export type PauseRelease = () => Promise<void>;
