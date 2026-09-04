@@ -10,33 +10,59 @@ use snowglass_library::{Directories, GameCatalog, MediaData};
 #[derive(Clone)]
 pub struct LibraryService {
     client: Library,
+    scraping: snowglass_scraping::ScrapingEngine,
 }
 
 struct LibraryBackend {
     catalog: Arc<GameCatalog>,
+    scraping: snowglass_scraping::ScrapingEngine,
     media: server::MediaServer,
 }
 
 impl LibraryService {
     pub async fn open(directories: &Directories) -> Result<Self, Box<dyn std::error::Error>> {
-        let catalog = Arc::new(GameCatalog::open_local(directories).await?);
-        Ok(Self::start(catalog).await?)
+        Self::open_with_plugins(directories, snowglass_pluginhost::PluginRegistry::new()).await
     }
 
-    async fn start(catalog: Arc<GameCatalog>) -> Result<Self, std::io::Error> {
+    pub async fn open_with_plugins(
+        directories: &Directories,
+        plugins: snowglass_pluginhost::PluginRegistry,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let catalog = Arc::new(GameCatalog::open_local(directories).await?);
+        Ok(Self::start(catalog, plugins, directories.clone()).await?)
+    }
+
+    async fn start(
+        catalog: Arc<GameCatalog>,
+        plugins: snowglass_pluginhost::PluginRegistry,
+        directories: Directories,
+    ) -> Result<Self, std::io::Error> {
         let media = server::MediaServer::start(catalog.clone()).await?;
+        let scraping =
+            snowglass_scraping::ScrapingEngine::new(catalog.clone(), plugins, directories);
+        if let Err(error) = scraping.resume().await {
+            tracing::warn!(%error, "could not resume scrape jobs");
+        }
         let (client, mut commands) = Library::channel();
-        let mut backend = LibraryBackend { catalog, media };
+        let mut backend = LibraryBackend {
+            catalog,
+            scraping: scraping.clone(),
+            media,
+        };
         tokio::spawn(async move {
             while let Some(command) = commands.recv().await {
                 command.dispatch(&mut backend).await;
             }
         });
-        Ok(Self { client })
+        Ok(Self { client, scraping })
     }
 
     pub fn client(&self) -> Library {
         self.client.clone()
+    }
+
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<snowglass_scraping::ScrapingEvent> {
+        self.scraping.subscribe()
     }
 }
 
@@ -69,9 +95,30 @@ mod tests {
     use std::sync::Arc;
 
     use object_store::memory::InMemory;
-    use snowglass_library::{IdentifiedLaunchable, MetadataInput, Relation};
+    use snowglass_library::{IdentifiedLaunchable, MetadataInput, MetadataInputData};
 
     use super::*;
+
+    #[test]
+    fn metadata_wire_value_deserializes_into_the_catalog_input() {
+        let input = LibraryBackend::metadata_input(serde_json::json!({
+            "key": "meta.score",
+            "source": "test",
+            "kind": "scalar",
+            "value": 9.5,
+        }))
+        .unwrap();
+        assert_eq!(
+            input,
+            MetadataInput {
+                key: "meta.score".to_owned(),
+                source: "test".to_owned(),
+                data: MetadataInputData::Scalar {
+                    value: snowglass_library::MetadataValue::Number(9.5),
+                },
+            }
+        );
+    }
 
     #[tokio::test]
     async fn urls_inline_data_and_protect_current_object_content() {
@@ -84,7 +131,13 @@ mod tests {
             .await
             .unwrap(),
         );
-        let service = LibraryService::start(catalog.clone()).await.unwrap();
+        let service = LibraryService::start(
+            catalog.clone(),
+            snowglass_pluginhost::PluginRegistry::new(),
+            Directories::rooted(directory.path(), directory.path()),
+        )
+        .await
+        .unwrap();
         let launchable = catalog
             .import_launchable(IdentifiedLaunchable {
                 path: directory.path().join("game.rom"),
@@ -99,12 +152,14 @@ mod tests {
         let inline = catalog
             .add_metadata(
                 launchable.binary_id,
-                MetadataInput::Inline {
-                    relation: Relation::Icon,
-                    language: None,
+                MetadataInput {
+                    key: "media.icon".to_owned(),
                     source: "banner".to_owned(),
-                    media_type: "image/gif".to_owned(),
-                    bytes: Box::from(&b"GIF89a"[..]),
+                    data: MetadataInputData::Inline {
+                        media_type: "image/gif".to_owned(),
+                        bytes: Box::from(&b"GIF89a"[..]),
+                        source_url: None,
+                    },
                 },
             )
             .await
@@ -123,12 +178,14 @@ mod tests {
         let object = catalog
             .add_metadata(
                 launchable.binary_id,
-                MetadataInput::Object {
-                    relation: Relation::Video,
-                    language: None,
+                MetadataInput {
+                    key: "media.video".to_owned(),
                     source: "test".to_owned(),
-                    media_type: "video/mp4".to_owned(),
-                    path: source.clone(),
+                    data: MetadataInputData::Object {
+                        media_type: "video/mp4".to_owned(),
+                        path: source.clone(),
+                        source_url: None,
+                    },
                 },
             )
             .await
@@ -152,12 +209,14 @@ mod tests {
         catalog
             .update_metadata(
                 object.id,
-                MetadataInput::Object {
-                    relation: Relation::Video,
-                    language: None,
+                MetadataInput {
+                    key: "media.video".to_owned(),
                     source: "test".to_owned(),
-                    media_type: "video/mp4".to_owned(),
-                    path: directory.path().join("video.bin"),
+                    data: MetadataInputData::Object {
+                        media_type: "video/mp4".to_owned(),
+                        path: directory.path().join("video.bin"),
+                        source_url: None,
+                    },
                 },
             )
             .await

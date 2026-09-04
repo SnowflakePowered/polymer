@@ -1,10 +1,9 @@
-use std::path::PathBuf;
-
 use object_store::path::Path as ObjectPath;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use uuid::Uuid;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Game {
     pub id: Uuid,
     pub platform: String,
@@ -34,141 +33,81 @@ pub struct IdentifiedLaunchable {
     pub platform: String,
 }
 
-#[non_exhaustive]
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Relation {
-    Title,
-    Description,
-    ReleaseDate,
-    Publisher,
-    BoxartFront,
-    BoxartBack,
-    BoxartSpine,
-    BoxartFull,
-    Screenshot,
-    Logo,
-    Video,
-    Icon,
-    Banner,
-    Media,
-}
-
-impl Relation {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Title => "title",
-            Self::Description => "description",
-            Self::ReleaseDate => "releasedate",
-            Self::Publisher => "publisher",
-            Self::BoxartFront => "boxartfront",
-            Self::BoxartBack => "boxartback",
-            Self::BoxartSpine => "boxartspine",
-            Self::BoxartFull => "boxartfull",
-            Self::Screenshot => "screenshot",
-            Self::Logo => "logo",
-            Self::Video => "video",
-            Self::Icon => "icon",
-            Self::Banner => "banner",
-            Self::Media => "media",
-        }
-    }
-
-    pub const fn expects_text(self) -> bool {
-        matches!(self, Self::Title | Self::Description | Self::Publisher)
-    }
-
-    pub const fn expects_year(self) -> bool {
-        matches!(self, Self::ReleaseDate)
-    }
-}
-
-impl std::str::FromStr for Relation {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Ok(match value {
-            "title" => Self::Title,
-            "description" => Self::Description,
-            "releasedate" => Self::ReleaseDate,
-            "publisher" => Self::Publisher,
-            "boxartfront" => Self::BoxartFront,
-            "boxartback" => Self::BoxartBack,
-            "boxartspine" => Self::BoxartSpine,
-            "boxartfull" => Self::BoxartFull,
-            "screenshot" => Self::Screenshot,
-            "logo" => Self::Logo,
-            "video" => Self::Video,
-            "icon" => Self::Icon,
-            "banner" => Self::Banner,
-            "media" => Self::Media,
-            _ => return Err(format!("unknown metadata relation '{value}'")),
-        })
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MediaData {
     Object(ObjectPath),
     Inline(Box<[u8]>),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum MetadataData {
-    Text(String),
-    ReleaseYear(u16),
-    Media { media_type: String, data: MediaData },
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum MetadataValue {
+    String(String),
+    Number(f64),
+    Boolean(bool),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+impl MetadataValue {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if matches!(self, Self::Number(value) if !value.is_finite()) {
+            return Err("metadata numbers must be finite");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum MetadataData {
+    Scalar(MetadataValue),
+    Media {
+        media_type: String,
+        data: MediaData,
+        source_url: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Metadata {
     pub id: Uuid,
     pub parent_binary_id: Uuid,
-    pub data: MetadataData,
-    pub relation: Relation,
-    pub language: Option<String>,
+    pub key: String,
     pub source: String,
+    pub producer: String,
+    pub ordinal: u32,
+    pub data: MetadataData,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum MetadataInput {
-    Text {
-        relation: Relation,
-        language: Option<String>,
-        source: String,
-        value: String,
-    },
-    ReleaseYear {
-        language: Option<String>,
-        source: String,
-        year: u16,
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MetadataInput {
+    pub key: String,
+    pub source: String,
+    #[serde(flatten)]
+    pub data: MetadataInputData,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(
+    tag = "kind",
+    rename_all = "lowercase",
+    rename_all_fields = "camelCase"
+)]
+pub enum MetadataInputData {
+    Scalar {
+        value: MetadataValue,
     },
     Inline {
-        relation: Relation,
-        language: Option<String>,
-        source: String,
         media_type: String,
         bytes: Box<[u8]>,
+        #[serde(skip)]
+        source_url: Option<String>,
     },
     Object {
-        relation: Relation,
-        language: Option<String>,
-        source: String,
         media_type: String,
         path: PathBuf,
+        #[serde(skip)]
+        source_url: Option<String>,
     },
-}
-
-impl MetadataInput {
-    pub fn with_source(mut self, source: &str) -> Self {
-        match &mut self {
-            Self::Text { source: value, .. }
-            | Self::ReleaseYear { source: value, .. }
-            | Self::Inline { source: value, .. }
-            | Self::Object { source: value, .. } => source.clone_into(value),
-        }
-        self
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

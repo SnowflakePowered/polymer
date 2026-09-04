@@ -1,10 +1,33 @@
 use super::*;
+use crate::{ScrapeCandidate, ScrapeScalar};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex as StdMutex},
     time::Duration,
 };
 use tempfile::TempDir;
+
+struct TestRuntime {
+    runtime: PluginRuntime,
+    _storage: TempDir,
+}
+
+impl std::ops::Deref for TestRuntime {
+    type Target = PluginRuntime;
+
+    fn deref(&self) -> &Self::Target {
+        &self.runtime
+    }
+}
+
+fn test_runtime(registry: PluginRegistry, options: PluginRuntimeOptions) -> TestRuntime {
+    let storage = tempfile::tempdir().unwrap();
+    let directories = snowglass_library::Directories::rooted(storage.path(), storage.path());
+    TestRuntime {
+        runtime: PluginRuntime::new(registry, directories, options),
+        _storage: storage,
+    }
+}
 
 fn package() -> (TempDir, PluginRegistry) {
     let root = tempfile::tempdir().unwrap();
@@ -15,6 +38,7 @@ fn package() -> (TempDir, PluginRegistry) {
             id = "worker-test"
             version = "1"
             class = "emulator"
+            main = "plugin.js"
 
             [[plugin.resources]]
             name = "runtime"
@@ -24,7 +48,6 @@ fn package() -> (TempDir, PluginRegistry) {
 
             [emulator]
             platforms = ["TEST"]
-            main = "plugin.js"
 
             [emulator.configuration]
             definitions = ["config.toml"]
@@ -217,6 +240,200 @@ fn configuration_mount_package() -> (TempDir, PluginRegistry) {
     (root, registry)
 }
 
+fn scraper_package(source: &str) -> (TempDir, PluginRegistry) {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(
+        root.path().join("plugin.toml"),
+        r#"
+            [plugin]
+            id = "scraper-test"
+            version = "1"
+            class = "scraper"
+            main = "scraper.js"
+
+            [scraper]
+            requires = ["package.platform", "any(meta.title, filename.nointro.title)"]
+            provides = ["meta.genre", "media.boxart"]
+        "#,
+    )
+    .unwrap();
+    std::fs::write(root.path().join("scraper.js"), source).unwrap();
+    let registry = PluginRegistry::new();
+    registry.load(root.path()).unwrap();
+    (root, registry)
+}
+
+fn capability_package() -> (TempDir, PluginRegistry, String) {
+    let root = tempfile::tempdir().unwrap();
+    let id = format!("capability-test-{}", std::process::id());
+    std::fs::write(
+        root.path().join("plugin.toml"),
+        format!(
+            r#"
+              [plugin]
+              id = "{id}"
+              version = "1"
+              class = "scraper"
+              main = "fixture.js"
+
+              [[plugin.caches]]
+              key = "fixture"
+              label = "Fixture"
+
+              [scraper]
+              provides = []
+            "#
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        root.path().join("fixture.js"),
+        r#"
+          import { caches } from "snowglass:cache";
+          import { connect } from "snowglass:database";
+          export async function exercise() {
+            const file = caches.fixture.open("nested/value.txt", { write: true, truncate: true });
+            const writer = file.writable.getWriter();
+            await writer.write("streamed-");
+            await writer.write("cache");
+            await writer.close();
+            const cached = caches.fixture.open("nested/value.txt");
+            const range = new TextDecoder().decode(await cached.read(9, 5));
+            const db = await connect();
+            await db.exec("CREATE TABLE IF NOT EXISTS values_table (value TEXT NOT NULL); DELETE FROM values_table;");
+            await db.batch([
+              ["INSERT INTO values_table VALUES (?)", ["one"]],
+              { sql: "INSERT INTO values_table VALUES (?)", args: ["two"] },
+            ]);
+            await db.transactionAsync(async database => {
+              await database.prepare("INSERT INTO values_table VALUES (?)").run(["three"]);
+            });
+            const values = [];
+            for await (const row of db.prepare("SELECT value FROM values_table ORDER BY rowid").iterate()) values.push(row.value);
+            await db.close();
+            return { text: await cached.text(), range, values };
+          }
+        "#,
+    )
+    .unwrap();
+    let registry = PluginRegistry::new();
+    registry.load(root.path()).unwrap();
+    (root, registry, id)
+}
+
+fn scrape_input() -> ScrapeInput {
+    BTreeMap::from([
+        (
+            "package.platform".to_owned(),
+            vec![ScrapeCandidate {
+                source: "Gumshoe".to_owned(),
+                value: ScrapeScalar::String("NINTENDO_NES".to_owned()),
+            }],
+        ),
+        (
+            "filename.nointro.title".to_owned(),
+            vec![ScrapeCandidate {
+                source: "Shiratsu No-Intro".to_owned(),
+                value: ScrapeScalar::String("Metroid".to_owned()),
+            }],
+        ),
+    ])
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn scraper_yields_scalar_objects_incrementally_and_preserves_order() {
+    let (_root, registry) = scraper_package(
+        r#"
+          export async function* onScrape(input) {
+            if (input["filename.nointro.title"][0].value !== "Metroid") throw new Error("input");
+            yield { key: "meta.genre", value: "Action", source: "Fixture" };
+            await Promise.resolve();
+            yield { key: "meta.genre", value: "Adventure", source: "Fixture" };
+          }
+        "#,
+    );
+    let runtime = test_runtime(registry, PluginRuntimeOptions::default());
+    let handle = runtime.handle();
+    let values = handle
+        .scrape("scraper-test", scrape_input(), handle.cancellation_token())
+        .await
+        .unwrap();
+    assert_eq!(
+        values.iter().map(|value| &value.value).collect::<Vec<_>>(),
+        [
+            &ScrapeScalar::String("Action".to_owned()),
+            &ScrapeScalar::String("Adventure".to_owned())
+        ]
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn scraper_rejects_non_generators_arrays_and_undeclared_keys() {
+    for source in [
+        "export function onScrape() { return [{ key: 'meta.genre', value: 'Action', source: 'Fixture' }]; }",
+        "export async function* onScrape() { yield ['meta.genre', 'Action', 'Fixture']; }",
+        "export async function* onScrape() { yield { key: 'meta.title', value: 'Metroid', source: 'Fixture' }; }",
+        "export async function* onScrape() { yield { key: 'meta.genre', value: ['Action'], source: 'Fixture' }; }",
+    ] {
+        let (_root, registry) = scraper_package(source);
+        let runtime = test_runtime(registry, PluginRuntimeOptions::default());
+        let handle = runtime.handle();
+        assert!(
+            handle
+                .scrape("scraper-test", scrape_input(), handle.cancellation_token())
+                .await
+                .is_err(),
+            "invalid scraper source was accepted: {source}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn scraper_requires_every_clause_but_accepts_any_alternative() {
+    let (_root, registry) = scraper_package("export async function* onScrape() {}");
+    let plugin = registry
+        .plugin::<dyn ScraperPluginInstance>("scraper-test")
+        .unwrap();
+    assert!(plugin.accepts(&scrape_input()));
+    assert!(!plugin.accepts(&BTreeMap::from([(
+        "package.platform".to_owned(),
+        vec![ScrapeCandidate {
+            source: "Gumshoe".to_owned(),
+            value: ScrapeScalar::String("NINTENDO_NES".to_owned()),
+        }],
+    )])));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn scripted_plugins_receive_streaming_cache_and_injected_turso_capabilities() {
+    let (_root, registry, id) = capability_package();
+    let storage = tempfile::tempdir().unwrap();
+    let directories = snowglass_library::Directories::rooted(storage.path(), storage.path());
+    let cache_file = directories
+        .plugin_cache(&id)
+        .join("fixture/nested/value.txt");
+    let database = directories.plugin_database(&id);
+    let runtime = PluginRuntime::new(registry, directories, PluginRuntimeOptions::default());
+    let result = runtime
+        .handle()
+        .invoke(&id, &["exercise".to_owned()], Vec::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        result,
+        serde_json::json!({
+            "text": "streamed-cache",
+            "range": "cache",
+            "values": ["one", "two", "three"],
+        })
+    );
+    assert_eq!(
+        std::fs::read_to_string(cache_file).unwrap(),
+        "streamed-cache"
+    );
+    assert!(database.is_file());
+}
+
 struct RecordingAutomation(Arc<StdMutex<Vec<&'static str>>>);
 
 impl snowglass_automation::AutomationDriver for RecordingAutomation {
@@ -254,7 +471,7 @@ impl snowglass_automation::AutomationDriver for RecordingAutomation {
 #[tokio::test(flavor = "current_thread")]
 async fn facade_on_emulator_launch_materializes_its_invocation_configuration() {
     let (_root, registry) = package();
-    let runtime = PluginRuntime::new(registry, PluginRuntimeOptions::default());
+    let runtime = test_runtime(registry, PluginRuntimeOptions::default());
     let result = runtime
         .handle()
         .invoke(
@@ -290,7 +507,7 @@ async fn facade_on_emulator_launch_materializes_its_invocation_configuration() {
 #[tokio::test(flavor = "current_thread")]
 async fn plugin_storage_is_shared_between_fresh_isolates() {
     let (_root, registry) = package();
-    let runtime = PluginRuntime::new(registry, PluginRuntimeOptions::default());
+    let runtime = test_runtime(registry, PluginRuntimeOptions::default());
     let handle = runtime.handle();
     let path = ["cached".to_owned()];
 
@@ -311,7 +528,7 @@ async fn plugin_storage_is_shared_between_fresh_isolates() {
 #[tokio::test(flavor = "current_thread")]
 async fn prepared_filesystems_are_returned_to_the_application_owner() {
     let (root, registry) = package();
-    let runtime = PluginRuntime::new(registry, PluginRuntimeOptions::default());
+    let runtime = test_runtime(registry, PluginRuntimeOptions::default());
     let handle = runtime.handle();
     let result = handle
         .invoke_with_storage_owned(
@@ -335,7 +552,7 @@ async fn prepared_filesystems_are_returned_to_the_application_owner() {
 #[tokio::test(flavor = "current_thread")]
 async fn controller_callback_regenerates_a_live_mounted_configuration() {
     let (root, registry) = package();
-    let runtime = PluginRuntime::new(registry, PluginRuntimeOptions::default());
+    let runtime = test_runtime(registry, PluginRuntimeOptions::default());
     let result = runtime
         .handle()
         .invoke_with_storage_owned(
@@ -399,7 +616,7 @@ async fn controller_callback_regenerates_a_live_mounted_configuration() {
 #[tokio::test(flavor = "current_thread")]
 async fn pause_callback_activates_its_parsed_hotkey_action() {
     let (root, registry) = package();
-    let runtime = PluginRuntime::new(registry, PluginRuntimeOptions::default());
+    let runtime = test_runtime(registry, PluginRuntimeOptions::default());
     let result = runtime
         .handle()
         .invoke_with_storage_owned(
@@ -458,7 +675,7 @@ async fn pause_callback_activates_its_parsed_hotkey_action() {
 #[tokio::test(flavor = "current_thread")]
 async fn configuration_mount_retains_a_controller_session_without_a_callback() {
     let (root, registry) = configuration_mount_package();
-    let runtime = PluginRuntime::new(registry, PluginRuntimeOptions::default());
+    let runtime = test_runtime(registry, PluginRuntimeOptions::default());
     let result = runtime
         .handle()
         .invoke_with_storage_owned(
@@ -506,7 +723,7 @@ async fn configuration_mount_retains_a_controller_session_without_a_callback() {
 #[tokio::test(flavor = "current_thread")]
 async fn cancellation_terminates_executing_v8_code() {
     let (_root, registry) = package();
-    let runtime = PluginRuntime::new(registry, PluginRuntimeOptions::default());
+    let runtime = test_runtime(registry, PluginRuntimeOptions::default());
     let handle = runtime.handle();
     let cancellation = handle.clone();
     let path = ["neverReturns".to_owned()];
@@ -526,7 +743,7 @@ async fn cancellation_terminates_executing_v8_code() {
 #[tokio::test(flavor = "current_thread")]
 async fn invocation_cancellation_does_not_abort_an_unrelated_call() {
     let (_root, registry) = package();
-    let runtime = PluginRuntime::new(
+    let runtime = test_runtime(
         registry,
         PluginRuntimeOptions {
             max_concurrent_calls: 1,

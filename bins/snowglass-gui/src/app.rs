@@ -136,6 +136,7 @@ impl ShellCoordinator {
         let ShellOptions {
             theme,
             plugins: _,
+            directories: _,
             local_storage: _,
             library: _,
         } = options;

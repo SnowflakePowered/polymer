@@ -176,12 +176,12 @@ impl GameCatalog {
     pub(super) async fn referenced_objects(
         transaction: &Transaction<'_>,
         parent: Uuid,
-        source: Option<&str>,
+        producer: Option<&str>,
     ) -> Result<Vec<[u8; 32]>, GameCatalogError> {
-        let (sql, params) = match source {
-            Some(source) => (
-                "SELECT DISTINCT object_blake3 FROM metadata WHERE parent_binary_id = ?1 AND source = ?2 AND object_blake3 IS NOT NULL",
-                vec![Self::id(parent), Value::from(source)],
+        let (sql, params) = match producer {
+            Some(producer) => (
+                "SELECT DISTINCT object_blake3 FROM metadata WHERE parent_binary_id = ?1 AND producer = ?2 AND object_blake3 IS NOT NULL",
+                vec![Self::id(parent), Value::from(producer)],
             ),
             None => (
                 "SELECT DISTINCT object_blake3 FROM metadata WHERE parent_binary_id = ?1 AND object_blake3 IS NOT NULL",

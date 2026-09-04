@@ -1,26 +1,22 @@
-use super::plugin::{PackageError, PluginPackage, confined_path};
-use crate::{EmulatorPluginInstance, EmulatorPort, PluginInstance, PluginModuleLoader};
-use deno_core::ModuleSpecifier;
+use super::plugin::{PackageError, PluginClass, PluginPackage, confined_path};
+use crate::{EmulatorPluginInstance, EmulatorPort};
 use serde::Deserialize;
 use snowglass_config::{
     ConfigurationToml,
     ast::{ConfigurationDefinition, ConfigurationInstance, PortAssignments},
 };
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{fs, path::PathBuf, sync::Arc};
 use toml_spanner::Arena;
 
 /// Keys owned directly by the `[emulator]` block.
-#[derive(Debug, Deserialize)]
-struct EmulatorBlock {
+#[derive(Deserialize)]
+pub struct EmulatorBlock {
     platforms: Vec<String>,
-    main: PathBuf,
     configuration: ConfigurationBlock,
     #[serde(default)]
     savestates: Option<SaveStateConfig>,
+    #[serde(skip)]
+    definition: Option<Arc<ConfigurationDefinition>>,
 }
 
 #[derive(Clone, Debug, Deserialize, serde::Serialize, Eq, PartialEq)]
@@ -37,25 +33,13 @@ struct ConfigurationBlock {
     definitions: Vec<PathBuf>,
 }
 
-/// A loaded emulator plugin. It owns the generic plugin package and its
-/// emulator-specific configuration definition, but no JavaScript runtime or
-/// viewer launch policy.
-pub struct EmulatorPlugin {
-    package: PluginPackage<EmulatorBlock>,
-    module_loader: PluginModuleLoader,
-    entrypoint: ModuleSpecifier,
-    definition: Arc<ConfigurationDefinition>,
-}
+pub type EmulatorPlugin = PluginPackage<EmulatorBlock>;
 
-impl EmulatorPlugin {
-    pub fn load(root: impl AsRef<Path>) -> Result<Self, PackageError> {
-        let package = PluginPackage::<EmulatorBlock>::load(root)?;
-        if package.class() != "emulator" {
-            return Err(PackageError::UnexpectedClass {
-                expected: "emulator",
-                actual: package.class().to_owned(),
-            });
-        }
+impl PluginClass for EmulatorBlock {
+    const CLASS: &'static str = "emulator";
+
+    fn prepare(package: &mut PluginPackage<Self>) -> Result<(), PackageError> {
+        confined_path(package.root(), package.main())?;
         let emulator = package.block();
         if emulator
             .savestates
@@ -65,12 +49,6 @@ impl EmulatorPlugin {
         {
             return Err(PackageError::InvalidSaveStateRevision);
         }
-        let entrypoint_path = confined_path(package.root(), &emulator.main)?;
-        let module_loader = package.module_loader();
-        let entrypoint = module_loader
-            .specifier(&entrypoint_path)
-            .map_err(|error| PackageError::ModuleSpecifier(error.to_string()))?;
-
         let mut definition_paths = Vec::new();
         for pattern in &emulator.configuration.definitions {
             let absolute = package.root().join(pattern);
@@ -93,54 +71,30 @@ impl EmulatorPlugin {
         let arena = Arena::new();
         let parsed = ConfigurationToml::try_from_tomls(&arena, sources.iter().map(String::as_str))?;
         let definition = Arc::new(ConfigurationDefinition::from(parsed));
-
-        Ok(Self {
-            package,
-            module_loader,
-            entrypoint,
-            definition,
-        })
+        package.block_mut().definition = Some(definition);
+        Ok(())
     }
+}
 
-    pub fn root(&self) -> &Path {
-        self.package.root()
-    }
-
-    pub fn id(&self) -> &str {
-        self.package.id()
-    }
-
-    pub fn version(&self) -> &str {
-        self.package.version()
-    }
-
-    pub fn class(&self) -> &str {
-        self.package.class()
-    }
-
-    pub fn config(&self) -> &toml::Table {
-        self.package.config()
-    }
-
-    pub fn module_loader(&self) -> &PluginModuleLoader {
-        &self.module_loader
-    }
-
-    pub fn entrypoint(&self) -> &ModuleSpecifier {
-        &self.entrypoint
+impl PluginPackage<EmulatorBlock> {
+    fn definition(&self) -> &Arc<ConfigurationDefinition> {
+        self.block()
+            .definition
+            .as_ref()
+            .expect("emulator package was prepared during loading")
     }
 
     pub fn platforms(&self) -> &[String] {
-        &self.package.block().platforms
+        &self.block().platforms
     }
 
     pub fn save_states(&self) -> Option<&SaveStateConfig> {
-        self.package.block().savestates.as_ref()
+        self.block().savestates.as_ref()
     }
 
     pub fn ports(&self, console: &str) -> Result<Vec<EmulatorPort>, PackageError> {
         let input = self
-            .definition
+            .definition()
             .input
             .as_ref()
             .ok_or(PackageError::NoInputDefinition)?;
@@ -168,7 +122,7 @@ impl EmulatorPlugin {
         layouts: impl IntoIterator<Item = impl AsRef<str>>,
     ) -> Result<PortAssignments, PackageError> {
         let input = self
-            .definition
+            .definition()
             .input
             .as_ref()
             .ok_or(PackageError::NoInputDefinition)?;
@@ -215,43 +169,13 @@ impl EmulatorPlugin {
         console: &str,
         assignments: PortAssignments,
     ) -> Result<ConfigurationInstance, PackageError> {
-        Ok(self.definition.instantiate(console, assignments)?)
+        Ok(self.definition().instantiate(console, assignments)?)
     }
 }
 
-impl PluginInstance for EmulatorPlugin {
-    fn id(&self) -> &str {
-        self.id()
-    }
-
-    fn version(&self) -> &str {
-        self.version()
-    }
-
-    fn class(&self) -> &str {
-        self.class()
-    }
-
-    fn module_loader(&self) -> &PluginModuleLoader {
-        self.module_loader()
-    }
-
-    fn resources(&self) -> Result<Vec<crate::PluginResource>, PackageError> {
-        self.package.resources()
-    }
-
-    fn caches(&self) -> &[crate::PluginCache] {
-        self.package.caches()
-    }
-}
-
-impl EmulatorPluginInstance for EmulatorPlugin {
-    fn entrypoint(&self) -> &ModuleSpecifier {
-        self.entrypoint()
-    }
-
+impl EmulatorPluginInstance for PluginPackage<EmulatorBlock> {
     fn configuration_definition(&self) -> &ConfigurationDefinition {
-        &self.definition
+        self.definition()
     }
 
     fn platforms(&self) -> &[String] {

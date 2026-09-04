@@ -1,4 +1,5 @@
-use super::{InvocationControl, PluginInvocationError, PluginLifecycle, create_worker_runtime};
+use super::{InvocationControl, PluginInvocationError, PluginLifecycle};
+use crate::plugin_runtime::worker::{WorkerOptions, create_worker_runtime};
 use crate::{EmulatorLaunchArguments, EmulatorLaunchInvocation, EmulatorPluginInstance};
 use snowglass_command::command_handler;
 use std::{
@@ -51,7 +52,7 @@ impl IsolateDeadline {
 }
 pub(super) fn start_controller_session_worker(
     invocation: EmulatorLaunchInvocation,
-    filesystem: crate::filesystem::FilesystemOptions,
+    worker: WorkerOptions,
     lifecycle: Arc<PluginLifecycle>,
     control: Arc<InvocationControl>,
 ) -> Result<(EmulatorLaunchArguments, Option<crate::ControllerSession>), PluginInvocationError> {
@@ -65,7 +66,7 @@ pub(super) fn start_controller_session_worker(
         .spawn(move || {
             let result = ControllerSessionWorker::start(
                 invocation,
-                filesystem,
+                worker,
                 lifecycle,
                 control,
                 command_receiver,
@@ -100,7 +101,7 @@ struct ControllerSessionWorker {
 impl ControllerSessionWorker {
     fn start(
         invocation: EmulatorLaunchInvocation,
-        filesystem: crate::filesystem::FilesystemOptions,
+        worker: WorkerOptions,
         lifecycle: Arc<PluginLifecycle>,
         control: Arc<InvocationControl>,
         commands: std::sync::mpsc::Receiver<crate::controller::ControllerSessionCommand>,
@@ -109,14 +110,13 @@ impl ControllerSessionWorker {
         >,
     ) -> Result<Option<Self>, PluginInvocationError> {
         let entrypoint = invocation.plugin.entrypoint().to_string();
-        let loader = invocation.plugin.module_loader().clone();
         let tokio = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(PluginInvocationError::worker)?;
         let mut runtime = {
             let _runtime_context = tokio.enter();
-            create_worker_runtime(&entrypoint, loader, filesystem, lifecycle.storage.clone())?
+            create_worker_runtime(&entrypoint, worker, lifecycle.storage.clone())?
         };
         let isolate = runtime.js_runtime_mut().v8_isolate().thread_safe_handle();
         if control.install_isolate(isolate) {

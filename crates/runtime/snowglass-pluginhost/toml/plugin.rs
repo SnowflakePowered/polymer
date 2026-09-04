@@ -13,6 +13,7 @@ struct PluginBlock {
     id: String,
     version: String,
     class: String,
+    main: PathBuf,
     #[serde(default)]
     config: toml::Table,
     #[serde(default)]
@@ -39,6 +40,90 @@ struct ResourceBlock {
     target: Option<String>,
 }
 
+impl ResourceBlock {
+    fn validate_all(root: &Path, resources: &[Self]) -> Result<(), PackageError> {
+        let mut keys = BTreeSet::new();
+        for resource in resources {
+            if resource.name.is_empty()
+                || !resource
+                    .name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            {
+                return Err(PackageError::InvalidResourceName(resource.name.clone()));
+            }
+            if !keys.insert((resource.name.clone(), resource.target.clone())) {
+                return Err(PackageError::DuplicateResource {
+                    name: resource.name.clone(),
+                    target: resource.target.clone(),
+                });
+            }
+            let parsed = resource.materialize(root)?;
+            match parsed.format {
+                PluginResourceFormat::Directory if !parsed.path.is_dir() => {
+                    return Err(PackageError::InvalidResourceType(resource.name.clone()));
+                }
+                PluginResourceFormat::Asar | PluginResourceFormat::File
+                    if !parsed.path.is_file() =>
+                {
+                    return Err(PackageError::InvalidResourceType(resource.name.clone()));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn materialize(&self, root: &Path) -> Result<PluginResource, PackageError> {
+        let source = self
+            .source
+            .strip_prefix("pkg:")
+            .ok_or_else(|| PackageError::InvalidResourceSource(self.source.clone()))?;
+        let relative = Path::new(source);
+        if source.is_empty()
+            || source.starts_with('/')
+            || source.contains(['\\', '?', '#'])
+            || relative
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            return Err(PackageError::InvalidResourceSource(self.source.clone()));
+        }
+        let permissions = self.mode.parse()?;
+        let authority: Permissions = "rx".parse().expect("canonical permission constant");
+        if !authority.contains(permissions) {
+            return Err(PackageError::Vfs(
+                snowglass_vfs::VfsError::AuthorityExceeded {
+                    authority,
+                    requested: permissions,
+                },
+            ));
+        }
+        Ok(PluginResource {
+            name: self.name.clone(),
+            path: confined_path(root, relative)?,
+            format: self.format,
+            permissions,
+        })
+    }
+
+    fn current_target() -> String {
+        let architecture = match std::env::consts::ARCH {
+            "x86_64" => "x86_64",
+            "aarch64" => "aarch64",
+            other => other,
+        };
+        let suffix = if cfg!(target_os = "windows") {
+            "pc-windows-msvc"
+        } else if cfg!(target_os = "linux") {
+            "unknown-linux-gnu"
+        } else {
+            std::env::consts::OS
+        };
+        format!("{architecture}-{suffix}")
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct PluginResource {
     pub name: String,
@@ -56,16 +141,48 @@ pub struct PluginCache {
     pub label: String,
 }
 
+impl PluginCache {
+    fn validate_all(caches: &[Self]) -> Result<(), PackageError> {
+        let mut keys = BTreeSet::new();
+        for cache in caches {
+            if cache.key.is_empty()
+                || !cache
+                    .key
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            {
+                return Err(PackageError::InvalidCacheKey(cache.key.clone()));
+            }
+            if cache.label.trim().is_empty() {
+                return Err(PackageError::InvalidCacheLabel(cache.key.clone()));
+            }
+            if !keys.insert(cache.key.clone()) {
+                return Err(PackageError::DuplicateCache(cache.key.clone()));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Generic data shared by every loaded plugin package. `B` is the root block
 /// belonging to the plugin class, such as `[emulator]`.
 pub struct PluginPackage<B> {
     root: PathBuf,
+    main: PathBuf,
     plugin: PluginBlock,
     block: B,
+    module_loader: crate::PluginModuleLoader,
+    entrypoint: deno_core::ModuleSpecifier,
+}
+
+pub trait PluginClass: DeserializeOwned + Send + Sync + Sized + 'static {
+    const CLASS: &'static str;
+
+    fn prepare(package: &mut PluginPackage<Self>) -> Result<(), PackageError>;
 }
 
 impl<B: DeserializeOwned> PluginPackage<B> {
-    pub fn load(root: impl AsRef<Path>) -> Result<Self, PackageError> {
+    fn load_manifest(root: impl AsRef<Path>) -> Result<Self, PackageError> {
         let root = root.as_ref().canonicalize()?;
         let manifest_path = root.join("plugin.toml");
         let mut manifest = fs::read_to_string(&manifest_path)?.parse::<toml::Table>()?;
@@ -81,8 +198,22 @@ impl<B: DeserializeOwned> PluginPackage<B> {
         {
             return Err(PackageError::InvalidPluginId(plugin.id));
         }
-        validate_resources(&root, &plugin.resources)?;
-        validate_caches(&plugin.caches)?;
+        ResourceBlock::validate_all(&root, &plugin.resources)?;
+        PluginCache::validate_all(&plugin.caches)?;
+        if plugin.main.as_os_str().is_empty()
+            || plugin.main.is_absolute()
+            || plugin
+                .main
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            return Err(PackageError::InvalidPluginMain(plugin.main));
+        }
+        let module_loader = crate::PluginModuleLoader::new(&plugin.id, root.clone());
+        let entrypoint = module_loader
+            .package_specifier(&plugin.main)
+            .map_err(|error| PackageError::ModuleSpecifier(error.to_string()))?;
+        let main = root.join(&plugin.main);
         let class = plugin.class.clone();
         let block: B = manifest
             .remove(&class)
@@ -90,9 +221,26 @@ impl<B: DeserializeOwned> PluginPackage<B> {
             .try_into()?;
         Ok(Self {
             root,
+            main,
             plugin,
             block,
+            module_loader,
+            entrypoint,
         })
+    }
+}
+
+impl<B: PluginClass> PluginPackage<B> {
+    pub fn load(root: impl AsRef<Path>) -> Result<Self, PackageError> {
+        let mut package = Self::load_manifest(root)?;
+        if package.plugin.class != B::CLASS {
+            return Err(PackageError::UnexpectedClass {
+                expected: B::CLASS,
+                actual: package.plugin.class.clone(),
+            });
+        }
+        B::prepare(&mut package)?;
+        Ok(package)
     }
 }
 
@@ -101,28 +249,49 @@ impl<B> PluginPackage<B> {
         &self.root
     }
 
-    pub fn id(&self) -> &str {
-        &self.plugin.id
-    }
-
-    pub fn version(&self) -> &str {
-        &self.plugin.version
-    }
-
-    pub fn class(&self) -> &str {
-        &self.plugin.class
-    }
-
     pub fn config(&self) -> &toml::Table {
         &self.plugin.config
+    }
+
+    pub fn main(&self) -> &Path {
+        &self.main
     }
 
     pub fn block(&self) -> &B {
         &self.block
     }
 
-    pub fn resources(&self) -> Result<Vec<PluginResource>, PackageError> {
-        let target = current_target();
+    pub(super) fn block_mut(&mut self) -> &mut B {
+        &mut self.block
+    }
+}
+
+impl<B> crate::PluginInstance for PluginPackage<B>
+where
+    B: Send + Sync + 'static,
+{
+    fn id(&self) -> &str {
+        &self.plugin.id
+    }
+
+    fn version(&self) -> &str {
+        &self.plugin.version
+    }
+
+    fn class(&self) -> &str {
+        &self.plugin.class
+    }
+
+    fn module_loader(&self) -> &crate::PluginModuleLoader {
+        &self.module_loader
+    }
+
+    fn entrypoint(&self) -> &deno_core::ModuleSpecifier {
+        &self.entrypoint
+    }
+
+    fn resources(&self) -> Result<Vec<PluginResource>, PackageError> {
+        let target = ResourceBlock::current_target();
         let mut names = BTreeSet::new();
         let mut selected = Vec::new();
         for resource in self
@@ -132,7 +301,7 @@ impl<B> PluginPackage<B> {
             .filter(|resource| resource.target.as_deref() == Some(target.as_str()))
         {
             names.insert(resource.name.clone());
-            selected.push(materialize_resource(&self.root, resource)?);
+            selected.push(resource.materialize(&self.root)?);
         }
         for resource in self
             .plugin
@@ -140,122 +309,14 @@ impl<B> PluginPackage<B> {
             .iter()
             .filter(|resource| resource.target.is_none() && !names.contains(&resource.name))
         {
-            selected.push(materialize_resource(&self.root, resource)?);
+            selected.push(resource.materialize(&self.root)?);
         }
         Ok(selected)
     }
 
-    pub fn caches(&self) -> &[PluginCache] {
+    fn caches(&self) -> &[PluginCache] {
         &self.plugin.caches
     }
-
-    pub fn module_loader(&self) -> crate::PluginModuleLoader {
-        crate::PluginModuleLoader::new(self.id(), self.root.clone())
-    }
-}
-
-fn validate_caches(caches: &[PluginCache]) -> Result<(), PackageError> {
-    let mut keys = BTreeSet::new();
-    for cache in caches {
-        if cache.key.is_empty()
-            || !cache
-                .key
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-        {
-            return Err(PackageError::InvalidCacheKey(cache.key.clone()));
-        }
-        if cache.label.trim().is_empty() {
-            return Err(PackageError::InvalidCacheLabel(cache.key.clone()));
-        }
-        if !keys.insert(cache.key.clone()) {
-            return Err(PackageError::DuplicateCache(cache.key.clone()));
-        }
-    }
-    Ok(())
-}
-
-fn validate_resources(root: &Path, resources: &[ResourceBlock]) -> Result<(), PackageError> {
-    let mut keys = BTreeSet::new();
-    for resource in resources {
-        if resource.name.is_empty()
-            || !resource
-                .name
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-        {
-            return Err(PackageError::InvalidResourceName(resource.name.clone()));
-        }
-        if !keys.insert((resource.name.clone(), resource.target.clone())) {
-            return Err(PackageError::DuplicateResource {
-                name: resource.name.clone(),
-                target: resource.target.clone(),
-            });
-        }
-        let parsed = materialize_resource(root, resource)?;
-        match parsed.format {
-            PluginResourceFormat::Directory if !parsed.path.is_dir() => {
-                return Err(PackageError::InvalidResourceType(resource.name.clone()));
-            }
-            PluginResourceFormat::Asar | PluginResourceFormat::File if !parsed.path.is_file() => {
-                return Err(PackageError::InvalidResourceType(resource.name.clone()));
-            }
-            _ => {}
-        }
-    }
-    Ok(())
-}
-
-fn materialize_resource(
-    root: &Path,
-    resource: &ResourceBlock,
-) -> Result<PluginResource, PackageError> {
-    let source = resource
-        .source
-        .strip_prefix("pkg:")
-        .ok_or_else(|| PackageError::InvalidResourceSource(resource.source.clone()))?;
-    let relative = Path::new(source);
-    if source.is_empty()
-        || source.starts_with('/')
-        || source.contains(['\\', '?', '#'])
-        || relative
-            .components()
-            .any(|component| !matches!(component, std::path::Component::Normal(_)))
-    {
-        return Err(PackageError::InvalidResourceSource(resource.source.clone()));
-    }
-    let permissions = resource.mode.parse()?;
-    let authority: Permissions = "rx".parse().expect("canonical permission constant");
-    if !authority.contains(permissions) {
-        return Err(PackageError::Vfs(
-            snowglass_vfs::VfsError::AuthorityExceeded {
-                authority,
-                requested: permissions,
-            },
-        ));
-    }
-    Ok(PluginResource {
-        name: resource.name.clone(),
-        path: confined_path(root, relative)?,
-        format: resource.format,
-        permissions,
-    })
-}
-
-fn current_target() -> String {
-    let architecture = match std::env::consts::ARCH {
-        "x86_64" => "x86_64",
-        "aarch64" => "aarch64",
-        other => other,
-    };
-    let suffix = if cfg!(target_os = "windows") {
-        "pc-windows-msvc"
-    } else if cfg!(target_os = "linux") {
-        "unknown-linux-gnu"
-    } else {
-        std::env::consts::OS
-    };
-    format!("{architecture}-{suffix}")
 }
 
 pub(super) fn confined_path(root: &Path, path: impl AsRef<Path>) -> Result<PathBuf, PackageError> {
@@ -322,16 +383,20 @@ pub enum PackageError {
     InvalidCacheLabel(String),
     #[error("duplicate plugin cache '{0}'")]
     DuplicateCache(String),
+    #[error("invalid namespaced scrape key '{0}'")]
+    InvalidScrapeKey(String),
+    #[error("duplicate scraper provides key '{0}'")]
+    DuplicateScrapeKey(String),
+    #[error("invalid scraper requirement '{0}'")]
+    InvalidScrapeRequirement(String),
     #[error("emulator save-state revision must not be empty")]
     InvalidSaveStateRevision,
-    #[error("theme main document must be a confined package-relative path: {}", .0.display())]
-    InvalidThemeMain(PathBuf),
+    #[error("plugin main must be a confined package-relative path: {}", .0.display())]
+    InvalidPluginMain(PathBuf),
     #[error("theme debug serve command must not be empty")]
     InvalidThemeServe,
     #[error("theme debug URL must be an absolute HTTP(S) URL: {0}")]
     InvalidThemeDebugUrl(String),
-    #[error("the user-local cache directory is unavailable")]
-    CacheStorageUnavailable,
     #[error(
         "layout '{layout}' does not identify one next port on '{console}' (candidates: {candidates:?})"
     )]

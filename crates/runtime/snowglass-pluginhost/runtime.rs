@@ -1,6 +1,7 @@
 use crate::{
     EmulatorPlugin, EmulatorPluginInstance, PackageError, PluginCache, PluginModuleLoader,
-    PluginResource, ThemeDebug, ThemePlugin, descriptor::PluginDescriptor,
+    PluginResource, ScraperPlugin, ScraperPluginInstance, ThemeDebug, ThemePlugin,
+    descriptor::PluginDescriptor,
 };
 use serde::Deserialize;
 use std::{
@@ -18,6 +19,7 @@ pub trait PluginInstance: Send + Sync + 'static {
     fn version(&self) -> &str;
     fn class(&self) -> &str;
     fn module_loader(&self) -> &PluginModuleLoader;
+    fn entrypoint(&self) -> &deno_core::ModuleSpecifier;
     fn resources(&self) -> Result<Vec<PluginResource>, PackageError> {
         Ok(Vec::new())
     }
@@ -102,6 +104,15 @@ impl PluginRegistry {
                 let emulator: Arc<dyn EmulatorPluginInstance> = concrete;
                 let mut registered = RegisteredPlugin::new(instance.clone());
                 registered.insert(emulator);
+                self.register(instance.id(), registered)?;
+                Ok(instance)
+            }
+            "scraper" => {
+                let concrete = Arc::new(ScraperPlugin::load(root)?);
+                let instance: Arc<dyn PluginInstance> = concrete.clone();
+                let scraper: Arc<dyn ScraperPluginInstance> = concrete;
+                let mut registered = RegisteredPlugin::new(instance.clone());
+                registered.insert(scraper);
                 self.register(instance.id(), registered)?;
                 Ok(instance)
             }

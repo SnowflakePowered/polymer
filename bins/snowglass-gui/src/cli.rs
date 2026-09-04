@@ -17,6 +17,7 @@ struct ShellArguments {
 pub struct ShellOptions {
     pub theme: crate::theme::SelectedTheme,
     pub plugins: PluginRegistry,
+    pub directories: snowglass_library::Directories,
     pub local_storage: Option<snowglass_deno::webstorage::LocalStorage>,
     pub library: Option<snowglass_runtime::LibraryService>,
 }
@@ -35,41 +36,31 @@ pub async fn parse() -> Result<ShellOptions, Box<dyn Error>> {
             }
         }
     }
-    let directories = match snowglass_library::Directories::discover() {
-        Ok(directories) => Some(directories),
+    let directories = snowglass_library::Directories::discover()?;
+    let local_storage = match snowglass_deno::webstorage::LocalStorage::open(&directories).await {
+        Ok(storage) => Some(storage),
         Err(error) => {
-            eprintln!("snowglass: could not locate local storage: {error}");
+            eprintln!("snowglass: could not open local storage: {error}");
             None
         }
     };
-    let local_storage = match directories.as_ref() {
-        Some(directories) => {
-            match snowglass_deno::webstorage::LocalStorage::open(directories).await {
-                Ok(storage) => Some(storage),
-                Err(error) => {
-                    eprintln!("snowglass: could not open local storage: {error}");
-                    None
-                }
-            }
-        }
-        None => None,
-    };
-    let library = match directories.as_ref() {
-        Some(directories) => match snowglass_runtime::LibraryService::open(directories).await {
+    let library =
+        match snowglass_runtime::LibraryService::open_with_plugins(&directories, plugins.clone())
+            .await
+        {
             Ok(library) => Some(library),
             Err(error) => {
                 eprintln!("snowglass: could not open games library: {error}");
                 None
             }
-        },
-        None => None,
-    };
+        };
     let saved_theme = saved_theme(local_storage.as_ref()).await;
     let theme = select_theme(&plugins, arguments.theme.as_deref(), saved_theme.as_deref())?;
     let theme = crate::theme::SelectedTheme::new(theme, arguments.debug);
     Ok(ShellOptions {
         theme,
         plugins,
+        directories,
         local_storage,
         library,
     })
@@ -157,9 +148,9 @@ mod tests {
 id = "{id}"
 version = "0"
 class = "theme"
+main = "dist/index.html"
 
 [theme]
-main = "dist/index.html"
 "#,
             ),
         )

@@ -52,12 +52,14 @@ async fn catalog_deduplicates_binaries_and_owns_external_media() {
     let metadata = store
         .add_metadata(
             first.binary_id,
-            MetadataInput::Object {
-                relation: Relation::BoxartFront,
-                language: Some("en-US".to_owned()),
+            MetadataInput {
+                key: "media.boxart.front.en-US".to_owned(),
                 source: "test".to_owned(),
-                media_type: "image/png".to_owned(),
-                path: source.clone(),
+                data: MetadataInputData::Object {
+                    media_type: "image/png".to_owned(),
+                    path: source.clone(),
+                    source_url: None,
+                },
             },
         )
         .await
@@ -105,10 +107,12 @@ async fn deleting_the_final_standalone_launchable_cascades_metadata() {
     let year = store
         .add_metadata(
             launchable.binary_id,
-            MetadataInput::ReleaseYear {
-                language: None,
+            MetadataInput {
+                key: "meta.releaseyear".to_owned(),
                 source: "test".to_owned(),
-                year: 1987,
+                data: MetadataInputData::Scalar {
+                    value: MetadataValue::Number(1987.0),
+                },
             },
         )
         .await
@@ -121,4 +125,209 @@ async fn deleting_the_final_standalone_launchable_cascades_metadata() {
         store.metadata_text(year.id).await,
         Err(GameCatalogError::NotFound(_))
     ));
+}
+
+#[tokio::test]
+async fn producer_replacement_preserves_other_sources_and_repeated_ordinals() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = GameCatalog::open(
+        directory.path().join("library.db"),
+        Arc::new(InMemory::new()),
+    )
+    .await
+    .unwrap();
+    let launchable = store
+        .import_launchable(IdentifiedLaunchable {
+            path: directory.path().join("game.rom"),
+            binary_blake3: *blake3::hash(b"producer-test").as_bytes(),
+            serial: None,
+            title_id: None,
+            parent_binary_id: None,
+            platform: "NINTENDO_NES".to_owned(),
+        })
+        .await
+        .unwrap();
+    let scalar = |value: &str| MetadataInput {
+        key: "meta.genre".to_owned(),
+        source: "Shared attribution".to_owned(),
+        data: MetadataInputData::Scalar {
+            value: MetadataValue::String(value.to_owned()),
+        },
+    };
+
+    store
+        .replace_metadata(
+            launchable.binary_id,
+            "scraper:first",
+            vec![scalar("Action"), scalar("Adventure")],
+        )
+        .await
+        .unwrap();
+    store
+        .replace_metadata(
+            launchable.binary_id,
+            "scraper:second",
+            vec![scalar("Platformer")],
+        )
+        .await
+        .unwrap();
+    store
+        .replace_metadata(
+            launchable.binary_id,
+            "scraper:first",
+            vec![scalar("Metroidvania")],
+        )
+        .await
+        .unwrap();
+
+    let values = store.metadata(launchable.binary_id).await.unwrap();
+    assert_eq!(values.len(), 2);
+    assert!(values.iter().any(|value| {
+        value.producer == "scraper:first"
+            && value.ordinal == 0
+            && value.data == MetadataData::Scalar(MetadataValue::String("Metroidvania".to_owned()))
+    }));
+    assert!(values.iter().any(|value| {
+        value.producer == "scraper:second"
+            && value.data == MetadataData::Scalar(MetadataValue::String("Platformer".to_owned()))
+    }));
+}
+
+#[tokio::test]
+async fn metadata_rejects_non_finite_numbers() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = GameCatalog::open(
+        directory.path().join("library.db"),
+        Arc::new(InMemory::new()),
+    )
+    .await
+    .unwrap();
+    let launchable = store
+        .import_launchable(IdentifiedLaunchable {
+            path: directory.path().join("game.rom"),
+            binary_blake3: *blake3::hash(b"finite-test").as_bytes(),
+            serial: None,
+            title_id: None,
+            parent_binary_id: None,
+            platform: "NINTENDO_NES".to_owned(),
+        })
+        .await
+        .unwrap();
+    let error = store
+        .add_metadata(
+            launchable.binary_id,
+            MetadataInput {
+                key: "meta.score".to_owned(),
+                source: "test".to_owned(),
+                data: MetadataInputData::Scalar {
+                    value: MetadataValue::Number(f64::NAN),
+                },
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("finite"));
+}
+
+#[tokio::test]
+async fn seeded_import_is_atomic_and_only_reports_a_new_root_binary_once() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = GameCatalog::open(
+        directory.path().join("library.db"),
+        Arc::new(InMemory::new()),
+    )
+    .await
+    .unwrap();
+    let digest = *blake3::hash(b"same-root").as_bytes();
+    let input = |name: &str| IdentifiedLaunchable {
+        path: directory.path().join(name),
+        binary_blake3: digest,
+        serial: None,
+        title_id: None,
+        parent_binary_id: None,
+        platform: "NINTENDO_NES".to_owned(),
+    };
+    let seed = MetadataInput {
+        key: "filename.raw".to_owned(),
+        source: "Filename".to_owned(),
+        data: MetadataInputData::Scalar {
+            value: MetadataValue::String("first.rom".to_owned()),
+        },
+    };
+    let (first, created) = store
+        .import_launchable_seeded(
+            input("first.rom"),
+            vec![("host:shiratsu".to_owned(), vec![seed])],
+        )
+        .await
+        .unwrap();
+    assert!(created);
+    let (_, created) = store
+        .import_launchable_seeded(input("second.rom"), Vec::new())
+        .await
+        .unwrap();
+    assert!(!created);
+    let metadata = store.metadata(first.binary_id).await.unwrap();
+    assert_eq!(metadata.len(), 1);
+    assert_eq!(metadata[0].producer, "host:shiratsu");
+
+    let error = store
+        .import_launchable_seeded(
+            input("broken.rom"),
+            vec![(
+                "host:bad".to_owned(),
+                vec![MetadataInput {
+                    key: "invalid..key".to_owned(),
+                    source: "test".to_owned(),
+                    data: MetadataInputData::Scalar {
+                        value: MetadataValue::String("bad".to_owned()),
+                    },
+                }],
+            )],
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("invalid namespaced metadata key")
+    );
+    assert_eq!(store.games(None).await.unwrap()[0].launchables.len(), 2);
+}
+
+#[tokio::test]
+async fn active_scrape_job_is_created_and_claimed_once() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = GameCatalog::open(
+        directory.path().join("library.db"),
+        Arc::new(InMemory::new()),
+    )
+    .await
+    .unwrap();
+    let launchable = store
+        .import_launchable(IdentifiedLaunchable {
+            path: directory.path().join("game.rom"),
+            binary_blake3: *blake3::hash(b"scrape-claim").as_bytes(),
+            serial: None,
+            title_id: None,
+            parent_binary_id: None,
+            platform: "NINTENDO_NES".to_owned(),
+        })
+        .await
+        .unwrap();
+    let plugins = vec!["fixture".to_owned()];
+
+    let (first, created) = store
+        .queue_scrape(launchable.binary_id, launchable.binary_id, &plugins)
+        .await
+        .unwrap();
+    assert!(created);
+    let (second, created) = store
+        .queue_scrape(launchable.binary_id, launchable.binary_id, &plugins)
+        .await
+        .unwrap();
+    assert!(!created);
+    assert_eq!(second.id, first.id);
+    assert!(store.claim_scrape_job(first.id).await.unwrap());
+    assert!(!store.claim_scrape_job(first.id).await.unwrap());
 }

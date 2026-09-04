@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use super::{
     Game, IdentifiedLaunchable, Launchable, MediaData, MediaResource, Metadata, MetadataData,
-    MetadataInput, Relation, schema::SCHEMA,
+    MetadataInput, MetadataInputData, MetadataValue, schema::SCHEMA,
 };
 use crate::Directories;
 
@@ -52,22 +52,24 @@ pub struct GameCatalog {
 }
 
 struct PreparedMetadata {
-    relation: Relation,
-    language: Option<String>,
+    key: String,
     source: String,
+    producer: String,
+    ordinal: u32,
     data: PreparedMetadataData,
 }
 
 enum PreparedMetadataData {
-    Text(String),
-    ReleaseYear(u16),
+    Scalar(MetadataValue),
     Inline {
         media_type: String,
         bytes: Box<[u8]>,
+        source_url: Option<String>,
     },
     Object {
         media_type: String,
         object: PreparedObject,
+        source_url: Option<String>,
     },
 }
 
@@ -129,6 +131,7 @@ impl GameCatalog {
             )
             .await?;
         let mut games = BTreeMap::<Uuid, Game>::new();
+        let mut binary_roots = BTreeMap::<Uuid, Uuid>::new();
         while let Some(row) = rows.next().await? {
             let root_id = Self::uuid(row.get_value(0)?)?;
             let root_platform: String = row.get(1)?;
@@ -141,9 +144,11 @@ impl GameCatalog {
                 launchables: Vec::new(),
                 metadata: Vec::new(),
             });
+            let binary_id = Self::uuid(row.get_value(3)?)?;
+            binary_roots.insert(binary_id, root_id);
             game.launchables.push(Launchable {
                 id: Self::uuid(row.get_value(2)?)?,
-                binary_id: Self::uuid(row.get_value(3)?)?,
+                binary_id,
                 path: PathBuf::from(row.get::<String>(4)?),
                 binary_blake3: Self::blob(row.get_value(5)?)?.into_boxed_slice(),
                 serial: Self::optional_text(row.get_value(6)?)?,
@@ -157,21 +162,25 @@ impl GameCatalog {
         let mut rows = connection
             .query(
                 r#"
-                SELECT metadata.id, metadata.parent_binary_id, metadata.relation,
-                       metadata.language, metadata.source, metadata.data_kind,
-                       metadata.text_value, metadata.release_year, metadata.inline_data,
-                       media_objects.object_key, metadata.media_type
+                SELECT metadata.id, metadata.parent_binary_id, metadata.key,
+                       metadata.source, metadata.producer, metadata.ordinal,
+                       metadata.data_kind, metadata.string_value, metadata.number_value,
+                       metadata.boolean_value, metadata.inline_data,
+                       media_objects.object_key, metadata.media_type, metadata.source_url
                 FROM metadata
                 LEFT JOIN media_objects ON media_objects.blake3 = metadata.object_blake3
-                ORDER BY metadata.parent_binary_id, metadata.relation,
-                         metadata.language, metadata.source, metadata.id
+                ORDER BY metadata.parent_binary_id, metadata.key,
+                         metadata.source, metadata.ordinal, metadata.id
                 "#,
                 (),
             )
             .await?;
         while let Some(row) = rows.next().await? {
             let parent = Self::uuid(row.get_value(1)?)?;
-            if let Some(game) = games.get_mut(&parent) {
+            if let Some(game) = binary_roots
+                .get(&parent)
+                .and_then(|root| games.get_mut(root))
+            {
                 game.metadata.push(Self::metadata_from_row(&row)?);
             }
         }
@@ -190,6 +199,18 @@ impl GameCatalog {
         &self,
         input: IdentifiedLaunchable,
     ) -> Result<Launchable, GameCatalogError> {
+        self.import_launchable_seeded(input, Vec::new())
+            .await
+            .map(|(launchable, _)| launchable)
+    }
+
+    /// Imports a launchable and replaces its host-produced seed metadata in one transaction.
+    /// The boolean is true only when this created a new root binary.
+    pub async fn import_launchable_seeded(
+        &self,
+        input: IdentifiedLaunchable,
+        seeds: Vec<(String, Vec<MetadataInput>)>,
+    ) -> Result<(Launchable, bool), GameCatalogError> {
         if input.platform.is_empty() {
             return Err(GameCatalogError::InvalidData(
                 "a launchable requires a platform".to_owned(),
@@ -203,12 +224,31 @@ impl GameCatalog {
                 "launchable paths must be absolute".to_owned(),
             ));
         }
+        let mut prepared_seeds = Vec::with_capacity(seeds.len());
+        for (producer, inputs) in seeds {
+            let mut prepared = Vec::with_capacity(inputs.len());
+            for (ordinal, input) in inputs.into_iter().enumerate() {
+                let ordinal = u32::try_from(ordinal).map_err(|_| {
+                    GameCatalogError::InvalidData("too many metadata values".to_owned())
+                })?;
+                prepared.push(self.prepare_metadata(&producer, ordinal, input).await?);
+            }
+            prepared_seeds.push((producer, prepared));
+        }
         let binary_id = Uuid::new_v5(&BINARY_NAMESPACE, &input.binary_blake3);
         let mut connection = self.connection().await?;
         let transaction = connection
             .transaction_with_behavior(turso::transaction::TransactionBehavior::Immediate)
             .await?;
         self.validate_parent(&transaction, &input).await?;
+        let mut binary_rows = transaction
+            .query(
+                "SELECT 1 FROM binaries WHERE id = ?1",
+                [Self::id(binary_id)],
+            )
+            .await?;
+        let binary_existed = binary_rows.next().await?.is_some();
+        drop(binary_rows);
         self.upsert_binary(&transaction, binary_id, &input).await?;
 
         let mut existing = transaction
@@ -249,18 +289,38 @@ impl GameCatalog {
                 )
                 .await?;
         }
+        let mut replaced_objects = Vec::new();
+        for (producer, values) in prepared_seeds {
+            replaced_objects
+                .extend(Self::referenced_objects(&transaction, binary_id, Some(&producer)).await?);
+            transaction
+                .execute(
+                    "DELETE FROM metadata WHERE parent_binary_id = ?1 AND producer = ?2",
+                    vec![Self::id(binary_id), Value::from(producer)],
+                )
+                .await?;
+            for value in values {
+                self.insert_metadata(&transaction, Uuid::now_v7(), binary_id, &value)
+                    .await?;
+            }
+        }
         transaction.commit().await?;
-        self.collect_objects(reassigned_objects).await;
-        Ok(Launchable {
-            id,
-            binary_id,
-            path: input.path,
-            binary_blake3: Box::new(input.binary_blake3),
-            serial: input.serial,
-            title_id: input.title_id,
-            parent_binary_id: input.parent_binary_id,
-            platform: input.platform,
-        })
+        replaced_objects.extend(reassigned_objects);
+        self.collect_objects(replaced_objects).await;
+        let created_root = !binary_existed && input.parent_binary_id.is_none();
+        Ok((
+            Launchable {
+                id,
+                binary_id,
+                path: input.path,
+                binary_blake3: Box::new(input.binary_blake3),
+                serial: input.serial,
+                title_id: input.title_id,
+                parent_binary_id: input.parent_binary_id,
+                platform: input.platform,
+            },
+            created_root,
+        ))
     }
 
     pub async fn remove_launchable(&self, id: Uuid) -> Result<(), GameCatalogError> {
@@ -350,7 +410,13 @@ impl GameCatalog {
         drop(rows);
         match version {
             0 => connection.execute_batch(SCHEMA).await?,
-            1 => {}
+            1 => {
+                connection.execute_batch(
+                    "DROP TABLE metadata; DROP TABLE media_objects; DROP TABLE IF EXISTS scrape_attempts; DROP TABLE IF EXISTS scrape_jobs;"
+                ).await?;
+                connection.execute_batch(SCHEMA).await?;
+            }
+            2 => {}
             version => {
                 return Err(GameCatalogError::InvalidData(format!(
                     "library database schema version {version} is not supported"
@@ -360,7 +426,7 @@ impl GameCatalog {
         Ok(())
     }
 
-    async fn connection(&self) -> Result<turso::Connection, GameCatalogError> {
+    pub(super) async fn connection(&self) -> Result<turso::Connection, GameCatalogError> {
         let connection = self.database.connect()?;
         connection.execute("PRAGMA foreign_keys = ON", ()).await?;
         Ok(connection)
@@ -478,7 +544,7 @@ impl GameCatalog {
         }
     }
 
-    async fn require_root(
+    pub(super) async fn require_root(
         &self,
         transaction: &Transaction<'_>,
         id: Uuid,
@@ -501,22 +567,35 @@ impl GameCatalog {
         Ok(())
     }
 
+    pub(super) async fn require_binary(
+        &self,
+        transaction: &Transaction<'_>,
+        id: Uuid,
+    ) -> Result<(), GameCatalogError> {
+        let mut rows = transaction
+            .query("SELECT 1 FROM binaries WHERE id = ?1", [Self::id(id)])
+            .await?;
+        if rows.next().await?.is_none() {
+            return Err(GameCatalogError::NotFound(id.simple().to_string()));
+        }
+        Ok(())
+    }
+
     fn metadata_from_row(row: &turso::Row) -> Result<Metadata, GameCatalogError> {
-        let kind: String = row.get(5)?;
+        let kind: String = row.get(6)?;
         let data = match kind.as_str() {
-            "text" => MetadataData::Text(row.get(6)?),
-            "year" => {
-                MetadataData::ReleaseYear(u16::try_from(row.get::<i64>(7)?).map_err(|_| {
-                    GameCatalogError::InvalidData("invalid release year".to_owned())
-                })?)
-            }
+            "string" => MetadataData::Scalar(MetadataValue::String(row.get(7)?)),
+            "number" => MetadataData::Scalar(MetadataValue::Number(row.get(8)?)),
+            "boolean" => MetadataData::Scalar(MetadataValue::Boolean(row.get::<i64>(9)? != 0)),
             "inline" => MetadataData::Media {
-                media_type: row.get(10)?,
-                data: MediaData::Inline(Self::blob(row.get_value(8)?)?.into_boxed_slice()),
+                media_type: row.get(12)?,
+                data: MediaData::Inline(Self::blob(row.get_value(10)?)?.into_boxed_slice()),
+                source_url: Self::optional_text(row.get_value(13)?)?,
             },
             "object" => MetadataData::Media {
-                media_type: row.get(10)?,
-                data: MediaData::Object(ObjectPath::from(row.get::<String>(9)?)),
+                media_type: row.get(12)?,
+                data: MediaData::Object(ObjectPath::from(row.get::<String>(11)?)),
+                source_url: Self::optional_text(row.get_value(13)?)?,
             },
             _ => {
                 return Err(GameCatalogError::InvalidData(format!(
@@ -527,12 +606,12 @@ impl GameCatalog {
         Ok(Metadata {
             id: Self::uuid(row.get_value(0)?)?,
             parent_binary_id: Self::uuid(row.get_value(1)?)?,
-            relation: row
-                .get::<String>(2)?
-                .parse()
-                .map_err(GameCatalogError::InvalidData)?,
-            language: Self::optional_text(row.get_value(3)?)?,
-            source: row.get(4)?,
+            key: row.get(2)?,
+            source: row.get(3)?,
+            producer: row.get(4)?,
+            ordinal: u32::try_from(row.get::<i64>(5)?).map_err(|_| {
+                GameCatalogError::InvalidData("invalid metadata ordinal".to_owned())
+            })?,
             data,
         })
     }
@@ -548,11 +627,11 @@ impl GameCatalog {
         matches!((stored, incoming), (Some(stored), Some(incoming)) if stored != incoming)
     }
 
-    fn id(value: Uuid) -> Value {
+    pub(super) fn id(value: Uuid) -> Value {
         Value::from(value.as_bytes().to_vec())
     }
 
-    fn uuid(value: Value) -> Result<Uuid, GameCatalogError> {
+    pub(super) fn uuid(value: Value) -> Result<Uuid, GameCatalogError> {
         Self::uuid_value(value)
     }
 
@@ -582,7 +661,7 @@ impl GameCatalog {
         }
     }
 
-    fn optional_text(value: Value) -> Result<Option<String>, GameCatalogError> {
+    pub(super) fn optional_text(value: Value) -> Result<Option<String>, GameCatalogError> {
         match value {
             Value::Null => Ok(None),
             Value::Text(value) => Ok(Some(value)),

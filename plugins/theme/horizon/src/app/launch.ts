@@ -4,8 +4,8 @@ import type {
   ConsoleStorageVolume,
   CreatableConsoleStorageKind,
   EmulatorConfiguration,
+  Package,
   PackageConfiguration,
-  ScrapedPackage,
 } from "../../../../../js/snowglass";
 
 const WII = "NINTENDO_WII";
@@ -104,6 +104,6 @@ export async function createSelection(game: PackageConfiguration): Promise<Confi
   return selection;
 }
 
-export async function onLaunch(packageValue: ScrapedPackage, game: PackageConfiguration) {
+export async function onLaunch(packageValue: Package, game: PackageConfiguration) {
   return window.Snowglass.configuration.onLaunch(packageValue, await createSelection(game));
 }

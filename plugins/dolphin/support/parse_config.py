@@ -69,11 +69,21 @@ for slot in range(1, 11):
     key = str(slot % 10)
     ACTION_VOCABULARY[f"load_state_{slot}"] = {
         "hotkey": f"HK_LOAD_STATE_SLOT_{slot}",
-        "fallback": (f"ctrl+alt+{key}", f"@(Ctrl+Alt+{key})"),
+        # Quick Resume owns native slot 10. Keep its actions single-key so
+        # synthetic DirectInput cannot miss a multi-key transition at quit.
+        "fallback": (
+            ("f14", "F14")
+            if slot == 10
+            else (f"ctrl+alt+{key}", f"@(Ctrl+Alt+{key})")
+        ),
     }
     ACTION_VOCABULARY[f"save_state_{slot}"] = {
         "hotkey": f"HK_SAVE_STATE_SLOT_{slot}",
-        "fallback": (f"ctrl+shift+{key}", f"@(Ctrl+Shift+{key})"),
+        "fallback": (
+            ("f13", "F13")
+            if slot == 10
+            else (f"ctrl+shift+{key}", f"@(Ctrl+Shift+{key})")
+        ),
     }
 
 # consolespec binding key → the Dolphin control it drives, per inputspec layout. Each

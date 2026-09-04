@@ -3,7 +3,8 @@ mod worker;
 
 use crate::filesystem::StorageFactories;
 use crate::{
-    EmulatorLaunchArguments, EmulatorLaunchInvocation, EmulatorPluginInstance, PluginRegistry,
+    EmulatorLaunchArguments, EmulatorLaunchInvocation, EmulatorPluginInstance, PluginInstance,
+    PluginRegistry, ScrapeInput, ScrapeResult, ScraperPluginInstance,
 };
 use controller_session::start_controller_session_worker;
 use deno_core::v8;
@@ -20,7 +21,7 @@ use std::{
 use thiserror::Error;
 use tokio::sync::{Notify, OnceCell, Semaphore};
 use worker::{
-    create_worker_runtime, filesystem_options, invoke_export, invoke_optional_export, run_worker,
+    WorkerOptions, invoke_export, invoke_optional_export, invoke_scrape_generator, run_worker,
 };
 
 /// Scheduling policy for plugin workers.
@@ -138,6 +139,7 @@ impl InvocationControl {
 
 struct RuntimeState {
     registry: PluginRegistry,
+    directories: snowglass_library::Directories,
     permits: Arc<Semaphore>,
     next_call: AtomicU64,
     active: Mutex<HashMap<u64, Arc<InvocationControl>>>,
@@ -282,7 +284,11 @@ pub struct PluginRuntime {
 }
 
 impl PluginRuntime {
-    pub fn new(registry: PluginRegistry, options: PluginRuntimeOptions) -> Self {
+    pub fn new(
+        registry: PluginRegistry,
+        directories: snowglass_library::Directories,
+        options: PluginRuntimeOptions,
+    ) -> Self {
         assert!(
             options.max_concurrent_calls > 0,
             "plugin runtime must allow at least one active call"
@@ -291,6 +297,7 @@ impl PluginRuntime {
             handle: PluginRuntimeHandle {
                 state: Arc::new(RuntimeState {
                     registry,
+                    directories,
                     permits: Arc::new(Semaphore::new(options.max_concurrent_calls)),
                     next_call: AtomicU64::new(1),
                     active: Mutex::new(HashMap::new()),
@@ -340,6 +347,10 @@ impl PluginRuntimeHandle {
             .clone()
     }
 
+    fn directories(&self) -> &snowglass_library::Directories {
+        &self.state.directories
+    }
+
     pub async fn configure(
         &self,
         plugin_id: &str,
@@ -364,16 +375,15 @@ impl PluginRuntimeHandle {
         let cancellation = self.cancellation_token();
         let entrypoint = plugin.entrypoint().to_string();
         let invocation_entrypoint = entrypoint.clone();
-        let loader = plugin.module_loader().clone();
-        let filesystem = filesystem_options(plugin.as_ref(), BTreeMap::new(), None)
-            .map_err(PluginInvocationError::worker)?;
+        let worker =
+            WorkerOptions::for_plugin(plugin.as_ref(), self.directories(), BTreeMap::new(), None)
+                .map_err(PluginInvocationError::worker)?;
         let lifecycle = self.lifecycle(plugin_id);
         let result = self
             .run_with_control(cancellation.control, move |control| {
                 run_worker(
                     entrypoint,
-                    loader,
-                    filesystem,
+                    worker,
                     lifecycle,
                     control,
                     move |runtime| async move {
@@ -492,6 +502,110 @@ impl PluginRuntimeHandle {
         Ok(result.value)
     }
 
+    /// Executes a scraper's async generator in a fresh isolate and validates
+    /// every yielded object against the plugin manifest.
+    pub async fn scrape(
+        &self,
+        plugin_id: &str,
+        input: ScrapeInput,
+        cancellation: PluginCancellationToken,
+    ) -> Result<Vec<ScrapeResult>, PluginInvocationError> {
+        let plugin = self
+            .state
+            .registry
+            .plugin::<dyn ScraperPluginInstance>(plugin_id)
+            .ok_or_else(|| {
+                PluginInvocationError::new(
+                    "NotFoundError",
+                    "UNKNOWN_SCRAPER",
+                    format!("unknown scraper '{plugin_id}'"),
+                )
+            })?;
+        if !plugin.accepts(&input) {
+            return Err(PluginInvocationError::new(
+                "TypeError",
+                "UNSATISFIED_REQUIREMENTS",
+                format!("scraper '{plugin_id}' requirements are not satisfied"),
+            ));
+        }
+        let entrypoint = plugin.entrypoint().to_string();
+        let invocation_entrypoint = entrypoint.clone();
+        let worker =
+            WorkerOptions::for_plugin(plugin.as_ref(), self.directories(), BTreeMap::new(), None)
+                .map_err(PluginInvocationError::worker)?;
+        let lifecycle = self.lifecycle(plugin_id);
+        let provided = plugin
+            .provides()
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        let results = self
+            .run_with_control(cancellation.control, move |control| {
+                run_worker(
+                    entrypoint,
+                    worker,
+                    lifecycle,
+                    control,
+                    move |runtime| async move {
+                        let mut runtime = runtime;
+                        invoke_scrape_generator(
+                            runtime.js_runtime_mut(),
+                            &invocation_entrypoint,
+                            &input,
+                        )
+                        .await
+                    },
+                )
+            })
+            .await?;
+        for result in &results {
+            if !provided.contains(&result.key) {
+                return Err(PluginInvocationError::new(
+                    "TypeError",
+                    "UNDECLARED_SCRAPE_KEY",
+                    format!(
+                        "scraper '{plugin_id}' yielded undeclared key '{}'",
+                        result.key
+                    ),
+                ));
+            }
+            if result.source.trim().is_empty() {
+                return Err(PluginInvocationError::new(
+                    "TypeError",
+                    "INVALID_SCRAPE_SOURCE",
+                    "scrape result source must not be empty",
+                ));
+            }
+            result.value.validate().map_err(|message| {
+                PluginInvocationError::new("TypeError", "INVALID_SCRAPE_VALUE", message)
+            })?;
+            if result.key.starts_with("media.") {
+                let crate::ScrapeScalar::String(value) = &result.value else {
+                    return Err(PluginInvocationError::new(
+                        "TypeError",
+                        "INVALID_MEDIA_URL",
+                        "media scrape values must be URL strings",
+                    ));
+                };
+                let url = url::Url::parse(value).map_err(|_| {
+                    PluginInvocationError::new(
+                        "TypeError",
+                        "INVALID_MEDIA_URL",
+                        "media scrape values must be absolute HTTP(S) URLs",
+                    )
+                })?;
+                if !matches!(url.scheme(), "http" | "https") {
+                    return Err(PluginInvocationError::new(
+                        "TypeError",
+                        "INVALID_MEDIA_URL",
+                        "media scrape values must be absolute HTTP(S) URLs",
+                    ));
+                }
+            }
+        }
+        Ok(results)
+    }
+
     async fn invoke_inner(
         &self,
         plugin_id: &str,
@@ -504,7 +618,7 @@ impl PluginRuntimeHandle {
         let plugin = self
             .state
             .registry
-            .plugin::<dyn EmulatorPluginInstance>(plugin_id)
+            .plugin::<dyn PluginInstance>(plugin_id)
             .ok_or_else(|| {
                 PluginInvocationError::new(
                     "NotFoundError",
@@ -514,8 +628,19 @@ impl PluginRuntimeHandle {
             })?;
         match ExportInvocation::parse(export_path)? {
             ExportInvocation::EmulatorLaunch { explicit_default } => {
+                let emulator = self
+                    .state
+                    .registry
+                    .plugin::<dyn EmulatorPluginInstance>(plugin_id)
+                    .ok_or_else(|| {
+                        PluginInvocationError::new(
+                            "TypeError",
+                            "NOT_AN_EMULATOR",
+                            format!("plugin '{plugin_id}' is not an emulator"),
+                        )
+                    })?;
                 let invocation = EmulatorLaunchInvocation::prepare(
-                    plugin,
+                    emulator,
                     arguments,
                     storage,
                     quick_resume,
@@ -550,24 +675,23 @@ impl PluginRuntimeHandle {
 
     async fn invoke_generic(
         &self,
-        plugin: Arc<dyn EmulatorPluginInstance>,
+        plugin: Arc<dyn PluginInstance>,
         export_path: &[String],
         arguments: Vec<Value>,
         cancellation: PluginCancellationToken,
     ) -> Result<PluginInvocationResult, PluginInvocationError> {
         let entrypoint = plugin.entrypoint().to_string();
         let invocation_entrypoint = entrypoint.clone();
-        let loader = plugin.module_loader().clone();
-        let filesystem = filesystem_options(plugin.as_ref(), BTreeMap::new(), None)
-            .map_err(PluginInvocationError::worker)?;
+        let worker =
+            WorkerOptions::for_plugin(plugin.as_ref(), self.directories(), BTreeMap::new(), None)
+                .map_err(PluginInvocationError::worker)?;
         let lifecycle = self.lifecycle(plugin.id());
         let path = export_path.to_vec();
         let value = self
             .run_with_control(cancellation.control, move |control| {
                 run_worker(
                     entrypoint,
-                    loader,
-                    filesystem,
+                    worker,
                     lifecycle,
                     control,
                     move |runtime| async move {
@@ -596,15 +720,16 @@ impl PluginRuntimeHandle {
         cancellation: PluginCancellationToken,
     ) -> Result<(EmulatorLaunchArguments, Option<crate::ControllerSession>), PluginInvocationError>
     {
-        let filesystem = filesystem_options(
+        let worker = WorkerOptions::for_plugin(
             invocation.plugin.as_ref(),
+            self.directories(),
             invocation.storage.clone(),
             invocation.quick_resume.clone(),
         )
         .map_err(PluginInvocationError::worker)?;
         let lifecycle = self.lifecycle(invocation.plugin.id());
         self.run_with_control(cancellation.control, move |control| {
-            start_controller_session_worker(invocation, filesystem, lifecycle, control)
+            start_controller_session_worker(invocation, worker, lifecycle, control)
         })
         .await
     }

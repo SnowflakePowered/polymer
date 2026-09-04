@@ -11,6 +11,7 @@ use snowglass_input::InputHub;
 use snowglass_pluginhost::{
     EmulatorPluginInstance, EmulatorPort, PackageError, PluginRuntimeHandle,
 };
+use snowglass_scraping::Package;
 use std::{
     collections::{BTreeMap, HashMap},
     path::PathBuf,
@@ -140,8 +141,7 @@ pub async fn describe_api(
     package: serde_json::Value,
     preferred_emulator: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let package: crate::ScrapedPackage =
-        serde_json::from_value(package).map_err(|error| error.to_string())?;
+    let package: Package = serde_json::from_value(package).map_err(|error| error.to_string())?;
     let mut prepared = PreparedGame::new(
         DetectedGame {
             path: package.path.clone(),
@@ -184,8 +184,7 @@ pub async fn configure_api(
     emulator: String,
     user_configuration: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
-    let package: crate::ScrapedPackage =
-        serde_json::from_value(package).map_err(|error| error.to_string())?;
+    let package: Package = serde_json::from_value(package).map_err(|error| error.to_string())?;
     let plugin = plugins
         .registry()
         .plugin::<dyn EmulatorPluginInstance>(&emulator)
@@ -231,8 +230,7 @@ pub(crate) fn prepare_api_with_sources(
     controller_profiles: &ControllerProfiles,
     controller_assignments: &ControllerAssignmentSnapshot,
 ) -> Result<serde_json::Value, String> {
-    let package: crate::ScrapedPackage =
-        serde_json::from_value(package).map_err(|error| error.to_string())?;
+    let package: Package = serde_json::from_value(package).map_err(|error| error.to_string())?;
     let request: ConfigurationRequest =
         serde_json::from_value(request).map_err(|error| error.to_string())?;
     let user_configuration = request.user_configuration.clone();
@@ -599,7 +597,7 @@ fn validate_assignments(
     Ok((assignments, gamepads))
 }
 
-fn configure_game(package: &crate::ScrapedPackage) -> serde_json::Value {
+fn configure_game(package: &Package) -> serde_json::Value {
     let mut game = serde_json::Map::from_iter([
         (
             "launchPath".to_owned(),

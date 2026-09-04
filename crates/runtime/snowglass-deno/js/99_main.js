@@ -30,7 +30,7 @@ const Snowglass = Object.freeze({
   emulator: emulator.Emulator,
   webrtc: webrtc.WebRTC,
   consolestorage: consolestorage.ConsoleStorage,
-  library,
+  library: library.Library,
 });
 
 function dispatch(event) {
@@ -56,6 +56,12 @@ function dispatch(event) {
       break;
     case "gameSaved":
       consolestorage.gameSaved(event.detail);
+      break;
+    case "scrapeJobChanged":
+      scraping.jobChanged(event.detail);
+      break;
+    case "libraryContentChanged":
+      library.contentChanged(event.detail);
       break;
     default:
       throw new TypeError(`Unknown Snowglass event '${event?.type}'`);

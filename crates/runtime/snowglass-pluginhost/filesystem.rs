@@ -32,6 +32,7 @@ pub type StorageFactories = BTreeMap<String, StorageFactory>;
 #[derive(Clone)]
 pub struct FilesystemOptions {
     pub package_root: PathBuf,
+    pub scratch_root: Option<PathBuf>,
     pub resources: Vec<PluginResource>,
     pub caches: Vec<NamedCache>,
     pub storage: StorageFactories,
@@ -54,6 +55,7 @@ impl FilesystemOptions {
     pub fn new(package_root: PathBuf) -> Self {
         Self {
             package_root,
+            scratch_root: None,
             resources: Vec::new(),
             caches: Vec::new(),
             storage: BTreeMap::new(),
@@ -104,6 +106,7 @@ impl ResourceFactory<dyn Volume> for SharedVolumeFactory {
 
 struct FilesystemState {
     package_root: PathBuf,
+    scratch_root: Option<PathBuf>,
     endpoint: FilesystemEndpoint,
     plan: FilesystemPlan,
     volumes: HashMap<
@@ -131,6 +134,7 @@ impl FilesystemState {
         let endpoint = FilesystemEndpoint::random();
         let mut state = Self {
             package_root,
+            scratch_root: options.scratch_root,
             endpoint,
             plan: FilesystemPlan::default(),
             volumes: HashMap::new(),
@@ -478,9 +482,13 @@ impl FilesystemState {
     }
 
     fn scratch_resource(&mut self, backing: &str) -> Result<ResourceHandle, VfsError> {
-        let backing = match backing {
-            "memory" => ScratchBacking::Memory,
-            "temporary" => ScratchBacking::Temporary,
+        let factory = match backing {
+            "memory" => ScratchVolumeFactory::new(ScratchBacking::Memory),
+            "temporary" => {
+                ScratchVolumeFactory::temporary_in(self.scratch_root.clone().ok_or_else(|| {
+                    VfsError::Unsupported("temporary scratch storage is unavailable".into())
+                })?)
+            }
             _ => {
                 return Err(VfsError::Unsupported(
                     "scratch backing must be 'memory' or 'temporary'".into(),
@@ -488,9 +496,7 @@ impl FilesystemState {
             }
         };
         Ok(ResourceHandle::Tree(self.insert_volume(Resource::new(
-            Arc::new(SharedVolumeFactory::new(Arc::new(
-                ScratchVolumeFactory::new(backing),
-            ))),
+            Arc::new(SharedVolumeFactory::new(Arc::new(factory))),
             Permissions::ALL,
             ResourceOrigin::Scratch,
         ))))
@@ -1024,17 +1030,10 @@ fn op_vfs_mount_scratch(
     #[string] backing: String,
 ) -> Result<(), JsErrorBox> {
     let permissions = Permissions::from_str(&mode).map_err(js_error)?;
-    let backing = match backing.as_str() {
-        "memory" => ScratchBacking::Memory,
-        "temporary" => ScratchBacking::Temporary,
-        _ => return Err(js_error("scratch backing must be 'memory' or 'temporary'")),
-    };
     let vfs = state.borrow_mut::<FilesystemState>();
-    let handle = vfs.insert_volume(Resource::new(
-        Arc::new(ScratchVolumeFactory::new(backing)),
-        Permissions::ALL,
-        ResourceOrigin::Scratch,
-    ));
+    let ResourceHandle::Tree(handle) = vfs.scratch_resource(&backing).map_err(js_error)? else {
+        unreachable!("scratch resources are always trees")
+    };
     let resource = vfs.volume(handle).map_err(js_error)?;
     vfs.plan.mount_tree(
         VfsPathBuf::new(target).map_err(js_error)?,
@@ -1173,6 +1172,32 @@ fn reject_links(root: &Path, relative: &Path) -> Result<(), VfsError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn temporary_scratch_is_materialized_under_the_configured_root() {
+        let package = tempfile::tempdir().unwrap();
+        let storage = tempfile::tempdir().unwrap();
+        let scratch_root = storage.path().join("plugin-scratch");
+        let mut options = FilesystemOptions::new(package.path().to_owned());
+        options.scratch_root = Some(scratch_root.clone());
+        let mut state = FilesystemState::new(options).unwrap();
+        let ResourceHandle::Tree(handle) = state.scratch_resource("temporary").unwrap() else {
+            unreachable!()
+        };
+
+        let _materialized = state.volume(handle).unwrap().materialize().unwrap();
+        let entries = std::fs::read_dir(scratch_root)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(
+            entries[0]
+                .file_name()
+                .to_string_lossy()
+                .starts_with("snowglass-scratch-")
+        );
+    }
 
     #[test]
     fn declared_cache_is_lazy_persistent_and_reused() {

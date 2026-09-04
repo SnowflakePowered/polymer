@@ -219,20 +219,20 @@ export interface PluginApi {
   open(id: string): PluginExport;
 }
 
-export interface ScrapedPackage {
+export interface Package {
   readonly path: string;
   readonly name: string;
   readonly platform: string;
   readonly serial: string | null;
   readonly titleId: string | null;
-  readonly binaryDigest: string | null;
+  readonly binaryDigest: string;
   toJSON(): Readonly<{
     path: string;
     name: string;
     platform: string;
     serial: string | null;
     titleId: string | null;
-    binaryDigest: string | null;
+    binaryDigest: string;
   }>;
 }
 
@@ -244,11 +244,34 @@ export interface SaveState {
 
 export interface ScrapingApi extends EventTarget {
   readonly Package: {
-    readonly prototype: ScrapedPackage;
-    fromPath(path: string, options?: { signal?: AbortSignal }): Promise<ScrapedPackage>;
+    readonly prototype: Package;
+    fromPath(path: string, options?: { signal?: AbortSignal }): Promise<Package>;
   };
   readonly dropActive: boolean;
+  readonly jobs: Readonly<{
+    list(): Promise<ScrapeJob[]>;
+    get(id: string): Promise<ScrapeJob | null>;
+    start(rootBinaryId: string, options?: { triggerBinaryId?: string }): Promise<ScrapeJob>;
+    retry(id: string): Promise<ScrapeJob>;
+  }>;
+  readonly scrapers: Readonly<{
+    list(): Promise<ScraperDescriptor[]>;
+    update(id: string): Promise<void>;
+  }>;
 }
+
+export type ScrapeJobState = "queued" | "running" | "completed" | "partial" | "failed";
+export type ScrapeAttemptState = "queued" | "running" | "completed" | "failed";
+export type ScrapeJob = Readonly<{
+  id: string;
+  rootBinaryId: string;
+  triggerBinaryId: string;
+  state: ScrapeJobState;
+  createdAt: number;
+  updatedAt: number;
+  attempts: readonly Readonly<{ pluginId: string; state: ScrapeAttemptState; error: string | null }>[];
+}>;
+export type ScraperDescriptor = Readonly<{ id: string; version: string; requires: readonly string[]; provides: readonly string[] }>;
 
 export type {
   ConfigurationChoice,
@@ -305,14 +328,14 @@ export type ConfigurationSelection = {
 };
 
 export interface ConfigurationApi {
-  describe(packageValue: ScrapedPackage, options?: { emulator?: string }): Promise<PackageConfiguration>;
+  describe(packageValue: Package, options?: { emulator?: string }): Promise<PackageConfiguration>;
   configure(
-    packageValue: ScrapedPackage,
+    packageValue: Package,
     emulator: string,
     userConfiguration?: UserConfiguration,
   ): Promise<ConfigurationState | null>;
-  prepare(packageValue: ScrapedPackage, selection: ConfigurationSelection): Promise<unknown>;
-  onLaunch(packageValue: ScrapedPackage, selection: ConfigurationSelection): Promise<LaunchRequest>;
+  prepare(packageValue: Package, selection: ConfigurationSelection): Promise<unknown>;
+  onLaunch(packageValue: Package, selection: ConfigurationSelection): Promise<LaunchRequest>;
 }
 
 export type ConsoleStorageKind = "nand" | "saveRepo" | "memoryCard" | "battery";
@@ -338,29 +361,11 @@ export interface ConsoleStorageApi {
   };
 }
 
-export type LibraryMetadataRelation =
-  | "title"
-  | "description"
-  | "releasedate"
-  | "publisher"
-  | "boxartfront"
-  | "boxartback"
-  | "boxartspine"
-  | "boxartfull"
-  | "screenshot"
-  | "logo"
-  | "video"
-  | "icon"
-  | "banner"
-  | "media";
-
 export type LibraryMetadataInput = Readonly<{
-  relation: LibraryMetadataRelation;
-  language?: string;
+  key: string;
   source?: string;
   data:
-    | Readonly<{ kind: "text"; value: string }>
-    | Readonly<{ kind: "year"; value: number }>
+    | Readonly<{ kind: "scalar"; value: string | number | boolean }>
     | Readonly<{ kind: "inline"; mediaType: string; bytes: Uint8Array }>
     | Readonly<{ kind: "object"; mediaType: string; path: string }>;
 }>;
@@ -379,13 +384,13 @@ export type LibraryLaunchable = Readonly<{
 export type LibraryMetadata = Readonly<{
   id: string;
   parentBinaryId: string;
-  relation: LibraryMetadataRelation;
-  language: string | null;
+  key: string;
   source: string;
+  producer: string;
+  ordinal: number;
   data:
-    | Readonly<{ kind: "text" }>
-    | Readonly<{ kind: "year" }>
-    | Readonly<{ kind: "media"; mediaType: string; storage: "inline" | "object" }>;
+    | Readonly<{ kind: "scalar"; value: string | number | boolean }>
+    | Readonly<{ kind: "media"; mediaType: string; storage: "inline" | "object"; sourceUrl: string | null }>;
 }>;
 
 export type LibraryGame = Readonly<{
@@ -395,14 +400,14 @@ export type LibraryGame = Readonly<{
   metadata: readonly LibraryMetadata[];
 }>;
 
-export interface LibraryApi {
+export interface LibraryApi extends EventTarget {
   readonly games: Readonly<{
     list(options?: { platform?: string }): Promise<LibraryGame[]>;
     get(rootBinaryId: string): Promise<LibraryGame | null>;
     delete(rootBinaryId: string): Promise<void>;
   }>;
   readonly launchables: Readonly<{
-    add(input: { path: string; platform?: string; parentBinaryId?: string }): Promise<LibraryLaunchable>;
+    add(input: { path: string; platform?: string; parentBinaryId?: string }): Promise<Readonly<{ launchable: LibraryLaunchable; scrapeJob: ScrapeJob | null }>>;
     delete(id: string): Promise<void>;
   }>;
   readonly metadata: Readonly<{

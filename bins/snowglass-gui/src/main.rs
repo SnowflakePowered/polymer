@@ -64,6 +64,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let proxy = event_loop.create_proxy();
     let shell_factory = shell_dom::ShellSessionFactory::new(
         options.plugins.clone(),
+        options.directories.clone(),
         options.local_storage.clone(),
         options.library.clone(),
         proxy.clone(),

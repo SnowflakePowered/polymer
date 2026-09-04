@@ -2,6 +2,7 @@
 id = "duckstation"
 version = "0.0.1"
 class = "emulator"
+main = "duckstation.ts"
 
 [plugin.config]
 bios = "D:\\bios\\SCPH1001.BIN"
@@ -15,7 +16,6 @@ mode = "rx"
 
 [emulator]
 platforms = ["SONY_PSX"]
-main = "duckstation.ts"
 
 [emulator.configuration]
 definitions = [

@@ -8,8 +8,10 @@
 
 mod actions;
 mod automation;
+mod cache;
 mod configuration;
 mod controller;
+mod database;
 mod deno;
 pub mod descriptor;
 mod emulator;
@@ -18,6 +20,7 @@ mod handle;
 mod module_loader;
 mod plugin_runtime;
 mod runtime;
+mod scraper;
 pub mod toml;
 
 pub use actions::ParsedHotkey;
@@ -35,9 +38,12 @@ pub use plugin_runtime::{
     PluginRuntimeHandle, PluginRuntimeOptions,
 };
 pub use runtime::{PluginInstance, PluginRegistry, PluginRegistryError, ThemePluginInstance};
+pub use scraper::{
+    ScrapeCandidate, ScrapeInput, ScrapeResult, ScrapeScalar, ScraperPluginInstance,
+};
 pub use toml::{
     EmulatorPlugin, PackageError, PluginCache, PluginPackage, PluginResource, PluginResourceFormat,
-    SaveStateConfig, ThemeDebug, ThemePlugin,
+    SaveStateConfig, ScrapeRequirement, ScraperPlugin, ThemeDebug, ThemePlugin,
 };
 
 #[cfg(test)]
@@ -73,6 +79,7 @@ mod tests {
         definition.instantiate("example", BTreeMap::new()).unwrap()
     }
 
+    #[allow(dead_code)]
     struct TestPlugin {
         loader: PluginModuleLoader,
         entrypoint: ModuleSpecifier,
@@ -94,13 +101,13 @@ mod tests {
         fn module_loader(&self) -> &PluginModuleLoader {
             &self.loader
         }
-    }
 
-    impl EmulatorPluginInstance for TestPlugin {
         fn entrypoint(&self) -> &ModuleSpecifier {
             &self.entrypoint
         }
+    }
 
+    impl EmulatorPluginInstance for TestPlugin {
         fn configuration_definition(&self) -> &ConfigurationDefinition {
             unreachable!()
         }

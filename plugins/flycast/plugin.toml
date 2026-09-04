@@ -2,6 +2,7 @@
 id = "flycast"
 version = "0.0.1"
 class = "emulator"
+main = "flycast.ts"
 
 [plugin.config]
 bios = "D:\\bios\\dreamcast\\dc_boot.bin"
@@ -16,7 +17,6 @@ mode = "rx"
 
 [emulator]
 platforms = ["SEGA_DC"]
-main = "flycast.ts"
 
 [emulator.configuration]
 definitions = ["config/input.toml"]

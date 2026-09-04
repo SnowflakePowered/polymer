@@ -1,4 +1,4 @@
-import type { LaunchInstance, LaunchRequest, PackageConfiguration, ScrapedPackage } from "../../../../../js/snowglass";
+import type { LaunchInstance, LaunchRequest, Package, PackageConfiguration } from "../../../../../js/snowglass";
 
 export type RecentGame = {
   path: string;
@@ -19,7 +19,7 @@ export type LauncherState =
 
 export type ShellModel = {
   launcher: LauncherState;
-  package: ScrapedPackage | null;
+  package: Package | null;
   draft: PackageConfiguration | null;
   request: LaunchRequest | null;
   surfaces: LaunchRequest["surfaces"];

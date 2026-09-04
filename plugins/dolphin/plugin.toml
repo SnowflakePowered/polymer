@@ -2,6 +2,7 @@
 id = "dolphin"
 version = "0.0.1"
 class = "emulator"
+main = "dolphin.ts"
 
 [[plugin.resources]]
 name = "runtime"
@@ -12,7 +13,6 @@ mode = "rx"
 
 [emulator]
 platforms = ["NINTENDO_GCN", "NINTENDO_WII"]
-main = "dolphin.ts"
 
 [emulator.configuration]
 definitions = [

@@ -9,7 +9,7 @@ use serde_json::Value;
 use snowglass_command::CommandSink;
 use snowglass_controllers::ControllerProfiles;
 use snowglass_deno::snowglass::{
-    ApiFuture, ConsoleStorageRequest, InstanceToken, Library, SnowglassHost,
+    ApiFuture, ConsoleStorageRequest, InstanceToken, Library, SnowglassHost, SnowglassNotification,
     SnowglassNotificationSender,
 };
 use snowglass_input::{
@@ -603,6 +603,34 @@ impl FrontendServices {
             notifications.clone(),
         ));
         let input_listener = input_sources.add_listener(deno_input.clone());
+        if let Some(library) = &library {
+            let mut events = library.subscribe();
+            let notifications = notifications.clone();
+            tokio::spawn(async move {
+                loop {
+                    let event = match events.recv().await {
+                        Ok(event) => event,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    };
+                    let notification = match event {
+                        snowglass_scraping::ScrapingEvent::JobChanged(job) => {
+                            SnowglassNotification::ScrapeJobChanged(
+                                serde_json::to_value(job).expect("scrape jobs are serializable"),
+                            )
+                        }
+                        snowglass_scraping::ScrapingEvent::LibraryContentChanged {
+                            root_binary_id,
+                        } => SnowglassNotification::LibraryContentChanged {
+                            root_binary_id: root_binary_id.simple().to_string(),
+                        },
+                    };
+                    if notifications.send(notification).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
         Self {
             plugins,
             configuration,
@@ -626,7 +654,7 @@ impl FrontendServices {
 impl SnowglassHost for FrontendServices {
     fn scrape(&self, path: String) -> ApiFuture<Result<Value, String>> {
         Box::pin(async move {
-            tokio::task::spawn_blocking(move || crate::ScrapedPackage::from_path(path))
+            tokio::task::spawn_blocking(move || snowglass_scraping::Package::from_path(path))
                 .await
                 .map_err(|error| format!("package detection task failed: {error}"))?
                 .map_err(|error| error.to_string())
