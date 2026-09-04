@@ -1,59 +1,31 @@
 //! Isolated Snowglass plugin registry and runtime.
 //!
 //! Package discovery is kept separate from execution. Every call made through
-//! [`PluginRuntimeHandle`] runs in a fresh curated Deno/V8 isolate owned by this
+//! [`runtime::PluginRuntimeHandle`] runs in a fresh curated Deno/V8 isolate owned by this
 //! crate, and invocation-scoped resources are destroyed with that isolate.
 
 #![forbid(unsafe_code)]
 
-mod actions;
+pub mod actions;
 mod automation;
 mod cache;
 mod configuration;
-mod controller;
+pub mod controller;
 mod database;
-mod deno;
-pub mod descriptor;
-mod emulator;
-mod filesystem;
+pub mod emulator;
+pub mod filesystem;
 mod handle;
-mod module_loader;
-mod plugin_runtime;
-mod runtime;
-mod scraper;
-pub mod toml;
-
-pub use actions::ParsedHotkey;
-pub use configuration::{ConfigurationAccessError, SerializedConfiguration};
-pub use controller::{ControllerSession, PauseState};
-pub(crate) use emulator::EmulatorLaunchInvocation;
-pub use emulator::{
-    EmulatorHostError, EmulatorLaunchArguments, EmulatorPluginInstance, EmulatorPort, GraphicsHook,
-    Hooks, InputHook, QuickResumeData, TrackedSurface,
-};
-pub use filesystem::{StorageFactories, StorageFactory};
-pub use module_loader::PluginModuleLoader;
-pub use plugin_runtime::{
-    PluginCancellationToken, PluginInvocationError, PluginInvocationResult, PluginRuntime,
-    PluginRuntimeHandle, PluginRuntimeOptions,
-};
-pub use runtime::{PluginInstance, PluginRegistry, PluginRegistryError, ThemePluginInstance};
-pub use scraper::{
-    ScrapeCandidate, ScrapeInput, ScrapeResult, ScrapeScalar, ScraperPluginInstance,
-};
-pub use toml::{
-    EmulatorPlugin, PackageError, PluginCache, PluginPackage, PluginResource, PluginResourceFormat,
-    SaveStateConfig, ScrapeRequirement, ScraperPlugin, ThemeDebug, ThemePlugin,
-};
+pub mod loading;
+pub mod plugin;
+mod plugin_storage;
+pub mod runtime;
+pub mod scraper;
+pub mod theme;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use deno_core::ModuleSpecifier;
-    use snowglass_config::{
-        ConfigurationToml,
-        ast::{ConfigurationDefinition, ConfigurationInstance, PortAssignments},
-    };
+    use crate::configuration::{ConfigurationAccessError, ConfigurationInstances};
+    use snowglass_config::{ConfigurationToml, ast::ConfigurationDefinition};
     use std::{collections::BTreeMap, sync::Arc};
     use toml_spanner::Arena;
 
@@ -79,71 +51,9 @@ mod tests {
         definition.instantiate("example", BTreeMap::new()).unwrap()
     }
 
-    #[allow(dead_code)]
-    struct TestPlugin {
-        loader: PluginModuleLoader,
-        entrypoint: ModuleSpecifier,
-    }
-
-    impl PluginInstance for TestPlugin {
-        fn id(&self) -> &str {
-            "test"
-        }
-
-        fn version(&self) -> &str {
-            "0"
-        }
-
-        fn class(&self) -> &str {
-            "emulator"
-        }
-
-        fn module_loader(&self) -> &PluginModuleLoader {
-            &self.loader
-        }
-
-        fn entrypoint(&self) -> &ModuleSpecifier {
-            &self.entrypoint
-        }
-    }
-
-    impl EmulatorPluginInstance for TestPlugin {
-        fn configuration_definition(&self) -> &ConfigurationDefinition {
-            unreachable!()
-        }
-
-        fn platforms(&self) -> &[String] {
-            &[]
-        }
-
-        fn save_states(&self) -> Option<&SaveStateConfig> {
-            None
-        }
-
-        fn ports(&self, _console: &str) -> Result<Vec<EmulatorPort>, PackageError> {
-            unreachable!()
-        }
-
-        fn port_assignments(
-            &self,
-            _console: &str,
-            _layouts: &[String],
-        ) -> Result<PortAssignments, PackageError> {
-            unreachable!()
-        }
-
-        fn materialize(
-            &self,
-            _console: &str,
-            _assignments: PortAssignments,
-        ) -> Result<ConfigurationInstance, PackageError> {
-            unreachable!()
-        }
-    }
-
     #[test]
     fn configurations_are_scoped_by_invocation_id() {
-        let mut configurations = configuration::ConfigurationInstances::default();
+        let mut configurations = ConfigurationInstances::default();
         let topology = snowglass_controllers::ControllerTopology::default();
         let first = configurations.insert(configuration(), &topology);
         let second = configurations.insert(configuration(), &topology);

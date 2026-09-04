@@ -1,5 +1,5 @@
 use clap::Parser;
-use snowglass_pluginhost::{PluginRegistry, ThemePluginInstance};
+use snowglass_pluginhost::{loading::PluginRegistry, theme::ThemePluginInstance};
 use std::{error::Error, fs, path::PathBuf};
 
 #[derive(Parser)]

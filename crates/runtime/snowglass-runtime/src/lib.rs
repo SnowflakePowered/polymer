@@ -37,7 +37,7 @@ pub use library::LibraryService;
 pub use savestates::{RgbaScreenshot, SaveStateManager, SaveStateMetadata};
 pub use session::{SessionController, mount_prepared_filesystem};
 pub use snowglass_command::CommandSink;
-pub use snowglass_pluginhost::{GraphicsHook, Hooks, InputHook};
+pub use snowglass_pluginhost::emulator::{GraphicsHook, Hooks, InputHook};
 pub use storage::launch_storage;
 pub use ui::{UiRequest, UiRequestReceiver};
 

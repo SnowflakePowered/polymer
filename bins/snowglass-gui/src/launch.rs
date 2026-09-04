@@ -28,7 +28,7 @@ pub struct AttachedLaunchPlan {
     #[serde(default)]
     pub controller_session: Option<String>,
     #[serde(default)]
-    pub save_states: Option<snowglass_pluginhost::SaveStateConfig>,
+    pub save_states: Option<snowglass_pluginhost::emulator::SaveStateConfig>,
     #[serde(default)]
     pub quick_resume_cache: Option<QuickResumeCache>,
 }

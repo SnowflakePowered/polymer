@@ -6,7 +6,7 @@ impl ShellCoordinator {
         token: InstanceToken,
         options: AttachedLaunchPlan,
         prepared_filesystem: Option<snowglass_vfs::PreparedFilesystemLaunch>,
-        controller_session: Option<snowglass_pluginhost::ControllerSession>,
+        controller_session: Option<snowglass_pluginhost::controller::ControllerSession>,
     ) -> Result<(), String> {
         let mounted_filesystem = if let Some(prepared) = prepared_filesystem {
             let host = snowglass_vfs_winfsp::WinFspFilesystemHost::default();

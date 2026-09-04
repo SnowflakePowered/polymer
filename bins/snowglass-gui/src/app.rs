@@ -98,7 +98,7 @@ struct PendingInputChange {
 
 struct PendingPauseResume {
     token: InstanceToken,
-    state: snowglass_pluginhost::PauseState,
+    state: snowglass_pluginhost::controller::PauseState,
     started: Instant,
     result: CommandResponse<Result<(), String>>,
     response: tokio::sync::oneshot::Receiver<Result<(), String>>,

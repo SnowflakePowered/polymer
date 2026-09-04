@@ -9,7 +9,9 @@ use snowglass_controllers::{
 };
 use snowglass_input::InputHub;
 use snowglass_pluginhost::{
-    EmulatorPluginInstance, EmulatorPort, PackageError, PluginRuntimeHandle,
+    emulator::{EmulatorPluginInstance, EmulatorPort},
+    loading::{PackageError, PluginRegistry},
+    runtime::PluginRuntimeHandle,
 };
 use snowglass_scraping::Package;
 use std::{
@@ -203,7 +205,7 @@ pub async fn configure_api(
 }
 
 pub fn prepare_api(
-    plugins: snowglass_pluginhost::PluginRegistry,
+    plugins: PluginRegistry,
     viewer: ConfigurationDefaults,
     package: serde_json::Value,
     request: serde_json::Value,
@@ -222,7 +224,7 @@ pub fn prepare_api(
 }
 
 pub(crate) fn prepare_api_with_sources(
-    plugins: snowglass_pluginhost::PluginRegistry,
+    plugins: PluginRegistry,
     viewer: ConfigurationDefaults,
     package: serde_json::Value,
     request: serde_json::Value,

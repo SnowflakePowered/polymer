@@ -1,7 +1,7 @@
 use std::{cell::RefCell, rc::Rc};
 
+use ::snowglass_automation::{AutomationRequest, AutomationSession};
 use deno_core::{JsRuntime, OpState, op2};
-use snowglass_automation::{AutomationRequest, AutomationSession};
 
 #[derive(Default)]
 pub(crate) struct AutomationState(Option<AutomationSession>);
@@ -46,4 +46,16 @@ pub(crate) fn close(runtime: &mut JsRuntime) {
     {
         session.close();
     }
+}
+
+deno_core::extension!(
+    snowglass_automation,
+    ops = [op_ui_automation_request],
+    esm_entry_point = "ext:snowglass_automation/00_automation.js",
+    esm = [dir "automation/js", "00_automation.js"],
+    state = |state| state.put(AutomationState::default()),
+);
+
+pub(crate) fn extension() -> deno_core::Extension {
+    snowglass_automation::init()
 }

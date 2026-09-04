@@ -720,10 +720,10 @@ async fn native_pointer_sequence_dispatches_a_delegated_click() {
             emulator_commands: deno::EmulatorCommandSink::default(),
             input_commands: deno::InputCommandSink::default(),
             webrtc_commands: deno::WebRtcCommandSink::default(),
-            plugin_runtime: Arc::new(snowglass_pluginhost::PluginRuntime::new(
-                snowglass_pluginhost::PluginRegistry::new(),
+            plugin_runtime: Arc::new(snowglass_pluginhost::runtime::PluginRuntime::new(
+                snowglass_pluginhost::loading::PluginRegistry::new(),
                 plugin_directories,
-                snowglass_pluginhost::PluginRuntimeOptions::default(),
+                snowglass_pluginhost::runtime::PluginRuntimeOptions::default(),
             )),
             local_storage: None,
             library: None,
