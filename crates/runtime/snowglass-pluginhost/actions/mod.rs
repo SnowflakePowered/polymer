@@ -114,3 +114,15 @@ pub(crate) fn op_action_activate(
         .ok_or_else(|| JsErrorBox::generic("emulator action endpoint is unavailable"))?;
     sink(hotkey).map_err(JsErrorBox::generic)
 }
+
+deno_core::extension!(
+    snowglass_actions,
+    ops = [op_actions_register, op_action_activate],
+    esm_entry_point = "ext:snowglass_actions/00_actions.js",
+    esm = [dir "actions/js", "00_actions.js"],
+    state = |state| state.put(ActionsState::default()),
+);
+
+pub(crate) fn extension() -> deno_core::Extension {
+    snowglass_actions::init()
+}

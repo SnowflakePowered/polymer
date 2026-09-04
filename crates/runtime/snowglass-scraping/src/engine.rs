@@ -4,8 +4,9 @@ use snowglass_library::{
     ScrapeAttemptState, ScrapeJob, ScrapeJobState,
 };
 use snowglass_pluginhost::{
-    PluginInvocationError, PluginRegistry, PluginRuntime, PluginRuntimeHandle,
-    PluginRuntimeOptions, ScrapeCandidate, ScrapeInput, ScraperPluginInstance,
+    loading::PluginRegistry,
+    runtime::{PluginInvocationError, PluginRuntime, PluginRuntimeHandle, PluginRuntimeOptions},
+    scraper::{ScrapeCandidate, ScrapeInput, ScraperPluginInstance},
 };
 use std::{
     collections::BTreeMap,

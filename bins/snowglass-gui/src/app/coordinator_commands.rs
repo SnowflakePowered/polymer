@@ -244,7 +244,7 @@ impl EmulatorCommandHandler for ShellCoordinator {
         token: InstanceToken,
         options: serde_json::Value,
         prepared_filesystem: Option<snowglass_vfs::PreparedFilesystemLaunch>,
-        controller_session: Option<snowglass_pluginhost::ControllerSession>,
+        controller_session: Option<snowglass_pluginhost::controller::ControllerSession>,
     ) -> Result<(), String> {
         let options = serde_json::from_value::<AttachedLaunchPlan>(options)
             .map_err(|error| format!("invalid emulator launch options: {error}"))
@@ -344,9 +344,9 @@ impl EmulatorCommandHandler for ShellCoordinator {
             return None;
         }
         let state = if pause {
-            snowglass_pluginhost::PauseState::Pause
+            snowglass_pluginhost::controller::PauseState::Pause
         } else {
-            snowglass_pluginhost::PauseState::Resume
+            snowglass_pluginhost::controller::PauseState::Resume
         };
         match self.game_host.pause_resume(state, timeout) {
             Ok(Some(callback)) => {

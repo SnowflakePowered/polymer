@@ -3,7 +3,7 @@ use snowglass_library::{
     GameCatalog, IdentifiedLaunchable, MetadataData, MetadataInput, MetadataInputData,
     MetadataValue, ScrapeJobState,
 };
-use snowglass_pluginhost::PluginRegistry;
+use snowglass_pluginhost::loading::PluginRegistry;
 use snowglass_scraping::{ScrapingEngine, ScrapingEvent};
 use std::{sync::Arc, time::Duration};
 

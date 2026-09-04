@@ -11,7 +11,7 @@ use snowglass_consolestorage::savegame::{Package, SaveGameSink};
 use snowglass_consolestorage::{BatteryIdentity, BatterySaveRepo, SaveRepo};
 use snowglass_deno::snowglass::{SnowglassNotification, SnowglassNotificationSender};
 use snowglass_library::{ConsoleStorage, StorageKind, StorageManager};
-use snowglass_pluginhost::StorageFactories;
+use snowglass_pluginhost::filesystem::StorageFactories;
 use snowglass_vfs::{
     BatteryStorageFactory, CompositeResourceLease, ExclusiveResourceKey, FinalizationReason,
     Materialized, MemoryCardStorageFactory, NandVolumeFactory, ResourceFactory, ResourceLease,

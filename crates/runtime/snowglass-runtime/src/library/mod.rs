@@ -21,12 +21,16 @@ struct LibraryBackend {
 
 impl LibraryService {
     pub async fn open(directories: &Directories) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::open_with_plugins(directories, snowglass_pluginhost::PluginRegistry::new()).await
+        Self::open_with_plugins(
+            directories,
+            snowglass_pluginhost::loading::PluginRegistry::new(),
+        )
+        .await
     }
 
     pub async fn open_with_plugins(
         directories: &Directories,
-        plugins: snowglass_pluginhost::PluginRegistry,
+        plugins: snowglass_pluginhost::loading::PluginRegistry,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let catalog = Arc::new(GameCatalog::open_local(directories).await?);
         Ok(Self::start(catalog, plugins, directories.clone()).await?)
@@ -34,7 +38,7 @@ impl LibraryService {
 
     async fn start(
         catalog: Arc<GameCatalog>,
-        plugins: snowglass_pluginhost::PluginRegistry,
+        plugins: snowglass_pluginhost::loading::PluginRegistry,
         directories: Directories,
     ) -> Result<Self, std::io::Error> {
         let media = server::MediaServer::start(catalog.clone()).await?;
@@ -133,7 +137,7 @@ mod tests {
         );
         let service = LibraryService::start(
             catalog.clone(),
-            snowglass_pluginhost::PluginRegistry::new(),
+            snowglass_pluginhost::loading::PluginRegistry::new(),
             Directories::rooted(directory.path(), directory.path()),
         )
         .await

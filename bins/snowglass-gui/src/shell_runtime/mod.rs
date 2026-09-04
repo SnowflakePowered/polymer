@@ -26,7 +26,7 @@ pub(crate) struct ShellRuntimeOptions {
     pub emulator_commands: EmulatorCommandSink,
     pub input_commands: InputCommandSink,
     pub webrtc_commands: WebRtcCommandSink,
-    pub plugin_runtime: std::sync::Arc<snowglass_pluginhost::PluginRuntime>,
+    pub plugin_runtime: std::sync::Arc<snowglass_pluginhost::runtime::PluginRuntime>,
     pub local_storage: Option<snowglass_deno::webstorage::LocalStorage>,
     pub library: Option<snowglass_runtime::LibraryService>,
     pub input_sources: snowglass_input::InputHub,

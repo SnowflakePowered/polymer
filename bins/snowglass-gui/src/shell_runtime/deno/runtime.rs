@@ -164,7 +164,7 @@ impl Runtime {
         emulator_commands: EmulatorCommandSink,
         input_commands: InputCommandSink,
         webrtc_commands: WebRtcCommandSink,
-        plugin_runtime: std::sync::Arc<snowglass_pluginhost::PluginRuntime>,
+        plugin_runtime: std::sync::Arc<snowglass_pluginhost::runtime::PluginRuntime>,
         local_storage: Option<snowglass_deno::webstorage::LocalStorage>,
         library: Option<snowglass_runtime::LibraryService>,
         input_sources: snowglass_input::InputHub,

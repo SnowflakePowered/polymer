@@ -227,7 +227,7 @@ struct ActivePresentation {
     token: crate::shell_runtime::InstanceToken,
     options: AttachedLaunchPlan,
     webrtc: Option<snowglass_renderer::webrtc::Publication>,
-    controller_session: Option<snowglass_pluginhost::ControllerSession>,
+    controller_session: Option<snowglass_pluginhost::controller::ControllerSession>,
     automation: Option<snowglass_automation::AutomationSession>,
     save_states: Option<snowglass_runtime::SaveStateManager>,
     closing: bool,
@@ -407,7 +407,7 @@ impl GameHost {
 
     pub fn pause_resume(
         &self,
-        state: snowglass_pluginhost::PauseState,
+        state: snowglass_pluginhost::controller::PauseState,
         timeout: std::time::Duration,
     ) -> Result<Option<tokio::sync::oneshot::Receiver<Result<(), String>>>, String> {
         let Some(active) = &self.active else {
@@ -692,7 +692,7 @@ impl GameHost {
         token: crate::shell_runtime::InstanceToken,
         options: AttachedLaunchPlan,
         mut filesystem: Option<snowglass_vfs::MountedFilesystem>,
-        controller_session: Option<snowglass_pluginhost::ControllerSession>,
+        controller_session: Option<snowglass_pluginhost::controller::ControllerSession>,
         session: String,
         wake_window: impl Fn() -> bool + Send + Sync + 'static,
     ) -> Result<(), String> {
@@ -747,10 +747,10 @@ impl GameHost {
                 .expect("a successful session launch owns an emulator instance")
                 .action_endpoint();
             let attached = controller_session.attach_actions(move |hotkey| match hotkey {
-                snowglass_pluginhost::ParsedHotkey::Keyboard { code, modifiers } => {
+                snowglass_pluginhost::actions::ParsedHotkey::Keyboard { code, modifiers } => {
                     endpoint.activate_keyboard(code, modifiers)
                 }
-                snowglass_pluginhost::ParsedHotkey::Binding { player, keys } => {
+                snowglass_pluginhost::actions::ParsedHotkey::Binding { player, keys } => {
                     endpoint.activate_bindings(*player, keys)
                 }
             });

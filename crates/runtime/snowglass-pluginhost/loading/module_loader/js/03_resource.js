@@ -1,0 +1,1 @@
+export default globalThis.__snowglassFilesystem.importResource(__SNOWGLASS_RESOURCE__);

@@ -1,6 +1,6 @@
 use crate::commands::ShellDocumentSource;
 use deno_core::ModuleSpecifier;
-use snowglass_pluginhost::ThemePluginInstance;
+use snowglass_pluginhost::theme::ThemePluginInstance;
 use std::{
     error::Error,
     ffi::OsString,

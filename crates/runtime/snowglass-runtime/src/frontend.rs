@@ -18,7 +18,7 @@ use snowglass_input::{
     SensorBarPosition, StickCalibration, TriggerCalibration,
 };
 use snowglass_library::StorageManager;
-use snowglass_pluginhost::EmulatorPluginInstance;
+use snowglass_pluginhost::emulator::EmulatorPluginInstance;
 use std::{
     collections::HashMap,
     net::SocketAddr,
@@ -45,7 +45,7 @@ snowglass_command::command_client! {
             token: InstanceToken,
             options: Value,
             prepared_filesystem: Option<snowglass_vfs::PreparedFilesystemLaunch>,
-            controller_session: Option<snowglass_pluginhost::ControllerSession>,
+            controller_session: Option<snowglass_pluginhost::controller::ControllerSession>,
         ) -> Result<(), String>;
 
         #[oneshot]
@@ -244,17 +244,17 @@ struct ControllerSessionStore(Arc<ControllerSessionStoreInner>);
 #[derive(Default)]
 struct ControllerSessionStoreInner {
     next: AtomicU64,
-    sessions: Mutex<HashMap<u64, snowglass_pluginhost::ControllerSession>>,
+    sessions: Mutex<HashMap<u64, snowglass_pluginhost::controller::ControllerSession>>,
 }
 
 impl ControllerSessionStore {
-    fn insert(&self, session: snowglass_pluginhost::ControllerSession) -> String {
+    fn insert(&self, session: snowglass_pluginhost::controller::ControllerSession) -> String {
         let token = self.0.next.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
         self.0.sessions.lock().insert(token, session);
         format!("{token:016x}")
     }
 
-    fn take(&self, token: &str) -> Option<snowglass_pluginhost::ControllerSession> {
+    fn take(&self, token: &str) -> Option<snowglass_pluginhost::controller::ControllerSession> {
         let token = u64::from_str_radix(token, 16).ok()?;
         self.0.sessions.lock().remove(&token)
     }
@@ -279,7 +279,7 @@ impl PreparedFilesystemStore {
 
 /// Runtime-owned implementation of all non-DOM `Snowglass.*` services.
 pub struct FrontendServices {
-    plugins: Arc<snowglass_pluginhost::PluginRuntime>,
+    plugins: Arc<snowglass_pluginhost::runtime::PluginRuntime>,
     configuration: Option<ConfigurationDefaults>,
     library: Option<LibraryService>,
     storage: Option<Arc<StorageManager>>,
@@ -588,7 +588,7 @@ impl ControllerDeviceCommandDecoder {
 impl FrontendServices {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        plugins: Arc<snowglass_pluginhost::PluginRuntime>,
+        plugins: Arc<snowglass_pluginhost::runtime::PluginRuntime>,
         configuration: Option<ConfigurationDefaults>,
         library: Option<LibraryService>,
         input_sources: InputHub,
@@ -755,7 +755,7 @@ impl SnowglassHost for FrontendServices {
                 match crate::launch_storage(storage, &path, &arguments, notifications).await {
                     Ok(storage) => storage,
                     Err(error) => {
-                        let error = snowglass_pluginhost::PluginInvocationError::new(
+                        let error = snowglass_pluginhost::runtime::PluginInvocationError::new(
                             "Error",
                             "STORAGE_UNAVAILABLE",
                             error,
@@ -921,11 +921,14 @@ impl SnowglassHost for FrontendServices {
 }
 
 async fn prepare_quick_resume(
-    plugins: &snowglass_pluginhost::PluginRuntimeHandle,
+    plugins: &snowglass_pluginhost::runtime::PluginRuntimeHandle,
     plugin_id: &str,
     path: &[String],
     arguments: &[Value],
-) -> (Option<snowglass_pluginhost::QuickResumeData>, Option<Value>) {
+) -> (
+    Option<snowglass_pluginhost::emulator::QuickResumeData>,
+    Option<Value>,
+) {
     if !matches!(path, [name] if name == "onLaunch")
         && !matches!(path, [root, name] if root == "default" && name == "onLaunch")
     {
@@ -996,7 +999,7 @@ async fn prepare_quick_resume(
         }
     };
     (
-        entry.map(|entry| snowglass_pluginhost::QuickResumeData {
+        entry.map(|entry| snowglass_pluginhost::emulator::QuickResumeData {
             state: entry.state,
             screenshot: entry.screenshot,
         }),

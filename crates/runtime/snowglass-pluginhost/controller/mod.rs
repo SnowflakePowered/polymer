@@ -96,6 +96,7 @@ impl ControllerSession {
         self.dispatch_state_action(slot, save, timeout.unwrap_or(DEFAULT_TIMEOUT))
     }
 
+    #[allow(clippy::type_complexity)]
     pub fn quit(
         &self,
         timeout: Option<std::time::Duration>,
@@ -106,7 +107,7 @@ impl ControllerSession {
 
     pub fn attach_actions(
         &self,
-        sink: impl Fn(&crate::ParsedHotkey) -> Result<(), String> + Send + Sync + 'static,
+        sink: impl Fn(&crate::actions::ParsedHotkey) -> Result<(), String> + Send + Sync + 'static,
     ) -> Result<(), String> {
         self.attach_action_sink(std::sync::Arc::new(sink))
     }
@@ -118,4 +119,14 @@ impl Drop for ControllerSession {
             self.stop();
         }
     }
+}
+
+deno_core::extension!(
+    snowglass_controller,
+    esm_entry_point = "ext:snowglass_controller/00_controller.js",
+    esm = [dir "controller/js", "00_controller.js"],
+);
+
+pub(crate) fn extension() -> deno_core::Extension {
+    snowglass_controller::init()
 }
