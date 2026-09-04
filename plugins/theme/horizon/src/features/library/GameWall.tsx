@@ -27,8 +27,8 @@ export function GameWall(props: { games: RecentGame[] }) {
   };
   const launch = () => { const game = gameFor(selected()); if (game) shell.launchRecent(game); };
   const playerIndex = (sourceId: string) => {
-    const assigned = window.Snowglass.controllers.players.find((player) => player.controller?.id === sourceId);
-    return assigned?.index ?? Math.max(0, window.Snowglass.controllers.connected.findIndex((source) => source.id === sourceId));
+    const assigned = window.Polymer.controllers.players.find((player) => player.controller?.id === sourceId);
+    return assigned?.index ?? Math.max(0, window.Polymer.controllers.connected.findIndex((source) => source.id === sourceId));
   };
   const playersFor = (id: string) => Object.entries(controllerSelections())
     .filter(([, game]) => game === id)

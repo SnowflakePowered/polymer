@@ -1,0 +1,19 @@
+[package]
+name = "polymer-hook-vulkan-layer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ash.workspace = true
+dashmap.workspace = true
+polymer-hook.workspace = true
+polymer-ipc.workspace = true
+polymer-platform-windows.workspace = true
+polymer-protocol.workspace = true
+polymer-producer-vulkan = { path = "../../producers/polymer-producer-vulkan" }
+tracing.workspace = true
+windows.workspace = true

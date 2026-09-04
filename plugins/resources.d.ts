@@ -3,14 +3,14 @@ declare module "resources:*" {
     export default resource;
 }
 
-declare module "snowglass:pluginStorage" {
+declare module "polymer:pluginStorage" {
     export const pluginStorage: import("./plugin-api.ts").PluginStorage;
 }
 
-declare module "snowglass:cache" {
+declare module "polymer:cache" {
     export const caches: Readonly<Record<string, import("./plugin-api.ts").PluginCache>>;
 }
 
-declare module "snowglass:database" {
+declare module "polymer:database" {
     export const connect: () => Promise<import("./plugin-api.ts").PluginDatabase>;
 }

@@ -85,7 +85,7 @@ BINDING_TO_GENERIC = {
 }
 
 # The machine these ports belong to and its machinespec input group. PCSX2 has
-# eight internal pad slots, but Snowglass exposes the four controller ports
+# eight internal pad slots, but Polymer exposes the four controller ports
 # declared by the PlayStation 2 machine specification.
 MACHINE = "SONY_PS2"
 PORT_GROUP = "controller"

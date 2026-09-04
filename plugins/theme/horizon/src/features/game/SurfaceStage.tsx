@@ -1,6 +1,6 @@
 import { FloatingPanel } from "@ark-ui/solid";
 import { For, Show, createSignal } from "solid-js";
-import type { LaunchRequest } from "../../../../../../js/snowglass";
+import type { LaunchRequest } from "../../../../../../js/polymer";
 import { useShell } from "../../app/ShellProvider";
 import { Icon } from "../../components/Icon";
 import { ClassicSurfaceBackdrop } from "./ClassicSurfaceBackdrop";

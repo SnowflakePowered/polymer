@@ -219,7 +219,7 @@ GROUP_LAYOUTS = {
                    "WII_REMOTE_NUNCHUCK_CONTROLLER"],
 }
 
-# Snowglass's global action vocabulary → Cemu's hotkey element name. Cemu has
+# Polymer's global action vocabulary → Cemu's hotkey element name. Cemu has
 # no save/load state, pause, frame advance or reset hotkey at all, so five of
 # the nine simply cannot be expressed; the run reports which.
 ACTION_VOCABULARY = {

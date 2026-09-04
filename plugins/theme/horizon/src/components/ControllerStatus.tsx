@@ -8,12 +8,12 @@ export function ControllerStatus() {
   const [open, setOpen] = createSignal(false);
   const changed = () => setRevision((value) => value + 1);
   onMount(() => {
-    window.Snowglass.controllers.addEventListener("statechange", changed);
+    window.Polymer.controllers.addEventListener("statechange", changed);
     onCleanup(() => {
-      window.Snowglass.controllers.removeEventListener("statechange", changed);
+      window.Polymer.controllers.removeEventListener("statechange", changed);
     });
   });
-  const controllerCount = () => (revision(), window.Snowglass.controllers.connected.length);
+  const controllerCount = () => (revision(), window.Polymer.controllers.connected.length);
   return <>
     <button type="button" class="horizon-controller-status" aria-label="Change controller grip or order" aria-expanded={open()} onClick={() => setOpen(true)}>
       <Show when={controllerCount() > 0} fallback={<Icon name="keyboard" />}>

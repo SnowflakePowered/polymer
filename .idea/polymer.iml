@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<module type="EMPTY_MODULE" version="4">
+  <component name="NewModuleRootManager">
+    <content url="file://$MODULE_DIR$">
+      <sourceFolder url="file://$MODULE_DIR$/bins/polymer-injector/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/consumer/polymer-consumer-core/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/consumer/polymer-consumer-d3d12/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/consumer/polymer-consumer-vulkan/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/consumer/polymer-egui/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/consumer/polymer-renderer/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/hooks/polymer-hook-d3d11/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/hooks/polymer-hook-d3d12/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/hooks/polymer-hook-dinput/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/hooks/polymer-hook-dxgi/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/hooks/polymer-hook-gdi/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/hooks/polymer-hook-opengl32/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/hooks/polymer-hook-sdl2/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/hooks/polymer-hook-sdl3/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/hooks/polymer-hook-ui/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/hooks/polymer-hook-vulkan-layer/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/hooks/polymer-hook-win32/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/hooks/polymer-hook/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/input/polymer-input-dinput/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/input/polymer-input-sdl/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/input/polymer-input-win32/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/input/polymer-input/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/producers/polymer-producer-d3d11/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/producers/polymer-producer-d3d12/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/producers/polymer-producer-gdi/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/producers/polymer-producer-opengl/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/producers/polymer-producer-vulkan/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/runtime/polymer-ipc/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/runtime/polymer-platform-windows/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/runtime/polymer-protocol/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/runtime/polymer-runtime/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/runtime/polymer-statistics/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/runtime/polymer-ui/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/polymer-api/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/polymer-config/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/polymer-config/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/runtime/polymer-library/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/filesystem/polymer-consolestorage/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/hooks/polymer-hook-d3d11/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/hooks/polymer-hook-d3d12/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/filesystem/polymer-vfs/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/runtime/polymer-library/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/runtime/polymer-pluginhost/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bins/polymer-debug-viewer/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bins/polymer-gui/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bins/polymer-gui/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bins/polymer-bttest/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/bins/polymer-watcher/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/hooks/polymer-hook-bluetoothapi-win32/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/hooks/polymer-hook-input-dinput/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/hooks/polymer-hook-input-sdl/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/hooks/polymer-hook-input-win32/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/hooks/polymer-hook-input/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/hooks/polymer-hook-input/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/input/polymer-bluetooth/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/input/polymer-bluetooth/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/input/polymer-input-bluetooth/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/input/polymer-input-ipc/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/input/polymer-input-layout/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/input/polymer-input-sdl3/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/runtime/polymer-automation/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/runtime/polymer-controllers/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/runtime/polymer-platform-windows/examples" isTestSource="false" />
+      <excludeFolder url="file://$MODULE_DIR$/target" />
+    </content>
+    <orderEntry type="inheritedJdk" />
+    <orderEntry type="sourceFolder" forTests="false" />
+  </component>
+</module>

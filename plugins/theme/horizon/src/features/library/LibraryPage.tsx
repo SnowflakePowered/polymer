@@ -9,11 +9,11 @@ import "./LibraryPage.css";
 
 export function LibraryPage() {
   const shell = useShell();
-  const [dropActive, setDropActive] = createSignal(window.Snowglass.scraping.dropActive);
+  const [dropActive, setDropActive] = createSignal(window.Polymer.scraping.dropActive);
   onMount(() => {
     const changed = (event: Event) => setDropActive((event as CustomEvent<boolean>).detail);
-    window.Snowglass.scraping.addEventListener("dropactivechange", changed);
-    onCleanup(() => window.Snowglass.scraping.removeEventListener("dropactivechange", changed));
+    window.Polymer.scraping.addEventListener("dropactivechange", changed);
+    onCleanup(() => window.Polymer.scraping.removeEventListener("dropactivechange", changed));
   });
   const status = () => shell.model.launcher.kind === "detecting" ? `Preparing ${shell.model.launcher.name}…` : "";
   return <main class="horizon-library">

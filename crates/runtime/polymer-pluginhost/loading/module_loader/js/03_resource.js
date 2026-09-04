@@ -1,0 +1,1 @@
+export default globalThis.__polymerFilesystem.importResource(__POLYMER_RESOURCE__);

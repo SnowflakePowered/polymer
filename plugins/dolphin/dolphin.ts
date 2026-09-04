@@ -98,7 +98,7 @@ function isNKit(path: string): boolean {
 }
 
 function quickResumeEnabled(configuration?: UserConfiguration): boolean {
-    return configuration?.snowglass?.quickResume !== false;
+    return configuration?.polymer?.quickResume !== false;
 }
 
 export const onConfigure = (
@@ -108,8 +108,8 @@ export const onConfigure = (
     schema: "dolphin/v1",
     key: game.titleId ?? game.serial ?? game.launchPath,
     groups: [{
-        key: "snowglass",
-        title: "Snowglass",
+        key: "polymer",
+        title: "Polymer",
         options: [{
             key: "quickResume",
             title: "Quick Resume",
@@ -119,7 +119,7 @@ export const onConfigure = (
         }],
     }],
     values: {
-        snowglass: {
+        polymer: {
             quickResume: !isNKit(game.launchPath) && quickResumeEnabled(userConfiguration),
         },
     },
@@ -162,7 +162,7 @@ function requiresWiimoteMappingReload(
     current: ControllerMapping,
 ): boolean {
     if (!loaded) return true;
-    // Dolphin only sees the stable Snowglass virtual gamepad, its emulated
+    // Dolphin only sees the stable Polymer virtual gamepad, its emulated
     // layout, and IR mode. Physical projection and custom bindings are applied
     // by the host before events reach that virtual device.
     return loaded.gamepad !== current.gamepad
@@ -253,10 +253,10 @@ async function applyWiiConnectionChanges(
             ? [port]
             : [],
     ));
-    console.info(`snowglass dolphin: controller topology previous=${JSON.stringify(wiimoteDiagnostics(context.previousTopology))} requested=${JSON.stringify(wiimoteDiagnostics(topology))}`);
+    console.info(`polymer dolphin: controller topology previous=${JSON.stringify(wiimoteDiagnostics(context.previousTopology))} requested=${JSON.stringify(wiimoteDiagnostics(topology))}`);
     if (current.every((source, port) => source === previousSources[port])
         && mappingReloadPorts.size === 0) {
-        console.info("snowglass dolphin: UIA controller configuration skipped; live sources and mappings are unchanged");
+        console.info("polymer dolphin: UIA controller configuration skipped; live sources and mappings are unchanged");
         return;
     }
 
@@ -287,7 +287,7 @@ async function applyWiiConnectionChanges(
         if (before.length < WII_REMOTE_SLOT_COUNT) {
             throw new RangeError(`Dolphin exposed ${before.length} enabled Wii Remote source controls, expected at least ${WII_REMOTE_SLOT_COUNT}`);
         }
-        console.info(`snowglass dolphin: UIA Wii sources before=${JSON.stringify(before)} desired=${JSON.stringify(current.map(source => WII_REMOTE_SOURCE_NAMES[source]))}`);
+        console.info(`polymer dolphin: UIA Wii sources before=${JSON.stringify(before)} desired=${JSON.stringify(current.map(source => WII_REMOTE_SOURCE_NAMES[source]))}`);
         const sourcesStarted = Date.now();
         const observed = before.map(snapshot => snapshot.value ?? snapshot.name);
         // Arm destination real slots before releasing their old slots. Dolphin
@@ -301,7 +301,7 @@ async function applyWiiConnectionChanges(
                 const sourceStarted = Date.now();
                 await sources.nth(port + 1).selectOption("Real Wii Remote");
                 observed[port] = "Real Wii Remote";
-                console.info(`snowglass dolphin: selected Wii Remote ${port + 1} source ${JSON.stringify(previousSource)}->"Real Wii Remote" elapsed_ms=${Date.now() - sourceStarted}`);
+                console.info(`polymer dolphin: selected Wii Remote ${port + 1} source ${JSON.stringify(previousSource)}->"Real Wii Remote" elapsed_ms=${Date.now() - sourceStarted}`);
             }
         }
         for (const [port, source] of current.entries()) {
@@ -311,7 +311,7 @@ async function applyWiiConnectionChanges(
                 const sourceStarted = Date.now();
                 await sources.nth(port + 1).selectOption(desired);
                 observed[port] = desired;
-                console.info(`snowglass dolphin: selected Wii Remote ${port + 1} source ${JSON.stringify(previousSource)}->${JSON.stringify(desired)} elapsed_ms=${Date.now() - sourceStarted}`);
+                console.info(`polymer dolphin: selected Wii Remote ${port + 1} source ${JSON.stringify(previousSource)}->${JSON.stringify(desired)} elapsed_ms=${Date.now() - sourceStarted}`);
             }
         }
         const sourcesAppliedAt = Date.now();
@@ -378,7 +378,7 @@ async function applyWiiConnectionChanges(
                     throw new Error(`Dolphin Wii Remote ${port + 1} Relative Input is ${JSON.stringify(snapshot.states.checked)}, expected ${desired}`);
                 }
                 reloadedPorts.push(port + 1);
-                console.info(`snowglass dolphin: reloaded Wii Remote ${port + 1} mappings relativeInput=${JSON.stringify(previousRelativeInput)}->${desired} elapsed_ms=${Date.now() - mappingStarted}`);
+                console.info(`polymer dolphin: reloaded Wii Remote ${port + 1} mappings relativeInput=${JSON.stringify(previousRelativeInput)}->${desired} elapsed_ms=${Date.now() - mappingStarted}`);
             } finally {
                 await mapping.locator(DOLPHIN_WINDOW_CLOSE_SELECTOR).nth(1).press();
             }
@@ -401,8 +401,8 @@ async function applyWiiConnectionChanges(
                 throw new Error(`Dolphin Wii Remote ${port + 1} source is ${JSON.stringify(observed)}, expected ${JSON.stringify(WII_REMOTE_SOURCE_NAMES[current[port]])}`);
             }
         }
-        console.info(`snowglass dolphin: UIA Wii sources applied=${JSON.stringify(after)}`);
-        console.info(`snowglass dolphin: UIA controller configuration timings=${JSON.stringify({
+        console.info(`polymer dolphin: UIA Wii sources applied=${JSON.stringify(after)}`);
+        console.info(`polymer dolphin: UIA controller configuration timings=${JSON.stringify({
             settingsReadyMs: settingsReadyAt - automationStarted,
             sourcesMs: sourcesAppliedAt - sourcesStarted,
             mappingWindowsMs: mappingWindowsAppliedAt - sourcesAppliedAt,
@@ -481,7 +481,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     options.core.gfx_backend = "D3D";
     options.core.gci_folder_a_path = args.filesystem.path("/MemoryCard/USA");
     // Dolphin disables save states by default in current development builds.
-    // Snowglass uses them for both explicit state slots and quick resume.
+    // Polymer uses them for both explicit state slots and quick resume.
     options.core.enable_save_states = true;
     options.core.slot_a = "MemoryCardFolder";
     options.core.slot_b = "None";
@@ -493,17 +493,17 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     if (isWii) {
         options.general.nand_root_path = args.filesystem.path("/User/Wii");
     }
-    // Snowglass owns the focused host window while Dolphin renders through an
+    // Polymer owns the focused host window while Dolphin renders through an
     // isolated capture surface. Dolphin must continue polling the injected
     // virtual controller while its own hidden window is not foreground.
     options.input.background_input = true;
-    // NKit images trigger a modal warning before emulation starts. Snowglass
+    // NKit images trigger a modal warning before emulation starts. Polymer
     // launches Dolphin unattended, so the warning must never block startup.
     options.interface.confirm_stop = false;
     options.interface.skip_n_kit_warning = true;
 
     if (isWii) {
-        console.info(`snowglass dolphin: launch Wii assignments=${JSON.stringify(wiimoteDiagnostics(controllerTopology))}`);
+        console.info(`polymer dolphin: launch Wii assignments=${JSON.stringify(wiimoteDiagnostics(controllerTopology))}`);
         // The synthetic HID topology can arrive just after Dolphin's first
         // scanner pass and can change while a mixed-controller session is live.
         // Keep the Real Wiimote scanner active, but do not expose its devices
@@ -519,7 +519,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
         }
     }
 
-    // Batch mode never shows Dolphin's control window. Snowglass already
+    // Batch mode never shows Dolphin's control window. Polymer already
     // isolates that UI on a private desktop and owns process termination.
     const quickResume = quickResumeEnabled(args.userConfiguration) && !isNKit(args.launchPath)
         ? args.saveStates.quickResume
@@ -574,9 +574,9 @@ export const onControllerChanged = async (context: ControllerChangeContext) => {
         slot.source = mapping ? wiimoteSource(mapping) : 0;
     }
     context.filesystem.flush();
-    console.info("snowglass dolphin: published controller configuration before UI automation");
+    console.info("polymer dolphin: published controller configuration before UI automation");
     await applyWiiConnectionChanges(context, topology);
-    console.info(`snowglass dolphin: onControllerChanged completed in ${Date.now() - started}ms applied=${JSON.stringify(wiimoteDiagnostics(topology))}`);
+    console.info(`polymer dolphin: onControllerChanged completed in ${Date.now() - started}ms applied=${JSON.stringify(wiimoteDiagnostics(topology))}`);
     return { controllerTopology: topology };
 };
 

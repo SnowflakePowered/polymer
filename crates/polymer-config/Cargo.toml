@@ -1,0 +1,26 @@
+[package]
+name = "polymer-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+toml-spanner = { version = "1", features = ["derive"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+consolespec.workspace = true
+indexmap = { version = "2" }
+configparser = { version = "3.2", features = ["indexmap"] }
+quick-xml = "0.39"
+bml = "0.3.1"
+rt-format = "0.3.1"
+crc = "3.4"
+uuid = "1.24"
+petgraph = "0.8"
+[dev-dependencies]
+tempfile.workspace = true
+
+
+[lints]
+workspace = true

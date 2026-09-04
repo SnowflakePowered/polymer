@@ -1,0 +1,25 @@
+[package]
+name = "polymer-vfs-winfsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+polymer-vfs.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+parking_lot.workspace = true
+winfsp = { version = "0.13.0", default-features = false, features = ["system", "windows-61"] }
+windows = { workspace = true, features = [
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

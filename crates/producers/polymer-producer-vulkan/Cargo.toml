@@ -1,0 +1,20 @@
+[package]
+name = "polymer-producer-vulkan"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ash.workspace = true
+dashmap.workspace = true
+parking_lot.workspace = true
+polymer-api.workspace = true
+polymer-hook.workspace = true
+polymer-ipc.workspace = true
+polymer-platform-windows.workspace = true
+polymer-protocol.workspace = true
+tracing.workspace = true
+windows.workspace = true
+
+[lints]
+workspace = true

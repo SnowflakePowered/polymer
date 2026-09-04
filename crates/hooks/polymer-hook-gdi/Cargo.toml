@@ -1,0 +1,17 @@
+[package]
+name = "polymer-hook-gdi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+polymer-hook.workspace = true
+polymer-platform-windows.workspace = true
+polymer-producer-gdi = { path = "../../producers/polymer-producer-gdi" }
+windows-sys.workspace = true
+
+[lints]
+workspace = true

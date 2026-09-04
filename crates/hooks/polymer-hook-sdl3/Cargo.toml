@@ -1,0 +1,25 @@
+[package]
+name = "polymer-hook-sdl3"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+consolespec.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+polymer-hook.workspace = true
+polymer-input.workspace = true
+polymer-ipc.workspace = true
+polymer-input-layout.workspace = true
+polymer-hook-input-sdl.workspace = true
+polymer-platform-windows.workspace = true
+windows-sys.workspace = true
+
+[lints]
+workspace = true
+

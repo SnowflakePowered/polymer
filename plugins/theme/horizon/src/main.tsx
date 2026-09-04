@@ -1,6 +1,6 @@
 import { EnvironmentProvider } from "@ark-ui/solid";
 import { render } from "solid-js/web";
-import "../../../../js/snowglass";
+import "../../../../js/polymer";
 import { ShellRouter } from "./app/ShellRouter";
 
 const root = document.getElementById("root");

@@ -1,15 +1,15 @@
 import { useNavigate } from "@solidjs/router";
 import { createContext, createEffect, onCleanup, onMount, useContext, type ParentProps } from "solid-js";
 import { createStore } from "solid-js/store";
-import type { LaunchRequest, PackageConfiguration } from "../../../../../js/snowglass";
-import type { ControllerDevice } from "../../../../../js/snowglass";
+import type { LaunchRequest, PackageConfiguration } from "../../../../../js/polymer";
+import type { ControllerDevice } from "../../../../../js/polymer";
 import { ControllerConnectionToast } from "../components/ControllerConnectionToast";
 import { InputNavigation } from "../components/InputNavigation";
 import { onLaunch, resolveGame } from "./launch";
 import type { RecentGame, ShellModel } from "./models";
 import "./ShellProvider.css";
 
-const RECENT_KEY = "snowglass.recentGames.v2";
+const RECENT_KEY = "polymer.recentGames.v2";
 const RECENT_LIMIT = 100;
 const DEFAULT_AUDIO = { available: false, volume: 1, muted: false };
 
@@ -19,7 +19,7 @@ type StartupRequest =
 
 const startupQueue: StartupRequest[] = [];
 let startupHandler: ((request: StartupRequest) => void) | null = null;
-window.Snowglass.scraping.addEventListener("request", (event: Event) => {
+window.Polymer.scraping.addEventListener("request", (event: Event) => {
   const request = (event as CustomEvent<StartupRequest>).detail;
   if (startupHandler) startupHandler(request);
   else startupQueue.push(request);
@@ -64,7 +64,7 @@ export function ShellProvider(props: ParentProps) {
     draft: null,
     request: null,
     surfaces: [],
-    launch: window.Snowglass.emulator.activeLaunch,
+    launch: window.Polymer.emulator.activeLaunch,
     audio: { ...DEFAULT_AUDIO },
     error: "",
     recent: [],
@@ -97,12 +97,12 @@ export function ShellProvider(props: ParentProps) {
     setModel("controllerToast", { name: source.name, index });
     toastTimer = setTimeout(() => setModel("controllerToast", null), 3200);
   };
-  let knownPlayers = new Map(window.Snowglass.controllers.players.flatMap((player) =>
+  let knownPlayers = new Map(window.Polymer.controllers.players.flatMap((player) =>
     player.controller ? [[player.controller.id, player.index] as const] : []
   ));
   const playersChanged = () => {
     const next = new Map<string, number>();
-    for (const player of window.Snowglass.controllers.players) {
+    for (const player of window.Polymer.controllers.players) {
       if (!player.controller) continue;
       next.set(player.controller.id, player.index);
       if (knownPlayers.get(player.controller.id) !== player.index) {
@@ -111,10 +111,10 @@ export function ShellProvider(props: ParentProps) {
     }
     knownPlayers = next;
   };
-  window.Snowglass.controllers.addEventListener("playerchange", playersChanged);
+  window.Polymer.controllers.addEventListener("playerchange", playersChanged);
 
   const prepare = async (path: string, emulator: string | undefined, destination: "details" | "launch") => {
-    if (window.Snowglass.emulator.activeLaunch) {
+    if (window.Polymer.emulator.activeLaunch) {
       fail(new DOMException("Close the active game before opening another one", "InvalidStateError"));
       return;
     }
@@ -204,7 +204,7 @@ export function ShellProvider(props: ParentProps) {
   onCleanup(() => {
     detection?.abort();
     if (toastTimer) clearTimeout(toastTimer);
-    window.Snowglass.controllers.removeEventListener("playerchange", playersChanged);
+    window.Polymer.controllers.removeEventListener("playerchange", playersChanged);
     if (startupHandler === acceptStartup) startupHandler = null;
   });
 

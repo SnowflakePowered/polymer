@@ -76,7 +76,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     args.filesystem.mountScratch("/User", { mode: "rwx", backing: "temporary" });
     args.filesystem.mountScratch("/User/generated", { mode: "rwx", backing: "temporary" });
     if (args.storage.card1) {
-        args.filesystem.mountStorage("/User/memcards/snowglass.mcd", args.storage.card1, {
+        args.filesystem.mountStorage("/User/memcards/polymer.mcd", args.storage.card1, {
             mode: "rw",
             format: "raw",
         });
@@ -112,7 +112,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     options.folders.textures = path("/User/textures");
     options.folders.user_resources = path("/DuckStation/resources");
     options.memorycards.card1_type = args.storage.card1 ? "Shared" : "None";
-    options.memorycards.card1_path = "snowglass.mcd";
+    options.memorycards.card1_path = "polymer.mcd";
     options.memorycards.card2_type = "None";
     options.memorycards.directory = path("/User/memcards");
     options.memorycards.fast_forward_access = false;

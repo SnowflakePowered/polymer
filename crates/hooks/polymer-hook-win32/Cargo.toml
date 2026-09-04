@@ -1,0 +1,19 @@
+[package]
+name = "polymer-hook-win32"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+tracing.workspace = true
+polymer-hook.workspace = true
+polymer-hook-input-win32.workspace = true
+polymer-platform-windows.workspace = true
+windows-sys.workspace = true
+
+[lints]
+workspace = true
+

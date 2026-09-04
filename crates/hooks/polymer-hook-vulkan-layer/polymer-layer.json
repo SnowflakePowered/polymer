@@ -1,0 +1,20 @@
+{
+    "file_format_version": "1.2.0",
+    "layer": {
+        "name": "VK_LAYER_POLYMER_capture",
+        "type": "GLOBAL",
+        "library_path": "../../../target/debug/polymer_hook_vulkan_layer.dll",
+        "api_version": "1.4.0",
+        "implementation_version": "1",
+        "description": "Polymer Vulkan capture layer",
+        "functions": {
+            "vkNegotiateLoaderLayerInterfaceVersion": "vkNegotiateLoaderLayerInterfaceVersion"
+        },
+        "enable_environment": {
+            "POLYMER_VULKAN_LAYER": "1"
+        },
+        "disable_environment": {
+            "DISABLE_POLYMER_VULKAN_LAYER": "1"
+        }
+    }
+}

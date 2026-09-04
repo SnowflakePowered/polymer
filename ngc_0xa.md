@@ -9,35 +9,35 @@ hypotheses.
 
 The findings below were derived from these captures:
 
-- `%LOCALAPPDATA%\Snowglass\captures\switch2-gamecube-motion-1787817891826-3C-A9-AB-93-02-36.jsonl`
+- `%LOCALAPPDATA%\Polymer\captures\switch2-gamecube-motion-1787817891826-3C-A9-AB-93-02-36.jsonl`
   - Native report `0x0A`
   - 43,365 notifications
   - Labeled stationary orientations, slow positive and negative rotations on all
     three axes, fast flicks, isolated taps, and a long stationary interval
-- `%LOCALAPPDATA%\Snowglass\captures\switch2-gamecube-motion-1787819268289-3C-A9-AB-93-02-36.jsonl`
+- `%LOCALAPPDATA%\Polymer\captures\switch2-gamecube-motion-1787819268289-3C-A9-AB-93-02-36.jsonl`
   - Common report `0x05`
   - 13,867 notifications
   - The same labeled sequence, used as the uncompressed reference
-- `%LOCALAPPDATA%\Snowglass\captures\switch2-gamecube-motion-1787840127427-3C-A9-AB-93-02-36.jsonl`
+- `%LOCALAPPDATA%\Polymer\captures\switch2-gamecube-motion-1787840127427-3C-A9-AB-93-02-36.jsonl`
   - Automatic native/common report experiment
   - 7,249 native and 6,240 common notifications
   - Concurrent GATT subscriptions followed by acknowledged 250 ms alternation
   - Modes 0, 1, and 2 exercised repeatedly during the three flick trials
-- `%LOCALAPPDATA%\Snowglass\captures\switch2-gamecube-motion-1787844007353-3C-A9-AB-93-02-36.jsonl`
+- `%LOCALAPPDATA%\Polymer\captures\switch2-gamecube-motion-1787844007353-3C-A9-AB-93-02-36.jsonl`
   - Guided quaternion and timing experiment
   - 24,970 native notifications; the complete run begins at `t_ns =
     42,761,290,600` after one aborted attempt
   - 25 stationary holds and isolated positive/negative rotations through full
     turns about all three physical axes
   - 21,879 usable normal-class packets in the completed run
-- `%LOCALAPPDATA%\Snowglass\captures\switch2-gamecube-motion-1787883791577-3C-A9-AB-93-02-36.jsonl`
+- `%LOCALAPPDATA%\Polymer\captures\switch2-gamecube-motion-1787883791577-3C-A9-AB-93-02-36.jsonl`
   - Guided lane-isolation experiment
   - 196,941 decoded native motion packets
   - Repeated stationary, rotation, translation, and closed-loop actions
-- `%LOCALAPPDATA%\Snowglass\captures\switch2-gamecube-motion-1787933425359-3C-A9-AB-93-02-36.jsonl`
+- `%LOCALAPPDATA%\Polymer\captures\switch2-gamecube-motion-1787933425359-3C-A9-AB-93-02-36.jsonl`
   - Guided class-`0xD` experiment and long stationary collection
   - 1,974,875 native notifications
-- `%LOCALAPPDATA%\Snowglass\captures\switch2-gamecube-motion-1788012704011-3C-A9-AB-93-02-36.jsonl`
+- `%LOCALAPPDATA%\Polymer\captures\switch2-gamecube-motion-1788012704011-3C-A9-AB-93-02-36.jsonl`
   - Focused class-`0xF` timing experiment
   - 19,049 native notifications and 186 class-`0xF` packets
   - Stationary, steady pitch/roll/yaw, mixed-flick, isolated-tap, and charging
@@ -505,7 +505,7 @@ after wake was approximately `[-20.91, -125.05, 4056.78]` and
 (`29 °C`) in Q8.7 form. The selector tuple also remained `[0, 2, 0]`, confirming
 that the selector interpretation is format-driven rather than session state.
 
-Snowglass constructs a new physical report decoder for every `Connected` event,
+Polymer constructs a new physical report decoder for every `Connected` event,
 so its timestamp history, orientation tracker, and stationary drift estimator
 reset at the correct boundary. The shared motion decoder also treats a
 non-continuous sensor-clock jump as a defensive session boundary, covering a
@@ -631,10 +631,10 @@ A safe decoder can now recover the observable motion stream:
    clock.
 8. Retain the previous motion state for all other lengths and timing classes.
 
-## Snowglass implementation status
+## Polymer implementation status
 
 The shared Switch 2 native-motion decoder is implemented in
-`crates/input/snowglass-input-bluetooth`. Parsing and stabilization live in the
+`crates/input/polymer-input-bluetooth`. Parsing and stabilization live in the
 input provider rather than in bttest, so GUI and future virtual-device consumers
 receive the same motion state. Every physical Switch 2 decoder owns its own
 orientation tracker; the state is not shared between controllers.
@@ -683,7 +683,7 @@ native quaternion basis documented above.
 ### Switch 2 family reuse
 
 The native controller-specific reports all expose the same observed motion
-lengths (`0`, `30`, and `40`) and enable motion through feature bit 2. Snowglass
+lengths (`0`, `30`, and `40`) and enable motion through feature bit 2. Polymer
 now shares one `NativeMotionDecoder` across:
 
 | Controller | Native report | Length byte | Motion start |
@@ -733,7 +733,7 @@ subscribed, proving that subscription alone does not enable simultaneous report
 streams. The fallback succeeded. WinRT characteristic switching added roughly
 90 ms of overhead, so acknowledged switches were normally about 340 ms apart.
 
-Capture schema `snowglass.switch2-motion.v2` records:
+Capture schema `polymer.switch2-motion.v2` records:
 
 - timestamped subscription, probe, fallback, and stop events;
 - timestamped successful report-selection acknowledgements;

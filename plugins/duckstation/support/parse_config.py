@@ -94,7 +94,7 @@ LAYOUTS = {
     "DUALSHOCK_CONTROLLER": "AnalogController",
 }
 
-# Snowglass's global action vocabulary → DuckStation's hotkey name. DuckStation
+# Polymer's global action vocabulary → DuckStation's hotkey name. DuckStation
 # ships defaults for some of these in SetDefaultHotkeyConfig; the rest get a
 # fallback that is checked against every parsed default for collisions.
 ACTION_VOCABULARY = {
@@ -370,7 +370,7 @@ def build_actions(hotkeys: list[dict], defaults: dict[str, str], revision: str |
 
 
 def canonical_chord(expression: str) -> str:
-    """`Keyboard/F1` → the snowglass key spec the shell synthesizes."""
+    """`Keyboard/F1` → the polymer key spec the shell synthesizes."""
     text = expression.split("/", 1)[-1] if expression.startswith("Keyboard/") else expression
     return "+".join(part.strip().lower() for part in text.split("+") if part.strip())
 

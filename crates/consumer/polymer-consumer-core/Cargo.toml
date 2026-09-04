@@ -1,0 +1,10 @@
+[package]
+name = "polymer-consumer-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+polymer-api.workspace = true
+polymer-protocol.workspace = true
+

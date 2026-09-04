@@ -5,7 +5,7 @@ import { ControlHintBar } from "../../components/ControlHintBar";
 import { Icon } from "../../components/Icon";
 import { useShell } from "../../app/ShellProvider";
 import { friendly } from "../../app/launch";
-import type { EmulatorConfiguration } from "../../../../../../js/snowglass";
+import type { EmulatorConfiguration } from "../../../../../../js/polymer";
 import { ControllerSection } from "./ControllerSection";
 import { SettingsSection } from "./SettingsSection";
 import "./GameDetailsPage.css";
@@ -34,7 +34,7 @@ export function GameDetailsPage() {
     updateEmulator((candidate) => {
       candidate.userConfiguration = values;
     });
-    void window.Snowglass.configuration.configure(packageValue, current.id, values)
+    void window.Polymer.configuration.configure(packageValue, current.id, values)
       .then((result) => {
         if (!result) return;
         updateEmulatorById(current.id, (candidate) => {

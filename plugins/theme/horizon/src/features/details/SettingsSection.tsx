@@ -1,6 +1,6 @@
 import { Collapsible } from "@ark-ui/solid";
 import { For } from "solid-js";
-import type { EmulatorConfiguration, PackageConfiguration } from "../../../../../../js/snowglass";
+import type { EmulatorConfiguration, PackageConfiguration } from "../../../../../../js/polymer";
 import { ChoiceControl, OptionControl } from "../../components/FormControls";
 import { friendly } from "../../app/launch";
 import "./SettingsSection.css";

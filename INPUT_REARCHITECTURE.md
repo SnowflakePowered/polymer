@@ -14,7 +14,7 @@ Repo conventions that apply (from `AGENTS.md` and standing user preferences):
 - **Do not add tests without asking.** Section 17 proposes coverage; get sign-off
   before writing any of it.
 - Protocol version bumps require a full workspace rebuild and killing leftover
-  `snowglass-viewer.exe` / target processes before re-running.
+  `polymer-viewer.exe` / target processes before re-running.
 
 ## Settled decisions
 
@@ -24,7 +24,7 @@ updated to match.
 
 | # | Question | Decision |
 | --- | --- | --- |
-| 1 | Crate names (§14.12) | As proposed. The router takes the name `InputHub`; the old type becomes `snowglass-controllers::ControllerConfiguration`. Host SDL capture is `snowglass-input-sdl3`, target SDL injection is `snowglass-hook-input-sdl` — the `hook-` prefix and the `crates/hooks/` location disambiguate. |
+| 1 | Crate names (§14.12) | As proposed. The router takes the name `InputHub`; the old type becomes `polymer-controllers::ControllerConfiguration`. Host SDL capture is `polymer-input-sdl3`, target SDL injection is `polymer-hook-input-sdl` — the `hook-` prefix and the `crates/hooks/` location disambiguate. |
 | 2 | Feedback arbitration (§14.3) | Single owner. |
 | 3 | `PointerCapabilities` split (§15.13) | **Merged.** One `Capabilities` bitfield covers general, pointer, and calibration bits. `PointerCapabilities` and `CalibrationFields` are deleted. |
 | 4 | Index range (§14.8) | `max_players` = 8, `u8` wire indices. |
@@ -44,7 +44,7 @@ behaviour that did not previously exist.
 
 ## 1. Goal
 
-`snowglass-input` becomes an **input hub and router**: it owns physical device
+`polymer-input` becomes an **input hub and router**: it owns physical device
 discovery aggregation, stable player-index assignment, device composition, and
 fan-out of gamepad state / raw HID to listeners. It republishes state *as the
 device reports it*. It knows nothing about consolespec inputspecs, emulator
@@ -63,7 +63,7 @@ publishes stream topology.
 
 Concrete, with file references, so the rewrite can be checked against it.
 
-### 2.1 `snowglass-input` has at least six unrelated responsibilities
+### 2.1 `polymer-input` has at least six unrelated responsibilities
 
 | Module | Responsibility | Belongs |
 | --- | --- | --- |
@@ -73,13 +73,13 @@ Concrete, with file references, so the rewrite can be checked against it.
 | `src/sdl.rs` (374) | the SDL virtual pad as a device | hook-safe layout crate |
 | `src/provider/sdl3/mod.rs` (2122) | SDL capture **and** mapping compilation **and** keyboard projection **and** pointer synthesis | split: capture → HAL crate, rest → hooks |
 | `src/router/mod.rs` (420) | physical→slot routing **and** button/axis remapping | hub keeps routing, drops remapping |
-| `src/mouse/layout.rs` (404) | letterbox/aspect-fit compositing geometry — **not input at all** | `snowglass-renderer` |
-| `src/mouse/mod.rs` | `PointerInput` wire struct | `snowglass-protocol` |
-| `src/lib.rs` | `DirectInputData`, `RawKeyInput` wire structs | `snowglass-protocol` + dinput hook |
+| `src/mouse/layout.rs` (404) | letterbox/aspect-fit compositing geometry — **not input at all** | `polymer-renderer` |
+| `src/mouse/mod.rs` | `PointerInput` wire struct | `polymer-protocol` |
+| `src/lib.rs` | `DirectInputData`, `RawKeyInput` wire structs | `polymer-protocol` + dinput hook |
 | `build.rs` | generates `SDL3.lib` from the hook's `SDL3.dll` | SDL HAL crate only |
 
 The `build.rs` is the sharpest symptom: **every crate that depends on
-`snowglass-input` — including four injected hook DLLs — drags in an SDL3 import
+`polymer-input` — including four injected hook DLLs — drags in an SDL3 import
 library and a `lib.exe` invocation** it has no use for.
 
 ### 2.2 Duplicated representations of one mapping
@@ -93,19 +93,19 @@ The same user binding exists as five types:
 5. `provider::sdl3::CompiledMapping` / `CompiledKeyboardMapping` — runtime form.
 
 A single binding change walks 1→2→3→5 on the reconcile path
-(`bins/snowglass-gui/src/input/reconcile.rs`) and 1→2→4 on the Bluetooth path
+(`bins/polymer-gui/src/input/reconcile.rs`) and 1→2→4 on the Bluetooth path
 (`ControllerManager::routes_for`). `ResolvedInputConfiguration` exists purely to
 carry (2) alongside (1).
 
 ### 2.3 Per-report allocation and cloning in the hot path
 
-- `snowglass-ipc/src/control.rs:1014` — `encode_input` does
+- `polymer-ipc/src/control.rs:1014` — `encode_input` does
   `encode(value).as_bytes().to_vec()`: **a heap allocation per gamepad update**,
   ~1 kB (`PAYLOAD_SIZE` is sized by `WireStreamReady`), for a ~40-byte payload.
-- `snowglass-input-bluetooth/src/lib.rs` — every HID report clones the whole
+- `polymer-input-bluetooth/src/lib.rs` — every HID report clones the whole
   `BluetoothControllerState` (name, profile id, motion frame, …) *and*
   `broadcast::send`s a `Box` of it, then separately publishes to the router.
-- `bins/snowglass-gui/src/input/publication/mod.rs` rebuilds a
+- `bins/polymer-gui/src/input/publication/mod.rs` rebuilds a
   `serde_json::Value` device tree at 60 Hz (`publication_due`, 16 ms).
 - `Sdl3Provider::states()` / `devices()` clone `Vec<PhysicalGamepadState>` out of
   a mutex on every poll.
@@ -121,16 +121,16 @@ paper over the skew between emulator ports and virtual pads.
 
 ### 2.5 Raw HID is Wii-Remote- and Dolphin-specific, and bypasses the hub
 
-`snowglass-input-bluetooth/src/raw/mod.rs` creates named pipes directly against
+`polymer-input-bluetooth/src/raw/mod.rs` creates named pipes directly against
 `BluetoothManager`, applies Dolphin-specific report filtering and a
 speaker-report→rumble rewrite, and is configured out of band via
-`SNOWGLASS_BLUETOOTH_HID_PIPES`. The hub never sees it.
+`POLYMER_BLUETOOTH_HID_PIPES`. The hub never sees it.
 
 ### 2.6 Layout topology is frozen at launch
 
-`snowglass-runtime/src/launch.rs:85` writes `SNOWGLASS_LAYOUTS` and
-`SNOWGLASS_SDL_GAMEPADS` into the target environment. The SDL hooks read them
-once (`snowglass-hook-sdl3/src/install.rs::create_table_state`). A controller
+`polymer-runtime/src/launch.rs:85` writes `POLYMER_LAYOUTS` and
+`POLYMER_SDL_GAMEPADS` into the target environment. The SDL hooks read them
+once (`polymer-hook-sdl3/src/install.rs::create_table_state`). A controller
 change after launch (`onControllerChanged`) cannot alter the virtual pad
 topology, only the values flowing through it.
 
@@ -139,96 +139,96 @@ topology, only the values flowing through it.
 ## 3. Target crate graph
 
 ```
-                      consolespec        snowglass-config
+                      consolespec        polymer-config
                             \                  /
                              \                /
-                        snowglass-input-layout          (hook-safe: layouts,
+                        polymer-input-layout          (hook-safe: layouts,
                            /        |        \           SDL pad, projection,
                           /         |         \          mapping application)
                          /          |          \
-       snowglass-controllers   hook DLLs   snowglass-input-ipc
+       polymer-controllers   hook DLLs   polymer-input-ipc
        (host: ports, topology,     |                |
         profiles, persistence)     |                |
                     \              |                |
                      \             |                |
-                      +---> snowglass-input <-------+       (HUB + ROUTER)
+                      +---> polymer-input <-------+       (HUB + ROUTER)
                             /            \
                            /              \
-             snowglass-input-sdl3    snowglass-input-bluetooth   (HAL backends)
+             polymer-input-sdl3    polymer-input-bluetooth   (HAL backends)
                                               |
-                                       snowglass-bluetooth       (radio HAL)
+                                       polymer-bluetooth       (radio HAL)
 ```
 
-`snowglass-input` depends on: `parking_lot`, `tracing`. **Nothing else.** No
+`polymer-input` depends on: `parking_lot`, `tracing`. **Nothing else.** No
 serde, no serde_json, no consolespec, no SDL, no IPC.
 
 ### 3.1 New crates
 
 | Crate | Path | Role |
 | --- | --- | --- |
-| `snowglass-input-layout` | `crates/input/snowglass-input-layout` | Hook-safe. `InputLayout`, `SdlButton`/`SdlAxis`/`Wire`/`SdlSensor`, projection re-export, `Mapping` application, keyboard mapping documents. Deps: `consolespec`, `snowglass-config`, `snowglass-input`, `serde`, `toml`. **No SDL, no IPC.** |
-| `snowglass-input-sdl3` | `crates/input/snowglass-input-sdl3` | Host-side SDL3 HAL backend. Owns the `sdl3` dependency and the `SDL3.lib` `build.rs`. |
-| `snowglass-input-ipc` | `crates/input/snowglass-input-ipc` | The IPC listener. Owns the shared-memory publisher, the target control socket, the raw-HID duplex channel, and the topology control channel. |
-| `snowglass-controllers` | `crates/runtime/snowglass-controllers` | Host-side emulator controller topology, user configuration, mapping profile persistence. Absorbs today's `snowglass-input::hub`, `::topology`, and `snowglass-runtime::controllers`. |
-| `snowglass-hook-input` | `crates/hooks/snowglass-hook-input` | Shared target-side runtime: IPC subscriber, latest-state store, keyboard/mouse queues, mapping application via `snowglass-input-layout`, feedback publish. |
+| `polymer-input-layout` | `crates/input/polymer-input-layout` | Hook-safe. `InputLayout`, `SdlButton`/`SdlAxis`/`Wire`/`SdlSensor`, projection re-export, `Mapping` application, keyboard mapping documents. Deps: `consolespec`, `polymer-config`, `polymer-input`, `serde`, `toml`. **No SDL, no IPC.** |
+| `polymer-input-sdl3` | `crates/input/polymer-input-sdl3` | Host-side SDL3 HAL backend. Owns the `sdl3` dependency and the `SDL3.lib` `build.rs`. |
+| `polymer-input-ipc` | `crates/input/polymer-input-ipc` | The IPC listener. Owns the shared-memory publisher, the target control socket, the raw-HID duplex channel, and the topology control channel. |
+| `polymer-controllers` | `crates/runtime/polymer-controllers` | Host-side emulator controller topology, user configuration, mapping profile persistence. Absorbs today's `polymer-input::hub`, `::topology`, and `polymer-runtime::controllers`. |
+| `polymer-hook-input` | `crates/hooks/polymer-hook-input` | Shared target-side runtime: IPC subscriber, latest-state store, keyboard/mouse queues, mapping application via `polymer-input-layout`, feedback publish. |
 
 ### 3.2 Renamed / relocated crates
 
 | From | To | Note |
 | --- | --- | --- |
-| `crates/input/snowglass-input-sdl` | `crates/hooks/snowglass-hook-input-sdl` | Target-side only. `SdlBackend` trait + virtual pad attach/detach/rebind; state store moves to `snowglass-hook-input`. |
-| `crates/input/snowglass-input-win32` | `crates/hooks/snowglass-hook-input-win32` | Target-side only. |
-| `crates/input/snowglass-input-dinput` | `crates/hooks/snowglass-hook-input-dinput` | **Target half only.** `DirectInputForwarder` and `RawKeyboardForwarder` are deleted — see §10. |
+| `crates/input/polymer-input-sdl` | `crates/hooks/polymer-hook-input-sdl` | Target-side only. `SdlBackend` trait + virtual pad attach/detach/rebind; state store moves to `polymer-hook-input`. |
+| `crates/input/polymer-input-win32` | `crates/hooks/polymer-hook-input-win32` | Target-side only. |
+| `crates/input/polymer-input-dinput` | `crates/hooks/polymer-hook-input-dinput` | **Target half only.** `DirectInputForwarder` and `RawKeyboardForwarder` are deleted — see §10. |
 
 After this, `crates/input/` contains only host-side crates:
-`snowglass-bluetooth`, `snowglass-input`, `snowglass-input-layout`,
-`snowglass-input-bluetooth`, `snowglass-input-sdl3`, `snowglass-input-ipc`.
+`polymer-bluetooth`, `polymer-input`, `polymer-input-layout`,
+`polymer-input-bluetooth`, `polymer-input-sdl3`, `polymer-input-ipc`.
 
 ### 3.3 Deleted outright
 
-- `snowglass-input/src/router/mod.rs::GamepadRemap` — remapping is no longer a
+- `polymer-input/src/router/mod.rs::GamepadRemap` — remapping is no longer a
   hub concern.
-- `snowglass-input/src/provider/sdl3/mod.rs` mapping machinery: `CompiledMapping`,
+- `polymer-input/src/provider/sdl3/mod.rs` mapping machinery: `CompiledMapping`,
   `CompiledKeyboardMapping`, `KeyboardTarget`, `MouseAxisMap`, `AxisMap`,
   `apply_mouse_axes`, `transform_axis`, `keyboard_target`, `projected_from`,
   `labelled_face_target_for`, `default_button_target_for`,
   `positional_face_target`, `apply_default_axes`, `profile_matches`,
   `element_button`, `element_axis_index`, `load_keyboard_mappings`,
   `DEFAULT_AXES`. Roughly 1100 of its 2122 lines move to
-  `snowglass-input-layout::mapping`.
-- `crates/runtime/snowglass-runtime/src/input.rs` — replaced by
-  `snowglass-input-ipc`.
-- `bins/snowglass-gui/src/input/reconcile.rs` — reconciliation collapses to
+  `polymer-input-layout::mapping`.
+- `crates/runtime/polymer-runtime/src/input.rs` — replaced by
+  `polymer-input-ipc`.
+- `bins/polymer-gui/src/input/reconcile.rs` — reconciliation collapses to
   `hub.assign()` plus a topology-revision publish.
-- `bins/snowglass-gui/src/input.rs::RoutedGamepadSink` and `RoutedInputSender` —
+- `bins/polymer-gui/src/input.rs::RoutedGamepadSink` and `RoutedInputSender` —
   the hub owns fan-out and replay; attach/detach becomes listener registration.
-- `snowglass-runtime::ResolvedInputConfiguration` / `ResolvedSlotMapping`.
-- `snowglass-input-dinput::DirectInputForwarder`, `::RawKeyboardForwarder`.
-- `snowglass-hook::config::{LAYOUT, LAYOUTS, SDL_GAMEPADS, BLUETOOTH_HID_PIPES}`
+- `polymer-runtime::ResolvedInputConfiguration` / `ResolvedSlotMapping`.
+- `polymer-input-dinput::DirectInputForwarder`, `::RawKeyboardForwarder`.
+- `polymer-hook::config::{LAYOUT, LAYOUTS, SDL_GAMEPADS, BLUETOOTH_HID_PIPES}`
   and their accessors — replaced by the control channel.
-- `snowglass-input::gamepad::LatestGamepadMailbox` — the hub's per-index slot
+- `polymer-input::gamepad::LatestGamepadMailbox` — the hub's per-index slot
   already coalesces; the mailbox's wake channel moves into the IPC publisher.
 
 ### 3.4 Moved out of the input tree entirely
 
-- `snowglass-input::mouse::layout` (`Extent`, `Rect`, `Point`, `AffineMapping`,
+- `polymer-input::mouse::layout` (`Extent`, `Rect`, `Point`, `AffineMapping`,
   `SurfaceLayout`, `CompositePlacement`, `aspect_fit`,
-  `vertical_surface_layout`) → `crates/consumer/snowglass-renderer/src/layout/mod.rs`.
-  Consumers to update: `snowglass-renderer/src/{lib,input,renderer/mod,renderer/d3d12/raster_surface}.rs`,
-  `bins/snowglass-debug-viewer/src/layout.rs`, `bins/snowglass-gui/src/game_host/mod.rs`.
-- `snowglass-input::mouse::{PointerInput, PointerPhase, PointerSource}` and
-  `snowglass-input::{DirectInputData, DirectInputDevice, RawKeyInput}` →
-  `snowglass-protocol`. They are wire structs; `snowglass-ipc` already treats
-  them as such, and moving them removes `snowglass-ipc`'s dependency on the hub.
+  `vertical_surface_layout`) → `crates/consumer/polymer-renderer/src/layout/mod.rs`.
+  Consumers to update: `polymer-renderer/src/{lib,input,renderer/mod,renderer/d3d12/raster_surface}.rs`,
+  `bins/polymer-debug-viewer/src/layout.rs`, `bins/polymer-gui/src/game_host/mod.rs`.
+- `polymer-input::mouse::{PointerInput, PointerPhase, PointerSource}` and
+  `polymer-input::{DirectInputData, DirectInputDevice, RawKeyInput}` →
+  `polymer-protocol`. They are wire structs; `polymer-ipc` already treats
+  them as such, and moving them removes `polymer-ipc`'s dependency on the hub.
 
 ---
 
-## 4. `snowglass-input` — the hub
+## 4. `polymer-input` — the hub
 
 New module layout:
 
 ```
-crates/input/snowglass-input/src/
+crates/input/polymer-input/src/
   lib.rs
   device/mod.rs        DeviceId, DeviceDescriptor, DeviceRole, Capabilities, BatteryState
   report/mod.rs        GamepadButton, GamepadReport, SensorReport, PointerReport, DeviceState
@@ -392,9 +392,9 @@ on the wire without a second mirror struct — this is what kills the
 `GamepadState` → `SlotState` → `GamepadUpdate` → `WireMessage` chain.
 
 `GamepadButton` ordering stays pinned to SDL wire order; the existing
-`wire_order_matches_the_pad` check moves to `snowglass-input-layout`.
+`wire_order_matches_the_pad` check moves to `polymer-input-layout`.
 `GamepadButton::binding()` (the `BindingKey` mapping) **moves out** — the hub has
-no `consolespec` dependency. It becomes `snowglass_input_layout::sdl::binding_of`.
+no `consolespec` dependency. It becomes `polymer_input_layout::sdl::binding_of`.
 
 ### 4.3 Backend (HAL) trait
 
@@ -543,7 +543,7 @@ HD rumble **audio streams** get a streaming entry point rather than an event —
 `ListenerHandle::open_hd_rumble` → `HdRumbleStream::submit(&[f32])` →
 `InputBackend::open_hd_rumble` → `Box<dyn HdRumbleSink>`.
 
-**Neither backend implements it in this refactor.** `snowglass-bluetooth` exposes
+**Neither backend implements it in this refactor.** `polymer-bluetooth` exposes
 only `set_rumble` and `set_player_index`; SDL3 exposes only
 `SDL_RumbleGamepad`. Define the trait, return `BackendError::Unsupported`, gate
 on `Capabilities::HD_RUMBLE`, and land Switch / Switch 2 HD rumble separately.
@@ -656,12 +656,12 @@ a composite fan out to its members.
 
 ---
 
-## 5. `snowglass-input-layout` — the mapping helper
+## 5. `polymer-input-layout` — the mapping helper
 
 Hook-safe. Contains, moved verbatim except for comment removal:
 
 ```
-crates/input/snowglass-input-layout/src/
+crates/input/polymer-input-layout/src/
   lib.rs
   layout/mod.rs     InputLayout, InputElement, Cluster, SdlOutputLayout,
                     ProjectionMode, RemapDatabase, RemapProfile, EMBEDDED_* consts
@@ -713,7 +713,7 @@ pub struct HostSample {
 This is the **only** place mapping happens after the refactor. It runs in three
 places, all reading the same compiled form:
 
-1. Inside `snowglass-hook-input` (target side, per virtual pad).
+1. Inside `polymer-hook-input` (target side, per virtual pad).
 2. Inside the Deno overlay listener (host side, for overlay navigation).
 3. Inside the GUI, for the binding-capture UI preview and `consumes_key`.
 
@@ -722,12 +722,12 @@ places, all reading the same compiled form:
 `profile_matches`, the `gamecontrollerdb` remap database) move here from
 `provider/sdl3/mod.rs` with behaviour unchanged.
 
-Dependency direction: `snowglass-input-layout` depends on `snowglass-input`,
+Dependency direction: `polymer-input-layout` depends on `polymer-input`,
 never the reverse. See §14.7.
 
 ---
 
-## 6. `snowglass-input-sdl3` — SDL HAL backend
+## 6. `polymer-input-sdl3` — SDL HAL backend
 
 Survives from `provider/sdl3/mod.rs`: the SDL thread, event pump, device
 enumeration and identity (`source_registry.rs` moves verbatim), gamepad open /
@@ -773,7 +773,7 @@ moves to the GUI, which now owns the `Mapping`.
 
 ---
 
-## 7. `snowglass-input-bluetooth` — Bluetooth HAL backend
+## 7. `polymer-input-bluetooth` — Bluetooth HAL backend
 
 Role unchanged; surface changes.
 
@@ -792,7 +792,7 @@ impl InputBackend for BluetoothBackend { /* … */ }
 - `BluetoothControllerState` is **deleted**. Its fields split into
   `DeviceDescriptor` (name, profile, vendor, product, role, capabilities) and
   `DeviceState` (gamepad, sensor, pointer, battery). `report_count` was
-  diagnostics only; drop it or move it behind `snowglass-statistics`.
+  diagnostics only; drop it or move it behind `polymer-statistics`.
 - The `BluetoothProviderEvent` broadcast is **deleted for input**. The per-report
   `Box<BluetoothControllerState>` clone goes away entirely. A separate low-rate
   `DiscoveryEvent` broadcast keeps the pairing / scan UI working —
@@ -816,7 +816,7 @@ impl InputBackend for BluetoothBackend { /* … */ }
   are deferred (§16.9).
 - `raw/mod.rs` splits: the **transport** (named pipe server, connect / retry,
   external-ownership handshake, 5 s grace period) moves to
-  `snowglass-input-ipc`; the **device-specific filtering** stays here behind a
+  `polymer-input-ipc`; the **device-specific filtering** stays here behind a
   HAL hook:
 
 ```rust
@@ -835,14 +835,14 @@ today, but it no longer routes through the GUI's Bluetooth handle.
 
 ---
 
-## 8. `snowglass-input-ipc` — the IPC listener
+## 8. `polymer-input-ipc` — the IPC listener
 
-Absorbs `snowglass-runtime/src/input.rs`, `snowglass-ipc/src/input.rs`, the
-transport half of `snowglass-input-bluetooth/src/raw/mod.rs`, and the host half
-of `snowglass-input-dinput`.
+Absorbs `polymer-runtime/src/input.rs`, `polymer-ipc/src/input.rs`, the
+transport half of `polymer-input-bluetooth/src/raw/mod.rs`, and the host half
+of `polymer-input-dinput`.
 
 ```
-crates/input/snowglass-input-ipc/src/
+crates/input/polymer-input-ipc/src/
   lib.rs
   publisher/mod.rs   shared-memory gamepad + host-input publication
   control/mod.rs     the target control socket, feedback fan-in
@@ -864,7 +864,7 @@ impl InputListener for InputIpcListener { /* … */ }
 impl HostInputListener for InputIpcListener { /* … */ }
 ```
 
-### 8.1 Wire changes in `snowglass-ipc`
+### 8.1 Wire changes in `polymer-ipc`
 
 Bump `PROTOCOL_VERSION` 16 → 17.
 
@@ -892,8 +892,8 @@ input messages only, and have `shared::Publisher::publish` write from a reusable
 per-publisher scratch buffer instead of a fresh `Vec`. Expect the input frame to
 drop from ~1 kB to ~72 bytes and the allocation to disappear.
 
-`snowglass-ipc` loses its `snowglass-input` dependency: it takes
-`PointerInput` / `RawKeyInput` from `snowglass-protocol` and defines the input
+`polymer-ipc` loses its `polymer-input` dependency: it takes
+`PointerInput` / `RawKeyInput` from `polymer-protocol` and defines the input
 wire structs itself.
 
 ### 8.2 Raw HID channel
@@ -901,7 +901,7 @@ wire structs itself.
 The `bluetoothapi-win32` hook needs a real OS `HANDLE` supporting overlapped
 `ReadFile` / `WriteFile` with message framing, because it redirects the target's
 `CreateFileW` on a synthetic HID device path
-(`snowglass-hook-bluetoothapi-win32/src/runtime/mod.rs::create_file`). **The
+(`polymer-hook-bluetoothapi-win32/src/runtime/mod.rs::create_file`). **The
 shared-memory ring cannot serve this.** Raw HID therefore stays a per-device
 duplex named pipe, with its lifecycle moved under the IPC listener:
 
@@ -924,7 +924,7 @@ pub struct RawHidSpec {
   load-bearing and non-obvious.
 
 The pipe name still reaches the hook, but through the topology control message
-rather than `SNOWGLASS_BLUETOOTH_HID_PIPES`. The hook builds its
+rather than `POLYMER_BLUETOOTH_HID_PIPES`. The hook builds its
 `SyntheticWiimote` table from that message and can rebuild on revision change —
 which the env-var version could not do.
 
@@ -984,11 +984,11 @@ debuggability over JSON.
 Consequences:
 
 - `EmulatorLaunchConfig::gamepad_layouts` is deleted.
-- `snowglass-hook::config::{LAYOUT, LAYOUTS, SDL_GAMEPADS, BLUETOOTH_HID_PIPES}`
+- `polymer-hook::config::{LAYOUT, LAYOUTS, SDL_GAMEPADS, BLUETOOTH_HID_PIPES}`
   and accessors are deleted.
-- `snowglass-runtime/src/launch.rs::hook_environment` loses the layout, gamepad
+- `polymer-runtime/src/launch.rs::hook_environment` loses the layout, gamepad
   count, and Bluetooth pipe blocks (about 30 lines).
-- `snowglass-hook-sdl3/src/install.rs::create_table_state` no longer reads env;
+- `polymer-hook-sdl3/src/install.rs::create_table_state` no longer reads env;
   it constructs an empty pad set and rebuilds on the first topology.
 - **SDL virtual joysticks must be detached and reattached on a topology change**
   — the button / axis / sensor mask changes with the layout. `SdlBackend` gains
@@ -997,10 +997,10 @@ Consequences:
 
 ---
 
-## 10. Target side: `snowglass-hook-input` and friends
+## 10. Target side: `polymer-hook-input` and friends
 
 ```
-crates/hooks/snowglass-hook-input/src/
+crates/hooks/polymer-hook-input/src/
   lib.rs
   subscriber/mod.rs   IPC subscriber thread, reconnect, feedback socket
   state/mod.rs        per-index SeqLock<DeviceState>, connection bits
@@ -1027,31 +1027,31 @@ now lives.
 
 The per-API hooks become thin:
 
-- `snowglass-hook-input-sdl` — `SdlBackend` trait, virtual joystick attach /
+- `polymer-hook-input-sdl` — `SdlBackend` trait, virtual joystick attach /
   detach / rebind, publishes `mapped()` into SDL. Retains the sequence-newer
   wrap check and the coalescing flush.
-- `snowglass-hook-input-win32` — consumes `HostState` pointer and key events and
+- `polymer-hook-input-win32` — consumes `HostState` pointer and key events and
   posts window messages. Essentially unchanged; it already subscribes to this
   channel.
-- `snowglass-hook-input-dinput` — consumes `HostState` and **now owns**
-  `RawKeyInput::direct_input_data()` (moved from `snowglass-input/src/lib.rs`),
+- `polymer-hook-input-dinput` — consumes `HostState` and **now owns**
+  `RawKeyInput::direct_input_data()` (moved from `polymer-input/src/lib.rs`),
   synthesising `DIDEVICEOBJECTDATA` records target-side instead of the viewer
   pre-encoding them. This is the concrete win from "hooks synthesize the correct
   expected inputs for virtual devices".
 
 ---
 
-## 11. `snowglass-controllers` — host-side emulator controller layer
+## 11. `polymer-controllers` — host-side emulator controller layer
 
 Everything consolespec-aware that the hub sheds. Moved, not rewritten, except
 where it must talk to the new hub.
 
 | Source | Destination |
 | --- | --- |
-| `snowglass-input/src/hub.rs` | `snowglass-controllers/src/configuration/mod.rs`; type renamed `InputHub` → `ControllerConfiguration` (the name `InputHub` now belongs to the router) |
-| `snowglass-input/src/topology/mod.rs` | `snowglass-controllers/src/topology/mod.rs` |
-| `snowglass-runtime/src/controllers/**` | `snowglass-controllers/src/manager/**` |
-| `snowglass-runtime/src/controllers/mapping/mod.rs` | `snowglass-controllers/src/profile/mod.rs` |
+| `polymer-input/src/hub.rs` | `polymer-controllers/src/configuration/mod.rs`; type renamed `InputHub` → `ControllerConfiguration` (the name `InputHub` now belongs to the router) |
+| `polymer-input/src/topology/mod.rs` | `polymer-controllers/src/topology/mod.rs` |
+| `polymer-runtime/src/controllers/**` | `polymer-controllers/src/manager/**` |
+| `polymer-runtime/src/controllers/mapping/mod.rs` | `polymer-controllers/src/profile/mod.rs` |
 
 Changes while moving:
 
@@ -1085,7 +1085,7 @@ Changes while moving:
 
 ## 12. Deno / JS surface
 
-`Snowglass.input` is only the input event/state surface. It does not enumerate
+`Polymer.input` is only the input event/state surface. It does not enumerate
 or command physical devices.
 
 ```js
@@ -1097,7 +1097,7 @@ class InputClient extends EventTarget {
 }
 ```
 
-`Snowglass.controllers` owns the physical-device surface: enumeration,
+`Polymer.controllers` owns the physical-device surface: enumeration,
 assignment, discovery and connection sessions, feedback, calibration, and
 mapping profiles.
 
@@ -1125,17 +1125,17 @@ the user layer in localStorage keyed by device id and pushes it on
 `deviceconnected` and on change; the hub's `Latched` retention covers reconnects
 the shell does not observe. There is no Rust persistence for it.
 
-Backed by a `DenoInputListener` in `snowglass-runtime` implementing
+Backed by a `DenoInputListener` in `polymer-runtime` implementing
 `InputListener`. It must **not** serialize on every report: expose a `get(index)`
 op reading the hub's current state on demand, and fire `input` only on change,
 coalesced to the JS event-loop turn. The 60 Hz `serde_json::Value` rebuild in
-`bins/snowglass-gui/src/input/publication/mod.rs` is exactly the pattern to
+`bins/polymer-gui/src/input/publication/mod.rs` is exactly the pattern to
 avoid.
 
-`Snowglass.controllers` (`07_controllers.js`) is backed by
-`snowglass-controllers` for manager state and by device-addressed hub commands
+`Polymer.controllers` (`07_controllers.js`) is backed by
+`polymer-controllers` for manager state and by device-addressed hub commands
 for feedback and calibration. `device.metadata` becomes typed fields — update
-`js/snowglass.ts` `ControllerDevice`, `plugins/plugin-api.ts`, and
+`js/polymer.ts` `ControllerDevice`, `plugins/plugin-api.ts`, and
 `plugins/dolphin/dolphin.ts::rawWiimote`, which reads
 `device.metadata.profileId`, `.productId`, and `.rawHidAvailable`.
 
@@ -1151,8 +1151,8 @@ export type InputProvider = Readonly<{
 }>;
 ```
 
-`snowglass-pluginhost::InputProvider::BluetoothHidPipe` → `RawHid`, and
-`snowglass-runtime::BluetoothHidPipeConfig` is deleted in favour of
+`polymer-pluginhost::InputProvider::BluetoothHidPipe` → `RawHid`, and
+`polymer-runtime::BluetoothHidPipeConfig` is deleted in favour of
 `RawHidBinding` in the topology message.
 
 ---
@@ -1163,33 +1163,33 @@ Each phase must leave the workspace building. Do not merge phases.
 
 1. **Extract wire types.** Move `PointerInput`, `PointerPhase`, `PointerSource`,
    `DirectInputData`, `DirectInputDevice`, `RawKeyInput` to
-   `snowglass-protocol`. Move `mouse::layout` to `snowglass-renderer`. Update
+   `polymer-protocol`. Move `mouse::layout` to `polymer-renderer`. Update
    the call sites in §3.4. No behaviour change.
-2. **Create `snowglass-input-layout`.** Move `layout.rs`, `sdl.rs`, the keyboard
+2. **Create `polymer-input-layout`.** Move `layout.rs`, `sdl.rs`, the keyboard
    documents, and the `SDL_GameControllerDB` / `keyboard` asset directories.
-   Point `snowglass-input` and the SDL hooks at it. No behaviour change.
-3. **Create `snowglass-controllers`.** Move `hub.rs`, `topology/`, and
-   `snowglass-runtime::controllers`. Collapse `BindingOverride` /
+   Point `polymer-input` and the SDL hooks at it. No behaviour change.
+3. **Create `polymer-controllers`.** Move `hub.rs`, `topology/`, and
+   `polymer-runtime::controllers`. Collapse `BindingOverride` /
    `InputBinding` / `ControllerBindings` into one type. Delete
    `ResolvedInputConfiguration`.
-4. **Rewrite `snowglass-input` as the hub.** New `device` / `report` /
+4. **Rewrite `polymer-input` as the hub.** New `device` / `report` /
    `feedback` / `backend` / `listener` / `hub` modules, the merged
    `Capabilities` bitfield, and `AssignmentPolicy` including `auto_compose` and
    the session-free composition rule of §14.6. Delete `router`, `source`,
    `gamepad`, `provider`, `hub`, `topology`, `sdl`, `layout`, `mouse`,
    `build.rs`.
-5. **Create `snowglass-input-sdl3`.** Move `provider/sdl3` + `build.rs`, strip
+5. **Create `polymer-input-sdl3`.** Move `provider/sdl3` + `build.rs`, strip
    mapping, implement `InputBackend`.
-6. **Convert `snowglass-input-bluetooth`.** Implement `InputBackend`, delete
+6. **Convert `polymer-input-bluetooth`.** Implement `InputBackend`, delete
    `BluetoothControllerState` and the input broadcast, add `RawHidFilter`.
-7. **Create `snowglass-input-ipc`.** Bump `PROTOCOL_VERSION` to 17, replace the
+7. **Create `polymer-input-ipc`.** Bump `PROTOCOL_VERSION` to 17, replace the
    input wire messages, fix the per-message allocation, add the blob frame and
-   the raw-HID channel. Delete `snowglass-runtime/src/input.rs` and
-   `snowglass-ipc/src/input.rs`.
-8. **Move and rewrite the target side.** Create `snowglass-hook-input`, relocate
-   `snowglass-input-{sdl,win32,dinput}` into `crates/hooks/`, delete the host
+   the raw-HID channel. Delete `polymer-runtime/src/input.rs` and
+   `polymer-ipc/src/input.rs`.
+8. **Move and rewrite the target side.** Create `polymer-hook-input`, relocate
+   `polymer-input-{sdl,win32,dinput}` into `crates/hooks/`, delete the host
    halves, wire the topology channel, delete the env-var config.
-9. **Rewire the GUI and runtime.** `bins/snowglass-gui/src/input.rs` shrinks to
+9. **Rewire the GUI and runtime.** `bins/polymer-gui/src/input.rs` shrinks to
    priority / focus / pointer policy plus hub registration; delete
    `reconcile.rs`, `RoutedGamepadSink`, `RoutedInputSender`; rewrite
    `publication/mod.rs` against `InputHub::snapshot()`.
@@ -1199,7 +1199,7 @@ Each phase must leave the workspace building. Do not merge phases.
     implement `Relative` and `AbsoluteDevice`. **Dolphin works at the end of
     this step** and never enters the projector.
 11. **Pointer projection (§15.5–15.7, 15.11).** Add
-    `snowglass-renderer/src/pointer/`, refit `PointerRoutingState` onto
+    `polymer-renderer/src/pointer/`, refit `PointerRoutingState` onto
     `PointerProjector`, add `PointerTarget::Surface` and the override path.
     Identity calibration plus the sensor bar offset only. This step is what
     azahar and melonDS need; nothing else depends on it.
@@ -1207,14 +1207,14 @@ Each phase must leave the workspace building. Do not merge phases.
     `correct` / `shape`, `CalibrationFields` on the descriptor, the `Latched`
     replay, and the composing capture flow. Per-profile defaults held inside
     each backend; no device reads yet. Folds `PointerSetup` in as one field.
-13. **Deno surface.** Real event-only `Snowglass.input` listener; device-owned
-    `Snowglass.controllers` with typed `ControllerDevice`, pointer capabilities,
+13. **Deno surface.** Real event-only `Polymer.input` listener; device-owned
+    `Polymer.controllers` with typed `ControllerDevice`, pointer capabilities,
     and `calibrate` / `getCalibration` / `beginCalibration` over localStorage;
     `InputProvider::RawHid`. Update `plugins/dolphin/dolphin.ts` and
     `plugins/plugin-api.ts`.
 
 Full-workspace rebuild required after phase 7. Kill leftover target processes
-and `snowglass-viewer.exe` before re-running anything.
+and `polymer-viewer.exe` before re-running anything.
 
 ---
 
@@ -1320,10 +1320,10 @@ and the session-gated logic moves out of `ControllerManager` into
 `hub/assignment.rs` (§11), leaving the manager owning only the press-to-join
 gesture semantics that genuinely need a session.
 
-### 14.7 `snowglass-input-layout` depends on `snowglass-input`
+### 14.7 `polymer-input-layout` depends on `polymer-input`
 
 `Mapping::apply` operates on `GamepadReport`, so the hook-safe layout crate
-depends on the hub crate. This is acceptable only because `snowglass-input` is
+depends on the hub crate. This is acceptable only because `polymer-input` is
 dependency-free (`parking_lot` + `tracing`). If the hub ever grows a host-only
 dependency, `GamepadReport` must split into a third leaf crate. Keep the hub
 dependency-free and enforce it in review.
@@ -1349,10 +1349,10 @@ the IPC listener stops forwarding and publishes one neutral `DeviceState` per
 assigned index on the priority flip, matching `RoutedGamepadSink::detach` today.
 Verify no stuck button survives the overlay↔game transition.
 
-### 14.11 `snowglass-bttest` and `snowglass-debug-viewer`
+### 14.11 `polymer-bttest` and `polymer-debug-viewer`
 
-Both consume the old surfaces (`bins/snowglass-bttest/src/input/mod.rs`;
-`bins/snowglass-debug-viewer/src/main.rs:527` and its `gamepad_layouts` /
+Both consume the old surfaces (`bins/polymer-bttest/src/input/mod.rs`;
+`bins/polymer-debug-viewer/src/main.rs:527` and its `gamepad_layouts` /
 `gamepad_remap_drafts` UI). The debug viewer in particular drives layouts and
 remap drafts from its own UI and needs the topology channel. Budget for it; it
 is not a trivial update.
@@ -1364,25 +1364,25 @@ pass before any of it exists:
 
 | Proposed | Role | Note |
 | --- | --- | --- |
-| `snowglass-input` | hub and router | **keeps its name, changes its meaning entirely** |
-| `snowglass-input-layout` | hook-safe layouts, projection, mapping | |
-| `snowglass-input-sdl3` | SDL HAL backend | collides conceptually with today's `snowglass-input-sdl`, which is target-side and moves to `crates/hooks/` |
-| `snowglass-input-ipc` | IPC listener | |
-| `snowglass-controllers` | emulator ports, topology, profiles | |
-| `snowglass-hook-input` | shared target-side runtime | |
+| `polymer-input` | hub and router | **keeps its name, changes its meaning entirely** |
+| `polymer-input-layout` | hook-safe layouts, projection, mapping | |
+| `polymer-input-sdl3` | SDL HAL backend | collides conceptually with today's `polymer-input-sdl`, which is target-side and moves to `crates/hooks/` |
+| `polymer-input-ipc` | IPC listener | |
+| `polymer-controllers` | emulator ports, topology, profiles | |
+| `polymer-hook-input` | shared target-side runtime | |
 
 Two specific hazards:
 
 - **`InputHub` changes referent.** Today it is the machinespec port
   configuration; after this it is the router, and the old type becomes
-  `snowglass-controllers::ControllerConfiguration`. Every existing mention of
+  `polymer-controllers::ControllerConfiguration`. Every existing mention of
   "the hub" in the codebase and in conversation flips meaning. An alternative is
   naming the router something else — `InputRouter`, `InputBus` — and leaving
   `InputHub` dead. **Recommendation:** take the name; "hub" is what the new
   thing is, and the old one is being renamed anyway.
-- **`snowglass-input-sdl3` versus `snowglass-hook-input-sdl`.** Host-side SDL
+- **`polymer-input-sdl3` versus `polymer-hook-input-sdl`.** Host-side SDL
   capture and target-side SDL injection, one letter apart. Consider
-  `snowglass-input-backend-sdl3` if the pair reads as ambiguous.
+  `polymer-input-backend-sdl3` if the pair reads as ambiguous.
 
 ### 14.13 Topology control-frame encoding
 
@@ -1390,7 +1390,7 @@ Two specific hazards:
 is a control-plane message published on change, not per frame, so JSON is
 adequate and debuggable.
 
-The counterargument is consistency: every other Snowglass IPC payload is a
+The counterargument is consistency: every other Polymer IPC payload is a
 `zerocopy` wire struct, the workspace already depends on `rkyv`, and a hook DLL
 paying for `serde_json` to read one message is a real code-size cost in an
 injected binary. `InputTopology` is variable-length and string-keyed, so it
@@ -1490,7 +1490,7 @@ pub enum PointerSample {
 `or_else` inside `WiimoteDecoder::decode`. The consumer can cross-fade or hold,
 and the GUI can show which is live.
 
-The `AirMouse` integrator stays in `snowglass-input-bluetooth` — gyro bias
+The `AirMouse` integrator stays in `polymer-input-bluetooth` — gyro bias
 estimation, gravity reference, and MotionPlus fast/slow scaling are device
 physics. What leaves is the final `0.5 + angle * GAIN` step, which is screen
 geometry pretending to be device physics.
@@ -1541,7 +1541,7 @@ pub struct ControllerPort {
 
 | Type | Change | Direction |
 | --- | --- | --- |
-| `snowglass-controllers::ControllerPort` | `+ pointer: PointerMode` | plugin declares, statically, from `ports(console)` |
+| `polymer-controllers::ControllerPort` | `+ pointer: PointerMode` | plugin declares, statically, from `ports(console)` |
 | `ControllerMapping` | `+ pointer: PointerBinding` | mode from the plugin, source from the user |
 | `PortDescriptor` | `+ pointer` | host → frontend, for display |
 | `PortBinding` (§9) | `+ pointer` | host → hook |
@@ -1587,7 +1587,7 @@ does not expect.
 
 ### 15.5 The projector — `AbsoluteScreen` only
 
-New module `crates/consumer/snowglass-renderer/src/pointer/mod.rs`, because it
+New module `crates/consumer/polymer-renderer/src/pointer/mod.rs`, because it
 needs `Presentation` and `CompositingPlan` and nothing else does.
 
 ```rust
@@ -1673,7 +1673,7 @@ The backend fans the struct out to whichever mechanism each field needs:
 parameterizes the decoder's vertical mapping. Both are backend-internal
 concerns; the hub latches one value and does not care how it is applied.
 
-Two concrete changes in `snowglass-bluetooth`:
+Two concrete changes in `polymer-bluetooth`:
 
 - `CAMERA_SENSITIVITY_BLOCK_1_ADDRESS` / `_BLOCK_2_ADDRESS` currently write the
   hardcoded `[0x02, 0x00, 0x00, 0x71, 0x01, 0x00, 0xaa, 0x00, 0x64]` and
@@ -1690,10 +1690,10 @@ Two concrete changes in `snowglass-bluetooth`:
 Only the Wii Remote consumes it today.
 
 Persistence is **localStorage on the shell side**, keyed by device id — no Rust
-storage schema and no `snowglass-library` table:
+storage schema and no `polymer-library` table:
 
 ```ts
-Snowglass.controllers.configurePointer(deviceId, {
+Polymer.controllers.configurePointer(deviceId, {
   sensorBar: "above", sensitivity: 3, mode: "basic",
 });
 ```
@@ -1844,7 +1844,7 @@ Two behaviours share the word "relative":
   `provider/sdl3/mod.rs::PointerSample::relative`.
 
 The decay is a *mapping* behaviour and moves to
-`snowglass-input-layout::mapping` alongside `AxisInput::MouseDelta`, fed from
+`polymer-input-layout::mapping` alongside `AxisInput::MouseDelta`, fed from
 `HostInputEvent::MouseMotion` (host mouse) or `PointerReport::delta` (device
 mouse). Preserve the hold/release constants; they were tuned.
 
@@ -1948,7 +1948,7 @@ by a concurrent recalibration.
 Note what is **not** here: no factory values, no effective values, no device
 units. `Calibration` is the user layer and nothing else — see §16.4.
 
-Inside `snowglass-input-bluetooth`, `normalize_stick`'s constants become a
+Inside `polymer-input-bluetooth`, `normalize_stick`'s constants become a
 stated per-profile factory value rather than arithmetic buried in a function:
 
 ```rust
@@ -2049,7 +2049,7 @@ device directly.
 ### 16.6 Shared transform, backend-owned application
 
 The software half of the realization table must not be written per backend.
-`snowglass-input` provides the transform as a pure function; the backend calls
+`polymer-input` provides the transform as a pure function; the backend calls
 it, having already folded in whatever factory values it holds:
 
 ```rust
@@ -2136,13 +2136,13 @@ by device id, pushed on `deviceconnected` and on change, with the hub's
 `Latched` retention covering reconnects the shell does not observe.
 
 ```ts
-Snowglass.controllers.calibrate(deviceId, {
+Polymer.controllers.calibrate(deviceId, {
   sticks: [{ center: [12, -4], min: [-31000, -30800], max: [31200, 30900],
              deadZone: 0.08, outerDeadZone: 0.02 }, null],
   pointer: { sensorBar: "above", sensitivity: 3, mode: "basic" },
 });
-Snowglass.controllers.getCalibration(deviceId);   // the user layer, from the hub
-Snowglass.controllers.resetCalibration(deviceId);
+Polymer.controllers.getCalibration(deviceId);   // the user layer, from the hub
+Polymer.controllers.resetCalibration(deviceId);
 ```
 
 Only the user layer is ever persisted, because it is the only layer that exists
@@ -2151,23 +2151,23 @@ only the `pointer` field set; keep it as a convenience wrapper in JS if the
 settings UI wants it.
 
 If this outgrows localStorage — it is larger and more structured than the
-pointer setup alone — moving it to `snowglass-library` changes no Rust API,
+pointer setup alone — moving it to `polymer-library` changes no Rust API,
 because the hub never sees the storage.
 
 ### 16.9 Remaining scope note
 
 - **Where do the deferred factory reads live inside each backend?** They are
   opaque either way, but the placement differs: Switch SPI reads belong in
-  `snowglass-bluetooth`'s `ControllerSession::synchronize` alongside the existing
+  `polymer-bluetooth`'s `ControllerSession::synchronize` alongside the existing
   MotionPlus and IR init, since that is already an acknowledged-write sequence
   on the connect path; the Wii Remote EEPROM read at `0x0016` likewise. The
-  decoders in `snowglass-input-bluetooth` then receive the values rather than
-  reading them. **Recommendation:** device traffic in `snowglass-bluetooth`,
-  application in `snowglass-input-bluetooth`, matching the existing split.
+  decoders in `polymer-input-bluetooth` then receive the values rather than
+  reading them. **Recommendation:** device traffic in `polymer-bluetooth`,
+  application in `polymer-input-bluetooth`, matching the existing split.
 - **Profile defaults until then — decided.** `normalize_stick`'s centre 2048 /
   range ±2047, the `/ 4096.0 * GRAVITY` accelerometer scale, and the
   `*_RAW_PER_RADIAN_PER_SECOND` gyro constants become a table inside
-  `snowglass-input-bluetooth` **keyed by `(vendor_id, product_id)`**, not by
+  `polymer-input-bluetooth` **keyed by `(vendor_id, product_id)`**, not by
   profile id. A vid/pid pair is what the eventual on-board factory read is also
   keyed by, so the interim table and its replacement address devices the same
   way, and the NSO controllers and GameCube adapter can carry values that differ
@@ -2190,11 +2190,11 @@ Not to be implemented without sign-off.
 3. `FeedbackClass` arbitration — `Actuation` dropped from a non-owner while
    `Latched` is accepted; a `Latched` value replayed on `Connected`; a
    `Latched` value surviving a feedback-priority change.
-4. `snowglass-input-layout::Mapping` — `compile` + `apply` across the three
+4. `polymer-input-layout::Mapping` — `compile` + `apply` across the three
    projection modes, reproducing the existing
    `inverted_axis_saturates_at_the_positive_limit` and
    `gamepad_binding_survives_keyboard_mouse_fallback` cases.
-5. `snowglass-input-ipc` — the four existing `snowglass-ipc/src/input.rs` tests
+5. `polymer-input-ipc` — the four existing `polymer-ipc/src/input.rs` tests
    retargeted: handshake, protocol mismatch, multi-subscriber broadcast, late
    subscriber replay. Plus one asserting the input frame no longer costs
    `PAYLOAD_SIZE`.
@@ -2207,7 +2207,7 @@ Not to be implemented without sign-off.
    rather than a unit box; `Angular` under identity calibration plus each
    `SensorBarPosition`; `PointerTarget::Surface` pinning to the bottom screen
    while the cursor sits over the top screen. The four existing
-   `snowglass-renderer/src/input.rs` pointer tests must keep passing unchanged —
+   `polymer-renderer/src/input.rs` pointer tests must keep passing unchanged —
    they are the regression net for the projection itself.
 9. `Calibration` — a partial update leaving other fields intact; `correct` then
    `shape` with an off-centre stick and a radial dead zone; and the composition

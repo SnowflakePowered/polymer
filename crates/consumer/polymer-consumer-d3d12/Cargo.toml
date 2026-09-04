@@ -1,0 +1,13 @@
+[package]
+name = "polymer-consumer-d3d12"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+polymer-ipc.workspace = true
+polymer-protocol.workspace = true
+windows.workspace = true
+
+[lints]
+workspace = true

@@ -1,5 +1,5 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
-import type { ControllerMappingProfile, InputState, ProjectionMode } from "../../../../js/snowglass";
+import type { ControllerMappingProfile, InputState, ProjectionMode } from "../../../../js/polymer";
 
 type Layout = { id: string; name: string; elements: Array<{ key: string; label: string; kind: string }> };
 
@@ -24,7 +24,7 @@ const activeControl = (state: InputState) => {
 };
 
 export function InputRemapping(props: { onClose(): void }) {
-  const api = window.Snowglass.controllers;
+  const api = window.Polymer.controllers;
   const layouts = api.layouts as readonly Layout[];
   const [revision, setRevision] = createSignal(0);
   const [deviceId, setDeviceId] = createSignal(api.connected[0]?.id || "");
@@ -67,7 +67,7 @@ export function InputRemapping(props: { onClose(): void }) {
       const target = capture();
       const { index } = (event as CustomEvent<{ index: number }>).detail;
       const device = api.players.find((player) => player.index === index)?.controller;
-      const state = window.Snowglass.input.get(index);
+      const state = window.Polymer.input.get(index);
       const detail = state && activeControl(state);
       if (!target || device?.id !== deviceId() || !detail) return;
       let source = detail.expression;
@@ -79,10 +79,10 @@ export function InputRemapping(props: { onClose(): void }) {
       void applyMapping(target, source);
     };
     api.addEventListener("statechange", stateChanged);
-    window.Snowglass.input.addEventListener("input", input);
+    window.Polymer.input.addEventListener("input", input);
     onCleanup(() => {
       api.removeEventListener("statechange", stateChanged);
-      window.Snowglass.input.removeEventListener("input", input);
+      window.Polymer.input.removeEventListener("input", input);
     });
   });
 

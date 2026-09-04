@@ -26,7 +26,7 @@ after that follows immediately.
 
 ## Fix
 
-`bins/snowglass-bttest/src/worker.rs` accepts an inbound ACL from a Switch
+`bins/polymer-bttest/src/worker.rs` accepts an inbound ACL from a Switch
 controller with `HciHost::accept_connection_with_role(addr, become_master =
 false)`. `BrEdrHid::attach_inbound_switch_with_frames` then waits for encryption
 and accepts both controller-originated HID PSMs concurrently. The host issues no
@@ -59,13 +59,13 @@ flow is continuous, with a worst-case inter-report gap of 56 ms.
 
 ## Raw H4 tracing
 
-`crates/input/snowglass-bluetooth/src/bredr/hci/trace.rs` records every command,
-event, and ACL packet at the `UsbHci` boundary when `SNOWGLASS_BT_TRACE` names an
+`crates/input/polymer-bluetooth/src/bredr/hci/trace.rs` records every command,
+event, and ACL packet at the `UsbHci` boundary when `POLYMER_BT_TRACE` names an
 output file:
 
 ```powershell
-$env:SNOWGLASS_BT_TRACE = "$env:TEMP\snowglass-h4.txt"
-cargo run -p snowglass-bttest
+$env:POLYMER_BT_TRACE = "$env:TEMP\polymer-h4.txt"
+cargo run -p polymer-bttest
 ```
 
 The layout matches the BlueRetro reference logs, so captures can be diffed
@@ -202,22 +202,22 @@ retries.
 
 Persistent files:
 
-- `%LOCALAPPDATA%\Snowglass\bluetooth-link-keys.txt`
-- `%LOCALAPPDATA%\Snowglass\bluetooth-controller-identities.txt`
+- `%LOCALAPPDATA%\Polymer\bluetooth-link-keys.txt`
+- `%LOCALAPPDATA%\Polymer\bluetooth-controller-identities.txt`
 
 Do not print the link-key value in logs or issue reports.
 
 ## Repository locations
 
-- Bluetooth crate: `crates/input/snowglass-bluetooth`
-- Test viewer: `bins/snowglass-bttest`
-- Viewer worker and reconnect policy: `bins/snowglass-bttest/src/worker.rs`
-- BR/EDR HID setup: `crates/input/snowglass-bluetooth/src/bredr/hid.rs`
-- L2CAP actor: `crates/input/snowglass-bluetooth/src/bredr/l2cap/link.rs`
-- HCI host/security: `crates/input/snowglass-bluetooth/src/bredr/hci/host.rs`
-- HCI event parser: `crates/input/snowglass-bluetooth/src/bredr/hci/event.rs`
+- Bluetooth crate: `crates/input/polymer-bluetooth`
+- Test viewer: `bins/polymer-bttest`
+- Viewer worker and reconnect policy: `bins/polymer-bttest/src/worker.rs`
+- BR/EDR HID setup: `crates/input/polymer-bluetooth/src/bredr/hid.rs`
+- L2CAP actor: `crates/input/polymer-bluetooth/src/bredr/l2cap/link.rs`
+- HCI host/security: `crates/input/polymer-bluetooth/src/bredr/hci/host.rs`
+- HCI event parser: `crates/input/polymer-bluetooth/src/bredr/hci/event.rs`
 - Nintendo initialization and sleep command:
-  `crates/input/snowglass-bluetooth/src/bredr/switch.rs`
+  `crates/input/polymer-bluetooth/src/bredr/switch.rs`
 
 Both Bluetooth directories are currently untracked in Git. The surrounding
 worktree is heavily dirty with unrelated user changes. Do not reset or reformat
@@ -263,7 +263,7 @@ Firmware 19.0.0 Bluetooth manager title (`010000000000002A`):
 The local research tree is:
 
 ```text
-C:\Users\ronny\AppData\Local\Temp\snowglass-switch-btdrv-reference
+C:\Users\ronny\AppData\Local\Temp\polymer-switch-btdrv-reference
 ```
 
 It contains the original NCAs, extracted ExeFS files, uncompressed NSOs, and
@@ -379,10 +379,10 @@ Primary/reference implementations used so far:
 Local reference traces already available on this machine:
 
 ```text
-C:\Users\ronny\AppData\Local\Temp\snowglass-bt-traces-reference\blueretro_logs\blueretro_sw_joycon_l_page.txt
-C:\Users\ronny\AppData\Local\Temp\snowglass-bt-traces-reference\blueretro_logs\blueretro_sw_joycon_r_page.txt
-C:\Users\ronny\AppData\Local\Temp\snowglass-bt-traces-reference\blueretro_logs\blueretro_sw_2x_reconn.txt
-C:\Users\ronny\AppData\Local\Temp\snowglass-bt-traces-reference\ubuntu1804_sw_btn_page.log
+C:\Users\ronny\AppData\Local\Temp\polymer-bt-traces-reference\blueretro_logs\blueretro_sw_joycon_l_page.txt
+C:\Users\ronny\AppData\Local\Temp\polymer-bt-traces-reference\blueretro_logs\blueretro_sw_joycon_r_page.txt
+C:\Users\ronny\AppData\Local\Temp\polymer-bt-traces-reference\blueretro_logs\blueretro_sw_2x_reconn.txt
+C:\Users\ronny\AppData\Local\Temp\polymer-bt-traces-reference\ubuntu1804_sw_btn_page.log
 ```
 
 The `ubuntu1804_sw_btn_page.log` file is actually binary btsnoop data despite its
@@ -394,10 +394,10 @@ installed when this handoff was written.
 Targeted validation commands:
 
 ```powershell
-cargo fmt -p snowglass-bluetooth -p snowglass-bttest
-cargo test -p snowglass-bluetooth -p snowglass-bttest
-cargo clippy -p snowglass-bluetooth -p snowglass-bttest --all-targets -- -D warnings
-cargo run -p snowglass-bttest
+cargo fmt -p polymer-bluetooth -p polymer-bttest
+cargo test -p polymer-bluetooth -p polymer-bttest
+cargo clippy -p polymer-bluetooth -p polymer-bttest --all-targets -- -D warnings
+cargo run -p polymer-bttest
 ```
 
 Current automated result: 38 Bluetooth library tests plus 5 viewer tests pass;
@@ -409,7 +409,7 @@ this work, and the repository contains unrelated user changes.
 Before rebuilding, close only the exact viewer executable:
 
 ```powershell
-$viewerPath = (Resolve-Path 'target\debug\snowglass-bttest.exe').Path
+$viewerPath = (Resolve-Path 'target\debug\polymer-bttest.exe').Path
 Get-CimInstance Win32_Process |
   Where-Object { $_.ExecutablePath -eq $viewerPath }
 ```
