@@ -10,7 +10,6 @@ mod instance;
 mod launch;
 mod library;
 mod savestates;
-mod scraping;
 mod session;
 mod storage;
 mod ui;
@@ -36,7 +35,6 @@ pub use instance::{
 };
 pub use library::LibraryService;
 pub use savestates::{RgbaScreenshot, SaveStateManager, SaveStateMetadata};
-pub use scraping::{ScrapedPackage, ScrapingError};
 pub use session::{SessionController, mount_prepared_filesystem};
 pub use snowglass_command::CommandSink;
 pub use snowglass_pluginhost::{GraphicsHook, Hooks, InputHook};

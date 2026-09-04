@@ -285,16 +285,19 @@ pub(crate) struct ShellSessionFactory {
 impl ShellSessionFactory {
     pub(crate) fn new(
         plugin_registry: snowglass_pluginhost::PluginRegistry,
+        directories: snowglass_library::Directories,
         local_storage: Option<snowglass_deno::webstorage::LocalStorage>,
         library: Option<snowglass_runtime::LibraryService>,
         event_proxy: crate::window_manager::EventLoopProxy<crate::app::UserEvent>,
     ) -> Self {
+        let plugin_runtime = snowglass_pluginhost::PluginRuntime::new(
+            plugin_registry,
+            directories,
+            snowglass_pluginhost::PluginRuntimeOptions::default(),
+        );
         Self {
             document: ShellDocumentFactory::new(event_proxy),
-            plugin_runtime: std::sync::Arc::new(snowglass_pluginhost::PluginRuntime::new(
-                plugin_registry,
-                snowglass_pluginhost::PluginRuntimeOptions::default(),
-            )),
+            plugin_runtime: std::sync::Arc::new(plugin_runtime),
             local_storage,
             library,
             input_sources: snowglass_input::InputHub::default(),

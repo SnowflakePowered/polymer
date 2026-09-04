@@ -1,11 +1,10 @@
-use language_tags::LanguageTag;
 use object_store::path::Path as ObjectPath;
 use turso::{Value, transaction::Transaction};
 use uuid::Uuid;
 
 use super::{
     GameCatalog, GameCatalogError, MediaData, MediaResource, Metadata, MetadataData, MetadataInput,
-    PreparedMetadata, PreparedMetadataData, Relation,
+    MetadataInputData, MetadataValue, PreparedMetadata, PreparedMetadataData,
 };
 
 impl GameCatalog {
@@ -14,8 +13,16 @@ impl GameCatalog {
         parent: Uuid,
         input: MetadataInput,
     ) -> Result<Metadata, GameCatalogError> {
-        let id = Uuid::now_v7();
-        self.write_metadata(id, parent, input, false).await
+        let connection = self.connection().await?;
+        let mut rows = connection.query(
+            "SELECT COALESCE(MAX(ordinal), -1) + 1 FROM metadata WHERE parent_binary_id = ?1 AND producer = 'manual'",
+            [Self::id(parent)],
+        ).await?;
+        let ordinal = u32::try_from(rows.next().await?.expect("aggregate row").get::<i64>(0)?)
+            .map_err(|_| GameCatalogError::InvalidData("metadata ordinal overflow".to_owned()))?;
+        drop(rows);
+        self.write_metadata(Uuid::now_v7(), parent, "manual", ordinal, input, false)
+            .await
     }
 
     pub async fn update_metadata(
@@ -26,18 +33,21 @@ impl GameCatalog {
         let connection = self.connection().await?;
         let mut rows = connection
             .query(
-                "SELECT parent_binary_id FROM metadata WHERE id = ?1",
+                "SELECT parent_binary_id, producer, ordinal FROM metadata WHERE id = ?1",
                 [Self::id(id)],
             )
             .await?;
-        let parent = rows
+        let row = rows
             .next()
             .await?
-            .map(|row| Self::uuid(row.get_value(0)?))
-            .transpose()?
             .ok_or_else(|| GameCatalogError::NotFound(id.simple().to_string()))?;
+        let parent = Self::uuid(row.get_value(0)?)?;
+        let producer: String = row.get(1)?;
+        let ordinal = u32::try_from(row.get::<i64>(2)?)
+            .map_err(|_| GameCatalogError::InvalidData("invalid metadata ordinal".to_owned()))?;
         drop(rows);
-        self.write_metadata(id, parent, input, true).await
+        self.write_metadata(id, parent, &producer, ordinal, input, true)
+            .await
     }
 
     pub async fn remove_metadata(&self, id: Uuid) -> Result<(), GameCatalogError> {
@@ -66,31 +76,31 @@ impl GameCatalog {
         Ok(())
     }
 
+    /// Atomically replaces all values owned by one host-controlled producer.
     pub async fn replace_metadata(
         &self,
         parent: Uuid,
-        source: &str,
+        producer: &str,
         inputs: Vec<MetadataInput>,
     ) -> Result<Vec<Metadata>, GameCatalogError> {
-        if source.is_empty() {
-            return Err(GameCatalogError::InvalidData(
-                "metadata source cannot be empty".to_owned(),
-            ));
-        }
+        Self::validate_context("producer", producer)?;
         let mut prepared = Vec::with_capacity(inputs.len());
-        for input in inputs {
-            prepared.push(self.prepare_metadata(input.with_source(source)).await?);
+        for (ordinal, input) in inputs.into_iter().enumerate() {
+            let ordinal = u32::try_from(ordinal).map_err(|_| {
+                GameCatalogError::InvalidData("too many metadata values".to_owned())
+            })?;
+            prepared.push(self.prepare_metadata(producer, ordinal, input).await?);
         }
         let mut connection = self.connection().await?;
         let transaction = connection
             .transaction_with_behavior(turso::transaction::TransactionBehavior::Immediate)
             .await?;
-        self.require_root(&transaction, parent).await?;
-        let old = Self::referenced_objects(&transaction, parent, Some(source)).await?;
+        self.require_binary(&transaction, parent).await?;
+        let old = Self::referenced_objects(&transaction, parent, Some(producer)).await?;
         transaction
             .execute(
-                "DELETE FROM metadata WHERE parent_binary_id = ?1 AND source = ?2",
-                vec![Self::id(parent), Value::from(source)],
+                "DELETE FROM metadata WHERE parent_binary_id = ?1 AND producer = ?2",
+                vec![Self::id(parent), Value::from(producer)],
             )
             .await?;
         let mut result = Vec::with_capacity(prepared.len());
@@ -105,50 +115,67 @@ impl GameCatalog {
         Ok(result)
     }
 
+    pub async fn metadata(&self, parent: Uuid) -> Result<Vec<Metadata>, GameCatalogError> {
+        let connection = self.connection().await?;
+        let mut rows = connection.query(
+            r#"SELECT metadata.id, metadata.parent_binary_id, metadata.key, metadata.source,
+                      metadata.producer, metadata.ordinal, metadata.data_kind,
+                      metadata.string_value, metadata.number_value, metadata.boolean_value,
+                      metadata.inline_data, media_objects.object_key, metadata.media_type,
+                      metadata.source_url
+               FROM metadata LEFT JOIN media_objects ON media_objects.blake3 = metadata.object_blake3
+               WHERE metadata.parent_binary_id = ?1
+               ORDER BY metadata.key, metadata.source, metadata.ordinal, metadata.id"#,
+            [Self::id(parent)],
+        ).await?;
+        let mut values = Vec::new();
+        while let Some(row) = rows.next().await? {
+            values.push(Self::metadata_from_row(&row)?);
+        }
+        Ok(values)
+    }
+
     pub async fn metadata_text(&self, id: Uuid) -> Result<String, GameCatalogError> {
         let connection = self.connection().await?;
-        let mut rows = connection
-            .query(
-                "SELECT data_kind, text_value, release_year FROM metadata WHERE id = ?1",
-                [Self::id(id)],
-            )
-            .await?;
+        let mut rows = connection.query(
+            "SELECT data_kind, string_value, number_value, boolean_value FROM metadata WHERE id = ?1",
+            [Self::id(id)],
+        ).await?;
         let row = rows
             .next()
             .await?
             .ok_or_else(|| GameCatalogError::NotFound(id.simple().to_string()))?;
-        match row.get::<String>(0)?.as_str() {
-            "text" => Ok(row.get(1)?),
-            "year" => Ok(row.get::<i64>(2)?.to_string()),
-            _ => Err(GameCatalogError::InvalidData(
-                "media metadata does not have text".to_owned(),
-            )),
-        }
+        Ok(match row.get::<String>(0)?.as_str() {
+            "string" => row.get(1)?,
+            "number" => row.get::<f64>(2)?.to_string(),
+            "boolean" => (row.get::<i64>(3)? != 0).to_string(),
+            _ => {
+                return Err(GameCatalogError::InvalidData(
+                    "media metadata does not have text".to_owned(),
+                ));
+            }
+        })
     }
 
     pub async fn media(&self, id: Uuid) -> Result<MediaResource, GameCatalogError> {
         let connection = self.connection().await?;
-        let mut rows = connection
-            .query(
-                r#"SELECT metadata.data_kind, metadata.inline_data, media_objects.object_key,
-                          metadata.media_type, metadata.byte_length, metadata.object_blake3
-                   FROM metadata
-                   LEFT JOIN media_objects ON media_objects.blake3 = metadata.object_blake3
-                   WHERE metadata.id = ?1"#,
-                [Self::id(id)],
-            )
-            .await?;
+        let mut rows = connection.query(
+            r#"SELECT metadata.data_kind, metadata.inline_data, media_objects.object_key,
+                      metadata.media_type, metadata.byte_length, metadata.object_blake3
+               FROM metadata LEFT JOIN media_objects ON media_objects.blake3 = metadata.object_blake3
+               WHERE metadata.id = ?1"#,
+            [Self::id(id)],
+        ).await?;
         let row = rows
             .next()
             .await?
             .ok_or_else(|| GameCatalogError::NotFound(id.simple().to_string()))?;
-        let kind: String = row.get(0)?;
         let media_type = Self::optional_text(row.get_value(3)?)?.ok_or_else(|| {
-            GameCatalogError::InvalidData("text metadata does not have a URL".to_owned())
+            GameCatalogError::InvalidData("scalar metadata does not have a URL".to_owned())
         })?;
         let byte_length = u64::try_from(row.get::<i64>(4)?)
             .map_err(|_| GameCatalogError::InvalidData("negative media length".to_owned()))?;
-        let (data, content_blake3) = match kind.as_str() {
+        let (data, content_blake3) = match row.get::<String>(0)?.as_str() {
             "inline" => {
                 let bytes = Self::blob(row.get_value(1)?)?;
                 let digest = *blake3::hash(&bytes).as_bytes();
@@ -165,7 +192,7 @@ impl GameCatalog {
             }
             _ => {
                 return Err(GameCatalogError::InvalidData(
-                    "text metadata does not have a URL".to_owned(),
+                    "scalar metadata does not have a URL".to_owned(),
                 ));
             }
         };
@@ -182,15 +209,17 @@ impl GameCatalog {
         &self,
         id: Uuid,
         parent: Uuid,
+        producer: &str,
+        ordinal: u32,
         input: MetadataInput,
         update: bool,
     ) -> Result<Metadata, GameCatalogError> {
-        let value = self.prepare_metadata(input).await?;
+        let value = self.prepare_metadata(producer, ordinal, input).await?;
         let mut connection = self.connection().await?;
         let transaction = connection
             .transaction_with_behavior(turso::transaction::TransactionBehavior::Immediate)
             .await?;
-        self.require_root(&transaction, parent).await?;
+        self.require_binary(&transaction, parent).await?;
         let old = if update {
             let mut rows = transaction
                 .query(
@@ -219,117 +248,85 @@ impl GameCatalog {
         Ok(value.into_metadata(id, parent))
     }
 
-    async fn prepare_metadata(
+    pub(super) async fn prepare_metadata(
         &self,
+        producer: &str,
+        ordinal: u32,
         input: MetadataInput,
     ) -> Result<PreparedMetadata, GameCatalogError> {
-        let (language, source) = match &input {
-            MetadataInput::Text {
-                language, source, ..
+        Self::validate_key(&input.key)?;
+        Self::validate_context("source", &input.source)?;
+        Self::validate_context("producer", producer)?;
+        let data = match input.data {
+            MetadataInputData::Scalar { value } => {
+                value
+                    .validate()
+                    .map_err(|message| GameCatalogError::InvalidData(message.to_owned()))?;
+                PreparedMetadataData::Scalar(value)
             }
-            | MetadataInput::ReleaseYear {
-                language, source, ..
-            }
-            | MetadataInput::Inline {
-                language, source, ..
-            }
-            | MetadataInput::Object {
-                language, source, ..
-            } => (language.as_deref(), source.as_str()),
-        };
-        let (language, source) = Self::metadata_context(language, source)?;
-        let (relation, data) = match input {
-            MetadataInput::Text {
-                relation, value, ..
-            } => {
-                if !relation.expects_text() {
-                    return Err(GameCatalogError::InvalidData(format!(
-                        "{} does not accept text",
-                        relation.as_str()
-                    )));
-                }
-                (relation, PreparedMetadataData::Text(value))
-            }
-            MetadataInput::ReleaseYear { year, .. } => {
-                if !(1..=9999).contains(&year) {
-                    return Err(GameCatalogError::InvalidData(
-                        "release year is out of range".to_owned(),
-                    ));
-                }
-                (
-                    Relation::ReleaseDate,
-                    PreparedMetadataData::ReleaseYear(year),
-                )
-            }
-            MetadataInput::Inline {
-                relation,
+            MetadataInputData::Inline {
                 media_type,
                 bytes,
-                ..
+                source_url,
             } => {
-                if relation.expects_text() || relation.expects_year() {
-                    return Err(GameCatalogError::InvalidData(format!(
-                        "{} does not accept media",
-                        relation.as_str()
-                    )));
-                }
                 Self::validate_media_type(&media_type)?;
                 i64::try_from(bytes.len())
                     .map_err(|_| GameCatalogError::InvalidData("media is too large".to_owned()))?;
-                (relation, PreparedMetadataData::Inline { media_type, bytes })
+                PreparedMetadataData::Inline {
+                    media_type,
+                    bytes,
+                    source_url,
+                }
             }
-            MetadataInput::Object {
-                relation,
+            MetadataInputData::Object {
                 media_type,
                 path,
-                ..
+                source_url,
             } => {
-                if relation.expects_text() || relation.expects_year() {
-                    return Err(GameCatalogError::InvalidData(format!(
-                        "{} does not accept media",
-                        relation.as_str()
-                    )));
-                }
                 Self::validate_media_type(&media_type)?;
                 let object = self.store_object(&path).await?;
-                (
-                    relation,
-                    PreparedMetadataData::Object { media_type, object },
-                )
+                PreparedMetadataData::Object {
+                    media_type,
+                    object,
+                    source_url,
+                }
             }
         };
         Ok(PreparedMetadata {
-            relation,
-            language,
-            source,
+            key: input.key,
+            source: input.source,
+            producer: producer.to_owned(),
+            ordinal,
             data,
         })
     }
 
-    fn metadata_context(
-        language: Option<&str>,
-        source: &str,
-    ) -> Result<(Option<String>, String), GameCatalogError> {
-        if source.is_empty() {
-            return Err(GameCatalogError::InvalidData(
-                "metadata source cannot be empty".to_owned(),
-            ));
-        }
-        let language = language
-            .map(|language| {
-                LanguageTag::parse(language)
-                    .map(|tag| tag.to_string())
-                    .map_err(|_| {
-                        GameCatalogError::InvalidData(format!(
-                            "invalid BCP 47 language tag '{language}'"
-                        ))
-                    })
+    fn validate_key(key: &str) -> Result<(), GameCatalogError> {
+        if key.is_empty()
+            || key.split('.').any(|segment| {
+                segment.is_empty()
+                    || !segment
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
             })
-            .transpose()?;
-        Ok((language, source.to_owned()))
+        {
+            return Err(GameCatalogError::InvalidData(format!(
+                "invalid namespaced metadata key '{key}'"
+            )));
+        }
+        Ok(())
     }
 
-    async fn insert_metadata(
+    fn validate_context(name: &str, value: &str) -> Result<(), GameCatalogError> {
+        if value.trim().is_empty() {
+            return Err(GameCatalogError::InvalidData(format!(
+                "metadata {name} cannot be empty"
+            )));
+        }
+        Ok(())
+    }
+
+    pub(super) async fn insert_metadata(
         &self,
         transaction: &Transaction<'_>,
         id: Uuid,
@@ -337,38 +334,27 @@ impl GameCatalog {
         value: &PreparedMetadata,
     ) -> Result<(), GameCatalogError> {
         if let PreparedMetadataData::Object { object, .. } = &value.data {
-            transaction
-                .execute(
-                    r#"INSERT INTO media_objects (blake3, object_key, byte_length)
-                       VALUES (?1, ?2, ?3) ON CONFLICT(blake3) DO NOTHING"#,
-                    vec![
-                        Value::from(object.digest.to_vec()),
-                        Value::from(object.key.to_string()),
-                        Value::from(i64::try_from(object.byte_length).map_err(|_| {
-                            GameCatalogError::InvalidData("media is too large".to_owned())
-                        })?),
-                    ],
-                )
-                .await?;
+            transaction.execute(
+                "INSERT INTO media_objects (blake3, object_key, byte_length) VALUES (?1, ?2, ?3) ON CONFLICT(blake3) DO NOTHING",
+                vec![Value::from(object.digest.to_vec()), Value::from(object.key.to_string()), Value::from(i64::try_from(object.byte_length).map_err(|_| GameCatalogError::InvalidData("media is too large".to_owned()))?)],
+            ).await?;
         }
-        let columns = value.data.database_values()?;
         let mut parameters = vec![
             Self::id(id),
             Self::id(parent),
-            Value::from(value.relation.as_str()),
-            value.language.clone().into(),
+            Value::from(value.key.clone()),
             Value::from(value.source.clone()),
+            Value::from(value.producer.clone()),
+            Value::from(i64::from(value.ordinal)),
         ];
-        parameters.extend(columns);
-        transaction
-            .execute(
-                r#"INSERT INTO metadata (
-                       id, parent_binary_id, relation, language, source, data_kind,
-                       text_value, release_year, inline_data, object_blake3, media_type, byte_length
-                   ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"#,
-                parameters,
-            )
-            .await?;
+        parameters.extend(value.data.database_values()?);
+        transaction.execute(
+            r#"INSERT INTO metadata (id, parent_binary_id, key, source, producer, ordinal, data_kind,
+                    string_value, number_value, boolean_value, inline_data, object_blake3,
+                    media_type, byte_length, source_url)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)"#,
+            parameters,
+        ).await?;
         Ok(())
     }
 }
@@ -376,52 +362,82 @@ impl GameCatalog {
 impl PreparedMetadata {
     fn into_metadata(self, id: Uuid, parent_binary_id: Uuid) -> Metadata {
         let data = match self.data {
-            PreparedMetadataData::Text(value) => MetadataData::Text(value),
-            PreparedMetadataData::ReleaseYear(year) => MetadataData::ReleaseYear(year),
-            PreparedMetadataData::Inline { media_type, bytes } => MetadataData::Media {
+            PreparedMetadataData::Scalar(value) => MetadataData::Scalar(value),
+            PreparedMetadataData::Inline {
+                media_type,
+                bytes,
+                source_url,
+            } => MetadataData::Media {
                 media_type,
                 data: MediaData::Inline(bytes),
+                source_url,
             },
-            PreparedMetadataData::Object { media_type, object } => MetadataData::Media {
+            PreparedMetadataData::Object {
+                media_type,
+                object,
+                source_url,
+            } => MetadataData::Media {
                 media_type,
                 data: MediaData::Object(object.key),
+                source_url,
             },
         };
         Metadata {
             id,
             parent_binary_id,
-            data,
-            relation: self.relation,
-            language: self.language,
+            key: self.key,
             source: self.source,
+            producer: self.producer,
+            ordinal: self.ordinal,
+            data,
         }
     }
 }
 
 impl PreparedMetadataData {
-    fn database_values(&self) -> Result<[Value; 7], GameCatalogError> {
-        let values =
-            match self {
-                Self::Text(value) => [
-                    Value::from("text"),
-                    Value::from(value.clone()),
-                    Value::Null,
-                    Value::Null,
-                    Value::Null,
-                    Value::Null,
-                    Value::Null,
-                ],
-                Self::ReleaseYear(year) => [
-                    Value::from("year"),
-                    Value::Null,
-                    Value::from(*year),
-                    Value::Null,
-                    Value::Null,
-                    Value::Null,
-                    Value::Null,
-                ],
-                Self::Inline { media_type, bytes } => [
+    fn database_values(&self) -> Result<[Value; 9], GameCatalogError> {
+        Ok(match self {
+            Self::Scalar(MetadataValue::String(value)) => [
+                Value::from("string"),
+                Value::from(value.clone()),
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Null,
+            ],
+            Self::Scalar(MetadataValue::Number(value)) => [
+                Value::from("number"),
+                Value::Null,
+                Value::from(*value),
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Null,
+            ],
+            Self::Scalar(MetadataValue::Boolean(value)) => [
+                Value::from("boolean"),
+                Value::Null,
+                Value::Null,
+                Value::from(i64::from(*value)),
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Null,
+                Value::Null,
+            ],
+            Self::Inline {
+                media_type,
+                bytes,
+                source_url,
+            } => {
+                [
                     Value::from("inline"),
+                    Value::Null,
                     Value::Null,
                     Value::Null,
                     Value::from(bytes.to_vec()),
@@ -430,9 +446,17 @@ impl PreparedMetadataData {
                     Value::from(i64::try_from(bytes.len()).map_err(|_| {
                         GameCatalogError::InvalidData("media is too large".to_owned())
                     })?),
-                ],
-                Self::Object { media_type, object } => [
+                    source_url.clone().into(),
+                ]
+            }
+            Self::Object {
+                media_type,
+                object,
+                source_url,
+            } => {
+                [
                     Value::from("object"),
+                    Value::Null,
                     Value::Null,
                     Value::Null,
                     Value::Null,
@@ -441,8 +465,9 @@ impl PreparedMetadataData {
                     Value::from(i64::try_from(object.byte_length).map_err(|_| {
                         GameCatalogError::InvalidData("media is too large".to_owned())
                     })?),
-                ],
-            };
-        Ok(values)
+                    source_url.clone().into(),
+                ]
+            }
+        })
     }
 }

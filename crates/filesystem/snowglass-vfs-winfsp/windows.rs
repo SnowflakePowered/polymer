@@ -105,6 +105,7 @@ impl FilesystemHost for WinFspFilesystemHost {
                 .read_only_volume(false)
                 .allow_open_in_kernel_mode(true)
                 .post_cleanup_when_modified_only(true)
+                .flush_and_purge_on_cleanup(true)
                 .post_disposition_only_when_necessary(true)
                 .supports_posix_unlink_rename(true);
             let mut host: NativeFileSystemHost<SnowglassFileSystem> =
@@ -828,6 +829,53 @@ mod tests {
         assert!(std::fs::write(&readonly_path, b"denied").is_err());
         std::fs::remove_file(&target_path).unwrap();
         std::fs::remove_dir(&user_path).unwrap();
+        drop(mounted);
+    }
+
+    #[test]
+    #[ignore = "requires the WinFSP driver and briefly registers a random UNC prefix"]
+    fn closed_unc_writes_are_immediately_visible_to_the_backing_volume() {
+        let scratch = Arc::new(Resource::new(
+            Arc::new(ScratchVolumeFactory::new(ScratchBacking::Temporary)),
+            Permissions::ALL,
+            ResourceOrigin::Scratch,
+        ));
+        let mut plan = FilesystemPlan::default();
+        plan.mount_tree(VfsPathBuf::root(), scratch, Permissions::ALL);
+        let filesystem = Arc::new(plan.seal().unwrap());
+        let endpoint = FilesystemEndpoint::random();
+        let staged_path = VfsPathBuf::new("/state.bin.tmp").unwrap();
+        let mounted_path = VfsPathBuf::new("/state.bin").unwrap();
+        let staged_host_path = endpoint.project(staged_path.as_path());
+        let host_path = endpoint.project(mounted_path.as_path());
+        let mounted = WinFspFilesystemHost::default()
+            .mount(endpoint, filesystem.clone())
+            .unwrap();
+        let expected = (0..(20 * 1024 * 1024 + 17))
+            .map(|offset| (offset % 251 + 1) as u8)
+            .collect::<Vec<_>>();
+
+        std::fs::write(&staged_host_path, &expected).unwrap();
+        std::fs::rename(&staged_host_path, &host_path).unwrap();
+
+        let (metadata, file) = filesystem
+            .open_with_metadata(
+                &mounted_path,
+                OpenOptions {
+                    read: true,
+                    write: false,
+                    truncate: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(metadata.len, expected.len() as u64);
+        let file = file.unwrap();
+        let mut actual = vec![0; expected.len()];
+        assert_eq!(file.read(0, &mut actual).unwrap(), actual.len());
+        assert!(
+            actual == expected,
+            "backing bytes differ from the closed UNC write"
+        );
         drop(mounted);
     }
 

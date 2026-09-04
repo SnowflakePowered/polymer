@@ -2,6 +2,7 @@
 id = "mgba"
 version = "0.0.1"
 class = "emulator"
+main = "mgba.ts"
 
 [[plugin.resources]]
 name = "runtime"
@@ -12,7 +13,6 @@ mode = "rx"
 
 [emulator]
 platforms = ["NINTENDO_GBA"]
-main = "mgba.ts"
 
 [emulator.configuration]
 definitions = ["config/input.toml"]

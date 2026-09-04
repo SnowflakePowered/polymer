@@ -1,38 +1,12 @@
-use std::{future::Future, path::PathBuf, pin::Pin};
+use std::{future::Future, pin::Pin};
 
-use serde::Deserialize;
 use serde_json::{Value, json};
 use snowglass_command::command_handler;
 use snowglass_deno::snowglass::LibraryCommandHandler;
-use snowglass_library::{
-    Game, Launchable, MediaData, Metadata, MetadataData, MetadataInput, Relation,
-};
+use snowglass_library::{Game, Launchable, MediaData, Metadata, MetadataData, MetadataInput};
 use uuid::Uuid;
 
 use super::LibraryBackend;
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct MetadataWrite {
-    relation: Relation,
-    language: Option<String>,
-    source: String,
-    #[serde(flatten)]
-    data: MetadataWriteData,
-}
-
-#[derive(Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "lowercase",
-    rename_all_fields = "camelCase"
-)]
-enum MetadataWriteData {
-    Text { value: String },
-    Year { value: u16 },
-    Inline { media_type: String, bytes: Vec<u8> },
-    Object { media_type: String, path: PathBuf },
-}
 
 #[command_handler]
 impl LibraryCommandHandler for LibraryBackend {
@@ -71,17 +45,30 @@ impl LibraryCommandHandler for LibraryBackend {
         parent_binary_id: Option<String>,
     ) -> Result<Value, String> {
         let parent = parent_binary_id.as_deref().map(Self::uuid).transpose()?;
-        let identified = tokio::task::spawn_blocking(move || {
-            crate::ScrapedPackage::identify_launchable(path, platform.as_deref(), parent)
+        let package = tokio::task::spawn_blocking(move || {
+            snowglass_scraping::Package::identify(path, platform.as_deref(), parent)
         })
         .await
         .map_err(|error| format!("package detection task failed: {error}"))?
         .map_err(|error| error.to_string())?;
-        self.catalog
-            .import_launchable(identified)
+        let (launchable, created_root) = package
+            .import(&self.catalog)
             .await
-            .map(|launchable| Self::launchable_value(&launchable))
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        let is_root = launchable.parent_binary_id.is_none();
+        let root_binary_id = launchable.parent_binary_id.unwrap_or(launchable.binary_id);
+        self.scraping.publish_library_content(root_binary_id);
+        let job = if is_root && created_root {
+            Some(
+                self.scraping
+                    .enqueue(launchable.binary_id, launchable.binary_id)
+                    .await
+                    .map_err(|error| error.to_string())?,
+            )
+        } else {
+            None
+        };
+        Ok(json!({ "launchable": Self::launchable_value(&launchable), "scrapeJob": job }))
     }
 
     async fn launchables_delete(&mut self, id: String) -> Result<(), String> {
@@ -129,7 +116,11 @@ impl LibraryCommandHandler for LibraryBackend {
             .map(Self::metadata_input)
             .collect::<Result<Vec<_>, _>>()?;
         self.catalog
-            .replace_metadata(Self::uuid(&parent_binary_id)?, &source, inputs)
+            .replace_metadata(
+                Self::uuid(&parent_binary_id)?,
+                &format!("manual:{source}"),
+                inputs,
+            )
             .await
             .map(|metadata| Value::Array(metadata.iter().map(Self::metadata_value).collect()))
             .map_err(|error| error.to_string())
@@ -152,6 +143,61 @@ impl LibraryCommandHandler for LibraryBackend {
     async fn metadata_url(&mut self, id: String) -> Result<String, String> {
         self.media_url(Self::uuid(&id)?).await
     }
+
+    async fn scraping_jobs(&mut self) -> Result<Value, String> {
+        self.catalog
+            .scrape_jobs()
+            .await
+            .map(|jobs| json!(jobs))
+            .map_err(|error| error.to_string())
+    }
+
+    async fn scraping_start(
+        &mut self,
+        root_binary_id: String,
+        trigger_binary_id: String,
+    ) -> Result<Value, String> {
+        self.scraping
+            .enqueue(
+                Self::uuid(&root_binary_id)?,
+                Self::uuid(&trigger_binary_id)?,
+            )
+            .await
+            .map(|job| json!(job))
+            .map_err(|error| error.to_string())
+    }
+
+    async fn scraping_job(&mut self, id: String) -> Result<Value, String> {
+        self.catalog
+            .scrape_job(Self::uuid(&id)?)
+            .await
+            .map(|job| json!(job))
+            .map_err(|error| error.to_string())
+    }
+
+    async fn scraping_retry(&mut self, id: String) -> Result<Value, String> {
+        self.scraping
+            .retry(Self::uuid(&id)?)
+            .await
+            .map(|job| json!(job))
+            .map_err(|error| error.to_string())
+    }
+
+    async fn scraping_scrapers(&mut self) -> Result<Value, String> {
+        Ok(Value::Array(self.scraping.scrapers().iter().map(|plugin| json!({
+            "id": plugin.id(),
+            "version": plugin.version(),
+            "requires": plugin.requirements().iter().map(ToString::to_string).collect::<Vec<_>>(),
+            "provides": plugin.provides(),
+        })).collect()))
+    }
+
+    async fn scraping_refresh(&mut self, plugin: String) -> Result<(), String> {
+        self.scraping
+            .refresh(&plugin)
+            .await
+            .map_err(|error| error.to_string())
+    }
 }
 
 impl LibraryBackend {
@@ -166,36 +212,8 @@ impl LibraryBackend {
         Uuid::parse_str(value).map_err(|error| format!("invalid UUID: {error}"))
     }
 
-    fn metadata_input(value: Value) -> Result<MetadataInput, String> {
-        let value: MetadataWrite =
-            serde_json::from_value(value).map_err(|error| format!("invalid metadata: {error}"))?;
-        Ok(match value.data {
-            MetadataWriteData::Text { value: text } => MetadataInput::Text {
-                relation: value.relation,
-                language: value.language,
-                source: value.source,
-                value: text,
-            },
-            MetadataWriteData::Year { value: year } => MetadataInput::ReleaseYear {
-                language: value.language,
-                source: value.source,
-                year,
-            },
-            MetadataWriteData::Inline { media_type, bytes } => MetadataInput::Inline {
-                relation: value.relation,
-                language: value.language,
-                source: value.source,
-                media_type,
-                bytes: bytes.into_boxed_slice(),
-            },
-            MetadataWriteData::Object { media_type, path } => MetadataInput::Object {
-                relation: value.relation,
-                language: value.language,
-                source: value.source,
-                media_type,
-                path,
-            },
-        })
+    pub(super) fn metadata_input(value: Value) -> Result<MetadataInput, String> {
+        serde_json::from_value(value).map_err(|error| format!("invalid metadata: {error}"))
     }
 
     fn game_value(game: &Game) -> Value {
@@ -222,11 +240,15 @@ impl LibraryBackend {
 
     fn metadata_value(metadata: &Metadata) -> Value {
         let data = match &metadata.data {
-            MetadataData::Text(_) => json!({ "kind": "text" }),
-            MetadataData::ReleaseYear(_) => json!({ "kind": "year" }),
-            MetadataData::Media { media_type, data } => json!({
+            MetadataData::Scalar(value) => json!({ "kind": "scalar", "value": value }),
+            MetadataData::Media {
+                media_type,
+                data,
+                source_url,
+            } => json!({
                 "kind": "media",
                 "mediaType": media_type,
+                "sourceUrl": source_url,
                 "storage": match data {
                     MediaData::Inline(_) => "inline",
                     MediaData::Object(_) => "object",
@@ -236,9 +258,10 @@ impl LibraryBackend {
         json!({
             "id": metadata.id.simple().to_string(),
             "parentBinaryId": metadata.parent_binary_id.simple().to_string(),
-            "relation": metadata.relation.as_str(),
-            "language": metadata.language,
+            "key": metadata.key,
             "source": metadata.source,
+            "producer": metadata.producer,
+            "ordinal": metadata.ordinal,
             "data": data,
         })
     }

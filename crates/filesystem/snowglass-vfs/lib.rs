@@ -17,6 +17,7 @@ pub use backends::{
     AsarVolumeFactory, BatteryStorageFactory, HostDirectoryFactory, HostFileFactory,
     MemoryCardFileFactory, MemoryCardStorageFactory, MemoryCardVolumeFactory, MemoryFileFactory,
     NandVolumeFactory, PackageDirectoryFactory, ScratchBacking, ScratchVolumeFactory,
+    TempDirectoryFactory,
 };
 pub use error::{VfsError, VfsResult};
 pub use host::{

@@ -25,7 +25,8 @@ use library::{
     op_library_games_delete, op_library_games_get, op_library_games_list,
     op_library_launchables_add, op_library_launchables_delete, op_library_metadata_add,
     op_library_metadata_delete, op_library_metadata_replace, op_library_metadata_text,
-    op_library_metadata_update, op_library_metadata_url,
+    op_library_metadata_update, op_library_metadata_url, op_scraping_job, op_scraping_jobs,
+    op_scraping_refresh, op_scraping_retry, op_scraping_scrapers, op_scraping_start,
 };
 
 pub type ApiFuture<T> = Pin<Box<dyn Future<Output = T> + 'static>>;
@@ -165,6 +166,10 @@ pub enum SnowglassNotification {
         kind: String,
         platform: String,
         id: String,
+    },
+    ScrapeJobChanged(Value),
+    LibraryContentChanged {
+        root_binary_id: String,
     },
 }
 
@@ -574,6 +579,8 @@ deno_core::extension!(
         op_library_metadata_replace,
         op_library_metadata_text,
         op_library_metadata_url,
+        op_scraping_jobs, op_scraping_start, op_scraping_job, op_scraping_retry, op_scraping_scrapers,
+        op_scraping_refresh,
         op_emulator_launch,
         op_emulator_close,
         op_emulator_set_volume,

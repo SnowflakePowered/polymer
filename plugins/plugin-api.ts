@@ -31,6 +31,38 @@ export type PluginStorage = Readonly<{
 
 export type OnPluginLoad = () => void | Promise<void>;
 
+export type PluginCacheFile = Readonly<{
+    readonly size: number,
+    readable?: ReadableStream<Uint8Array>,
+    writable?: WritableStream<Uint8Array | string>,
+    read(offset: number, length: number): Promise<Uint8Array>,
+    bytes(): Promise<Uint8Array>,
+    text(): Promise<string>,
+}>;
+export type PluginCache = Readonly<{
+    open(path: string, options?: { read?: boolean, write?: boolean, create?: boolean, truncate?: boolean }): PluginCacheFile,
+}>;
+
+export type PluginStatement = Readonly<{
+    run(values?: readonly unknown[]): Promise<{ changes: number, lastInsertRowid: number }>,
+    get<T = Record<string, unknown>>(values?: readonly unknown[]): Promise<T | undefined>,
+    all<T = Record<string, unknown>>(values?: readonly unknown[]): Promise<T[]>,
+    iterate<T = Record<string, unknown>>(values?: readonly unknown[]): AsyncIterable<T>,
+}>;
+export type PluginDatabase = Readonly<{
+    prepare(sql: string): PluginStatement,
+    exec(sql: string): Promise<void>,
+    batch(items: readonly (readonly [string, (readonly unknown[])?] | { sql: string, args?: readonly unknown[] })[], mode?: "read" | "write"): Promise<unknown[]>,
+    transactionAsync<T>(callback: (database: PluginDatabase) => Promise<T>, mode?: "read" | "write"): Promise<T>,
+    close(): Promise<void>,
+}>;
+
+export type ScrapeScalar = string | number | boolean;
+export type ScrapeCandidate = Readonly<{ source: string, value: ScrapeScalar }>;
+export type ScrapeInput = Readonly<Record<string, readonly ScrapeCandidate[]>>;
+export type ScrapeResult = Readonly<{ key: string, value: ScrapeScalar, source: string }>;
+export type OnScrape = (input: ScrapeInput) => AsyncGenerator<ScrapeResult, void, void>;
+
 export type Filesystem = {
     mountCache(cacheKey: string): Resource,
     mountHostTree(target: string, source: string, options: { mode: string }): void,

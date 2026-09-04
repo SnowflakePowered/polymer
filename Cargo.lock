@@ -8898,6 +8898,7 @@ version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "010378780309880b08997fae13be7834dba947d36393bd372f2b1556deb2a2f6"
 dependencies = [
+ "phf_macros 0.14.0",
  "phf_shared 0.14.0",
  "serde",
 ]
@@ -8973,6 +8974,19 @@ checksum = "812f032b54b1e759ccd5f8b6677695d5268c588701effba24601f6932f8269ef"
 dependencies = [
  "phf_generator 0.13.1",
  "phf_shared 0.13.1",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "phf_macros"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fa8d0ca26d424d27630da600c6624696e7dec8bf7b3b492b383c5dc49e5e085"
+dependencies = [
+ "phf_generator 0.14.0",
+ "phf_shared 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -9804,6 +9818,7 @@ dependencies = [
  "bytes",
  "encoding_rs",
  "futures-core",
+ "futures-util",
  "http",
  "http-body",
  "http-body-util",
@@ -9827,12 +9842,14 @@ dependencies = [
  "tokio",
  "tokio-native-tls",
  "tokio-rustls",
+ "tokio-util",
  "tower",
  "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-streams",
  "web-sys",
 ]
 
@@ -10813,6 +10830,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc6fe69c597f9c37bfeeeeeb33da3530379845f10be461a66d16d03eca2ded77"
 
 [[package]]
+name = "shiratsu-naming"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "350c37d7498fac6759c6936954de6143291227bd4df52e01f1fdb16fd870e5e8"
+dependencies = [
+ "indexmap 1.9.3",
+ "nom",
+ "phf 0.14.0",
+]
+
+[[package]]
 name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11785,14 +11813,18 @@ dependencies = [
 name = "snowglass-pluginhost"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "consolespec",
  "dashmap",
  "deno_ast",
  "deno_core",
  "deno_error",
+ "futures-util",
  "glob",
  "parking_lot",
  "percent-encoding",
+ "reqwest",
+ "semver",
  "serde",
  "serde_bytes",
  "serde_json",
@@ -11804,6 +11836,7 @@ dependencies = [
  "snowglass-input",
  "snowglass-input-layout",
  "snowglass-ipc",
+ "snowglass-library",
  "snowglass-vfs",
  "tempfile",
  "thiserror 2.0.20",
@@ -11811,6 +11844,8 @@ dependencies = [
  "toml 0.9.12+spec-1.1.0",
  "toml-spanner",
  "tracing",
+ "turso",
+ "url",
 ]
 
 [[package]]
@@ -11935,7 +11970,6 @@ dependencies = [
  "consolespec",
  "crossfire",
  "dashmap",
- "gumshoe",
  "image 0.25.6",
  "object_store",
  "parking_lot",
@@ -11958,6 +11992,7 @@ dependencies = [
  "snowglass-platform-windows",
  "snowglass-pluginhost",
  "snowglass-protocol",
+ "snowglass-scraping",
  "snowglass-statistics",
  "snowglass-vfs",
  "tempfile",
@@ -11967,6 +12002,32 @@ dependencies = [
  "url",
  "uuid",
  "watchable",
+ "winapi",
+]
+
+[[package]]
+name = "snowglass-scraping"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "consolespec",
+ "futures-util",
+ "gumshoe",
+ "image 0.25.6",
+ "language",
+ "object_store",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "shiratsu-naming",
+ "snowglass-library",
+ "snowglass-pluginhost",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
  "winapi",
 ]
 
@@ -14429,6 +14490,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ef64dbcc55df09c7e5a46182d181c2cfa3e925f3da937ea764728b4bbb9dcbf"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "wasm-streams"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9d1ec4f6517c9e11ae630e200b2b65d193279042e28edd4a2cda233e46670bbb"
+dependencies = [
+ "futures-util",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

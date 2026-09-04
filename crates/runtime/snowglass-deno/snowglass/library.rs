@@ -52,6 +52,19 @@ snowglass_command::command_client! {
 
         #[args(MetadataUrl)]
         pub async fn metadata_url(id: String) -> Result<String, String>;
+
+        #[args(ScrapingJobs)]
+        pub async fn scraping_jobs() -> Result<Value, String>;
+        #[args(ScrapingStart)]
+        pub async fn scraping_start(root_binary_id: String, trigger_binary_id: String) -> Result<Value, String>;
+        #[args(ScrapingJob)]
+        pub async fn scraping_job(id: String) -> Result<Value, String>;
+        #[args(ScrapingRetry)]
+        pub async fn scraping_retry(id: String) -> Result<Value, String>;
+        #[args(ScrapingScrapers)]
+        pub async fn scraping_scrapers() -> Result<Value, String>;
+        #[args(ScrapingRefresh)]
+        pub async fn scraping_refresh(plugin: String) -> Result<(), String>;
     }
 }
 
@@ -188,4 +201,62 @@ pub(super) async fn op_library_metadata_url(
     #[string] id: String,
 ) -> Result<String, JsErrorBox> {
     library(&state)?.metadata_url(id).await.map_err(error)
+}
+
+#[op2]
+#[serde]
+pub(super) async fn op_scraping_jobs(
+    state: Rc<RefCell<OpState>>,
+) -> Result<serde_json::Value, JsErrorBox> {
+    library(&state)?.scraping_jobs().await.map_err(error)
+}
+
+#[op2]
+#[serde]
+pub(super) async fn op_scraping_start(
+    state: Rc<RefCell<OpState>>,
+    #[string] root: String,
+    #[string] trigger: String,
+) -> Result<serde_json::Value, JsErrorBox> {
+    library(&state)?
+        .scraping_start(root, trigger)
+        .await
+        .map_err(error)
+}
+
+#[op2]
+#[serde]
+pub(super) async fn op_scraping_job(
+    state: Rc<RefCell<OpState>>,
+    #[string] id: String,
+) -> Result<serde_json::Value, JsErrorBox> {
+    library(&state)?.scraping_job(id).await.map_err(error)
+}
+
+#[op2]
+#[serde]
+pub(super) async fn op_scraping_retry(
+    state: Rc<RefCell<OpState>>,
+    #[string] id: String,
+) -> Result<serde_json::Value, JsErrorBox> {
+    library(&state)?.scraping_retry(id).await.map_err(error)
+}
+
+#[op2]
+#[serde]
+pub(super) async fn op_scraping_scrapers(
+    state: Rc<RefCell<OpState>>,
+) -> Result<serde_json::Value, JsErrorBox> {
+    library(&state)?.scraping_scrapers().await.map_err(error)
+}
+
+#[op2]
+pub(super) async fn op_scraping_refresh(
+    state: Rc<RefCell<OpState>>,
+    #[string] plugin: String,
+) -> Result<(), JsErrorBox> {
+    library(&state)?
+        .scraping_refresh(plugin)
+        .await
+        .map_err(error)
 }

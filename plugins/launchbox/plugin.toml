@@ -1,0 +1,31 @@
+[plugin]
+id = "launchbox"
+version = "0.1.0"
+class = "scraper"
+main = "launchbox.ts"
+
+[[plugin.caches]]
+key = "download"
+label = "LaunchBox Metadata Download"
+
+[scraper]
+requires = [
+    "package.platform",
+    "any(meta.title, meta.title.en, filename.nointro.title, filename.tosec.title, filename.goodtools.title, package.internalname)",
+]
+provides = [
+    "meta.description",
+    "meta.publisher",
+    "meta.title",
+    "meta.genre",
+    "meta.rating.esrb",
+    "meta.releasedate",
+    "media.banner",
+    "media.boxart.back",
+    "media.boxart.front",
+    "media.boxart.full",
+    "media.boxart.spine",
+    "media.logo",
+    "media.label.disc",
+    "media.label.cart",
+]

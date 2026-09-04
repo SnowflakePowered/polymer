@@ -1,14 +1,15 @@
-use super::plugin::{PackageError, PluginPackage};
-use crate::{PluginInstance, PluginModuleLoader, ThemePluginInstance};
+use super::plugin::{PackageError, PluginClass, PluginPackage};
+use crate::ThemePluginInstance;
 use deno_core::ModuleSpecifier;
 use serde::Deserialize;
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
 
 #[derive(Debug, Deserialize)]
-struct ThemeBlock {
-    main: PathBuf,
-    #[serde(default)]
-    debug: Option<ThemeDebugBlock>,
+pub struct ThemeBlock {
+    #[serde(default, rename = "debug")]
+    manifest_debug: Option<ThemeDebugBlock>,
+    #[serde(skip)]
+    debug: Option<ThemeDebug>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -23,29 +24,15 @@ pub struct ThemeDebug {
     pub url: ModuleSpecifier,
 }
 
-/// A document theme packaged with its production frontend and optional
-/// development-server metadata.
-pub struct ThemePlugin {
-    package: PluginPackage<ThemeBlock>,
-    module_loader: PluginModuleLoader,
-    main: PathBuf,
-    debug: Option<ThemeDebug>,
-}
+pub type ThemePlugin = PluginPackage<ThemeBlock>;
 
-impl ThemePlugin {
-    pub fn load(root: impl AsRef<Path>) -> Result<Self, PackageError> {
-        let package = PluginPackage::<ThemeBlock>::load(root)?;
-        if package.class() != "theme" {
-            return Err(PackageError::UnexpectedClass {
-                expected: "theme",
-                actual: package.class().to_owned(),
-            });
-        }
-        let theme = package.block();
-        validate_relative_main(&theme.main)?;
-        let main = package.root().join(&theme.main);
-        let debug = theme
-            .debug
+impl PluginClass for ThemeBlock {
+    const CLASS: &'static str = "theme";
+
+    fn prepare(package: &mut PluginPackage<Self>) -> Result<(), PackageError> {
+        let debug = package
+            .block()
+            .manifest_debug
             .as_ref()
             .map(|debug| {
                 if debug.serve.trim().is_empty() {
@@ -62,59 +49,18 @@ impl ThemePlugin {
                 })
             })
             .transpose()?;
-        let module_loader = package.module_loader();
-        Ok(Self {
-            package,
-            module_loader,
-            main,
-            debug,
-        })
+        package.block_mut().debug = debug;
+        Ok(())
     }
+}
 
-    pub fn root(&self) -> &Path {
-        self.package.root()
-    }
-
-    pub fn main(&self) -> &Path {
-        &self.main
-    }
-
+impl PluginPackage<ThemeBlock> {
     pub fn debug(&self) -> Option<&ThemeDebug> {
-        self.debug.as_ref()
+        self.block().debug.as_ref()
     }
 }
 
-fn validate_relative_main(path: &Path) -> Result<(), PackageError> {
-    if path.as_os_str().is_empty()
-        || path.is_absolute()
-        || path
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
-    {
-        return Err(PackageError::InvalidThemeMain(path.to_owned()));
-    }
-    Ok(())
-}
-
-impl PluginInstance for ThemePlugin {
-    fn id(&self) -> &str {
-        self.package.id()
-    }
-
-    fn version(&self) -> &str {
-        self.package.version()
-    }
-
-    fn class(&self) -> &str {
-        self.package.class()
-    }
-
-    fn module_loader(&self) -> &PluginModuleLoader {
-        &self.module_loader
-    }
-}
-
-impl ThemePluginInstance for ThemePlugin {
+impl ThemePluginInstance for PluginPackage<ThemeBlock> {
     fn root(&self) -> &Path {
         self.root()
     }
@@ -131,6 +77,7 @@ impl ThemePluginInstance for ThemePlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::PluginInstance;
     use std::fs;
     use tempfile::TempDir;
 
@@ -142,9 +89,9 @@ mod tests {
 id = "chipotle"
 version = "0.1.0"
 class = "theme"
+main = "{main}"
 
 [theme]
-main = "{main}"
 {debug}
 "#,
             ),
@@ -178,6 +125,10 @@ url = "http://127.0.0.1:5173"
             theme.debug().unwrap().url.as_str(),
             "http://127.0.0.1:5173/"
         );
+        assert_eq!(
+            crate::PluginInstance::entrypoint(&theme).as_str(),
+            "snowglass-pkg://plugin/chipotle/dist/index.html"
+        );
     }
 
     #[test]
@@ -186,7 +137,7 @@ url = "http://127.0.0.1:5173"
         write_theme(escaping.path(), "../index.html", "");
         assert!(matches!(
             ThemePlugin::load(escaping.path()),
-            Err(PackageError::InvalidThemeMain(_))
+            Err(PackageError::InvalidPluginMain(_))
         ));
 
         let invalid_url = TempDir::new().unwrap();

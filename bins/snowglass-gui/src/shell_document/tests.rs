@@ -705,6 +705,9 @@ async fn native_pointer_sequence_dispatches_a_delegated_click() {
         dom_to_script,
         pointer_hover_path: Vec::new(),
     };
+    let plugin_storage = tempfile::tempdir().unwrap();
+    let plugin_directories =
+        snowglass_library::Directories::rooted(plugin_storage.path(), plugin_storage.path());
     let (mut runtime, _notifications) = ShellRuntime::start(
         layer.document.as_ref(),
         800,
@@ -719,6 +722,7 @@ async fn native_pointer_sequence_dispatches_a_delegated_click() {
             webrtc_commands: deno::WebRtcCommandSink::default(),
             plugin_runtime: Arc::new(snowglass_pluginhost::PluginRuntime::new(
                 snowglass_pluginhost::PluginRegistry::new(),
+                plugin_directories,
                 snowglass_pluginhost::PluginRuntimeOptions::default(),
             )),
             local_storage: None,

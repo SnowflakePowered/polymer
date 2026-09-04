@@ -2,6 +2,7 @@
 id = "retroarch-lrps2"
 version = "0.0.1"
 class = "emulator"
+main = "retroarch.ts"
 
 [plugin.config]
 bios = "D:\\bios\\ps2\\scph-39001.BIN"
@@ -15,7 +16,6 @@ mode = "rx"
 
 [emulator]
 platforms = ["SONY_PS2"]
-main = "retroarch.ts"
 
 [emulator.configuration]
 definitions = [

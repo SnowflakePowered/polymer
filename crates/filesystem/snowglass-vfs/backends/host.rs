@@ -81,13 +81,43 @@ impl ResourceFactory<dyn Volume> for HostDirectoryFactory {
     }
 }
 
-pub(super) fn temporary_volume() -> VfsResult<Materialized<dyn Volume>> {
-    let directory = tempfile::tempdir()?;
-    let backend = Arc::new(HostVolume::new(directory.path(), true)?);
-    Ok(Materialized {
-        backend,
-        lease: Arc::new(TemporaryLease(Mutex::new(Some(directory)))),
-    })
+pub struct TempDirectoryFactory {
+    root: Option<PathBuf>,
+}
+
+impl TempDirectoryFactory {
+    pub const fn new() -> Self {
+        Self { root: None }
+    }
+
+    pub fn in_root(root: PathBuf) -> Self {
+        Self { root: Some(root) }
+    }
+}
+
+impl Default for TempDirectoryFactory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ResourceFactory<dyn Volume> for TempDirectoryFactory {
+    fn materialize(&self) -> VfsResult<Materialized<dyn Volume>> {
+        let directory = match &self.root {
+            Some(root) => {
+                std::fs::create_dir_all(root)?;
+                tempfile::Builder::new()
+                    .prefix("snowglass-scratch-")
+                    .tempdir_in(root)?
+            }
+            None => tempfile::tempdir()?,
+        };
+        let backend = Arc::new(HostVolume::new(directory.path(), true)?);
+        Ok(Materialized {
+            backend,
+            lease: Arc::new(TemporaryLease(Mutex::new(Some(directory)))),
+        })
+    }
 }
 
 struct TemporaryLease(Mutex<Option<tempfile::TempDir>>);

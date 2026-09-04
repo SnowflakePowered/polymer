@@ -1,5 +1,5 @@
 import { Show, onCleanup, onMount } from "solid-js";
-import { produce } from "solid-js/store";
+import { produce, unwrap } from "solid-js/store";
 import { AppSidebar } from "../../components/AppSidebar";
 import { ControlHintBar } from "../../components/ControlHintBar";
 import { Icon } from "../../components/Icon";
@@ -29,7 +29,7 @@ export function GameDetailsPage() {
     const packageValue = shell.model.package;
     const current = emulator();
     if (!packageValue || !current) return;
-    const values = structuredClone(current.userConfiguration) as Record<string, Record<string, boolean | number | string | null>>;
+    const values = structuredClone(unwrap(current.userConfiguration)) as Record<string, Record<string, boolean | number | string | null>>;
     (values[group] ||= {})[option] = value;
     updateEmulator((candidate) => {
       candidate.userConfiguration = values;

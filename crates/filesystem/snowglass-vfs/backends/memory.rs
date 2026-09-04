@@ -206,11 +206,22 @@ pub enum ScratchBacking {
 
 pub struct ScratchVolumeFactory {
     backing: ScratchBacking,
+    temporary: super::host::TempDirectoryFactory,
 }
 
 impl ScratchVolumeFactory {
     pub const fn new(backing: ScratchBacking) -> Self {
-        Self { backing }
+        Self {
+            backing,
+            temporary: super::host::TempDirectoryFactory::new(),
+        }
+    }
+
+    pub fn temporary_in(root: std::path::PathBuf) -> Self {
+        Self {
+            backing: ScratchBacking::Temporary,
+            temporary: super::host::TempDirectoryFactory::in_root(root),
+        }
     }
 }
 
@@ -221,7 +232,7 @@ impl ResourceFactory<dyn Volume> for ScratchVolumeFactory {
                 backend: Arc::new(MemoryVolume::new()),
                 lease: Arc::new(NoopResourceLease),
             }),
-            ScratchBacking::Temporary => super::host::temporary_volume(),
+            ScratchBacking::Temporary => self.temporary.materialize(),
         }
     }
 }

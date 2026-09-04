@@ -13,7 +13,6 @@ blake3 = { workspace = true, features = ["traits-preview"] }
 crossfire.workspace = true
 consolespec.workspace = true
 dashmap.workspace = true
-gumshoe.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 object_store.workspace = true
 parking_lot.workspace = true
@@ -31,6 +30,7 @@ snowglass-input-ipc.workspace = true
 snowglass-controllers.workspace = true
 snowglass-input-bluetooth = { path = "../../input/snowglass-input-bluetooth" }
 snowglass-library.workspace = true
+snowglass-scraping.workspace = true
 snowglass-ipc.workspace = true
 snowglass-platform-windows.workspace = true
 snowglass-pluginhost = { path = "../snowglass-pluginhost" }

@@ -33,7 +33,15 @@ impl Directories {
     }
 
     pub fn plugin_cache(&self, plugin: &str) -> PathBuf {
-        self.cache.join(plugin)
+        self.cache.join("plugins").join(plugin)
+    }
+
+    pub fn jsr_cache(&self) -> PathBuf {
+        self.cache.join("jsr")
+    }
+
+    pub fn plugin_scratch(&self, plugin: &str) -> PathBuf {
+        self.cache.join("scratch").join(plugin)
     }
 
     pub fn quick_resume(&self) -> PathBuf {
@@ -50,6 +58,10 @@ impl Directories {
 
     pub fn library_database(&self) -> PathBuf {
         self.storage.join("library.db")
+    }
+
+    pub fn plugin_database(&self, plugin: &str) -> PathBuf {
+        self.storage.join("plugins").join(plugin).join("plugin.db")
     }
 
     pub fn object_storage(&self) -> PathBuf {

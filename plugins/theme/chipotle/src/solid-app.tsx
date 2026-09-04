@@ -23,8 +23,8 @@ import type {
   LaunchInstance,
   LaunchOptions,
   LaunchRequest,
+  Package,
   PackageConfiguration,
-  ScrapedPackage,
 } from "../../../../js/snowglass";
 import { InputRemapping } from "./input-remapping";
 
@@ -221,7 +221,7 @@ type LauncherUiState =
 
 type ShellModel = {
   launcher: LauncherUiState;
-  package: ScrapedPackage | null;
+  package: Package | null;
   draft: PackageConfiguration | null;
   request: LaunchRequest | null;
   surfaces: LaunchRequest["surfaces"];

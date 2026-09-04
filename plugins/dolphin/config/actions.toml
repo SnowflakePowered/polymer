@@ -19,7 +19,7 @@ fast_forward = { expression = "TAB", name = "Emulation Speed/Disable Emulation S
 frame_advance = { expression = "@(Ctrl+F4)", name = "Frame Advance/Frame Advance" }
 load_state = { expression = "@(Ctrl+F1)", name = "Load State/Load from Selected Slot" }
 load_state_1 = { expression = "F1", name = "Load State/Load State Slot 1" }
-load_state_10 = { expression = "@(Ctrl+Alt+0)", name = "Load State/Load State Slot 10" }
+load_state_10 = { expression = "F14", name = "Load State/Load State Slot 10" }
 load_state_2 = { expression = "F2", name = "Load State/Load State Slot 2" }
 load_state_3 = { expression = "F3", name = "Load State/Load State Slot 3" }
 load_state_4 = { expression = "F4", name = "Load State/Load State Slot 4" }
@@ -32,7 +32,7 @@ pause = { expression = "F10", name = "General/Toggle Pause" }
 reset = { expression = "@(Ctrl+F3)", name = "General/Reset" }
 save_state = { expression = "@(Ctrl+F2)", name = "Save State/Save to Selected Slot" }
 save_state_1 = { expression = "@(Shift+F1)", name = "Save State/Save State Slot 1" }
-save_state_10 = { expression = "@(Ctrl+Shift+0)", name = "Save State/Save State Slot 10" }
+save_state_10 = { expression = "F13", name = "Save State/Save State Slot 10" }
 save_state_2 = { expression = "@(Shift+F2)", name = "Save State/Save State Slot 2" }
 save_state_3 = { expression = "@(Shift+F3)", name = "Save State/Save State Slot 3" }
 save_state_4 = { expression = "@(Shift+F4)", name = "Save State/Save State Slot 4" }

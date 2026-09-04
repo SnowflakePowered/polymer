@@ -2,6 +2,7 @@
 id = "cemu"
 version = "0.0.1"
 class = "emulator"
+main = "cemu.ts"
 
 [[plugin.resources]]
 name = "runtime"
@@ -22,7 +23,6 @@ label = "Shader Cache"
 
 [emulator]
 platforms = ["NINTENDO_WIIU"]
-main = "cemu.ts"
 
 [emulator.configuration]
 definitions = [
