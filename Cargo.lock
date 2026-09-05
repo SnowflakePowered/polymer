@@ -9293,13 +9293,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "polymer-consumer-core"
-version = "0.1.0"
-dependencies = [
- "polymer-protocol",
-]
-
-[[package]]
 name = "polymer-consumer-d3d12"
 version = "0.1.0"
 dependencies = [
@@ -9313,7 +9306,6 @@ name = "polymer-consumer-vulkan"
 version = "0.1.0"
 dependencies = [
  "ash",
- "polymer-consumer-core",
  "polymer-ipc",
  "polymer-protocol",
  "windows-sys 0.61.2",
