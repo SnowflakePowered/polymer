@@ -78,7 +78,10 @@ export function createPlugin() {
     },
   });
 
-  return Object.freeze({
+  const target = new EventTarget();
+  const latest = new Map();
+  const api = Object.assign(target, {
+    events: () => Object.freeze([...latest.values()]),
     list,
     get(id) {
       id = pluginId(id);
@@ -86,6 +89,17 @@ export function createPlugin() {
     },
     open(id) {
       return callable(pluginId(id));
+    },
+  });
+  return Object.freeze({
+    Plugin: api,
+    dispatch(event) {
+      const value = Object.freeze({ ...event });
+      const key = `${value.sourceId}:${value.name}`;
+      latest.delete(key);
+      latest.set(key, value);
+      if (latest.size > 256) latest.delete(latest.keys().next().value);
+      target.dispatchEvent(new CustomEvent(value.name, { detail: value }));
     },
   });
 }

@@ -7,6 +7,7 @@ export type RecentGame = {
   platform: string;
   emulator: string;
   playedAt: number;
+  artwork?: string;
 };
 
 export type AudioState = { available: boolean; volume: number; muted: boolean };

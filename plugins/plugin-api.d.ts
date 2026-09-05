@@ -31,7 +31,12 @@ declare module "polymer:api" {
         setItem(key: string, value: unknown): void,
     }>;
 
-    export type OnPluginLoad = () => void | Promise<void>;
+    export type PluginProgressContext = Readonly<{
+        progress(update: { message: string; completed?: number; total?: number }): void;
+    }>;
+    export type PluginLoadContext = PluginProgressContext;
+    export type UpdateContents = (context: PluginProgressContext) => void | Promise<void>;
+    export type OnPluginLoad = (context: PluginLoadContext) => void | Promise<void>;
 
     export type PluginCacheFile = Readonly<{
         readonly size: number,

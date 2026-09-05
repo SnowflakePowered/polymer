@@ -380,6 +380,120 @@ async fn scraper_yields_scalar_objects_incrementally_and_preserves_order() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn plugin_load_progress_is_visible_while_scraping_waits_for_initialization() {
+    let (_root, registry) = scraper_package(
+        r#"
+        export async function onPluginLoad({ progress }) {
+            progress({ message: "fixture import in progress", completed: 25, total: 100 });
+            await new Promise(resolve => setTimeout(resolve, 300));
+        }
+        export async function* onScrape() {
+            yield { key: "meta.genre", value: "Action", source: "Fixture" };
+        }
+    "#,
+    );
+    let runtime = test_runtime(registry, PluginRuntimeOptions::default());
+    let handle = runtime.handle();
+    let mut events = PluginEvent::subscribe();
+    let pending = tokio::spawn(async move {
+        handle
+            .scrape("scraper-test", scrape_input(), handle.cancellation_token())
+            .await
+    });
+    let progress = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = events.recv().await.unwrap();
+            if event.detail["message"] == "fixture import in progress" {
+                break event;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(progress.detail["state"], "loading");
+    assert_eq!(progress.detail["completed"], 25);
+    assert_eq!(progress.detail["total"], 100);
+    assert!(!pending.is_finished());
+    assert_eq!(pending.await.unwrap().unwrap().len(), 1);
+    let terminal = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = events.recv().await.unwrap();
+            if event.source_id == progress.source_id && event.detail["state"] == "ready" {
+                break event;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(terminal.plugin_id, "scraper-test");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn launchbox_batches_run_on_the_plugin_database_during_load() {
+    let (root, registry) = scraper_package(
+        r#"
+        import { connect } from "polymer:database";
+        import { IndexWriter } from "pkg:index-writer.ts";
+        export async function onPluginLoad({ progress }) {
+            const db = await connect();
+            await db.exec("CREATE TABLE items(id INTEGER PRIMARY KEY, name TEXT); BEGIN IMMEDIATE;");
+            const writer = new IndexWriter(db, "INSERT INTO items", "fixture items");
+            for (let i = 0; i < 1000; i++) writer.add([i, `Item ${i}`]);
+            await writer.flush();
+            await db.exec("COMMIT;");
+            progress({ message: "fixture batches committed", completed: 1000, total: 1000 });
+        }
+        export async function* onScrape() {
+            const db = await connect();
+            const row = await db.prepare("SELECT COUNT(*) n FROM items").get();
+            if (row.n !== 1000) throw new Error("Incomplete index");
+            yield { key: "meta.genre", value: "Indexed", source: "Fixture" };
+        }
+    "#,
+    );
+    std::fs::write(
+        root.path().join("index-writer.ts"),
+        include_str!("../../../../plugins/launchbox/index-writer.ts"),
+    )
+    .unwrap();
+    let runtime = test_runtime(registry, PluginRuntimeOptions::default());
+    let handle = runtime.handle();
+    let results = handle
+        .scrape("scraper-test", scrape_input(), handle.cancellation_token())
+        .await
+        .unwrap();
+    assert_eq!(results.len(), 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn failed_plugin_load_reports_failure_instead_of_leaving_a_progress_bar_running() {
+    let (_root, registry) = scraper_package(
+        r#"
+        export async function onPluginLoad({ progress }) {
+            progress({ message: "failure fixture importing", completed: 1, total: 2 });
+            throw new Error("failure fixture import rejected");
+        }
+        export async function* onScrape() { throw new Error("must not scrape"); }
+    "#,
+    );
+    let runtime = test_runtime(registry, PluginRuntimeOptions::default());
+    let handle = runtime.handle();
+    assert!(
+        handle
+            .scrape("scraper-test", scrape_input(), handle.cancellation_token())
+            .await
+            .is_err()
+    );
+    let mut events = PluginEvent::subscribe();
+    assert!(std::iter::from_fn(|| events.try_recv().ok()).any(|event| {
+        event.detail["state"] == "failed"
+            && event.detail["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("failure fixture import rejected"))
+    }));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn scraper_rejects_non_generators_arrays_and_undeclared_keys() {
     for source in [
         "export function onScrape() { return [{ key: 'meta.genre', value: 'Action', source: 'Fixture' }]; }",
@@ -796,4 +910,32 @@ async fn invocation_cancellation_does_not_abort_an_unrelated_call() {
             .unwrap(),
         serde_json::json!(18)
     );
+}
+
+
+#[tokio::test(flavor = "current_thread")]
+async fn update_contents_receives_progress_and_publishes_terminal_events() {
+    for (path, fails) in [(vec!["updateContents".to_owned()], false), (vec!["default".to_owned(), "updateContents".to_owned()], true)] {
+        let source = format!(r#"
+            export default {{
+                async updateContents({{ progress }}) {{
+                    progress({{ message: "refresh fixture progress", completed: 2, total: 4 }});
+                    if ({fails}) throw new Error("refresh fixture failure");
+                }}
+            }};
+            export async function* onScrape() {{}}
+        "#);
+        let (_root, registry) = scraper_package(&source);
+        let runtime = test_runtime(registry, PluginRuntimeOptions::default());
+        let mut events = PluginEvent::subscribe();
+        while events.try_recv().is_ok() {}
+        let result = runtime.handle().invoke("scraper-test", &path, Vec::new()).await;
+        assert_eq!(result.is_err(), fails);
+        let events = std::iter::from_fn(|| events.try_recv().ok()).collect::<Vec<_>>();
+        let progress = events.iter().find(|event| event.detail["message"] == "refresh fixture progress").unwrap();
+        assert_eq!(progress.detail["completed"], 2);
+        assert_eq!(progress.detail["total"], 4);
+        let terminal = events.iter().rev().find(|event| event.source_id == progress.source_id).unwrap();
+        assert_eq!(terminal.detail["state"], if fails { "failed" } else { "ready" });
+    }
 }

@@ -1,8 +1,9 @@
+import { IndexWriter } from "pkg:index-writer.ts";
 import { parseXmlStreamFromBytes } from "jsr:@std/xml/parse-stream";
 import { Reader, ZipReader } from "jsr:@zip-js/zip-js";
 import { caches } from "polymer:cache";
 import { connect } from "polymer:database";
-import type { OnPluginLoad, OnScrape, ScrapeCandidate, ScrapeInput, ScrapeResult } from "polymer:api";
+import type { OnPluginLoad, UpdateContents, PluginProgressContext, OnScrape, ScrapeCandidate, ScrapeInput, ScrapeResult } from "polymer:api";
 
 const SOURCE = "LaunchBox Games Database";
 const METADATA_URL = "https://gamesdb.launchbox-app.com/Metadata.zip";
@@ -42,7 +43,7 @@ type GameRecord = {
   matchRegion?: string;
 };
 
-type ImageRecord = { id: number; fileName: string; type: string };
+type ImageRecord = { id: number; fileName: string; type: string; region: string };
 type FileRecord = { platform: string; fileName: string; gameName: string };
 
 class CacheReader extends Reader<ReturnType<typeof caches.download.open>> {
@@ -81,20 +82,26 @@ function strings(input: ScrapeInput, keys: readonly string[]): string[] {
   return values(input, keys).map(({ value }) => value).filter((value): value is string => typeof value === "string");
 }
 
-async function* streamChunks(stream: ReadableStream<Uint8Array>): AsyncGenerator<Uint8Array> {
+async function* streamChunks(stream: ReadableStream<Uint8Array>, flush: () => Promise<void>, progress: (bytes: number) => void): AsyncGenerator<Uint8Array> {
   const reader = stream.getReader();
+  let bytes = 0;
+  let reported = 0;
   try {
     while (true) {
       const { done, value } = await reader.read();
-      if (done) return;
+      if (done) { progress(bytes); return; }
       yield value;
+      await flush();
+      bytes += value.byteLength;
+      if (bytes - reported >= 1024 * 1024) { progress(bytes); reported = bytes; }
     }
   } finally {
+    await reader.cancel();
     reader.releaseLock();
   }
 }
 
-async function buildIndex(): Promise<void> {
+async function buildIndex(context?: PluginProgressContext): Promise<void> {
   const db = await connect();
   await db.exec(`
     DROP TABLE IF EXISTS games_next;
@@ -107,7 +114,7 @@ async function buildIndex(): Promise<void> {
       esrb TEXT, release_date TEXT
     );
     CREATE TABLE images_next (
-      game_id INTEGER NOT NULL, key TEXT NOT NULL, url TEXT NOT NULL, ordinal INTEGER NOT NULL,
+      game_id INTEGER NOT NULL, key TEXT NOT NULL, url TEXT NOT NULL, ordinal INTEGER NOT NULL, region TEXT NOT NULL,
       PRIMARY KEY(game_id, key, ordinal)
     );
     CREATE TABLE aliases_next (
@@ -120,20 +127,10 @@ async function buildIndex(): Promise<void> {
     );
     BEGIN IMMEDIATE;
   `);
-  const gameInsert = db.prepare("INSERT OR REPLACE INTO games_next VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
-  const imageInsert = db.prepare("INSERT OR IGNORE INTO images_next VALUES (?, ?, ?, ?)");
-  const aliasInsert = db.prepare("INSERT INTO raw_aliases_next VALUES (?, ?, ?, ?)");
-  let writes = Promise.resolve();
-  const gameRows: unknown[][] = [];
-  const imageRows: unknown[][] = [];
-  const aliasRows: unknown[][] = [];
-  const flush = (statement: ReturnType<typeof db.prepare>, rows: unknown[][]): void => {
-    if (!rows.length) return;
-    const batch = rows.splice(0);
-    writes = writes.then(async () => {
-      for (const values of batch) await statement.run(values);
-    });
-  };
+  const games = new IndexWriter(db, "INSERT OR REPLACE INTO games_next", "games");
+  const images = new IndexWriter(db, "INSERT OR IGNORE INTO images_next", "images");
+  const aliases = new IndexWriter(db, "INSERT INTO raw_aliases_next", "aliases");
+  console.info("LaunchBox: building metadata index");
   let record: GameRecord | ImageRecord | undefined;
   let recordType: "Game" | "GameImage" | undefined;
   let field = "";
@@ -146,12 +143,13 @@ async function buildIndex(): Promise<void> {
     const entries = await zip.getEntries();
     const entry = entries.find((entry) => entry.filename === "Metadata.xml");
     if (!entry?.getData) throw new Error("LaunchBox archive does not contain Metadata.xml");
+    context?.progress({ message: "Indexing game metadata", completed: 0, total: entry.uncompressedSize });
     const xml = new TransformStream<Uint8Array, Uint8Array>();
     const extraction = entry.getData(xml.writable);
-    await parseXmlStreamFromBytes(streamChunks(xml.readable), {
+    await Promise.all([extraction, parseXmlStreamFromBytes(streamChunks(xml.readable, async () => { await games.flush(); await images.flush(); }, completed => context?.progress({ message: "Indexing game metadata", completed, total: entry.uncompressedSize })), {
       onStartElement(name) {
         if (name === "Game") { recordType = "Game"; record = { id: 0, platform: "", name: "" }; }
-        else if (name === "GameImage") { recordType = "GameImage"; record = { id: 0, fileName: "", type: "" }; }
+        else if (name === "GameImage") { recordType = "GameImage"; record = { id: 0, fileName: "", type: "", region: "" }; }
         else if (record) { field = name; text = ""; }
       },
       onText(value) { if (record && field) text += value; },
@@ -174,6 +172,7 @@ async function buildIndex(): Promise<void> {
             if (name === "DatabaseID") image.id = Number(value);
             else if (name === "FileName") image.fileName = value;
             else if (name === "Type") image.type = value;
+            else if (name === "Region") image.region = value;
           }
           field = ""; text = "";
         }
@@ -181,8 +180,8 @@ async function buildIndex(): Promise<void> {
           if (recordType === "Game") {
             const game = record as GameRecord;
             if (game.id && game.platform && game.name) {
-              gameRows.push([game.id, game.platform, game.name, normalize(game.name), game.overview ?? null, game.publisher ?? null, game.genres ?? null, game.esrb ?? null, game.releaseDate ?? (game.releaseYear ? `${game.releaseYear}-01-01` : null)]);
-              if (gameRows.length >= 1000) flush(gameInsert, gameRows);
+              games.add([game.id, game.platform, game.name, normalize(game.name), game.overview ?? null, game.publisher ?? null, game.genres ?? null, game.esrb ?? null, game.releaseDate ?? (game.releaseYear ? `${game.releaseYear}-01-01` : null)]);
+
             }
           } else {
             const image = record as ImageRecord;
@@ -191,23 +190,23 @@ async function buildIndex(): Promise<void> {
               const ordinalKey = `${image.id}:${key}`;
               const ordinal = imageOrdinals.get(ordinalKey) ?? 0;
               imageOrdinals.set(ordinalKey, ordinal + 1);
-              imageRows.push([image.id, key, `${IMAGE_ROOT}${encodeURIComponent(image.fileName)}`, ordinal]);
-              if (imageRows.length >= 1000) flush(imageInsert, imageRows);
+              images.add([image.id, key, `${IMAGE_ROOT}${encodeURIComponent(image.fileName)}`, ordinal, image.region]);
+
             }
           }
           record = undefined; recordType = undefined; field = ""; text = "";
         }
       },
-    });
-    await extraction;
+    })]);
     const filesEntry = entries.find((entry) => entry.filename === "Files.xml");
     if (!filesEntry?.getData) throw new Error("LaunchBox archive does not contain Files.xml");
+    context?.progress({ message: "Indexing filenames", completed: 0, total: filesEntry.uncompressedSize });
     const files = new TransformStream<Uint8Array, Uint8Array>();
     const filesExtraction = filesEntry.getData(files.writable);
     let file: FileRecord | undefined;
     field = "";
     text = "";
-    await parseXmlStreamFromBytes(streamChunks(files.readable), {
+    await Promise.all([filesExtraction, parseXmlStreamFromBytes(streamChunks(files.readable, () => aliases.flush(), completed => context?.progress({ message: "Indexing filenames", completed, total: filesEntry.uncompressedSize })), {
       onStartElement(name) {
         if (name === "File") file = { platform: "", fileName: "", gameName: "" };
         else if (file) { field = name; text = ""; }
@@ -224,24 +223,25 @@ async function buildIndex(): Promise<void> {
         }
         if (name === "File" && file) {
           if (file.platform && file.fileName && file.gameName) {
-            aliasRows.push([
+            aliases.add([
               file.platform,
               titleWithoutTags(file.fileName),
               titleWithoutTags(file.gameName),
               region(file.fileName),
             ]);
-            if (aliasRows.length >= 1000) flush(aliasInsert, aliasRows);
+
           }
           file = undefined;
         }
       },
-    });
-    await filesExtraction;
-    flush(gameInsert, gameRows);
-    flush(imageInsert, imageRows);
-    flush(aliasInsert, aliasRows);
-    await writes;
+    })]);
+    await games.flush();
+    await images.flush();
+    await aliases.flush();
+    context?.progress({ message: "Matching aliases and publishing metadata index" });
+    console.info("LaunchBox: matching aliases and publishing metadata index");
     await db.exec(`
+      CREATE INDEX games_next_match ON games_next(platform, normalized);
       COMMIT;
       INSERT OR IGNORE INTO aliases_next (game_id, normalized, region)
         SELECT games_next.id, raw_aliases_next.normalized, raw_aliases_next.region
@@ -256,13 +256,15 @@ async function buildIndex(): Promise<void> {
       ALTER TABLE games_next RENAME TO games;
       ALTER TABLE images_next RENAME TO images;
       ALTER TABLE aliases_next RENAME TO aliases;
+      DROP INDEX games_next_match;
       CREATE INDEX games_match ON games(platform, normalized);
       CREATE INDEX images_game ON images(game_id, key, ordinal);
       CREATE INDEX aliases_match ON aliases(normalized, region, game_id);
       CREATE TABLE IF NOT EXISTS content_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-      INSERT OR REPLACE INTO content_state VALUES ('ready', '1');
+      INSERT OR REPLACE INTO content_state VALUES ('ready', '2');
       COMMIT;
     `);
+    console.info("LaunchBox: metadata index ready");
   } catch (error) {
     try { await db.exec("ROLLBACK"); } catch { /* transaction was already closed */ }
     throw error;
@@ -283,32 +285,50 @@ function imageKey(type: string): string | undefined {
   return undefined;
 }
 
-async function downloadAndBuildIndex(): Promise<void> {
+async function downloadAndBuildIndex(context?: PluginProgressContext): Promise<void> {
+  context?.progress({ message: "Downloading LaunchBox metadata" });
   const response = await fetch(METADATA_URL);
   if (!response.ok || !response.body) throw new Error(`LaunchBox metadata download failed: ${response.status}`);
   const file = caches.download.open(DOWNLOAD_FILE, { read: false, write: true, create: true, truncate: true });
   if (!file.writable) throw new Error("LaunchBox download cache is not writable");
-  await response.body.pipeTo(file.writable as WritableStream<Uint8Array>);
-  await buildIndex();
+  const length = Number(response.headers.get("content-length"));
+  let downloaded = 0;
+  let reported = 0;
+  const downloadProgress = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      downloaded += chunk.byteLength;
+      if (downloaded - reported >= 1024 * 1024) {
+        context?.progress({ message: "Downloading LaunchBox metadata", completed: downloaded, total: length > 0 ? Math.max(length, downloaded) : undefined });
+        reported = downloaded;
+      }
+      controller.enqueue(chunk);
+    },
+  });
+  await response.body.pipeThrough(downloadProgress).pipeTo(file.writable as WritableStream<Uint8Array>);
+  await buildIndex(context);
 }
 
 let updatedDuringLoad = false;
 
-export async function updateContents(): Promise<void> {
+export const updateContents: UpdateContents = async (context) => {
   if (updatedDuringLoad) {
     updatedDuringLoad = false;
     return;
   }
-  await downloadAndBuildIndex();
-}
+  await downloadAndBuildIndex(context);
+};
 
-export const onPluginLoad: OnPluginLoad = async () => {
+export const onPluginLoad: OnPluginLoad = async (context) => {
   const db = await connect();
+  let version: string | undefined;
   try {
-    const ready = await db.prepare("SELECT value FROM content_state WHERE key = 'ready'").get<{ value: string }>();
-    if (ready?.value === "1") return;
+    version = (await db.prepare("SELECT value FROM content_state WHERE key = 'ready'").get<{ value: string }>())?.value;
   } catch { /* first use has no schema */ }
-  await downloadAndBuildIndex();
+  if (version === "2") return;
+  let cached = false;
+  try { cached = caches.download.open(DOWNLOAD_FILE).size > 0; } catch { /* no cached archive */ }
+  if (cached) await buildIndex(context);
+  else await downloadAndBuildIndex(context);
   updatedDuringLoad = true;
 };
 
@@ -375,6 +395,32 @@ async function match(input: ScrapeInput): Promise<GameRecord | undefined> {
   return ranked[0].game;
 }
 
+class ArtworkRegions {
+  static canonical(value: string): string {
+    const name = normalize(value);
+    const aliases: Record<string, string> = {
+      usa: "north america", us: "north america", canada: "north america",
+      japan: "japan", jp: "japan", europe: "europe", eur: "europe",
+      australia: "australia", aus: "australia", korea: "korea", southkorea: "korea",
+    };
+    return aliases[name] ?? name;
+  }
+
+  static select<T extends { key: string; region: string }>(images: T[], input: ScrapeInput): T[] {
+    const requested = strings(input, ["filename.nointro.region", "filename.tosec.region", "filename.goodtools.region"])
+      .flatMap(value => value.split(/[,;]/)).map(value => this.canonical(value));
+    if (!requested.length || requested.includes("world")) return images;
+    const rank = (image: T) => {
+      const region = this.canonical(image.region);
+      if (requested.includes(region)) return 0;
+      return !region || region === "world" ? 1 : 2;
+    };
+    const best = new Map<string, number>();
+    for (const image of images) best.set(image.key, Math.min(best.get(image.key) ?? 2, rank(image)));
+    return images.filter(image => rank(image) < 2 && rank(image) === best.get(image.key));
+  }
+}
+
 export const onScrape: OnScrape = async function* (input): AsyncGenerator<ScrapeResult, void, void> {
   const game = await match(input);
   if (!game) return;
@@ -385,8 +431,8 @@ export const onScrape: OnScrape = async function* (input): AsyncGenerator<Scrape
   if (game.releaseDate) yield { key: "meta.releasedate", value: game.releaseDate, source: SOURCE };
   for (const genre of game.genres?.split(/[;,]/).map((value) => value.trim()).filter(Boolean) ?? []) yield { key: "meta.genre", value: genre, source: SOURCE };
   const db = await connect();
-  const images = await db.prepare("SELECT key, url FROM images WHERE game_id = ? ORDER BY key, ordinal").all<{ key: string; url: string }>([game.id]);
-  for (const image of images) yield { key: image.key, value: image.url, source: SOURCE };
+  const images = await db.prepare("SELECT key, url, region FROM images WHERE game_id = ? ORDER BY key, ordinal").all<{ key: string; url: string; region: string }>([game.id]);
+  for (const image of ArtworkRegions.select(images, input)) yield { key: image.key, value: image.url, source: SOURCE };
 };
 
 export default { onPluginLoad, updateContents, onScrape };

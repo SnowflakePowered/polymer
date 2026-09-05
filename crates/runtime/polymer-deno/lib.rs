@@ -390,7 +390,8 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn network_whitelist_denies_unlisted_hosts_and_empty_lists() {
-        let mut permissions = Runtime::network_permissions(&["example.com:443".to_owned()]).unwrap();
+        let mut permissions =
+            Runtime::network_permissions(&["example.com:443".to_owned()]).unwrap();
         for (url, allowed) in [
             ("https://example.com/path", true),
             ("http://example.com/path", false),

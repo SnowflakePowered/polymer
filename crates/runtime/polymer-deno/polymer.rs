@@ -172,6 +172,7 @@ pub enum PolymerNotification {
         platform: String,
         id: String,
     },
+    PluginEvent(Value),
     ScrapeJobChanged(Value),
     LibraryContentChanged {
         root_binary_id: String,

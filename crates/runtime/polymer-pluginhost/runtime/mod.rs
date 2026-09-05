@@ -1,3 +1,5 @@
+mod events;
+pub use events::PluginEvent;
 mod controller_session;
 mod invocation;
 pub(crate) mod js;
@@ -44,13 +46,15 @@ struct RuntimeState {
 }
 
 struct PluginLifecycle {
+    events: Arc<events::EventEmitter>,
     storage: Arc<crate::plugin_storage::PluginStorage>,
     loaded: OnceCell<()>,
 }
 
 impl PluginLifecycle {
-    fn new() -> Self {
+    fn new(plugin: &str) -> Self {
         Self {
+            events: Arc::new(events::EventEmitter::new(plugin)),
             storage: Arc::new(crate::plugin_storage::PluginStorage::default()),
             loaded: OnceCell::new(),
         }
@@ -61,8 +65,18 @@ impl PluginLifecycle {
         runtime: &mut polymer_deno::Runtime,
         entrypoint: &str,
     ) -> Result<(), PluginInvocationError> {
+        runtime
+            .js_runtime_mut()
+            .op_state()
+            .borrow_mut()
+            .put(self.events.clone());
         self.loaded
             .get_or_try_init(|| async {
+                let progress = self.events.scope(
+                    "loadprogress",
+                    serde_json::json!({"state": "loading", "message": "Loading plugin"}),
+                    serde_json::json!({"state": "failed", "message": "Plugin loading interrupted"}),
+                );
                 let result = invoke_optional_export(
                     runtime.js_runtime_mut(),
                     entrypoint,
@@ -70,6 +84,12 @@ impl PluginLifecycle {
                     Vec::new(),
                 )
                 .await;
+                progress.finish(match &result {
+                    Ok(_) => serde_json::json!({"state": "ready", "message": "Plugin ready"}),
+                    Err(error) => {
+                        serde_json::json!({"state": "failed", "message": error.to_string()})
+                    }
+                });
                 if result.is_err() {
                     self.storage.clear();
                 }
@@ -239,7 +259,7 @@ impl PluginRuntimeHandle {
             .plugins
             .lock()
             .entry(plugin_id.into())
-            .or_insert_with(|| Arc::new(PluginLifecycle::new()))
+            .or_insert_with(|| Arc::new(PluginLifecycle::new(plugin_id)))
             .clone()
     }
 

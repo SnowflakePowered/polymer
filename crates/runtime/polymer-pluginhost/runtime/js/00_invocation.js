@@ -1,3 +1,13 @@
+import { op_plugin_emit_event } from "ext:core/ops";
+const progressContext = Object.freeze({ progress: ({ message, completed = null, total = null }) => {
+    if (typeof message !== "string" ||
+        (completed !== null && (!Number.isFinite(completed) || completed < 0)) ||
+        (total !== null && (!Number.isFinite(total) || total <= 0)) ||
+        (completed !== null && total !== null && completed > total)) {
+      throw new TypeError("invalid plugin progress");
+    }
+    op_plugin_emit_event("loadprogress", { state: "loading", message, completed, total });
+  } });
 async function invoke(entrypoint, path, args) {
   const namespace = await import(entrypoint);
   let receiver;
@@ -24,7 +34,9 @@ async function invoke(entrypoint, path, args) {
   if (typeof value !== "function") {
     throw new TypeError(`plugin export '${path.join(".")}' is not a function`);
   }
-  return await Reflect.apply(value, receiver, args);
+  if (path.join(".") === "updateContents" || path.join(".") === "default.updateContents") args = [progressContext];
+  const result = await Reflect.apply(value, receiver, args);
+  return result === undefined ? null : result;
 }
 
 async function invokeOptional(entrypoint, name, args) {
@@ -39,6 +51,7 @@ async function invokeOptional(entrypoint, name, args) {
   if (typeof value !== "function") {
     throw new TypeError(`plugin export '${name}' is not a function`);
   }
+  if (name === "onPluginLoad") args = [progressContext];
   const result = await Reflect.apply(value, receiver, args);
   return { found: true, value: result === undefined ? null : result };
 }
@@ -49,3 +62,4 @@ Object.defineProperty(globalThis, "__polymerPluginRuntime", {
   enumerable: false,
   writable: false,
 });
+
