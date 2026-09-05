@@ -219,21 +219,10 @@ export interface PluginApi {
   open(id: string): PluginExport;
 }
 
-export interface Package {
-  readonly path: string;
-  readonly name: string;
-  readonly platform: string;
-  readonly serial: string | null;
-  readonly titleId: string | null;
-  readonly binaryDigest: string;
-  toJSON(): Readonly<{
-    path: string;
-    name: string;
-    platform: string;
-    serial: string | null;
-    titleId: string | null;
-    binaryDigest: string;
-  }>;
+import type { Package as PackageData } from "./package.ts";
+
+export interface Package extends PackageData {
+  toJSON(): PackageData;
 }
 
 export interface SaveState {
@@ -323,19 +312,18 @@ export type ConfigurationSelection = {
       mapping?: Record<string, string>;
     }>;
   }>;
-  userConfiguration: UserConfiguration;
   storage?: Record<string, string | string[]>;
 };
 
 export interface ConfigurationApi {
-  describe(packageValue: Package, options?: { emulator?: string }): Promise<PackageConfiguration>;
+  describe(launchableId: string, options?: { emulator?: string }): Promise<PackageConfiguration>;
   configure(
-    packageValue: Package,
+    launchableId: string,
     emulator: string,
     userConfiguration?: UserConfiguration,
   ): Promise<ConfigurationState | null>;
-  prepare(packageValue: Package, selection: ConfigurationSelection): Promise<unknown>;
-  onLaunch(packageValue: Package, selection: ConfigurationSelection): Promise<LaunchRequest>;
+  prepare(launchableId: string, selection: ConfigurationSelection): Promise<unknown>;
+  onLaunch(launchableId: string, selection: ConfigurationSelection): Promise<LaunchRequest>;
 }
 
 export type ConsoleStorageKind = "nand" | "saveRepo" | "memoryCard" | "battery";

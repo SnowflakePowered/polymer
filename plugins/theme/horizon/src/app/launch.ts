@@ -4,7 +4,6 @@ import type {
   ConsoleStorageVolume,
   CreatableConsoleStorageKind,
   EmulatorConfiguration,
-  Package,
   PackageConfiguration,
 } from "../../../../../js/polymer";
 
@@ -62,9 +61,12 @@ async function defaultVolume(kind: CreatableConsoleStorageKind, platform: string
 }
 
 export async function resolveGame(path: string, emulator?: string, signal?: AbortSignal) {
-  const packageValue = await window.Polymer.scraping.Package.fromPath(path, { signal });
-  const draft = applyFrontendDefaults(await window.Polymer.configuration.describe(packageValue, { emulator }));
-  return { packageValue, draft };
+  const games = await window.Polymer.library.games.list();
+  const launchable = games.flatMap(game => game.launchables).find(item => item.path === path);
+  if (!launchable) throw new Error("Add this launchable to the library before configuring it");
+  if (signal?.aborted) throw signal.reason;
+  const draft = applyFrontendDefaults(await window.Polymer.configuration.describe(launchable.id, { emulator }));
+  return { launchableId: launchable.id, draft };
 }
 
 export async function createSelection(game: PackageConfiguration): Promise<ConfigurationSelection> {
@@ -80,7 +82,6 @@ export async function createSelection(game: PackageConfiguration): Promise<Confi
         layout: port.selectedLayout,
       })),
     })),
-    userConfiguration: emulator.userConfiguration,
   };
 
   if (game.platform === WII || game.platform === WII_U) {
@@ -104,6 +105,6 @@ export async function createSelection(game: PackageConfiguration): Promise<Confi
   return selection;
 }
 
-export async function onLaunch(packageValue: Package, game: PackageConfiguration) {
-  return window.Polymer.configuration.onLaunch(packageValue, await createSelection(game));
+export async function onLaunch(launchableId: string, game: PackageConfiguration) {
+  return window.Polymer.configuration.onLaunch(launchableId, await createSelection(game));
 }

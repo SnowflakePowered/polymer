@@ -14,6 +14,7 @@ use super::{
 };
 use crate::Directories;
 
+mod configuration;
 mod metadata;
 mod objects;
 #[cfg(test)]
@@ -416,7 +417,8 @@ impl GameCatalog {
                 ).await?;
                 connection.execute_batch(SCHEMA).await?;
             }
-            2 => {}
+            2 => connection.execute_batch(SCHEMA).await?,
+            3 => {}
             version => {
                 return Err(GameCatalogError::InvalidData(format!(
                     "library database schema version {version} is not supported"

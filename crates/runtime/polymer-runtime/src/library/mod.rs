@@ -9,6 +9,8 @@ use polymer_library::{Directories, GameCatalog, MediaData};
 
 #[derive(Clone)]
 pub struct LibraryService {
+    configuration_locks: crate::launchable_configuration::ConfigurationLocks,
+    catalog: Arc<GameCatalog>,
     client: Library,
     scraping: polymer_scraping::ScrapingEngine,
 }
@@ -48,7 +50,7 @@ impl LibraryService {
         }
         let (client, mut commands) = Library::channel();
         let mut backend = LibraryBackend {
-            catalog,
+            catalog: catalog.clone(),
             scraping: scraping.clone(),
             media,
         };
@@ -57,11 +59,26 @@ impl LibraryService {
                 command.dispatch(&mut backend).await;
             }
         });
-        Ok(Self { client, scraping })
+        Ok(Self {
+            configuration_locks: Default::default(),
+            client,
+            scraping,
+            catalog,
+        })
     }
 
     pub fn client(&self) -> Library {
         self.client.clone()
+    }
+
+    pub(crate) fn catalog(&self) -> Arc<GameCatalog> {
+        self.catalog.clone()
+    }
+
+    pub(crate) fn configuration_locks(
+        &self,
+    ) -> crate::launchable_configuration::ConfigurationLocks {
+        self.configuration_locks.clone()
     }
 
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<polymer_scraping::ScrapingEvent> {

@@ -278,21 +278,14 @@ pub async fn launch_storage(
         .map(|device| device.id())
         .collect::<std::collections::BTreeSet<_>>();
     let manager = manager.ok_or_else(|| "console storage is unavailable".to_owned())?;
-    let package = arguments.get("package").map(|package| {
-        let identified = Package::new(
-            package
-                .get("serial")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-            package
-                .get("titleId")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-        );
-        match package.get("binaryDigest").and_then(Value::as_str) {
-            Some(binary_digest) => identified.with_binary_digest(binary_digest),
-            None => identified,
-        }
+    let metadata = arguments
+        .get("package")
+        .map(|value| serde_json::from_value::<polymer_scraping::Package>(value.clone()))
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    let package = metadata.as_ref().map(|package| {
+        Package::new(package.serial.clone(), package.title_id.clone())
+            .with_binary_digest(package.binary_digest.clone())
     });
 
     let mut storage = StorageFactories::new();
@@ -315,10 +308,9 @@ pub async fn launch_storage(
                     .get("launchPath")
                     .and_then(Value::as_str)
                     .ok_or_else(|| format!("{console} battery saves require a launch path"))?;
-                let title = arguments
-                    .get("package")
-                    .and_then(|package| package.get("name"))
-                    .and_then(Value::as_str)
+                let title = metadata
+                    .as_ref()
+                    .map(|package| package.filename.as_str())
                     .filter(|title| !title.is_empty())
                     .or_else(|| {
                         std::path::Path::new(rom)
@@ -516,7 +508,8 @@ mod tests {
             "launchPath": rom,
             "console": "NINTENDO_GBA",
             "package": {
-                "name": "Test Game",
+                "filename": "Test Game.gba",
+                "platform": "NINTENDO_GBA",
                 "binaryDigest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
             }
         });
@@ -581,7 +574,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             reopened.metadata().await.unwrap().label.as_deref(),
-            Some("Test Game")
+            Some("Test Game.gba")
         );
         let reopened = reopened.downcast::<BatterySaveRepo>().unwrap();
         assert_eq!(

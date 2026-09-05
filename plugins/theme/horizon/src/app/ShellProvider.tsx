@@ -47,7 +47,7 @@ export function ShellProvider(props: ParentProps) {
   const navigate = useNavigate();
   const [model, updateModel] = createStore<ShellModel>({
     launcher: { kind: "idle" },
-    package: null,
+    launchableId: null,
     draft: null,
     request: null,
     surfaces: [],
@@ -115,23 +115,23 @@ export function ShellProvider(props: ParentProps) {
     try {
       const resolved = await resolveGame(path, emulator, detection.signal);
       if (detection.signal.aborted) return;
-      setModel("package", resolved.packageValue);
+      setModel("launchableId", resolved.launchableId);
       setModel("draft", resolved.draft);
       if (destination === "details") {
         setModel("launcher", { kind: "details" });
         go("/details");
       } else {
-        await beginLaunch(resolved.packageValue, resolved.draft);
+        await beginLaunch(resolved.launchableId, resolved.draft);
       }
     } catch (error) {
       if (!detection.signal.aborted) fail(error);
     }
   };
 
-  const beginLaunch = async (packageValue: NonNullable<ShellModel["package"]>, draft: PackageConfiguration) => {
+  const beginLaunch = async (launchableId: NonNullable<ShellModel["launchableId"]>, draft: PackageConfiguration) => {
     setModel("launcher", { kind: "launching", name: draft.name });
     try {
-      const request = await onLaunch(packageValue, draft);
+      const request = await onLaunch(launchableId, draft);
       setModel("request", request);
       setModel("surfaces", structuredClone(request.surfaces));
       go("/game/launching", true);
@@ -141,14 +141,14 @@ export function ShellProvider(props: ParentProps) {
   };
 
   const launchDraft = (draft = model.draft || undefined) => {
-    if (model.package && draft) void beginLaunch(model.package, draft);
+    if (model.launchableId && draft) void beginLaunch(model.launchableId, draft);
   };
   const launchRecent = (game: RecentGame) => void prepare(game.path, game.emulator || undefined, "launch");
   const showDetails = (game: RecentGame) => void prepare(game.path, game.emulator || undefined, "details");
   const cancelDetails = () => {
     detection?.abort();
     setModel("launcher", { kind: "idle" });
-    setModel("package", null);
+    setModel("launchableId", null);
     setModel("draft", null);
     setModel("error", "");
     go("/", true);

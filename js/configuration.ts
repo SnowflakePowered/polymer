@@ -23,7 +23,6 @@ export type ConfigurationGroup<Option = ConfigurationLayoutOption> = Readonly<{
 
 export type ConfigurationLayout<Option = ConfigurationLayoutOption> = Readonly<{
   schema: string;
-  key: string;
   groups: readonly ConfigurationGroup<Option>[];
 }>;
 

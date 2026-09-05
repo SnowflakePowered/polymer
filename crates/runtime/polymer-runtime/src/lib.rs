@@ -9,6 +9,7 @@ pub mod controllers;
 mod frontend;
 mod instance;
 mod launch;
+mod launchable_configuration;
 mod library;
 mod savestates;
 mod session;

@@ -4,7 +4,7 @@ import { pluginStorage } from "polymer:pluginStorage";
 import type {
     Configuration as HostConfiguration,
     ConfigurationResult,
-    ConfigureGame,
+    Package,
     Filesystem,
     Resource,
     RepeatedSection,
@@ -59,7 +59,7 @@ export async function onPluginLoad() {
 }
 
 export function onConfigure(
-    game: ConfigureGame,
+    game: Package,
     userConfiguration?: UserConfiguration,
 ): ConfigurationResult {
     const api = selectedApi(userConfiguration);
@@ -88,7 +88,6 @@ export function onConfigure(
     }
     return {
         schema: "cemu/v1",
-        key: normalizeTitleId(game.titleId) || game.serial || game.launchPath,
         groups,
         values,
     };

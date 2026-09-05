@@ -94,13 +94,7 @@ declare module "polymer:api" {
         append(): Options,
     }>;
 
-    export type ConfigureGame = Readonly<{
-        launchPath: string,
-        name: string,
-        platform: string,
-        serial?: string,
-        titleId?: string,
-    }>;
+    export type Package = import("../js/package.ts").Package;
 
     export type ConfigurationChoice = import("../js/configuration.ts").ConfigurationChoice;
     export type UserConfiguration = import("../js/configuration.ts").UserConfiguration;
@@ -118,7 +112,7 @@ declare module "polymer:api" {
     }>;
 
     export type OnConfigure = (
-        game: ConfigureGame,
+        game: Package,
         userConfiguration?: UserConfiguration,
     ) => ConfigurationResult | Promise<ConfigurationResult>;
 
@@ -233,7 +227,7 @@ declare module "polymer:api" {
         directory: DirectoryResource,
         launchPath: string,
         console: string,
-        package: ConfigureGame,
+        package: Package,
         userConfiguration?: UserConfiguration,
     }>;
 
