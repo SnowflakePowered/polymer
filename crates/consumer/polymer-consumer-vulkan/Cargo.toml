@@ -6,7 +6,6 @@ license.workspace = true
 
 [dependencies]
 ash.workspace = true
-polymer-api.workspace = true
 polymer-consumer-core = { path = "../polymer-consumer-core" }
 polymer-ipc.workspace = true
 polymer-protocol.workspace = true

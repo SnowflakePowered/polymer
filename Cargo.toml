@@ -100,7 +100,6 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_UI_Input_KeyboardAndMouse",
 ] }
 zerocopy = { version = "0.8.55", features = ["derive"] }
-polymer-api = { path = "crates/polymer-api" }
 polymer-protocol = { path = "crates/runtime/polymer-protocol" }
 polymer-ipc = { path = "crates/runtime/polymer-ipc" }
 polymer-egui = { path = "crates/consumer/polymer-egui" }

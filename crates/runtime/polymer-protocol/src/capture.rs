@@ -1,8 +1,6 @@
-//! Internal contracts implemented by graphics producers and consumers.
+//! Contracts implemented by graphics producers and consumers.
 
-#![forbid(unsafe_code)]
-
-use polymer_protocol::{ExternalImageDesc, FrameReady, StreamId};
+use crate::{ExternalImageDesc, FrameReady, StreamId};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SurfaceDesc {

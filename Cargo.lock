@@ -9172,13 +9172,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "polymer-api"
-version = "0.1.0"
-dependencies = [
- "polymer-protocol",
-]
-
-[[package]]
 name = "polymer-automation"
 version = "0.1.0"
 dependencies = [
@@ -9303,7 +9296,6 @@ dependencies = [
 name = "polymer-consumer-core"
 version = "0.1.0"
 dependencies = [
- "polymer-api",
  "polymer-protocol",
 ]
 
@@ -9321,7 +9313,6 @@ name = "polymer-consumer-vulkan"
 version = "0.1.0"
 dependencies = [
  "ash",
- "polymer-api",
  "polymer-consumer-core",
  "polymer-ipc",
  "polymer-protocol",
@@ -9894,7 +9885,6 @@ version = "0.1.0"
 dependencies = [
  "dashmap",
  "parking_lot",
- "polymer-api",
  "polymer-hook",
  "polymer-hook-dxgi",
  "polymer-ipc",
@@ -9939,7 +9929,6 @@ name = "polymer-producer-opengl"
 version = "0.1.0"
 dependencies = [
  "parking_lot",
- "polymer-api",
  "polymer-hook",
  "polymer-ipc",
  "polymer-platform-windows",
@@ -9956,7 +9945,6 @@ dependencies = [
  "ash",
  "dashmap",
  "parking_lot",
- "polymer-api",
  "polymer-hook",
  "polymer-ipc",
  "polymer-platform-windows",

@@ -1,8 +1,11 @@
-//! Stable, graphics-API-neutral messages exchanged between Polymer processes.
+//! Stable, graphics-API-neutral messages and contracts used by Polymer.
 
 #![forbid(unsafe_code)]
 
+mod capture;
 pub mod input;
+
+pub use capture::{CaptureError, FrameConsumer, FrameProducer, SurfaceDesc};
 
 pub const PROTOCOL_VERSION: u32 = 17;
 /// Fractional bits used by coordinates in [`PresentationPoint`].
