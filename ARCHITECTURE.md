@@ -22,7 +22,6 @@ Frame *Producers* interact with the hooked device, and send the texture over to 
 
 The **graphics IPC** system is contained in the following crates
 
-* `polymer-consumer-core` -- Common logic for frame consumers
 * `polymer-consumer-d3d12` -- D3D12 frame consumer
 * `polymer-consumer-vulkan` -- Vulkan frame consumer
 * `polymer-hook-d3d11` -- D3D11 entrypoint Hook 
@@ -100,6 +99,8 @@ They declare a `main` entry point that is an `html` that is rendered by the GUI.
 
 #### `emulator` plugins
 
+**This section is incomplete**
+
 Emulator plugins are used to orchestrate the execution of guest emulator processes. Emulator plugins expect a TypeScript `main` which supports the following exports.
 
 * `onLaunch` -- Called when launching the emulator, and returns an `EmulatorLaunchConfig`. Emulator plugins MUST export this function.
@@ -167,10 +168,12 @@ Emulator plugins are used to orchestrate the execution of guest emulator process
 Emulator plugins must define the configuration files of the guest emulator via TOML definitions under the `emulator.configuration.definitions` key. All TOML files under this key are effective concatenated together during evaluation.
 
 
+**This section is incomplete**
 
 
 #### `scraper` plugins
 
+**This section is incomplete**
 Scraper plugins are used to interface with scraping databases.
 
 * `updateContents` -- Called to update the database of the scraper. This might be irrelevant if the scraper simply calls an external service, but is useful when it involves a local database or large binary file which needs to be parsed.
@@ -178,9 +181,12 @@ Scraper plugins are used to interface with scraping databases.
 
 ### Frontend Runtime (GUI)
 
+**This section is incomplete**
 The frontend runtime glues all these parts together and can really be split into deeper parts.
 
 
+### Library
+TODO:
 #### IPC
 The IPC protocol interacts with the **Input IPC** and **Graphics IPC** in order to ferry information between the guest process and the frontend host.
 
