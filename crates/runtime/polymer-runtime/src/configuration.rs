@@ -325,10 +325,8 @@ fn resolved_controller(
     if device.is_none()
         && let Some(layout) = polymer_input_layout::layout::InputLayout::get(&gamepad.layout)
     {
-        for element in &layout.elements {
-            if let Some(source) = layout.projected_key(element.key) {
-                mapping.insert(element.key.to_string(), source.to_string());
-            }
+        for (target, source) in layout.default_gamepad_bindings() {
+            mapping.insert(target.to_string(), source.to_string());
         }
     }
 
