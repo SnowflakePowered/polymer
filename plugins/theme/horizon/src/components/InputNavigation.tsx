@@ -1,4 +1,5 @@
 import { onCleanup, onMount } from "solid-js";
+import { useShell } from "../app/shell-context";
 import { dispatchControllerBack, useInputActions, type InputDirection } from "../app/InputProvider";
 
 const focusable = "button:not(:disabled), [href], input:not(:disabled), [tabindex]:not([tabindex='-1']), [data-part='item']:not([data-disabled])";
@@ -85,8 +86,11 @@ function back() {
 
 export function InputNavigation() {
   const input = useInputActions();
+  const shell = useShell();
   onMount(() => {
     const unsubscribe = input.subscribe((action) => {
+      // Unclaimed keys must reach the host's keyboard-backed controller.
+      if (shell.model.launch && !hasActiveInputScope()) return;
       if (navigationScope() === document && document.querySelector(".horizon-game-wall")) return;
       if (action.type === "move") {
         action.event.preventDefault();

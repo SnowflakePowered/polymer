@@ -30,6 +30,7 @@ async fn successful_plugins_commit_repeated_values_and_publish_events() {
         plugin.path().join("fixture.js"),
         r#"
           export async function* onScrape(input) {
+            await new Promise(resolve => setTimeout(resolve, 10));
             if (input["package.platform"][0].value !== "NINTENDO_NES") return;
             yield { key: "meta.genre", value: "Action", source: "Fixture DB" };
             yield { key: "meta.genre", value: "Adventure", source: "Fixture DB" };
@@ -113,8 +114,21 @@ async fn successful_plugins_commit_repeated_values_and_publish_events() {
     );
 
     let mut saw_content = false;
+    let mut saw_running_attempt = false;
     while let Ok(event) = events.try_recv() {
-        saw_content |= matches!(event, ScrapingEvent::LibraryContentChanged { .. });
+        match event {
+            ScrapingEvent::LibraryContentChanged { .. } => saw_content = true,
+            ScrapingEvent::JobChanged(job) => {
+                saw_running_attempt |= job
+                    .attempts
+                    .iter()
+                    .any(|attempt| attempt.state == polymer_library::ScrapeAttemptState::Running);
+            }
+        }
     }
     assert!(saw_content);
+    assert!(
+        saw_running_attempt,
+        "themes must be notified when a scraper starts"
+    );
 }

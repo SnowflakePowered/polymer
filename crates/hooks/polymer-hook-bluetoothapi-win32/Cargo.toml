@@ -11,7 +11,7 @@ crate-type = ["cdylib"]
 parking_lot.workspace = true
 polymer-hook.workspace = true
 polymer-hook-input.workspace = true
-polymer-input-layout.workspace = true
+polymer-controllers.workspace = true
 polymer-platform-windows.workspace = true
 tracing.workspace = true
 windows-sys = { workspace = true, features = [

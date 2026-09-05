@@ -111,7 +111,7 @@ impl ShellCoordinator {
 
     fn dispatch_controller_transaction(
         &mut self,
-        transaction: polymer_controllers::ControllerTopologyTransaction,
+        transaction: polymer_runtime::ControllerTopologyTransaction,
         completion: PendingInputChangeCompletion,
     ) -> Option<PendingInputChange> {
         if !transaction.topology_changed() {

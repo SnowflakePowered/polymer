@@ -1,12 +1,12 @@
 use consolespec::input::BindingKey;
 use parking_lot::{RwLock, RwLockReadGuard};
 use polymer_config::input::ProjectionMode;
-use polymer_input::{GamepadReport, PointerFlags, PointerKind, PointerReport};
-use polymer_input_layout::{
+use polymer_controllers::{
     layout::InputLayout,
     mapping::{HostSample, Mapping},
     topology::{InputTopology, PointerBinding, PointerMode, PointerSource, RemapMode},
 };
+use polymer_input::{GamepadReport, PointerFlags, PointerKind, PointerReport};
 use std::{collections::BTreeMap, str::FromStr};
 
 struct CompiledPort {
@@ -140,6 +140,13 @@ impl TopologyState {
 }
 
 impl TopologyGuard<'_> {
+    pub fn keyboard_mouse(&self, player: u8) -> bool {
+        self.0
+            .document
+            .ports
+            .iter()
+            .any(|port| port.player == player && port.keyboard_mouse)
+    }
     pub fn document(&self) -> &InputTopology {
         &self.0.document
     }
@@ -176,7 +183,7 @@ impl TopologyGuard<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use polymer_input_layout::topology::RawHidBinding;
+    use polymer_controllers::topology::RawHidBinding;
 
     #[test]
     fn provider_only_updates_advance_the_topology_generation() {

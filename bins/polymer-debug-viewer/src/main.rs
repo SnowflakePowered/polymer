@@ -1,6 +1,6 @@
 use polymer_config::input::SourceSelector;
+use polymer_controllers::layout::InputLayout;
 use polymer_input::InputHub;
-use polymer_input_layout::layout::InputLayout;
 use polymer_ipc::StreamReady;
 use polymer_platform_windows::{
     NativeWindow, forward_character, performance_counter, performance_frequency,
@@ -1443,23 +1443,25 @@ fn start_target_session(
         .register_backend(backend)
         .map_err(|error| std::io::Error::other(error.to_string()))?;
     instance.input().attach(&provider);
-    let topology = polymer_input_layout::topology::InputTopology {
+    let topology = polymer_controllers::topology::InputTopology {
         revision: 1,
         machine: None,
         ports: gamepads
             .iter()
             .enumerate()
-            .map(
-                |(player, pad)| polymer_input_layout::topology::PortBinding {
-                    player: player as u8,
-                    group: "controller".to_owned(),
-                    port: player as u8,
-                    layout: pad.layout.clone(),
-                    mode: polymer_input_layout::topology::RemapMode::Position,
-                    bindings: Vec::new(),
-                    pointer: polymer_input_layout::topology::PointerBinding::default(),
-                },
-            )
+            .map(|(player, pad)| polymer_controllers::topology::PortBinding {
+                player: player as u8,
+                keyboard_mouse: matches!(
+                    pad.source,
+                    Some(polymer_config::input::SourceSelector::KeyboardMouse)
+                ),
+                group: "controller".to_owned(),
+                port: player as u8,
+                layout: pad.layout.clone(),
+                mode: polymer_controllers::topology::RemapMode::Position,
+                bindings: Vec::new(),
+                pointer: polymer_controllers::topology::PointerBinding::default(),
+            })
             .collect(),
         raw_hid: Vec::new(),
     };

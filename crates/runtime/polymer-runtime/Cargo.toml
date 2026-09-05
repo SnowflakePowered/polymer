@@ -25,13 +25,12 @@ polymer-consolestorage = { path = "../../filesystem/polymer-consolestorage" }
 polymer-deno = { path = "../polymer-deno" }
 polymer-hook.workspace = true
 polymer-input.workspace = true
-polymer-input-layout.workspace = true
-polymer-input-ipc.workspace = true
+
 polymer-controllers.workspace = true
 polymer-input-bluetooth = { path = "../../input/polymer-input-bluetooth" }
 polymer-library.workspace = true
 polymer-scraping.workspace = true
-polymer-ipc.workspace = true
+polymer-ipc = { workspace = true, features = ["input-host"] }
 polymer-platform-windows.workspace = true
 polymer-pluginhost = { path = "../polymer-pluginhost" }
 polymer-protocol.workspace = true

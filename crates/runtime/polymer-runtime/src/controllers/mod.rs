@@ -1,14 +1,16 @@
+//! Host controller assignments, connection sessions, and persistent mapping profiles.
+
 mod command;
 mod profile;
+mod transaction;
+pub use transaction::ControllerTopologyTransaction;
 
-use crate::{
-    ControllerConfiguration, ControllerDevice, ControllerTopology, ControllerTopologyTransaction,
-};
 use parking_lot::RwLock;
 use polymer_config::input::{
     InputConfiguration, InputOperation, InputTransaction, ProjectionMode, SourceAssignment,
     SourceSelector,
 };
+use polymer_controllers::{ControllerConfiguration, ControllerDevice, ControllerTopology};
 use polymer_input::{DeviceDescriptor, DeviceId, DeviceRole, GamepadButton, InputHub};
 use polymer_library::InputStore;
 use profile::MappingProfile;
@@ -350,7 +352,7 @@ impl ControllerManager {
                 "discovery": { "active": false },
                 "candidates": [],
             })),
-            "layouts": polymer_input_layout::layout::InputLayout::all(),
+            "layouts": polymer_controllers::layout::InputLayout::all(),
         })
     }
 

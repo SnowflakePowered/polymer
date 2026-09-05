@@ -11,7 +11,7 @@ import controllerPro from "../../assets/switch/controller-pro.svg";
 import controllerSwitch from "../../assets/switch/controller-switch.svg";
 import joyconLeft from "../../assets/switch/joycon-left-horizontal.svg";
 import joyconRight from "../../assets/switch/joycon-right-horizontal.svg";
-import { useShell } from "../../app/ShellProvider";
+import { useShell } from "../../app/shell-context";
 import { OverlayPortal } from "../../components/OverlayPortal";
 import { PauseDecorator, type PauseRelease } from "./PauseDecorator";
 import "./ControllerReorder.css";

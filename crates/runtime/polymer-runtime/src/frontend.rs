@@ -3,10 +3,10 @@
 //! Domain policy lives here. The shell supplies only thread-affine platform
 //! mechanics such as presentation, input routing, and window attachment.
 
+use crate::ControllerProfiles;
 use crate::{ConfigurationDefaults, LibraryService};
 use parking_lot::{Mutex, RwLock};
 use polymer_command::CommandSink;
-use polymer_controllers::ControllerProfiles;
 use polymer_deno::polymer::{
     ApiFuture, ConsoleStorageRequest, InstanceToken, Library, PolymerHost, PolymerNotification,
     PolymerNotificationSender,
@@ -114,7 +114,7 @@ polymer_command::command_client! {
 pub struct ControllerApiState {
     state: Arc<RwLock<Value>>,
     controller_profiles: ControllerProfiles,
-    controller_assignments: Arc<RwLock<polymer_controllers::ControllerAssignmentSnapshot>>,
+    controller_assignments: Arc<RwLock<crate::ControllerAssignmentSnapshot>>,
 }
 
 impl Default for ControllerApiState {
@@ -150,17 +150,11 @@ impl ControllerApiState {
         self.controller_profiles.clone()
     }
 
-    pub(crate) fn controller_assignments(
-        &self,
-    ) -> polymer_controllers::ControllerAssignmentSnapshot {
+    pub(crate) fn controller_assignments(&self) -> crate::ControllerAssignmentSnapshot {
         self.controller_assignments.read().clone()
     }
 
-    pub fn publish(
-        &self,
-        controllers: Value,
-        assignments: polymer_controllers::ControllerAssignmentSnapshot,
-    ) {
+    pub fn publish(&self, controllers: Value, assignments: crate::ControllerAssignmentSnapshot) {
         let mut state = self.state.write();
         if state["controllers"] == controllers {
             return;

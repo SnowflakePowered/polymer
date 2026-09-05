@@ -59,8 +59,6 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/input/polymer-bluetooth/examples" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/input/polymer-bluetooth/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/input/polymer-input-bluetooth/src" isTestSource="false" />
-      <sourceFolder url="file://$MODULE_DIR$/crates/input/polymer-input-ipc/src" isTestSource="false" />
-      <sourceFolder url="file://$MODULE_DIR$/crates/input/polymer-input-layout/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/input/polymer-input-sdl3/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/runtime/polymer-automation/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/runtime/polymer-controllers/src" isTestSource="false" />

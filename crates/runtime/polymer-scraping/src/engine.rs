@@ -149,6 +149,7 @@ impl ScrapingEngine {
             .queue_scrape(root, trigger, &plugins)
             .await?;
         if created {
+            tracing::info!(job = %job.id, root = %root, scrapers = job.attempts.len(), "scrape job queued");
             let _ = self
                 .inner
                 .events
@@ -257,9 +258,12 @@ impl ScrapingEngine {
                     .catalog
                     .set_scrape_attempt(id, &plugin, ScrapeAttemptState::Running, None)
                     .await?;
+                tracing::info!(job = %id, scraper = %plugin, "scraper started");
+                engine.publish_job(id).await;
                 let result = engine.run_plugin(job.root_binary_id, &plugin, input).await;
                 match &result {
                     Ok(()) => {
+                        tracing::info!(job = %id, scraper = %plugin, "scraper completed");
                         engine
                             .inner
                             .catalog
@@ -267,6 +271,7 @@ impl ScrapingEngine {
                             .await?
                     }
                     Err(error) => {
+                        tracing::warn!(job = %id, scraper = %plugin, %error, "scraper failed");
                         engine
                             .inner
                             .catalog
@@ -301,6 +306,17 @@ impl ScrapingEngine {
     async fn publish_job(&self, id: Uuid) {
         match self.inner.catalog.scrape_job(id).await {
             Ok(Some(job)) => {
+                let finished = job
+                    .attempts
+                    .iter()
+                    .filter(|attempt| {
+                        matches!(
+                            attempt.state,
+                            ScrapeAttemptState::Completed | ScrapeAttemptState::Failed
+                        )
+                    })
+                    .count();
+                tracing::info!(job = %id, state = ?job.state, finished, total = job.attempts.len(), "scrape job progress");
                 let _ = self.inner.events.send(ScrapingEvent::JobChanged(job));
             }
             Ok(None) => {}

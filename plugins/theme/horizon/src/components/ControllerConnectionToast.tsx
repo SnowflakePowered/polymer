@@ -1,5 +1,5 @@
 import { For, Show } from "solid-js";
-import { useShell } from "../app/ShellProvider";
+import { useShell } from "../app/shell-context";
 import { Icon } from "./Icon";
 import "./ControllerConnectionToast.css";
 

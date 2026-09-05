@@ -461,3 +461,6 @@ impl InputSubscriber {
 }
 
 const _: () = assert!(mem::size_of::<WireInputMessage>() <= 128);
+
+#[cfg(feature = "input-host")]
+pub mod host;

@@ -1,7 +1,7 @@
 import { createEffect, createMemo, createSignal, onCleanup, type ParentProps } from "solid-js";
 import { unwrap } from "solid-js/store";
 import type { LaunchInstance, LaunchOptions } from "../../../../../../js/polymer";
-import { useShell } from "../../app/ShellProvider";
+import { useShell } from "../../app/shell-context";
 import { SurfaceStage } from "./SurfaceStage";
 import "./GameLayout.css";
 

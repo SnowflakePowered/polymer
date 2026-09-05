@@ -1,7 +1,7 @@
 use crate::HookInput;
 use parking_lot::Mutex;
+use polymer_controllers::topology::InputTopology;
 use polymer_input::Feedback;
-use polymer_input_layout::topology::InputTopology;
 use polymer_ipc::{BlobKind, Message, WireFeedback, input::InputSubscriber};
 use std::{
     sync::{Arc, mpsc},

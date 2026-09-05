@@ -13,6 +13,8 @@ pub struct InputTopology {
 #[serde(rename_all = "camelCase")]
 pub struct PortBinding {
     pub player: u8,
+    #[serde(default)]
+    pub keyboard_mouse: bool,
     pub group: String,
     pub port: u8,
     pub layout: String,

@@ -1,5 +1,5 @@
 use parking_lot::{Mutex, RwLock};
-use polymer_input_layout::mapping::HostSample;
+use polymer_controllers::mapping::HostSample;
 use polymer_ipc::input::InputMessage;
 use std::{
     collections::VecDeque,

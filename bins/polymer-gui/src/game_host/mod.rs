@@ -856,7 +856,7 @@ impl GameHost {
         active.webrtc.take().is_some()
     }
 
-    pub fn input_endpoint(&self) -> Option<polymer_input_ipc::InputIpcListener> {
+    pub fn input_endpoint(&self) -> Option<polymer_ipc::input::host::InputIpcListener> {
         self.session.instance().map(|instance| instance.input())
     }
 

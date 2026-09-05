@@ -8,7 +8,7 @@ license.workspace = true
 parking_lot.workspace = true
 sdl3.workspace = true
 polymer-input.workspace = true
-polymer-input-layout.workspace = true
+polymer-controllers.workspace = true
 tracing.workspace = true
 
 [build-dependencies]

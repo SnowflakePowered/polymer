@@ -1,13 +1,13 @@
 //! Canonical controller topology shared by launch, host, and plugin layers.
 
+mod wire;
+pub use wire::*;
+
 use crate::configuration::ControllerConfiguration;
+use crate::layout::InputLayout;
 use polymer_config::input::{
     ControllerBindings, InputOperation, InputTransaction, PortConfiguration, ProjectionMode,
     SourceAssignment, SourceSelector, VirtualPort,
-};
-use polymer_input_layout::layout::InputLayout;
-use polymer_input_layout::topology::{
-    InputTopology, PointerBinding, PointerMode, PointerSource, PortBinding, RemapMode,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -412,6 +412,8 @@ impl ControllerTopology {
                 })?;
                 Ok(PortBinding {
                     player: mapping.gamepad,
+                    keyboard_mouse: mapping.connected
+                        && matches!(mapping.source, Some(SourceSelector::KeyboardMouse)),
                     group: mapping.target.group.clone(),
                     port,
                     layout: mapping.layout.clone(),
@@ -528,7 +530,7 @@ mod tests {
                 port: 0,
             },
             gamepad: 0,
-            source: None,
+            source: Some(SourceSelector::KeyboardMouse),
             layout: "WII_REMOTE_CONTROLLER".to_owned(),
             connected: true,
             device: None,
@@ -546,6 +548,14 @@ mod tests {
         .unwrap();
 
         assert_eq!(topology.mappings.len(), 4);
+        let wire = topology.input_topology(1, None).unwrap();
+        assert_eq!(
+            wire.ports
+                .iter()
+                .map(|port| port.keyboard_mouse)
+                .collect::<Vec<_>>(),
+            vec![true, false, false, false],
+        );
         assert!(
             topology
                 .mappings

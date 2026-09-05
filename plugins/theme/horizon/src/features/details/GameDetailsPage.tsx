@@ -3,7 +3,7 @@ import { produce, unwrap } from "solid-js/store";
 import { AppSidebar } from "../../components/AppSidebar";
 import { ControlHintBar } from "../../components/ControlHintBar";
 import { Icon } from "../../components/Icon";
-import { useShell } from "../../app/ShellProvider";
+import { useShell } from "../../app/shell-context";
 import { friendly } from "../../app/launch";
 import type { EmulatorConfiguration } from "../../../../../../js/polymer";
 import { ControllerSection } from "./ControllerSection";

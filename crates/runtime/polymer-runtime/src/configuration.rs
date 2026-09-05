@@ -1,11 +1,9 @@
 //! Native configuration and launch-selection services.
 
+use crate::{ControllerAssignmentSnapshot, ControllerManager, ControllerProfiles};
 use polymer_config::ast::PortAssignments;
 use polymer_config::input::{ControllerBindings, ProjectionMode, SourceSelector, VirtualPort};
-use polymer_controllers::{
-    ControllerAssignmentSnapshot, ControllerManager, ControllerMapping, ControllerProfiles,
-    ControllerTarget, ControllerTopology,
-};
+use polymer_controllers::{ControllerMapping, ControllerTarget, ControllerTopology};
 use polymer_input::InputHub;
 use polymer_pluginhost::{
     emulator::{EmulatorPluginInstance, EmulatorPort},
@@ -87,7 +85,7 @@ pub struct PortDescriptor {
     pub index: usize,
     pub layouts: Vec<String>,
     pub selected_layout: String,
-    pub pointer: polymer_input_layout::topology::PointerMode,
+    pub pointer: polymer_controllers::topology::PointerMode,
 }
 
 pub struct PreparedGame {
@@ -323,7 +321,7 @@ fn resolved_controller(
     };
 
     if device.is_none()
-        && let Some(layout) = polymer_input_layout::layout::InputLayout::get(&gamepad.layout)
+        && let Some(layout) = polymer_controllers::layout::InputLayout::get(&gamepad.layout)
     {
         for (target, source) in layout.default_gamepad_bindings() {
             mapping.insert(target.to_string(), source.to_string());
@@ -359,7 +357,7 @@ fn resolved_controller(
         layout: gamepad.layout.clone(),
         projection_mode,
         mapping: ControllerBindings::try_from_strings(mapping)?,
-        pointer: polymer_input_layout::topology::PointerBinding::default(),
+        pointer: polymer_controllers::topology::PointerBinding::default(),
     })
 }
 

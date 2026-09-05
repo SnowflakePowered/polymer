@@ -108,8 +108,6 @@ polymer-ui = { path = "crates/runtime/polymer-ui" }
 polymer-platform-windows = { path = "crates/runtime/polymer-platform-windows" }
 polymer-automation = { path = "crates/runtime/polymer-automation" }
 polymer-input = { path = "crates/input/polymer-input" }
-polymer-input-layout = { path = "crates/input/polymer-input-layout" }
-polymer-input-ipc = { path = "crates/input/polymer-input-ipc" }
 polymer-config = { path = "crates/polymer-config" }
 polymer-hook-input-dinput = { path = "crates/hooks/polymer-hook-input-dinput" }
 polymer-hook-input-sdl = { path = "crates/hooks/polymer-hook-input-sdl" }

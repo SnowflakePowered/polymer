@@ -1,11 +1,14 @@
 use super::{ControllerManager, DeviceMapping};
-use crate::{ControllerDevice, ControllerMapping, ControllerTarget, ControllerTopology};
+use polymer_controllers::{
+    ControllerDevice, ControllerMapping, ControllerTarget, ControllerTopology,
+};
+
 use consolespec::input::BindingKey;
 use polymer_config::input::{
     ControllerBindings, InputConfiguration, ProjectionMode, SourceSelector,
 };
+use polymer_controllers::layout::InputLayout;
 use polymer_input::DeviceDescriptor;
-use polymer_input_layout::layout::InputLayout;
 use polymer_library::{
     InputIdentityScope, InputMappingMode, InputMappingProfile as StoredMappingProfile,
 };
@@ -112,7 +115,7 @@ impl ControllerManager {
                     mouse: port.force_mouse,
                     projection_mode: mode,
                     mapping,
-                    pointer: polymer_input_layout::topology::PointerBinding::default(),
+                    pointer: polymer_controllers::topology::PointerBinding::default(),
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;

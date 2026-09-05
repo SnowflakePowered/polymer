@@ -5,6 +5,7 @@
 mod capture;
 mod configuration;
 mod consolestorage;
+pub mod controllers;
 mod frontend;
 mod instance;
 mod launch;
@@ -21,6 +22,11 @@ pub use configuration::{
     PreparedGame, describe_api as describe_configuration, prepare_api as prepare_configuration,
 };
 pub use consolestorage::{manager as console_storage_manager, serve as serve_console_storage};
+pub use controllers::{
+    ControllerAssignmentSnapshot, ControllerCommandOutcome, ControllerManager,
+    ControllerManagerEffect, ControllerProfiles, ControllerSessionCommit,
+    ControllerTopologyTransaction, DeviceMapping,
+};
 pub use frontend::{
     ControllerApiState, Emulator, EmulatorCommand, EmulatorCommandHandler, EmulatorCommandSink,
     FrontendServices, Input, InputCommand, InputCommandHandler, InputCommandSink, WebRtc,

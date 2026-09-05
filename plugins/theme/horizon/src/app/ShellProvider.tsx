@@ -1,5 +1,7 @@
+import { ShellContext } from "./shell-context";
+import { LibraryState } from "../../../../../js/library-state";
 import { useNavigate } from "@solidjs/router";
-import { createContext, createEffect, onCleanup, onMount, useContext, type ParentProps } from "solid-js";
+import { createEffect, onCleanup, onMount, type ParentProps } from "solid-js";
 import { createStore } from "solid-js/store";
 import type { LaunchRequest, PackageConfiguration } from "../../../../../js/polymer";
 import type { ControllerDevice } from "../../../../../js/polymer";
@@ -20,10 +22,14 @@ type StartupRequest =
 
 const startupQueue: StartupRequest[] = [];
 let startupHandler: ((request: StartupRequest) => void) | null = null;
-window.Polymer.scraping.addEventListener("request", (event: Event) => {
+const requestListener = (event: Event) => {
   const request = (event as CustomEvent<StartupRequest>).detail;
   if (startupHandler) startupHandler(request);
   else startupQueue.push(request);
+};
+window.Polymer.scraping.addEventListener("request", requestListener);
+import.meta.hot?.dispose(() => {
+  window.Polymer.scraping.removeEventListener("request", requestListener);
 });
 
 async function readRecent(): Promise<RecentGame[]> {
@@ -35,26 +41,6 @@ async function readRecent(): Promise<RecentGame[]> {
   } catch {
     return [];
   }
-}
-
-export type ShellContextValue = {
-  model: ShellModel;
-  setModel: (...path: any[]) => void;
-  navigate(path: string, replace?: boolean): void;
-  launchRecent(game: RecentGame): void;
-  showDetails(game: RecentGame): void;
-  launchDraft(draft?: PackageConfiguration): void;
-  cancelDetails(): void;
-  closeGame(): void;
-  rememberGame(): void;
-};
-
-const ShellContext = createContext<ShellContextValue>();
-
-export function useShell() {
-  const context = useContext(ShellContext);
-  if (!context) throw new Error("Horizon shell context is unavailable");
-  return context;
 }
 
 export function ShellProvider(props: ParentProps) {
@@ -69,6 +55,8 @@ export function ShellProvider(props: ParentProps) {
     audio: { ...DEFAULT_AUDIO },
     error: "",
     recent: [],
+    libraryGames: [],
+    scrapeStatus: "",
     selectedGame: null,
     gamepadOpen: false,
     pauseOpen: false,
@@ -77,6 +65,7 @@ export function ShellProvider(props: ParentProps) {
   const setModel = (...path: any[]) => (updateModel as (...args: any[]) => void)(...path);
   let recentLoaded = false;
   onMount(() => {
+    if (model.launch) navigate("/game/play", { replace: true });
     void readRecent().then((recent) => {
       recentLoaded = true;
       setModel("recent", recent);
@@ -154,8 +143,8 @@ export function ShellProvider(props: ParentProps) {
   const launchDraft = (draft = model.draft || undefined) => {
     if (model.package && draft) void beginLaunch(model.package, draft);
   };
-  const launchRecent = (game: RecentGame) => void prepare(game.path, game.emulator, "launch");
-  const showDetails = (game: RecentGame) => void prepare(game.path, game.emulator, "details");
+  const launchRecent = (game: RecentGame) => void prepare(game.path, game.emulator || undefined, "launch");
+  const showDetails = (game: RecentGame) => void prepare(game.path, game.emulator || undefined, "details");
   const cancelDetails = () => {
     detection?.abort();
     setModel("launcher", { kind: "idle" });
@@ -182,13 +171,17 @@ export function ShellProvider(props: ParentProps) {
     ].slice(0, RECENT_LIMIT));
   };
 
+  const libraryState = new LibraryState(window.Polymer.library, window.Polymer.scraping, snapshot => {
+    setModel("libraryGames", snapshot.games);
+    setModel("scrapeStatus", snapshot.status);
+  }, fail);
+  libraryState.start();
+  onCleanup(() => libraryState.dispose());
+
   const acceptStartup = (request: StartupRequest) => {
     if (request.kind === "scrape") {
-      void window.Polymer.library.launchables.add({ path: request.path }).then(async ({ launchable, scrapeJob }) => {
-        if (!scrapeJob) {
-          await window.Polymer.scraping.jobs.start(launchable.parentBinaryId ?? launchable.binaryId, { triggerBinaryId: launchable.binaryId });
-        }
-      }).catch(fail);
+      setModel("error", "");
+      void libraryState.import(request.path);
       return;
     }
     if (request.kind === "package") {

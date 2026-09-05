@@ -1,10 +1,10 @@
 use parking_lot::{Mutex, RwLock};
-use polymer_hook_input::HookInput;
-use polymer_input::{Feedback, GamepadReport};
-use polymer_input_layout::{
+use polymer_controllers::{
     layout::{InputLayout, OutputLayout},
     projection::Projection,
 };
+use polymer_hook_input::HookInput;
+use polymer_input::{Feedback, GamepadReport};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU32, Ordering},

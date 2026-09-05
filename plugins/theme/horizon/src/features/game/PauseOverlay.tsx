@@ -1,6 +1,6 @@
 import { Dialog, Popover } from "@ark-ui/solid";
 import { Show, createEffect, createSignal } from "solid-js";
-import { useShell } from "../../app/ShellProvider";
+import { useShell } from "../../app/shell-context";
 import { Icon } from "../../components/Icon";
 import { OverlayPortal } from "../../components/OverlayPortal";
 import { VolumeSlider } from "../../components/FormControls";

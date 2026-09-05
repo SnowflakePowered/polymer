@@ -1,6 +1,8 @@
 mod host;
 mod state;
 mod subscriber;
+#[cfg(test)]
+mod tests;
 mod topology;
 
 pub use host::HostState;
@@ -47,7 +49,11 @@ impl HookInput {
     }
 
     pub fn raw(&self, player: u8) -> Option<DeviceState> {
-        self.state.get(player)
+        if self.topology.read().keyboard_mouse(player) {
+            Some(DeviceState::default())
+        } else {
+            self.state.get(player)
+        }
     }
 
     pub fn resolved(&self, player: u8) -> Option<DeviceState> {
@@ -78,7 +84,7 @@ impl HookInput {
         self.host.receive(event);
     }
 
-    pub(crate) fn set_topology(&self, value: polymer_input_layout::topology::InputTopology) {
+    pub(crate) fn set_topology(&self, value: polymer_controllers::topology::InputTopology) {
         self.topology.set(value);
     }
 

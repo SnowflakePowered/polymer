@@ -7,7 +7,7 @@ use crossfire::{MRx, MTx, mpmc, oneshot::TxOneshot};
 use dashmap::{DashMap, DashSet};
 use parking_lot::{Condvar, Mutex, RwLock};
 use polymer_input::{HostInputEvent, HostPointerInput};
-use polymer_input_ipc::InputIpcListener;
+use polymer_ipc::input::host::InputIpcListener;
 use polymer_ipc::{Message, StreamReady};
 use polymer_platform_windows::{
     NativeWindow, ProcessId, ProcessWaitHandle, TargetProcess, client_size, process_audio_state,
@@ -302,8 +302,8 @@ impl EmulatorActionEndpoint {
             let key = key
                 .parse::<consolespec::input::BindingKey>()
                 .map_err(|error| error.to_string())?;
-            let Some(polymer_input_layout::model::Control::Button(button)) =
-                polymer_input_layout::model::Control::from_key(key)
+            let Some(polymer_controllers::model::Control::Button(button)) =
+                polymer_controllers::model::Control::from_key(key)
             else {
                 return Err(format!("action binding '{key}' is not a gamepad button"));
             };

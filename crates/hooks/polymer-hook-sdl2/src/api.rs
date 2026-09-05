@@ -1,11 +1,11 @@
 //! SDL2-only ABI and virtual joystick adapter.
 
+use polymer_controllers::layout::OutputLayout;
 use polymer_hook_input_sdl::{BackendError, Runtime, SdlBackend};
 use polymer_hook_input_sdl::{
     ConnectionState, GAMEPAD_AXIS_COUNT, GAMEPAD_BUTTON_COUNT, GamepadFeedback, GamepadFrame,
     GamepadSlot,
 };
-use polymer_input_layout::layout::OutputLayout;
 use std::{
     ffi::{c_char, c_void},
     mem,

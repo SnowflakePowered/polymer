@@ -9327,11 +9327,9 @@ dependencies = [
  "parking_lot",
  "polymer-config",
  "polymer-input",
- "polymer-input-bluetooth",
- "polymer-input-layout",
- "polymer-library",
  "serde",
  "serde_json",
+ "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]
@@ -9350,8 +9348,6 @@ dependencies = [
  "polymer-egui",
  "polymer-hook-input-dinput",
  "polymer-input",
- "polymer-input-ipc",
- "polymer-input-layout",
  "polymer-input-sdl3",
  "polymer-ipc",
  "polymer-platform-windows",
@@ -9446,8 +9442,6 @@ dependencies = [
  "polymer-hook-input-dinput",
  "polymer-input",
  "polymer-input-bluetooth",
- "polymer-input-ipc",
- "polymer-input-layout",
  "polymer-input-sdl3",
  "polymer-ipc",
  "polymer-library",
@@ -9506,9 +9500,9 @@ name = "polymer-hook-bluetoothapi-win32"
 version = "0.1.0"
 dependencies = [
  "parking_lot",
+ "polymer-controllers",
  "polymer-hook",
  "polymer-hook-input",
- "polymer-input-layout",
  "polymer-platform-windows",
  "tracing",
  "windows-sys 0.61.2",
@@ -9596,8 +9590,8 @@ dependencies = [
  "consolespec",
  "parking_lot",
  "polymer-config",
+ "polymer-controllers",
  "polymer-input",
- "polymer-input-layout",
  "polymer-ipc",
 ]
 
@@ -9620,9 +9614,9 @@ name = "polymer-hook-input-sdl"
 version = "0.1.0"
 dependencies = [
  "parking_lot",
+ "polymer-controllers",
  "polymer-hook-input",
  "polymer-input",
- "polymer-input-layout",
 ]
 
 [[package]]
@@ -9654,10 +9648,10 @@ name = "polymer-hook-sdl2"
 version = "0.1.0"
 dependencies = [
  "parking_lot",
+ "polymer-controllers",
  "polymer-hook",
  "polymer-hook-input-sdl",
  "polymer-input",
- "polymer-input-layout",
  "polymer-ipc",
  "polymer-platform-windows",
  "tracing",
@@ -9670,10 +9664,10 @@ version = "0.1.0"
 dependencies = [
  "consolespec",
  "parking_lot",
+ "polymer-controllers",
  "polymer-hook",
  "polymer-hook-input-sdl",
  "polymer-input",
- "polymer-input-layout",
  "polymer-ipc",
  "polymer-platform-windows",
  "tracing",
@@ -9752,38 +9746,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "polymer-input-ipc"
-version = "0.1.0"
-dependencies = [
- "bincode 2.0.1",
- "parking_lot",
- "polymer-input",
- "polymer-input-layout",
- "polymer-ipc",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "polymer-input-layout"
-version = "0.1.0"
-dependencies = [
- "consolespec",
- "polymer-config",
- "polymer-input",
- "serde",
- "serde_json",
- "toml 0.9.12+spec-1.1.0",
-]
-
-[[package]]
 name = "polymer-input-sdl3"
 version = "0.1.0"
 dependencies = [
  "cc",
  "parking_lot",
+ "polymer-controllers",
  "polymer-input",
- "polymer-input-layout",
  "sdl3",
  "tracing",
 ]
@@ -9793,11 +9762,17 @@ name = "polymer-ipc"
 version = "0.1.0"
 dependencies = [
  "bcast",
+ "bincode 2.0.1",
  "memmap2",
+ "parking_lot",
+ "polymer-controllers",
+ "polymer-input",
  "polymer-protocol",
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
+ "tracing",
  "windows-sys 0.61.2",
  "zerocopy",
 ]
@@ -9860,7 +9835,6 @@ dependencies = [
  "polymer-controllers",
  "polymer-deno",
  "polymer-input",
- "polymer-input-layout",
  "polymer-ipc",
  "polymer-library",
  "polymer-vfs",
@@ -10009,8 +9983,6 @@ dependencies = [
  "polymer-hook",
  "polymer-input",
  "polymer-input-bluetooth",
- "polymer-input-ipc",
- "polymer-input-layout",
  "polymer-ipc",
  "polymer-library",
  "polymer-platform-windows",

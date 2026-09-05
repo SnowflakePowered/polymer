@@ -1,17 +1,18 @@
 use polymer_config::input::{InputConfiguration, InputTransaction};
-use polymer_controllers::{
-    ControllerCommandOutcome, ControllerManager, ControllerManagerEffect, ControllerSessionCommit,
-    ControllerTopology, ControllerTopologyTransaction,
-};
+use polymer_controllers::ControllerTopology;
 use polymer_egui::{InputAxisDiagnostics, InputDiagnostics, InputSlotDiagnostics};
 use polymer_input::{HostInputEvent, InputHub, KeyCode, PlayerIndex, PointerFlags, PointerReport};
-use polymer_input_ipc::InputIpcListener;
-use polymer_input_ipc::{RawHidChannel, RawHidSpec};
+use polymer_ipc::input::host::InputIpcListener;
+use polymer_ipc::input::host::{RawHidChannel, RawHidSpec};
 use polymer_protocol::input::PointerPhase;
 use polymer_renderer::{
     input::{PointerEventSink, PointerRoutingState},
     layout::Rect,
     pointer::PointerProjector,
+};
+use polymer_runtime::{
+    ControllerCommandOutcome, ControllerManager, ControllerManagerEffect, ControllerSessionCommit,
+    ControllerTopologyTransaction,
 };
 use std::{
     sync::Arc,
@@ -19,6 +20,7 @@ use std::{
 };
 
 mod bluetooth;
+mod keyboard;
 use bluetooth::BluetoothUi;
 
 const DOM_MK_SHIFT: u32 = 0x0004;
@@ -61,7 +63,8 @@ pub(crate) struct InputRouter {
     sdl: Arc<polymer_input_sdl3::Sdl3Backend>,
     bluetooth: Arc<polymer_input_bluetooth::BluetoothBackend>,
     bluetooth_ui: BluetoothUi,
-    topology: Option<polymer_input_layout::topology::InputTopology>,
+    topology: Option<polymer_controllers::topology::InputTopology>,
+    keyboard: keyboard::KeyboardInput,
     mouse_buttons: u8,
     pointer_routing: PointerRoutingState,
     pointer_projectors: Vec<PointerProjector>,
@@ -124,6 +127,7 @@ impl InputRouter {
             bluetooth,
             bluetooth_ui,
             topology: None,
+            keyboard: keyboard::KeyboardInput::default(),
             mouse_buttons: 0,
             pointer_routing: PointerRoutingState::new(Instant::now()),
             pointer_projectors: (0..8)
@@ -156,8 +160,8 @@ impl InputRouter {
         self.controllers.applied().cloned()
     }
 
-    pub fn layouts(&self) -> &'static [polymer_input_layout::layout::InputLayout] {
-        polymer_input_layout::layout::InputLayout::all()
+    pub fn layouts(&self) -> &'static [polymer_controllers::layout::InputLayout] {
+        polymer_controllers::layout::InputLayout::all()
     }
 
     pub fn configuration_publication(&self) -> InputConfigurationPublication {
@@ -201,8 +205,9 @@ impl InputRouter {
         }
     }
 
-    pub fn route_game_key(&self, key: &str, pressed: bool) -> bool {
+    pub fn route_game_key(&mut self, key: &str, pressed: bool) -> bool {
         let code = KeyCode::new(key);
+        self.keyboard.sample.keys.set(code.as_str(), pressed);
         self.hub.publish_host(HostInputEvent::Key {
             code,
             scan_code: 0,
@@ -296,7 +301,7 @@ impl InputRouter {
         plan: &polymer_renderer::CompositingPlan,
         pointer: &polymer_renderer::SurfacePointerSender,
     ) {
-        use polymer_input_layout::topology::{PointerMode, PointerSource};
+        use polymer_controllers::topology::{PointerMode, PointerSource};
 
         let routes = self.topology.as_ref().map_or_else(Vec::new, |topology| {
             topology
@@ -373,6 +378,7 @@ impl InputRouter {
     }
 
     pub fn prepare_priority_change(&mut self) {
+        self.keyboard.sample = Default::default();
         self.hub.publish_host(HostInputEvent::FocusLost);
     }
     pub fn set_game_input_enabled(&self, enabled: bool) {
@@ -380,7 +386,8 @@ impl InputRouter {
             listener.set_forwarding(enabled, &self.hub);
         }
     }
-    pub fn clear_guest_input_state(&self) {
+    pub fn clear_guest_input_state(&mut self) {
+        self.keyboard.sample = Default::default();
         self.hub.publish_host(HostInputEvent::FocusLost);
     }
 
@@ -394,6 +401,7 @@ impl InputRouter {
     }
 
     pub fn finish_focus_lost(&mut self) {
+        self.keyboard.sample = Default::default();
         self.mouse_buttons = 0;
         self.dom_mouse_keys = 0;
         self.dom_alt_key = false;
@@ -448,6 +456,7 @@ impl InputRouter {
         }
         self.topology = Some(wire);
         self.controllers.initialize(topology.clone())?;
+        self.keyboard.configure(topology);
         self.rebuild_input_hooks()
     }
 
@@ -488,6 +497,7 @@ impl InputRouter {
             input_topology.raw_hid.clone_from(&previous.raw_hid);
         }
         self.topology = Some(input_topology);
+        self.keyboard.configure(topology);
         self.rebuild_input_hooks()
     }
 
@@ -629,6 +639,11 @@ impl InputRouter {
         let slots = mappings
             .iter()
             .map(|mapping| {
+                if let Some(diagnostics) =
+                    self.keyboard.diagnostics(mapping.gamepad, &mapping.layout)
+                {
+                    return diagnostics;
+                }
                 let state = snapshots.iter().find(|(index, _, _)| {
                     index.is_some_and(|index| index.get() == mapping.gamepad)
                 });
@@ -733,7 +748,7 @@ impl InputRouter {
                     let source_player = (*source_player).ok_or_else(|| {
                         format!("raw HID source '{source_id}' has no input assignment")
                     })?;
-                    Ok(polymer_input_layout::topology::RawHidBinding {
+                    Ok(polymer_controllers::topology::RawHidBinding {
                         player: source_player.get(),
                         port: u8::try_from(mapping.target.port).map_err(|_| {
                             format!("raw HID target port {} exceeds 255", mapping.target.port)

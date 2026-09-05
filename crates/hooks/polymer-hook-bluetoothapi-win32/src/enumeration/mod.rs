@@ -1,6 +1,6 @@
 use crate::configuration::SyntheticWiimote;
 use parking_lot::RwLock;
-use polymer_input_layout::topology::RawHidBinding;
+use polymer_controllers::topology::RawHidBinding;
 use windows_sys::{
     Win32::Devices::{
         DeviceAndDriverInstallation::{CONFIGRET, CR_BUFFER_SMALL, CR_SUCCESS},

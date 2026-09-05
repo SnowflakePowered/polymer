@@ -7,7 +7,7 @@ use polymer_renderer::{
 use std::sync::Arc;
 
 #[derive(Clone, Default)]
-pub(crate) struct InputEndpoint(Arc<RwLock<Option<polymer_input_ipc::InputIpcListener>>>);
+pub(crate) struct InputEndpoint(Arc<RwLock<Option<polymer_ipc::input::host::InputIpcListener>>>);
 
 impl InputEndpoint {
     pub fn attach(&self, instance: &polymer_runtime::EmulatorInstance) {

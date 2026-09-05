@@ -90,7 +90,7 @@ enum PendingInputChangeCompletion {
 }
 
 struct PendingInputChange {
-    transaction: polymer_controllers::ControllerTopologyTransaction,
+    transaction: polymer_runtime::ControllerTopologyTransaction,
     completion: PendingInputChangeCompletion,
     response:
         tokio::sync::oneshot::Receiver<Result<polymer_controllers::ControllerTopology, String>>,

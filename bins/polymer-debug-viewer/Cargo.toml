@@ -22,11 +22,10 @@ polymer-egui.workspace = true
 polymer-statistics.workspace = true
 polymer-input.workspace = true
 polymer-input-sdl3 = { path = "../../crates/input/polymer-input-sdl3" }
-polymer-input-ipc.workspace = true
 polymer-controllers.workspace = true
-polymer-input-layout.workspace = true
+
 polymer-hook-input-dinput.workspace = true
-polymer-ipc.workspace = true
+polymer-ipc = { workspace = true, features = ["input-host"] }
 polymer-platform-windows.workspace = true
 polymer-protocol.workspace = true
 polymer-runtime.workspace = true

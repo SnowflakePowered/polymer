@@ -33,15 +33,14 @@ polymer-config.workspace = true
 style = { package = "stylo", version = "0.20.0" }
 style_dom = { package = "stylo_dom", version = "0.20.0" }
 polymer-input.workspace = true
-polymer-input-layout.workspace = true
-polymer-input-ipc.workspace = true
+
 polymer-input-sdl3 = { path = "../../crates/input/polymer-input-sdl3" }
 polymer-controllers.workspace = true
 polymer-automation.workspace = true
 polymer-bluetooth = { path = "../../crates/input/polymer-bluetooth" }
 polymer-input-bluetooth = { path = "../../crates/input/polymer-input-bluetooth" }
 polymer-hook-input-dinput.workspace = true
-polymer-ipc.workspace = true
+polymer-ipc = { workspace = true, features = ["input-host"] }
 polymer-library.workspace = true
 polymer-platform-windows.workspace = true
 polymer-pluginhost = { path = "../../crates/runtime/polymer-pluginhost" }

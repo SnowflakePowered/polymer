@@ -1,6 +1,6 @@
 import { onCleanup, onMount } from "solid-js";
 import { useInputActions } from "../../app/InputProvider";
-import { useShell } from "../../app/ShellProvider";
+import { useShell } from "../../app/shell-context";
 import { PauseOverlay } from "./PauseOverlay";
 
 export function PlayPage() {

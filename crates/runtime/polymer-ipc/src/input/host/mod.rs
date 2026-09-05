@@ -1,3 +1,5 @@
+//! Host input publication, topology updates, and raw HID forwarding.
+
 mod control;
 mod hid;
 mod publisher;
@@ -5,14 +7,14 @@ mod topology;
 
 pub use hid::{RawHidChannel, RawHidSpec};
 
+use crate::LocalSocketListener;
 use control::Control;
 use parking_lot::Mutex;
+use polymer_controllers::topology::InputTopology;
 use polymer_input::{
     DeviceState, HostInputEvent, HostInputListener, HostListenerHandle, InputEvent, InputHub,
     InputListener, ListenerHandle, PlayerIndex,
 };
-use polymer_input_layout::topology::InputTopology;
-use polymer_ipc::LocalSocketListener;
 use publisher::InputPublication;
 use std::collections::{BTreeMap, BTreeSet};
 use std::{
@@ -176,7 +178,7 @@ impl InputIpcListener {
         Ok(())
     }
 
-    pub fn send_control(&self, message: polymer_ipc::Message) -> bool {
+    pub fn send_control(&self, message: crate::Message) -> bool {
         self.0.control.send(message)
     }
 
@@ -223,7 +225,7 @@ impl InputIpcListener {
         self.0.hub.lock().take();
     }
 
-    fn accept(&self, socket: &mut polymer_ipc::LocalSocket) -> io::Result<()> {
+    fn accept(&self, socket: &mut crate::LocalSocket) -> io::Result<()> {
         self.0.publication.lock().accept(socket)?;
         self.0.control.add_client(socket, self.0.hub.clone())
     }

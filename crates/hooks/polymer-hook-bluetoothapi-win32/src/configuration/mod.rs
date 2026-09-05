@@ -1,4 +1,4 @@
-use polymer_input_layout::topology::RawHidBinding;
+use polymer_controllers::topology::RawHidBinding;
 use std::{ffi::OsStr, os::windows::ffi::OsStrExt};
 
 #[derive(Clone, Debug)]

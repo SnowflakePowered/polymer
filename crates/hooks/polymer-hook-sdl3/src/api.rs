@@ -1,13 +1,14 @@
 //! SDL3-only ABI and virtual joystick adapter.
 
 use consolespec::input::{Alignment, AnalogClass};
+use polymer_controllers::{layout::OutputLayout, model::Sensor};
 use polymer_hook_input_sdl::Runtime;
 use polymer_hook_input_sdl::{BackendError, SdlBackend};
 use polymer_hook_input_sdl::{
     ConnectionState, GAMEPAD_AXIS_COUNT, GAMEPAD_BUTTON_COUNT, GamepadFeedback, GamepadFrame,
     GamepadSlot,
 };
-use polymer_input_layout::{layout::OutputLayout, model::Sensor};
+
 use std::{
     ffi::{CString, c_char, c_void},
     mem,

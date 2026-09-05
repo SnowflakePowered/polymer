@@ -1,8 +1,8 @@
-use polymer_input::{DeviceDescriptor, DeviceState, HostInputEvent, InputEvent, PlayerIndex};
-use polymer_ipc::input::{
+use crate::input::{
     InputMessage, InputPublisher, WireDeviceConnected, WireDeviceState, WireHostKey,
     WireHostPointer, WireHostWheel,
 };
+use polymer_input::{DeviceDescriptor, DeviceState, HostInputEvent, InputEvent, PlayerIndex};
 use std::io;
 
 pub struct InputPublication {
@@ -18,7 +18,7 @@ impl InputPublication {
         })
     }
 
-    pub fn accept(&mut self, socket: &mut polymer_ipc::LocalSocket) -> io::Result<u32> {
+    pub fn accept(&mut self, socket: &mut crate::LocalSocket) -> io::Result<u32> {
         self.publisher.accept(socket)
     }
 

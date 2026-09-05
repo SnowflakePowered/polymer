@@ -1,4 +1,4 @@
-use polymer_input_layout::topology::InputTopology;
+use polymer_controllers::topology::InputTopology;
 use std::io;
 
 pub fn encode(value: &InputTopology) -> io::Result<Vec<u8>> {

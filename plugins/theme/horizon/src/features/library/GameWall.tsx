@@ -1,6 +1,6 @@
 import { For, createEffect, createSignal, onCleanup, onMount } from "solid-js";
 import type { RecentGame } from "../../app/models";
-import { useShell } from "../../app/ShellProvider";
+import { useShell } from "../../app/shell-context";
 import { useInputActions } from "../../app/InputProvider";
 import { hasActiveInputScope } from "../../components/InputNavigation";
 import { GameTile } from "./GameTile";
@@ -67,7 +67,7 @@ export function GameWall(props: { games: RecentGame[] }) {
 
   return <section
     class="horizon-game-wall"
-    aria-label="Recently played games"
+    aria-label="Game library"
     style={`--tile-min-height:${9 * zoom()}rem;--tile-fluid-height:${18 * zoom()}vh;--tile-max-height:${12 * zoom()}rem;--tile-min-width:${7 * zoom()}rem`}
     onWheel={zoomWall}
   >

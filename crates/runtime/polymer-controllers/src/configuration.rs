@@ -1,3 +1,4 @@
+use crate::layout::{InputBinding, InputLayout};
 use consolespec::MachineSpec;
 use consolespec::input::BindingKey;
 use parking_lot::RwLock;
@@ -5,7 +6,6 @@ use polymer_config::input::{
     ControllerBindings, InputConfiguration, InputOperation, InputTransaction, PortConfiguration,
     SourceAssignment, SourceSelector, VirtualPort,
 };
-use polymer_input_layout::layout::{InputBinding, InputLayout};
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},

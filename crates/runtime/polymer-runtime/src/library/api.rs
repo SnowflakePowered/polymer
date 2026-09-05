@@ -45,6 +45,7 @@ impl LibraryCommandHandler for LibraryBackend {
         parent_binary_id: Option<String>,
     ) -> Result<Value, String> {
         let parent = parent_binary_id.as_deref().map(Self::uuid).transpose()?;
+        tracing::info!(%path, "identifying dropped game for library import");
         let package = tokio::task::spawn_blocking(move || {
             polymer_scraping::Package::identify(path, platform.as_deref(), parent)
         })
@@ -57,6 +58,7 @@ impl LibraryCommandHandler for LibraryBackend {
             .map_err(|error| error.to_string())?;
         let is_root = launchable.parent_binary_id.is_none();
         let root_binary_id = launchable.parent_binary_id.unwrap_or(launchable.binary_id);
+        tracing::info!(root = %root_binary_id, path = ?launchable.path, created_root, "game imported into library");
         self.scraping.publish_library_content(root_binary_id);
         let job = if is_root && created_root {
             Some(

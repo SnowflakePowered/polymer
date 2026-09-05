@@ -30,7 +30,7 @@ polymer-controllers.workspace = true
 polymer-automation.workspace = true
 polymer-deno = { path = "../polymer-deno" }
 polymer-input.workspace = true
-polymer-input-layout.workspace = true
+
 polymer-ipc.workspace = true
 polymer-library.workspace = true
 polymer-vfs.workspace = true

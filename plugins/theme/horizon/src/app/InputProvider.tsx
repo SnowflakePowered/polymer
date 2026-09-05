@@ -1,4 +1,4 @@
-import { createContext, onCleanup, onMount, useContext, type ParentProps } from "solid-js";
+import { createContext, onCleanup, onMount, useContext, type Context, type ParentProps } from "solid-js";
 
 export type InputDirection = "left" | "right" | "up" | "down";
 export type InputOrigin = "controller" | "keyboard";
@@ -12,7 +12,8 @@ type ControllerAction =
   | { type: "move"; direction: InputDirection }
   | { type: "activate" | "back" | "details" | "pause" };
 
-const InputContext = createContext<InputContextValue>();
+const InputContext: Context<InputContextValue | undefined> = import.meta.hot?.data.inputContext ?? createContext<InputContextValue>();
+if (import.meta.hot) import.meta.hot.data.inputContext = InputContext;
 const controllerNavigationEvents = new WeakSet<Event>();
 const buttonActions: Partial<Record<string, ControllerAction>> = {
   "directional.w": { type: "move", direction: "left" },

@@ -1,3 +1,4 @@
+import type { LibraryEntry } from "../../../../../js/library-state";
 import type { LaunchInstance, LaunchRequest, Package, PackageConfiguration } from "../../../../../js/polymer";
 
 export type RecentGame = {
@@ -27,6 +28,8 @@ export type ShellModel = {
   audio: AudioState;
   error: string;
   recent: RecentGame[];
+  libraryGames: LibraryEntry[];
+  scrapeStatus: string;
   selectedGame: string | null;
   gamepadOpen: boolean;
   pauseOpen: boolean;
