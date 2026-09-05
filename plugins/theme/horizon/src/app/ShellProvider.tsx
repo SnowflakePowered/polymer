@@ -14,6 +14,7 @@ const RECENT_LIMIT = 100;
 const DEFAULT_AUDIO = { available: false, volume: 1, muted: false };
 
 type StartupRequest =
+  | { kind: "scrape"; path: string }
   | { kind: "package"; path: string; emulator?: string }
   | { kind: "launch"; options: LaunchRequest };
 
@@ -182,6 +183,14 @@ export function ShellProvider(props: ParentProps) {
   };
 
   const acceptStartup = (request: StartupRequest) => {
+    if (request.kind === "scrape") {
+      void window.Polymer.library.launchables.add({ path: request.path }).then(async ({ launchable, scrapeJob }) => {
+        if (!scrapeJob) {
+          await window.Polymer.scraping.jobs.start(launchable.parentBinaryId ?? launchable.binaryId, { triggerBinaryId: launchable.binaryId });
+        }
+      }).catch(fail);
+      return;
+    }
     if (request.kind === "package") {
       void prepare(request.path, request.emulator, "launch");
       return;

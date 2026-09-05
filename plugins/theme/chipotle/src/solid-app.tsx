@@ -50,6 +50,7 @@ let defaultPs1Card: Promise<ConsoleStorageVolume> | null = null;
 let defaultPs2Card: Promise<ConsoleStorageVolume> | null = null;
 let memoryNavigate: ((path: string, options?: { replace?: boolean }) => void) | null = null;
 type StartupRequest =
+  | { kind: "scrape"; path: string }
   | { kind: "package"; path: string; emulator?: string }
   | { kind: "launch"; options: LaunchRequest };
 let startupHandler: ((request: StartupRequest) => void) | null = null;
@@ -310,6 +311,14 @@ function ShellProvider(props: ParentProps) {
   };
 
   const acceptStartup = (request: StartupRequest) => {
+    if (request.kind === "scrape") {
+      void window.Polymer.library.launchables.add({ path: request.path }).then(async ({ launchable, scrapeJob }) => {
+        if (!scrapeJob) {
+          await window.Polymer.scraping.jobs.start(launchable.parentBinaryId ?? launchable.binaryId, { triggerBinaryId: launchable.binaryId });
+        }
+      }).catch(fail);
+      return;
+    }
     if (request.kind === "package") {
       open(request.path, request.emulator);
       return;
@@ -438,7 +447,7 @@ function LibraryPage() {
   return <main class="min-h-screen bg-snow-950 p-10 text-snow-100">
     <header class="mb-8"><p class="text-ice-300"><span class="symbol-glyph">◇</span> Polymer</p><h1 class="text-4xl font-semibold">Your games, one drop away.</h1></header>
     <section class="rounded-2xl border-2 border-dashed border-snow-300 p-16 text-center data-[active=true]:border-ice-500 data-[active=true]:bg-snow-900" data-active={dropActive()}>
-      <p class="symbol-glyph text-4xl">＋</p><h2 class="mt-3 text-2xl">{shell.model.launcher.kind === "detecting" ? `Detecting ${shell.model.launcher.name}` : dropActive() ? "Release to add" : "Drop a game or game folder here"}</h2>
+      <p class="symbol-glyph text-4xl">＋</p><h2 class="mt-3 text-2xl">{shell.model.launcher.kind === "detecting" ? `Detecting ${shell.model.launcher.name}` : dropActive() ? "Release to scrape" : "Drop a game or game folder here"}</h2>
     </section>
     <Show when={shell.model.error}><p role="alert" class="mt-5 rounded-lg bg-error-500 p-3">{shell.model.error}</p></Show>
     <section class="mt-10"><div class="flex justify-between"><h2 class="text-2xl">Recently played</h2><Show when={shell.model.recent.length}><button onClick={() => shell.setModel("recent", [])}>Clear</button></Show></div>

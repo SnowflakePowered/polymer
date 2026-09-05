@@ -195,7 +195,7 @@ impl ShellCoordinator {
 
     pub(super) fn handle_dropped_file(&mut self, path: std::path::PathBuf) {
         self.notify_polymer(PolymerNotification::OpenRequested(serde_json::json!({
-            "kind": "package",
+            "kind": "scrape",
             "path": path.to_string_lossy(),
         })));
     }
