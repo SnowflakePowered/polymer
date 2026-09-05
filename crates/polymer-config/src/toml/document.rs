@@ -386,25 +386,7 @@ mod packages {
         config: BTreeMap<&'de str, &'de str>,
         #[toml(default)]
         #[expect(dead_code)]
-        resources: Vec<ManifestResource<'de>>,
-        #[toml(default)]
-        #[expect(dead_code)]
         caches: Vec<ManifestCache<'de>>,
-    }
-
-    #[derive(Toml)]
-    #[toml(FromToml)]
-    struct ManifestResource<'de> {
-        #[expect(dead_code)]
-        name: &'de str,
-        #[expect(dead_code)]
-        target: Option<&'de str>,
-        #[expect(dead_code)]
-        source: &'de str,
-        #[expect(dead_code)]
-        format: &'de str,
-        #[expect(dead_code)]
-        mode: &'de str,
     }
 
     #[derive(Toml)]

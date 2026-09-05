@@ -11,11 +11,9 @@ async function launch(entrypoint, args, configurationId, explicitDefault) {
   const configuration = __polymerPluginHost.configuration(configurationId);
   args.configuration = configuration;
   args.filesystem = __polymerFilesystem.filesystem;
-  args.resources = __polymerFilesystem.resources;
   args.storage = __polymerFilesystem.storage;
   const parserReceiver = typeof module.onParseHotkey === "function" ? module : receiver;
-  const actions = __polymerActions.create(configurationId, parserReceiver?.onParseHotkey);
-  args.actions = actions;
+  __polymerActions.create(configurationId, parserReceiver?.onParseHotkey);
   args.saveStates = Object.freeze({
     directory: __polymerFilesystem.createSaveStateDirectory(),
     quickResume: __polymerFilesystem.quickResume,
@@ -67,7 +65,6 @@ async function launch(entrypoint, args, configurationId, explicitDefault) {
           userConfiguration: args.userConfiguration,
         }),
         configuration,
-        actions,
       }),
       configurable: false,
       enumerable: false,
@@ -96,7 +93,6 @@ async function controllerChanged(inputTopology, previousTopology) {
     previousTopology,
     active.configuration,
     __polymerFilesystem.filesystem,
-    active.actions,
   );
   const result = typeof active.onControllerChanged === "function"
     ? await Reflect.apply(active.onControllerChanged, active.controllerReceiver, [context])
@@ -108,7 +104,7 @@ async function controllerChanged(inputTopology, previousTopology) {
 async function pauseResume(pauseState) {
   const active = globalThis.__polymerActiveEmulator;
   if (active == null || typeof active.onPauseResume !== "function") return;
-  const context = __polymerControllerChange.pauseContext(pauseState, active.actions);
+  const context = __polymerControllerChange.pauseContext(pauseState);
   await Reflect.apply(active.onPauseResume, active.pauseReceiver, [context]);
 }
 
@@ -124,7 +120,6 @@ async function stateAction(slot, save) {
   }
   const context = __polymerControllerChange.stateContext(
     slot,
-    active.actions,
     __polymerFilesystem.filesystem,
     active.saveStateDirectory,
   );

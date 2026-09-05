@@ -1,9 +1,9 @@
-import type { BatteryStorage, Filesystem, Resource } from "../plugin-api.ts";
+import runtime from "pkg:bin/win-x64";
+import type { BatteryStorage, Filesystem } from "polymer:api";
 
 type EmulatorLaunchArgs = {
     launchPath: string,
     filesystem: Filesystem,
-    resources: { runtime: Resource },
     storage: BatteryStorage,
 };
 
@@ -22,7 +22,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     const gameName = basename(args.launchPath);
     const path = (virtualPath: string) => args.filesystem.path(virtualPath);
 
-    args.filesystem.mountTree("/mGBA", args.resources.runtime, { mode: "rx" });
+    args.filesystem.mountTree("/mGBA", runtime, { mode: "rx" });
     args.filesystem.mountScratch("/Game", { mode: "rwx", backing: "temporary" });
     args.filesystem.mountScratch("/User", { mode: "rwx", backing: "temporary" });
     args.filesystem.mountHostFile(`/Game/${gameName}`, args.launchPath, { mode: "r" });

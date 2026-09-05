@@ -4,6 +4,9 @@ version = "0.1.0"
 class = "scraper"
 main = "launchbox.ts"
 
+[plugin.permissions.net]
+allowed-hosts = ["gamesdb.launchbox-app.com", "jsr.io"]
+
 [[plugin.caches]]
 key = "download"
 label = "LaunchBox Metadata Download"

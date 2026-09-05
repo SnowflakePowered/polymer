@@ -44,12 +44,6 @@ fn package() -> (TempDir, PluginRegistry) {
             class = "emulator"
             main = "plugin.js"
 
-            [[plugin.resources]]
-            name = "runtime"
-            source = "pkg:runtime"
-            format = "directory"
-            mode = "rx"
-
             [emulator]
             platforms = ["TEST"]
 
@@ -97,7 +91,9 @@ fn package() -> (TempDir, PluginRegistry) {
     std::fs::write(
         root.path().join("plugin.js"),
         r#"
-            import runtime from "resources:runtime";
+            import runtime from "pkg:runtime";
+            import { uiAutomation } from "polymer:uiautomation";
+            import { actions } from "polymer:actions";
             import { pluginStorage } from "polymer:pluginStorage";
             let isolateCounter = 0;
             export function onPluginLoad() {
@@ -106,6 +102,17 @@ fn package() -> (TempDir, PluginRegistry) {
               pluginStorage.setItem("cached", { names: ["graphics-pack"] });
             }
             export async function onConfigure(game, userConfiguration) {
+              const dynamicRuntime = (await import("pkg:runtime")).default;
+              if (dynamicRuntime !== runtime) throw new Error("package resource imports must share module identity");
+              await import("polymer:api");
+              for (const source of ["./plugin.js", "../plugin.js", "/plugin.js", "file:///plugin.js"]) {
+                let rejected = false;
+                try { await import(source); } catch { rejected = true; }
+                if (!rejected) throw new Error(`path-based import was accepted: ${source}`);
+              }
+              let readOnly = false;
+              try { await runtime.remove("emulator.exe"); } catch { readOnly = true; }
+              if (!readOnly) throw new Error("package resources must remain read-only");
               const entries = [];
               for await (const entry of runtime) {
                 entries.push(entry.name);
@@ -162,7 +169,7 @@ fn package() -> (TempDir, PluginRegistry) {
                 if (firstRender === secondRender || firstRender["settings.ini"] === secondRender["settings.ini"]) {
                   throw new Error("configuration.render() did not return fresh values");
                 }
-                args.filesystem.mountTree("/Emulator", args.resources.runtime, { mode: "rx" });
+                args.filesystem.mountTree("/Emulator", runtime, { mode: "rx" });
                 for (const [name, bytes] of Object.entries(firstRender)) {
                   args.filesystem.mountFile(`/Emulator/Config/${name}`, bytes, { mode: "r" });
                 }
@@ -182,10 +189,10 @@ fn package() -> (TempDir, PluginRegistry) {
               };
             }
             export async function onControllerChanged(context) {
-              if (typeof context.actions.pause?.activate !== "function") {
+              if (typeof actions.pause?.activate !== "function") {
                 throw new Error("onControllerChanged did not receive configured actions");
               }
-              const window = await context.ui.waitForWindow({ pattern: "Emulator" });
+              const window = await uiAutomation.waitForWindow({ pattern: "Emulator" });
               await window.locator('button[name="Controllers"]').press();
               context.configuration.options().general.enabled = false;
               for (const [name, bytes] of Object.entries(context.configuration.render())) {
@@ -199,7 +206,7 @@ fn package() -> (TempDir, PluginRegistry) {
               if (context.pauseState !== "pause" && context.pauseState !== "resume") {
                 throw new Error(`invalid pause state: ${context.pauseState}`);
               }
-              context.actions.pause.activate();
+              actions.pause.activate();
             }
             export default {
               fallback(value) { return `fallback:${value}`; },
@@ -222,11 +229,12 @@ fn configuration_mount_package() -> (TempDir, PluginRegistry) {
     std::fs::write(
         root.path().join("plugin.js"),
         r#"
+            import runtime from "pkg:runtime";
             export function onParseHotkey(expression) {
               return { kind: "keyboard", code: expression };
             }
             export function onLaunch(args) {
-              args.filesystem.mountTree("/Emulator", args.resources.runtime, { mode: "rx" });
+              args.filesystem.mountTree("/Emulator", runtime, { mode: "rx" });
               args.filesystem.mountConfiguration("/Emulator/Config", args.configuration, { mode: "r" });
               return {
                 command: args.filesystem.path("/Emulator/emulator.exe"),
@@ -296,6 +304,7 @@ fn capability_package() -> (TempDir, PluginRegistry, String) {
           import { caches } from "polymer:cache";
           import { connect } from "polymer:database";
           export async function exercise() {
+            __polymerFilesystem.filesystem.mountTree("/Cache", caches.fixture, { mode: "rwx" });
             const file = caches.fixture.open("nested/value.txt", { write: true, truncate: true });
             const writer = file.writable.getWriter();
             await writer.write("streamed-");

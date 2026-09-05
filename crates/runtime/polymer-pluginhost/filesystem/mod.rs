@@ -20,11 +20,7 @@ use std::{
     sync::Arc,
 };
 
-use crate::{
-    emulator::QuickResumeData,
-    handle::Handle,
-    loading::{PluginResource, PluginResourceFormat},
-};
+use crate::{emulator::QuickResumeData, handle::Handle};
 
 #[derive(Clone, Debug)]
 pub struct NamedCache {
@@ -42,7 +38,6 @@ type MaterializedVolume = (Arc<dyn Volume>, Arc<dyn ResourceLease>);
 pub struct FilesystemOptions {
     pub package_root: PathBuf,
     pub scratch_root: Option<PathBuf>,
-    pub resources: Vec<PluginResource>,
     pub caches: Vec<NamedCache>,
     pub storage: StorageFactories,
     pub quick_resume: Option<QuickResumeData>,
@@ -53,7 +48,6 @@ impl std::fmt::Debug for FilesystemOptions {
         formatter
             .debug_struct("FilesystemOptions")
             .field("package_root", &self.package_root)
-            .field("resources", &self.resources)
             .field("caches", &self.caches)
             .field("storage", &self.storage.keys().collect::<Vec<_>>())
             .finish()
@@ -65,7 +59,6 @@ impl FilesystemOptions {
         Self {
             package_root,
             scratch_root: None,
-            resources: Vec::new(),
             caches: Vec::new(),
             storage: BTreeMap::new(),
             quick_resume: None,
@@ -130,7 +123,6 @@ struct FilesystemState {
     plan: FilesystemPlan,
     volumes: HashMap<Handle<VolumeResource>, Arc<VolumeResource>>,
     files: HashMap<Handle<FileResource>, Arc<FileResource>>,
-    named: BTreeMap<String, ResourceHandle>,
     storage: BTreeMap<String, ResourceHandle>,
     caches: BTreeMap<String, CacheResource>,
     used: bool,
@@ -152,7 +144,6 @@ impl FilesystemState {
             plan: FilesystemPlan::default(),
             volumes: HashMap::new(),
             files: HashMap::new(),
-            named: BTreeMap::new(),
             storage: BTreeMap::new(),
             caches: BTreeMap::new(),
             used: false,
@@ -162,17 +153,6 @@ impl FilesystemState {
             staged_files: Vec::new(),
             quick_resume: None,
         };
-        for resource in options.resources {
-            if state.named.contains_key(&resource.name) {
-                return Err(VfsError::Unsupported(format!(
-                    "duplicate named resource '{}'",
-                    resource.name
-                )));
-            }
-            let handle =
-                state.insert_path_resource(resource.path, resource.format, resource.permissions)?;
-            state.named.insert(resource.name, handle);
-        }
         for cache in options.caches {
             if !cache.path.is_absolute() {
                 return Err(VfsError::Unsupported(format!(
@@ -246,31 +226,30 @@ impl FilesystemState {
         Ok(ResourceHandle::Tree(handle))
     }
 
-    fn insert_path_resource(
-        &mut self,
-        path: PathBuf,
-        kind: PluginResourceFormat,
-        permissions: Permissions,
-    ) -> Result<ResourceHandle, VfsError> {
-        Ok(match kind {
-            PluginResourceFormat::Directory => {
-                ResourceHandle::Tree(self.insert_volume(Resource::new(
-                    Arc::new(PackageDirectoryFactory::new(path.clone())),
-                    permissions,
-                    ResourceOrigin::Package(path.display().to_string()),
-                )))
-            }
-            PluginResourceFormat::Asar => ResourceHandle::Tree(self.insert_volume(Resource::new(
+    fn insert_path_resource(&mut self, path: PathBuf) -> Result<ResourceHandle, VfsError> {
+        let permissions = Permissions::from_str("rx").expect("canonical package permissions");
+        if path.is_dir() {
+            return Ok(ResourceHandle::Tree(self.insert_volume(Resource::new(
+                Arc::new(PackageDirectoryFactory::new(path.clone())),
+                permissions,
+                ResourceOrigin::Package(path.display().to_string()),
+            ))));
+        }
+        if path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("asar"))
+        {
+            return Ok(ResourceHandle::Tree(self.insert_volume(Resource::new(
                 Arc::new(AsarVolumeFactory::new(path.clone())),
                 permissions,
                 ResourceOrigin::Asar(path.display().to_string()),
-            ))),
-            PluginResourceFormat::File => ResourceHandle::File(self.insert_file(Resource::new(
-                Arc::new(HostFileFactory::new(path.clone(), false)),
-                permissions,
-                ResourceOrigin::Package(path.display().to_string()),
-            ))),
-        })
+            ))));
+        }
+        Ok(ResourceHandle::File(self.insert_file(Resource::new(
+            Arc::new(HostFileFactory::new(path.clone(), false)),
+            permissions,
+            ResourceOrigin::Package(path.display().to_string()),
+        ))))
     }
 
     fn insert_volume(
@@ -335,18 +314,10 @@ impl FilesystemState {
             .any(|component| !matches!(component, HostComponent::Normal(_)))
         {
             return Err(VfsError::Unsupported(format!(
-                "pkg: source escapes its package: {source}"
+                "pkg: source must contain only normal path components: {source}"
             )));
         }
-        let candidate = self.package_root.join(relative);
-        reject_links(&self.package_root, relative)?;
-        let canonical = candidate.canonicalize()?;
-        if !canonical.starts_with(&self.package_root) {
-            return Err(VfsError::Unsupported(format!(
-                "pkg: source escapes its package: {source}"
-            )));
-        }
-        Ok(canonical)
+        Ok(self.package_root.join(relative))
     }
 
     fn handle(&self, kind: &str, token: &str) -> Result<ResourceHandle, VfsError> {
@@ -616,22 +587,6 @@ pub(crate) fn discard_staged(runtime: &mut JsRuntime) {
         .borrow_mut::<FilesystemState>()
         .staged_files
         .clear();
-}
-
-fn reject_links(root: &Path, relative: &Path) -> Result<(), VfsError> {
-    let mut current = root.to_owned();
-    for component in relative.components() {
-        current.push(component.as_os_str());
-        if std::fs::symlink_metadata(&current)?
-            .file_type()
-            .is_symlink()
-        {
-            return Err(VfsError::Unsupported(
-                "pkg: sources cannot traverse links".into(),
-            ));
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

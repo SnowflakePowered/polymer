@@ -7,13 +7,6 @@ main = "retroarch.ts"
 [plugin.config]
 bios = "D:\\bios\\ps2\\scph-39001.BIN"
 
-[[plugin.resources]]
-name = "runtime"
-target = "x86_64-pc-windows-msvc"
-source = "pkg:bin/win-x64"
-format = "directory"
-mode = "rx"
-
 [emulator]
 platforms = ["SONY_PS2"]
 

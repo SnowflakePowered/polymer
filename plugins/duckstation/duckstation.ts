@@ -1,6 +1,8 @@
+import runtime from "pkg:bin/win-x64";
+import { actions } from "polymer:actions";
 import config from "pkg:plugin.toml";
-import type { Actions, Configuration as HostConfiguration, Filesystem, PauseResumeContext, Resource } from "../plugin-api.ts";
-import { HotkeyParser } from "./hotkeys.ts";
+import type { Configuration as HostConfiguration, Filesystem, PauseResumeContext, Resource } from "polymer:api";
+import { HotkeyParser } from "pkg:hotkeys.ts";
 
 type Configuration = HostConfiguration<{
         main: {
@@ -43,12 +45,10 @@ type Configuration = HostConfiguration<{
         input_sources: { sdl: boolean },
 }>;
 type EmulatorLaunchArgs = {
-    actions: Actions,
     launchPath: string,
     console: string,
     configuration: Configuration,
     filesystem: Filesystem,
-    resources: { runtime: Resource },
     storage: Readonly<{ card1?: Resource, card2?: Resource }>,
 };
 
@@ -70,7 +70,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     const gameName = basename(args.launchPath);
     const path = (virtualPath: string) => args.filesystem.path(virtualPath);
 
-    args.filesystem.mountTree("/DuckStation", args.resources.runtime, { mode: "rx" });
+    args.filesystem.mountTree("/DuckStation", runtime, { mode: "rx" });
     args.filesystem.mountFile("/DuckStation/portable.txt", new Uint8Array(), { mode: "r" });
     args.filesystem.mountFile("/DuckStation/duckstation.log", new Uint8Array(), { mode: "rw" });
     args.filesystem.mountScratch("/User", { mode: "rwx", backing: "temporary" });
@@ -137,7 +137,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
 export const onParseHotkey = (expression: string) => HotkeyParser.pcsx2(expression);
 
 export const onPauseResume = (context: PauseResumeContext) => {
-    context.actions.pause?.activate();
+    actions.pause?.activate();
 };
 
 export default { onLaunch, onParseHotkey, onPauseResume };

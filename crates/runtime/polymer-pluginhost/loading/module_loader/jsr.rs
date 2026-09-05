@@ -60,7 +60,19 @@ impl PluginModuleLoader {
         if let Ok(bytes) = tokio::fs::read(&path).await {
             return Ok(bytes);
         }
-        let response = reqwest::get(url)
+        let mut permissions = polymer_deno::Runtime::network_permissions(&self.network_hosts)
+            .map_err(|error| ModuleLoaderError::type_error(error.to_string()))?;
+        let target = ModuleSpecifier::parse(url).map_err(ModuleLoaderError::from_err)?;
+        permissions
+            .check_net_url(&target, "JSR import")
+            .map_err(ModuleLoaderError::from_err)?;
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|error| ModuleLoaderError::generic(error.to_string()))?;
+        let response = client
+            .get(url)
+            .send()
             .await
             .map_err(|error| ModuleLoaderError::generic(error.to_string()))?
             .error_for_status()

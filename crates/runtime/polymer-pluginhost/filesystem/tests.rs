@@ -68,7 +68,7 @@ fn declared_cache_is_lazy_persistent_and_reused() {
 }
 
 #[test]
-fn javascript_mount_cache_returns_a_mountable_tree_capability() {
+fn javascript_cache_resource_returns_a_mountable_tree_capability() {
     let package = tempfile::tempdir().unwrap();
     let storage = tempfile::tempdir().unwrap();
     let cache_path = storage.path().join("plugin-cache");
@@ -86,7 +86,7 @@ fn javascript_mount_cache_returns_a_mountable_tree_capability() {
         .execute_script(
             "polymer:test/cache.js",
             r#"
-                    const cache = __polymerFilesystem.filesystem.mountCache("shaders");
+                    const cache = __polymerFilesystem.cacheResource("shaders");
                     __polymerFilesystem.filesystem.mountTree(
                       "/Cache", cache, { mode: "rwx" });
                 "#,

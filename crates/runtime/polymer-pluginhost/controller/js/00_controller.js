@@ -1,28 +1,22 @@
-import { uiAutomation } from "ext:polymer_automation/00_automation.js";
-
-function context(topology, previousTopology, configuration, filesystem, actions) {
+function context(topology, previousTopology, configuration, filesystem) {
   return Object.freeze({
     topology: Object.freeze(topology),
     previousTopology: Object.freeze(previousTopology),
     configuration,
     filesystem,
-    ui: uiAutomation,
-    actions,
   });
 }
 
-function pauseContext(pauseState, actions) {
-  return Object.freeze({ pauseState, actions, ui: uiAutomation });
+function pauseContext(pauseState) {
+  return Object.freeze({ pauseState });
 }
 
-function stateContext(slot, actions, filesystem, directory) {
-  return Object.freeze({ slot, actions, ui: uiAutomation, filesystem, directory });
+function stateContext(slot, filesystem, directory) {
+  return Object.freeze({ slot, filesystem, directory });
 }
 
 function quitContext(active) {
   return Object.freeze({
-    actions: active.actions,
-    ui: uiAutomation,
     filesystem: __polymerFilesystem.filesystem,
     directory: active.saveStateDirectory,
     launchPath: active.launch.launchPath,

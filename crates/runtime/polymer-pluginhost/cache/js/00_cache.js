@@ -58,9 +58,14 @@ function file(key, path, options) {
 
 const caches = Object.create(null);
 for (const key of op_cache_keys()) {
+  let cache;
   Object.defineProperty(caches, key, {
     enumerable: true,
-    value: Object.freeze({ open(path, options = {}) { return file(key, plainPath(path), options); } }),
+    get() {
+      return cache ??= globalThis.__polymerFilesystem.cacheResource(key, {
+        open(path, options = {}) { return file(key, plainPath(path), options); },
+      });
+    },
   });
 }
 Object.freeze(caches);

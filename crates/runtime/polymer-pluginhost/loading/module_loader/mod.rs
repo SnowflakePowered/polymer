@@ -13,7 +13,9 @@ mod jsr;
 
 const PLUGIN_SCHEME: &str = "pkg";
 const PLUGIN_HOST: &str = "plugin";
-const RESOURCE_SCHEME: &str = "polymer-resource";
+const API_MODULE: &str = "polymer:api";
+const UI_AUTOMATION_MODULE: &str = "polymer:uiautomation";
+const ACTIONS_MODULE: &str = "polymer:actions";
 const PLUGIN_STORAGE_MODULE: &str = "polymer:pluginStorage";
 const CACHE_MODULE: &str = "polymer:cache";
 const DATABASE_MODULE: &str = "polymer:database";
@@ -26,6 +28,7 @@ pub struct PluginModuleLoader {
     root: Arc<PathBuf>,
     base: ModuleSpecifier,
     jsr_cache: Option<Arc<PathBuf>>,
+    network_hosts: Vec<String>,
 }
 
 impl PluginModuleLoader {
@@ -37,6 +40,7 @@ impl PluginModuleLoader {
             root: Arc::new(root),
             base,
             jsr_cache: None,
+            network_hosts: Vec::new(),
         }
     }
 
@@ -50,52 +54,17 @@ impl PluginModuleLoader {
         &self.id
     }
 
+    pub(crate) fn with_network_hosts(mut self, hosts: Vec<String>) -> Self {
+        self.network_hosts = hosts;
+        self
+    }
+
+    pub(crate) fn network_hosts(&self) -> &[String] {
+        &self.network_hosts
+    }
+
     pub fn root(&self) -> &std::path::Path {
         &self.root
-    }
-
-    pub fn owns(&self, specifier: &ModuleSpecifier) -> bool {
-        specifier.as_str().starts_with(self.base.as_str())
-    }
-
-    fn resource_specifier(&self, specifier: &str) -> Result<ModuleSpecifier, ModuleLoaderError> {
-        let name = specifier
-            .strip_prefix("resources:")
-            .expect("resource resolution is only called for resources: specifiers");
-        if name.is_empty()
-            || name.chars().any(|character| {
-                !(character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
-            })
-        {
-            return Err(ModuleLoaderError::type_error(format!(
-                "resources: import requires a declared resource name: {specifier}"
-            )));
-        }
-        ModuleSpecifier::parse(&format!(
-            "{RESOURCE_SCHEME}://{PLUGIN_HOST}/{}/{name}",
-            self.id
-        ))
-        .map_err(ModuleLoaderError::from_err)
-    }
-
-    fn resource_name<'a>(&self, specifier: &'a ModuleSpecifier) -> Option<&'a str> {
-        let prefix = format!("{RESOURCE_SCHEME}://{PLUGIN_HOST}/{}/", self.id);
-        specifier.as_str().strip_prefix(&prefix)
-    }
-
-    pub fn specifier(&self, path: &std::path::Path) -> Result<ModuleSpecifier, ModuleLoaderError> {
-        let found = path.canonicalize().map_err(ModuleLoaderError::from_err)?;
-        if !found.starts_with(self.root()) {
-            return Err(ModuleLoaderError::type_error(format!(
-                "plugin module escapes package root: {}",
-                found.display()
-            )));
-        }
-        let relative = found.strip_prefix(self.root()).expect("root was checked");
-        let relative = relative.to_string_lossy().replace('\\', "/");
-        self.base
-            .join(&relative)
-            .map_err(ModuleLoaderError::from_err)
     }
 
     pub(crate) fn package_specifier(
@@ -163,14 +132,7 @@ impl PluginModuleLoader {
         let path = file.to_file_path().map_err(|()| {
             ModuleLoaderError::type_error(format!("plugin module is not a file path: {file}"))
         })?;
-        let found = path.canonicalize().map_err(ModuleLoaderError::from_err)?;
-        if !found.starts_with(self.root()) {
-            return Err(ModuleLoaderError::type_error(format!(
-                "plugin module escapes package root: {}",
-                found.display()
-            )));
-        }
-        Ok(found)
+        Ok(path)
     }
 
     fn load_source(
@@ -179,6 +141,32 @@ impl PluginModuleLoader {
         module_type: ModuleType,
     ) -> Result<ModuleSource, ModuleLoaderError> {
         let path = self.path(specifier)?;
+        if path.is_dir()
+            || path
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("asar"))
+        {
+            if module_type != ModuleType::JavaScript {
+                return Err(ModuleLoaderError::type_error(
+                    "package directories must be imported as JavaScript resources",
+                ));
+            }
+            let relative = specifier
+                .as_str()
+                .strip_prefix(self.base.as_str())
+                .expect("package ownership was checked");
+            let source = format!("pkg:{relative}");
+            let code = include_str!("js/03_resource.js").replace(
+                "__POLYMER_RESOURCE__",
+                &serde_json::to_string(&source).expect("package URL is JSON-compatible"),
+            );
+            return Ok(ModuleSource::new(
+                ModuleType::JavaScript,
+                ModuleSourceCode::String(code.into()),
+                specifier,
+                None,
+            ));
+        }
         let code = std::fs::read(&path).map_err(ModuleLoaderError::from_err)?;
         let code = self.transform_source(specifier, code)?;
         Ok(ModuleSource::new(
@@ -244,43 +232,39 @@ impl ModuleLoader for PluginModuleLoader {
         referrer: &str,
         _kind: ResolutionKind,
     ) -> Result<ModuleSpecifier, ModuleLoaderError> {
-        let resolved = if matches!(
+        if matches!(
             specifier,
-            PLUGIN_STORAGE_MODULE | CACHE_MODULE | DATABASE_MODULE
+            API_MODULE
+                | UI_AUTOMATION_MODULE
+                | ACTIONS_MODULE
+                | PLUGIN_STORAGE_MODULE
+                | CACHE_MODULE
+                | DATABASE_MODULE
         ) {
-            ModuleSpecifier::parse(specifier).map_err(ModuleLoaderError::from_err)?
-        } else if specifier.starts_with("jsr:") {
-            self.resolve_jsr(specifier)?
-        } else if specifier.starts_with("resources:") {
-            self.resource_specifier(specifier)?
-        } else if specifier.starts_with("pkg:") && !specifier.starts_with("pkg://") {
-            self.resolve_package(specifier)?
-        } else {
-            resolve_import(specifier, referrer).map_err(ModuleLoaderError::from_err)?
-        };
-        if resolved.origin().ascii_serialization() == JSR_ORIGIN
-            && !specifier.starts_with("jsr:")
-            && ModuleSpecifier::parse(referrer)
-                .map(|value| value.origin().ascii_serialization() != JSR_ORIGIN)
-                .unwrap_or(true)
-        {
-            return Err(ModuleLoaderError::type_error(
-                "plugins must import JSR packages through a jsr: specifier",
-            ));
+            return ModuleSpecifier::parse(specifier).map_err(ModuleLoaderError::from_err);
         }
-        if !matches!(
-            resolved.as_str(),
-            PLUGIN_STORAGE_MODULE | CACHE_MODULE | DATABASE_MODULE
-        ) && !self.owns(&resolved)
-            && self.resource_name(&resolved).is_none()
-            && resolved.origin().ascii_serialization() != JSR_ORIGIN
-        {
-            return Err(ModuleLoaderError::type_error(format!(
-                "plugin '{}' import escapes its package: {resolved}",
-                self.id
-            )));
+        if specifier.starts_with("jsr:") {
+            return self.resolve_jsr(specifier);
         }
-        Ok(resolved)
+        if specifier.starts_with(self.base.as_str()) {
+            return ModuleSpecifier::parse(specifier).map_err(ModuleLoaderError::from_err);
+        }
+        if specifier.starts_with("pkg:") && !specifier.starts_with("pkg://") {
+            return self.resolve_package(specifier);
+        }
+        // Registry dependencies resolve their own module graph, never local plugin paths.
+        if ModuleSpecifier::parse(referrer)
+            .is_ok_and(|url| url.origin().ascii_serialization() == JSR_ORIGIN)
+        {
+            let resolved =
+                resolve_import(specifier, referrer).map_err(ModuleLoaderError::from_err)?;
+            if resolved.origin().ascii_serialization() == JSR_ORIGIN {
+                return Ok(resolved);
+            }
+        }
+        Err(ModuleLoaderError::type_error(format!(
+            "unsupported plugin import '{specifier}': use pkg:, polymer:, or jsr:"
+        )))
     }
 
     fn load(
@@ -297,7 +281,28 @@ impl ModuleLoader for PluginModuleLoader {
                 async move { loader.load_jsr(specifier, module_type).await }.boxed_local(),
             );
         }
-        let source = if module_specifier.as_str() == PLUGIN_STORAGE_MODULE {
+        let source = if module_specifier.as_str() == API_MODULE {
+            Ok(ModuleSource::new(
+                ModuleType::JavaScript,
+                ModuleSourceCode::String("export {};".to_owned().into()),
+                module_specifier,
+                None,
+            ))
+        } else if module_specifier.as_str() == UI_AUTOMATION_MODULE {
+            Ok(ModuleSource::new(
+                ModuleType::JavaScript,
+                ModuleSourceCode::String(include_str!("js/05_ui_automation.js").to_owned().into()),
+                module_specifier,
+                None,
+            ))
+        } else if module_specifier.as_str() == ACTIONS_MODULE {
+            Ok(ModuleSource::new(
+                ModuleType::JavaScript,
+                ModuleSourceCode::String(include_str!("js/06_actions.js").to_owned().into()),
+                module_specifier,
+                None,
+            ))
+        } else if module_specifier.as_str() == PLUGIN_STORAGE_MODULE {
             Ok(ModuleSource::new(
                 ModuleType::JavaScript,
                 ModuleSourceCode::String(include_str!("js/00_plugin_storage.js").to_owned().into()),
@@ -315,17 +320,6 @@ impl ModuleLoader for PluginModuleLoader {
             Ok(ModuleSource::new(
                 ModuleType::JavaScript,
                 ModuleSourceCode::String(include_str!("js/02_database.js").to_owned().into()),
-                module_specifier,
-                None,
-            ))
-        } else if let Some(name) = self.resource_name(module_specifier) {
-            let code = include_str!("js/03_resource.js").replace(
-                "__POLYMER_RESOURCE__",
-                &serde_json::to_string(name).expect("resource name is JSON-compatible"),
-            );
-            Ok(ModuleSource::new(
-                ModuleType::JavaScript,
-                ModuleSourceCode::String(code.into()),
                 module_specifier,
                 None,
             ))
@@ -360,13 +354,13 @@ mod tests {
         let output = loader
             .transform_source(
                 &specifier,
-                br#"import type { Filesystem } from "../plugin-api.ts";
+                br#"import type { Filesystem } from "polymer:api";
                     export function setup(filesystem: Filesystem) { return Boolean(filesystem); }"#
                     .to_vec(),
             )
             .unwrap();
         let output = String::from_utf8(output).unwrap();
-        assert!(!output.contains("plugin-api"));
+        assert!(!output.contains("polymer:api"));
         assert!(output.contains("export function setup"));
     }
 
@@ -419,25 +413,25 @@ mod tests {
             let root = workspace.join("plugins").join(name).canonicalize().unwrap();
             let source = root.join(format!("{name}.ts"));
             let loader = PluginModuleLoader::new(name, root.clone());
-            let specifier = loader.specifier(&source).unwrap();
+            let specifier = loader
+                .package_specifier(source.strip_prefix(loader.root()).unwrap())
+                .unwrap();
             let output = loader
                 .transform_source(&specifier, std::fs::read(source).unwrap())
                 .unwrap();
             let output = String::from_utf8(output).unwrap();
-            assert!(!output.contains("../plugin-api.ts"));
+            assert!(!output.contains("polymer:api"));
             assert!(!output.contains("../hotkeys.ts"));
 
             let hotkeys = root.join("hotkeys.ts");
             if hotkeys.exists() {
-                let specifier = loader.specifier(&hotkeys).unwrap();
+                let specifier = loader
+                    .package_specifier(hotkeys.strip_prefix(loader.root()).unwrap())
+                    .unwrap();
                 let output = loader
                     .transform_source(&specifier, std::fs::read(hotkeys).unwrap())
                     .unwrap();
-                assert!(
-                    !String::from_utf8(output)
-                        .unwrap()
-                        .contains("../plugin-api.ts")
-                );
+                assert!(!String::from_utf8(output).unwrap().contains("polymer:api"));
             }
         }
     }
@@ -450,14 +444,12 @@ mod tests {
             .unwrap();
         let source = root.join("launchbox.ts");
         let loader = PluginModuleLoader::new("launchbox", root);
-        let specifier = loader.specifier(&source).unwrap();
+        let specifier = loader
+            .package_specifier(source.strip_prefix(loader.root()).unwrap())
+            .unwrap();
         let output = loader
             .transform_source(&specifier, std::fs::read(source).unwrap())
             .unwrap();
-        assert!(
-            !String::from_utf8(output)
-                .unwrap()
-                .contains("../plugin-api.ts")
-        );
+        assert!(!String::from_utf8(output).unwrap().contains("polymer:api"));
     }
 }

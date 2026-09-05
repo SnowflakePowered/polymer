@@ -1,6 +1,6 @@
 //! Common public identity for loaded plugins.
 
-use crate::loading::{PackageError, PluginCache, PluginModuleLoader, PluginResource};
+use crate::loading::{PluginCache, PluginModuleLoader};
 
 /// Runtime-neutral identity and package services shared by every plugin class.
 pub trait PluginInstance: Send + Sync + 'static {
@@ -9,10 +9,6 @@ pub trait PluginInstance: Send + Sync + 'static {
     fn class(&self) -> &str;
     fn module_loader(&self) -> &PluginModuleLoader;
     fn entrypoint(&self) -> &deno_core::ModuleSpecifier;
-
-    fn resources(&self) -> Result<Vec<PluginResource>, PackageError> {
-        Ok(Vec::new())
-    }
 
     fn caches(&self) -> &[PluginCache] {
         &[]

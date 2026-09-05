@@ -1,6 +1,6 @@
 // Plugin-worker filesystem API. This is intentionally separate from Polymer.*.
 import {
-  op_vfs_mount_cache,
+  op_vfs_cache_resource,
   op_vfs_mount_host_file,
   op_vfs_mount_host_tree,
   op_vfs_mount_file_bytes,
@@ -16,7 +16,7 @@ import {
   op_vfs_resource_entries,
   op_vfs_resource_remove,
   op_vfs_scratch_resource,
-  op_vfs_resources,
+  op_vfs_import_package,
   op_vfs_storage,
   op_vfs_quick_resume,
   op_vfs_set_profile,
@@ -29,9 +29,9 @@ const saveStateEntries = new WeakSet();
 const storageHandles = new WeakSet();
 const configurationMounts = [];
 
-function resource(description) {
+function resource(description, methods = {}) {
   if (description == null) return undefined;
-  const value = Object.freeze({ kind: description.kind, path: description.path });
+  const value = Object.freeze({ ...methods, kind: description.kind, path: description.path });
   handles.set(value, description);
   return value;
 }
@@ -83,14 +83,6 @@ function readableResource(description, saveState = false) {
   return value;
 }
 
-const namedResources = Object.create(null);
-for (const description of op_vfs_resources()) {
-  Object.defineProperty(namedResources, description.name, {
-    value: readableResource(description), enumerable: true, writable: false,
-  });
-}
-Object.freeze(namedResources);
-
 const storageResources = Object.create(null);
 for (const description of op_vfs_storage()) {
   const value = resource(description);
@@ -122,10 +114,6 @@ function pkgSource(value) {
 }
 
 const filesystem = Object.freeze({
-  mountCache(cacheKey) {
-    return resource(op_vfs_mount_cache(String(cacheKey)));
-  },
-
   mountHostTree(target, source, options) {
     op_vfs_mount_host_tree(String(target), String(source), mode(options));
   },
@@ -236,12 +224,11 @@ function refreshConfigurations() {
 Object.defineProperty(globalThis, "__polymerFilesystem", {
   value: Object.freeze({
     filesystem,
-    resources: namedResources,
-    importResource(name) {
-      if (!Object.hasOwn(namedResources, name)) {
-        throw new TypeError(`resource '${name}' is not declared by this plugin`);
-      }
-      return namedResources[name];
+    cacheResource(cacheKey, methods) {
+      return resource(op_vfs_cache_resource(String(cacheKey)), methods);
+    },
+    importResource(source) {
+      return readableResource(op_vfs_import_package(String(source)));
     },
     storage: storageResources,
     quickResume,

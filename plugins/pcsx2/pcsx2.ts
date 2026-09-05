@@ -1,13 +1,14 @@
+import runtime from "pkg:bin/win-x64";
+import { actions } from "polymer:actions";
 import config from "pkg:plugin.toml";
 import type {
-    Actions,
     Configuration as HostConfiguration,
     ControllerChangeContext as HostControllerChangeContext,
     Filesystem,
     Resource,
     PauseResumeContext,
-} from "../plugin-api.ts";
-import { HotkeyParser } from "./hotkeys.ts";
+} from "polymer:api";
+import { HotkeyParser } from "pkg:hotkeys.ts";
 
 type Configuration = HostConfiguration<{
         ui: {
@@ -42,12 +43,10 @@ type Configuration = HostConfiguration<{
 }>;
 
 type EmulatorLaunchArgs = {
-    actions: Actions,
     launchPath: string,
     console: string,
     configuration: Configuration,
     filesystem: Filesystem,
-    resources: { runtime: Resource },
     storage: Readonly<{ mem1?: Resource, mem2?: Resource }>,
 };
 
@@ -64,7 +63,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     // Keep the immutable PCSX2 distribution separate from invocation-local
     // state. Portable mode only needs its fixed `inis/` child to be writable;
     // every configurable data directory is redirected to /User below.
-    args.filesystem.mountTree("/PCSX2", args.resources.runtime, { mode: "rx" });
+    args.filesystem.mountTree("/PCSX2", runtime, { mode: "rx" });
     args.filesystem.mountScratch("/PCSX2/inis", { mode: "rwx", backing: "memory" });
     args.filesystem.mountScratch("/User", { mode: "rwx", backing: "temporary" });
     if (args.storage.mem1) {
@@ -134,7 +133,7 @@ export const onControllerChanged = (context: ControllerChangeContext) => {
 export const onParseHotkey = (expression: string) => HotkeyParser.pcsx2(expression);
 
 export const onPauseResume = (context: PauseResumeContext) => {
-    context.actions.pause?.activate();
+    actions.pause?.activate();
 };
 
 export default { onLaunch, onControllerChanged, onParseHotkey, onPauseResume };

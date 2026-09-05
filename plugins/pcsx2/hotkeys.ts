@@ -1,4 +1,4 @@
-import type { ParsedHotkey } from "../plugin-api.ts";
+import type { ParsedHotkey } from "polymer:api";
 
 export class HotkeyParser {
     static dolphin(expression: string): ParsedHotkey {

@@ -334,3 +334,5 @@ export const uiAutomation = Object.freeze({
     return Object.freeze(new UiWindow(window));
   },
 });
+
+Object.defineProperty(globalThis, "__polymerUiAutomation", { value: uiAutomation });

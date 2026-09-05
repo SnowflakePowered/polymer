@@ -4,7 +4,7 @@ import type {
     DirEntry,
     DirectoryResource,
     UserConfiguration,
-} from "../plugin-api.ts";
+} from "polymer:api";
 
 export type GraphicsApi = "vulkan" | "opengl";
 

@@ -1,5 +1,6 @@
+import runtime from "pkg:bin/win-x64";
 import config from "pkg:plugin.toml";
-import type { Configuration as HostConfiguration, Filesystem, Resource } from "../plugin-api.ts";
+import type { Configuration as HostConfiguration, Filesystem } from "polymer:api";
 
 type Configuration = HostConfiguration<{ core: { placeholder: boolean } }>;
 
@@ -8,7 +9,6 @@ type EmulatorLaunchArgs = {
     console: string,
     configuration: Configuration,
     filesystem: Filesystem,
-    resources: { runtime: Resource },
 };
 
 function basename(path: string): string {
@@ -32,7 +32,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     const biosName = basename(config.plugin.config.bios);
     const gameName = basename(args.launchPath);
 
-    args.filesystem.mountTree("/RetroArch", args.resources.runtime, { mode: "rx" });
+    args.filesystem.mountTree("/RetroArch", runtime, { mode: "rx" });
     args.filesystem.mountScratch("/User", { mode: "rwx", backing: "temporary" });
     args.filesystem.mountScratch("/User/saves", { mode: "rwx", backing: "temporary" });
     args.filesystem.mountScratch("/User/states", { mode: "rwx", backing: "temporary" });

@@ -1,22 +1,22 @@
-import graphicsPacks from "resources:graphicsPacks";
+import graphicsPacks from "pkg:bin/graphicsPacks";
+import { caches } from "polymer:cache";
 import { pluginStorage } from "polymer:pluginStorage";
 import type {
     Configuration as HostConfiguration,
     ConfigurationResult,
     ConfigureGame,
-    DirectoryResource,
     Filesystem,
     Resource,
     RepeatedSection,
     UserConfiguration,
-} from "../plugin-api.ts";
+} from "polymer:api";
 import {
     loadGraphicsPacks,
     normalizeTitleId,
     settleGraphicsPacks,
     type GraphicsApi,
     type GraphicsPack,
-} from "./graphics-packs.ts";
+} from "pkg:graphics-packs.ts";
 
 type Configuration = HostConfiguration<{
     content: {
@@ -40,7 +40,6 @@ type EmulatorLaunchArgs = {
     configuration: Configuration,
     userConfiguration?: UserConfiguration,
     filesystem: Filesystem,
-    resources: { runtime: Resource, graphicsPacks: DirectoryResource },
     storage: Readonly<{
         slc?: Resource,
         slccmpt?: Resource,
@@ -124,7 +123,7 @@ export function onLaunch(args: EmulatorLaunchArgs) {
     args.filesystem.mountTree("/Cemu/resources", new URL("pkg:bin/win-x64/resources"), { mode: "rx" });
     args.filesystem.mountTree("/Cemu/gameProfiles", new URL("pkg:bin/win-x64/gameProfiles"), { mode: "rx" });
     args.filesystem.mountTree("/Cemu/graphicPacks/downloadedGraphicPacks", graphicsPacks, { mode: "rx" });
-    args.filesystem.mountTree("/Cemu/shaderCache", args.filesystem.mountCache("shaderCache"), { mode: "rwx" });
+    args.filesystem.mountTree("/Cemu/shaderCache", caches.shaderCache, { mode: "rwx" });
     for (const [name, bytes] of Object.entries(args.configuration.render())) {
         args.filesystem.mountFile(`/Cemu/${name}`, bytes, { mode: "rw" });
     }

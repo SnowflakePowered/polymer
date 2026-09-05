@@ -116,6 +116,34 @@ pub struct Runtime {
 }
 
 impl Runtime {
+    pub fn network_permissions(
+        hosts: &[String],
+    ) -> Result<PermissionsContainer, deno_permissions::PermissionsFromOptionsError> {
+        let parser = Arc::new(RuntimePermissionDescriptorParser::new(
+            sys_traits::impls::RealSys,
+        ));
+        let permissions = deno_permissions::Permissions::from_options(
+            parser.as_ref(),
+            &deno_permissions::PermissionsOptions {
+                allow_net: (!hosts.is_empty()).then(|| hosts.to_vec()),
+                prompt: false,
+                ..Default::default()
+            },
+        )?;
+        Ok(PermissionsContainer::new(parser, permissions))
+    }
+
+    pub fn restrict_network(
+        &mut self,
+        hosts: &[String],
+    ) -> Result<(), deno_permissions::PermissionsFromOptionsError> {
+        self.js_runtime
+            .op_state()
+            .borrow_mut()
+            .put(Self::network_permissions(hosts)?);
+        Ok(())
+    }
+
     pub fn new(mut options: RuntimeOptions) -> Self {
         // A workspace embedder can unify rustls dependencies that select both
         // built-in providers. Pick the provider used by Deno's networking
@@ -358,5 +386,52 @@ mod tests {
         deno_core::scope!(scope, runtime.js_runtime_mut());
         let value = deno_core::v8::Local::new(scope, value);
         assert_eq!(value.to_rust_string_lossy(scope), r#"["ready","timer"]"#);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn network_whitelist_denies_unlisted_hosts_and_empty_lists() {
+        let mut permissions = Runtime::network_permissions(&["example.com:443".to_owned()]).unwrap();
+        for (url, allowed) in [
+            ("https://example.com/path", true),
+            ("http://example.com/path", false),
+            ("https://sub.example.com/path", false),
+            ("https://example.com.evil.test/path", false),
+        ] {
+            assert_eq!(
+                permissions
+                    .check_net_url(&ModuleSpecifier::parse(url).unwrap(), "test")
+                    .is_ok(),
+                allowed,
+                "{url}"
+            );
+        }
+        let mut runtime = runtime();
+        runtime.restrict_network(&[]).unwrap();
+        runtime
+            .js_runtime_mut()
+            .execute_script(
+                "polymer:test/network.js",
+                r#"
+            globalThis.networkDenied = false;
+            fetch("https://example.com/").catch(() => networkDenied = true);
+        "#,
+            )
+            .unwrap();
+        runtime
+            .run_up_to_duration(Duration::from_secs(1))
+            .await
+            .unwrap();
+        runtime
+            .js_runtime_mut()
+            .execute_script(
+                "polymer:test/network-result.js",
+                r#"
+            if (!networkDenied) throw new Error("empty whitelist allowed networking");
+            let denied = false;
+            try { new WebSocket("wss://example.com/"); } catch { denied = true; }
+            if (!denied) throw new Error("empty whitelist allowed WebSocket");
+        "#,
+            )
+            .unwrap();
     }
 }

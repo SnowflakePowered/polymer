@@ -33,7 +33,6 @@ impl WorkerOptions {
         filesystem.scratch_root = Some(directories.plugin_scratch(plugin.id()));
         filesystem.storage = storage;
         filesystem.quick_resume = quick_resume;
-        filesystem.resources = plugin.resources()?;
         let cache = crate::cache::CacheOptions::for_plugin(directories, plugin);
         filesystem.caches = cache.filesystem_caches();
         Ok(Self {
@@ -84,7 +83,8 @@ pub(super) fn create_worker_runtime(
     } = options;
     let main_module =
         deno_core::ModuleSpecifier::parse(entrypoint).map_err(PluginInvocationError::worker)?;
-    Ok(polymer_deno::Runtime::new(polymer_deno::RuntimeOptions {
+    let network_hosts = loader.network_hosts().to_vec();
+    let mut runtime = polymer_deno::Runtime::new(polymer_deno::RuntimeOptions {
         main_module,
         module_loader: Rc::new(loader),
         extensions: vec![
@@ -103,7 +103,11 @@ pub(super) fn create_worker_runtime(
         user_agent: format!("PolymerPluginHost/{}", env!("CARGO_PKG_VERSION")),
         local_storage: None,
         inspect: false,
-    }))
+    });
+    runtime
+        .restrict_network(&network_hosts)
+        .map_err(PluginInvocationError::worker)?;
+    Ok(runtime)
 }
 
 pub(super) async fn invoke_scrape_generator(

@@ -1,3 +1,6 @@
+import runtime from "pkg:bin/win-x64";
+import { uiAutomation } from "polymer:uiautomation";
+import { actions } from "polymer:actions";
 import type {
     Actions,
     Configuration as HostConfiguration,
@@ -15,8 +18,8 @@ import type {
     StateContext,
     UiNodeSnapshot,
     UserConfiguration,
-} from "../plugin-api.ts";
-import { HotkeyParser } from "./hotkeys.ts";
+} from "polymer:api";
+import { HotkeyParser } from "pkg:hotkeys.ts";
 
 type Configuration = HostConfiguration<{
         main: {
@@ -64,14 +67,12 @@ type Package = Readonly<{
 }>;
 
 type EmulatorLaunchArgs = {
-    actions: Actions,
     launchPath: string,
     console: string,
     package: Package,
     controllerTopology: ControllerTopology,
     configuration: Configuration,
     filesystem: Filesystem,
-    resources: { runtime: Resource },
     storage: Readonly<{ nand?: Resource, slotA?: Resource, slotB?: Resource }>,
     userConfiguration?: UserConfiguration,
     saveStates: Readonly<{
@@ -262,13 +263,13 @@ async function applyWiiConnectionChanges(
 
     // The control window title is Dolphin's source revision. The render window
     // appends pipe-delimited CPU, graphics, audio, and optional game details.
-    const dolphin = await context.ui.waitForWindow({
+    const dolphin = await uiAutomation.waitForWindow({
         pattern: "^Dolphin [^|]+$",
         selector: 'button[name="Controllers"]',
     });
     await dolphin.locator('button[name="Controllers"]').nth(1).press();
 
-    const settings = await context.ui.waitForWindow({
+    const settings = await uiAutomation.waitForWindow({
         pattern: "^Settings$",
         selector: 'group[name="Wii Remotes"] combo_box[enabled="true"]',
     });
@@ -331,13 +332,13 @@ async function applyWiiConnectionChanges(
             if (!mappingReloadPorts.has(port)) continue;
             const mappingStarted = Date.now();
             const pattern = `^Wii Remote ${port + 1}$`;
-            const staleWindows = await context.ui.windows({ pattern });
+            const staleWindows = await uiAutomation.windows({ pattern });
             for (const stale of staleWindows) {
                 await stale.locator(DOLPHIN_WINDOW_CLOSE_SELECTOR).nth(1).press();
             }
             if (staleWindows.length !== 0) {
                 const cleanupStarted = Date.now();
-                while ((await context.ui.windows({ pattern })).length !== 0) {
+                while ((await uiAutomation.windows({ pattern })).length !== 0) {
                     if (Date.now() - cleanupStarted >= 2_000) {
                         throw new Error(`Dolphin Wii Remote ${port + 1} configuration did not close`);
                     }
@@ -345,7 +346,7 @@ async function applyWiiConnectionChanges(
                 }
             }
             await configure.nth(port + 1).press();
-            const mapping = await context.ui.waitForWindow({
+            const mapping = await uiAutomation.waitForWindow({
                 pattern,
             });
             try {
@@ -423,7 +424,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     // visible as files and be passed to Dolphin with -e.
     const launchesNandTitle = isWii && !isDiscImage(gameName);
 
-    args.filesystem.mountTree("/Dolphin", args.resources.runtime, { mode: "rx" });
+    args.filesystem.mountTree("/Dolphin", runtime, { mode: "rx" });
     args.filesystem.mountScratch("/User", { mode: "rwx", backing: "temporary" });
     args.filesystem.mountTree("/User/StateSaves", args.saveStates.directory, { mode: "rwx" });
     args.filesystem.mountFile(
@@ -583,7 +584,7 @@ export const onControllerChanged = async (context: ControllerChangeContext) => {
 export const onParseHotkey = (expression: string) => HotkeyParser.dolphin(expression);
 
 export const onPauseResume = (context: PauseResumeContext) => {
-    context.actions.pause?.activate();
+    actions.pause?.activate();
 };
 
 function nativeSlot(slot: number): number {
@@ -624,20 +625,20 @@ function activateStateAction(actions: Actions, operation: "load" | "save", slot:
 export const onStateSave = async (context: StateContext) => {
     const slot = nativeSlot(context.slot);
     await removeNativeState(context.directory, slot);
-    activateStateAction(context.actions, "save", slot);
+    activateStateAction(actions, "save", slot);
     await awaitNativeState(context.directory, slot);
 }
 
 export const onStateResume = (context: StateContext) => {
     const slot = nativeSlot(context.slot);
-    activateStateAction(context.actions, "load", slot);
+    activateStateAction(actions, "load", slot);
 }
 
 export const onQuit = async (context: QuitContext): Promise<FileEntry | null> => {
     if (!quickResumeEnabled(context.userConfiguration) || isNKit(context.launchPath)) return null;
     const slot = 10;
     await removeNativeState(context.directory, slot);
-    activateStateAction(context.actions, "save", slot);
+    activateStateAction(actions, "save", slot);
     return await awaitNativeState(context.directory, slot);
 }
 

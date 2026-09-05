@@ -1,5 +1,6 @@
+import runtime from "pkg:bin/win-x64";
 import config from "pkg:plugin.toml";
-import type { Configuration as HostConfiguration, Filesystem, Resource } from "../plugin-api.ts";
+import type { Configuration as HostConfiguration, Filesystem, Resource } from "polymer:api";
 
 type Configuration = HostConfiguration;
 
@@ -8,7 +9,6 @@ type EmulatorLaunchArgs = {
     console: string,
     configuration: Configuration,
     filesystem: Filesystem,
-    resources: { runtime: Resource },
     storage: Readonly<{ vmu?: Resource }>,
 };
 
@@ -32,7 +32,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     const flashName = basename(config.plugin.config.flash);
     const path = (virtualPath: string) => args.filesystem.path(virtualPath);
 
-    args.filesystem.mountTree("/Flycast", args.resources.runtime, { mode: "rx" });
+    args.filesystem.mountTree("/Flycast", runtime, { mode: "rx" });
     args.filesystem.mountScratch("/Flycast/data", { mode: "rwx", backing: "temporary" });
     args.filesystem.mountFile(
         "/Flycast/emu.cfg",

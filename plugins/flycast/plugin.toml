@@ -8,13 +8,6 @@ main = "flycast.ts"
 bios = "D:\\bios\\dreamcast\\dc_boot.bin"
 flash = "D:\\bios\\dreamcast\\dc_flash.bin"
 
-[[plugin.resources]]
-name = "runtime"
-target = "x86_64-pc-windows-msvc"
-source = "pkg:bin/win-x64"
-format = "directory"
-mode = "rx"
-
 [emulator]
 platforms = ["SEGA_DC"]
 

@@ -1,4 +1,3 @@
-use polymer_vfs::Permissions;
 use serde::{Deserialize, de::DeserializeOwned};
 use std::{
     collections::BTreeSet,
@@ -15,115 +14,23 @@ struct PluginBlock {
     class: String,
     main: PathBuf,
     #[serde(default)]
-    resources: Vec<ResourceBlock>,
-    #[serde(default)]
     caches: Vec<PluginCache>,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum PluginResourceFormat {
-    Directory,
-    Asar,
-    File,
-}
-
-#[derive(Debug, Deserialize)]
-struct ResourceBlock {
-    name: String,
-    source: String,
-    format: PluginResourceFormat,
-    mode: String,
     #[serde(default)]
-    target: Option<String>,
+    permissions: PluginPermissions,
 }
 
-impl ResourceBlock {
-    fn validate_all(root: &Path, resources: &[Self]) -> Result<(), PackageError> {
-        let mut keys = BTreeSet::new();
-        for resource in resources {
-            if resource.name.is_empty()
-                || !resource
-                    .name
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-            {
-                return Err(PackageError::InvalidResourceName(resource.name.clone()));
-            }
-            if !keys.insert((resource.name.clone(), resource.target.clone())) {
-                return Err(PackageError::DuplicateResource {
-                    name: resource.name.clone(),
-                    target: resource.target.clone(),
-                });
-            }
-            let parsed = resource.materialize(root)?;
-            match parsed.format {
-                PluginResourceFormat::Directory if !parsed.path.is_dir() => {
-                    return Err(PackageError::InvalidResourceType(resource.name.clone()));
-                }
-                PluginResourceFormat::Asar | PluginResourceFormat::File
-                    if !parsed.path.is_file() =>
-                {
-                    return Err(PackageError::InvalidResourceType(resource.name.clone()));
-                }
-                _ => {}
-            }
-        }
-        Ok(())
-    }
-
-    fn materialize(&self, root: &Path) -> Result<PluginResource, PackageError> {
-        let source = self
-            .source
-            .strip_prefix("pkg:")
-            .ok_or_else(|| PackageError::InvalidResourceSource(self.source.clone()))?;
-        let relative = Path::new(source);
-        if source.is_empty()
-            || source.starts_with('/')
-            || source.contains(['\\', '?', '#'])
-            || relative
-                .components()
-                .any(|component| !matches!(component, std::path::Component::Normal(_)))
-        {
-            return Err(PackageError::InvalidResourceSource(self.source.clone()));
-        }
-        let permissions = self.mode.parse()?;
-        let authority: Permissions = "rx".parse().expect("canonical permission constant");
-        if !authority.contains(permissions) {
-            return Err(PackageError::Vfs(
-                polymer_vfs::VfsError::AuthorityExceeded {
-                    authority,
-                    requested: permissions,
-                },
-            ));
-        }
-        Ok(PluginResource {
-            name: self.name.clone(),
-            path: confined_path(root, relative)?,
-            format: self.format,
-            permissions,
-        })
-    }
-
-    fn current_target() -> String {
-        let architecture = std::env::consts::ARCH;
-        let suffix = if cfg!(target_os = "windows") {
-            "pc-windows-msvc"
-        } else if cfg!(target_os = "linux") {
-            "unknown-linux-gnu"
-        } else {
-            std::env::consts::OS
-        };
-        format!("{architecture}-{suffix}")
-    }
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PluginPermissions {
+    #[serde(default)]
+    net: NetworkPermissions,
 }
 
-#[derive(Clone, Debug)]
-pub struct PluginResource {
-    pub name: String,
-    pub path: PathBuf,
-    pub format: PluginResourceFormat,
-    pub permissions: Permissions,
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+struct NetworkPermissions {
+    #[serde(default)]
+    allowed_hosts: Vec<String>,
 }
 
 /// Persistent, plugin-local cache storage declared by a package.
@@ -192,7 +99,6 @@ impl<B: DeserializeOwned> PluginPackage<B> {
         {
             return Err(PackageError::InvalidPluginId(plugin.id));
         }
-        ResourceBlock::validate_all(&root, &plugin.resources)?;
         PluginCache::validate_all(&plugin.caches)?;
         if plugin.main.as_os_str().is_empty()
             || plugin.main.is_absolute()
@@ -203,7 +109,10 @@ impl<B: DeserializeOwned> PluginPackage<B> {
         {
             return Err(PackageError::InvalidPluginMain(plugin.main));
         }
-        let module_loader = crate::loading::PluginModuleLoader::new(&plugin.id, root.clone());
+        polymer_deno::Runtime::network_permissions(&plugin.permissions.net.allowed_hosts)
+            .map_err(|error| PackageError::ModuleSpecifier(error.to_string()))?;
+        let module_loader = crate::loading::PluginModuleLoader::new(&plugin.id, root.clone())
+            .with_network_hosts(plugin.permissions.net.allowed_hosts.clone());
         let entrypoint = module_loader
             .package_specifier(&plugin.main)
             .map_err(|error| PackageError::ModuleSpecifier(error.to_string()))?;
@@ -280,30 +189,6 @@ where
         &self.entrypoint
     }
 
-    fn resources(&self) -> Result<Vec<PluginResource>, PackageError> {
-        let target = ResourceBlock::current_target();
-        let mut names = BTreeSet::new();
-        let mut selected = Vec::new();
-        for resource in self
-            .plugin
-            .resources
-            .iter()
-            .filter(|resource| resource.target.as_deref() == Some(target.as_str()))
-        {
-            names.insert(resource.name.clone());
-            selected.push(resource.materialize(&self.root)?);
-        }
-        for resource in self
-            .plugin
-            .resources
-            .iter()
-            .filter(|resource| resource.target.is_none() && !names.contains(&resource.name))
-        {
-            selected.push(resource.materialize(&self.root)?);
-        }
-        Ok(selected)
-    }
-
     fn caches(&self) -> &[PluginCache] {
         &self.plugin.caches
     }
@@ -356,17 +241,6 @@ pub enum PackageError {
     ModuleSpecifier(String),
     #[error(transparent)]
     Vfs(#[from] polymer_vfs::VfsError),
-    #[error("invalid plugin resource name '{0}'")]
-    InvalidResourceName(String),
-    #[error("duplicate plugin resource '{name}' for target {target:?}")]
-    DuplicateResource {
-        name: String,
-        target: Option<String>,
-    },
-    #[error("plugin resource source must be a confined pkg: URL: {0}")]
-    InvalidResourceSource(String),
-    #[error("plugin resource '{0}' does not match its declared format")]
-    InvalidResourceType(String),
     #[error("invalid plugin cache key '{0}'")]
     InvalidCacheKey(String),
     #[error("plugin cache '{0}' must have a non-empty label")]

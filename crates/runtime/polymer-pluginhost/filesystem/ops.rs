@@ -49,13 +49,17 @@ fn js_error(error: impl std::fmt::Display) -> JsErrorBox {
 
 #[op2]
 #[serde]
-fn op_vfs_resources(state: &mut OpState) -> Vec<JsResource> {
-    state
-        .borrow::<FilesystemState>()
-        .named
-        .iter()
-        .map(|(name, handle)| JsResource::new(Some(name.clone()), *handle))
-        .collect()
+fn op_vfs_import_package(
+    state: &mut OpState,
+    #[string] source: String,
+) -> Result<JsResource, JsErrorBox> {
+    let vfs = state.borrow_mut::<FilesystemState>();
+    let path = vfs.package_path(&source).map_err(js_error)?;
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned());
+    let handle = vfs.insert_path_resource(path).map_err(js_error)?;
+    Ok(JsResource::new(name, handle))
 }
 
 #[op2]
@@ -138,7 +142,7 @@ fn op_vfs_scratch_resource(
 
 #[op2]
 #[serde]
-fn op_vfs_mount_cache(
+fn op_vfs_cache_resource(
     state: &mut OpState,
     #[string] key: String,
 ) -> Result<JsResource, JsErrorBox> {
@@ -245,22 +249,17 @@ fn op_vfs_mount_tree_pkg(
         .package_path(&source)
         .map_err(js_error)?;
     let metadata = std::fs::metadata(&path).map_err(js_error)?;
-    let kind = if metadata.is_dir() {
-        PluginResourceFormat::Directory
-    } else if path
-        .extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("asar"))
+    if !metadata.is_dir()
+        && !path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("asar"))
     {
-        PluginResourceFormat::Asar
-    } else {
         return Err(js_error(
             "mountTree pkg: source must be a directory or .asar file",
         ));
-    };
+    }
     let vfs = state.borrow_mut::<FilesystemState>();
-    let handle = vfs
-        .insert_path_resource(path, kind, authority)
-        .map_err(js_error)?;
+    let handle = vfs.insert_path_resource(path).map_err(js_error)?;
     let ResourceHandle::Tree(handle) = handle else {
         unreachable!()
     };
@@ -349,12 +348,11 @@ fn op_vfs_mount_file_pkg(
         return Err(js_error("mountFile pkg: source must be a regular file"));
     }
     let vfs = state.borrow_mut::<FilesystemState>();
-    let ResourceHandle::File(handle) = vfs
-        .insert_path_resource(path, PluginResourceFormat::File, authority)
-        .map_err(js_error)?
-    else {
-        unreachable!()
-    };
+    let handle = vfs.insert_file(Resource::new(
+        Arc::new(HostFileFactory::new(path.clone(), false)),
+        authority,
+        ResourceOrigin::Package(path.display().to_string()),
+    ));
     let resource = vfs.file(handle).map_err(js_error)?;
     vfs.plan.mount_file(
         VfsPathBuf::new(target).map_err(js_error)?,
@@ -523,10 +521,10 @@ fn op_vfs_flush(state: &mut OpState) -> Result<(), JsErrorBox> {
 
 deno_core::extension!(polymer_filesystem,
     ops = [
-        op_vfs_resources, op_vfs_storage, op_vfs_quick_resume,
+        op_vfs_import_package, op_vfs_storage, op_vfs_quick_resume,
         op_vfs_resource_entries, op_vfs_resource_bytes,
         op_vfs_resource_remove, op_vfs_scratch_resource,
-        op_vfs_mount_cache, op_vfs_mount_host_tree, op_vfs_mount_host_file,
+        op_vfs_cache_resource, op_vfs_mount_host_tree, op_vfs_mount_host_file,
         op_vfs_mount_tree_pkg, op_vfs_mount_tree_resource, op_vfs_mount_file_pkg,
         op_vfs_mount_file_text, op_vfs_mount_file_bytes, op_vfs_mount_file_resource,
         op_vfs_mount_scratch, op_vfs_mount_storage, op_vfs_path,

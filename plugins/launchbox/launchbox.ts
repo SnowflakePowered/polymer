@@ -2,7 +2,7 @@ import { parseXmlStreamFromBytes } from "jsr:@std/xml/parse-stream";
 import { Reader, ZipReader } from "jsr:@zip-js/zip-js";
 import { caches } from "polymer:cache";
 import { connect } from "polymer:database";
-import type { OnPluginLoad, OnScrape, ScrapeCandidate, ScrapeInput, ScrapeResult } from "../plugin-api.ts";
+import type { OnPluginLoad, OnScrape, ScrapeCandidate, ScrapeInput, ScrapeResult } from "polymer:api";
 
 const SOURCE = "LaunchBox Games Database";
 const METADATA_URL = "https://gamesdb.launchbox-app.com/Metadata.zip";
