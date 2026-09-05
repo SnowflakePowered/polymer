@@ -7,11 +7,11 @@ license.workspace = true
 [dependencies]
 anyrender = "0.13.0"
 anyrender_vello = "0.14.0"
-blitz-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "9d5cef2fa3d01423081681843d91b76ef593443e", features = ["custom-widget"] }
-blitz-html = { git = "https://github.com/DioxusLabs/blitz", rev = "9d5cef2fa3d01423081681843d91b76ef593443e" }
-blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "9d5cef2fa3d01423081681843d91b76ef593443e" }
-blitz-paint = { git = "https://github.com/DioxusLabs/blitz", rev = "9d5cef2fa3d01423081681843d91b76ef593443e", features = ["custom-widget"] }
-blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "9d5cef2fa3d01423081681843d91b76ef593443e" }
+blitz-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "a50cb8971a03fb4cac697b763f8f5d01ee83cefb", features = ["custom-widget"] }
+blitz-html = { git = "https://github.com/DioxusLabs/blitz", rev = "a50cb8971a03fb4cac697b763f8f5d01ee83cefb" }
+blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "a50cb8971a03fb4cac697b763f8f5d01ee83cefb" }
+blitz-paint = { git = "https://github.com/DioxusLabs/blitz", rev = "a50cb8971a03fb4cac697b763f8f5d01ee83cefb", features = ["custom-widget"] }
+blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "a50cb8971a03fb4cac697b763f8f5d01ee83cefb" }
 arboard = "3.6.1"
 clap = "4.6.1"
 consolespec.workspace = true

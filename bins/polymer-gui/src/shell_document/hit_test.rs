@@ -174,7 +174,7 @@ fn pointer_hit_node(
     }
     let mut local_x = x - node.final_layout().location.x + node.scroll_offset().x as f32;
     let mut local_y = y - node.final_layout().location.y + node.scroll_offset().y as f32;
-    if let Some(transform) = *node.transform() {
+    if let Some(transform) = node.transform() {
         let point = transform.inverse() * kurbo::Point::new(local_x.into(), local_y.into());
         local_x = point.x as f32;
         local_y = point.y as f32;
