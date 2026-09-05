@@ -112,3 +112,50 @@ test("polling retries failures without overlapping pending requests", async (t) 
   await flush();
   assert.equal(fixture.snapshots.length, snapshots);
 });
+
+
+test("unchanged polling and progress updates preserve the library tile objects", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const fixture = new Fixture();
+  fixture.games = [{ id: "root", platform: "NINTENDO_NES", launchables: [{ path: "game.nes" }], metadata: [] }];
+  fixture.scraping.jobs.list = async () => [fixture.job];
+  fixture.state.start();
+  await flush();
+  const games = fixture.latest.games;
+  const snapshots = fixture.snapshots.length;
+  t.mock.timers.tick(1000);
+  await flush();
+  assert.equal(fixture.snapshots.length, snapshots);
+  fixture.notify({ ...fixture.job, state: "running" });
+  assert.equal(fixture.latest.games, games);
+  assert.equal(fixture.latest.games[0], games[0]);
+  fixture.state.dispose();
+});
+
+test("tiles resolve stored front covers, fall back to banners, and remove deleted artwork", async (t) => {
+  const fixture = new Fixture();
+  const requests = [];
+  fixture.library.metadata = { url: async id => {
+    requests.push(id);
+    if (id === "broken") throw new Error("Missing media");
+    return `http://localhost/media/${id}`;
+  } };
+  t.mock.method(console, "warn", () => {});
+  const media = (id, key, ordinal = 0) => ({ id, key, ordinal, data: { kind: "media", mediaType: "image/jpeg", sourceUrl: "https://example.com/original.jpg" } });
+  fixture.games = [{ id: "root", platform: "NINTENDO_NES", launchables: [{ path: "game.nes" }], metadata: [
+    media("banner", "media.banner"), media("second", "media.boxart.front", 1), media("front", "media.boxart.front"),
+  ] }];
+  fixture.state.start();
+  await flush();
+  assert.equal(fixture.latest.games[0].artwork, "http://localhost/media/front");
+  assert.deepEqual(requests, ["front"]);
+  fixture.games[0].metadata = [media("banner", "media.banner"), media("broken", "media.boxart.front")];
+  fixture.library.dispatchEvent(new CustomEvent("contentchange"));
+  await flush();
+  assert.equal(fixture.latest.games[0].artwork, "http://localhost/media/banner");
+  fixture.games[0].metadata = [];
+  fixture.library.dispatchEvent(new CustomEvent("contentchange"));
+  await flush();
+  assert.equal(fixture.latest.games[0].artwork, undefined);
+  fixture.state.dispose();
+});

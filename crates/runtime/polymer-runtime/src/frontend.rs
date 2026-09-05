@@ -627,6 +627,25 @@ impl FrontendServices {
                 }
             });
         }
+        let mut plugin_events = polymer_pluginhost::runtime::PluginEvent::subscribe();
+        let plugin_notifications = notifications.clone();
+        tokio::spawn(async move {
+            loop {
+                let event = tokio::select! {
+                    _ = plugin_notifications.closed() => break,
+                    event = plugin_events.recv() => match event {
+                        Some(event) => event,
+                        None => break,
+                    },
+                };
+                let notification = PolymerNotification::PluginEvent(
+                    serde_json::to_value(event).expect("plugin events are JSON-compatible"),
+                );
+                if plugin_notifications.send(notification).is_err() {
+                    break;
+                }
+            }
+        });
         let launchable_configurations = library.as_ref().map(|library| {
             Arc::new(
                 crate::launchable_configuration::LaunchableConfigurations::new(

@@ -12,7 +12,7 @@ import { op_controller_api_snapshot, op_polymer_next_notification } from "ext:co
 
 const scraping = createScraping();
 const plugin = createPlugin();
-const configuration = createConfiguration(plugin);
+const configuration = createConfiguration(plugin.Plugin);
 const initialControllerApi = op_controller_api_snapshot();
 const input = createInput();
 const controllers = createControllers(initialControllerApi.controllers);
@@ -24,7 +24,7 @@ const library = createLibrary();
 const Polymer = Object.freeze({
   input: input.polymerInput,
   controllers: controllers.controllers,
-  plugin,
+  plugin: plugin.Plugin,
   scraping: scraping.Scraping,
   configuration,
   emulator: emulator.Emulator,
@@ -56,6 +56,9 @@ function dispatch(event) {
       break;
     case "gameSaved":
       consolestorage.gameSaved(event.detail);
+      break;
+    case "pluginEvent":
+      plugin.dispatch(event.detail);
       break;
     case "scrapeJobChanged":
       scraping.jobChanged(event.detail);

@@ -6,6 +6,7 @@ export type LibraryEntry = {
   platform: string;
   emulator: string;
   playedAt: number;
+  artwork?: string;
 };
 
 export type LibrarySnapshot = { games: LibraryEntry[]; status: string };
@@ -13,6 +14,7 @@ export type LibrarySnapshot = { games: LibraryEntry[]; status: string };
 /** Catalog and scrape subscriptions, independent of theme rendering. */
 export class LibraryState {
   private games: LibraryGame[] = [];
+  private entries: LibraryEntry[] = [];
   private jobs = new Map<string, ScrapeJob>();
   private imports = new Map<symbol, string>();
   private revision = 0;
@@ -53,8 +55,10 @@ export class LibraryState {
         this.jobs.set(job.id, job);
         changed = true;
       }
-      if (changed) this.refresh();
-      this.publish();
+      if (changed) {
+        this.refresh();
+        this.publish();
+      }
     } catch (error) {
       if (!this.disposed) this.failed(error);
     } finally {
@@ -85,9 +89,16 @@ export class LibraryState {
 
   private refresh = () => {
     const revision = ++this.revision;
-    void this.library.games.list().then(games => {
+    void this.library.games.list().then(async games => {
+      const entries = await Promise.all(games.map(async game => {
+        const launchable = game.launchables.find(item => !item.parentBinaryId) ?? game.launchables[0];
+        if (!launchable) return [];
+        return [{ path: launchable.path, name: this.title(game), platform: game.platform,
+          emulator: "", playedAt: 0, artwork: await this.artwork(game) }];
+      }));
       if (this.disposed || revision !== this.revision) return;
       this.games = games;
+      this.entries = entries.flat();
       this.publish();
     }).catch(error => {
       if (!this.disposed && revision === this.revision) this.failed(error);
@@ -108,6 +119,21 @@ export class LibraryState {
     return game.launchables[0]?.path.split(/[\\/]/).pop() || game.id;
   }
 
+  private async artwork(game: LibraryGame): Promise<string | undefined> {
+    const keys = ["media.boxart.front", "media.banner", "media.logo", "media.boxart.full"];
+    const candidates = game.metadata.filter(item =>
+      keys.includes(item.key) && item.data.kind === "media" && item.data.mediaType.startsWith("image/")
+    ).sort((a, b) => keys.indexOf(a.key) - keys.indexOf(b.key) || a.ordinal - b.ordinal);
+    for (const candidate of candidates) {
+      try {
+        return await this.library.metadata.url(candidate.id);
+      } catch (error) {
+        console.warn(`Unable to load artwork for ${game.id}: ${candidate.id}`, error);
+      }
+    }
+    return undefined;
+  }
+
   private progress(job: ScrapeJob): string {
     const game = this.games.find(game => game.id === job.rootBinaryId);
     const name = game ? this.title(game) : "Game";
@@ -125,10 +151,7 @@ export class LibraryState {
     const active = jobs.filter(job => job.state === "queued" || job.state === "running");
     const visible = active.length ? active : jobs.slice(0, 1);
     this.changed({
-      games: this.games.flatMap(game => {
-        const launchable = game.launchables.find(item => !item.parentBinaryId) ?? game.launchables[0];
-        return launchable ? [{ path: launchable.path, name: this.title(game), platform: game.platform, emulator: "", playedAt: 0 }] : [];
-      }),
+      games: this.entries,
       status: [...this.imports.values()].map(name => `Identifying ${name}…`).concat(visible.map(job => this.progress(job))).join(" · "),
     });
   }

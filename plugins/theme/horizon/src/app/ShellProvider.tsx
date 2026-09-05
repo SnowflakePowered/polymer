@@ -2,10 +2,11 @@ import { ShellContext } from "./shell-context";
 import { LibraryState } from "../../../../../js/library-state";
 import { useNavigate } from "@solidjs/router";
 import { createEffect, onCleanup, onMount, type ParentProps } from "solid-js";
-import { createStore } from "solid-js/store";
+import { createStore, reconcile } from "solid-js/store";
 import type { LaunchRequest, PackageConfiguration } from "../../../../../js/polymer";
 import type { ControllerDevice } from "../../../../../js/polymer";
 import { ControllerConnectionToast } from "../components/ControllerConnectionToast";
+import { PluginLoadProgress } from "../components/PluginLoadProgress";
 import { InputNavigation } from "../components/InputNavigation";
 import { onLaunch, resolveGame } from "./launch";
 import type { RecentGame, ShellModel } from "./models";
@@ -172,7 +173,7 @@ export function ShellProvider(props: ParentProps) {
   };
 
   const libraryState = new LibraryState(window.Polymer.library, window.Polymer.scraping, snapshot => {
-    setModel("libraryGames", snapshot.games);
+    setModel("libraryGames", reconcile(snapshot.games, { key: "path" }));
     setModel("scrapeStatus", snapshot.status);
   }, fail);
   libraryState.start();
@@ -226,6 +227,7 @@ export function ShellProvider(props: ParentProps) {
         <div class="horizon-shell-content">{props.children}</div>
         <InputNavigation />
         <ControllerConnectionToast />
+        <PluginLoadProgress />
       </div>
     </ShellContext.Provider>
   );

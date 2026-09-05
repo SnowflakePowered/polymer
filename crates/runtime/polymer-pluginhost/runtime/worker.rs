@@ -174,6 +174,15 @@ pub(super) async fn invoke_export(
     export_path: &[String],
     arguments: Vec<Value>,
 ) -> Result<Value, PluginInvocationError> {
+    let progress = matches!(export_path, [name] if name == "updateContents")
+        || matches!(export_path, [default, name] if default == "default" && name == "updateContents");
+    let progress = progress.then(|| {
+        runtime.op_state().borrow().borrow::<Arc<super::events::EventEmitter>>().scope(
+            "loadprogress",
+            serde_json::json!({"state": "loading", "message": "Updating plugin contents"}),
+            serde_json::json!({"state": "failed", "message": "Plugin contents update interrupted"}),
+        )
+    });
     let invoke = ExtensionFunction::get(runtime, "__polymerPluginRuntime", "invoke")
         .map_err(PluginInvocationError::worker)?;
     let values = [
@@ -181,10 +190,14 @@ pub(super) async fn invoke_export(
         ExtensionFunction::argument(runtime, export_path).map_err(PluginInvocationError::worker)?,
         ExtensionFunction::argument(runtime, arguments).map_err(PluginInvocationError::worker)?,
     ];
-    let resolved = invoke
-        .call(runtime, &values)
-        .await
-        .map_err(PluginInvocationError::worker)?;
+    let resolved = invoke.call(runtime, &values).await.map_err(PluginInvocationError::worker);
+    if let Some(progress) = progress {
+        progress.finish(match &resolved {
+            Ok(_) => serde_json::json!({"state": "ready", "message": "Plugin contents updated"}),
+            Err(error) => serde_json::json!({"state": "failed", "message": error.to_string()}),
+        });
+    }
+    let resolved = resolved?;
     deno_core::scope!(scope, runtime);
     let value = v8::Local::new(scope, resolved);
     serde_v8::from_v8(scope, value).map_err(PluginInvocationError::worker)

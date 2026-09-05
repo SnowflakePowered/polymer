@@ -215,9 +215,28 @@ export interface PluginExport {
   readonly [property: string]: PluginExport;
 }
 
-export interface PluginApi {
+export interface PluginApi extends EventTarget {
+  /** Latest events per runtime source and topic, bounded to 256 entries for late listeners. */
+  events(): readonly PluginEvent[];
   open(id: string): PluginExport;
+  list(): readonly Readonly<{ id: string; version: string; class: string }>[];
 }
+
+export type PluginEvent<T = unknown> = Readonly<{
+  sourceId: number;
+  pluginId: string;
+  name: string;
+  detail: T;
+}>;
+
+export type PluginLoadProgress = Readonly<{
+  id: number;
+  pluginId: string;
+  state: "loading" | "ready" | "failed";
+  message: string;
+  completed: number | null;
+  total: number | null;
+}>;
 
 import type { Package as PackageData } from "./package.ts";
 
