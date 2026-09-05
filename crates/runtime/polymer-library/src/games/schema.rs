@@ -65,5 +65,12 @@ CREATE INDEX IF NOT EXISTS metadata_producer ON metadata(parent_binary_id, produ
 CREATE INDEX IF NOT EXISTS metadata_object ON metadata(object_blake3);
 CREATE UNIQUE INDEX IF NOT EXISTS scrape_jobs_active ON scrape_jobs(root_binary_id) WHERE state IN ('queued', 'running');
 CREATE INDEX IF NOT EXISTS scrape_jobs_root ON scrape_jobs(root_binary_id, created_at DESC);
-PRAGMA user_version = 2;
+CREATE TABLE IF NOT EXISTS launchable_configurations (
+    launchable_id BLOB NOT NULL REFERENCES launchables(id) ON DELETE CASCADE,
+    plugin_id TEXT NOT NULL CHECK (length(plugin_id) > 0),
+    schema TEXT NOT NULL CHECK (length(schema) > 0),
+    values_json TEXT NOT NULL,
+    PRIMARY KEY (launchable_id, plugin_id, schema)
+) STRICT;
+PRAGMA user_version = 3;
 "#;

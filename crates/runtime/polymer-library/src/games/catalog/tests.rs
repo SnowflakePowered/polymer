@@ -2,6 +2,104 @@ use super::*;
 use object_store::{ObjectStoreExt, memory::InMemory};
 
 #[tokio::test]
+async fn launchable_configuration_migrates_isolates_and_cascades() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("library.db");
+    let objects = Arc::new(InMemory::new());
+    let store = GameCatalog::open(&path, objects.clone()).await.unwrap();
+    let mut ids = Vec::new();
+    for name in ["one.rom", "two.rom"] {
+        ids.push(
+            store
+                .import_launchable(IdentifiedLaunchable {
+                    path: directory.path().join(name),
+                    binary_blake3: [7; 32],
+                    serial: Some("SERIAL".into()),
+                    title_id: Some("TITLE".into()),
+                    parent_binary_id: None,
+                    platform: "NINTENDO_NES".into(),
+                })
+                .await
+                .unwrap()
+                .id,
+        );
+    }
+    store
+        .connection()
+        .await
+        .unwrap()
+        .execute_batch("DROP TABLE launchable_configurations; PRAGMA user_version = 2;")
+        .await
+        .unwrap();
+    drop(store);
+    let store = GameCatalog::open(&path, objects.clone()).await.unwrap();
+    assert_eq!(
+        store.launchable(ids[0]).await.unwrap().serial.as_deref(),
+        Some("SERIAL")
+    );
+    let values = serde_json::json!({"graphics": {"enabled": true, "scale": 2, "mode": "vulkan", "optional": null}});
+    store
+        .save_configuration(ids[0], "emulator", "v1", &values)
+        .await
+        .unwrap();
+    for (id, plugin, schema) in [
+        (ids[1], "emulator", "v1"),
+        (ids[0], "other", "v1"),
+        (ids[0], "emulator", "v2"),
+    ] {
+        assert!(
+            store
+                .configuration(id, plugin, schema)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+    assert!(
+        store
+            .save_configuration(
+                ids[0],
+                "emulator",
+                "v1",
+                &serde_json::json!({"graphics": {"bad": []}})
+            )
+            .await
+            .is_err()
+    );
+    drop(store);
+    let store = GameCatalog::open(&path, objects).await.unwrap();
+    assert_eq!(
+        store.configuration(ids[0], "emulator", "v1").await.unwrap(),
+        Some(values.clone())
+    );
+    store
+        .save_configuration(ids[0], "emulator", "v2", &serde_json::json!({}))
+        .await
+        .unwrap();
+    assert_eq!(
+        store.configuration(ids[0], "emulator", "v1").await.unwrap(),
+        Some(values)
+    );
+    store.remove_launchable(ids[0]).await.unwrap();
+    let connection = store.connection().await.unwrap();
+    let mut rows = connection
+        .query("SELECT COUNT(*) FROM launchable_configurations", ())
+        .await
+        .unwrap();
+    assert_eq!(
+        rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
+        0
+    );
+    assert!(store.configuration(ids[0], "emulator", "v1").await.is_err());
+    assert!(
+        store
+            .save_configuration(ids[0], "emulator", "v1", &serde_json::json!({}))
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
 async fn catalog_deduplicates_binaries_and_owns_external_media() {
     let directory = tempfile::tempdir().unwrap();
     let objects = Arc::new(InMemory::new());

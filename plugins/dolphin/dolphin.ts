@@ -8,7 +8,7 @@ import type {
     ControllerMapping,
     ControllerTopology,
     ConfigurationResult,
-    ConfigureGame,
+    Package,
     DirectoryResource,
     FileEntry,
     Filesystem,
@@ -61,11 +61,6 @@ type Configuration = HostConfiguration<{
         },
 }>;
 
-type Package = Readonly<{
-    titleId?: string | null,
-    serial?: string | null,
-}>;
-
 type EmulatorLaunchArgs = {
     launchPath: string,
     console: string,
@@ -103,11 +98,10 @@ function quickResumeEnabled(configuration?: UserConfiguration): boolean {
 }
 
 export const onConfigure = (
-    game: ConfigureGame,
+    package: Package,
     userConfiguration?: UserConfiguration,
 ): ConfigurationResult => ({
     schema: "dolphin/v1",
-    key: game.titleId ?? game.serial ?? game.launchPath,
     groups: [{
         key: "polymer",
         title: "Polymer",
@@ -121,7 +115,7 @@ export const onConfigure = (
     }],
     values: {
         polymer: {
-            quickResume: !isNKit(game.launchPath) && quickResumeEnabled(userConfiguration),
+            quickResume: !isNKit(package.filename) && quickResumeEnabled(userConfiguration),
         },
     },
 });

@@ -28,8 +28,9 @@ use std::{
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Package {
+    #[serde(skip)]
     pub path: PathBuf,
-    pub name: String,
+    pub filename: String,
     pub platform: String,
     pub serial: Option<String>,
     pub title_id: Option<String>,
@@ -128,7 +129,7 @@ impl Package {
             .unwrap_or_else(|| path.display().to_string());
         Ok(Self {
             path,
-            name,
+            filename: name,
             platform: platform.to_owned(),
             serial,
             title_id,

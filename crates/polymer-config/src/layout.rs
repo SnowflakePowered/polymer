@@ -30,7 +30,7 @@ impl ConfigurationDefinition {
             .as_object_mut()
             .ok_or_else(|| ConfigurationLayoutError::invalid("layout must be an object"))?;
         Self::required_text(root, "schema")?;
-        Self::required_text(root, "key")?;
+        root.remove("key");
         let groups = root
             .get_mut("groups")
             .and_then(Value::as_array_mut)

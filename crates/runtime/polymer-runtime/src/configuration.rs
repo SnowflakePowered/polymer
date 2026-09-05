@@ -138,10 +138,9 @@ struct PreparedConfiguration {
 pub async fn describe_api(
     plugins: PluginRuntimeHandle,
     viewer: ConfigurationDefaults,
-    package: serde_json::Value,
+    package: Package,
     preferred_emulator: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let package: Package = serde_json::from_value(package).map_err(|error| error.to_string())?;
     let mut prepared = PreparedGame::new(
         DetectedGame {
             path: package.path.clone(),
@@ -151,7 +150,7 @@ pub async fn describe_api(
         plugins.registry().plugins::<dyn EmulatorPluginInstance>(),
         viewer,
     )?;
-    let game = configure_game(&package);
+    let game = serde_json::to_value(&package).map_err(|error| error.to_string())?;
     let mut errors = Vec::new();
     let mut retained = Vec::new();
     for mut candidate in prepared.descriptor.candidates.drain(..) {
@@ -180,11 +179,10 @@ pub async fn describe_api(
 
 pub async fn configure_api(
     plugins: PluginRuntimeHandle,
-    package: serde_json::Value,
+    package: Package,
     emulator: String,
     user_configuration: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
-    let package: Package = serde_json::from_value(package).map_err(|error| error.to_string())?;
     let plugin = plugins
         .registry()
         .plugin::<dyn EmulatorPluginInstance>(&emulator)
@@ -196,7 +194,11 @@ pub async fn configure_api(
         ));
     }
     let layout = plugins
-        .configure(&emulator, configure_game(&package), user_configuration)
+        .configure(
+            &emulator,
+            serde_json::to_value(&package).map_err(|error| error.to_string())?,
+            user_configuration,
+        )
         .await
         .map_err(|error| error.to_string())?;
     serde_json::to_value(layout).map_err(|error| error.to_string())
@@ -205,7 +207,7 @@ pub async fn configure_api(
 pub fn prepare_api(
     plugins: PluginRegistry,
     viewer: ConfigurationDefaults,
-    package: serde_json::Value,
+    package: Package,
     request: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let controller_profiles = ControllerProfiles::default();
@@ -224,13 +226,12 @@ pub fn prepare_api(
 pub(crate) fn prepare_api_with_sources(
     plugins: PluginRegistry,
     viewer: ConfigurationDefaults,
-    package: serde_json::Value,
+    package: Package,
     request: serde_json::Value,
     sources: &InputHub,
     controller_profiles: &ControllerProfiles,
     controller_assignments: &ControllerAssignmentSnapshot,
 ) -> Result<serde_json::Value, String> {
-    let package: Package = serde_json::from_value(package).map_err(|error| error.to_string())?;
     let request: ConfigurationRequest =
         serde_json::from_value(request).map_err(|error| error.to_string())?;
     let user_configuration = request.user_configuration.clone();
@@ -405,7 +406,13 @@ impl PreparedGame {
             ));
         }
 
-        let name = display_name(&detected.path);
+        let name = detected
+            .path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| detected.path.display().to_string());
+
         let selected_emulator = descriptors[0].id.clone();
         Ok(Self {
             descriptor: GameDescriptor {
@@ -593,29 +600,4 @@ fn validate_assignments(
         return Err(format!("Emulator has no input group '{name}'."));
     }
     Ok((assignments, gamepads))
-}
-
-fn configure_game(package: &Package) -> serde_json::Value {
-    let mut game = serde_json::Map::from_iter([
-        (
-            "launchPath".to_owned(),
-            package.path.to_string_lossy().into_owned().into(),
-        ),
-        ("name".to_owned(), package.name.clone().into()),
-        ("platform".to_owned(), package.platform.clone().into()),
-    ]);
-    if let Some(serial) = &package.serial {
-        game.insert("serial".to_owned(), serial.clone().into());
-    }
-    if let Some(title_id) = &package.title_id {
-        game.insert("titleId".to_owned(), title_id.clone().into());
-    }
-    game.into()
-}
-
-fn display_name(path: &std::path::Path) -> String {
-    path.file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| path.display().to_string())
 }

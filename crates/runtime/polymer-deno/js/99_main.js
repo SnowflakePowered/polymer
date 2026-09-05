@@ -12,7 +12,7 @@ import { op_controller_api_snapshot, op_polymer_next_notification } from "ext:co
 
 const scraping = createScraping();
 const plugin = createPlugin();
-const configuration = createConfiguration(scraping, plugin);
+const configuration = createConfiguration(plugin);
 const initialControllerApi = op_controller_api_snapshot();
 const input = createInput();
 const controllers = createControllers(initialControllerApi.controllers);

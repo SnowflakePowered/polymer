@@ -126,9 +126,9 @@ Emulator plugins are used to orchestrate the execution of guest emulator process
 
   Emulator plugins should export this function if they wish to expose user-facing configuration options.
 
-  `onConfigure` receives the following arguments in its `args` object.
+  `onConfigure` receives the following arguments.
 
-  * `game` -- Details about the game to configure
+  * `package` -- Details about the game to configure
   * `userConfiguration` -- The previously configured state 
   
 * `onPauseResume` -- Called when pausing or resuming the emulating instance.

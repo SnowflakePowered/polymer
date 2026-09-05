@@ -26,15 +26,15 @@ export function GameDetailsPage() {
     if (current) updateEmulatorById(current.id, change);
   };
   const updateConfiguration = (group: string, option: string, value: boolean | number | string | null) => {
-    const packageValue = shell.model.package;
+    const launchableId = shell.model.launchableId;
     const current = emulator();
-    if (!packageValue || !current) return;
+    if (!launchableId || !current) return;
     const values = structuredClone(unwrap(current.userConfiguration)) as Record<string, Record<string, boolean | number | string | null>>;
     (values[group] ||= {})[option] = value;
     updateEmulator((candidate) => {
       candidate.userConfiguration = values;
     });
-    void window.Polymer.configuration.configure(packageValue, current.id, values)
+    void window.Polymer.configuration.configure(launchableId, current.id, values)
       .then((result) => {
         if (!result) return;
         updateEmulatorById(current.id, (candidate) => {

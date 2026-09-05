@@ -276,6 +276,8 @@ pub struct FrontendServices {
     plugins: Arc<polymer_pluginhost::runtime::PluginRuntime>,
     configuration: Option<ConfigurationDefaults>,
     library: Option<LibraryService>,
+    launchable_configurations:
+        Option<Arc<crate::launchable_configuration::LaunchableConfigurations>>,
     storage: Option<Arc<StorageManager>>,
     prepared_filesystems: PreparedFilesystemStore,
     controller_sessions: ControllerSessionStore,
@@ -625,10 +627,20 @@ impl FrontendServices {
                 }
             });
         }
+        let launchable_configurations = library.as_ref().map(|library| {
+            Arc::new(
+                crate::launchable_configuration::LaunchableConfigurations::new(
+                    library.catalog(),
+                    plugins.handle(),
+                    library.configuration_locks(),
+                ),
+            )
+        });
         Self {
             plugins,
             configuration,
             library,
+            launchable_configurations,
             storage: crate::console_storage_manager(),
             prepared_filesystems: PreparedFilesystemStore::default(),
             controller_sessions: ControllerSessionStore::default(),
@@ -660,50 +672,71 @@ impl PolymerHost for FrontendServices {
 
     fn describe_configuration(
         &self,
-        package: Value,
+        launchable_id: String,
         preferred_emulator: Option<String>,
     ) -> ApiFuture<Result<Value, String>> {
-        let defaults = match self.configuration.clone() {
-            Some(defaults) => defaults,
-            None => {
-                return Box::pin(async { Err("configuration service is unavailable".to_owned()) });
-            }
-        };
-        let plugins = self.plugins.handle();
+        let service = self.launchable_configurations.clone();
+        let defaults = self.configuration.clone();
         Box::pin(async move {
-            crate::describe_configuration(plugins, defaults, package, preferred_emulator).await
+            service
+                .ok_or("library configuration service is unavailable")?
+                .describe(
+                    &launchable_id,
+                    defaults.ok_or("configuration service is unavailable")?,
+                    preferred_emulator,
+                )
+                .await
         })
     }
 
     fn configure(
         &self,
-        package: Value,
+        launchable_id: String,
         emulator: String,
         user_configuration: Option<Value>,
     ) -> ApiFuture<Result<Value, String>> {
-        let plugins = self.plugins.handle();
+        let service = self.launchable_configurations.clone();
         Box::pin(async move {
-            crate::configuration::configure_api(plugins, package, emulator, user_configuration)
+            service
+                .ok_or("library configuration service is unavailable")?
+                .configure(&launchable_id, &emulator, user_configuration)
                 .await
         })
     }
 
-    fn prepare_configuration(&self, package: Value, request: Value) -> Result<Value, String> {
-        let defaults = self
-            .configuration
-            .clone()
-            .ok_or_else(|| "configuration service is unavailable".to_owned())?;
-        let controller_profiles = self.controller_api.controller_profiles();
-        let controller_assignments = self.controller_api.controller_assignments();
-        crate::configuration::prepare_api_with_sources(
-            self.plugins.handle().registry().clone(),
-            defaults,
-            package,
-            request,
-            &self.input_sources,
-            &controller_profiles,
-            &controller_assignments,
-        )
+    fn prepare_configuration(
+        &self,
+        launchable_id: String,
+        mut request: Value,
+    ) -> ApiFuture<Result<Value, String>> {
+        let service = self.launchable_configurations.clone();
+        let defaults = self.configuration.clone();
+        let plugins = self.plugins.handle().registry().clone();
+        let sources = self.input_sources.clone();
+        let profiles = self.controller_api.controller_profiles();
+        let assignments = self.controller_api.controller_assignments();
+        Box::pin(async move {
+            let service = service.ok_or("library configuration service is unavailable")?;
+            let emulator = request["emulator"]
+                .as_str()
+                .ok_or("missing emulator")?
+                .to_owned();
+            let configuration = service.configure(&launchable_id, &emulator, None).await?;
+            request["userConfiguration"] = configuration
+                .get("values")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            let package = service.package(&launchable_id).await?;
+            crate::configuration::prepare_api_with_sources(
+                plugins,
+                defaults.ok_or("configuration service is unavailable")?,
+                package,
+                request,
+                &sources,
+                &profiles,
+                &assignments,
+            )
+        })
     }
 
     fn controller_api_snapshot(&self) -> Value {
@@ -944,22 +977,25 @@ async fn prepare_quick_resume(
     let Some(argument) = arguments.first() else {
         return (None, None);
     };
-    let package = &argument["package"];
-    let platform = package["platform"]
-        .as_str()
-        .or_else(|| argument["console"].as_str())
-        .unwrap_or_default();
-    let identity = package["titleId"]
-        .as_str()
+    let Ok(package) =
+        serde_json::from_value::<polymer_scraping::Package>(argument["package"].clone())
+    else {
+        return (None, None);
+    };
+    let platform = package.platform.as_str();
+    let identity = package
+        .title_id
+        .as_deref()
         .filter(|value| !value.trim().is_empty())
         .or_else(|| {
-            package["serial"]
-                .as_str()
+            package
+                .serial
+                .as_deref()
                 .filter(|value| !value.trim().is_empty())
         })
         .map(|value| value.trim().to_ascii_lowercase())
         .or_else(|| {
-            package["path"].as_str().map(|path| {
+            argument["launchPath"].as_str().map(|path| {
                 std::fs::canonicalize(path)
                     .unwrap_or_else(|_| std::path::PathBuf::from(path))
                     .to_string_lossy()

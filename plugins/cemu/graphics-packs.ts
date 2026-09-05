@@ -53,7 +53,7 @@ export async function loadGraphicsPacks(root: DirectoryResource): Promise<Graphi
     return packs;
 }
 
-export function matchingPacks(packs: GraphicsPack[], titleId: string | undefined, api: GraphicsApi) {
+export function matchingPacks(packs: GraphicsPack[], titleId: string | null | undefined, api: GraphicsApi) {
     const normalized = normalizeTitleId(titleId);
     if (!normalized) return [];
     return packs.filter((pack) =>
@@ -63,7 +63,7 @@ export function matchingPacks(packs: GraphicsPack[], titleId: string | undefined
 
 export function settleGraphicsPacks(
     packs: GraphicsPack[],
-    titleId: string | undefined,
+    titleId: string | null | undefined,
     userConfiguration: UserConfiguration | undefined,
     api: GraphicsApi,
 ): {
@@ -226,7 +226,7 @@ function unquote(value: string) {
         : trimmed;
 }
 
-export function normalizeTitleId(value: string | undefined) {
+export function normalizeTitleId(value: string | null | undefined) {
     const normalized = value?.replace(/[^0-9a-f]/gi, "").toUpperCase();
     return normalized || undefined;
 }

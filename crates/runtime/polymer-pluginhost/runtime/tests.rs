@@ -120,7 +120,6 @@ fn package() -> (TempDir, PluginRegistry) {
               }
               return {
                 schema: "worker/v1",
-                key: game.launchPath,
                 groups: [{
                   key: "general",
                   title: entries.join(","),

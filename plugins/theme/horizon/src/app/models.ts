@@ -1,5 +1,5 @@
 import type { LibraryEntry } from "../../../../../js/library-state";
-import type { LaunchInstance, LaunchRequest, Package, PackageConfiguration } from "../../../../../js/polymer";
+import type { LaunchInstance, LaunchRequest, PackageConfiguration } from "../../../../../js/polymer";
 
 export type RecentGame = {
   path: string;
@@ -20,7 +20,7 @@ export type LauncherState =
 
 export type ShellModel = {
   launcher: LauncherState;
-  package: Package | null;
+  launchableId: string | null;
   draft: PackageConfiguration | null;
   request: LaunchRequest | null;
   surfaces: LaunchRequest["surfaces"];

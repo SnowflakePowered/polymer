@@ -41,16 +41,20 @@ pub trait PolymerHost: Send + Sync {
     fn scrape(&self, path: String) -> ApiFuture<Result<Value, String>>;
     fn describe_configuration(
         &self,
-        package: Value,
+        launchable_id: String,
         preferred_emulator: Option<String>,
     ) -> ApiFuture<Result<Value, String>>;
     fn configure(
         &self,
-        package: Value,
+        launchable_id: String,
         emulator: String,
         user_configuration: Option<Value>,
     ) -> ApiFuture<Result<Value, String>>;
-    fn prepare_configuration(&self, package: Value, request: Value) -> Result<Value, String>;
+    fn prepare_configuration(
+        &self,
+        launchable_id: String,
+        request: Value,
+    ) -> ApiFuture<Result<Value, String>>;
     fn list_plugins(&self) -> Value;
     fn invoke_plugin(
         &self,
@@ -291,11 +295,11 @@ async fn op_consolestorage_set_label(
 #[serde]
 async fn op_configuration_describe(
     state: Rc<RefCell<OpState>>,
-    #[serde] package: serde_json::Value,
+    #[string] launchable_id: String,
     #[string] preferred_emulator: Option<String>,
 ) -> Result<serde_json::Value, JsErrorBox> {
     let host = state.borrow().borrow::<Arc<dyn PolymerHost>>().clone();
-    host.describe_configuration(package, preferred_emulator)
+    host.describe_configuration(launchable_id, preferred_emulator)
         .await
         .map_err(JsErrorBox::generic)
 }
@@ -304,26 +308,26 @@ async fn op_configuration_describe(
 #[serde]
 async fn op_configuration_configure(
     state: Rc<RefCell<OpState>>,
-    #[serde] package: serde_json::Value,
+    #[string] launchable_id: String,
     #[string] emulator: String,
     #[serde] user_configuration: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, JsErrorBox> {
     let host = state.borrow().borrow::<Arc<dyn PolymerHost>>().clone();
-    host.configure(package, emulator, user_configuration)
+    host.configure(launchable_id, emulator, user_configuration)
         .await
         .map_err(JsErrorBox::generic)
 }
 
 #[op2]
 #[serde]
-fn op_configuration_prepare(
-    state: &mut OpState,
-    #[serde] package: serde_json::Value,
+async fn op_configuration_prepare(
+    state: Rc<RefCell<OpState>>,
+    #[string] launchable_id: String,
     #[serde] request: serde_json::Value,
 ) -> Result<serde_json::Value, JsErrorBox> {
-    state
-        .borrow::<Arc<dyn PolymerHost>>()
-        .prepare_configuration(package, request)
+    let host = state.borrow().borrow::<Arc<dyn PolymerHost>>().clone();
+    host.prepare_configuration(launchable_id, request)
+        .await
         .map_err(JsErrorBox::generic)
 }
 

@@ -26,8 +26,7 @@ export function createScraping() {
       return new Package(internal, await Promise.race([pending, aborted]));
     }
 
-    get path() { return packageData.get(this).path; }
-    get name() { return packageData.get(this).name; }
+    get filename() { return packageData.get(this).filename; }
     get platform() { return packageData.get(this).platform; }
     get serial() { return packageData.get(this).serial; }
     get titleId() { return packageData.get(this).titleId; }
