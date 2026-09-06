@@ -17,7 +17,6 @@ tracing.workspace = true
 windows.workspace = true
 
 [dev-dependencies]
-polymer-test-viewer = { path = "../../consumer/polymer-test-viewer" }
 windows = { workspace = true, features = ["Win32_System_LibraryLoader"] }
 
 [lints]

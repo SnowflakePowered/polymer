@@ -6,7 +6,4 @@ mod install;
 mod runtime;
 mod sys;
 
-#[cfg(test)]
-mod tests;
-
 pub use sys::PolymerInstallGdiHook;

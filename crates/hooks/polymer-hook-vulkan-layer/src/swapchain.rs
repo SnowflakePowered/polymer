@@ -175,74 +175,22 @@ pub(crate) unsafe fn handle_queue_present(
         .copied()
         .zip(image_indices.iter().copied())
         .collect::<Vec<_>>();
-    let capture_state = next.common.queue_capture(queue);
-    let retry = capture_state.retry_presentation(queue, &presents, waits);
-    let completion = if let Some(capture) = queue_state
-        .dispatch
-        .capture
-        .as_ref()
-        .filter(|capture| capture.supports_present_fences)
-    {
-        match unsafe {
-            polymer_producer_vulkan::capture::PresentationCompletion::prepare(
-                &capture.device,
-                original,
-            )
-        } {
-            Ok(completion) => Some(completion),
-            Err(error) => {
-                if let Some(retry) = retry {
-                    // The original waits were consumed by the earlier copy;
-                    // leave the attempt pending until completion setup works.
-                    capture_state.preserve_retry(queue, &presents, waits, retry);
-                    return error;
-                }
-                tracing::debug!(
-                    ?error,
-                    "polymer: presentation completion unavailable; skipping capture"
-                );
-                return unsafe { continuation(queue, present_info, next) };
-            }
-        }
-    } else {
-        None
-    };
-    let fresh = retry.as_ref().map(|retry| retry.uncaptured(&presents));
-    let chained_waits = if fresh.as_ref().is_some_and(Vec::is_empty) {
-        None
-    } else {
-        capture_state.present(
-            &next.common.queue_tracking(queue),
-            queue,
-            queue_state.queue_family_index,
-            fresh.as_deref().unwrap_or(&presents),
-            retry.as_ref().map_or(waits, |retry| retry.waits.as_slice()),
-        )
-    }
-    .or_else(|| retry.as_ref().map(|retry| retry.waits.clone()));
-    let mut modified = *original;
-    if let Some(waits) = &chained_waits {
-        modified.wait_semaphore_count = waits.len() as u32;
-        modified.p_wait_semaphores = waits.as_ptr();
-    }
-    let mut fence_info = vk::SwapchainPresentFenceInfoEXT::default();
-    if let Some(completion) = completion
-        .as_ref()
-        .filter(|completion| !completion.fences().is_empty())
-    {
-        fence_info = fence_info.fences(completion.fences());
-        fence_info.p_next = modified.p_next;
-        modified.p_next = (&fence_info as *const vk::SwapchainPresentFenceInfoEXT<'_>).cast();
-    }
-    let result = unsafe { continuation(queue, &modified, next) };
-    capture_state.finish_presentation(
+    match next.common.queue_capture(queue).present(
+        &next.common.queue_tracking(queue),
         queue,
+        queue_state.queue_family_index,
         &presents,
         waits,
-        chained_waits.as_deref(),
-        result,
-        completion,
-        retry,
-    );
-    result
+    ) {
+        Some(chained_waits) => {
+            // The final copy-ready semaphore represents completion of every
+            // captured swapchain and replaces the application's waits for
+            // the combined present operation.
+            let mut modified = *original;
+            modified.wait_semaphore_count = chained_waits.len() as u32;
+            modified.p_wait_semaphores = chained_waits.as_ptr();
+            unsafe { continuation(queue, &modified, next) }
+        }
+        None => unsafe { continuation(queue, present_info, next) },
+    }
 }

@@ -5,7 +5,6 @@ use polymer_presentation::registry::PresentationRegistry;
 #[derive(Default)]
 pub(super) struct CaptureStore {
     pub(super) entries: dashmap::DashMap<(usize, usize), Mutex<WindowCaptures>>,
-    pub(super) recovery: dashmap::DashMap<usize, super::recovery::RecoveryState>,
 }
 
 impl CaptureStore {
@@ -23,14 +22,8 @@ impl CaptureStore {
             }
             false
         });
-        self.recovery.remove(&context);
     }
 
-    /// The observed context must be current on the presenting thread.
-    pub(super) unsafe fn prepare_context(&self, context: usize, dc: usize) {
-        let mut recovery = self.recovery.entry(context).or_default();
-        unsafe { recovery.prepare(dc as crate::interop::Hdc) };
-    }
     /// The supplied context must be current on this thread, with presentation
     /// transactions serialized, until all native entries finish destruction.
     pub(super) unsafe fn retire_context(&self, context: usize, registry: &PresentationRegistry) {

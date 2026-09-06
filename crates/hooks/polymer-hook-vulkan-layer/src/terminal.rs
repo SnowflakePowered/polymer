@@ -149,33 +149,10 @@ pub(crate) unsafe fn create_instance(
     }) else {
         return vk::Result::ERROR_INITIALIZATION_FAILED;
     };
-    let extensions = unsafe { create_info.as_ref() }.map(|info| unsafe {
-        crate::instance_extensions::InstanceExtensions::negotiate(
-            info,
-            instance_proc(
-                bootstrap.next_gipa,
-                vk::Instance::null(),
-                c"vkEnumerateInstanceExtensionProperties",
-            ),
-        )
-    });
-    let modified = unsafe { create_info.as_ref() }
-        .zip(extensions.as_ref())
-        .map(|(info, extensions)| (*info).enabled_extension_names(&extensions.names));
-    let result = unsafe {
-        next(
-            modified.as_ref().map_or(create_info, |info| info),
-            allocator,
-            instance,
-        )
-    };
+    let result = unsafe { next(create_info, allocator, instance) };
     if result == vk::Result::SUCCESS && !instance.is_null() {
         let created = unsafe { *instance };
-        crate::layer::register_instance_dispatch(
-            created,
-            bootstrap,
-            extensions.is_some_and(|extensions| extensions.surface_maintenance),
-        );
+        crate::layer::register_instance_dispatch(created, bootstrap);
     }
     result
 }
@@ -241,68 +218,12 @@ pub(crate) unsafe fn create_device(
             injected_extensions.push(foreign_queue_extension);
             true
         });
-    let mut capture_supported = capture_extensions.iter().all(|required| {
+    let capture_supported = capture_extensions.iter().all(|required| {
         extension_names
             .iter()
             .any(|name| !name.is_null() && unsafe { CStr::from_ptr(*name) } == *required)
     });
     let mut modified = (!create_info.is_null()).then(|| unsafe { *create_info });
-    use crate::device_features::FeatureNegotiation;
-    let query = physical_state.as_ref().and_then(|state| unsafe {
-        instance_proc::<vk::PFN_vkGetPhysicalDeviceFeatures2>(
-            state.next_gipa,
-            state.instance,
-            c"vkGetPhysicalDeviceFeatures2",
-        )
-        .or_else(|| {
-            instance_proc(
-                state.next_gipa,
-                state.instance,
-                c"vkGetPhysicalDeviceFeatures2KHR",
-            )
-        })
-    });
-    let timeline_features = modified
-        .as_ref()
-        .filter(|_| capture_supported)
-        .map_or(FeatureNegotiation::Disabled, |info| unsafe {
-            FeatureNegotiation::timeline(info, physical_device, query)
-        });
-    capture_supported &= timeline_features != FeatureNegotiation::Disabled;
-    let maintenance_extension = ash::ext::swapchain_maintenance1::NAME;
-    let maintenance_enabled = extension_names
-        .iter()
-        .any(|name| !name.is_null() && unsafe { CStr::from_ptr(*name) } == maintenance_extension);
-    let maintenance_available = physical_state.as_ref().is_some_and(|state| {
-        let instance_support = unsafe { crate::layer::dispatch_key(state.instance) }
-            .and_then(|key| {
-                crate::layer::hook_state()
-                    .instance
-                    .get(&key)
-                    .map(|entry| entry.surface_maintenance)
-            })
-            .unwrap_or(false);
-        instance_support
-            && unsafe { device_supports_extension(state, physical_device, maintenance_extension) }
-    });
-    let has_swapchain = extension_names.iter().any(|name| {
-        !name.is_null() && unsafe { CStr::from_ptr(*name) } == ash::khr::swapchain::NAME
-    });
-    let maintenance_features = modified
-        .as_ref()
-        .filter(|_| {
-            capture_supported && has_swapchain && (maintenance_enabled || maintenance_available)
-        })
-        .map_or(FeatureNegotiation::Disabled, |info| unsafe {
-            FeatureNegotiation::swapchain_maintenance(info, physical_device, query)
-        });
-    let supports_present_fences = maintenance_features != FeatureNegotiation::Disabled;
-    if supports_present_fences && !maintenance_enabled {
-        extension_names.push(maintenance_extension.as_ptr());
-        injected_extensions.push(maintenance_extension);
-    }
-    let mut maintenance = vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT::default()
-        .swapchain_maintenance1(supports_present_fences);
     let mut timeline = vk::PhysicalDeviceTimelineSemaphoreFeatures::default()
         .timeline_semaphore(capture_supported);
     if let Some(info) = modified.as_mut() {
@@ -310,13 +231,9 @@ pub(crate) unsafe fn create_device(
             info.enabled_extension_count = extension_names.len() as u32;
             info.pp_enabled_extension_names = extension_names.as_ptr();
         }
-        if timeline_features == FeatureNegotiation::Inject {
+        if capture_supported {
             timeline.p_next = info.p_next as *mut c_void;
             info.p_next = (&timeline as *const _) as *const c_void;
-        }
-        if maintenance_features == FeatureNegotiation::Inject {
-            maintenance.p_next = info.p_next as *mut c_void;
-            info.p_next = (&maintenance as *const _) as *const c_void;
         }
     }
     let result = unsafe {
@@ -405,7 +322,6 @@ pub(crate) unsafe fn create_device(
             high_part: 0,
         });
         Some(Arc::new(crate::layer::CaptureDevice {
-            supports_present_fences,
             device: ash_device,
             memory_properties,
             get_memory_win32_handle,

@@ -1,48 +1,35 @@
 use super::{StreamResources, tracking};
 use ash::vk;
-use polymer_presentation::producer::CaptureOperation;
 
-pub(super) struct CopyFrame<'a> {
-    pub queue: vk::Queue,
-    pub image_index: u32,
-    pub source: Option<&'a tracking::PresentSource>,
-    pub capture_rect: Option<vk::Rect2D>,
-    pub rect_is_content: bool,
-    pub waits: &'a [vk::Semaphore],
-}
-impl CaptureOperation for CopyFrame<'_> {
-    type Backend = StreamResources;
-    type Output = crate::swapchain::CopySubmission;
-    type Error = vk::Result;
-    unsafe fn submit(
-        self,
-        backend: &mut StreamResources,
-    ) -> Result<Option<Self::Output>, vk::Result> {
-        let engine = backend.copy_engine.as_mut().expect("active copy engine");
-        let submission = if let Some(source) = self.source {
+impl StreamResources {
+    pub(super) unsafe fn copy_frame(
+        &mut self,
+        queue: vk::Queue,
+        image_index: u32,
+        source: Option<&tracking::PresentSource>,
+        capture_rect: Option<vk::Rect2D>,
+        rect_is_content: bool,
+        waits: &[vk::Semaphore],
+    ) -> Result<Option<crate::swapchain::CopySubmission>, vk::Result> {
+        let engine = self.copy_engine.as_mut().expect("active copy engine");
+        let submission = if let Some(source) = source {
             engine.submit_image_copy(
-                self.queue,
-                self.image_index,
+                queue,
+                image_index,
                 source.image,
                 source.subresource,
                 source.source_offset,
                 source.extent,
                 source.layout,
-                self.waits,
+                waits,
             )
-        } else if self.rect_is_content {
-            let Some(rect) = self.capture_rect else {
+        } else if rect_is_content {
+            let Some(rect) = capture_rect else {
                 return Ok(None);
             };
-            engine.submit_region_copy(
-                self.queue,
-                self.image_index,
-                rect.offset,
-                rect.extent,
-                self.waits,
-            )
+            engine.submit_region_copy(queue, image_index, rect.offset, rect.extent, waits)
         } else {
-            engine.submit_copy(self.queue, self.image_index, self.waits)
+            engine.submit_copy(queue, image_index, waits)
         };
         match submission {
             Ok(submission) => Ok(Some(submission)),

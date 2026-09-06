@@ -98,6 +98,21 @@ impl ProducerSession {
         }
     }
 
+    /// Publish to an optional stream and release a failed connection.
+    pub fn publish_frame(connection: &mut Option<Self>, frame: Message) -> bool {
+        let Some(session) = connection else {
+            return false;
+        };
+        match session.send(frame) {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::debug!("polymer: viewer released capture stream: {error}");
+                *connection = None;
+                false
+            }
+        }
+    }
+
     pub fn send(&mut self, message: Message) -> io::Result<()> {
         if !self.accepted {
             return Err(io::Error::new(

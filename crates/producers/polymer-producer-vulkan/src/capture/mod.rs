@@ -6,10 +6,7 @@
 
 use crate::tracking;
 mod operation;
-mod presentation;
-mod retries;
-pub use presentation::{PresentationCompletion, PresentationFence};
-pub use retries::PresentationRetry;
+mod retirement;
 mod routing;
 use crate::{
     ExportImageRing, ExportImageRingDesc, ExportTimelineSemaphore, ExternalHandleMode,
@@ -21,7 +18,6 @@ use parking_lot::Mutex;
 use polymer_hook::config;
 use polymer_platform_windows::{NativeWindow, performance_counter, window_title};
 use polymer_presentation::producer::ExportDescriptor;
-use polymer_presentation::producer::FramePublisher;
 use polymer_presentation::producer::ProducerSession;
 use polymer_protocol::{
     AdapterLuid, ConsumerApi, ExternalImageKind, ExternalSyncKind, PresentationTransform, StreamId,
@@ -38,7 +34,6 @@ use std::{
 /// Everything the capture needs from a hooked device: an owned dispatch and
 /// the external-memory entry points the export transport is built from.
 pub struct CaptureDevice {
-    pub supports_present_fences: bool,
     pub device: ash::Device,
     pub memory_properties: vk::PhysicalDeviceMemoryProperties,
     pub get_memory_win32_handle: vk::PFN_vkGetMemoryWin32HandleKHR,
@@ -58,7 +53,9 @@ struct CaptureStream {
     surface_id: SurfaceId,
     target_window: isize,
     presentation_extent: vk::Extent2D,
-    session: polymer_presentation::producer::CaptureSession<StreamResources, CaptureRequirements>,
+    native: Option<StreamResources>,
+    requirements: Option<CaptureRequirements>,
+    retry: polymer_presentation::producer::ConnectionRetry,
 }
 
 #[derive(PartialEq)]
@@ -70,8 +67,7 @@ struct CaptureRequirements {
     images: Vec<vk::Image>,
 }
 
-type RetiredCopies =
-    Arc<Mutex<polymer_presentation::retirement::RetirementQueue<SwapchainCopyEngine>>>;
+type RetiredCopies = Arc<Mutex<retirement::RetiredCopies>>;
 
 struct StreamResources {
     copy_engine: Option<SwapchainCopyEngine>,
@@ -97,11 +93,14 @@ impl CaptureStream {
             surface_id,
             target_window,
             presentation_extent,
-            session: Default::default(),
+            native: None,
+            requirements: None,
+            retry: Default::default(),
         }
     }
     fn retire(&mut self) {
-        self.session.invalidate();
+        self.native = None;
+        self.retry = Default::default();
     }
     fn initialize(
         &mut self,
@@ -112,51 +111,63 @@ impl CaptureStream {
         images: &[vk::Image],
         queue_family_index: u32,
     ) {
-        self.session.configure(CaptureRequirements {
+        let requirements = CaptureRequirements {
             extent: self.extent,
             window: self.target_window,
             format,
             queue_family: queue_family_index,
             images: images.to_vec(),
-        });
-        let setup = CaptureSetup {
-            retirement,
-            presentation_semaphores,
-            images,
-            queue_family_index,
-            capture,
-            extent: self.extent,
-            format,
-            surface_id: self.surface_id,
-            source_window: self.target_window,
         };
-        if let Err(error) = unsafe { self.session.initialize(std::time::Instant::now(), &setup) } {
-            tracing::debug!("polymer: Vulkan capture initialization deferred: {error}");
+        if self.requirements.as_ref() != Some(&requirements) {
+            self.retire();
+            self.requirements = Some(requirements);
+        }
+        if self
+            .native
+            .as_ref()
+            .is_some_and(|native| !native.connected())
+        {
+            self.native = None;
+            self.retry = polymer_presentation::producer::ConnectionRetry::Parked;
+        }
+        if self.native.is_some() || !self.retry.begin() {
+            return;
+        }
+        match unsafe {
+            self.create_resources(
+                capture,
+                presentation_semaphores,
+                retirement,
+                format,
+                images,
+                queue_family_index,
+            )
+        } {
+            Ok(Some(native)) => self.native = Some(native),
+            Ok(None) => self.retry = polymer_presentation::producer::ConnectionRetry::Parked,
+            Err(error) => {
+                tracing::debug!("polymer: Vulkan capture initialization deferred: {error}")
+            }
         }
     }
 }
 
-struct CaptureSetup<'a> {
-    retirement: &'a RetiredCopies,
-    presentation_semaphores: &'a crate::swapchain::PresentationSemaphores,
-    images: &'a [vk::Image],
-    queue_family_index: u32,
-    capture: Option<&'a CaptureDevice>,
-    extent: vk::Extent2D,
-    format: vk::Format,
-    surface_id: SurfaceId,
-    source_window: isize,
-}
-impl polymer_presentation::producer::CaptureInitializer for CaptureSetup<'_> {
-    type Backend = StreamResources;
-    type Error = String;
-    unsafe fn initialize(&self) -> Result<Option<StreamResources>, Self::Error> {
+impl CaptureStream {
+    unsafe fn create_resources(
+        &self,
+        capture: Option<&CaptureDevice>,
+        presentation_semaphores: &crate::swapchain::PresentationSemaphores,
+        retirement: &RetiredCopies,
+        format: vk::Format,
+        images: &[vk::Image],
+        queue_family_index: u32,
+    ) -> Result<Option<StreamResources>, String> {
         let transport = create_transport(
-            self.capture,
+            capture,
             self.extent,
-            self.format,
+            format,
             self.surface_id,
-            self.source_window,
+            self.target_window,
         );
         if transport.ipc.is_none() {
             return if transport.parked {
@@ -165,27 +176,27 @@ impl polymer_presentation::producer::CaptureInitializer for CaptureSetup<'_> {
                 Err("transport unavailable".into())
             };
         }
-        let capture = self.capture.ok_or("capture device unavailable")?;
+        let capture = capture.ok_or("capture device unavailable")?;
         let ring = transport.ring.ok_or("export ring unavailable")?;
         let timeline = transport
             .producer_timeline
             .ok_or("producer timeline unavailable")?;
         let copy_engine = SwapchainCopyEngine::create(
             capture.device.clone(),
-            self.presentation_semaphores,
+            presentation_semaphores,
             self.surface_id.0,
             ring,
             timeline,
             transport.consumer_timeline,
-            self.images.to_vec(),
+            images.to_vec(),
             self.extent,
-            self.queue_family_index,
+            queue_family_index,
             capture.set_loader_data,
         )
         .map_err(|error| error.to_string())?;
         Ok(Some(StreamResources {
             copy_engine: Some(copy_engine),
-            retirement: self.retirement.clone(),
+            retirement: retirement.clone(),
             ipc: transport.ipc,
         }))
     }
@@ -246,7 +257,6 @@ struct PresentationTarget {
 /// instance and propagated to its devices and queues.
 #[derive(Default)]
 pub struct CaptureState {
-    present_retries: retries::PresentRetries,
     swapchains: DashMap<vk::SwapchainKHR, SwapchainState>,
     surface_windows: DashMap<vk::SurfaceKHR, isize>,
     swapchain_images: DashMap<vk::Image, vk::SwapchainKHR>,
@@ -261,6 +271,7 @@ pub struct CaptureState {
     /// window creation order so input can return to the corresponding window
     /// even though only one swapchain owns the exported copies.
     graph_presentations: DashMap<vk::SwapchainKHR, GraphPresentation>,
+    graph_target_layouts: DashMap<(u64, u32, u32), PresentationTarget>,
     /// Stable HWND order comes from Vulkan surface creation rather than
     /// swapchain creation: applications can recreate sibling swapchains in a
     /// different order during resize or startup transitions.
@@ -336,66 +347,6 @@ impl CaptureState {
                 },
             );
         }
-    }
-
-    fn presentation_targets(
-        &self,
-        domain: u64,
-        owner_window: isize,
-        owner_extent: vk::Extent2D,
-        sources: &[tracking::PresentSource],
-        requested_indices: &[usize],
-        now: u64,
-    ) -> (Vec<(usize, usize)>, Vec<PresentationTarget>) {
-        let observations = self
-            .graph_presentations
-            .iter()
-            .map(|entry| entry.observation())
-            .collect::<Vec<_>>();
-        let mut titles = observations
-            .iter()
-            .map(|observation| {
-                (
-                    observation.window,
-                    window_title(NativeWindow(observation.window)),
-                )
-            })
-            .collect::<HashMap<_, _>>();
-        titles
-            .entry(owner_window)
-            .or_insert_with(|| window_title(NativeWindow(owner_window)));
-        let sources = sources
-            .iter()
-            .map(|source| source.routing_source(domain))
-            .collect::<Vec<_>>();
-        let (requests, targets) = self.presentation_registry.route_presentations(
-            polymer_presentation::registry::PresentationTarget {
-                window: owner_window,
-                extent: polymer_presentation::Extent2D {
-                    width: owner_extent.width,
-                    height: owner_extent.height,
-                },
-                placement: None,
-            },
-            &sources,
-            &observations,
-            requested_indices,
-            now,
-            |slot, window| {
-                config::tracked_render_target_has_surface_pattern(slot).then(|| {
-                    titles
-                        .get(&window)
-                        .and_then(|title| title.as_ref())
-                        .is_some_and(|title| {
-                            config::tracked_render_target_surface_matches(slot, title) == Some(true)
-                        })
-                })
-            },
-        );
-        (
-            requests,
-            targets.into_iter().map(PresentationTarget::from).collect(),
-        )
     }
 
     fn claim_tracked_streaming(
@@ -768,8 +719,8 @@ impl CaptureState {
                 .iter()
                 .any(|state| state.source_window == source_window)
         {
-            self.presentation_registry
-                .forget_routing_window(source_window);
+            self.graph_target_layouts
+                .retain(|_, target| target.source_window != source_window);
             self.swapchain_windows
                 .lock()
                 .retain(|window| *window != source_window);
@@ -784,11 +735,10 @@ impl CaptureState {
             .map(|state| *state.key())
             .collect::<Vec<_>>();
         for owner in owners {
-            self.present_retries.forget_swapchain(owner);
             self.release_tracked_streaming(owner);
         }
-        self.presentation_registry
-            .forget_routing_domain(device.as_raw());
+        self.graph_target_layouts
+            .retain(|(domain, _, _), _| *domain != device.as_raw());
         self.swapchains.retain(|_, state| state.device != device);
         let presentations = &self.graph_presentations;
         presentations.retain(|swapchain, _| self.swapchains.contains_key(swapchain));
@@ -857,7 +807,6 @@ impl CaptureState {
     }
 
     pub fn swapchain_destroyed(&self, swapchain: vk::SwapchainKHR) {
-        self.present_retries.forget_swapchain(swapchain);
         if let Some(state) = self.swapchains.get(&swapchain) {
             for image in &state.images {
                 self.swapchain_images.remove(image);
@@ -1063,7 +1012,7 @@ impl CaptureState {
             stream.target_window = target.source_window;
             stream.presentation_extent = target.presentation_extent;
             if source_changed {
-                stream.session.source_changed();
+                stream.retry.source_changed();
             }
             state.streams.push(stream);
         }
@@ -1106,15 +1055,23 @@ impl CaptureState {
                 Some(source) => source.extent,
                 None => capture_rect.map_or(swapchain_extent, |rect| rect.extent),
             };
+            let Some(native) = stream.native.as_mut() else {
+                continue;
+            };
+            if !native.connected() {
+                stream.native = None;
+                stream.retry = polymer_presentation::producer::ConnectionRetry::Parked;
+                continue;
+            }
             let submission = unsafe {
-                stream.session.capture(operation::CopyFrame {
+                native.copy_frame(
                     queue,
                     image_index,
                     source,
                     capture_rect,
                     rect_is_content,
-                    waits: &waits,
-                })
+                    &waits,
+                )
             };
             match submission {
                 Ok(Some(submission)) => {
@@ -1178,8 +1135,8 @@ impl CaptureState {
                             PresentationTransform::UNAVAILABLE
                         },
                     });
-                    if let Some(native) = stream.session.as_mut() {
-                        native.ipc.publish_frame(notification);
+                    if let Some(native) = stream.native.as_mut() {
+                        ProducerSession::publish_frame(&mut native.ipc, notification);
                     }
                     waits.clear();
                     waits.push(submission.present_ready);
@@ -1615,7 +1572,7 @@ mod tests {
     }
 }
 
-impl polymer_presentation::producer::CaptureBackend for StreamResources {
+impl StreamResources {
     fn connected(&self) -> bool {
         self.ipc.as_ref().is_some_and(ProducerSession::connected)
     }

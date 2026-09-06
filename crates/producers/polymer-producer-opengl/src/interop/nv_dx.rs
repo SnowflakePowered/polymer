@@ -287,9 +287,8 @@ impl Lease<'_> {
         Ok(())
     }
 }
-impl polymer_presentation::scheduling::SlotLease for Lease<'_> {
-    type Error = String;
-    fn finish(mut self) -> Result<(), String> {
+impl Lease<'_> {
+    pub fn finish(mut self) -> Result<(), String> {
         self.unlock()?;
         unsafe {
             self.ring.context.CopyResource(
@@ -339,54 +338,5 @@ impl Drop for Ring {
             self.device_handle.raw = std::ptr::null_mut();
             tracing::error!("polymer: retaining NV interop resources after unregister failure");
         }
-    }
-}
-
-#[cfg(test)]
-impl Ring {
-    pub(crate) unsafe fn verify_locked_retirement() {
-        unsafe extern "system" fn reject_unregister(
-            _device: *mut c_void,
-            _object: *mut c_void,
-        ) -> i32 {
-            0
-        }
-        let mut ring = unsafe { Self::new(32, 32) }.unwrap();
-        let unregister = ring.functions.unregister_object;
-        ring.functions.unregister_object = reject_unregister;
-        let object = ring.slots[0].object;
-        let texture = ring.slots[0].texture;
-        let siblings = ring
-            .slots
-            .iter()
-            .skip(1)
-            .map(|slot| slot.texture)
-            .collect::<Vec<_>>();
-        assert_ne!(
-            unsafe { (ring.functions.lock_objects)(ring.device_handle.raw, 1, &object) },
-            0
-        );
-        ring.unregister_slots();
-        assert_eq!(ring.slots.len(), siblings.len() + 1);
-        assert_eq!(ring.slots[0].object, object);
-        assert_ne!(
-            unsafe { windows_sys::Win32::Graphics::OpenGL::glIsTexture(texture) },
-            0
-        );
-        assert!(siblings.iter().all(|texture| unsafe {
-            windows_sys::Win32::Graphics::OpenGL::glIsTexture(*texture)
-        } != 0));
-        assert_ne!(
-            unsafe { (ring.functions.unlock_objects)(ring.device_handle.raw, 1, &object) },
-            0
-        );
-        ring.functions.unregister_object = unregister;
-        ring.unregister_slots();
-        assert!(ring.slots.is_empty());
-        assert_eq!(
-            unsafe { windows_sys::Win32::Graphics::OpenGL::glIsTexture(texture) },
-            0
-        );
-        // Ring::drop can now close the device without retaining native objects.
     }
 }

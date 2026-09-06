@@ -61,7 +61,7 @@ impl NvCapture {
         else {
             return Ok(None);
         };
-        let slot_index = reservation.index();
+        let slot_index = reservation.0;
         let slot = &self.transport.slots[slot_index];
         let f = self.transport.functions;
         let mut old_read = 0;
@@ -127,7 +127,8 @@ impl NvCapture {
             (f.bind_framebuffer)(GL_READ_FRAMEBUFFER, old_read as u32);
             (f.bind_framebuffer)(GL_DRAW_FRAMEBUFFER, old_draw as u32);
         }
-        reservation.commit()?;
+        reservation.1.finish()?;
+        self.scheduler.commit(slot_index, count);
         self.frame_number = self.frame_number.wrapping_add(1);
         let message = polymer_presentation::producer::CapturedFrame {
             stream_id,
@@ -146,7 +147,7 @@ impl NvCapture {
                 height: self.window_height,
             },
         ));
-        self.ipc.publish_frame(message);
+        ProducerSession::publish_frame(&mut self.ipc, message);
         Ok(Some(()))
     }
 }

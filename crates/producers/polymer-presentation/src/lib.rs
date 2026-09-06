@@ -10,7 +10,6 @@ pub mod observation;
 #[cfg(all(feature = "producer", windows))]
 pub mod producer;
 pub mod registry;
-pub mod retirement;
 pub mod scheduling;
 pub mod selection;
 

@@ -28,9 +28,8 @@ impl<'a> KeyedMutexLease<'a> {
         }))
     }
 }
-impl polymer_presentation::scheduling::SlotLease for KeyedMutexLease<'_> {
-    type Error = windows::core::Error;
-    fn finish(mut self) -> Result<(), Self::Error> {
+impl KeyedMutexLease<'_> {
+    pub fn finish(mut self) -> Result<(), windows::core::Error> {
         unsafe { self.mutex.ReleaseSync(self.publish_key) }?;
         self.armed = false;
         Ok(())

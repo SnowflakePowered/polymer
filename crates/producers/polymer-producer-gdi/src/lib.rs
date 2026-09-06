@@ -1,16 +1,13 @@
 //! Direct GDI rendering into a shared D3D11 surface.
 #![allow(unsafe_code)]
 
-mod paint;
 use parking_lot::Mutex;
-use polymer_platform_windows::performance_counter;
-use polymer_presentation::producer::ExportDescriptor;
-use polymer_presentation::producer::FramePublisher;
-use polymer_presentation::producer::ProducerSession;
+use polymer_ipc::{LocalSocket, Message, StreamReady};
+use polymer_platform_windows::{ProcessId, duplicate_handle_into_process, performance_counter};
 use polymer_producer_d3d11::D3d11ImageRing;
 use polymer_protocol::{
-    AdapterLuid, ConsumerApi, ExternalImageKind, ExternalSyncKind, PresentationTransform, StreamId,
-    SurfaceId,
+    AdapterLuid, ConsumerApi, ExternalImageKind, ExternalSyncKind, FrameReady, MAX_IMAGE_SLOTS,
+    PROTOCOL_VERSION, PresentationTransform, StreamId, SurfaceId,
 };
 use std::{
     sync::OnceLock,
@@ -54,14 +51,12 @@ struct Capture {
     height: u32,
     context: ID3D11DeviceContext4,
     ring: D3d11ImageRing,
-    ipc: Option<ProducerSession>,
+    ipc: Option<LocalSocket>,
     sync_value: u64,
+    frame_number: u64,
     initialized: bool,
-    active_paint: Option<paint::PaintReservation>,
-    pending_release: Option<paint::PaintReservation>,
-    scheduler: polymer_presentation::scheduling::SlotScheduler,
-    submitted_value: u64,
-    pending_signal: Option<u64>,
+    active_dc: Option<isize>,
+    dirty: RECT,
     last_present: Instant,
 }
 
@@ -71,48 +66,7 @@ unsafe impl Send for Capture {}
 
 #[derive(Default)]
 struct State {
-    capture: polymer_presentation::producer::CaptureSession<Capture, (isize, u32, u32)>,
-    destroyed: bool,
-}
-
-impl State {
-    fn retire_destroyed(&mut self) {
-        if self.destroyed
-            && self.capture.as_ref().is_none_or(|capture| {
-                capture.active_paint.is_none() && capture.pending_release.is_none()
-            })
-        {
-            self.capture.invalidate();
-            self.destroyed = false;
-        }
-    }
-
-    fn window_destroyed(&mut self, hwnd: isize) {
-        let matches = self
-            .capture
-            .as_ref()
-            .is_some_and(|capture| capture.hwnd == hwnd)
-            || self
-                .capture
-                .configuration()
-                .is_some_and(|configuration| configuration.0 == hwnd);
-        if !matches {
-            return;
-        }
-        self.destroyed = true;
-        if let Some(capture) = self.capture.as_mut() {
-            capture.ipc.take();
-            if capture.active_paint.is_none() {
-                let _ = capture.recover_paint();
-            }
-        }
-        self.retire_destroyed();
-    }
-}
-
-/// Notify only after successful destruction of the source window.
-pub fn window_destroyed(hwnd: isize) {
-    state().lock().window_destroyed(hwnd);
+    capture: Option<Capture>,
 }
 
 static STATE: OnceLock<Mutex<State>> = OnceLock::new();
@@ -128,16 +82,10 @@ pub unsafe fn begin_paint(hwnd: isize, width: u32, height: u32, dirty: [i32; 4])
         return None;
     }
     let mut state = state().lock();
-    if let Some(capture) = state.capture.as_mut() {
-        if capture.recover_paint() != Ok(true) {
-            return None;
-        }
-    }
-    state.retire_destroyed();
     if state
         .capture
         .as_ref()
-        .is_some_and(|capture| capture.active_paint.is_some())
+        .is_some_and(|capture| capture.active_dc.is_some())
     {
         return None;
     }
@@ -149,42 +97,122 @@ pub unsafe fn begin_paint(hwnd: isize, width: u32, height: u32, dirty: [i32; 4])
     }) {
         return None;
     }
-    state.capture.configure((hwnd, width, height));
-    let setup = CaptureSetup {
-        hwnd,
-        width,
-        height,
+    let recreate = state.capture.as_ref().is_none_or(|capture| {
+        capture.hwnd != hwnd || capture.width != width || capture.height != height
+    });
+    if recreate {
+        state.capture = match unsafe { Capture::new(hwnd, width, height) } {
+            Ok(capture) => Some(capture),
+            Err(error) => {
+                tracing::debug!("polymer: GDI capture creation failed: {error}");
+                None
+            }
+        };
+    }
+    let capture = state.capture.as_mut()?;
+    let released = capture
+        .ring
+        .consumer_fence()
+        .is_some_and(|fence| unsafe { fence.GetCompletedValue() } >= capture.sync_value);
+    if capture.sync_value != 0 && !released {
+        return None;
+    }
+    let surface: IDXGISurface1 = capture.ring.slots()[0].texture.cast().ok()?;
+    let dc = unsafe { surface.GetDC(!capture.initialized) }.ok()?;
+    if !capture.initialized {
+        unsafe { PatBlt(dc, 0, 0, width as i32, height as i32, BLACKNESS) };
+        capture.initialized = true;
+    }
+    let [left, top, right, bottom] = dirty;
+    if right > left && bottom > top {
+        unsafe { IntersectClipRect(dc, left, top, right, bottom) };
+    }
+    capture.active_dc = Some(dc.0 as isize);
+    capture.dirty = RECT {
+        left,
+        top,
+        right,
+        bottom,
     };
-    if let Err(error) = unsafe { state.capture.initialize(Instant::now(), &setup) } {
-        tracing::debug!("polymer: GDI capture creation failed: {error}");
-    }
-    match unsafe { state.capture.capture(paint::BeginPaint { dirty }) } {
-        Ok(dc) => dc,
-        Err(_) => None,
-    }
+    Some(dc.0 as isize)
 }
 
 /// Completes a redirected paint and publishes the shared surface.
 pub unsafe fn end_paint(hwnd: isize, dc: isize) {
     let mut state = state().lock();
-    let _ = unsafe { state.capture.capture(paint::EndPaint { hwnd, dc }) };
-    state.retire_destroyed();
+    let Some(capture) = state.capture.as_mut() else {
+        return;
+    };
+    if capture.hwnd != hwnd || capture.active_dc != Some(dc) {
+        return;
+    }
+    unsafe { GdiFlush() };
+    let surface = match capture.ring.slots()[0].texture.cast::<IDXGISurface1>() {
+        Ok(surface) => surface,
+        Err(error) => {
+            capture.active_dc = None;
+            tracing::debug!("polymer: GDI surface query failed: {error}");
+            return;
+        }
+    };
+    if let Err(error) = unsafe { surface.ReleaseDC(Some(&raw const capture.dirty)) } {
+        capture.active_dc = None;
+        tracing::debug!("polymer: GDI ReleaseDC failed: {error}");
+        return;
+    }
+    capture.active_dc = None;
+    let value = capture.sync_value.wrapping_add(1).max(1);
+    let fence = capture
+        .ring
+        .fence()
+        .expect("GDI rings carry a producer fence");
+    if let Err(error) = unsafe { capture.context.Signal(fence, value) } {
+        tracing::debug!("polymer: GDI producer-fence signal failed: {error}");
+        return;
+    }
+    capture.sync_value = value;
+    capture.frame_number = capture.frame_number.wrapping_add(1);
+    capture.last_present = Instant::now();
+    let message = Message::FrameReady(FrameReady {
+        stream_id: StreamId(hwnd as u64),
+        slot: 0,
+        render_width: capture.width,
+        render_height: capture.height,
+        capture_x: 0,
+        capture_y: 0,
+        capture_width: capture.width,
+        capture_height: capture.height,
+        presentation_width: capture.width,
+        presentation_height: capture.height,
+        presentation_transform: PresentationTransform::axis_aligned(
+            0,
+            0,
+            capture.width,
+            capture.height,
+        ),
+        frame_number: capture.frame_number,
+        sync_value: value,
+        timestamp_qpc: performance_counter().unwrap_or(0),
+    });
+    if capture
+        .ipc
+        .as_mut()
+        .is_some_and(|ipc| ipc.send(message).is_err())
+    {
+        capture.ipc = None;
+    }
+    if capture.frame_number == 1 || capture.frame_number % 120 == 0 {
+        tracing::debug!(
+            "polymer: submitted GDI capture {}x{} (count={})",
+            capture.width,
+            capture.height,
+            capture.frame_number
+        );
+    }
 }
 
 impl Capture {
-    unsafe fn new(hwnd: isize, width: u32, height: u32) -> windows::core::Result<Option<Self>> {
-        let name = polymer_hook::config::session()
-            .map_err(|error| Error::new(HRESULT(0x8000_4005u32 as i32), error.to_string()))?;
-        let Some(socket) = ProducerSession::setup_result(ProducerSession::connect(&name))
-            .map_err(|error| Error::new(HRESULT(0x8000_4005u32 as i32), error.to_string()))?
-        else {
-            return Ok(None);
-        };
-        if socket.preferred_consumer() != ConsumerApi::D3d12 {
-            tracing::debug!("polymer: GDI requires a D3D12 consumer");
-            return Ok(None);
-        }
-
+    unsafe fn new(hwnd: isize, width: u32, height: u32) -> windows::core::Result<Self> {
         let factory = unsafe { CreateDXGIFactory2::<IDXGIFactory4>(DXGI_CREATE_FACTORY_FLAGS(0)) }?;
         let adapter = unsafe { factory.EnumAdapters1(0) }?;
         let adapter_base: IDXGIAdapter = adapter.cast()?;
@@ -226,19 +254,14 @@ impl Capture {
             low_part: adapter_desc.AdapterLuid.LowPart,
             high_part: adapter_desc.AdapterLuid.HighPart,
         };
-        let Some(ipc) =
-            ProducerSession::setup_result(connect_viewer(hwnd, adapter_luid, &ring, socket))
-                .map_err(|error| {
-                    Error::new(
-                        HRESULT(0x8000_4005u32 as i32),
-                        format!("viewer connection: {error}"),
-                    )
-                })?
-        else {
-            return Ok(None);
-        };
+        let ipc = connect_viewer(hwnd, adapter_luid, &ring).map_err(|error| {
+            Error::new(
+                HRESULT(0x8000_4005u32 as i32),
+                format!("viewer connection: {error}"),
+            )
+        })?;
         tracing::debug!("polymer: attached GDI {width}x{height} shared DXGI surface");
-        Ok(Some(Self {
+        Ok(Self {
             hwnd,
             width,
             height,
@@ -246,14 +269,12 @@ impl Capture {
             ring,
             ipc: Some(ipc),
             sync_value: 0,
+            frame_number: 0,
             initialized: false,
-            active_paint: None,
-            pending_release: None,
-            scheduler: Default::default(),
-            submitted_value: 0,
-            pending_signal: None,
+            active_dc: None,
+            dirty: RECT::default(),
             last_present: Instant::now(),
-        }))
+        })
     }
 }
 
@@ -261,19 +282,48 @@ fn connect_viewer(
     hwnd: isize,
     adapter_luid: AdapterLuid,
     ring: &D3d11ImageRing,
-    mut socket: ProducerSession,
-) -> std::io::Result<ProducerSession> {
-    let image_handles = ring
-        .slots()
-        .iter()
-        .map(|slot| slot.raw_handle() as isize as i64)
-        .collect::<Vec<_>>();
-    let producer = (ring.raw_fence_handle().expect("GDI producer fence") as isize) as i64;
-    let consumer = (ring
-        .raw_consumer_fence_handle()
-        .expect("GDI consumer fence") as isize) as i64;
+) -> std::io::Result<LocalSocket> {
+    let session = polymer_hook::config::session()
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::NotFound, error))?;
+    let mut socket = LocalSocket::connect(&session)?;
+    let hello = match socket.receive()? {
+        Message::Hello(hello) if hello.protocol_version == PROTOCOL_VERSION => hello,
+        _ => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "viewer did not begin with a compatible Hello message",
+            ));
+        }
+    };
+    socket.enable_frame_channel(hello.process_id)?;
+    if hello.preferred_consumer != ConsumerApi::D3d12 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "GDI capture currently requires the D3D12 viewer",
+        ));
+    }
+    if ring.slots().len() > MAX_IMAGE_SLOTS {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "GDI ring exceeds protocol capacity",
+        ));
+    }
+    let viewer = ProcessId(hello.process_id);
+    let mut image_handles = [0; MAX_IMAGE_SLOTS];
+    image_handles[0] =
+        duplicate_handle_into_process(ring.slots()[0].raw_handle() as isize, viewer)? as i64;
+    let producer = duplicate_handle_into_process(
+        ring.raw_fence_handle().expect("GDI producer fence") as isize,
+        viewer,
+    )? as i64;
+    let consumer = duplicate_handle_into_process(
+        ring.raw_consumer_fence_handle()
+            .expect("GDI consumer fence") as isize,
+        viewer,
+    )? as i64;
     let desc = ring.desc();
-    socket.publish(ExportDescriptor {
+    socket.send(Message::StreamReady(StreamReady {
+        producer_process_id: std::process::id(),
         surface_id: SurfaceId(hwnd as u64),
         adapter_luid,
         source_window: hwnd as i64,
@@ -282,40 +332,15 @@ fn connect_viewer(
         format: desc.format,
         image_kind: ExternalImageKind::GdiD3d12Resource,
         sync_kind: ExternalSyncKind::D3d12Fence,
-        image_handles: &image_handles,
+        slot_count: 1,
+        image_handles,
         timeline_semaphore_handle: producer,
         consumer_semaphore_handle: consumer,
         bottom_up: false,
-    })?;
+    }))?;
     Ok(socket)
 }
 
 fn invalid_pointer() -> Error {
     Error::from_hresult(HRESULT(0x8000_4003u32 as i32))
 }
-
-impl polymer_presentation::producer::CaptureBackend for Capture {
-    fn connected(&self) -> bool {
-        // Preserve the owning thread's DC until EndPaint or release recovery;
-        // that boundary observes publication failure before parking the stream.
-        self.active_paint.is_some()
-            || self.pending_release.is_some()
-            || self.ipc.as_ref().is_some_and(ProducerSession::connected)
-    }
-}
-
-struct CaptureSetup {
-    hwnd: isize,
-    width: u32,
-    height: u32,
-}
-impl polymer_presentation::producer::CaptureInitializer for CaptureSetup {
-    type Backend = Capture;
-    type Error = windows::core::Error;
-    unsafe fn initialize(&self) -> Result<Option<Capture>, Self::Error> {
-        unsafe { Capture::new(self.hwnd, self.width, self.height) }
-    }
-}
-
-#[cfg(test)]
-mod tests;

@@ -1,10 +1,10 @@
 use super::*;
-use polymer_presentation::producer::CaptureSession;
-use std::time::Instant;
+use polymer_presentation::producer::ConnectionRetry;
 
 /// Native resources are initialized and retired only on the presenting GL context.
 pub(super) struct Capture {
-    session: CaptureSession<NativeCapture, ((u32, u32), bool, isize)>,
+    native: Option<NativeCapture>,
+    retry: ConnectionRetry,
     surface: SurfaceId,
     window: isize,
     extent: (u32, u32),
@@ -15,7 +15,7 @@ impl Capture {
     /// The original context is gone. Never run GL destructors in another
     /// context's object namespace, even if the numeric context handle is reused.
     pub(super) fn context_destroyed(mut self) {
-        let Some(native) = self.session.as_mut() else {
+        let Some(native) = self.native.as_mut() else {
             return;
         };
         match native {
@@ -39,7 +39,8 @@ impl Capture {
         bottom_up: bool,
     ) -> Result<Self, String> {
         let mut capture = Self {
-            session: CaptureSession::default(),
+            native: None,
+            retry: Default::default(),
             surface,
             window,
             extent: (width, height),
@@ -50,17 +51,21 @@ impl Capture {
         Ok(capture)
     }
     pub(super) unsafe fn tick(&mut self) {
-        self.session
-            .configure((self.extent, self.bottom_up, self.window));
-        let setup = CaptureSetup {
-            surface: self.surface,
-            window: self.window,
-            extent: self.extent,
-            window_extent: self.window_extent,
-            bottom_up: self.bottom_up,
-        };
-        if let Err(error) = unsafe { self.session.initialize(Instant::now(), &setup) } {
-            tracing::debug!("polymer: OpenGL capture initialization failed: {error}");
+        if self
+            .native
+            .as_ref()
+            .is_some_and(|native| !native.connected())
+        {
+            self.native = None;
+            self.retry = ConnectionRetry::Parked;
+        }
+        if self.native.is_some() || !self.retry.begin() {
+            return;
+        }
+        match unsafe { self.initialize() } {
+            Ok(Some(native)) => self.native = Some(native),
+            Ok(None) => self.retry = ConnectionRetry::Parked,
+            Err(error) => tracing::debug!("polymer: OpenGL capture initialization failed: {error}"),
         }
     }
 
@@ -71,13 +76,16 @@ impl Capture {
         bottom_up: bool,
         window: isize,
     ) {
+        if (self.extent, self.bottom_up, self.window) != ((width, height), bottom_up, window) {
+            self.native = None;
+            self.retry = Default::default();
+        }
         self.extent = (width, height);
         self.bottom_up = bottom_up;
         self.window = window;
-        self.session.configure((self.extent, bottom_up, window));
     }
     pub(super) fn source_changed(&mut self) {
-        self.session.source_changed();
+        self.retry.source_changed();
     }
     pub(super) fn width(&self) -> u32 {
         self.extent.0
@@ -90,7 +98,7 @@ impl Capture {
     }
     pub(super) fn set_window_extent(&mut self, width: u32, height: u32) {
         self.window_extent = (width, height);
-        if let Some(native) = self.session.as_mut() {
+        if let Some(native) = self.native.as_mut() {
             native.set_window_extent(width, height);
         }
     }
@@ -99,26 +107,22 @@ impl Capture {
         stream: StreamId,
         source: Option<&DrawCandidate>,
     ) -> Result<(), String> {
-        unsafe { self.session.capture(CopyFrame { stream, source }) }.map(|_| ())
+        let Some(native) = self.native.as_mut() else {
+            return Ok(());
+        };
+        if !native.connected() {
+            self.native = None;
+            self.retry = ConnectionRetry::Parked;
+            return Ok(());
+        }
+        match native {
+            NativeCapture::Ext(value) => unsafe { value.copy_frame(stream, source) },
+            NativeCapture::Nv(value) => unsafe { value.copy_frame(stream, source) },
+            NativeCapture::Pbo(value) => unsafe { value.copy_frame(stream, source) },
+        }
+        .map(|_| ())
     }
-}
 
-impl polymer_presentation::producer::CaptureBackend for NativeCapture {
-    fn connected(&self) -> bool {
-        NativeCapture::connected(self)
-    }
-}
-
-struct CaptureSetup {
-    surface: SurfaceId,
-    window: isize,
-    extent: (u32, u32),
-    window_extent: (u32, u32),
-    bottom_up: bool,
-}
-impl polymer_presentation::producer::CaptureInitializer for CaptureSetup {
-    type Backend = NativeCapture;
-    type Error = String;
     unsafe fn initialize(&self) -> Result<Option<NativeCapture>, String> {
         let name = config::session().map_err(|error| error.to_string())?;
         let Some(connection) = ProducerSession::setup_result(ProducerSession::connect(&name))
@@ -139,22 +143,5 @@ impl polymer_presentation::producer::CaptureInitializer for CaptureSetup {
             )
         }
         .map(Some)
-    }
-}
-
-struct CopyFrame<'a> {
-    stream: StreamId,
-    source: Option<&'a DrawCandidate>,
-}
-impl polymer_presentation::producer::CaptureOperation for CopyFrame<'_> {
-    type Backend = NativeCapture;
-    type Output = ();
-    type Error = String;
-    unsafe fn submit(self, backend: &mut NativeCapture) -> Result<Option<()>, String> {
-        match backend {
-            NativeCapture::Ext(value) => unsafe { value.copy_frame(self.stream, self.source) },
-            NativeCapture::Nv(value) => unsafe { value.copy_frame(self.stream, self.source) },
-            NativeCapture::Pbo(value) => unsafe { value.copy_frame(self.stream, self.source) },
-        }
     }
 }

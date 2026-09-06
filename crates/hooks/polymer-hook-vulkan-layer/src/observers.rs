@@ -9,8 +9,6 @@
 use crate::{hooks, layer::*};
 use ash::vk;
 
-pub(crate) fn noop() {}
-
 pub(crate) fn begin_command_buffer(
     command_buffer: vk::CommandBuffer,
     context: &hooks::BeginCommandBufferContext,

@@ -7,8 +7,6 @@ use windows_sys::Win32::{
 
 #[link(name = "user32")]
 unsafe extern "system" {
-    #[link_name = "DestroyWindow"]
-    pub(crate) fn system_destroy_window(hwnd: HWND) -> i32;
     #[link_name = "BeginPaint"]
     pub(crate) fn system_begin_paint(hwnd: HWND, paint: *mut PAINTSTRUCT) -> HDC;
     #[link_name = "EndPaint"]

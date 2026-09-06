@@ -1,9 +1,7 @@
 //! Vulkan loader layer that transparently observes swapchain presentation.
 
-mod device_features;
 mod hook_chain;
 mod hooks;
-mod instance_extensions;
 mod layer;
 mod observers;
 mod swapchain;

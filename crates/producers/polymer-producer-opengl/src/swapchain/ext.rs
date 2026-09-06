@@ -87,11 +87,11 @@ impl ExtCapture {
         let completed = unsafe { self.consumer.completed_value() };
         let sync_value = self.sync_value.wrapping_add(1).max(1);
         let Some(reservation) = self.scheduler.try_acquire(self.slots.len(), |index| {
-            self.slots[index].try_acquire(completed, sync_value)
+            (self.slots[index].release_value.load(Ordering::Relaxed) <= completed).then_some(())
         }) else {
             return Ok(None);
         };
-        let slot_index = reservation.index();
+        let slot_index = reservation.0;
         let slot = &self.slots[slot_index];
         let mut old_read = 0;
         let mut old_draw = 0;
@@ -161,7 +161,10 @@ impl ExtCapture {
             self.ready
                 .signal(&self.functions, slot.image.texture, sync_value)
         };
-        reservation.commit().unwrap();
+        self.slots[slot_index]
+            .release_value
+            .store(sync_value, Ordering::Relaxed);
+        self.scheduler.commit(slot_index, self.slots.len());
         self.sync_value = sync_value;
         let message = polymer_presentation::producer::CapturedFrame {
             stream_id,
@@ -180,7 +183,7 @@ impl ExtCapture {
                 height: self.window_height,
             },
         ));
-        self.ipc.publish_frame(message);
+        ProducerSession::publish_frame(&mut self.ipc, message);
         Ok(Some(()))
     }
 }

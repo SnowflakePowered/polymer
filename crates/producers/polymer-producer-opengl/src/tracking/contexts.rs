@@ -215,23 +215,3 @@ impl ContextTracking {
         }
     }
 }
-#[cfg(test)]
-impl Tracking {
-    pub(crate) unsafe fn verify_binding_revalidation(texture: u32) {
-        let context = super::ContextTracking::default();
-        context.get_texture_level_parameter.set(None).unwrap();
-        let mut source = super::tests::candidate(texture, 64, 64, 1);
-        source.incarnation = context.incarnation(false, texture);
-        unsafe { super::glBindTexture(super::GL_TEXTURE_2D, 0) };
-        assert_eq!(context.refresh_sources(&[source]).len(), 1);
-        let mut binding = -1;
-        unsafe { super::glGetIntegerv(super::GL_TEXTURE_BINDING_2D, &mut binding) };
-        assert_eq!(
-            binding, 0,
-            "metadata queries changed the application's binding"
-        );
-        source.allocation_extent = Some((32, 64));
-        assert!(context.refresh_sources(&[source]).is_empty());
-        unsafe { super::glBindTexture(super::GL_TEXTURE_2D, texture) };
-    }
-}

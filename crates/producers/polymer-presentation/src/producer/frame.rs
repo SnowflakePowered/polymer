@@ -2,27 +2,6 @@ use crate::{Extent2D, Rect};
 use polymer_ipc::Message;
 use polymer_protocol::{FrameReady, PresentationTransform, StreamId};
 
-/// One publication path for independently negotiated streams. A failed send
-/// removes the connection so lifecycle checks park it before another copy.
-pub trait FramePublisher {
-    fn publish_frame(&mut self, frame: Message) -> bool;
-}
-impl FramePublisher for Option<super::ProducerSession> {
-    fn publish_frame(&mut self, frame: Message) -> bool {
-        let Some(session) = self else {
-            return false;
-        };
-        match session.send(frame) {
-            Ok(()) => true,
-            Err(error) => {
-                tracing::debug!("polymer: viewer released capture stream: {error}");
-                *self = None;
-                false
-            }
-        }
-    }
-}
-
 pub struct CapturedFrame {
     pub stream_id: StreamId,
     pub slot: u32,

@@ -5,7 +5,6 @@ use parking_lot::Mutex;
 use polymer_hook_dxgi::{SwapchainOwner, SwapchainOwnerHandle};
 use polymer_platform_windows::performance_counter;
 use polymer_presentation::producer::ExportDescriptor;
-use polymer_presentation::producer::FramePublisher;
 use polymer_presentation::producer::ProducerSession;
 use polymer_protocol::{
     AdapterLuid, ExternalImageKind, ExternalSyncKind, PresentationTransform, StreamId, SurfaceId,
@@ -26,8 +25,25 @@ struct CaptureState {
 /// present and dropped when the swapchain resizes; a swapchain the viewer
 /// declined stays parked until it resizes or is destroyed, so a rejected
 /// surface does not reconnect on every present.
-type Capture =
-    polymer_presentation::producer::CaptureSession<CaptureState, (usize, Option<(u32, u32, u32)>)>;
+#[derive(Default)]
+struct Capture {
+    native: Option<CaptureState>,
+    requirements: Option<(usize, Option<(u32, u32, u32)>)>,
+    retry: polymer_presentation::producer::ConnectionRetry,
+}
+impl Capture {
+    fn invalidate(&mut self) {
+        self.native = None;
+        self.retry = Default::default();
+    }
+    fn park(&mut self) {
+        self.native = None;
+        self.retry = polymer_presentation::producer::ConnectionRetry::Parked;
+    }
+    fn source_changed(&mut self) {
+        self.retry.source_changed();
+    }
+}
 
 /// Per-swapchain capture state stored in the swapchain's hook context.
 ///
@@ -204,7 +220,7 @@ impl SwapchainOwner for SwapchainCapture {
         let previous = std::mem::take(&mut *self.capture.lock());
         tracing::debug!(
             "polymer: D3D12 resize released capture state: {}",
-            previous.iter().any(|capture| capture.as_ref().is_some())
+            previous.iter().any(|capture| capture.native.is_some())
         );
         unsafe { self.tracking.before_swapchain_resize(swapchain) };
     }
@@ -238,7 +254,7 @@ impl SwapchainCapture {
                 value.region
             }
         });
-        capture.configure((
+        let requirements = (
             requested_index,
             tracked_source.map(|source| {
                 (
@@ -247,25 +263,37 @@ impl SwapchainCapture {
                     transport_unorm_dxgi_format(source.format),
                 )
             }),
-        ));
-        let setup = CaptureSetup {
-            owner: self,
-            swapchain,
-            tracked_source,
-            slot,
-        };
-        if let Err(error) = unsafe { capture.initialize(std::time::Instant::now(), &setup) } {
-            tracing::debug!("polymer: capture initialization deferred: {error}");
-            return;
+        );
+        if capture.requirements.as_ref() != Some(&requirements) {
+            capture.invalidate();
+            capture.requirements = Some(requirements);
         }
-        let _ = unsafe {
-            capture.capture(CopyFrame {
-                presentation,
-                tracked_source,
-                copy_region,
-                stream_id: StreamId(self.stream_id ^ ((slot as u64) << 48)),
-            })
-        };
+        if capture
+            .native
+            .as_ref()
+            .is_some_and(|native| !native.connected())
+        {
+            capture.park();
+        }
+        if capture.native.is_none() && capture.retry.begin() {
+            match unsafe { CaptureState::new(self, swapchain, tracked_source, slot) } {
+                Ok(Some(native)) => capture.native = Some(native),
+                Ok(None) => capture.park(),
+                Err(error) => tracing::debug!("polymer: capture initialization deferred: {error}"),
+            }
+        }
+        if let Some(native) = capture.native.as_mut() {
+            if let Err(error) = unsafe {
+                native.copy_frame(
+                    presentation,
+                    tracked_source,
+                    copy_region,
+                    StreamId(self.stream_id ^ ((slot as u64) << 48)),
+                )
+            } {
+                tracing::debug!("polymer: capture failed: {error}");
+            }
+        }
     }
 }
 
@@ -319,28 +347,19 @@ impl Drop for SwapchainCapture {
     }
 }
 
-impl polymer_presentation::producer::CaptureBackend for CaptureState {
+impl CaptureState {
     fn connected(&self) -> bool {
         self.ipc.as_ref().is_some_and(ProducerSession::connected)
     }
 }
 
-struct CaptureSetup<'a> {
-    owner: &'a SwapchainCapture,
-    swapchain: *mut c_void,
-    tracked_source: Option<&'a crate::tracking::TrackedResource>,
-    slot: usize,
-}
-impl polymer_presentation::producer::CaptureInitializer for CaptureSetup<'_> {
-    type Backend = CaptureState;
-    type Error = String;
-    unsafe fn initialize(&self) -> Result<Option<CaptureState>, String> {
-        let Self {
-            swapchain,
-            tracked_source,
-            slot,
-            ..
-        } = *self;
+impl CaptureState {
+    unsafe fn new(
+        owner: &SwapchainCapture,
+        swapchain: *mut c_void,
+        tracked_source: Option<&crate::tracking::TrackedResource>,
+        slot: usize,
+    ) -> Result<Option<Self>, String> {
         let name = polymer_hook::config::session().map_err(|error| error.to_string())?;
         let Some(connection) = ProducerSession::setup_result(ProducerSession::connect(&name))
             .map_err(|error| error.to_string())?
@@ -351,10 +370,10 @@ impl polymer_presentation::producer::CaptureInitializer for CaptureSetup<'_> {
         let ring = match unsafe {
             D3d12SwapchainCapture::new(
                 swapchain,
-                self.owner.queue.as_raw(),
+                owner.queue.as_raw(),
                 3,
                 tracked_source.map(|source| (&source.resource, source.subresource)),
-                self.owner.tracking.enhanced_barriers_supported(),
+                owner.tracking.enhanced_barriers_supported(),
             )
         } {
             Ok(value) => value,
@@ -380,25 +399,16 @@ impl polymer_presentation::producer::CaptureInitializer for CaptureSetup<'_> {
     }
 }
 
-struct CopyFrame<'a> {
-    presentation: Option<&'a crate::tracking::Presentation>,
-    tracked_source: Option<&'a crate::tracking::TrackedResource>,
-    copy_region: Option<crate::D3d12CaptureRegion>,
-    stream_id: StreamId,
-}
-impl polymer_presentation::producer::CaptureOperation for CopyFrame<'_> {
-    type Backend = CaptureState;
-    type Output = ();
-    type Error = windows::core::Error;
-    unsafe fn submit(self, state: &mut CaptureState) -> Result<Option<()>, Self::Error> {
-        let Self {
-            presentation,
-            tracked_source,
-            copy_region,
-            ..
-        } = self;
+impl CaptureState {
+    unsafe fn copy_frame(
+        &mut self,
+        presentation: Option<&crate::tracking::Presentation>,
+        tracked_source: Option<&crate::tracking::TrackedResource>,
+        copy_region: Option<crate::D3d12CaptureRegion>,
+        stream_id: StreamId,
+    ) -> Result<Option<()>, windows::core::Error> {
         let submission = match unsafe {
-            state.capture.copy_frame(
+            self.capture.copy_frame(
                 copy_region,
                 tracked_source.map(|source| {
                     (
@@ -414,7 +424,7 @@ impl polymer_presentation::producer::CaptureOperation for CopyFrame<'_> {
             Err(error) => return Err(error),
         };
 
-        let capture_desc = state.capture.desc();
+        let capture_desc = self.capture.desc();
         let presentation_extent = presentation
             .as_ref()
             .map_or((capture_desc.width, capture_desc.height), |value| {
@@ -430,7 +440,7 @@ impl polymer_presentation::producer::CaptureOperation for CopyFrame<'_> {
             |region| (region.x, region.y, region.width, region.height),
         );
         let message = polymer_presentation::producer::CapturedFrame {
-            stream_id: self.stream_id,
+            stream_id,
             slot: submission.slot,
             sync_value: submission.sync_value,
             timestamp_qpc: performance_counter().unwrap_or(0),
@@ -465,7 +475,7 @@ impl polymer_presentation::producer::CaptureOperation for CopyFrame<'_> {
                 )
             },
         });
-        state.ipc.publish_frame(message);
+        ProducerSession::publish_frame(&mut self.ipc, message);
         Ok(Some(()))
     }
 }

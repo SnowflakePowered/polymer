@@ -1,5 +1,4 @@
 use super::*;
-use polymer_presentation::retirement::{Retirable, RetirementQueue};
 use std::sync::OnceLock;
 
 pub(super) struct RetiredRing {
@@ -10,9 +9,8 @@ pub(super) struct RetiredRing {
     needs_signal: bool,
 }
 impl RetiredRing {
-    fn queue() -> &'static parking_lot::Mutex<RetirementQueue<Self>> {
-        static RETIRED: OnceLock<parking_lot::Mutex<RetirementQueue<RetiredRing>>> =
-            OnceLock::new();
+    fn queue() -> &'static parking_lot::Mutex<Vec<Self>> {
+        static RETIRED: OnceLock<parking_lot::Mutex<Vec<RetiredRing>>> = OnceLock::new();
         RETIRED.get_or_init(Default::default)
     }
     pub fn new(capture: &mut D3d12SwapchainCapture) -> Self {
@@ -25,10 +23,14 @@ impl RetiredRing {
         }
     }
     pub fn poll() {
-        Self::queue().lock().poll();
+        Self::queue()
+            .lock()
+            .retain_mut(|ring| !ring.ready_to_retire());
     }
-    pub fn defer(self) {
-        Self::queue().lock().retire(self);
+    pub fn defer(mut self) {
+        if !self.ready_to_retire() {
+            Self::queue().lock().push(self);
+        }
     }
     pub fn wait(&mut self) -> bool {
         if self.ready_to_retire() {
@@ -57,7 +59,7 @@ impl RetiredRing {
         self.ready_to_retire()
     }
 }
-impl Retirable for RetiredRing {
+impl RetiredRing {
     fn ready_to_retire(&mut self) -> bool {
         if unsafe { self.fence.GetCompletedValue() } >= self.value {
             return true;

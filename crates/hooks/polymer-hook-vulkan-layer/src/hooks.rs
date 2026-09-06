@@ -184,7 +184,6 @@ polymer_hook::chain_hooks! {
 
     #[export(vkCreateDevice)]
     #[terminal(direct = crate::terminal::create_device)]
-    #[prefix(|_context| observers::noop())]
     pub(crate) unsafe extern "system" fn create_device(
         physical_device: vk::PhysicalDevice,
         create_info: *const vk::DeviceCreateInfo<'_>,
@@ -194,7 +193,6 @@ polymer_hook::chain_hooks! {
 
     #[export(vkGetInstanceProcAddr)]
     #[terminal(direct = crate::terminal::get_instance_proc_addr)]
-    #[prefix(|_context| observers::noop())]
     pub(crate) unsafe extern "system" fn get_instance_proc_addr(
         instance: vk::Instance,
         name: *const std::ffi::c_char,
@@ -202,7 +200,6 @@ polymer_hook::chain_hooks! {
 
     #[export(vk_layerGetPhysicalDeviceProcAddr)]
     #[terminal(direct = crate::terminal::get_physical_device_proc_addr)]
-    #[prefix(|_context| observers::noop())]
     pub(crate) unsafe extern "system" fn get_physical_device_proc_addr(
         instance: vk::Instance,
         name: *const std::ffi::c_char,
@@ -210,7 +207,6 @@ polymer_hook::chain_hooks! {
 
     #[export(vkGetDeviceProcAddr)]
     #[terminal(direct = crate::terminal::get_device_proc_addr)]
-    #[prefix(|_context| observers::noop())]
     pub(crate) unsafe extern "system" fn get_device_proc_addr(
         device: vk::Device,
         name: *const std::ffi::c_char,

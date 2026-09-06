@@ -6,7 +6,6 @@ license.workspace = true
 
 [features]
 default = []
-test-support = ["producer"]
 producer = ["dep:polymer-ipc", "dep:polymer-protocol", "dep:polymer-platform-windows", "dep:windows", "dep:tracing"]
 
 [dependencies]

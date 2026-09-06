@@ -224,7 +224,7 @@ impl Transport {
             }
             return Ok(None);
         };
-        let output_index = reservation.index();
+        let output_index = reservation.0;
         let slot = &self.ring.slots()[output_index];
         unsafe {
             self.context.UpdateSubresource(
@@ -239,8 +239,10 @@ impl Transport {
             (self.functions.bind_buffer)(GL_PIXEL_PACK_BUFFER, old_pixel_pack_buffer as u32);
         }
         reservation
-            .commit()
+            .1
+            .finish()
             .map_err(|e| format!("IDXGIKeyedMutex::ReleaseSync: {e}"))?;
+        self.scheduler.commit(output_index, self.ring.slots().len());
         let (timestamp, placement) = self.frames[read_index]
             .take()
             .expect("completed PBO has capture metadata");

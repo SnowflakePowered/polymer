@@ -1,5 +1,4 @@
 use ash::vk;
-use polymer_presentation::scheduling::SlotLease;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// Host bookkeeping is separate from the native fence's signaled state: a
@@ -21,15 +20,14 @@ impl SlotState {
         &self,
         producer_completed: bool,
         consumer_completed: Option<u64>,
-        value: u64,
-    ) -> Option<Lease<'_>> {
+    ) -> Option<()> {
         if !producer_completed
             || consumer_completed.unwrap_or(0) < self.release_value.load(Ordering::Relaxed)
         {
             return None;
         }
         self.pending.store(false, Ordering::Relaxed);
-        Some(Lease { state: self, value })
+        Some(())
     }
     pub fn submitted(&self, result: Result<(), vk::Result>) -> Result<(), vk::Result> {
         // OOM leaves submitted resources and synchronization untouched. Device
@@ -44,19 +42,10 @@ impl SlotState {
         result
     }
 }
-
-pub(super) struct Lease<'a> {
-    state: &'a SlotState,
-    value: u64,
-}
-impl SlotLease for Lease<'_> {
-    type Error = std::convert::Infallible;
-    fn finish(self) -> Result<(), Self::Error> {
-        self.state.initialized.store(true, Ordering::Relaxed);
-        self.state
-            .release_value
-            .store(self.value, Ordering::Relaxed);
-        Ok(())
+impl SlotState {
+    pub fn published(&self, value: u64) {
+        self.initialized.store(true, Ordering::Relaxed);
+        self.release_value.store(value, Ordering::Relaxed);
     }
 }
 
@@ -69,33 +58,34 @@ mod tests {
         let slots = [SlotState::default(), SlotState::default()];
         let mut scheduler = SlotScheduler::default();
         let first = scheduler
-            .try_acquire(2, |index| slots[index].try_acquire(true, Some(0), 1))
+            .try_acquire(2, |index| slots[index].try_acquire(true, Some(0)))
             .unwrap();
         assert!(
             slots[0]
                 .submitted(Err(vk::Result::ERROR_OUT_OF_HOST_MEMORY))
                 .is_err()
         );
-        drop(first);
+        let _ = first;
         assert!(!slots[0].pending());
         assert!(!slots[0].initialized());
         let retry = scheduler
-            .try_acquire(2, |index| slots[index].try_acquire(true, Some(0), 1))
+            .try_acquire(2, |index| slots[index].try_acquire(true, Some(0)))
             .unwrap();
-        assert_eq!(retry.index(), 0);
+        assert_eq!(retry.0, 0);
         slots[0].submitted(Ok(())).unwrap();
-        retry.commit().unwrap();
+        slots[retry.0].published(1);
+        scheduler.commit(retry.0, 2);
         assert!(slots[0].pending());
-        assert!(slots[0].try_acquire(true, Some(0), 2).is_none());
-        assert!(slots[0].try_acquire(true, None, 2).is_none());
-        assert!(slots[0].try_acquire(false, Some(1), 2).is_none());
+        assert!(slots[0].try_acquire(true, Some(0)).is_none());
+        assert!(slots[0].try_acquire(true, None).is_none());
+        assert!(slots[0].try_acquire(false, Some(1)).is_none());
         let next = scheduler
-            .try_acquire(2, |index| slots[index].try_acquire(true, Some(0), 2))
+            .try_acquire(2, |index| slots[index].try_acquire(true, Some(0)))
             .unwrap();
-        assert_eq!(next.index(), 1);
-        drop(next); // Recording failure: no submission and no ring advancement.
+        assert_eq!(next.0, 1);
+        let _ = next; // Recording failure: no submission and no ring advancement.
         assert!(!slots[1].pending());
-        assert!(slots[0].try_acquire(true, Some(1), 2).is_some());
+        assert!(slots[0].try_acquire(true, Some(1)).is_some());
         assert!(!slots[0].pending());
         assert!(
             slots[0]

@@ -90,49 +90,6 @@ impl Fixture {
 }
 
 #[test]
-fn busy_capture_detects_peer_closure_without_publishing_another_frame() {
-    struct BusyBackend(ProducerSession);
-    impl CaptureBackend for BusyBackend {
-        fn connected(&self) -> bool {
-            self.0.connected()
-        }
-    }
-    struct Busy<'a>(&'a std::cell::Cell<usize>);
-    impl CaptureOperation for Busy<'_> {
-        type Backend = BusyBackend;
-        type Output = ();
-        type Error = ();
-        unsafe fn submit(self, _: &mut BusyBackend) -> Result<Option<()>, ()> {
-            self.0.set(self.0.get() + 1);
-            Ok(None)
-        }
-    }
-    let fixture = Fixture::new();
-    let (close, release) = std::sync::mpsc::channel();
-    let (session, server) = fixture.accepted(move |socket, _| {
-        release.recv().unwrap();
-        drop(socket);
-    });
-    let mut capture = CaptureSession::<BusyBackend>::from_backend(BusyBackend(session.unwrap()));
-    let attempts = std::cell::Cell::new(0);
-    assert_eq!(unsafe { capture.capture(Busy(&attempts)) }, Ok(None));
-    assert_eq!(attempts.get(), 1);
-    close.send(()).unwrap();
-    server.join().unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while !capture.is_parked() {
-        capture.refresh_connection();
-        assert!(
-            std::time::Instant::now() < deadline,
-            "busy stream did not detect viewer closure"
-        );
-        std::thread::yield_now();
-    }
-    assert_eq!(unsafe { capture.capture(Busy(&attempts)) }, Ok(None));
-    assert_eq!(attempts.get(), 1);
-}
-
-#[test]
 fn disconnected_publisher_releases_only_its_session_and_sibling_numbers_only_sent_frames() {
     let disconnected = Fixture::new();
     let sibling = Fixture::new();
@@ -167,7 +124,7 @@ fn disconnected_publisher_releases_only_its_session_and_sibling_numbers_only_sen
             transform: polymer_protocol::PresentationTransform::UNAVAILABLE,
         })
     };
-    assert!(healthy.publish_frame(frame(42, 17)));
+    assert!(ProducerSession::publish_frame(&mut healthy, frame(42, 17)));
     received
         .recv_timeout(std::time::Duration::from_secs(2))
         .unwrap();
@@ -175,13 +132,13 @@ fn disconnected_publisher_releases_only_its_session_and_sibling_numbers_only_sen
     // A socket may buffer a notification after peer closure. The finite burst
     // also exercises clearing the session when the transport reports closure.
     for _ in 0..256 {
-        if !failed.publish_frame(frame(100, 20)) {
+        if !ProducerSession::publish_frame(&mut failed, frame(100, 20)) {
             break;
         }
     }
     assert!(failed.is_none());
-    assert!(!failed.publish_frame(frame(101, 21)));
-    assert!(healthy.publish_frame(frame(81, 29)));
+    assert!(!ProducerSession::publish_frame(&mut failed, frame(101, 21)));
+    assert!(ProducerSession::publish_frame(&mut healthy, frame(81, 29)));
     received
         .recv_timeout(std::time::Duration::from_secs(2))
         .unwrap();

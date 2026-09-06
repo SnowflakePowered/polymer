@@ -1,14 +1,9 @@
-mod ext;
-mod nv;
-mod readback;
-use polymer_presentation::producer::FramePublisher;
 mod context;
-mod leases;
+mod ext;
 mod lifecycle;
-#[cfg(test)]
-mod native_capture;
+mod nv;
 mod presentation;
-mod recovery;
+mod readback;
 mod source_attachment;
 mod storage;
 use lifecycle::Capture;
@@ -318,29 +313,23 @@ pub unsafe fn before_delete_context(context: usize) {
         return;
     }
     let _presentation = PRESENTATION_LOCK.lock();
-    let mut devices = captures()
+    let devices = captures()
         .entries
         .iter()
         .filter_map(|entry| (entry.key().1 == context).then_some(entry.key().0))
         .collect::<Vec<_>>();
-    if let Some(surface) = captures().recovery.get(&context)
-        && let Some(surface) = surface.surface.as_ref()
-    {
-        devices.push(surface.dc);
-    }
     let Some(binding) = (unsafe { context::ContextBinding::acquire(context, devices) }) else {
         return;
     };
     let registry = REGISTRY.get_or_init(Default::default);
     unsafe { captures().retire_context(context, registry) };
     drop(binding);
-    captures().recovery.remove(&context);
 }
 
 /// Called only after the native context deletion succeeds.
 /// # Safety
 /// The context must have been successfully deleted and must no longer be
-/// current on any thread. Its recovery drawable must no longer be bound.
+/// current on any thread.
 pub unsafe fn after_delete_context(context: usize) {
     let _presentation = PRESENTATION_LOCK.lock();
     captures().context_destroyed(context, REGISTRY.get_or_init(Default::default));
@@ -382,7 +371,6 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
     let now = SWAP_CLOCK.fetch_add(1, Ordering::Relaxed) + 1;
     let _presentation = PRESENTATION_LOCK.lock();
     let store = captures();
-    unsafe { store.prepare_context(key.1, key.0) };
     let map = &store.entries;
     let registry = REGISTRY.get_or_init(Default::default);
     // Other contexts may be current on other threads. Only this context's

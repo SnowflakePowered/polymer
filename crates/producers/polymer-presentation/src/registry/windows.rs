@@ -135,7 +135,6 @@ impl PresentationRegistry {
         for owner in owners {
             self.forget_owner(owner);
         }
-        self.forget_routing_window(window);
     }
     /// Selects across windows before deciding which owner publishes each source.
     /// Identical dimensions never establish duplicate ownership.

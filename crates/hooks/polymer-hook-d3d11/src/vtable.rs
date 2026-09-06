@@ -100,7 +100,7 @@ polymer_hook::impl_com_hook! {
         #[postfix(|result, context| unsafe {
             if result.is_ok() && !output.is_null() && !(*output).is_null() {
                 context.state.tracking.finish_commands(this, *output, restore.as_bool());
-                ID3D11CommandListHook::install_all_interfaces(*output, ListHookContext(Arc::new(ListLifetime { tracking: context.state.tracking.clone(), id: *output as usize })));
+                ID3D11CommandListHook::install_all_interfaces(*output, ListHookContext { _lifetime: Arc::new(ListLifetime { tracking: context.state.tracking.clone(), id: *output as usize }) });
             }
         })]
         unsafe extern "system" fn finish_command_list(this: *mut c_void, restore: windows::core::BOOL, output: *mut *mut c_void) -> windows::core::HRESULT;
@@ -275,7 +275,9 @@ polymer_hook::com_vtable! {
 }
 
 #[derive(Clone)]
-struct ListHookContext(Arc<ListLifetime>);
+struct ListHookContext {
+    _lifetime: Arc<ListLifetime>,
+}
 struct ListLifetime {
     tracking: Arc<polymer_producer_d3d11::Tracking>,
     id: usize,
@@ -294,10 +296,6 @@ polymer_hook::impl_com_hook! {
         #[state = ListHookContext]
         #[release]
         unsafe extern "system" fn list_release(this: *mut c_void) -> u32;
-        #[base = ID3D11CommandList::GetContextFlags]
-        #[fallback = 0]
-        #[postfix(|_result, context| { let _ = &context.state.0; })]
-        unsafe extern "system" fn get_context_flags(this: *mut c_void) -> u32;
     }
 }
 

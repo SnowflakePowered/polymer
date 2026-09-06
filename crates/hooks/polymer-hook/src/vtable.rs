@@ -952,7 +952,7 @@ macro_rules! __impl_com_dispatches {
                 $($dispatch_field:ident: $dispatch_field_type:ty = $dispatch_field_value:expr),*
                 $(,)?
             })?]
-        )+
+        )*
     ) => { $(
         $crate::__impl_com_dispatch! {
             $common_fields $common_values;
@@ -968,7 +968,7 @@ macro_rules! __impl_com_dispatches {
                 $($dispatch_field: $dispatch_field_type = $dispatch_field_value),*
             })?]
         }
-    )+ };
+    )* };
 }
 
 #[macro_export]
@@ -1170,7 +1170,7 @@ macro_rules! impl_com_hook {
                         $(,)?
                     }
                 } )? $(;)?
-            )+
+            )*
         }
     ) => { $crate::__paste! {
         const _: () = {
@@ -1185,7 +1185,7 @@ macro_rules! impl_com_hook {
             $(fn [<base_ $dispatch>](&self) -> Option<unsafe extern "system" fn(
                 $this_type,
                 $($argument_type),*
-            ) $(-> $result)?>;)+
+            ) $(-> $result)?>;)*
         }
 
         #[allow(non_upper_case_globals)]
@@ -1366,7 +1366,7 @@ macro_rules! impl_com_hook {
                                 $($argument_type),*
                             ) $(-> $result)?
                         );
-                    })+
+                    })*
                 }
                 let state: ::std::sync::Arc<dyn $hook_trait> =
                     ::std::sync::Arc::new([<$hook State>]::<A> {
@@ -1417,7 +1417,7 @@ macro_rules! impl_com_hook {
                         (*::core::ptr::from_ref(&self.saved).cast::<<$vtable_interface as ::windows::core::Interface>::Vtable>()).$base
                     )
                 })
-            })+
+            })*
         }
 
         $visibility_trait unsafe extern "system" fn $release_dispatch(
@@ -1467,7 +1467,7 @@ macro_rules! impl_com_hook {
                 [$(#[context] |$state| {
                     $($dispatch_field: $dispatch_field_type = $dispatch_field_value),*
                 })?]
-            )+
+            )*
         }
     }};
 

@@ -115,7 +115,7 @@ impl PboCapture {
             },
         }
         .present(placement);
-        self.ipc.publish_frame(message);
+        ProducerSession::publish_frame(&mut self.ipc, message);
         Ok(Some(()))
     }
 }

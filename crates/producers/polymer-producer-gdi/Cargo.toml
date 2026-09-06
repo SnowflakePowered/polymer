@@ -5,7 +5,6 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-polymer-presentation = { workspace = true, features = ["producer"] }
 parking_lot.workspace = true
 polymer-hook.workspace = true
 polymer-ipc.workspace = true

@@ -12,11 +12,6 @@ polymer_hook::chain_hooks! {
     pub(crate) struct HookInstallation;
 
     #[trampoline]
-    #[terminal(installed(target = crate::install::system_destroy_window), fallback = 0)]
-    #[infix(crate::runtime::redirect_destroy_window)]
-    pub(crate) unsafe extern "system" fn destroy_window(hwnd: HWND) -> i32;
-
-    #[trampoline]
     #[terminal(installed(
         target = crate::install::system_begin_paint,
     ), fallback = std::ptr::null_mut())]

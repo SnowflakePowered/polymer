@@ -39,7 +39,6 @@ pub struct D3d11SwapchainCapture {
     context4: Option<ID3D11DeviceContext4>,
     ring: D3d11ImageRing,
     source_desc: D3D11_TEXTURE2D_DESC,
-    resolved_source: Option<ID3D11Texture2D>,
     scheduler: polymer_presentation::scheduling::SlotScheduler,
     sync_value: u64,
     release_values: Vec<u64>,
@@ -98,22 +97,6 @@ impl D3d11SwapchainCapture {
         };
         let mut source_desc = D3D11_TEXTURE2D_DESC::default();
         unsafe { source.GetDesc(&mut source_desc) };
-        let mut resolved_source = None;
-        if source_desc.SampleDesc.Count > 1 {
-            let mut resolved_desc = source_desc;
-            resolved_desc.MipLevels = 1;
-            resolved_desc.ArraySize = 1;
-            resolved_desc.SampleDesc.Count = 1;
-            resolved_desc.SampleDesc.Quality = 0;
-            resolved_desc.Usage = windows::Win32::Graphics::Direct3D11::D3D11_USAGE_DEFAULT;
-            resolved_desc.BindFlags = 0;
-            resolved_desc.MiscFlags = 0;
-            resolved_desc.CPUAccessFlags = 0;
-            resolved_desc.Format = DXGI_FORMAT(polymer_protocol::transport_unorm_dxgi_format(
-                source_desc.Format.0 as u32,
-            ) as i32);
-            unsafe { device.CreateTexture2D(&resolved_desc, None, Some(&mut resolved_source)) }?;
-        }
         if let Some(source) = tracked_source {
             source_desc.Width = source.width;
             source_desc.Height = source.height;
@@ -128,7 +111,6 @@ impl D3d11SwapchainCapture {
             context4,
             ring,
             source_desc,
-            resolved_source,
             scheduler: Default::default(),
             sync_value: 0,
             release_values: vec![0; slots as usize],
@@ -167,8 +149,7 @@ impl D3d11SwapchainCapture {
                 (unsafe { swapchain.GetBuffer(0)? }, 0)
             }
         };
-        let region = tracked_source
-            .is_none()
+        let region = (tracked_source.is_none() && self.source_desc.SampleDesc.Count == 1)
             .then_some(tracked_region)
             .flatten()
             .and_then(|region| {
@@ -220,25 +201,21 @@ impl D3d11SwapchainCapture {
                     "no capture slot has completed and been released",
                 )
             })?;
-        let slot = reservation.index() as u32;
+        let slot = reservation.0 as u32;
         let ring_slot = &self.ring.slots()[slot as usize];
         let destination = &ring_slot.texture;
-        let (copy_source, copy_subresource) = if let Some(resolved) = &self.resolved_source {
+        if self.source_desc.SampleDesc.Count > 1 {
             let transport_format = DXGI_FORMAT(self.ring.desc().format as i32);
             unsafe {
                 self.context.ResolveSubresource(
-                    resolved,
+                    destination,
                     0,
                     &source,
                     source_subresource,
                     transport_format,
                 )
             };
-            (resolved, 0)
         } else {
-            (&source, source_subresource)
-        };
-        {
             let source_box = D3D11_BOX {
                 left: region.x,
                 top: region.y,
@@ -254,8 +231,8 @@ impl D3d11SwapchainCapture {
                     0,
                     0,
                     0,
-                    copy_source,
-                    copy_subresource,
+                    &source,
+                    source_subresource,
                     Some(&raw const source_box),
                 )
             };
@@ -276,9 +253,13 @@ impl D3d11SwapchainCapture {
             }
             self.pending_signal = None;
         }
-        reservation
-            .commit()
-            .map_err(|error| contextual(error, "IDXGIKeyedMutex::ReleaseSync"))?;
+        if let Some(lease) = reservation.1 {
+            lease
+                .finish()
+                .map_err(|error| contextual(error, "IDXGIKeyedMutex::ReleaseSync"))?;
+        }
+        self.scheduler
+            .commit(slot as usize, self.ring.slots().len());
         self.release_values[slot as usize] = next_value;
         Ok(D3d11CopySubmission {
             slot,
@@ -334,7 +315,6 @@ fn contextual(error: Error, operation: &str) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    mod failure;
 
     #[test]
     fn capture_region_is_clamped_to_the_backbuffer() {

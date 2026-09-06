@@ -4,17 +4,13 @@ mod descriptor;
 mod export;
 mod failure;
 mod frame;
-mod lifecycle;
+mod retry;
 mod session;
-#[cfg(feature = "test-support")]
-pub mod testing;
 mod window;
 pub use descriptor::ExportDescriptor;
 pub use failure::SessionFailure;
-pub use frame::{CapturedFrame, FramePlacement, FramePublisher};
-pub use lifecycle::{
-    CaptureBackend, CaptureCounters, CaptureInitializer, CaptureOperation, CaptureSession,
-};
+pub use frame::{CapturedFrame, FramePlacement};
+pub use retry::ConnectionRetry;
 pub use session::ProducerSession;
 pub use window::ProducerWindows;
 

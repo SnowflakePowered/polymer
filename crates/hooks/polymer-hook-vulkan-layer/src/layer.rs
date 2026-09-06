@@ -72,7 +72,6 @@ struct VkLayerDeviceCreateInfo {
 
 #[derive(Clone)]
 pub(crate) struct InstanceDispatchTable {
-    pub(crate) surface_maintenance: bool,
     pub(crate) next_gipa: vk::PFN_vkGetInstanceProcAddr,
     pub(crate) next_physical_gpa: Option<PfnGetPhysicalDeviceProcAddr>,
     pub(crate) capture_state: Arc<CaptureState>,
@@ -224,17 +223,12 @@ pub(crate) unsafe fn take_instance_bootstrap(
     })
 }
 
-pub(crate) fn register_instance_dispatch(
-    created: vk::Instance,
-    bootstrap: InstanceBootstrap,
-    surface_maintenance: bool,
-) {
+pub(crate) fn register_instance_dispatch(created: vk::Instance, bootstrap: InstanceBootstrap) {
     if let Some(key) = unsafe { dispatch_key(created) } {
         {
             hook_state().instance.insert(
                 key,
                 InstanceDispatchTable {
-                    surface_maintenance,
                     next_gipa: bootstrap.next_gipa,
                     next_physical_gpa: bootstrap.next_physical_gpa,
                     capture_state: CAPTURE_STATE.clone(),

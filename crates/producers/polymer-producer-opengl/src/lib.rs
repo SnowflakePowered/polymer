@@ -1,8 +1,6 @@
 //! OpenGL capture through EXT external memory objects and semaphores.
 #![allow(unsafe_code)]
 
-#[cfg(test)]
-mod application;
 mod interop;
 mod swapchain;
 mod timeline;

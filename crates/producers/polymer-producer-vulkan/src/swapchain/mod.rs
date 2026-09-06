@@ -3,14 +3,6 @@ mod slots;
 use crate::{ExportImageRing, ExportTimelineSemaphore, ExternalHandleMode};
 use ash::{vk, vk::Handle};
 pub(crate) use presentation::PresentationSemaphore;
-#[cfg(test)]
-mod application;
-#[cfg(test)]
-mod ring_fixture;
-#[cfg(test)]
-mod wsi_fixture;
-#[cfg(test)]
-mod wsi_image;
 pub(crate) use presentation::PresentationSemaphores;
 use slots::SlotState;
 use std::ffi::c_void;
@@ -283,10 +275,10 @@ impl SwapchainCopyEngine {
                 let producer_completed = !slot.state.pending()
                     || unsafe { self.device.get_fence_status(slot.fence) }.unwrap_or(false);
                 slot.state
-                    .try_acquire(producer_completed, consumer_completed, sync_value)
+                    .try_acquire(producer_completed, consumer_completed)
             })
             .ok_or(vk::Result::NOT_READY)?;
-        let slot_index = reservation.index();
+        let slot_index = reservation.0;
         let slot = &self.slots[slot_index];
         let destination_image = self.ring.slots()[slot_index].image();
         let d3d12_handoff = self.ring.desc().handle_mode == ExternalHandleMode::D3d12;
@@ -489,7 +481,8 @@ impl SwapchainCopyEngine {
             self.device.reset_fences(&[slot.fence])?;
             slot.state
                 .submitted(self.device.queue_submit(queue, &[submit], slot.fence))?;
-            reservation.commit().unwrap();
+            self.slots[slot_index].state.published(sync_value);
+            self.scheduler.commit(slot_index, self.slots.len());
             self.next_sync_value += 1;
             Ok(CopySubmission {
                 present_ready: ready,
@@ -535,14 +528,11 @@ unsafe fn destroy_slots(
     unsafe { device.destroy_command_pool(command_pool, None) };
 }
 
-impl polymer_presentation::retirement::Retirable for SwapchainCopyEngine {
-    fn ready_to_retire(&mut self) -> bool {
+impl SwapchainCopyEngine {
+    pub(crate) fn ready_to_retire(&mut self) -> bool {
         self.slots.iter().all(|slot| {
             !slot.state.pending()
                 || unsafe { self.device.get_fence_status(slot.fence) }.unwrap_or(false)
         })
-    }
-    fn wait_for_retirement(&mut self) {
-        self.wait_idle();
     }
 }

@@ -1,20 +1,12 @@
 //! Window/source assignment using metadata supplied by the presentation backend.
-use crate::Extent2D;
 
 mod placements;
-mod routing;
 mod windows;
-pub use routing::{PresentationTarget, RoutingSource, WindowPresentation};
 pub use windows::{RegistrySource, SourceIdentity};
 #[derive(Default)]
 pub struct PresentationRegistry {
-    #[cfg(feature = "producer")]
-    pub(crate) window_event_generation: std::sync::atomic::AtomicU64,
     claim_lock: std::sync::Mutex<()>,
     placements: dashmap::DashMap<(u64, usize), placements::CachedPlacement>,
-    routes: dashmap::DashMap<SourceIdentity, routing::CachedRoute>,
-    route_slots: dashmap::DashMap<(u64, isize, usize), SourceIdentity>,
-    selection_slots: dashmap::DashMap<(u64, isize, usize), routing::SelectionSlot>,
     assignments: dashmap::DashMap<usize, windows::Assignment>,
     windows: dashmap::DashMap<u64, windows::WindowObservation>,
     owners: dashmap::DashMap<SourceIdentity, (u64, u64)>,
@@ -144,59 +136,6 @@ impl PresentationRegistry {
         }
         (resolved, used)
     }
-
-    pub fn placement_cost(source: Extent2D, target: Extent2D, covered: Option<Extent2D>) -> u128 {
-        let direct = (u128::from(source.width) * u128::from(target.height))
-            .abs_diff(u128::from(source.height) * u128::from(target.width));
-        let transposed = (u128::from(source.height) * u128::from(target.height))
-            .abs_diff(u128::from(source.width) * u128::from(target.width));
-        let uncovered = target
-            .area()
-            .saturating_sub(covered.map_or(0, Extent2D::area).min(target.area()));
-        (u128::from(covered.is_none()) << 120)
-            | (direct.min(transposed) << 48)
-            | u128::from(uncovered).min((1u128 << 48) - 1)
-    }
-
-    /// Minimum-cost injective assignment. A subset DP bounds work to 2^16
-    /// rather than exploring all permutations of windows on a present thread.
-    pub fn assign(costs: &[Vec<u128>]) -> Option<Vec<usize>> {
-        let count = costs.first().map_or(0, Vec::len);
-        if costs.len() > count || count > 16 || costs.iter().any(|row| row.len() != count) {
-            return None;
-        }
-        let mut states = vec![None::<(u128, Vec<usize>)>; 1 << count];
-        states[0] = Some((0, Vec::new()));
-        for mask in 0usize..states.len() {
-            let Some((cost, path)) = states[mask].clone() else {
-                continue;
-            };
-            if path.len() == costs.len() {
-                continue;
-            }
-            for (candidate, &candidate_cost) in costs[path.len()].iter().enumerate() {
-                if mask & (1 << candidate) != 0 {
-                    continue;
-                }
-                let next = mask | (1 << candidate);
-                let next_cost = cost.saturating_add(candidate_cost);
-                let mut next_path = path.clone();
-                next_path.push(candidate);
-                if states[next]
-                    .as_ref()
-                    .is_none_or(|old| (next_cost, &next_path) < (old.0, &old.1))
-                {
-                    states[next] = Some((next_cost, next_path));
-                }
-            }
-        }
-        states
-            .into_iter()
-            .flatten()
-            .filter(|(_, path)| path.len() == costs.len())
-            .min()
-            .map(|(_, path)| path)
-    }
 }
 
 #[cfg(test)]
@@ -237,18 +176,5 @@ mod tests {
             ),
             [Some("top"), None, None],
         );
-    }
-
-    #[test]
-    fn assignment_avoids_greedy_window_choice_and_preserves_ties() {
-        assert_eq!(
-            PresentationRegistry::assign(&[vec![1, 2], vec![0, 100]]),
-            Some(vec![1, 0])
-        );
-        assert_eq!(
-            PresentationRegistry::assign(&[vec![1, 1], vec![1, 1]]),
-            Some(vec![0, 1])
-        );
-        assert_eq!(PresentationRegistry::assign(&[vec![1], vec![2]]), None);
     }
 }

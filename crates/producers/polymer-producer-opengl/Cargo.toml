@@ -17,5 +17,4 @@ tracing.workspace = true
 windows.workspace = true
 
 [dev-dependencies]
-polymer-presentation = { workspace = true, features = ["test-support"] }
 windows-sys.workspace = true

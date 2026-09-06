@@ -305,15 +305,14 @@ impl D3d12SwapchainCapture {
             let consumer_completed = self.consumer_fence.GetCompletedValue();
             let sync_value = self.next_fence;
             let Some(reservation) = self.scheduler.try_acquire(self.slots.len(), |index| {
-                self.slots[index].state.try_acquire(
-                    producer_completed,
-                    consumer_completed,
-                    sync_value,
-                )
+                self.slots[index]
+                    .state
+                    .available(producer_completed, consumer_completed)
+                    .then_some(())
             }) else {
                 return Ok(None);
             };
-            let slot_index = reservation.index();
+            let slot_index = reservation.0;
             let slot = &self.slots[slot_index];
             *slot.source.lock() = Some(source.clone());
             slot.allocator.Reset()?;
@@ -415,7 +414,8 @@ impl D3d12SwapchainCapture {
             self.pending_signal = Some(sync_value);
             self.queue.Signal(&self.fence, sync_value)?;
             self.pending_signal = None;
-            reservation.commit().unwrap();
+            self.slots[slot_index].state.published(sync_value);
+            self.scheduler.commit(slot_index, self.slots.len());
             Ok(Some(D3d12CopySubmission {
                 slot: slot_index as u32,
                 width: region.width,
