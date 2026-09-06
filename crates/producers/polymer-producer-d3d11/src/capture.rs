@@ -3,11 +3,13 @@
 use crate::{D3d11RingMode, D3d11SwapchainCapture, Tracking};
 use parking_lot::Mutex;
 use polymer_hook_dxgi::{SwapchainOwner, SwapchainOwnerHandle};
-use polymer_ipc::{LocalSocket, Message, StreamReady};
-use polymer_platform_windows::{ProcessId, duplicate_handle_into_process, performance_counter};
+use polymer_platform_windows::performance_counter;
+use polymer_presentation::producer::ExportDescriptor;
+use polymer_presentation::producer::FramePublisher;
+use polymer_presentation::producer::ProducerSession;
 use polymer_protocol::{
-    AdapterLuid, ConsumerApi, ExternalImageKind, ExternalSyncKind, FrameReady, MAX_IMAGE_SLOTS,
-    PROTOCOL_VERSION, PresentationTransform, StreamId, SurfaceId, transport_unorm_dxgi_format,
+    AdapterLuid, ConsumerApi, ExternalImageKind, ExternalSyncKind, PresentationTransform, StreamId,
+    SurfaceId, transport_unorm_dxgi_format,
 };
 use std::{ffi::c_void, sync::Arc};
 use windows::{
@@ -17,19 +19,37 @@ use windows::{
 
 struct CaptureState {
     capture: D3d11SwapchainCapture,
-    ipc: Option<LocalSocket>,
-    frame_number: u64,
-    copy_failures: u64,
+    ipc: Option<ProducerSession>,
 }
 
 /// The capture ring for one swapchain. A ring is created lazily on the first
 /// present and dropped when the swapchain resizes; a swapchain the viewer
 /// declined stays parked until it resizes or is destroyed, so a rejected
 /// surface does not reconnect on every present.
-enum Capture {
-    Idle,
-    Active(Box<CaptureState>),
-    Declined,
+type Capture = polymer_presentation::producer::CaptureSession<
+    CaptureState,
+    (usize, Option<SourceRequirements>),
+>;
+
+#[derive(PartialEq, Eq)]
+pub(crate) struct SourceRequirements {
+    extent: (u32, u32),
+    format: u32,
+    resolve_extent: Option<(u32, u32)>,
+}
+
+impl SourceRequirements {
+    pub(crate) fn from_source(source: &crate::tracking::TrackedResource) -> Self {
+        let mut desc = Default::default();
+        unsafe { source.texture.GetDesc(&mut desc) };
+        Self {
+            extent: (source.width, source.height),
+            format: transport_unorm_dxgi_format(source.format),
+            // The output uses the crop, but MSAA resolves require the entire
+            // native subresource. Page flips may change that allocation.
+            resolve_extent: (desc.SampleDesc.Count > 1).then_some((desc.Width, desc.Height)),
+        }
+    }
 }
 
 /// Per-swapchain capture state stored in the swapchain's hook context.
@@ -39,7 +59,8 @@ enum Capture {
 pub struct SwapchainCapture {
     stream_id: u64,
     tracking: Arc<Tracking>,
-    capture: Mutex<Capture>,
+    capture: Mutex<Vec<Capture>>,
+    history: Mutex<polymer_presentation::history::ResourceHistory<crate::tracking::Presentation>>,
 }
 
 /// Claims a DXGI swapchain created for a D3D11 device, returning the
@@ -66,7 +87,8 @@ pub unsafe fn claim(
     Some(SwapchainOwnerHandle::new(SwapchainCapture {
         stream_id: swapchain as u64,
         tracking,
-        capture: Mutex::new(Capture::Idle),
+        capture: Mutex::new(Vec::new()),
+        history: Mutex::new(Default::default()),
     }))
 }
 
@@ -77,8 +99,142 @@ impl SwapchainOwner for SwapchainCapture {
     ///
     /// `swapchain` must point to the live swapchain being presented.
     unsafe fn before_present(&self, swapchain: *mut c_void) {
+        let _capture_scope = polymer_presentation::observation::CaptureScope::enter();
         unsafe { self.tracking.register_swapchain(swapchain) };
-        let presentation = self.tracking.take_swapchain_presentation(swapchain);
+        let requested =
+            polymer_hook::config::tracked_render_target_indices().unwrap_or_else(|| vec![0]);
+        let limit = requested.iter().copied().max().map_or(1, |index| index + 1);
+        let presentations = if polymer_hook::config::tracking_enabled() {
+            self.tracking.take_swapchain_presentations(swapchain, limit)
+        } else {
+            Vec::new()
+        };
+        let exact = !presentations.is_empty()
+            && presentations
+                .iter()
+                .all(|presentation| presentation.exact_selection);
+        let reconciled = self
+            .history
+            .lock()
+            .reconcile(presentations, exact, |presentation| {
+                presentation.revalidate()
+            });
+        let presentations = reconciled.surfaces;
+        let now = self
+            .tracking
+            .presentation_clock
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+        let window = unsafe {
+            windows::Win32::Graphics::Dxgi::IDXGISwapChain::from_raw_borrowed(&swapchain)
+        }
+        .and_then(|swapchain| unsafe { swapchain.GetDesc().ok() })
+        .map_or(0, |desc| desc.OutputWindow.0 as isize);
+        use polymer_presentation::history::HistorySurface;
+        use polymer_presentation::registry::{RegistrySource, SourceIdentity};
+        polymer_presentation::producer::ProducerWindows::refresh(&self.tracking.registry);
+        let sources = presentations
+            .iter()
+            .zip(&reconciled.slots)
+            .map(|(presentation, &logical_slot)| {
+                let (resource, subresource) = presentation.identity();
+                let (width, height, _, _) = presentation.layout();
+                RegistrySource {
+                    logical_slot,
+                    identity: SourceIdentity {
+                        domain: 0,
+                        resource: if resource == 0 {
+                            self.stream_id
+                        } else {
+                            resource as u64
+                        },
+                        subresource,
+                    },
+                    extent: polymer_presentation::Extent2D { width, height },
+                    placement: None,
+                }
+            })
+            .collect();
+        self.tracking
+            .registry
+            .observe(self.stream_id, window, sources, now);
+        let resolved = if polymer_hook::config::tracking_enabled() && !presentations.is_empty() {
+            self.tracking
+                .registry
+                .requests(self.stream_id, &requested, now, |slot, window| {
+                    let title = polymer_platform_windows::window_title(
+                        polymer_platform_windows::NativeWindow(window),
+                    );
+                    polymer_hook::config::tracked_render_target_surface_matches(
+                        slot,
+                        title.as_deref().unwrap_or_default(),
+                    )
+                })
+        } else {
+            vec![(0, 0)]
+        };
+        let mut captures = self.capture.lock();
+        captures.resize_with(requested.len(), Capture::default);
+        captures.truncate(requested.len());
+        for change in reconciled.changes {
+            let source_slot = match change {
+                polymer_presentation::history::SurfaceChange::Replace { slot }
+                | polymer_presentation::history::SurfaceChange::Add { slot } => slot,
+                _ => continue,
+            };
+            for &(slot, index) in &resolved {
+                if reconciled.slots.get(index) == Some(&source_slot) {
+                    captures[slot].source_changed();
+                }
+            }
+        }
+        for (slot, capture) in captures.iter_mut().enumerate() {
+            if !resolved.iter().any(|(selected, _)| *selected == slot) {
+                capture.park();
+            }
+        }
+        for (slot, index) in resolved {
+            let presentation = presentations.get(index);
+            if presentation.is_none() && (!presentations.is_empty() || slot != 0) {
+                captures[slot].invalidate();
+                continue;
+            }
+            unsafe {
+                self.capture_source(
+                    swapchain,
+                    presentation,
+                    slot,
+                    requested[slot],
+                    &mut captures[slot],
+                )
+            };
+        }
+    }
+
+    /// Releases the capture ring before the swapchain buffers resize.
+    ///
+    /// # Safety
+    ///
+    /// `swapchain` must point to the live swapchain being resized.
+    unsafe fn before_resize(&self, swapchain: *mut c_void) {
+        self.history.lock().reset();
+        unsafe { self.tracking.release_swapchain(swapchain) };
+        let previous = std::mem::take(&mut *self.capture.lock());
+        if previous.iter().any(|capture| capture.as_ref().is_some()) {
+            tracing::debug!("polymer: released D3D11 capture for ResizeBuffers");
+        }
+    }
+}
+
+impl SwapchainCapture {
+    unsafe fn capture_source(
+        &self,
+        swapchain: *mut c_void,
+        presentation: Option<&crate::tracking::Presentation>,
+        slot: usize,
+        requested_index: usize,
+        capture: &mut Capture,
+    ) {
         let tracked_source = presentation
             .as_ref()
             .and_then(|value| value.source.as_ref());
@@ -86,114 +242,230 @@ impl SwapchainOwner for SwapchainCapture {
             .is_none()
             .then(|| presentation.as_ref().map(|value| value.region))
             .flatten();
-        let mut capture = self.capture.lock();
-        if let Some(source) = tracked_source
-            && matches!(&*capture, Capture::Active(state) if {
-                let desc = state.capture.ring().desc();
-                (desc.width, desc.height, desc.format)
-                    != (
-                        source.width,
-                        source.height,
-                        transport_unorm_dxgi_format(source.format),
-                    )
-            })
-        {
-            *capture = Capture::Idle;
-        }
-        if matches!(*capture, Capture::Idle) {
-            let connection = match begin_viewer_connection() {
-                Ok(connection) => Some(connection),
-                Err(error) => {
-                    tracing::debug!("polymer: D3D11 viewer connection failed: {error}");
-                    None
-                }
-            };
-
-            let mode_chain: &[D3d11RingMode] = if connection
-                .as_ref()
-                .is_some_and(|value| value.preferred_consumer == ConsumerApi::D3d12)
-            {
-                if polymer_hook::config::force_keyed_mutex() {
-                    &[D3d11RingMode::KeyedMutexNoFence, D3d11RingMode::KeyedMutex]
-                } else {
-                    &[
-                        D3d11RingMode::Fence,
-                        D3d11RingMode::KeyedMutexNoFence,
-                        D3d11RingMode::KeyedMutex,
-                    ]
-                }
-            } else {
-                &[D3d11RingMode::KeyedMutex]
-            };
-            let mut ring = None;
-            for (index, &mode) in mode_chain.iter().enumerate() {
-                match unsafe { D3d11SwapchainCapture::new(swapchain, 3, mode, tracked_source) } {
-                    Ok(value) => {
-                        ring = Some(value);
-                        break;
-                    }
-                    Err(error) if index + 1 < mode_chain.len() => {
-                        tracing::debug!(
-                            "polymer: D3D11 {mode:?} capture unavailable, trying {:?}: {error}",
-                            mode_chain[index + 1]
-                        );
-                    }
-                    Err(error) => {
-                        tracing::debug!("polymer: D3D11 capture creation failed: {error}");
-                    }
-                }
-            }
-            let Some(ring) = ring else {
-                return;
-            };
-            let ipc = connection.and_then(|mut connection| {
-                match send_stream_ready(&mut connection, &ring) {
-                    Ok(()) => Some(connection.socket),
-                    Err(error) => {
-                        tracing::debug!("polymer: D3D11 viewer connection failed: {error}");
-                        None
-                    }
-                }
-            });
-            let desc = ring.ring().desc();
-            tracing::debug!(
-                "polymer: attached D3D11 {}x{} {}-slot shared texture ring",
-                desc.width,
-                desc.height,
-                desc.slots
-            );
-            *capture = Capture::Active(Box::new(CaptureState {
-                capture: ring,
-                ipc,
-                frame_number: 0,
-                copy_failures: 0,
-            }));
-        }
-        let Capture::Active(state) = &mut *capture else {
-            return;
+        capture.configure((
+            requested_index,
+            tracked_source.map(SourceRequirements::from_source),
+        ));
+        let setup = CaptureSetup {
+            swapchain,
+            tracked_source,
+            slot,
         };
-        let submission = match unsafe { state.capture.copy_frame(tracked_region, tracked_source) } {
-            Ok(submission) => submission,
-            Err(error) => {
-                state.copy_failures += 1;
-                if state.copy_failures == 1 || state.copy_failures % 120 == 0 {
+        if let Err(error) = unsafe { capture.initialize(std::time::Instant::now(), &setup) } {
+            tracing::debug!("polymer: capture initialization deferred: {error}");
+            return;
+        }
+        let _ = unsafe {
+            capture.capture(CopyFrame {
+                presentation,
+                tracked_source,
+                tracked_region,
+                stream_id: StreamId(self.stream_id ^ ((slot as u64) << 48)),
+            })
+        };
+    }
+}
+
+struct ViewerConnection {
+    socket: ProducerSession,
+    viewer_pid: u32,
+    preferred_consumer: ConsumerApi,
+}
+
+fn begin_viewer_connection() -> std::io::Result<ViewerConnection> {
+    let session = polymer_hook::config::session()
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::NotFound, error))?;
+    let socket = ProducerSession::connect(&session)?;
+    Ok(ViewerConnection {
+        viewer_pid: socket.viewer_pid(),
+        preferred_consumer: socket.preferred_consumer(),
+        socket,
+    })
+}
+
+fn send_stream_ready(
+    connection: &mut ViewerConnection,
+    capture: &D3d11SwapchainCapture,
+    slot: usize,
+) -> std::io::Result<()> {
+    let viewer_pid = connection.viewer_pid;
+    let ring = capture.ring();
+
+    let image_handles = ring
+        .slots()
+        .iter()
+        .map(|slot| slot.raw_handle() as isize as i64)
+        .collect::<Vec<_>>();
+    let fence = match ring.raw_fence_handle() {
+        Some(raw) => (raw as isize) as i64,
+        None => 0,
+    };
+    let (image_kind, sync_kind, adapter_luid, consumer_fence) = match ring.mode() {
+        D3d11RingMode::Fence => {
+            let raw_consumer_fence = ring.raw_consumer_fence_handle().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "fence-mode D3D11 ring is missing its consumer fence",
+                )
+            })?;
+            (
+                ExternalImageKind::D3d11D3d12Resource,
+                // The shared D3D11 fences open as ID3D12Fence on the consumer.
+                ExternalSyncKind::D3d12Fence,
+                capture.adapter_luid(),
+                (raw_consumer_fence as isize) as i64,
+            )
+        }
+        // The D3D12 consumer acquires the keyed mutexes through D3D11On12.
+        D3d11RingMode::KeyedMutexNoFence => (
+            ExternalImageKind::D3d11SharedResourceNt,
+            ExternalSyncKind::D3d11KeyedMutex,
+            capture.adapter_luid(),
+            0,
+        ),
+        D3d11RingMode::KeyedMutex => (
+            ExternalImageKind::D3d11SharedResourceNt,
+            ExternalSyncKind::D3d11Fence,
+            AdapterLuid {
+                low_part: 0,
+                high_part: 0,
+            },
+            0,
+        ),
+    };
+    let desc = ring.desc();
+    connection.socket.publish(ExportDescriptor {
+        surface_id: SurfaceId(if polymer_hook::config::tracking_enabled() {
+            polymer_presentation::registry::PresentationRegistry::logical_surface_id(slot)
+        } else {
+            capture.source_window() as u64
+        }),
+        adapter_luid,
+        source_window: capture.source_window() as i64,
+        width: desc.width,
+        height: desc.height,
+        format: desc.format,
+        image_kind,
+        sync_kind,
+        image_handles: &image_handles,
+        timeline_semaphore_handle: fence,
+        consumer_semaphore_handle: consumer_fence,
+        bottom_up: false,
+    })?;
+    tracing::debug!("polymer: connected D3D11 ring to viewer process {viewer_pid}");
+    Ok(())
+}
+
+impl Drop for SwapchainCapture {
+    fn drop(&mut self) {
+        self.tracking.registry.forget_owner(self.stream_id);
+    }
+}
+
+impl polymer_presentation::producer::CaptureBackend for CaptureState {
+    fn connected(&self) -> bool {
+        self.ipc.as_ref().is_some_and(ProducerSession::connected)
+    }
+}
+
+struct CaptureSetup<'a> {
+    swapchain: *mut c_void,
+    tracked_source: Option<&'a crate::tracking::TrackedResource>,
+    slot: usize,
+}
+impl polymer_presentation::producer::CaptureInitializer for CaptureSetup<'_> {
+    type Backend = CaptureState;
+    type Error = String;
+    unsafe fn initialize(&self) -> Result<Option<CaptureState>, String> {
+        let Self {
+            swapchain,
+            tracked_source,
+            slot,
+            ..
+        } = *self;
+        let Some(mut connection) = ProducerSession::setup_result(begin_viewer_connection())
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(None);
+        };
+
+        let mode_chain: &[D3d11RingMode] = if connection.preferred_consumer == ConsumerApi::D3d12 {
+            if polymer_hook::config::force_keyed_mutex() {
+                &[D3d11RingMode::KeyedMutexNoFence, D3d11RingMode::KeyedMutex]
+            } else {
+                &[
+                    D3d11RingMode::Fence,
+                    D3d11RingMode::KeyedMutexNoFence,
+                    D3d11RingMode::KeyedMutex,
+                ]
+            }
+        } else {
+            &[D3d11RingMode::KeyedMutex]
+        };
+        let mut ring = None;
+        for (index, &mode) in mode_chain.iter().enumerate() {
+            match unsafe { D3d11SwapchainCapture::new(swapchain, 3, mode, tracked_source) } {
+                Ok(value) => {
+                    ring = Some(value);
+                    break;
+                }
+                Err(error) if index + 1 < mode_chain.len() => {
                     tracing::debug!(
-                        "polymer: D3D11 capture copy deferred ({error}, count={})",
-                        state.copy_failures
+                        "polymer: D3D11 {mode:?} capture unavailable, trying {:?}: {error}",
+                        mode_chain[index + 1]
                     );
                 }
-                return;
+                Err(error) => {
+                    tracing::debug!("polymer: D3D11 capture creation failed: {error}");
+                }
             }
-        };
-        state.frame_number = state.frame_number.wrapping_add(1);
-        if state.frame_number == 1 || state.frame_number % 120 == 0 {
-            tracing::debug!(
-                "polymer: submitted D3D11 capture {}x{} (count={})",
-                submission.width,
-                submission.height,
-                state.frame_number
-            );
         }
+        let Some(ring) = ring else {
+            return Err("capture initialization failed".into());
+        };
+        if ProducerSession::setup_result(send_stream_ready(&mut connection, &ring, slot))
+            .map_err(|error| error.to_string())?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        let ipc = Some(connection.socket);
+        let desc = ring.ring().desc();
+        tracing::debug!(
+            "polymer: attached D3D11 {}x{} {}-slot shared texture ring",
+            desc.width,
+            desc.height,
+            desc.slots
+        );
+        Ok(Some(CaptureState { capture: ring, ipc }))
+    }
+}
+
+struct CopyFrame<'a> {
+    presentation: Option<&'a crate::tracking::Presentation>,
+    tracked_source: Option<&'a crate::tracking::TrackedResource>,
+    tracked_region: Option<crate::D3d11CaptureRegion>,
+    stream_id: StreamId,
+}
+impl polymer_presentation::producer::CaptureOperation for CopyFrame<'_> {
+    type Backend = CaptureState;
+    type Output = ();
+    type Error = windows::core::Error;
+    unsafe fn submit(self, state: &mut CaptureState) -> Result<Option<()>, Self::Error> {
+        let Self {
+            presentation,
+            tracked_source,
+            tracked_region,
+            ..
+        } = self;
+        let submission = match unsafe { state.capture.copy_frame(tracked_region, tracked_source) } {
+            Ok(submission) => submission,
+            Err(error) if error.code() == windows::core::HRESULT(0x8007_0102u32 as i32) => {
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
+
         let capture_desc = state.capture.ring().desc();
         let presentation_extent = presentation
             .as_ref()
@@ -216,151 +488,49 @@ impl SwapchainOwner for SwapchainCapture {
                 )
             },
         );
-        let message = Message::FrameReady(FrameReady {
-            stream_id: StreamId(self.stream_id),
+        let message = polymer_presentation::producer::CapturedFrame {
+            stream_id: self.stream_id,
             slot: submission.slot,
-            render_width: submission.width,
-            render_height: submission.height,
-            capture_x: presentation_rect.0,
-            capture_y: presentation_rect.1,
-            capture_width: presentation_rect.2,
-            capture_height: presentation_rect.3,
-            presentation_width: presentation_extent.0,
-            presentation_height: presentation_extent.1,
-            presentation_transform: PresentationTransform::axis_aligned(
-                presentation_rect.0,
-                presentation_rect.1,
-                presentation_rect.2,
-                presentation_rect.3,
-            ),
-            frame_number: state.frame_number,
             sync_value: submission.sync_value,
             timestamp_qpc: performance_counter().unwrap_or(0),
-        });
-        if state
-            .ipc
-            .as_mut()
-            .is_some_and(|ipc| ipc.send(message).is_err())
-        {
-            // The viewer declined or preempted this stream; release the ring
-            // instead of copying frames nobody consumes.
-            tracing::debug!("polymer: viewer released D3D11 stream; capture parked until resize",);
-            *capture = Capture::Declined;
-        }
-    }
-
-    /// Releases the capture ring before the swapchain buffers resize.
-    ///
-    /// # Safety
-    ///
-    /// `swapchain` must point to the live swapchain being resized.
-    unsafe fn before_resize(&self, _swapchain: *mut c_void) {
-        let previous = std::mem::replace(&mut *self.capture.lock(), Capture::Idle);
-        if matches!(previous, Capture::Active(_)) {
-            tracing::debug!("polymer: released D3D11 capture for ResizeBuffers");
-        }
-    }
-}
-
-struct ViewerConnection {
-    socket: LocalSocket,
-    viewer_pid: u32,
-    preferred_consumer: ConsumerApi,
-}
-
-fn begin_viewer_connection() -> std::io::Result<ViewerConnection> {
-    let session = polymer_hook::config::session()
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::NotFound, error))?;
-    let mut socket = LocalSocket::connect(&session)?;
-    match socket.receive()? {
-        Message::Hello(hello) if hello.protocol_version == PROTOCOL_VERSION => {
-            socket.enable_frame_channel(hello.process_id)?;
-            Ok(ViewerConnection {
-                socket,
-                viewer_pid: hello.process_id,
-                preferred_consumer: hello.preferred_consumer,
-            })
-        }
-        _ => Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "viewer did not begin with a compatible Hello message",
-        )),
-    }
-}
-
-fn send_stream_ready(
-    connection: &mut ViewerConnection,
-    capture: &D3d11SwapchainCapture,
-) -> std::io::Result<()> {
-    let viewer_pid = connection.viewer_pid;
-    let ring = capture.ring();
-    if ring.slots().len() > MAX_IMAGE_SLOTS {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "D3D11 image ring exceeds the protocol capacity",
-        ));
-    }
-    let mut image_handles = [0i64; MAX_IMAGE_SLOTS];
-    for (destination, slot) in image_handles.iter_mut().zip(ring.slots()) {
-        *destination =
-            duplicate_handle_into_process(slot.raw_handle() as isize, ProcessId(viewer_pid))?
-                as i64;
-    }
-    let fence = match ring.raw_fence_handle() {
-        Some(raw) => duplicate_handle_into_process(raw as isize, ProcessId(viewer_pid))? as i64,
-        None => 0,
-    };
-    let (image_kind, sync_kind, adapter_luid, consumer_fence) = match ring.mode() {
-        D3d11RingMode::Fence => {
-            let raw_consumer_fence = ring.raw_consumer_fence_handle().ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "fence-mode D3D11 ring is missing its consumer fence",
-                )
-            })?;
-            (
-                ExternalImageKind::D3d11D3d12Resource,
-                // The shared D3D11 fences open as ID3D12Fence on the consumer.
-                ExternalSyncKind::D3d12Fence,
-                capture.adapter_luid(),
-                duplicate_handle_into_process(raw_consumer_fence as isize, ProcessId(viewer_pid))?
-                    as i64,
-            )
-        }
-        // The D3D12 consumer acquires the keyed mutexes through D3D11On12.
-        D3d11RingMode::KeyedMutexNoFence => (
-            ExternalImageKind::D3d11SharedResourceNt,
-            ExternalSyncKind::D3d11KeyedMutex,
-            capture.adapter_luid(),
-            0,
-        ),
-        D3d11RingMode::KeyedMutex => (
-            ExternalImageKind::D3d11SharedResourceNt,
-            ExternalSyncKind::D3d11Fence,
-            AdapterLuid {
-                low_part: 0,
-                high_part: 0,
+            extent: polymer_presentation::Extent2D {
+                width: submission.width,
+                height: submission.height,
             },
-            0,
-        ),
-    };
-    let desc = ring.desc();
-    connection.socket.send(Message::StreamReady(StreamReady {
-        producer_process_id: std::process::id(),
-        surface_id: SurfaceId(capture.source_window() as u64),
-        adapter_luid,
-        source_window: capture.source_window() as i64,
-        width: desc.width,
-        height: desc.height,
-        format: desc.format,
-        image_kind,
-        sync_kind,
-        slot_count: desc.slots,
-        image_handles,
-        timeline_semaphore_handle: fence,
-        consumer_semaphore_handle: consumer_fence,
-        bottom_up: false,
-    }))?;
-    tracing::debug!("polymer: connected D3D11 ring to viewer process {viewer_pid}");
-    Ok(())
+        }
+        .present(polymer_presentation::producer::FramePlacement {
+            extent: polymer_presentation::Extent2D {
+                width: presentation_extent.0,
+                height: presentation_extent.1,
+            },
+            bounds: polymer_presentation::Rect {
+                x: (presentation_rect.0) as i32,
+                y: (presentation_rect.1) as i32,
+                extent: polymer_presentation::Extent2D {
+                    width: presentation_rect.2,
+                    height: presentation_rect.3,
+                },
+            },
+            transform: if tracked_source.is_some()
+                && presentation.is_some_and(|value| !value.placement_known)
+            {
+                PresentationTransform::UNAVAILABLE
+            } else {
+                polymer_presentation::producer::FramePlacement::mapped(
+                    polymer_presentation::Rect {
+                        x: presentation_rect.0 as i32,
+                        y: presentation_rect.1 as i32,
+                        extent: polymer_presentation::Extent2D {
+                            width: presentation_rect.2,
+                            height: presentation_rect.3,
+                        },
+                    },
+                    presentation.is_some_and(|value| value.orientation.0),
+                    presentation.is_some_and(|value| value.orientation.1),
+                )
+            },
+        });
+        state.ipc.publish_frame(message);
+        Ok(Some(()))
+    }
 }

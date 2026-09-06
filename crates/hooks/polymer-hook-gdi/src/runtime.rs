@@ -23,6 +23,24 @@ unsafe extern "system" {
 thread_local! { static INSIDE_HOOK: Cell<bool> = const { Cell::new(false) }; }
 thread_local! { static REAL_PAINT_DC: Cell<Option<(isize, isize)>> = const { Cell::new(None) }; }
 
+pub(crate) unsafe fn redirect_destroy_window(
+    hwnd: HWND,
+    mut context: crate::hooks::DestroyWindowContext<'_>,
+) -> i32 {
+    let result = polymer_hook::next!(context, hwnd);
+    if result == 0 {
+        return result;
+    }
+    INSIDE_HOOK.with(|inside| {
+        if inside.replace(true) {
+            return;
+        }
+        polymer_producer_gdi::window_destroyed(hwnd as isize);
+        inside.set(false);
+    });
+    result
+}
+
 unsafe fn replacement_dc(hwnd: HWND) -> Option<isize> {
     if hwnd.is_null() {
         return None;

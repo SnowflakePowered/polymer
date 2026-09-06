@@ -16,6 +16,7 @@ pub(crate) struct Timeline {
     fence: ID3D12Fence,
     handle: HANDLE,
     semaphore: Gluint,
+    functions: GlFunctions,
 }
 
 unsafe impl Send for Timeline {}
@@ -38,6 +39,7 @@ impl Timeline {
             fence,
             handle,
             semaphore,
+            functions: *functions,
         })
     }
 
@@ -56,11 +58,50 @@ impl Timeline {
             (functions.signal_semaphore)(self.semaphore, 0, std::ptr::null(), 1, &texture, &layout);
         }
     }
+}
 
-    pub(crate) unsafe fn destroy(&self, functions: &GlFunctions) {
+impl Drop for Timeline {
+    fn drop(&mut self) {
         unsafe {
-            (functions.delete_semaphores)(1, &self.semaphore);
+            (self.functions.delete_semaphores)(1, &self.semaphore);
             let _ = CloseHandle(self.handle);
         }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::interop::{
+        memory_object_win32::{ExternalImage, GL_DEVICE_LUID_EXT},
+        proc,
+    };
+    use polymer_protocol::AdapterLuid;
+    use windows::Win32::Foundation::GetHandleInformation;
+
+    /// Run under the native WGL fixture's current context.
+    pub(crate) unsafe fn abandoned_setup_releases_imported_timeline() {
+        let functions = unsafe { GlFunctions::load() }.expect("EXT interop unavailable");
+        let mut luid = [0u8; 8];
+        unsafe { (functions.get_unsigned_byte)(GL_DEVICE_LUID_EXT, luid.as_mut_ptr()) };
+        let (device, _) = unsafe {
+            ExternalImage::create_device(AdapterLuid {
+                low_part: u32::from_le_bytes(luid[..4].try_into().unwrap()),
+                high_part: i32::from_le_bytes(luid[4..].try_into().unwrap()),
+            })
+        }
+        .unwrap();
+        let is_semaphore: unsafe extern "system" fn(u32) -> u8 =
+            unsafe { proc(b"glIsSemaphoreEXT\0") }.unwrap();
+        let timeline = unsafe { Timeline::new(&device, &functions) }.unwrap();
+        let (handle, semaphore) = (timeline.handle, timeline.semaphore);
+        let mut flags = 0;
+        assert!(unsafe { GetHandleInformation(handle, &mut flags) }.is_ok());
+        assert_ne!(unsafe { is_semaphore(semaphore) }, 0);
+        // This is the ownership state when a later setup stage returns an
+        // error: no ExtCapture exists to perform manual teardown.
+        drop(timeline);
+        assert_eq!(unsafe { is_semaphore(semaphore) }, 0);
+        assert!(unsafe { GetHandleInformation(handle, &mut flags) }.is_err());
     }
 }

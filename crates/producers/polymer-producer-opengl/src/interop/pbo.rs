@@ -4,19 +4,16 @@ use super::{Glenum, Glint, Glsizei, Gluint, proc};
 use polymer_producer_d3d11::{D3d11ImageRing, D3d11RingMode};
 use polymer_protocol::AdapterLuid;
 use std::{ffi::c_void, ptr};
-use windows::{
-    Win32::Graphics::{
-        Direct3D::{D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_11_0},
-        Direct3D11::{
-            D3D11_BIND_SHADER_RESOURCE, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION,
-            D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11CreateDevice, ID3D11DeviceContext,
-        },
-        Dxgi::{
-            Common::{DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SAMPLE_DESC},
-            CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, IDXGIFactory4,
-        },
+use windows::Win32::Graphics::{
+    Direct3D::{D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_11_0},
+    Direct3D11::{
+        D3D11_BIND_SHADER_RESOURCE, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION,
+        D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11CreateDevice, ID3D11DeviceContext,
     },
-    core::Interface,
+    Dxgi::{
+        Common::{DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SAMPLE_DESC},
+        CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, IDXGIFactory4,
+    },
 };
 
 const GL_PIXEL_PACK_BUFFER: Glenum = 0x88EB;
@@ -68,6 +65,8 @@ pub(crate) struct Transport {
     height: u32,
     issued: u64,
     next_pbo: usize,
+    frames: Vec<Option<(u64, polymer_presentation::producer::FramePlacement)>>,
+    scheduler: polymer_presentation::scheduling::SlotScheduler,
     pub(crate) adapter_luid: AdapterLuid,
 }
 
@@ -150,6 +149,8 @@ impl Transport {
                 height,
                 issued: 0,
                 next_pbo: 0,
+                frames: (0..3).map(|_| None).collect(),
+                scheduler: Default::default(),
                 adapter_luid: AdapterLuid {
                     low_part: desc.AdapterLuid.LowPart,
                     high_part: desc.AdapterLuid.HighPart,
@@ -160,15 +161,24 @@ impl Transport {
     }
 
     /// Queues the current framebuffer read and uploads an older completed PBO.
-    pub(crate) unsafe fn transfer(&mut self) -> Result<Option<usize>, String> {
+    pub(crate) unsafe fn transfer(
+        &mut self,
+        x: i32,
+        y: i32,
+        placement: polymer_presentation::producer::FramePlacement,
+    ) -> Result<Option<(usize, u64, polymer_presentation::producer::FramePlacement)>, String> {
         let mut old_pixel_pack_buffer = 0;
         unsafe { super::glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &mut old_pixel_pack_buffer) };
         let write_index = self.next_pbo;
+        self.frames[write_index] = Some((
+            polymer_platform_windows::performance_counter().unwrap_or(0),
+            placement,
+        ));
         unsafe {
             (self.functions.bind_buffer)(GL_PIXEL_PACK_BUFFER, self.pbos[write_index]);
             (self.functions.read_pixels)(
-                0,
-                0,
+                x,
+                y,
                 self.width as i32,
                 self.height as i32,
                 super::GL_RGBA,
@@ -193,21 +203,29 @@ impl Transport {
             };
             return Err("glMapBuffer returned null".into());
         }
-        let slot = &self.ring.slots()[read_index];
-        let acquire = unsafe {
-            (Interface::vtable(slot.keyed_mutex.as_ref().expect("keyed ring")).AcquireSync)(
-                Interface::as_raw(slot.keyed_mutex.as_ref().expect("keyed ring")),
-                0,
-                0,
-            )
-        };
-        if acquire.0 != 0 {
+        let reservation = self
+            .scheduler
+            .try_acquire(self.ring.slots().len(), |index| unsafe {
+                polymer_producer_d3d11::KeyedMutexLease::try_acquire(
+                    self.ring.slots()[index]
+                        .keyed_mutex
+                        .as_ref()
+                        .expect("keyed ring"),
+                    0,
+                    1,
+                )
+                .ok()
+                .flatten()
+            });
+        let Some(reservation) = reservation else {
             unsafe {
                 (self.functions.unmap_buffer)(GL_PIXEL_PACK_BUFFER);
                 (self.functions.bind_buffer)(GL_PIXEL_PACK_BUFFER, old_pixel_pack_buffer as u32);
             }
-            return Err("all PBO image slots are awaiting the viewer".into());
-        }
+            return Ok(None);
+        };
+        let output_index = reservation.index();
+        let slot = &self.ring.slots()[output_index];
         unsafe {
             self.context.UpdateSubresource(
                 &slot.texture,
@@ -219,13 +237,14 @@ impl Transport {
             );
             (self.functions.unmap_buffer)(GL_PIXEL_PACK_BUFFER);
             (self.functions.bind_buffer)(GL_PIXEL_PACK_BUFFER, old_pixel_pack_buffer as u32);
-            slot.keyed_mutex
-                .as_ref()
-                .expect("keyed ring")
-                .ReleaseSync(1)
-                .map_err(|e| format!("IDXGIKeyedMutex::ReleaseSync: {e}"))?;
         }
-        Ok(Some(read_index))
+        reservation
+            .commit()
+            .map_err(|e| format!("IDXGIKeyedMutex::ReleaseSync: {e}"))?;
+        let (timestamp, placement) = self.frames[read_index]
+            .take()
+            .expect("completed PBO has capture metadata");
+        Ok(Some((output_index, timestamp, placement)))
     }
 }
 

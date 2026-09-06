@@ -9530,6 +9530,7 @@ dependencies = [
  "polymer-hook-dxgi",
  "polymer-ipc",
  "polymer-platform-windows",
+ "polymer-presentation",
  "polymer-producer-d3d12",
  "polymer-protocol",
  "tracing",
@@ -9569,8 +9570,10 @@ name = "polymer-hook-gdi"
 version = "0.1.0"
 dependencies = [
  "polymer-hook",
+ "polymer-ipc",
  "polymer-platform-windows",
  "polymer-producer-gdi",
+ "polymer-protocol",
  "windows-sys 0.61.2",
 ]
 
@@ -9846,6 +9849,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "polymer-presentation"
+version = "0.1.0"
+dependencies = [
+ "dashmap",
+ "polymer-ipc",
+ "polymer-platform-windows",
+ "polymer-protocol",
+ "tracing",
+ "windows 0.61.3",
+]
+
+[[package]]
 name = "polymer-producer-d3d11"
 version = "0.1.0"
 dependencies = [
@@ -9855,6 +9870,7 @@ dependencies = [
  "polymer-hook-dxgi",
  "polymer-ipc",
  "polymer-platform-windows",
+ "polymer-presentation",
  "polymer-protocol",
  "tracing",
  "windows 0.61.3",
@@ -9870,6 +9886,7 @@ dependencies = [
  "polymer-hook-dxgi",
  "polymer-ipc",
  "polymer-platform-windows",
+ "polymer-presentation",
  "polymer-protocol",
  "tracing",
  "windows 0.61.3",
@@ -9884,6 +9901,7 @@ dependencies = [
  "polymer-hook",
  "polymer-ipc",
  "polymer-platform-windows",
+ "polymer-presentation",
  "polymer-producer-d3d11",
  "polymer-protocol",
  "tracing",
@@ -9894,14 +9912,17 @@ dependencies = [
 name = "polymer-producer-opengl"
 version = "0.1.0"
 dependencies = [
+ "dashmap",
  "parking_lot",
  "polymer-hook",
  "polymer-ipc",
  "polymer-platform-windows",
+ "polymer-presentation",
  "polymer-producer-d3d11",
  "polymer-protocol",
  "tracing",
  "windows 0.61.3",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9914,7 +9935,9 @@ dependencies = [
  "polymer-hook",
  "polymer-ipc",
  "polymer-platform-windows",
+ "polymer-presentation",
  "polymer-protocol",
+ "polymer-test-viewer",
  "tracing",
  "windows 0.61.3",
 ]
@@ -10029,6 +10052,18 @@ version = "0.1.0"
 dependencies = [
  "metrics",
  "metrics-util",
+]
+
+[[package]]
+name = "polymer-test-viewer"
+version = "0.1.0"
+dependencies = [
+ "polymer-consumer-d3d12",
+ "polymer-consumer-vulkan",
+ "polymer-ipc",
+ "polymer-presentation",
+ "polymer-protocol",
+ "windows 0.61.3",
 ]
 
 [[package]]

@@ -166,6 +166,8 @@ impl From<vk::Result> for ImportError {
 }
 
 pub struct ImportedStream {
+    // Keep the dynamically loaded library alive through native teardown.
+    _entry: Entry,
     instance: ash::Instance,
     device: ash::Device,
     images: Vec<vk::Image>,
@@ -231,6 +233,7 @@ impl ImportedStream {
                 command_pool,
                 readbacks,
             )) => Ok(Self {
+                _entry: entry,
                 instance,
                 device,
                 images,

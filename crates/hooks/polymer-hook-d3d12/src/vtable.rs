@@ -34,6 +34,7 @@ use windows::{
 };
 
 polymer_hook::vtable! {
+    [ID3D12CommandQueue],
     [
         ID3D12GraphicsCommandList,
         ID3D12GraphicsCommandList1,
@@ -78,8 +79,37 @@ polymer_hook::com_vtable! {
     pub(crate) union ID3D12DeviceVtable for ID3D12Device14;
 }
 
+polymer_hook::com_vtable! {
+    union ID3D12CommandQueueVtable for ID3D12CommandQueue;
+}
+
+polymer_hook::impl_com_hook! {
+    trait QueueHook;
+    impl QueueHook for ID3D12CommandQueueHook {
+        #![vtable = ID3D12CommandQueueVtable]
+        #[interfaces] { ID3D12CommandQueue }
+        #[state = DeviceContext]
+        #[release]
+        unsafe extern "system" fn queue_release(this: *mut c_void) -> u32;
+        #[base = ID3D12CommandQueue::ExecuteCommandLists]
+        #[infix(track_submission)]
+        unsafe extern "system" fn execute_command_lists(this: *mut c_void, count: u32, lists: *const *mut c_void);
+    }
+}
+
 pub(crate) struct CommandListContext {
+    lifetime: Arc<CommandListLifetime>,
     pub(crate) tracking: Arc<polymer_producer_d3d12::Tracking>,
+}
+
+struct CommandListLifetime {
+    tracking: Arc<polymer_producer_d3d12::Tracking>,
+    id: usize,
+}
+impl Drop for CommandListLifetime {
+    fn drop(&mut self) {
+        self.tracking.command_reset(self.id as *mut c_void);
+    }
 }
 
 pub(crate) struct DeviceContext {
@@ -117,6 +147,27 @@ polymer_hook::impl_com_hook! {
             }
         }
 
+        #[base = ID3D12GraphicsCommandList::ExecuteBundle]
+        #[postfix(|_result, context| context.state.tracking.execute_bundle(this, bundle))]
+        unsafe extern "system" fn execute_bundle(this: *mut c_void, bundle: *mut c_void);
+
+        #[base = ID3D12GraphicsCommandList::CopyTextureRegion]
+        #[postfix(|_result, context| unsafe { context.state.tracking.copy_texture(this, destination, x, y, source, bounds) })]
+        unsafe extern "system" fn copy_texture_region(this: *mut c_void, destination: *const windows::Win32::Graphics::Direct3D12::D3D12_TEXTURE_COPY_LOCATION,
+            x: u32, y: u32, z: u32, source: *const windows::Win32::Graphics::Direct3D12::D3D12_TEXTURE_COPY_LOCATION,
+            bounds: *const windows::Win32::Graphics::Direct3D12::D3D12_BOX);
+
+        #[base = ID3D12GraphicsCommandList::ResolveSubresource]
+        #[postfix(|_result, context| unsafe {
+            context.state.tracking.resolve_subresource(this, destination, destination_subresource, source, source_subresource);
+        })]
+        unsafe extern "system" fn resolve_subresource(this: *mut c_void, destination: *mut c_void, destination_subresource: u32,
+            source: *mut c_void, source_subresource: u32, format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT);
+
+        #[base = ID3D12GraphicsCommandList::CopyResource]
+        #[postfix(|_result, context| unsafe { context.state.tracking.copy_resource(this, destination, source) })]
+        unsafe extern "system" fn copy_resource(this: *mut c_void, destination: *mut c_void, source: *mut c_void);
+
         #[base = ID3D12GraphicsCommandList::RSSetViewports]
         #[postfix(|_result, context| unsafe {
             context.state.tracking.record_viewports(this, count, viewports)
@@ -149,15 +200,23 @@ polymer_hook::impl_com_hook! {
         })]
         unsafe extern "system" fn set_graphics_root_descriptor_table(this: *mut c_void, root_index: u32, descriptor: D3D12_GPU_DESCRIPTOR_HANDLE) ;
 
+        #[base = ID3D12GraphicsCommandList::SetDescriptorHeaps]
+        #[postfix(|_result, context| unsafe { context.state.tracking.record_descriptor_heaps(this, count, heaps) })]
+        unsafe extern "system" fn set_descriptor_heaps(this: *mut c_void, count: u32, heaps: *const *mut c_void);
+
         #[base = ID3D12GraphicsCommandList::SetGraphicsRootSignature]
-        #[postfix(|_result, context| context.state.tracking.record_root_signature(this))]
+        #[postfix(|_result, context| context.state.tracking.record_root_signature(this, signature))]
         unsafe extern "system" fn set_graphics_root_signature(this: *mut c_void, signature: *mut c_void) ;
 
         #[base = ID3D12GraphicsCommandList::OMSetRenderTargets]
         #[postfix(|_result, context| unsafe {
-            context.state.tracking.record_render_targets(this, count, descriptors)
+            context.state.tracking.record_render_targets(this, count, descriptors, contiguous.as_bool())
         })]
         unsafe extern "system" fn om_set_render_targets(this: *mut c_void, count: u32, descriptors: *const D3D12_CPU_DESCRIPTOR_HANDLE, contiguous: BOOL, depth: *const D3D12_CPU_DESCRIPTOR_HANDLE) ;
+
+        #[base = ID3D12GraphicsCommandList::ClearRenderTargetView]
+        #[postfix(|_result, context| unsafe { context.state.tracking.record_clear(this, descriptor, count, rects) })]
+        unsafe extern "system" fn clear_render_target(this: *mut c_void, descriptor: D3D12_CPU_DESCRIPTOR_HANDLE, color: *const f32, count: u32, rects: *const RECT);
 
         #[base = ID3D12GraphicsCommandList7::Barrier]
         #[postfix(|_result, context| unsafe {
@@ -191,6 +250,25 @@ polymer_hook::impl_com_hook! {
         #[state = DeviceContext]
         #[release]
         unsafe extern "system" fn device_release(this: *mut c_void) -> u32;
+
+        #[base = ID3D12Device::CreateRootSignature]
+        #[fallback = E_FAIL]
+        #[postfix(|result, context| unsafe { if result.is_ok() { context.state.tracking.root_signature_created(blob, length, output); } })]
+        unsafe extern "system" fn create_root_signature(this: *mut c_void, node_mask: u32, blob: *const c_void, length: usize, iid: *const GUID, output: *mut *mut c_void) -> HRESULT;
+
+        #[base = ID3D12Device::CopyDescriptors]
+        #[postfix(|_result, context| unsafe { context.state.tracking.copy_descriptors(destination_count, destinations, destination_sizes, source_count, sources, source_sizes, kind) })]
+        unsafe extern "system" fn copy_descriptors(this: *mut c_void, destination_count: u32, destinations: *const D3D12_CPU_DESCRIPTOR_HANDLE, destination_sizes: *const u32,
+            source_count: u32, sources: *const D3D12_CPU_DESCRIPTOR_HANDLE, source_sizes: *const u32, kind: D3D12_DESCRIPTOR_HEAP_TYPE);
+
+        #[base = ID3D12Device::CreateCommandQueue]
+        #[fallback = E_FAIL]
+        #[postfix(|result, context| unsafe {
+            if result.is_ok() && !output.is_null() && !(*output).is_null() {
+                ID3D12CommandQueueHook::install_all_interfaces(*output, DeviceContext { tracking: context.state.tracking.clone() });
+            }
+        })]
+        unsafe extern "system" fn create_command_queue(this: *mut c_void, desc: *const windows::Win32::Graphics::Direct3D12::D3D12_COMMAND_QUEUE_DESC, interface_id: *const GUID, output: *mut *mut c_void) -> HRESULT;
 
         #[base = ID3D12Device::CreateCommandList]
         #[fallback = E_FAIL]
@@ -235,6 +313,7 @@ polymer_hook::impl_com_hook! {
 impl Clone for CommandListContext {
     fn clone(&self) -> Self {
         Self {
+            lifetime: self.lifetime.clone(),
             tracking: self.tracking.clone(),
         }
     }
@@ -317,7 +396,16 @@ unsafe fn install_command_list(
     // sized to the creation interface would dispatch those wider slots into
     // the uninitialized tail of the clone.
     unsafe {
-        ID3D12GraphicsCommandListHook::install_all_interfaces(list, CommandListContext { tracking })
+        ID3D12GraphicsCommandListHook::install_all_interfaces(
+            list,
+            CommandListContext {
+                lifetime: Arc::new(CommandListLifetime {
+                    tracking: tracking.clone(),
+                    id: list as usize,
+                }),
+                tracking,
+            },
+        )
     };
 }
 
@@ -371,6 +459,20 @@ unsafe fn track_descriptor_heap(
     if result.is_ok() {
         unsafe { context.state.tracking.record_descriptor_heap(desc, output) };
     }
+}
+
+unsafe fn track_submission(
+    this: *mut c_void,
+    count: u32,
+    lists: *const *mut c_void,
+    mut next: ExecuteCommandListsContext<'_>,
+) {
+    let tracking = next.state.tracking.clone();
+    unsafe {
+        tracking.execute(this as usize, count, lists, || {
+            polymer_hook::next!(next, this, count, lists)
+        })
+    };
 }
 
 unsafe fn track_reset(

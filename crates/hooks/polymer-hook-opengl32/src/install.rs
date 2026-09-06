@@ -11,6 +11,7 @@ use windows_sys::Win32::Foundation::E_FAIL;
 pub(crate) type GlDrawArraysFn = unsafe extern "system" fn(u32, i32, i32);
 pub(crate) type GlDrawElementsFn = unsafe extern "system" fn(u32, i32, u32, *const c_void);
 type GlDrawElementsBaseVertexFn = unsafe extern "system" fn(u32, i32, u32, *const c_void, i32);
+type GlDeleteRenderbuffersFn = unsafe extern "system" fn(i32, *const u32);
 type GlBlitFramebufferFn =
     unsafe extern "system" fn(i32, i32, i32, i32, i32, i32, i32, i32, u32, u32);
 type GlCopyImageSubDataFn = unsafe extern "system" fn(
@@ -39,8 +40,12 @@ unsafe extern "system" {
 
 #[link(name = "opengl32")]
 unsafe extern "system" {
+    #[link_name = "wglDeleteContext"]
+    pub(crate) fn system_delete_context(context: *mut c_void) -> i32;
     #[link_name = "wglGetProcAddress"]
     pub(crate) fn system_wgl_get_proc_address(name: *const u8) -> *const c_void;
+    #[link_name = "glDeleteTextures"]
+    pub(crate) fn system_delete_textures(count: i32, textures: *const u32);
     #[link_name = "wglSwapLayerBuffers"]
     pub(crate) fn system_swap_layer_buffers(hdc: Hdc, planes: u32) -> i32;
     #[link_name = "glDrawArrays"]
@@ -60,6 +65,8 @@ pub(crate) struct OpenGlRuntime {
     pub(crate) draw_arrays: OnceLock<GlDrawArraysFn>,
     pub(crate) draw_elements: OnceLock<GlDrawElementsFn>,
     pub(crate) draw_elements_base_vertex: OnceLock<GlDrawElementsBaseVertexFn>,
+    pub(crate) delete_renderbuffers: OnceLock<GlDeleteRenderbuffersFn>,
+    pub(crate) delete_renderbuffers_ext: OnceLock<GlDeleteRenderbuffersFn>,
     pub(crate) blit_framebuffer: OnceLock<GlBlitFramebufferFn>,
     pub(crate) copy_image_sub_data: OnceLock<GlCopyImageSubDataFn>,
 }
@@ -84,6 +91,18 @@ impl OpenGlRuntime {
         let function =
             unsafe { std::mem::transmute::<*const c_void, GlDrawElementsBaseVertexFn>(address) };
         let _ = self.draw_elements_base_vertex.set(function);
+    }
+
+    pub(crate) fn remember_delete_renderbuffers(&self, address: *const c_void) {
+        let function =
+            unsafe { std::mem::transmute::<*const c_void, GlDeleteRenderbuffersFn>(address) };
+        let _ = self.delete_renderbuffers.set(function);
+    }
+
+    pub(crate) fn remember_delete_renderbuffers_ext(&self, address: *const c_void) {
+        let function =
+            unsafe { std::mem::transmute::<*const c_void, GlDeleteRenderbuffersFn>(address) };
+        let _ = self.delete_renderbuffers_ext.set(function);
     }
 
     pub(crate) fn remember_blit_framebuffer(&self, address: *const c_void) {
@@ -157,3 +176,5 @@ pub(crate) unsafe fn install() -> i32 {
 pub(crate) fn uninstall() -> i32 {
     crate::hooks::HookInstallation::uninstall().map_or(E_FAIL, |()| 0)
 }
+
+pub(crate) unsafe fn unavailable_delete_renderbuffers(_count: i32, _names: *const u32) {}

@@ -5,4 +5,7 @@ mod hooks;
 mod install;
 mod sys;
 
+#[cfg(test)]
+mod tests;
+
 pub use sys::{PolymerInstallOpenGlHook, PolymerUninstallOpenGlHook};

@@ -10,7 +10,7 @@ use std::{
     io::{self, Read, Write},
     mem,
     net::{Shutdown, TcpStream},
-    os::windows::io::FromRawSocket,
+    os::windows::io::{AsRawSocket, FromRawSocket},
     path::PathBuf,
     sync::{
         Arc, OnceLock,
@@ -337,6 +337,23 @@ pub struct LocalSocket {
 }
 
 impl LocalSocket {
+    /// Polls connection termination without consuming control messages or
+    /// changing the socket's blocking mode and read/write timeouts.
+    pub fn peer_disconnected(&self) -> io::Result<bool> {
+        use windows_sys::Win32::Networking::WinSock::{
+            POLLERR, POLLHUP, POLLNVAL, POLLRDNORM, WSAPOLLFD, WSAPoll,
+        };
+        let mut poll = WSAPOLLFD {
+            fd: self.stream.as_raw_socket() as SOCKET,
+            events: POLLRDNORM,
+            revents: 0,
+        };
+        if unsafe { WSAPoll(&mut poll, 1, 0) } < 0 {
+            return Err(winsock_error());
+        }
+        Ok(poll.revents & (POLLERR | POLLHUP | POLLNVAL) != 0)
+    }
+
     pub fn try_clone(&self) -> io::Result<Self> {
         Ok(Self {
             stream: self.stream.try_clone()?,
@@ -349,9 +366,14 @@ impl LocalSocket {
     }
 
     pub fn connect(name: &str) -> io::Result<Self> {
+        Self::connect_timeout(name, CONNECT_TIMEOUT)
+    }
+
+    /// A zero timeout attempts once; hook callers schedule their own retries.
+    pub fn connect_timeout(name: &str, timeout: Duration) -> io::Result<Self> {
         initialize_winsock()?;
         let (address, _) = socket_address(name)?;
-        let deadline = Instant::now() + CONNECT_TIMEOUT;
+        let deadline = Instant::now() + timeout;
         loop {
             let socket = create_socket()?;
             // SAFETY: address points to an initialized SOCKADDR_UN and socket is

@@ -13,6 +13,33 @@ polymer_hook::chain_hooks! {
         pub(crate) state: std::sync::Arc<crate::layer::VulkanHookState> = crate::layer::hook_state(),
     }
 
+    #[export(vkAllocateCommandBuffers)]
+    #[terminal(dynamic(device, c"vkAllocateCommandBuffers": vk::PFN_vkAllocateCommandBuffers), fallback = vk::Result::ERROR_DEVICE_LOST)]
+    #[postfix(|result, context| {
+        if result == vk::Result::SUCCESS && !info.is_null() && !commands.is_null() {
+            let info = unsafe { &*info };
+            context.common.device_tracking(device).commands_allocated(info.command_pool, unsafe { std::slice::from_raw_parts(commands, info.command_buffer_count as usize) });
+        }
+    })]
+    pub(crate) unsafe extern "system" fn allocate_command_buffers(device: vk::Device, info: *const vk::CommandBufferAllocateInfo<'_>, commands: *mut vk::CommandBuffer) -> vk::Result;
+
+    #[export(vkFreeCommandBuffers)]
+    #[terminal(dynamic(device, c"vkFreeCommandBuffers": vk::PFN_vkFreeCommandBuffers), fallback = ())]
+    #[prefix(|context| {
+        if !commands.is_null() { context.common.device_tracking(device).commands_freed(unsafe { std::slice::from_raw_parts(commands, count as usize) }); }
+    })]
+    pub(crate) unsafe extern "system" fn free_command_buffers(device: vk::Device, pool: vk::CommandPool, count: u32, commands: *const vk::CommandBuffer);
+
+    #[export(vkResetCommandPool)]
+    #[terminal(dynamic(device, c"vkResetCommandPool": vk::PFN_vkResetCommandPool), fallback = vk::Result::ERROR_DEVICE_LOST)]
+    #[postfix(|result, context| if result == vk::Result::SUCCESS { context.common.device_tracking(device).command_pool_reset(pool, false); })]
+    pub(crate) unsafe extern "system" fn reset_command_pool(device: vk::Device, pool: vk::CommandPool, flags: vk::CommandPoolResetFlags) -> vk::Result;
+
+    #[export(vkDestroyCommandPool)]
+    #[terminal(dynamic(device, c"vkDestroyCommandPool": vk::PFN_vkDestroyCommandPool), fallback = ())]
+    #[prefix(|context| { context.common.device_tracking(device).command_pool_reset(pool, true); })]
+    pub(crate) unsafe extern "system" fn destroy_command_pool(device: vk::Device, pool: vk::CommandPool, allocator: *const vk::AllocationCallbacks<'_>);
+
     #[export(vkCmdDraw)]
     #[terminal(dynamic(command_buffer, c"vkCmdDraw": vk::PFN_vkCmdDraw), fallback = ())]
     #[prefix(observers::cmd_draw(command_buffer))]
@@ -52,6 +79,26 @@ polymer_hook::chain_hooks! {
         submits: *const vk::SubmitInfo<'_>,
         fence: vk::Fence,
     ) -> vk::Result;
+
+    #[export(vkQueueSubmit2)]
+    #[terminal(dynamic(queue, c"vkQueueSubmit2": vk::PFN_vkQueueSubmit2), fallback = vk::Result::ERROR_DEVICE_LOST)]
+    #[postfix(|result, context| context.common.submitted2(queue, submit_count, submits, result))]
+    pub(crate) unsafe extern "system" fn queue_submit2(queue: vk::Queue, submit_count: u32, submits: *const vk::SubmitInfo2<'_>, fence: vk::Fence) -> vk::Result;
+
+    #[export(vkQueueSubmit2KHR)]
+    #[terminal(dynamic(queue, c"vkQueueSubmit2KHR": vk::PFN_vkQueueSubmit2), fallback = vk::Result::ERROR_DEVICE_LOST)]
+    #[postfix(|result, context| context.common.submitted2(queue, submit_count, submits, result))]
+    pub(crate) unsafe extern "system" fn queue_submit2_khr(queue: vk::Queue, submit_count: u32, submits: *const vk::SubmitInfo2<'_>, fence: vk::Fence) -> vk::Result;
+
+    #[export(vkResetCommandBuffer)]
+    #[terminal(dynamic(command_buffer, c"vkResetCommandBuffer": vk::PFN_vkResetCommandBuffer), fallback = vk::Result::ERROR_DEVICE_LOST)]
+    #[postfix(|result, context| if result == vk::Result::SUCCESS { context.common.command_tracking(command_buffer).command_buffer_began(command_buffer); })]
+    pub(crate) unsafe extern "system" fn reset_command_buffer(command_buffer: vk::CommandBuffer, flags: vk::CommandBufferResetFlags) -> vk::Result;
+
+    #[export(vkCmdExecuteCommands)]
+    #[terminal(dynamic(command_buffer, c"vkCmdExecuteCommands": vk::PFN_vkCmdExecuteCommands), fallback = ())]
+    #[prefix(|context| if count != 0 && !secondary.is_null() { context.common.command_tracking(command_buffer).command_executed(command_buffer, unsafe { std::slice::from_raw_parts(secondary, count as usize) }); })]
+    pub(crate) unsafe extern "system" fn cmd_execute_commands(command_buffer: vk::CommandBuffer, count: u32, secondary: *const vk::CommandBuffer);
 
     #[export(vkCreateSwapchainKHR)]
     #[terminal(direct = crate::terminal::create_swapchain)]
@@ -179,7 +226,7 @@ polymer_hook::chain_hooks! {
 
     #[export(vkBeginCommandBuffer)]
     #[terminal(dynamic(command_buffer, c"vkBeginCommandBuffer": vk::PFN_vkBeginCommandBuffer), fallback = vk::Result::ERROR_INITIALIZATION_FAILED)]
-    #[prefix(observers::begin_command_buffer(command_buffer))]
+    #[postfix(|result, context| if result == vk::Result::SUCCESS { observers::begin_command_buffer(command_buffer, context); })]
     pub(crate) unsafe extern "system" fn begin_command_buffer(
         command_buffer: vk::CommandBuffer,
         begin_info: *const vk::CommandBufferBeginInfo<'_>,
@@ -286,6 +333,43 @@ polymer_hook::chain_hooks! {
         regions: *const vk::ImageCopy,
     );
 
+    #[export(vkCmdResolveImage)]
+    #[terminal(dynamic(command_buffer, c"vkCmdResolveImage": vk::PFN_vkCmdResolveImage), fallback = ())]
+    #[prefix(observers::cmd_resolve_image(command_buffer, source_image, source_layout, destination_image, destination_layout, region_count, regions))]
+    pub(crate) unsafe extern "system" fn cmd_resolve_image(
+        command_buffer: vk::CommandBuffer,
+        source_image: vk::Image,
+        source_layout: vk::ImageLayout,
+        destination_image: vk::Image,
+        destination_layout: vk::ImageLayout,
+        region_count: u32,
+        regions: *const vk::ImageResolve,
+    );
+
+    #[export(vkCmdCopyImage2)]
+    #[terminal(dynamic(command_buffer, c"vkCmdCopyImage2": vk::PFN_vkCmdCopyImage2), fallback = ())]
+    #[prefix(|context| context.common.cmd_copy_image2(command_buffer, info))]
+    pub(crate) unsafe extern "system" fn cmd_copy_image2(command_buffer: vk::CommandBuffer, info: *const vk::CopyImageInfo2<'_>);
+    #[export(vkCmdCopyImage2KHR)]
+    #[terminal(dynamic(command_buffer, c"vkCmdCopyImage2KHR": vk::PFN_vkCmdCopyImage2), fallback = ())]
+    #[prefix(|context| context.common.cmd_copy_image2(command_buffer, info))]
+    pub(crate) unsafe extern "system" fn cmd_copy_image2_khr(command_buffer: vk::CommandBuffer, info: *const vk::CopyImageInfo2<'_>);
+    #[export(vkCmdBlitImage2)]
+    #[terminal(dynamic(command_buffer, c"vkCmdBlitImage2": vk::PFN_vkCmdBlitImage2), fallback = ())]
+    #[prefix(|context| context.common.cmd_blit_image2(command_buffer, info))]
+    pub(crate) unsafe extern "system" fn cmd_blit_image2(command_buffer: vk::CommandBuffer, info: *const vk::BlitImageInfo2<'_>);
+    #[export(vkCmdBlitImage2KHR)]
+    #[terminal(dynamic(command_buffer, c"vkCmdBlitImage2KHR": vk::PFN_vkCmdBlitImage2), fallback = ())]
+    #[prefix(|context| context.common.cmd_blit_image2(command_buffer, info))]
+    pub(crate) unsafe extern "system" fn cmd_blit_image2_khr(command_buffer: vk::CommandBuffer, info: *const vk::BlitImageInfo2<'_>);
+    #[export(vkCmdResolveImage2)]
+    #[terminal(dynamic(command_buffer, c"vkCmdResolveImage2": vk::PFN_vkCmdResolveImage2), fallback = ())]
+    #[prefix(|context| context.common.cmd_resolve_image2(command_buffer, info))]
+    pub(crate) unsafe extern "system" fn cmd_resolve_image2(command_buffer: vk::CommandBuffer, info: *const vk::ResolveImageInfo2<'_>);
+    #[export(vkCmdResolveImage2KHR)]
+    #[terminal(dynamic(command_buffer, c"vkCmdResolveImage2KHR": vk::PFN_vkCmdResolveImage2), fallback = ())]
+    #[prefix(|context| context.common.cmd_resolve_image2(command_buffer, info))]
+    pub(crate) unsafe extern "system" fn cmd_resolve_image2_khr(command_buffer: vk::CommandBuffer, info: *const vk::ResolveImageInfo2<'_>);
     #[export(vkCreateImage)]
     #[terminal(direct = crate::terminal::create_image)]
     #[postfix(observers::create_image(device, create_info, image, result))]
@@ -366,6 +450,34 @@ polymer_hook::chain_hooks! {
 }
 
 impl VulkanHookContext {
+    fn submitted2(
+        &self,
+        queue: vk::Queue,
+        count: u32,
+        submits: *const vk::SubmitInfo2<'_>,
+        result: vk::Result,
+    ) {
+        if result != vk::Result::SUCCESS || submits.is_null() {
+            return;
+        }
+        let tracking = self.queue_tracking(queue);
+        for submit in unsafe { std::slice::from_raw_parts(submits, count as usize) } {
+            if submit.p_command_buffer_infos.is_null() {
+                continue;
+            }
+            let commands = unsafe {
+                std::slice::from_raw_parts(
+                    submit.p_command_buffer_infos,
+                    submit.command_buffer_info_count as usize,
+                )
+            }
+            .iter()
+            .map(|info| info.command_buffer)
+            .collect::<Vec<_>>();
+            tracking.commands_submitted(&commands);
+        }
+    }
+
     pub(crate) fn command_tracking(
         &self,
         command_buffer: vk::CommandBuffer,

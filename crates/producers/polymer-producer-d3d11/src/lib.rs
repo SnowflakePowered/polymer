@@ -12,3 +12,6 @@ pub use swapchain::{D3d11CaptureRegion, D3d11CopySubmission, D3d11SwapchainCaptu
 pub use tracking::{Presentation, TrackedResource, Tracking};
 
 pub const BACKEND_NAME: &str = "d3d11";
+
+mod lease;
+pub use lease::KeyedMutexLease;

@@ -30,6 +30,7 @@ mod tests {
     use super::*;
 
     static TEST_LOCK: Mutex<()> = Mutex::new(());
+    mod multistream;
 
     #[test]
     fn early_detour_installation_is_idempotent() {

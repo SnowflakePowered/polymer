@@ -14,6 +14,7 @@ pub(crate) type Glint = i32;
 pub(crate) type Glsizei = i32;
 
 pub(crate) const GL_TEXTURE_2D: Glenum = 0x0DE1;
+pub(crate) const GL_RENDERBUFFER: Glenum = 0x8D41;
 pub(crate) const GL_TEXTURE_2D_ARRAY: Glenum = 0x8C1A;
 pub(crate) const GL_TEXTURE_BINDING_2D: Glenum = 0x8069;
 pub(crate) const GL_TEXTURE_BINDING_2D_ARRAY: Glenum = 0x8C1D;
@@ -42,6 +43,7 @@ unsafe extern "system" {
     pub(crate) fn glGenTextures(count: Glsizei, textures: *mut Gluint);
     pub(crate) fn glDeleteTextures(count: Glsizei, textures: *const Gluint);
     pub(crate) fn glBindTexture(target: Glenum, texture: Gluint);
+    pub(crate) fn glIsTexture(texture: Gluint) -> u8;
     pub(crate) fn glGetIntegerv(name: Glenum, value: *mut Glint);
     pub(crate) fn glGetTexLevelParameteriv(
         target: Glenum,
@@ -67,6 +69,8 @@ pub(crate) type GlActiveTexture = unsafe extern "system" fn(Glenum);
 pub(crate) type GlGenFramebuffers = unsafe extern "system" fn(Glsizei, *mut Gluint);
 pub(crate) type GlDeleteFramebuffers = unsafe extern "system" fn(Glsizei, *const Gluint);
 pub(crate) type GlBindFramebuffer = unsafe extern "system" fn(Glenum, Gluint);
+pub(crate) type GlFramebufferRenderbuffer =
+    unsafe extern "system" fn(Glenum, Glenum, Glenum, Gluint);
 pub(crate) type GlFramebufferTexture2D =
     unsafe extern "system" fn(Glenum, Glenum, Glenum, Gluint, Glint);
 pub(crate) type GlFramebufferTextureLayer =
@@ -76,7 +80,8 @@ pub(crate) type GlBlitFramebuffer =
 
 pub(crate) unsafe fn proc<T: Copy>(name: &'static [u8]) -> Option<T> {
     let address = unsafe { wglGetProcAddress(name.as_ptr()) };
-    (!address.is_null()).then(|| unsafe { mem::transmute_copy(&address) })
+    (!matches!(address as usize, 0 | 1 | 2 | 3 | usize::MAX))
+        .then(|| unsafe { mem::transmute_copy(&address) })
 }
 
 pub(crate) unsafe fn current_context() -> Hglrc {

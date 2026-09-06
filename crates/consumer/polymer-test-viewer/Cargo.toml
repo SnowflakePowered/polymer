@@ -1,0 +1,17 @@
+[package]
+name = "polymer-test-viewer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+polymer-consumer-vulkan = { path = "../polymer-consumer-vulkan" }
+polymer-consumer-d3d12 = { path = "../polymer-consumer-d3d12" }
+polymer-presentation = { workspace = true, features = ["test-support"] }
+polymer-ipc.workspace = true
+polymer-protocol.workspace = true
+windows.workspace = true
+
+[lints]
+workspace = true

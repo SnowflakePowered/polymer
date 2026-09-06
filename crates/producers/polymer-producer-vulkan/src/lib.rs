@@ -21,6 +21,7 @@ pub use environment::{
 #[cfg(windows)]
 pub use image_ring::{ExportImageRing, ExportImageSlot};
 pub use image_ring::{ExportImageRingDesc, ExternalHandleMode};
+pub use polymer_presentation::Evidence;
 pub use swapchain::{CopySubmission, SetDeviceLoaderData, SwapchainCopyEngine};
 #[cfg(windows)]
 pub use timeline::ExportTimelineSemaphore;

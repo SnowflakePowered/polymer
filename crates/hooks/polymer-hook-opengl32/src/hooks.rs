@@ -15,6 +15,22 @@ polymer_hook::chain_hooks! {
     pub(crate) struct HookInstallation;
 
     #[trampoline]
+    #[terminal(installed(target = crate::install::system_delete_context), fallback = 0)]
+    #[prefix(|_context| unsafe { polymer_producer_opengl::before_delete_context(rendering_context as usize); })]
+    #[postfix(|result, context| {
+        if result != 0 {
+            unsafe { polymer_producer_opengl::after_delete_context(rendering_context as usize); }
+            context.state.tracking.context_deleted(rendering_context as usize);
+        }
+    })]
+    pub(crate) unsafe extern "system" fn delete_context(rendering_context: *mut c_void) -> i32;
+
+    #[trampoline]
+    #[terminal(installed(target = crate::install::system_delete_textures), fallback = ())]
+    #[prefix(|context| unsafe { context.state.tracking.textures_deleted(count, textures); })]
+    pub(crate) unsafe extern "system" fn delete_textures(count: i32, textures: *const u32);
+
+    #[trampoline]
     #[terminal(installed(
         target = crate::install::system_swap_buffers,
     ), fallback = 0)]
@@ -71,12 +87,22 @@ polymer_hook::chain_hooks! {
     );
 
     #[trampoline]
+    #[terminal(direct = crate::install::unavailable_delete_renderbuffers)]
+    #[infix(route_delete_renderbuffers)]
+    pub(crate) unsafe extern "system" fn delete_renderbuffers(count: i32, names: *const u32);
+
+    #[trampoline]
+    #[terminal(direct = crate::install::unavailable_delete_renderbuffers)]
+    #[infix(route_delete_renderbuffers_ext)]
+    pub(crate) unsafe extern "system" fn delete_renderbuffers_ext(count: i32, names: *const u32);
+
+    #[trampoline]
     #[terminal(direct = crate::install::unavailable_blit_framebuffer)]
     #[prefix(|context| {
         // The capture path issues its own blits through the hooked entry points;
         // observing those would feed the external image textures into the graph.
         if !CAPTURING.with(|capturing| capturing.get()) {
-            unsafe { context.state.tracking.record_blit_candidate() }
+            unsafe { context.state.tracking.record_blit_candidate([src_x0, src_y0, src_x1, src_y1], [dst_x0, dst_y0, dst_x1, dst_y1], mask) }
         }
     })]
     #[infix(route_blit_framebuffer)]
@@ -92,7 +118,7 @@ polymer_hook::chain_hooks! {
         if !CAPTURING.with(|capturing| capturing.get()) {
             unsafe {
                 context.state.tracking.record_copy_candidate(
-                    src_name, src_target, dst_name, dst_target, dst_z, width, height,
+                    src_name, src_target, [src_level, src_x, src_y, src_z], dst_name, dst_target, [dst_level, dst_x, dst_y, dst_z], [width, height, depth],
                 )
             }
         }
@@ -257,6 +283,14 @@ pub(crate) unsafe fn route_proc_address(
             state.remember_draw_elements_base_vertex(original);
             crate::hooks::draw_elements_base_vertex as *const c_void
         }
+        b"glDeleteRenderbuffers" => {
+            state.remember_delete_renderbuffers(original);
+            crate::hooks::delete_renderbuffers as *const c_void
+        }
+        b"glDeleteRenderbuffersEXT" => {
+            state.remember_delete_renderbuffers_ext(original);
+            crate::hooks::delete_renderbuffers_ext as *const c_void
+        }
         b"glBlitFramebuffer" => {
             state.remember_blit_framebuffer(original);
             crate::hooks::blit_framebuffer as *const c_void
@@ -266,5 +300,31 @@ pub(crate) unsafe fn route_proc_address(
             crate::hooks::copy_image_sub_data as *const c_void
         }
         _ => original,
+    }
+}
+
+pub(crate) unsafe fn route_delete_renderbuffers(
+    count: i32,
+    names: *const u32,
+    next: DeleteRenderbuffersContext<'_>,
+) {
+    if let Some(original) = next.state.delete_renderbuffers.get() {
+        unsafe {
+            next.state.tracking.renderbuffers_deleted(count, names);
+            original(count, names);
+        }
+    }
+}
+
+pub(crate) unsafe fn route_delete_renderbuffers_ext(
+    count: i32,
+    names: *const u32,
+    next: DeleteRenderbuffersExtContext<'_>,
+) {
+    if let Some(original) = next.state.delete_renderbuffers_ext.get() {
+        unsafe {
+            next.state.tracking.renderbuffers_deleted(count, names);
+            original(count, names);
+        }
     }
 }

@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+polymer-presentation = { workspace = true, features = ["producer"] }
 ash.workspace = true
 dashmap.workspace = true
 parking_lot.workspace = true
@@ -14,6 +15,10 @@ polymer-platform-windows.workspace = true
 polymer-protocol.workspace = true
 tracing.workspace = true
 windows.workspace = true
+
+[dev-dependencies]
+polymer-test-viewer = { path = "../../consumer/polymer-test-viewer" }
+windows = { workspace = true, features = ["Win32_System_LibraryLoader"] }
 
 [lints]
 workspace = true

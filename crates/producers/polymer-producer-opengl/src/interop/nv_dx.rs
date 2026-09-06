@@ -14,7 +14,7 @@ use windows::{
         Direct3D11::{
             D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
             D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11CreateDevice,
-            ID3D11Device,
+            ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
         },
         Dxgi::{
             Common::{DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SAMPLE_DESC},
@@ -42,6 +42,7 @@ pub(crate) struct GlFunctions {
     pub bind_framebuffer: GlBindFramebuffer,
     pub framebuffer_texture_2d: GlFramebufferTexture2D,
     pub framebuffer_texture_layer: GlFramebufferTextureLayer,
+    pub framebuffer_renderbuffer: super::GlFramebufferRenderbuffer,
     pub blit_framebuffer: GlBlitFramebuffer,
     close_device: WglDxCloseDevice,
     unregister_object: WglDxUnregisterObject,
@@ -57,19 +58,33 @@ pub(crate) struct Slot {
     pub texture: Gluint,
     pub object: *mut c_void,
     pub keyed_mutex: IDXGIKeyedMutex,
+    image: ID3D11Texture2D,
 }
 
 unsafe impl Send for Slot {}
 
 pub(crate) struct Ring {
     pub functions: GlFunctions,
-    pub device_handle: *mut c_void,
+    device_handle: DeviceHandle,
     pub ring: D3d11ImageRing,
     pub slots: Vec<Slot>,
     pub adapter_luid: AdapterLuid,
+    context: ID3D11DeviceContext,
 }
 
 unsafe impl Send for Ring {}
+
+struct DeviceHandle {
+    raw: *mut c_void,
+    close: WglDxCloseDevice,
+}
+impl Drop for DeviceHandle {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            unsafe { (self.close)(self.raw) };
+        }
+    }
+}
 
 impl Ring {
     pub(crate) unsafe fn new(width: u32, height: u32) -> Result<Self, String> {
@@ -86,6 +101,8 @@ impl Ring {
                 .ok_or("missing glBindFramebuffer")?,
             framebuffer_texture_2d: unsafe { load(b"glFramebufferTexture2D\0") }
                 .ok_or("missing glFramebufferTexture2D")?,
+            framebuffer_renderbuffer: unsafe { load(b"glFramebufferRenderbuffer\0") }
+                .ok_or("missing glFramebufferRenderbuffer")?,
             framebuffer_texture_layer: unsafe { load(b"glFramebufferTextureLayer\0") }
                 .ok_or("missing glFramebufferTextureLayer")?,
             blit_framebuffer: unsafe { load(b"glBlitFramebuffer\0") }
@@ -102,6 +119,7 @@ impl Ring {
 
         let factory = unsafe { CreateDXGIFactory2::<IDXGIFactory4>(DXGI_CREATE_FACTORY_FLAGS(0)) }
             .map_err(|e| format!("CreateDXGIFactory2: {e}"))?;
+        let mut failure = "WGL_NV_DX_interop rejected every DXGI adapter".to_string();
         for index in 0.. {
             let Ok(adapter) = (unsafe { factory.EnumAdapters1(index) }) else {
                 break;
@@ -126,25 +144,32 @@ impl Ring {
             if device_handle.is_null() {
                 continue;
             }
-            return unsafe {
+            let attempt = unsafe {
                 Self::finish(
                     device,
                     adapter,
-                    device_handle,
+                    DeviceHandle {
+                        raw: device_handle,
+                        close: functions.close_device,
+                    },
                     functions,
                     register_object,
                     width,
                     height,
                 )
             };
+            match attempt {
+                Ok(ring) => return Ok(ring),
+                Err(error) => failure = error,
+            }
         }
-        Err("WGL_NV_DX_interop rejected every DXGI adapter".into())
+        Err(failure)
     }
 
     unsafe fn finish(
         device: ID3D11Device,
         adapter: IDXGIAdapter1,
-        device_handle: *mut c_void,
+        device_handle: DeviceHandle,
         functions: GlFunctions,
         register_object: WglDxRegisterObject,
         width: u32,
@@ -168,43 +193,53 @@ impl Ring {
         let ring =
             unsafe { D3d11ImageRing::new(&device, &desc, 3, D3d11RingMode::KeyedMutexNoFence) }
                 .map_err(|e| format!("D3D11 interop ring: {e}"))?;
-        let mut slots = Vec::with_capacity(3);
-        for image in ring.slots() {
+        let adapter_desc = unsafe { adapter.GetDesc1() }.map_err(|e| format!("GetDesc1: {e}"))?;
+        let mut capture = Self {
+            functions,
+            device_handle,
+            ring,
+            slots: Vec::with_capacity(3),
+            adapter_luid: AdapterLuid {
+                low_part: adapter_desc.AdapterLuid.LowPart,
+                high_part: adapter_desc.AdapterLuid.HighPart,
+            },
+            context: unsafe { device.GetImmediateContext() }.map_err(|error| error.to_string())?,
+        };
+        for image in capture.ring.slots() {
+            // WGL registers a private D3D image. The exported NT-handle image
+            // has separate consumer ownership and receives a native copy after
+            // GL releases the interop object.
+            let mut interop_image = None;
+            unsafe { device.CreateTexture2D(&desc, None, Some(&mut interop_image)) }
+                .map_err(|error| format!("D3D11 interop image: {error}"))?;
+            let interop_image = interop_image.ok_or("missing D3D11 interop image")?;
             let mut texture = 0;
             unsafe { interop::glGenTextures(1, &mut texture) };
             let object = unsafe {
                 register_object(
-                    device_handle,
-                    Interface::as_raw(&image.texture),
+                    capture.device_handle.raw,
+                    Interface::as_raw(&interop_image),
                     texture,
                     interop::GL_TEXTURE_2D,
                     WGL_ACCESS_WRITE_DISCARD_NV,
                 )
             };
             if object.is_null() {
+                let error = windows::core::Error::from_win32();
                 unsafe { interop::glDeleteTextures(1, &texture) };
-                return Err("wglDXRegisterObjectNV failed".into());
+                return Err(format!("wglDXRegisterObjectNV failed: {error}"));
             }
-            slots.push(Slot {
+            capture.slots.push(Slot {
                 texture,
                 object,
                 keyed_mutex: image.keyed_mutex.as_ref().expect("keyed ring").clone(),
+                image: interop_image,
             });
         }
-        let adapter_desc = unsafe { adapter.GetDesc1() }.map_err(|e| format!("GetDesc1: {e}"))?;
-        Ok(Self {
-            functions,
-            device_handle,
-            ring,
-            slots,
-            adapter_luid: AdapterLuid {
-                low_part: adapter_desc.AdapterLuid.LowPart,
-                high_part: adapter_desc.AdapterLuid.HighPart,
-            },
-        })
+        Ok(capture)
     }
 
-    pub(crate) unsafe fn acquire(&self, index: usize) -> Result<(), String> {
+    pub(crate) unsafe fn acquire(&self, index: usize) -> Result<Lease<'_>, String> {
         let slot = &self.slots[index];
         let hr = unsafe {
             (Interface::vtable(&slot.keyed_mutex).AcquireSync)(
@@ -216,32 +251,142 @@ impl Ring {
         if hr.0 != 0 {
             return Err("interop slot is still owned by the viewer".into());
         }
-        if unsafe { (self.functions.lock_objects)(self.device_handle, 1, &slot.object) } == 0 {
+        if unsafe { (self.functions.lock_objects)(self.device_handle.raw, 1, &slot.object) } == 0 {
             let _ = unsafe { slot.keyed_mutex.ReleaseSync(0) };
             return Err("wglDXLockObjectsNV failed".into());
         }
+        Ok(Lease {
+            ring: self,
+            index,
+            locked: true,
+            owned: true,
+        })
+    }
+}
+
+/// Both WGL object access and keyed-mutex ownership belong to the lease. It
+/// must be completed or dropped on the same presenting OpenGL context.
+pub(crate) struct Lease<'a> {
+    ring: &'a Ring,
+    index: usize,
+    locked: bool,
+    owned: bool,
+}
+impl Lease<'_> {
+    fn unlock(&mut self) -> Result<(), String> {
+        if self.locked {
+            let slot = &self.ring.slots[self.index];
+            if unsafe {
+                (self.ring.functions.unlock_objects)(self.ring.device_handle.raw, 1, &slot.object)
+            } == 0
+            {
+                return Err("wglDXUnlockObjectsNV failed".into());
+            }
+            self.locked = false;
+        }
         Ok(())
     }
-
-    pub(crate) unsafe fn release(&self, index: usize) -> Result<(), String> {
-        let slot = &self.slots[index];
-        if unsafe { (self.functions.unlock_objects)(self.device_handle, 1, &slot.object) } == 0 {
-            let _ = unsafe { slot.keyed_mutex.ReleaseSync(0) };
-            return Err("wglDXUnlockObjectsNV failed".into());
+}
+impl polymer_presentation::scheduling::SlotLease for Lease<'_> {
+    type Error = String;
+    fn finish(mut self) -> Result<(), String> {
+        self.unlock()?;
+        unsafe {
+            self.ring.context.CopyResource(
+                &self.ring.ring.slots()[self.index].texture,
+                &self.ring.slots[self.index].image,
+            );
         }
-        unsafe { slot.keyed_mutex.ReleaseSync(1) }
-            .map_err(|e| format!("IDXGIKeyedMutex::ReleaseSync: {e}"))
+        unsafe { self.ring.slots[self.index].keyed_mutex.ReleaseSync(1) }
+            .map_err(|error| format!("IDXGIKeyedMutex::ReleaseSync: {error}"))?;
+        self.owned = false;
+        Ok(())
+    }
+}
+impl Drop for Lease<'_> {
+    fn drop(&mut self) {
+        if self.owned && self.unlock().is_ok() {
+            let _ = unsafe { self.ring.slots[self.index].keyed_mutex.ReleaseSync(0) };
+        }
+    }
+}
+
+impl Ring {
+    /// Retire independent registrations and preserve any still owned by GL.
+    /// Runs only with the registration's original context current.
+    fn unregister_slots(&mut self) {
+        unsafe {
+            self.slots.retain(|slot| {
+                if (self.functions.unregister_object)(self.device_handle.raw, slot.object) != 0 {
+                    interop::glDeleteTextures(1, &slot.texture);
+                    false
+                } else {
+                    true
+                }
+            });
+        }
     }
 }
 
 impl Drop for Ring {
     fn drop(&mut self) {
-        unsafe {
-            for slot in &self.slots {
-                let _ = (self.functions.unregister_object)(self.device_handle, slot.object);
-                interop::glDeleteTextures(1, &slot.texture);
-            }
-            let _ = (self.functions.close_device)(self.device_handle);
+        self.unregister_slots();
+        if !self.slots.is_empty() {
+            // A failed unlock can leave a registration GL-owned. Keep its
+            // native image and device connection alive together.
+            std::mem::forget(std::mem::take(&mut self.slots));
+            // Closing the device would invalidate the retained registration.
+            self.device_handle.raw = std::ptr::null_mut();
+            tracing::error!("polymer: retaining NV interop resources after unregister failure");
         }
+    }
+}
+
+#[cfg(test)]
+impl Ring {
+    pub(crate) unsafe fn verify_locked_retirement() {
+        unsafe extern "system" fn reject_unregister(
+            _device: *mut c_void,
+            _object: *mut c_void,
+        ) -> i32 {
+            0
+        }
+        let mut ring = unsafe { Self::new(32, 32) }.unwrap();
+        let unregister = ring.functions.unregister_object;
+        ring.functions.unregister_object = reject_unregister;
+        let object = ring.slots[0].object;
+        let texture = ring.slots[0].texture;
+        let siblings = ring
+            .slots
+            .iter()
+            .skip(1)
+            .map(|slot| slot.texture)
+            .collect::<Vec<_>>();
+        assert_ne!(
+            unsafe { (ring.functions.lock_objects)(ring.device_handle.raw, 1, &object) },
+            0
+        );
+        ring.unregister_slots();
+        assert_eq!(ring.slots.len(), siblings.len() + 1);
+        assert_eq!(ring.slots[0].object, object);
+        assert_ne!(
+            unsafe { windows_sys::Win32::Graphics::OpenGL::glIsTexture(texture) },
+            0
+        );
+        assert!(siblings.iter().all(|texture| unsafe {
+            windows_sys::Win32::Graphics::OpenGL::glIsTexture(*texture)
+        } != 0));
+        assert_ne!(
+            unsafe { (ring.functions.unlock_objects)(ring.device_handle.raw, 1, &object) },
+            0
+        );
+        ring.functions.unregister_object = unregister;
+        ring.unregister_slots();
+        assert!(ring.slots.is_empty());
+        assert_eq!(
+            unsafe { windows_sys::Win32::Graphics::OpenGL::glIsTexture(texture) },
+            0
+        );
+        // Ring::drop can now close the device without retaining native objects.
     }
 }

@@ -49,6 +49,11 @@ pub(crate) fn create_image(
 ) {
     if result == vk::Result::SUCCESS && !create_info.is_null() && !image.is_null() {
         let info = unsafe { &*create_info };
+        context.common.device_tracking(device).image_subresources(
+            unsafe { *image },
+            info.mip_levels,
+            info.array_layers,
+        );
         context.common.device_tracking(device).image_created(
             unsafe { *image },
             vk::Extent2D {
@@ -84,9 +89,7 @@ pub(crate) fn create_image_view(
         context.common.device_tracking(device).image_view_created(
             unsafe { *view },
             info.image,
-            info.subresource_range
-                .aspect_mask
-                .contains(vk::ImageAspectFlags::COLOR),
+            info.subresource_range,
         );
     }
 }
@@ -299,31 +302,18 @@ pub(crate) fn cmd_blit_image(
     if region_count == 0 || regions.is_null() {
         return;
     }
-    let region = unsafe { &*regions };
-    context
-        .common
-        .command_tracking(command_buffer)
-        .command_blitted(
-            source_image,
-            source_layout,
-            destination_image,
-            vk::Offset2D {
-                x: region.src_offsets[0].x.min(region.src_offsets[1].x),
-                y: region.src_offsets[0].y.min(region.src_offsets[1].y),
-            },
-            vk::Extent2D {
-                width: (region.src_offsets[1].x - region.src_offsets[0].x).unsigned_abs(),
-                height: (region.src_offsets[1].y - region.src_offsets[0].y).unsigned_abs(),
-            },
-            vk::Offset2D {
-                x: region.dst_offsets[0].x.min(region.dst_offsets[1].x),
-                y: region.dst_offsets[0].y.min(region.dst_offsets[1].y),
-            },
-            vk::Extent2D {
-                width: (region.dst_offsets[1].x - region.dst_offsets[0].x).unsigned_abs(),
-                height: (region.dst_offsets[1].y - region.dst_offsets[0].y).unsigned_abs(),
-            },
-        );
+    for region in unsafe { std::slice::from_raw_parts(regions, region_count as usize) } {
+        context
+            .common
+            .command_tracking(command_buffer)
+            .command_image_blitted(
+                command_buffer,
+                source_image,
+                source_layout,
+                destination_image,
+                region,
+            );
+    }
 }
 
 pub(crate) fn cmd_copy_image(
@@ -340,29 +330,51 @@ pub(crate) fn cmd_copy_image(
     if region_count == 0 || regions.is_null() {
         return;
     }
-    let region = unsafe { &*regions };
-    let extent = vk::Extent2D {
-        width: region.extent.width,
-        height: region.extent.height,
-    };
-    context
-        .common
-        .command_tracking(command_buffer)
-        .command_blitted(
+    let tracking = context.common.command_tracking(command_buffer);
+    for region in unsafe { std::slice::from_raw_parts(regions, region_count as usize) } {
+        tracking.command_image_transferred(
+            command_buffer,
             source_image,
             source_layout,
             destination_image,
-            vk::Offset2D {
-                x: region.src_offset.x,
-                y: region.src_offset.y,
-            },
-            extent,
-            vk::Offset2D {
-                x: region.dst_offset.x,
-                y: region.dst_offset.y,
-            },
-            extent,
+            region,
+            polymer_producer_vulkan::Evidence::Copy,
         );
+    }
+}
+
+pub(crate) fn cmd_resolve_image(
+    command_buffer: vk::CommandBuffer,
+    source_image: vk::Image,
+    source_layout: vk::ImageLayout,
+    destination_image: vk::Image,
+    destination_layout: vk::ImageLayout,
+    region_count: u32,
+    regions: *const vk::ImageResolve,
+    context: &hooks::CmdResolveImageContext,
+) {
+    let _ = (command_buffer, destination_layout);
+    if region_count == 0 || regions.is_null() {
+        return;
+    }
+    let tracking = context.common.command_tracking(command_buffer);
+    for region in unsafe { std::slice::from_raw_parts(regions, region_count as usize) } {
+        let copy = vk::ImageCopy {
+            src_subresource: region.src_subresource,
+            src_offset: region.src_offset,
+            dst_subresource: region.dst_subresource,
+            dst_offset: region.dst_offset,
+            extent: region.extent,
+        };
+        tracking.command_image_transferred(
+            command_buffer,
+            source_image,
+            source_layout,
+            destination_image,
+            &copy,
+            polymer_producer_vulkan::Evidence::Resolve,
+        );
+    }
 }
 
 pub(crate) fn get_device_queue(

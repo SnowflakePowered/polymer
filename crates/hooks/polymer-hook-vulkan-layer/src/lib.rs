@@ -1,11 +1,18 @@
 //! Vulkan loader layer that transparently observes swapchain presentation.
 
+mod device_features;
 mod hook_chain;
 mod hooks;
+mod instance_extensions;
 mod layer;
 mod observers;
 mod swapchain;
 mod terminal;
+mod transfers;
+pub use hooks::{
+    vkCmdBlitImage2, vkCmdBlitImage2KHR, vkCmdCopyImage2, vkCmdCopyImage2KHR, vkCmdResolveImage2,
+    vkCmdResolveImage2KHR,
+};
 
 // The Vulkan loader discovers these symbols directly from the layer DLL.
 pub use hooks::vkCreateDevice;
@@ -17,10 +24,14 @@ pub use hooks::{
     vkNegotiateLoaderLayerInterfaceVersion,
 };
 pub use hooks::{
+    vkAllocateCommandBuffers, vkDestroyCommandPool, vkFreeCommandBuffers, vkResetCommandPool,
+};
+pub use hooks::{
     vkBeginCommandBuffer, vkCmdBeginRenderPass, vkCmdBindDescriptorSets, vkCmdBlitImage,
     vkCmdCopyImage, vkCmdDraw, vkCmdDrawIndexed, vkCmdEndRenderPass, vkCmdPushDescriptorSetKHR,
-    vkCmdSetScissor, vkCmdSetViewport,
+    vkCmdResolveImage, vkCmdSetScissor, vkCmdSetViewport,
 };
+pub use hooks::{vkCmdExecuteCommands, vkQueueSubmit2, vkQueueSubmit2KHR, vkResetCommandBuffer};
 pub use hooks::{
     vkCreateFramebuffer, vkCreateImage, vkCreateImageView, vkDestroyFramebuffer, vkDestroyImage,
     vkDestroyImageView, vkGetDeviceQueue, vkGetDeviceQueue2, vkQueueSubmit, vkUpdateDescriptorSets,
@@ -66,6 +77,14 @@ pub(crate) fn registered_device_hook(name: &[u8], tracking: bool) -> vk::PFN_vkV
     always.or_else(|| {
         tracking.then_some(())?;
         match name {
+            b"vkAllocateCommandBuffers" => hook(hooks::vkAllocateCommandBuffers as *const ()),
+            b"vkFreeCommandBuffers" => hook(hooks::vkFreeCommandBuffers as *const ()),
+            b"vkResetCommandPool" => hook(hooks::vkResetCommandPool as *const ()),
+            b"vkDestroyCommandPool" => hook(hooks::vkDestroyCommandPool as *const ()),
+            b"vkQueueSubmit2" => hook(hooks::vkQueueSubmit2 as *const ()),
+            b"vkQueueSubmit2KHR" => hook(hooks::vkQueueSubmit2KHR as *const ()),
+            b"vkResetCommandBuffer" => hook(hooks::vkResetCommandBuffer as *const ()),
+            b"vkCmdExecuteCommands" => hook(hooks::vkCmdExecuteCommands as *const ()),
             b"vkQueueSubmit" => hook(hooks::vkQueueSubmit as *const ()),
             b"vkBeginCommandBuffer" => hook(hooks::vkBeginCommandBuffer as *const ()),
             b"vkCreateImage" => hook(hooks::vkCreateImage as *const ()),
@@ -84,7 +103,14 @@ pub(crate) fn registered_device_hook(name: &[u8], tracking: bool) -> vk::PFN_vkV
             b"vkCmdDraw" => hook(hooks::vkCmdDraw as *const ()),
             b"vkCmdDrawIndexed" => hook(hooks::vkCmdDrawIndexed as *const ()),
             b"vkCmdBlitImage" => hook(hooks::vkCmdBlitImage as *const ()),
+            b"vkCmdCopyImage2" => hook(hooks::vkCmdCopyImage2 as *const ()),
+            b"vkCmdCopyImage2KHR" => hook(hooks::vkCmdCopyImage2KHR as *const ()),
+            b"vkCmdBlitImage2" => hook(hooks::vkCmdBlitImage2 as *const ()),
+            b"vkCmdBlitImage2KHR" => hook(hooks::vkCmdBlitImage2KHR as *const ()),
+            b"vkCmdResolveImage2" => hook(hooks::vkCmdResolveImage2 as *const ()),
+            b"vkCmdResolveImage2KHR" => hook(hooks::vkCmdResolveImage2KHR as *const ()),
             b"vkCmdCopyImage" => hook(hooks::vkCmdCopyImage as *const ()),
+            b"vkCmdResolveImage" => hook(hooks::vkCmdResolveImage as *const ()),
             _ => None,
         }
     })
