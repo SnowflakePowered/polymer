@@ -25,6 +25,9 @@ pub(crate) fn create_win32_surface(
         && !surface.is_null()
         && unsafe { *surface } != vk::SurfaceKHR::null()
     {
+        crate::virtual_swapchain::Surface::created(instance, unsafe { *surface }, unsafe {
+            (*create_info).hwnd as isize
+        });
         context
             .common
             .instance_capture(instance)
@@ -37,6 +40,7 @@ pub(crate) fn destroy_surface(
     surface: vk::SurfaceKHR,
     context: &crate::hooks::DestroySurfaceContext,
 ) {
+    crate::virtual_swapchain::Surface::destroyed(surface);
     context
         .common
         .instance_capture(instance)

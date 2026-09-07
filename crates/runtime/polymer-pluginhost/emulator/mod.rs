@@ -21,7 +21,9 @@ pub struct EmulatorLaunchArguments {
     /// Process-wide presentation dependency-graph traversal requested by the
     /// emulator plugin for its tracked surfaces.
     #[serde(default)]
-    pub graph_tracking: bool,
+    #[serde(alias = "graphTracking")]
+    pub render_mode: polymer_presentation_config::RenderMode,
+    #[serde(default)]
     pub surfaces: Vec<TrackedSurface>,
     #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub prepared_filesystem: Option<String>,
@@ -39,6 +41,26 @@ pub struct EmulatorLaunchArguments {
     pub quick_resume_accepted: bool,
     #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub quick_resume_screenshot: Option<Vec<u8>>,
+}
+
+impl EmulatorLaunchArguments {
+    pub fn validate_render_configuration(&self) -> Result<(), String> {
+        use polymer_presentation_config::{RenderConfiguration, SurfaceRequest};
+        RenderConfiguration {
+            render_mode: self.render_mode,
+            surfaces: self
+                .surfaces
+                .iter()
+                .map(|surface| SurfaceRequest {
+                    index: surface.index,
+                    pattern: surface.pattern.clone(),
+                    resolution: surface.resolution,
+                    rotation: surface.rotation,
+                })
+                .collect(),
+        }
+        .validate()
+    }
 }
 
 /// A graphics capture hook installed into the target process.
@@ -106,6 +128,8 @@ pub struct TrackedSurface {
     pub rotation: i32,
     #[serde(default)]
     pub pattern: Option<String>,
+    #[serde(default)]
+    pub resolution: Option<[u32; 2]>,
 }
 
 pub struct EmulatorLaunchInvocation {

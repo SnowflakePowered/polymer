@@ -243,6 +243,9 @@ pub(crate) unsafe fn handle_destroy_instance(
     allocator: *const vk::AllocationCallbacks<'_>,
     mut next: crate::hooks::DestroyInstanceContext<'_>,
 ) {
+    if crate::virtual_swapchain::Device::retains_instance(instance) {
+        return;
+    }
     let continuation = *next
         .fp_next()
         .expect("Vulkan around chains always have a terminal");
@@ -311,6 +314,9 @@ pub(crate) unsafe fn handle_destroy_device(
     allocator: *const vk::AllocationCallbacks<'_>,
     mut next: crate::hooks::DestroyDeviceContext<'_>,
 ) {
+    if !crate::virtual_swapchain::Device::destroy(device) {
+        return;
+    }
     let continuation = *next
         .fp_next()
         .expect("Vulkan around chains always have a terminal");

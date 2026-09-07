@@ -201,6 +201,10 @@ pub fn register_claim(claim: SwapchainClaim) {
 /// `creation_device` must be null or point to a live COM object for the
 /// duration of this call.
 pub unsafe fn register_swapchain(swapchain: *mut c_void, creation_device: *mut c_void) -> bool {
+    if polymer_hook::config::render_mode() == Ok(polymer_hook::config::RenderMode::Swapchain) {
+        tracing::debug!("native DXGI object remains unexported in virtual mode");
+        return false;
+    }
     if swapchain.is_null() {
         return false;
     }

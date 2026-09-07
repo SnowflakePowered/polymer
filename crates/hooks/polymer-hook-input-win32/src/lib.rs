@@ -218,6 +218,9 @@ impl Runtime {
 
     fn apply_resize(&self, event: polymer_protocol::ResizeWindow) {
         let window = NativeWindow(event.target_window as isize);
+        if polymer_platform_windows::FixedWindowBinding::active(window) {
+            return;
+        }
         if event.target_window != 0
             && is_process_window(window, ProcessId(unsafe { GetCurrentProcessId() }))
         {

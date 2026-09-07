@@ -83,6 +83,9 @@ pub unsafe fn claim(
     creation_device: *mut c_void,
     tracking: Arc<Tracking>,
 ) -> Option<SwapchainOwnerHandle> {
+    if !polymer_hook::config::capture_enabled() {
+        return None;
+    }
     if swapchain.is_null() || creation_device.is_null() {
         return None;
     }

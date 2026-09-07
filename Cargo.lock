@@ -9479,6 +9479,7 @@ dependencies = [
  "dashmap",
  "parking_lot",
  "paste",
+ "polymer-presentation-config",
  "regex",
  "seq-macro",
  "serde_json",
@@ -9550,6 +9551,7 @@ dependencies = [
 name = "polymer-hook-dxgi"
 version = "0.1.0"
 dependencies = [
+ "dashmap",
  "parking_lot",
  "polymer-hook",
  "polymer-platform-windows",
@@ -9680,9 +9682,13 @@ version = "0.1.0"
 dependencies = [
  "ash",
  "dashmap",
+ "parking_lot",
+ "polymer-consumer-d3d12",
+ "polymer-consumer-vulkan",
  "polymer-hook",
  "polymer-ipc",
  "polymer-platform-windows",
+ "polymer-presentation",
  "polymer-producer-vulkan",
  "polymer-protocol",
  "tracing",
@@ -9824,6 +9830,7 @@ dependencies = [
  "polymer-input",
  "polymer-ipc",
  "polymer-library",
+ "polymer-presentation-config",
  "polymer-vfs",
  "reqwest",
  "semver",
@@ -9847,9 +9854,20 @@ dependencies = [
  "dashmap",
  "polymer-ipc",
  "polymer-platform-windows",
+ "polymer-presentation-config",
  "polymer-protocol",
+ "regex",
  "tracing",
  "windows 0.61.3",
+]
+
+[[package]]
+name = "polymer-presentation-config"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -9991,6 +10009,7 @@ dependencies = [
  "polymer-library",
  "polymer-platform-windows",
  "polymer-pluginhost",
+ "polymer-presentation-config",
  "polymer-protocol",
  "polymer-scraping",
  "polymer-statistics",

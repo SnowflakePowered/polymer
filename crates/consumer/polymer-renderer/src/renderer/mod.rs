@@ -292,7 +292,9 @@ impl Renderer for D3d12Compositor {
         offer: &SurfaceOffer,
         quarter_turns: u8,
     ) -> Result<(), Box<dyn Error>> {
-        D3d12Compositor::import_stream(self, offer.connection_id(), offer.stream(), quarter_turns)
+        D3d12Compositor::import_stream(self, offer.connection_id(), offer.stream(), quarter_turns)?;
+        self.set_buffer_release_sender(offer);
+        Ok(())
     }
 
     fn disconnect_stream(&mut self, connection: u64) -> Result<(), Box<dyn Error>> {
@@ -330,7 +332,14 @@ impl Renderer for VulkanCompositor {
         offer: &SurfaceOffer,
         quarter_turns: u8,
     ) -> Result<(), Box<dyn Error>> {
-        VulkanCompositor::import_stream(self, offer.connection_id(), offer.stream(), quarter_turns)
+        VulkanCompositor::import_stream(
+            self,
+            offer.connection_id(),
+            offer.stream(),
+            quarter_turns,
+        )?;
+        self.set_buffer_release_sender(offer);
+        Ok(())
     }
 
     fn disconnect_stream(&mut self, connection: u64) -> Result<(), Box<dyn Error>> {

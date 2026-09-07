@@ -8,6 +8,7 @@ license.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+dashmap.workspace = true
 parking_lot.workspace = true
 polymer-hook.workspace = true
 polymer-platform-windows.workspace = true

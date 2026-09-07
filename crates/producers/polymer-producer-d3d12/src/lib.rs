@@ -643,3 +643,5 @@ unsafe fn record_barriers<const N: usize>(
         }
     }
 }
+
+pub mod virtual_swapchain;

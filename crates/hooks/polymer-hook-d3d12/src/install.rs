@@ -14,6 +14,9 @@ unsafe extern "system" {
 
 pub(crate) unsafe fn install() -> i32 {
     polymer_hook_dxgi::register_claim(crate::claim_swapchain);
+    polymer_hook_dxgi::register_virtual_claim(
+        polymer_producer_d3d12::virtual_swapchain::creation::D3d12Creation::claim,
+    );
     crate::hooks::HookInstallation::install().map_or(E_FAIL, |()| 0)
 }
 

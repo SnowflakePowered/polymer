@@ -196,9 +196,13 @@ fn hook_environment(runtime: &EmulatorLaunchConfig) -> Vec<(OsString, OsString)>
             ));
         }
     }
-    if runtime.tracking_enabled && runtime.graph_tracking {
-        environment.push((OsString::from(config::GRAPH_TRACKING), OsString::from("1")));
-    }
+    environment.push((
+        OsString::from(config::RENDER_CONFIGURATION),
+        OsString::from(
+            serde_json::to_string(&runtime.render_configuration())
+                .expect("render configuration serializes"),
+        ),
+    ));
     if runtime.force_keyed_mutex {
         environment.push((
             OsString::from(config::FORCE_KEYED_MUTEX),

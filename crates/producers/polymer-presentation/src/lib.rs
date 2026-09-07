@@ -13,6 +13,7 @@ pub mod producer;
 pub mod registry;
 pub mod scheduling;
 pub mod selection;
+pub use polymer_presentation_config as configuration;
 
 pub use frame::{CapturedFrame, FramePlacement};
 pub use geometry::{Extent2D, Rect, RegionMapping};
@@ -21,3 +22,5 @@ pub use selection::{PresentationSelector, SelectedSurface, Selection, SurfaceSel
 
 #[cfg(test)]
 mod testing;
+
+pub mod swapchain;

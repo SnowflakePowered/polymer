@@ -303,6 +303,9 @@ pub unsafe fn after_delete_context(context: usize) {
 /// # Safety
 /// The application's current OpenGL context and its device context must be live.
 pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
+    if !config::capture_enabled() {
+        return;
+    }
     let context = unsafe { current_context() };
     if context.is_null() {
         return;

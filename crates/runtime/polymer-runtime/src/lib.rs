@@ -16,7 +16,7 @@ mod session;
 mod storage;
 mod ui;
 
-pub use capture::ConsumerPreference;
+pub use capture::{BufferReleaseSender, ConsumerPreference};
 pub use configuration::{
     ConfigurationDefaults, ConfigurationRequest, DefaultGamepad, DetectedGame, EmulatorDescriptor,
     GameDescriptor, LaunchGroupRequest, LaunchPortRequest, PortDescriptor, PortGroupDescriptor,
@@ -55,3 +55,5 @@ pub enum RuntimeState {
     Active,
     ShuttingDown,
 }
+
+pub use polymer_presentation_config::{RenderConfiguration, RenderMode, SurfaceRequest};

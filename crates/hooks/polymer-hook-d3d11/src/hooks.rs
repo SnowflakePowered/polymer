@@ -1,6 +1,5 @@
 #![allow(clippy::too_many_arguments)] // Signatures are fixed by the D3D11 ABI.
 
-use polymer_producer_d3d11::Tracking;
 use std::ffi::c_void;
 use windows_sys::Win32::Foundation::{E_FAIL, HMODULE};
 
@@ -9,10 +8,6 @@ polymer_hook::chain_hooks! {
     #![detour(polymer_platform_windows::InlineDetour<_>)]
     #[installer]
     pub(crate) struct HookInstallation;
-    #[context]
-    pub(crate) struct D3D11HookContext {
-        pub(crate) tracking: std::sync::Arc<Tracking> = std::sync::Arc::default(),
-    }
 
     #[trampoline(abi = "system-unwind")]
     #[terminal(installed(
@@ -44,6 +39,7 @@ polymer_hook::chain_hooks! {
     #[terminal(installed(
         target = crate::install::system_create_device_and_swapchain,
     ), fallback = E_FAIL)]
+    #[infix(crate::virtual_creation::VirtualCreation::create)]
     #[postfix(
         crate::device::create_device_and_swapchain(
             adapter,

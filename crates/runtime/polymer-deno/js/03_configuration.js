@@ -100,6 +100,7 @@ export function createConfiguration(pluginApi) {
     async onLaunch(launchableId, selection) {
       const prepared = await Configuration.prepare(launchableId, selection);
       const plugin = await pluginApi.open(prepared.plugin).onLaunch(prepared.arguments);
+      if ("graphTracking" in plugin) throw new TypeError("graphTracking was replaced by renderMode");
       const targets = new Set(prepared.webrtcTargets || []);
       const launch = Object.freeze({
         command: plugin.command,
@@ -109,10 +110,11 @@ export function createConfiguration(pluginApi) {
           graphics: [...plugin.hooks.graphics],
           input: [...plugin.hooks.input],
         },
-        graphTracking: Boolean(plugin.graphTracking),
+        renderMode: plugin.renderMode ?? "intercept",
         surfaces: (plugin.surfaces || []).map((surface) => Object.freeze({
           index: surface.index,
           rotation: surface.rotation || 0,
+          resolution: surface.resolution,
           selector: surface.pattern,
           webrtc: targets.has(surface.index),
         })),

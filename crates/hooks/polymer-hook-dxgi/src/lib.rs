@@ -87,7 +87,7 @@ pub unsafe extern "system" fn PolymerInstallDxgiHook() -> i32 {
         "install requested in process {} (dxgi already loaded: {already_loaded})",
         std::process::id()
     );
-    if unsafe { install_factory_detours() } {
+    if unsafe { install::install() } {
         tracing::debug!("factory creation detours installed");
         0
     } else {
@@ -111,26 +111,6 @@ pub extern "system" fn PolymerUninstallDxgiHook() -> i32 {
     } else {
         windows_sys::Win32::Foundation::E_FAIL
     }
-}
-
-/// Installs process-wide detours over the DXGI factory creation exports so
-/// every factory the application creates receives the per-object vtable hooks
-/// at creation time.
-///
-/// # Safety
-///
-/// The process must have a usable system DXGI runtime, and callers must not
-/// concurrently unload the DXGI module while installation is in progress.
-pub unsafe fn install_factory_detours() -> bool {
-    unsafe { install::install() }
-}
-
-/// Removes the process-wide DXGI factory detours.
-///
-/// A later call to [`install_factory_detours`] installs a fresh terminal
-/// generation and enables all three detours again.
-pub fn uninstall_factory_detours() -> bool {
-    install::uninstall()
 }
 
 #[cfg(test)]
@@ -213,4 +193,25 @@ mod tests {
             "the application's own vtable should be left alone"
         );
     }
+}
+
+pub mod virtual_swapchain;
+pub use virtual_swapchain::{SwapchainCreateInfo, VirtualSwapchainClaim};
+
+pub fn register_virtual_claim(claim: VirtualSwapchainClaim) {
+    type Register = unsafe extern "system" fn(VirtualSwapchainClaim);
+    if let Some(register) =
+        unsafe { dxgi_hook_export::<Register>(c"PolymerRegisterVirtualDxgiClaim") }
+    {
+        unsafe {
+            register(claim);
+        }
+    } else {
+        virtual_swapchain::CreationDispatch::register(claim);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn PolymerRegisterVirtualDxgiClaim(claim: VirtualSwapchainClaim) {
+    virtual_swapchain::CreationDispatch::register(claim);
 }

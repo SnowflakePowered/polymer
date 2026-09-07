@@ -566,6 +566,8 @@ fn create_transport(
             &capture.memory_properties,
             capture.adapter_luid,
             ExportImageRingDesc {
+                usage: vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
+                queue_families: Vec::new(),
                 extent,
                 format,
                 slots: 3,
@@ -841,6 +843,9 @@ impl CaptureState {
         presents: &[(vk::SwapchainKHR, u32)],
         waits: &[vk::Semaphore],
     ) -> Option<Vec<vk::Semaphore>> {
+        if !polymer_hook::config::capture_enabled() {
+            return None;
+        }
         let mut chained_waits = waits.to_vec();
         let mut copied = false;
         self.retire_idle_streams(self.presents_seen.load(Ordering::Relaxed));

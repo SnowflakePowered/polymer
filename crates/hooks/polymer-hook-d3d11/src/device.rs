@@ -47,7 +47,6 @@ pub(crate) unsafe fn create_device(
     _feature_level: *mut i32,
     _immediate_context: *mut *mut c_void,
     result: i32,
-    _context: &crate::hooks::CreateDeviceContext,
 ) {
     if result >= 0 {
         tracing::debug!("polymer: intercepted D3D11CreateDevice");
@@ -66,7 +65,6 @@ pub(crate) unsafe fn create_device_and_swapchain(
     _feature_level: *mut i32,
     _immediate_context: *mut *mut c_void,
     result: i32,
-    _context: &crate::hooks::CreateDeviceAndSwapchainContext,
 ) {
     if result < 0 || swapchain.is_null() {
         return;

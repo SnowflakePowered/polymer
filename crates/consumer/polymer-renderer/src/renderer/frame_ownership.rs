@@ -92,6 +92,7 @@ impl Replacement {
 /// Backends prepare after checking producer readiness and commit after submit.
 #[derive(Default)]
 pub(super) struct SurfaceFrames {
+    pub release_sender: Option<polymer_runtime::BufferReleaseSender>,
     replacement: Option<Replacement>,
     displayed: Option<FrameOwnership<Displayed>>,
     received: u64,
@@ -99,6 +100,12 @@ pub(super) struct SurfaceFrames {
 }
 
 impl SurfaceFrames {
+    pub fn acknowledge_release(&self, value: u64) -> std::io::Result<()> {
+        if let (Some(sender), Some(frame)) = (&self.release_sender, self.frame()) {
+            sender.release(frame.stream_id, value)?;
+        }
+        Ok(())
+    }
     /// A superseded lease must be recycled by keyed-mutex backends. Fence
     /// backends reclaim it through the next submitted release watermark.
     pub fn offer(&mut self, ready: FrameReady) -> Option<FrameOwnership<Discarded>> {

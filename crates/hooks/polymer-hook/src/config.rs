@@ -1,5 +1,6 @@
 //! Environment-backed configuration shared by hook and producer crates.
 
+pub use polymer_presentation_config::{RenderConfiguration, RenderMode};
 use regex::Regex;
 use std::{
     ffi::{OsStr, OsString},
@@ -23,6 +24,41 @@ pub const TRACK_RENDER_TARGETS: &str = "POLYMER_TRACK_RENDER_TARGETS";
 pub const TRACK_RENDER_TARGET_SURFACE_PATTERNS: &str =
     "POLYMER_TRACK_RENDER_TARGET_SURFACE_PATTERNS";
 pub const GRAPH_TRACKING: &str = "POLYMER_GRAPH_TRACKING";
+pub const RENDER_CONFIGURATION: &str = "POLYMER_RENDER_CONFIGURATION";
+
+static RENDER: LazyLock<Result<RenderConfiguration, String>> = LazyLock::new(|| {
+    if let Some(payload) = std::env::var_os(RENDER_CONFIGURATION) {
+        let configuration: RenderConfiguration = serde_json::from_str(
+            payload
+                .to_str()
+                .ok_or("render configuration is not Unicode")?,
+        )
+        .map_err(|error| format!("invalid {RENDER_CONFIGURATION}: {error}"))?;
+        configuration.validate()?;
+        if is_set(GRAPH_TRACKING) && configuration.render_mode != RenderMode::GraphTracking {
+            tracing::warn!(
+                "POLYMER_GRAPH_TRACKING conflicts with explicit renderMode; renderMode wins"
+            );
+        }
+        return Ok(configuration);
+    }
+    Ok(RenderConfiguration {
+        render_mode: if is_set(GRAPH_TRACKING) {
+            RenderMode::GraphTracking
+        } else {
+            RenderMode::Intercept
+        },
+        surfaces: Vec::new(),
+    })
+});
+
+pub fn render_configuration() -> Result<&'static RenderConfiguration, &'static str> {
+    RENDER.as_ref().map_err(String::as_str)
+}
+
+pub fn render_mode() -> Result<RenderMode, &'static str> {
+    render_configuration().map(|configuration| configuration.render_mode)
+}
 pub const FORCE_KEYED_MUTEX: &str = "POLYMER_FORCE_KEYED_MUTEX";
 /// Removal of application-requested display pacing. This is enabled by default;
 /// set the variable to `0`, `false`, `off`, or `no` for targets that require
@@ -138,7 +174,26 @@ pub fn tracked_render_target_surface_slots<T: Copy + Eq>(
 }
 
 pub fn graph_tracking_enabled() -> bool {
-    is_set(GRAPH_TRACKING)
+    render_mode() == Ok(RenderMode::GraphTracking)
+}
+
+/// Legacy capture must never masquerade as virtual presentation, including
+/// when a caller injects hooks directly instead of using the native launcher.
+pub fn capture_enabled() -> bool {
+    static ENABLED: LazyLock<bool> = LazyLock::new(|| match render_mode() {
+        Ok(RenderMode::Intercept | RenderMode::GraphTracking) => true,
+        Ok(RenderMode::Swapchain) => {
+            tracing::error!(
+                "virtual swapchain frontend is not implemented; native capture is disabled"
+            );
+            false
+        }
+        Err(error) => {
+            tracing::error!(%error, "invalid render configuration; native capture is disabled");
+            false
+        }
+    });
+    *ENABLED
 }
 
 pub fn force_keyed_mutex() -> bool {

@@ -1,0 +1,56 @@
+use super::*;
+use VirtualDxgiSwapchain as Object;
+pub(super) static VTABLE: IDXGISwapChain3_Vtbl = IDXGISwapChain3_Vtbl {
+    base__: IDXGISwapChain2_Vtbl {
+        base__: IDXGISwapChain1_Vtbl {
+            base__: IDXGISwapChain_Vtbl {
+                base__: IDXGIDeviceSubObject_Vtbl {
+                    base__: IDXGIObject_Vtbl {
+                        base__: windows::core::IUnknown_Vtbl {
+                            QueryInterface: Object::query,
+                            AddRef: Object::add_ref,
+                            Release: Object::release,
+                        },
+                        SetPrivateData: Object::set_private,
+                        SetPrivateDataInterface: Object::set_private_interface,
+                        GetPrivateData: Object::get_private,
+                        GetParent: Object::parent,
+                    },
+                    GetDevice: Object::device,
+                },
+                Present: Object::present,
+                GetBuffer: Object::buffer,
+                SetFullscreenState: Object::set_fullscreen,
+                GetFullscreenState: Object::fullscreen,
+                GetDesc: Object::desc,
+                ResizeBuffers: Object::resize,
+                ResizeTarget: Object::resize_target,
+                GetContainingOutput: Object::containing_output,
+                GetFrameStatistics: Object::statistics,
+                GetLastPresentCount: Object::present_count,
+            },
+            GetDesc1: Object::desc1,
+            GetFullscreenDesc: Object::fullscreen_desc,
+            GetHwnd: Object::hwnd,
+            GetCoreWindow: Object::core_window,
+            Present1: Object::present1,
+            IsTemporaryMonoSupported: Object::mono,
+            GetRestrictToOutput: Object::restrict_output,
+            SetBackgroundColor: Object::set_background,
+            GetBackgroundColor: Object::background,
+            SetRotation: Object::set_rotation,
+            GetRotation: Object::rotation,
+        },
+        SetSourceSize: Object::set_source,
+        GetSourceSize: Object::source,
+        SetMaximumFrameLatency: Object::set_latency,
+        GetMaximumFrameLatency: Object::latency,
+        GetFrameLatencyWaitableObject: Object::latency_handle,
+        SetMatrixTransform: Object::set_matrix,
+        GetMatrixTransform: Object::matrix,
+    },
+    GetCurrentBackBufferIndex: Object::current_index,
+    CheckColorSpaceSupport: Object::color_support,
+    SetColorSpace1: Object::set_color,
+    ResizeBuffers1: Object::resize1,
+};

@@ -342,3 +342,28 @@ fn half_turns_mirror_vulkan_blit_source_offsets() {
         [(1280, 0, 0), (0, 720, 1)]
     );
 }
+
+#[test]
+fn virtual_swapchain_cli_preserves_extent_and_rejects_conflicting_modes() {
+    let options = arguments(&["--swapchain-resolution", "640", "528", "--hook", "d3d11"]).unwrap();
+    assert_eq!(
+        LauncherState::from_options(&options).swapchain_resolution,
+        Some([640, 528])
+    );
+    for args in [
+        vec!["--swapchain-resolution", "0", "528"],
+        vec!["--swapchain-resolution", "640"],
+        vec!["--swapchain-resolution", "2147483648", "528"],
+        vec!["--swapchain-resolution", "640", "528", "--force-km"],
+        vec![
+            "--swapchain-resolution",
+            "640",
+            "528",
+            "--graph-tracking",
+            "--track-render-targets",
+            "0",
+        ],
+    ] {
+        assert!(arguments(&args).is_err(), "accepted {args:?}");
+    }
+}

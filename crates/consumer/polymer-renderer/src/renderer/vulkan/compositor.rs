@@ -101,6 +101,15 @@ impl VulkanRenderPass<'_> {
 }
 
 impl VulkanCompositor {
+    pub(crate) fn set_buffer_release_sender(&mut self, offer: &polymer_runtime::SurfaceOffer) {
+        if let Some(surface) = self
+            .surfaces
+            .iter_mut()
+            .find(|surface| surface.connection == offer.connection_id())
+        {
+            surface.frames.release_sender = offer.buffer_release_sender();
+        }
+    }
     pub fn new(
         window: &impl RenderWindow,
         preferred_adapter: Option<AdapterLuid>,
@@ -1310,6 +1319,9 @@ impl VulkanCompositor {
             self.device
                 .queue_submit(self.queue, &[submit], self.fences[flight])?;
             for surface in &mut self.surfaces {
+                if let Some(value) = surface.frames.release_value() {
+                    surface.frames.acknowledge_release(value)?;
+                }
                 surface.commit();
             }
             for (index, frame) in video_copies {

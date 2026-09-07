@@ -5,6 +5,17 @@ use polymer_platform_windows::{NativeWindow, ProcessId, is_process_window};
 pub struct ProducerWindows;
 
 impl ProducerWindows {
+    /// Called after the fixed assignment commits. Keep the returned guard on
+    /// the application-facing object until that binding ends, not on an IPC
+    /// connection that can disconnect independently.
+    pub fn bind_fixed(
+        binding: &crate::swapchain::FixedSurfaceBinding,
+    ) -> windows::core::Result<polymer_platform_windows::FixedWindowBinding> {
+        polymer_platform_windows::FixedWindowBinding::new(NativeWindow(
+            binding.window().handle as isize,
+        ))
+    }
+
     /// Validate observed process windows on the presenting thread. A zero
     /// handle denotes an unspecified window, not evidence of destruction.
     /// Native resources are retired separately under their backend's rules.

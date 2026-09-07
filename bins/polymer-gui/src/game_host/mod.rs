@@ -714,11 +714,13 @@ impl GameHost {
                     id: polymer_runtime::TrackedSurfaceId(surface.index),
                     render_target_index: surface.index,
                     window_pattern: surface.selector.clone(),
+                    resolution: surface.resolution,
+                    rotation: surface.rotation,
                 })
                 .collect(),
             tracking_enabled: !options.surfaces.is_empty(),
             skip_surfaces: 0,
-            graph_tracking: options.graph_tracking,
+            render_mode: options.render_mode,
             force_keyed_mutex: false,
         };
         let dirty = self.dirty.clone();

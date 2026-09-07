@@ -5,6 +5,7 @@ mod capture;
 mod image_ring;
 mod swapchain;
 mod tracking;
+pub mod virtual_swapchain;
 
 pub use capture::{SwapchainCapture, claim};
 pub use image_ring::{D3d11ImageRing, D3d11ImageRingDesc, D3d11ImageSlot, D3d11RingMode};

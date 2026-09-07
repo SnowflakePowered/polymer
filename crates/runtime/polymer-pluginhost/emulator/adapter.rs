@@ -195,6 +195,9 @@ impl<'runtime> EmulatorWorker<'runtime> {
             let value = property(scope, wrapper, "result")?;
             serde_v8::from_v8(scope, value)?
         };
+        launch
+            .validate_render_configuration()
+            .map_err(DenoPluginError::Adapter)?;
         let (quick_resume_accepted, quick_resume_screenshot) = {
             deno_core::scope!(scope, self.runtime);
             let wrapper = local_object(scope, &pending.value, "pluginhost launch result")?;

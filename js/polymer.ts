@@ -131,6 +131,7 @@ export type TrackedSurface = {
   index: number;
   rotation: number;
   selector?: string;
+  resolution?: Resolution;
   attach: HTMLTrackedSurfaceElement;
   webrtc: boolean;
 };
@@ -156,7 +157,23 @@ export type ControllerTopology = Readonly<{
   mappings: readonly ControllerMapping[];
 }>;
 
-export type LaunchOptions = {
+export type EmulatorSurface = {
+  index: number;
+  pattern?: string;
+  rotation?: number;
+  resolution?: Resolution;
+};
+export type EmulatorRenderSelection = RenderSelection<EmulatorSurface>;
+
+export type RenderMode = "intercept" | "graphTracking" | "swapchain";
+export type Resolution = readonly [number, number];
+export type RenderSelection<S> =
+  | { renderMode?: "intercept" | "graphTracking"; surfaces: S[] }
+  | { renderMode: "swapchain"; surfaces: (S & { resolution: Resolution })[] };
+
+export type LaunchOptions = LaunchFields & RenderSelection<TrackedSurface>;
+
+type LaunchFields = {
   command: string;
   arguments: string[];
   isolated: boolean;
@@ -164,8 +181,6 @@ export type LaunchOptions = {
     graphics: GraphicsHook[];
     input: InputHook[];
   }>;
-  graphTracking: boolean;
-  surfaces: TrackedSurface[];
   controllerTopology: ControllerTopology;
   machine: string;
   webrtcBind?: string;
@@ -176,9 +191,7 @@ export type LaunchOptions = {
   quickResumeCache?: Readonly<{ key: string; revision: string }> | null;
 };
 
-export type LaunchRequest = Omit<LaunchOptions, "surfaces"> & {
-  surfaces: Array<Omit<TrackedSurface, "attach">>;
-};
+export type LaunchRequest = LaunchFields & RenderSelection<Omit<TrackedSurface, "attach">>;
 
 export type LaunchState = "pending" | "starting" | "ready" | "closing" | "closed" | "error";
 

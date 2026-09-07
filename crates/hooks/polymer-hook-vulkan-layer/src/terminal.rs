@@ -52,6 +52,11 @@ pub(crate) unsafe fn get_physical_device_proc_addr(
     if name.is_null() {
         return None;
     }
+    if let Some(hook) =
+        crate::virtual_swapchain::instance_hook(unsafe { CStr::from_ptr(name) }.to_bytes())
+    {
+        return Some(hook);
+    }
     if let Some(next) = crate::layer::instance_physical_gpa(instance) {
         unsafe { next(instance, name) }
     } else {
@@ -149,7 +154,36 @@ pub(crate) unsafe fn create_instance(
     }) else {
         return vk::Result::ERROR_INITIALIZATION_FAILED;
     };
-    let result = unsafe { next(create_info, allocator, instance) };
+    let mut modified = unsafe { *create_info };
+    let mut extensions = if modified.enabled_extension_count == 0 {
+        Vec::new()
+    } else {
+        unsafe {
+            std::slice::from_raw_parts(
+                modified.pp_enabled_extension_names,
+                modified.enabled_extension_count as usize,
+            )
+        }
+        .to_vec()
+    };
+    if crate::virtual_swapchain::enabled() {
+        for required in [
+            ash::khr::surface::NAME,
+            ash::khr::get_surface_capabilities2::NAME,
+            ash::ext::surface_maintenance1::NAME,
+            ash::khr::get_physical_device_properties2::NAME,
+        ] {
+            if !extensions
+                .iter()
+                .any(|&name| unsafe { CStr::from_ptr(name) } == required)
+            {
+                extensions.push(required.as_ptr());
+            }
+        }
+        modified.enabled_extension_count = extensions.len() as u32;
+        modified.pp_enabled_extension_names = extensions.as_ptr();
+    }
+    let result = unsafe { next(&modified, allocator, instance) };
     if result == vk::Result::SUCCESS && !instance.is_null() {
         let created = unsafe { *instance };
         crate::layer::register_instance_dispatch(created, bootstrap);
@@ -223,18 +257,45 @@ pub(crate) unsafe fn create_device(
             .iter()
             .any(|name| !name.is_null() && unsafe { CStr::from_ptr(*name) } == *required)
     });
-    let mut modified = (!create_info.is_null()).then(|| unsafe { *create_info });
-    let mut timeline = vk::PhysicalDeviceTimelineSemaphoreFeatures::default()
-        .timeline_semaphore(capture_supported);
+    if create_info.is_null() {
+        return vk::Result::ERROR_INITIALIZATION_FAILED;
+    }
+    if unsafe { crate::virtual_swapchain::features::Features::virtual_device(&*create_info) } {
+        for required in [
+            ash::khr::synchronization2::NAME,
+            ash::ext::swapchain_maintenance1::NAME,
+        ] {
+            if !extension_names
+                .iter()
+                .any(|name| unsafe { CStr::from_ptr(*name) } == required)
+            {
+                if !physical_state.as_ref().is_some_and(|state| unsafe {
+                    device_supports_extension(state, physical_device, required)
+                }) {
+                    return vk::Result::ERROR_EXTENSION_NOT_PRESENT;
+                }
+                extension_names.push(required.as_ptr());
+                injected_extensions.push(required);
+            }
+        }
+    }
+    let mut features = match unsafe {
+        crate::virtual_swapchain::features::Features::new(
+            physical_device,
+            physical_state.as_ref(),
+            create_info,
+            capture_supported,
+        )
+    } {
+        Ok(features) => features,
+        Err(error) => return error,
+    };
+    let capture_supported = features.supported;
+    let mut modified = Some(unsafe { *create_info });
     if let Some(info) = modified.as_mut() {
-        if !injected_extensions.is_empty() {
-            info.enabled_extension_count = extension_names.len() as u32;
-            info.pp_enabled_extension_names = extension_names.as_ptr();
-        }
-        if capture_supported {
-            timeline.p_next = info.p_next as *mut c_void;
-            info.p_next = (&timeline as *const _) as *const c_void;
-        }
+        info.enabled_extension_count = extension_names.len() as u32;
+        info.pp_enabled_extension_names = extension_names.as_ptr();
+        features.attach(info);
     }
     let result = unsafe {
         next_create(
@@ -345,6 +406,27 @@ pub(crate) unsafe fn create_device(
             tracking: Arc::default(),
         },
     );
+    if let Err(error) = unsafe { crate::virtual_swapchain::Device::install(created, &*create_info) }
+    {
+        let dispatch_key = unsafe { crate::layer::dispatch_key(created) };
+        if let Some(destroy) = unsafe {
+            device_proc::<vk::PFN_vkDestroyDevice>(bootstrap.next_gdpa, created, c"vkDestroyDevice")
+        } {
+            unsafe {
+                destroy(created, allocator);
+            }
+        }
+        if let Some(key) = dispatch_key {
+            crate::layer::hook_state().device.remove(&key);
+        }
+        crate::layer::hook_state()
+            .queue
+            .retain(|_, dispatch| dispatch.device != created);
+        unsafe {
+            *device = vk::Device::null();
+        }
+        return error;
+    }
     result
 }
 

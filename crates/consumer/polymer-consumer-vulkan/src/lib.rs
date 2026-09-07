@@ -11,6 +11,7 @@ fn format_for_stream(stream: &StreamReady) -> Result<vk::Format, ImportError> {
     let format = match stream.image_kind {
         ExternalImageKind::VulkanOpaqueWin32 => vk::Format::from_raw(stream.format as i32),
         ExternalImageKind::D3d11SharedResourceNt
+        | ExternalImageKind::D3d11D3d12Resource
         | ExternalImageKind::D3d12Resource
         | ExternalImageKind::OpenGlD3d12Resource
         | ExternalImageKind::VulkanD3d12Resource => match stream.format {
@@ -126,6 +127,7 @@ impl ImportedImageRing {
         matches!(
             self.image_kind,
             ExternalImageKind::D3d12Resource
+                | ExternalImageKind::D3d11D3d12Resource
                 | ExternalImageKind::OpenGlD3d12Resource
                 | ExternalImageKind::VulkanD3d12Resource
         )
@@ -339,6 +341,7 @@ impl ImportedStream {
                         matches!(
                             stream.image_kind,
                             ExternalImageKind::D3d12Resource
+                                | ExternalImageKind::D3d11D3d12Resource
                                 | ExternalImageKind::OpenGlD3d12Resource
                                 | ExternalImageKind::VulkanD3d12Resource
                         ),
@@ -474,6 +477,7 @@ fn validate_consumer_semaphore(stream: &StreamReady) -> Result<(), ImportError> 
     if matches!(
         stream.image_kind,
         ExternalImageKind::D3d12Resource
+            | ExternalImageKind::D3d11D3d12Resource
             | ExternalImageKind::OpenGlD3d12Resource
             | ExternalImageKind::VulkanD3d12Resource
     ) && stream.consumer_semaphore_handle == 0
@@ -750,7 +754,7 @@ unsafe fn import_resources(
     let format = format_for_stream(stream).map_err(|_| vk::Result::ERROR_FORMAT_NOT_SUPPORTED)?;
     let memory_handle_type = match stream.image_kind {
         ExternalImageKind::VulkanOpaqueWin32 => vk::ExternalMemoryHandleTypeFlags::OPAQUE_WIN32,
-        ExternalImageKind::D3d11SharedResourceNt => {
+        ExternalImageKind::D3d11SharedResourceNt | ExternalImageKind::D3d11D3d12Resource => {
             vk::ExternalMemoryHandleTypeFlags::D3D11_TEXTURE
         }
         ExternalImageKind::D3d12Resource

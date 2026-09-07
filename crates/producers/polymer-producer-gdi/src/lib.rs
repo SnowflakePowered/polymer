@@ -78,6 +78,9 @@ fn state() -> &'static Mutex<State> {
 /// Replaces a top-level window paint DC with a shared DXGI-surface DC.
 /// Returns `None` when capture is unavailable; the caller must retain the real DC.
 pub unsafe fn begin_paint(hwnd: isize, width: u32, height: u32, dirty: [i32; 4]) -> Option<isize> {
+    if !polymer_hook::config::capture_enabled() {
+        return None;
+    }
     if hwnd == 0 || width == 0 || height == 0 || width > 8192 || height > 8192 {
         return None;
     }

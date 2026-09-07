@@ -25,12 +25,14 @@ impl ExternalHandleMode {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct ExportImageRingDesc {
     pub extent: vk::Extent2D,
     pub format: vk::Format,
     pub slots: u32,
     pub handle_mode: ExternalHandleMode,
+    pub usage: vk::ImageUsageFlags,
+    pub queue_families: Vec<u32>,
 }
 
 /// Dedicated, device-local images whose allocations can be imported by
@@ -117,7 +119,7 @@ impl ExportImageRing {
         let mut ring = Self {
             device,
             slots: Vec::with_capacity(desc.slots as usize),
-            desc,
+            desc: desc.clone(),
         };
         for _ in 0..desc.slots {
             ring.slots.push(unsafe {
@@ -127,7 +129,7 @@ impl ExportImageRing {
                     get_memory_win32_handle_properties,
                     memory_properties,
                     d3d12_device.as_ref(),
-                    desc,
+                    &desc,
                 )?
             });
         }
@@ -135,7 +137,7 @@ impl ExportImageRing {
     }
 
     pub fn desc(&self) -> ExportImageRingDesc {
-        self.desc
+        self.desc.clone()
     }
 
     pub fn slots(&self) -> &[ExportImageSlot] {
@@ -162,7 +164,7 @@ unsafe fn create_export_image(
     get_memory_win32_handle_properties: vk::PFN_vkGetMemoryWin32HandlePropertiesKHR,
     memory_properties: &vk::PhysicalDeviceMemoryProperties,
     d3d12_device: Option<&windows::Win32::Graphics::Direct3D12::ID3D12Device>,
-    desc: ExportImageRingDesc,
+    desc: &ExportImageRingDesc,
 ) -> Result<ExportImageSlot, vk::Result> {
     let handle_type = desc.handle_mode.memory_handle_type();
     let mut external_image = vk::ExternalMemoryImageCreateInfo::default().handle_types(handle_type);
@@ -179,20 +181,26 @@ unsafe fn create_export_image(
         .array_layers(1)
         .samples(vk::SampleCountFlags::TYPE_1)
         .tiling(vk::ImageTiling::OPTIMAL)
-        .usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED)
-        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .usage(desc.usage)
+        .sharing_mode(if desc.queue_families.len() > 1 {
+            vk::SharingMode::CONCURRENT
+        } else {
+            vk::SharingMode::EXCLUSIVE
+        })
+        .queue_family_indices(&desc.queue_families)
         .initial_layout(vk::ImageLayout::UNDEFINED);
-    let image = unsafe { device.create_image(&image_info, None)? };
-    let requirements = unsafe { device.get_image_memory_requirements(image) };
     let shared_resource = if desc.handle_mode == ExternalHandleMode::D3d12 {
         Some(crate::d3d12_interop::create_resource(
             d3d12_device.ok_or(vk::Result::ERROR_INITIALIZATION_FAILED)?,
             desc.extent,
             desc.format,
+            desc.usage,
         )?)
     } else {
         None
     };
+    let image = unsafe { device.create_image(&image_info, None)? };
+    let requirements = unsafe { device.get_image_memory_requirements(image) };
     let allowed_bits = if let Some(shared) = shared_resource.as_ref() {
         let mut properties = vk::MemoryWin32HandlePropertiesKHR::default();
         let result = unsafe {

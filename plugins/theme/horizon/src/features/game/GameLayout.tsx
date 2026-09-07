@@ -69,12 +69,15 @@ export function GameLayout(props: ParentProps) {
     const wait = (remaining: number) => requestAnimationFrame(() => {
       if (currentSequence !== sequence || shell.model.request !== request) return;
       try {
-        const attached = request.surfaces.map((surface) => {
+        // Launch off the unwrapped request: store proxies over nested values
+        // such as `resolution` do not survive the op boundary as arrays.
+        const plan = unwrap(request);
+        const attached = plan.surfaces.map((surface) => {
           const attach = elements.get(surface.index);
           if (!attach?.isConnected || attach.localName !== "tracked-surface") throw new Error(`Surface ${surface.index} is not ready`);
           return { ...surface, attach };
         });
-        const instance = window.Polymer.emulator.launch({ ...unwrap(request), surfaces: attached } as LaunchOptions);
+        const instance = window.Polymer.emulator.launch({ ...plan, surfaces: attached } as LaunchOptions);
         shell.setModel("launch", instance);
         bind(instance);
       } catch (error) {

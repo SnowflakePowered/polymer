@@ -83,6 +83,7 @@ pub struct ViewerOptions {
     pub target: Vec<String>,
     pub track_render_targets: Option<Vec<TrackedRenderTarget>>,
     pub graph_tracking: bool,
+    pub swapchain_resolution: Option<[u32; 2]>,
     pub layout_css: Option<String>,
     pub surfaces: u32,
     pub skip_surfaces: u32,
@@ -123,6 +124,10 @@ struct ViewerArguments {
     /// of the scissor and one-hop heuristics.
     #[arg(long, action = ArgAction::SetTrue, requires = "track_render_targets")]
     pub(crate) graph_tracking: bool,
+
+    /// Use a virtual swapchain with a fixed width and height.
+    #[arg(long, num_args = 2, value_names = ["WIDTH", "HEIGHT"], conflicts_with_all = ["graph_tracking", "force_keyed_mutex"], value_parser = clap::value_parser!(u32).range(1..=i32::MAX as i64))]
+    pub(crate) swapchain_resolution: Option<Vec<u32>>,
 
     /// CSS declarations applied to the Taffy container that holds render
     /// targets. Without this option the viewer uses its original vertical
@@ -232,6 +237,7 @@ impl ViewerArguments {
             target: self.target,
             track_render_targets: self.track_render_targets,
             graph_tracking: self.graph_tracking,
+            swapchain_resolution: self.swapchain_resolution.map(|size| [size[0], size[1]]),
             layout_css: self.layout_css,
             surfaces: self.surfaces,
             skip_surfaces: self.skip_surfaces,

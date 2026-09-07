@@ -24,6 +24,7 @@ pub(crate) struct LauncherState {
     pub(crate) hooks: Vec<GraphicsHook>,
     pub(crate) render_targets: Vec<TrackedRenderTarget>,
     pub(crate) graph_tracking: bool,
+    pub(crate) swapchain_resolution: Option<[u32; 2]>,
     pub(crate) gamepads: Vec<LauncherGamepad>,
 }
 
@@ -88,6 +89,7 @@ impl LauncherState {
             hooks: options.hooks.clone(),
             render_targets: options.track_render_targets.clone().unwrap_or_default(),
             graph_tracking: options.graph_tracking,
+            swapchain_resolution: options.swapchain_resolution,
             gamepads: vec![LauncherGamepad {
                 slot: 0,
                 selector: "K".to_owned(),
@@ -350,12 +352,18 @@ pub(crate) fn draw_launcher_window(
             if let Some(row) = remove_target {
                 launcher.render_targets.remove(row);
             }
-            ui.add_enabled_ui(!launcher.render_targets.is_empty(), |ui| {
-                ui.checkbox(
-                    &mut launcher.graph_tracking,
-                    "Resolve targets through the presentation dependency graph",
-                );
-            });
+            if let Some([width, height]) = launcher.swapchain_resolution {
+                ui.label(format!("Virtual swapchain: {width} x {height}"));
+            }
+            ui.add_enabled_ui(
+                !launcher.render_targets.is_empty() && launcher.swapchain_resolution.is_none(),
+                |ui| {
+                    ui.checkbox(
+                        &mut launcher.graph_tracking,
+                        "Resolve targets through the presentation dependency graph",
+                    );
+                },
+            );
             ui.separator();
             ui.horizontal(|ui| {
                 ui.strong("Virtual controller slots");

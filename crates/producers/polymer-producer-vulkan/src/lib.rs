@@ -13,6 +13,8 @@ mod swapchain;
 #[cfg(windows)]
 mod timeline;
 pub mod tracking;
+#[cfg(windows)]
+pub mod virtual_swapchain;
 
 pub use environment::{
     REQUIRED_DEVICE_EXTENSIONS, VulkanAdapter, VulkanEnvironment, VulkanProbeError,

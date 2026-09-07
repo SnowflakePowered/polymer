@@ -1401,15 +1401,23 @@ fn start_target_session(
                     id: polymer_runtime::TrackedSurfaceId(index),
                     render_target_index: index,
                     window_pattern: tracked_surface_patterns.get(slot).cloned().flatten(),
+                    resolution: launcher.swapchain_resolution,
+                    rotation: 0,
                 })
                 .collect::<Vec<_>>()
         })
         .unwrap_or_else(|| {
-            (0..surface_limit)
+            (0..if launcher.swapchain_resolution.is_some() {
+                1
+            } else {
+                surface_limit
+            })
                 .map(|index| polymer_runtime::TrackedSurfaceConfig {
                     id: polymer_runtime::TrackedSurfaceId(index),
                     render_target_index: index,
                     window_pattern: None,
+                    resolution: launcher.swapchain_resolution,
+                    rotation: 0,
                 })
                 .collect()
         });
@@ -1431,7 +1439,13 @@ fn start_target_session(
             tracked_surfaces: configured_surfaces,
             tracking_enabled: tracked_render_targets.is_some(),
             skip_surfaces,
-            graph_tracking,
+            render_mode: if launcher.swapchain_resolution.is_some() {
+                polymer_runtime::RenderMode::Swapchain
+            } else if graph_tracking {
+                polymer_runtime::RenderMode::GraphTracking
+            } else {
+                polymer_runtime::RenderMode::Intercept
+            },
             force_keyed_mutex,
         })?;
     let provider = InputHub::default();

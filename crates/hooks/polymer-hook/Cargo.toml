@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+polymer-presentation-config.workspace = true
 dashmap = "6.1.0"
 parking_lot.workspace = true
 paste = "1.0.15"

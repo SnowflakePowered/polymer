@@ -850,6 +850,16 @@ impl D3d12Compositor {
         Ok(())
     }
 
+    pub(crate) fn set_buffer_release_sender(&mut self, offer: &polymer_runtime::SurfaceOffer) {
+        if let Some(surface) = self
+            .surfaces
+            .iter_mut()
+            .find(|surface| surface.connection == offer.connection_id())
+        {
+            surface.frames.release_sender = offer.buffer_release_sender();
+        }
+    }
+
     pub(crate) fn set_latest(&mut self, connection: u64, frame: FrameReady) {
         let Some(surface) = self
             .surfaces
@@ -1041,6 +1051,7 @@ impl D3d12Compositor {
                             copied?;
                             released?;
                             surface.frames.prepare_pending(Retention::Cached);
+                            surface.frames.acknowledge_release(frame.sync_value)?;
                             // The synchronous copy really was submitted even
                             // if recording the main frame subsequently fails.
                             surface.frames.commit();
@@ -1181,6 +1192,7 @@ impl D3d12Compositor {
                     surface
                         .imported
                         .signal_release(self.receiver.queue(), value)?;
+                    surface.frames.acknowledge_release(value)?;
                 }
             }
             self.fence_value += 1;

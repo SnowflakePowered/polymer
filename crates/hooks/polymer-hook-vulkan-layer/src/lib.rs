@@ -7,6 +7,7 @@ mod observers;
 mod swapchain;
 mod terminal;
 mod transfers;
+mod virtual_swapchain;
 pub use hooks::{
     vkCmdBlitImage2, vkCmdBlitImage2KHR, vkCmdCopyImage2, vkCmdCopyImage2KHR, vkCmdResolveImage2,
     vkCmdResolveImage2KHR,
@@ -47,6 +48,11 @@ fn hook(pointer: *const ()) -> vk::PFN_vkVoidFunction {
 
 /// Central registration table for every entry point owned by the layer.
 pub(crate) fn registered_instance_hook(name: &[u8]) -> vk::PFN_vkVoidFunction {
+    if let Some(hook) =
+        virtual_swapchain::instance_hook(name).or_else(|| virtual_swapchain::device_hook(name))
+    {
+        return Some(hook);
+    }
     match name {
         b"vkGetInstanceProcAddr" => hook(hooks::vkGetInstanceProcAddr as *const ()),
         b"vkCreateInstance" => hook(hooks::vkCreateInstance as *const ()),
@@ -61,6 +67,9 @@ pub(crate) fn registered_instance_hook(name: &[u8]) -> vk::PFN_vkVoidFunction {
 }
 
 pub(crate) fn registered_device_hook(name: &[u8], tracking: bool) -> vk::PFN_vkVoidFunction {
+    if let Some(hook) = virtual_swapchain::device_hook(name) {
+        return Some(hook);
+    }
     let always = match name {
         b"vkGetDeviceProcAddr" => hook(hooks::vkGetDeviceProcAddr as *const ()),
         b"vkDestroyDevice" => hook(hooks::vkDestroyDevice as *const ()),
@@ -73,7 +82,7 @@ pub(crate) fn registered_device_hook(name: &[u8], tracking: bool) -> vk::PFN_vkV
         _ => None,
     };
     always.or_else(|| {
-        tracking.then_some(())?;
+        (tracking && !virtual_swapchain::enabled()).then_some(())?;
         match name {
             b"vkAllocateCommandBuffers" => hook(hooks::vkAllocateCommandBuffers as *const ()),
             b"vkFreeCommandBuffers" => hook(hooks::vkFreeCommandBuffers as *const ()),

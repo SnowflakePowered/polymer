@@ -40,6 +40,8 @@ pub struct TrackedSurfaceConfig {
     pub id: TrackedSurfaceId,
     pub render_target_index: u32,
     pub window_pattern: Option<String>,
+    pub resolution: Option<[u32; 2]>,
+    pub rotation: i32,
 }
 
 #[derive(Clone, Debug)]
@@ -54,11 +56,27 @@ pub struct EmulatorLaunchConfig {
     pub tracked_surfaces: Vec<TrackedSurfaceConfig>,
     pub tracking_enabled: bool,
     pub skip_surfaces: u32,
-    pub graph_tracking: bool,
+    pub render_mode: crate::RenderMode,
     pub force_keyed_mutex: bool,
 }
 
 impl EmulatorLaunchConfig {
+    pub fn render_configuration(&self) -> crate::RenderConfiguration {
+        crate::RenderConfiguration {
+            render_mode: self.render_mode,
+            surfaces: self
+                .tracked_surfaces
+                .iter()
+                .map(|surface| crate::SurfaceRequest {
+                    index: surface.render_target_index,
+                    pattern: surface.window_pattern.clone(),
+                    resolution: surface.resolution,
+                    rotation: surface.rotation,
+                })
+                .collect(),
+        }
+    }
+
     fn validate(&self) -> Result<(), LaunchError> {
         if self.session.is_empty() || self.session.contains(['/', '\\']) {
             return Err(LaunchError::InvalidConfig(
@@ -73,6 +91,23 @@ impl EmulatorLaunchConfig {
         if self.hooks.graphics.is_empty() {
             return Err(LaunchError::InvalidConfig(
                 "at least one graphics hook is required".to_owned(),
+            ));
+        }
+        self.render_configuration()
+            .validate()
+            .map_err(LaunchError::InvalidConfig)?;
+        if self.render_mode == crate::RenderMode::Swapchain
+            && self.hooks.graphics.iter().any(|hook| {
+                !matches!(
+                    hook,
+                    crate::GraphicsHook::D3d11
+                        | crate::GraphicsHook::D3d12
+                        | crate::GraphicsHook::Vulkan
+                )
+            })
+        {
+            return Err(LaunchError::InvalidConfig(
+                "swapchain render mode currently requires D3D11, D3D12, or Vulkan hooks".to_owned(),
             ));
         }
         let mut ids = HashSet::new();
@@ -542,6 +577,12 @@ pub struct SurfaceOffer {
 }
 
 impl SurfaceOffer {
+    pub fn buffer_release_sender(&self) -> Option<crate::capture::BufferReleaseSender> {
+        self.manager
+            .upgrade()?
+            .router()
+            .map(|router| router.buffer_release_sender(self.connection))
+    }
     pub const fn id(&self) -> TrackedSurfaceId {
         self.surface.id()
     }
@@ -827,6 +868,7 @@ struct ActiveSurface {
 pub(crate) struct SurfaceManager {
     hooks: Arc<[GraphicsHook]>,
     tracked_surfaces: Arc<[TrackedSurfaceConfig]>,
+    render_mode: crate::RenderMode,
     input: InputIpcListener,
     router: RwLock<Option<FrameRouter>>,
     events: SurfaceEventSender,
@@ -848,6 +890,7 @@ impl SurfaceManager {
         Self {
             hooks: Arc::from(config.hooks.graphics.clone()),
             tracked_surfaces: Arc::from(config.tracked_surfaces.clone()),
+            render_mode: config.render_mode,
             input,
             router: RwLock::new(None),
             events,
@@ -1093,6 +1136,23 @@ impl SurfaceManager {
     }
 
     fn unassigned_surface(&self, stream: &StreamReady) -> Option<TrackedSurfaceId> {
+        if self.render_mode == crate::RenderMode::Swapchain {
+            let index = graph_surface_index(stream.surface_id.0)?;
+            return self
+                .tracked_surfaces
+                .iter()
+                .find(|surface| {
+                    surface.render_target_index == index
+                        && surface.resolution == Some([stream.width, stream.height])
+                        && !self.active.contains_key(&surface.id)
+                        && !self
+                            .pending
+                            .iter()
+                            .any(|pending| pending.value().surface_id == surface.id)
+                })
+                .map(|surface| surface.id);
+        }
+
         graph_surface_index(stream.surface_id.0)
             .and_then(|index| {
                 self.tracked_surfaces
@@ -1429,10 +1489,12 @@ mod tests {
                 id: TrackedSurfaceId(7),
                 render_target_index: 0,
                 window_pattern: None,
+                resolution: None,
+                rotation: 0,
             }],
             tracking_enabled: true,
             skip_surfaces: 0,
-            graph_tracking: false,
+            render_mode: crate::RenderMode::Intercept,
             force_keyed_mutex: false,
         }
     }
@@ -1456,6 +1518,26 @@ mod tests {
             invalid.validate(),
             Err(LaunchError::InvalidConfig(_))
         ));
+    }
+
+    #[test]
+    fn virtual_launch_requires_implemented_backend_and_fixed_extent() {
+        let mut launch = config();
+        launch.render_mode = crate::RenderMode::Swapchain;
+        assert!(launch.validate().is_err());
+        launch.tracked_surfaces[0].resolution = Some([640, 528]);
+        for hook in [
+            GraphicsHook::D3d11,
+            GraphicsHook::D3d12,
+            GraphicsHook::Vulkan,
+        ] {
+            launch.hooks.graphics = vec![hook];
+            assert!(launch.validate().is_ok());
+        }
+        for hook in [GraphicsHook::OpenGl, GraphicsHook::Gdi] {
+            launch.hooks.graphics = vec![GraphicsHook::D3d11, hook];
+            assert!(launch.validate().is_err());
+        }
     }
 
     #[test]

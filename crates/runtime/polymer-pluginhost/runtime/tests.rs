@@ -183,7 +183,7 @@ fn package() -> (TempDir, PluginRegistry) {
                 command,
                 argv,
                 hooks: { graphics: ["vulkan"], input: ["sdl3"] },
-                graphTracking: true,
+                renderMode: "graphTracking",
                 surfaces: [{ index: 0 }],
               };
             }
@@ -239,7 +239,7 @@ fn configuration_mount_package() -> (TempDir, PluginRegistry) {
                 command: args.filesystem.path("/Emulator/emulator.exe"),
                 argv: [],
                 hooks: { graphics: [], input: ["sdl3"] },
-                graphTracking: false,
+                renderMode: "intercept",
                 surfaces: [],
               };
             }
@@ -611,7 +611,7 @@ async fn facade_on_emulator_launch_materializes_its_invocation_configuration() {
         .await
         .unwrap();
     assert_eq!(result["command"], "emulator.exe");
-    assert_eq!(result["graphTracking"], true);
+    assert_eq!(result["renderMode"], "graphTracking");
 
     let explicit_default = runtime
         .handle()
