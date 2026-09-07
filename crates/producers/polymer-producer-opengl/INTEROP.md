@@ -1,6 +1,6 @@
 # OpenGL pbuffer swapchains
 
-OpenGL requires `renderMode: "swapchain"` and a fixed positive resolution for each requested surface. The hook installer, runtime, and pluginhost reject `intercept` for OpenGL. Only GDI retains that mode.
+OpenGL uses a native swapchain and requires a fixed positive resolution for each requested surface.
 
 `WGL_ARB_pbuffer` provides an independent, driver-managed default framebuffer at the configured extent. Polymer uses the application's pixel format and context, redirects `wglMakeCurrent` and the ARB/EXT separate-read variants to the pbuffer DC, and routes presentation to that DC. Framebuffer zero remains native; application FBOs, shaders, resource bindings, and rendering calls are not intercepted.
 

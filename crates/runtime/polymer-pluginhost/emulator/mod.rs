@@ -18,9 +18,6 @@ pub struct EmulatorLaunchArguments {
     #[serde(default)]
     pub isolate: bool,
     pub hooks: Hooks,
-    /// Presentation mode. D3D11, D3D12, and Vulkan require native swapchains.
-    #[serde(default)]
-    pub render_mode: polymer_protocol::RenderMode,
     #[serde(default)]
     pub surfaces: Vec<TrackedSurface>,
     #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
@@ -44,11 +41,7 @@ pub struct EmulatorLaunchArguments {
 impl EmulatorLaunchArguments {
     pub fn validate_render_configuration(&self) -> Result<(), String> {
         use polymer_protocol::{RenderConfiguration, SurfaceRequest};
-        for hook in &self.hooks.graphics {
-            hook.validate_render_mode(self.render_mode)?;
-        }
         RenderConfiguration {
-            render_mode: self.render_mode,
             surfaces: self
                 .surfaces
                 .iter()
@@ -72,36 +65,14 @@ pub enum GraphicsHook {
     Vulkan,
     D3d11,
     D3d12,
-    Gdi,
 }
 
 impl GraphicsHook {
-    pub fn validate_render_mode(
-        self,
-        mode: polymer_protocol::RenderMode,
-    ) -> Result<(), String> {
-        use polymer_protocol::RenderMode;
-        let supported = match self {
-            Self::D3d11 | Self::D3d12 | Self::Vulkan | Self::OpenGl => mode == RenderMode::Swapchain,
-            Self::Gdi => mode == RenderMode::Intercept,
-        };
-        if supported {
-            Ok(())
-        } else {
-            Err(format!(
-                "{} does not support renderMode '{}'; D3D11, D3D12, Vulkan, and OpenGL require swapchain mode with fixed surface resolutions",
-                self.label(),
-                mode.as_str()
-            ))
-        }
-    }
-
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 4] = [
         Self::Vulkan,
         Self::OpenGl,
         Self::D3d12,
         Self::D3d11,
-        Self::Gdi,
     ];
 
     pub const fn label(self) -> &'static str {
@@ -110,17 +81,15 @@ impl GraphicsHook {
             Self::OpenGl => "OpenGL",
             Self::D3d12 => "D3D12",
             Self::D3d11 => "D3D11",
-            Self::Gdi => "GDI",
         }
     }
 
     pub const fn class(self) -> u8 {
         match self {
-            Self::Gdi => 0,
-            Self::D3d11 => 1,
-            Self::D3d12 => 2,
-            Self::OpenGl => 3,
-            Self::Vulkan => 4,
+            Self::D3d11 => 0,
+            Self::D3d12 => 1,
+            Self::OpenGl => 2,
+            Self::Vulkan => 3,
         }
     }
 }

@@ -15,9 +15,6 @@ pub struct AttachedLaunchPlan {
     #[serde(default)]
     pub isolated: bool,
     pub hooks: Hooks,
-    /// Selects native swapchain presentation or OpenGL/GDI capture.
-    #[serde(default)]
-    pub render_mode: polymer_runtime::RenderMode,
     #[serde(default)]
     pub surfaces: Vec<AttachedTrackedSurface>,
     #[serde(default)]
@@ -83,7 +80,6 @@ impl AttachedLaunchPlan {
             }
         }
         polymer_runtime::RenderConfiguration {
-            render_mode: self.render_mode,
             surfaces: self
                 .surfaces
                 .iter()
@@ -117,7 +113,6 @@ mod tests {
                     "graphics": ["d3d12"],
                     "input": ["sdl3"]
                 },
-                "renderMode": "swapchain",
                 "surfaces": [{
                     "index": 0,
                     "rotation": 0,
@@ -130,7 +125,6 @@ mod tests {
             }"#,
         )
         .unwrap();
-        assert_eq!(launch.render_mode, polymer_runtime::RenderMode::Swapchain);
         launch.validate().unwrap();
     }
 }

@@ -9556,16 +9556,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "polymer-hook-gdi"
-version = "0.1.0"
-dependencies = [
- "polymer-hook",
- "polymer-platform-windows",
- "polymer-producer-gdi",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "polymer-hook-input"
 version = "0.1.0"
 dependencies = [
@@ -9874,20 +9864,6 @@ dependencies = [
  "polymer-hook-dxgi",
  "polymer-platform-windows",
  "polymer-presentation",
- "polymer-protocol",
- "tracing",
- "windows 0.61.3",
-]
-
-[[package]]
-name = "polymer-producer-gdi"
-version = "0.1.0"
-dependencies = [
- "parking_lot",
- "polymer-hook",
- "polymer-ipc",
- "polymer-platform-windows",
- "polymer-producer-d3d11",
  "polymer-protocol",
  "tracing",
  "windows 0.61.3",

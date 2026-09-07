@@ -115,7 +115,7 @@ fn launcher_preserves_render_target_order_and_rotation() -> Result<(), Box<dyn E
 }
 
 #[test]
-fn hook_selection_defaults_to_auto_without_gdi() -> Result<(), Box<dyn Error>> {
+fn hook_selection_defaults_to_auto() -> Result<(), Box<dyn Error>> {
     assert_eq!(
         arguments(&[
             "--swapchain-resolution",
@@ -129,7 +129,6 @@ fn hook_selection_defaults_to_auto_without_gdi() -> Result<(), Box<dyn Error>> {
         .hooks,
         AUTO_HOOKS
     );
-    assert!(!AUTO_HOOKS.contains(&GraphicsHook::Gdi));
     Ok(())
 }
 

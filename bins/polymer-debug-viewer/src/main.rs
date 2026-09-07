@@ -238,7 +238,6 @@ fn d3d12_consumable(stream: &StreamReady) -> bool {
             | ExternalImageKind::OpenGlD3d12Resource
             | ExternalImageKind::VulkanD3d12Resource
             | ExternalImageKind::D3d11D3d12Resource
-            | ExternalImageKind::GdiD3d12Resource
     ) && stream.sync_kind == ExternalSyncKind::D3d12Fence
 }
 
@@ -519,7 +518,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             &launcher,
             &executable_dir,
             &session,
-            surface_limit,
             options.skip_surfaces,
             viewer_api,
             launcher.tracked_render_target_indices(),
@@ -796,7 +794,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     | ExternalImageKind::D3d12Heap => "D3D12",
                                     ExternalImageKind::OpenGlD3d12Resource => "OpenGL",
                                     ExternalImageKind::VulkanD3d12Resource => "Vulkan",
-                                    ExternalImageKind::GdiD3d12Resource => "GDI",
                                 };
                                 if stream.source_window != 0 {
                                     let source = NativeWindow(stream.source_window as isize);
@@ -1258,7 +1255,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                             &launcher,
                             &executable_dir,
                             &session,
-                            surface_limit,
                             options.skip_surfaces,
                             viewer_api,
                             launcher.tracked_render_target_indices(),
@@ -1346,7 +1342,6 @@ fn start_target_session(
     launcher: &LauncherState,
     executable_dir: &Path,
     session: &str,
-    surface_limit: u32,
     skip_surfaces: u32,
     viewer_api: ViewerApi,
     tracked_render_targets: Option<Vec<u32>>,
@@ -1380,26 +1375,18 @@ fn start_target_session(
                     id: polymer_runtime::TrackedSurfaceId(index),
                     render_target_index: index,
                     window_pattern: tracked_surface_patterns.get(slot).cloned().flatten(),
-                    resolution: launcher.swapchain_resolution.filter(|_| {
-                        launcher.render_mode() == polymer_runtime::RenderMode::Swapchain
-                    }),
+                    resolution: launcher.swapchain_resolution,
                     rotation: 0,
                 })
                 .collect::<Vec<_>>()
         })
         .unwrap_or_else(|| {
-            (0..if launcher.render_mode() == polymer_runtime::RenderMode::Swapchain {
-                1
-            } else {
-                surface_limit
-            })
+            (0..1)
                 .map(|index| polymer_runtime::TrackedSurfaceConfig {
                     id: polymer_runtime::TrackedSurfaceId(index),
                     render_target_index: index,
                     window_pattern: None,
-                    resolution: launcher.swapchain_resolution.filter(|_| {
-                        launcher.render_mode() == polymer_runtime::RenderMode::Swapchain
-                    }),
+                    resolution: launcher.swapchain_resolution,
                     rotation: 0,
                 })
                 .collect()
@@ -1422,7 +1409,6 @@ fn start_target_session(
             tracked_surfaces: configured_surfaces,
             tracking_enabled: tracked_render_targets.is_some(),
             skip_surfaces,
-            render_mode: launcher.render_mode(),
         })?;
     let provider = InputHub::default();
     let backend = Arc::new(

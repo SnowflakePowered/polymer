@@ -4,24 +4,6 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum RenderMode {
-    /// GDI capture only.
-    Intercept,
-    #[default]
-    Swapchain,
-}
-
-impl RenderMode {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Intercept => "intercept",
-            Self::Swapchain => "swapchain",
-        }
-    }
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SurfaceRequest {
@@ -38,8 +20,6 @@ pub struct SurfaceRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RenderConfiguration {
     #[serde(default)]
-    pub render_mode: RenderMode,
-    #[serde(default)]
     pub surfaces: Vec<SurfaceRequest>,
 }
 
@@ -47,7 +27,7 @@ impl RenderConfiguration {
     /// Run before injection and again before constructing a producer registry.
     /// Device and format limits must additionally be checked by the backend.
     pub fn validate(&self) -> Result<(), String> {
-        if self.render_mode == RenderMode::Swapchain && self.surfaces.is_empty() {
+        if self.surfaces.is_empty() {
             return Err("swapchain mode requires at least one surfaces entry".into());
         }
         let mut indices = HashSet::new();
@@ -63,7 +43,7 @@ impl RenderConfiguration {
                     .map_err(|error| format!("surfaces[{ordinal}].pattern: {error}"))?;
             }
             surface
-                .validate_extent(self.render_mode)
+                .validate_extent()
                 .map_err(|error| format!("surfaces[{ordinal}].resolution: {error}"))?;
         }
         Ok(())
@@ -71,13 +51,9 @@ impl RenderConfiguration {
 }
 
 impl SurfaceRequest {
-    fn validate_extent(&self, mode: RenderMode) -> Result<(), &'static str> {
+    fn validate_extent(&self) -> Result<(), &'static str> {
         let Some([width, height]) = self.resolution else {
-            return if mode == RenderMode::Swapchain {
-                Err("required in swapchain mode")
-            } else {
-                Ok(())
-            };
+            return Err("required in swapchain mode");
         };
         if width == 0 || height == 0 {
             return Err("dimensions must be positive integers");

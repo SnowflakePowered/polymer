@@ -1,6 +1,6 @@
 use crate::{
     Extent2D,
-    configuration::{RenderConfiguration, RenderMode},
+    configuration::RenderConfiguration,
     registry::PresentationRegistry,
 };
 use regex::Regex;
@@ -113,9 +113,6 @@ impl AssignmentRegistry {
     }
     pub fn new(configuration: &RenderConfiguration) -> Result<Arc<Self>, String> {
         configuration.validate()?;
-        if configuration.render_mode != RenderMode::Swapchain {
-            return Err("virtual assignment requires swapchain mode".into());
-        }
         let requests = configuration
             .surfaces
             .iter()

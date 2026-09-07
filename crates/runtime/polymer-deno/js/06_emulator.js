@@ -56,7 +56,6 @@ export function createEmulator(webrtc) {
         graphics: [...options.hooks.graphics],
         input: [...options.hooks.input],
       },
-      renderMode: options.renderMode ?? "swapchain",
       surfaces: options.surfaces.map((surface) => ({
         index: surface.index,
         rotation: surface.rotation || 0,

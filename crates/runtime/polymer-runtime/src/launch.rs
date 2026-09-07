@@ -136,13 +136,6 @@ fn hook_environment(runtime: &EmulatorLaunchConfig) -> Vec<(OsString, OsString)>
                 .into_os_string(),
         ),
         (
-            OsString::from(config::GDI_LOG_FILE),
-            runtime
-                .artifact_root
-                .join("polymer-gdi.log")
-                .into_os_string(),
-        ),
-        (
             OsString::from(config::BLUETOOTH_API_LOG_FILE),
             runtime
                 .artifact_root
@@ -243,13 +236,6 @@ fn hook_libraries(
             "OpenGL",
             "polymer_hook_opengl32.dll",
             c"PolymerInstallOpenGlHook",
-        ));
-    }
-    if hooks.contains(&GraphicsHook::Gdi) {
-        libraries.push(InjectionLibrary::new(
-            "GDI",
-            "polymer_hook_gdi.dll",
-            c"PolymerInstallGdiHook",
         ));
     }
     libraries.push(InjectionLibrary::new(

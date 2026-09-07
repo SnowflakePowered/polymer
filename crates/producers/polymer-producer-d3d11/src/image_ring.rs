@@ -5,8 +5,8 @@ use windows::{
         Foundation::GENERIC_ALL,
         Graphics::{
             Direct3D11::{
-                D3D11_FENCE_FLAG_SHARED, D3D11_RESOURCE_MISC_GDI_COMPATIBLE,
-                D3D11_RESOURCE_MISC_SHARED, D3D11_RESOURCE_MISC_SHARED_NTHANDLE,
+                D3D11_FENCE_FLAG_SHARED, D3D11_RESOURCE_MISC_SHARED,
+                D3D11_RESOURCE_MISC_SHARED_NTHANDLE,
                 D3D11_TEXTURE2D_DESC, ID3D11Device, ID3D11Device5, ID3D11Fence, ID3D11Texture2D,
             },
             Dxgi::IDXGIResource1,
@@ -49,24 +49,6 @@ impl D3d11ImageRing {
         source: &D3D11_TEXTURE2D_DESC,
         slot_count: u32,
     ) -> windows::core::Result<Self> {
-        unsafe { Self::new_inner(device, source, slot_count, false) }
-    }
-
-    /// Creates a fence-synchronized ring whose textures can be rendered by GDI.
-    pub unsafe fn new_gdi(
-        device: &ID3D11Device,
-        source: &D3D11_TEXTURE2D_DESC,
-        slot_count: u32,
-    ) -> windows::core::Result<Self> {
-        unsafe { Self::new_inner(device, source, slot_count, true) }
-    }
-
-    unsafe fn new_inner(
-        device: &ID3D11Device,
-        source: &D3D11_TEXTURE2D_DESC,
-        slot_count: u32,
-        gdi_compatible: bool,
-    ) -> windows::core::Result<Self> {
         if slot_count == 0 {
             return Err(Error::from_hresult(HRESULT(0x8000_4003u32 as i32)));
         }
@@ -85,11 +67,8 @@ impl D3d11ImageRing {
         shared_desc.SampleDesc.Count = 1;
         shared_desc.SampleDesc.Quality = 0;
         shared_desc.CPUAccessFlags = 0;
-        let mut flags = D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED;
-        if gdi_compatible {
-            flags |= D3D11_RESOURCE_MISC_GDI_COMPATIBLE;
-        }
-        shared_desc.MiscFlags = flags.0 as u32;
+        shared_desc.MiscFlags =
+            (D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED).0 as u32;
 
         let mut slots = Vec::with_capacity(slot_count as usize);
         for _ in 0..slot_count {

@@ -120,7 +120,7 @@ fn native_pbuffer_survives_resize_rebind_and_separate_read_dc() {
     unsafe {
         std::env::set_var(
             polymer_hook::config::RENDER_CONFIGURATION,
-            r#"{"renderMode":"swapchain","surfaces":[{"index":0,"pattern":"^pbuffer-regression-A$","resolution":[64,48]},{"index":1,"pattern":"^pbuffer-regression-B$","resolution":[96,72]}]}"#,
+            r#"{"surfaces":[{"index":0,"pattern":"^pbuffer-regression-A$","resolution":[64,48]},{"index":1,"pattern":"^pbuffer-regression-B$","resolution":[96,72]}]}"#,
         );
         assert_eq!(crate::install::install(), 0);
         let _installed = Installed;

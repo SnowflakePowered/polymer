@@ -6,7 +6,7 @@ This records the refined acknowledgment/DDI design. It replaces the historical s
 
 D3D11, D3D12, and Vulkan now support only native zero-copy swapchain presentation. Their graph trackers, draw/resource observers, copy-capture engines, native-swapchain capture ownership, and related hook tables are deleted. There is no capture fallback. Unmatched application UI surfaces remain native and unexported.
 
-`renderMode` defaults to `"swapchain"`; every requested surface requires a fixed positive `resolution`. Pluginhost and runtime reject `"intercept"` and `"graphTracking"` with these three APIs, including mixed launch requests with capture-only backends. Hook installation independently requires a valid swapchain configuration. The old environment-only render-mode fallback and `POLYMER_GRAPH_TRACKING`/`POLYMER_PRESENT_UNTHROTTLED` controls are removed.
+Every requested surface requires a fixed positive `resolution`; presentation is always swapchain-based. Hook installation independently requires a valid swapchain configuration. The old render-mode controls, `POLYMER_GRAPH_TRACKING`, and `POLYMER_PRESENT_UNTHROTTLED` are removed.
 
 OpenGL now requires `"swapchain"` using independent WGL pbuffers; only GDI uses `"intercept"` mode. The removed `"graphTracking"` mode is no longer part of the launch schema. Shared allocation utilities needed by those producers remain. D3D11's scoped DDI resource-identity collection also remains: it enables native allocation rotation and does not capture application rendering.
 

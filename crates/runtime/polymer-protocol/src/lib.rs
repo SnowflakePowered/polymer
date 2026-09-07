@@ -7,9 +7,9 @@ pub mod configuration;
 pub mod input;
 
 pub use capture::{CaptureError, FrameConsumer, FrameProducer, SurfaceDesc};
-pub use configuration::{RenderConfiguration, RenderMode, SurfaceRequest};
+pub use configuration::{RenderConfiguration, SurfaceRequest};
 
-pub const PROTOCOL_VERSION: u32 = 18;
+pub const PROTOCOL_VERSION: u32 = 19;
 /// Fractional bits used by coordinates in [`PresentationPoint`].
 pub const PRESENTATION_COORD_FRACTIONAL_BITS: u32 = 16;
 pub const MAX_IMAGE_SLOTS: usize = 4;
@@ -121,9 +121,6 @@ pub enum ExternalImageKind {
     /// Fence-synchronized D3D11 shared resource, opened through its NT handle
     /// by D3D12 or as D3D11_TEXTURE external memory by Vulkan.
     D3d11D3d12Resource = 7,
-    /// D3D11 shared resource painted through a GDI surface DC and opened by
-    /// D3D12 through its NT handle.
-    GdiD3d12Resource = 8,
 }
 
 impl TryFrom<u32> for ExternalImageKind {
@@ -137,7 +134,6 @@ impl TryFrom<u32> for ExternalImageKind {
             5 => Ok(Self::OpenGlD3d12Resource),
             6 => Ok(Self::VulkanD3d12Resource),
             7 => Ok(Self::D3d11D3d12Resource),
-            8 => Ok(Self::GdiD3d12Resource),
             _ => Err(()),
         }
     }

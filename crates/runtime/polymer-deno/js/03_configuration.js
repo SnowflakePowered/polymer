@@ -109,7 +109,6 @@ export function createConfiguration(pluginApi) {
           graphics: [...plugin.hooks.graphics],
           input: [...plugin.hooks.input],
         },
-        renderMode: plugin.renderMode ?? "swapchain",
         surfaces: (plugin.surfaces || []).map((surface) => Object.freeze({
           index: surface.index,
           rotation: surface.rotation || 0,

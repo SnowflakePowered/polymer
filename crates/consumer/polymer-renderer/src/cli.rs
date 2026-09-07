@@ -20,7 +20,6 @@ enum HookChoice {
     OpenGl,
     D3d12,
     D3d11,
-    Gdi,
 }
 
 impl HookChoice {
@@ -31,7 +30,6 @@ impl HookChoice {
             Self::OpenGl => Some(GraphicsHook::OpenGl),
             Self::D3d12 => Some(GraphicsHook::D3d12),
             Self::D3d11 => Some(GraphicsHook::D3d11),
-            Self::Gdi => Some(GraphicsHook::Gdi),
         }
     }
 }
@@ -193,28 +191,11 @@ struct ViewerArguments {
 }
 
 impl ViewerArguments {
-    fn validate_presentation(&self, hooks: &[GraphicsHook]) -> Result<(), Box<dyn Error>> {
-        let mode = if hooks.iter().any(|hook| {
-            matches!(
-                hook,
-                GraphicsHook::D3d11 | GraphicsHook::D3d12 | GraphicsHook::Vulkan | GraphicsHook::OpenGl
-            )
-        }) {
-            polymer_runtime::RenderMode::Swapchain
-        } else {
-            polymer_runtime::RenderMode::Intercept
-        };
-        for hook in hooks {
-            hook.validate_render_mode(mode)?;
-        }
-        if mode == polymer_runtime::RenderMode::Swapchain {
-            if !self.target.is_empty() && self.swapchain_resolution.is_none() {
-                return Err(
-                    "D3D11, D3D12, Vulkan, and OpenGL require --swapchain-resolution WIDTH HEIGHT".into(),
-                );
-            }
-        } else if self.swapchain_resolution.is_some() {
-            return Err("--swapchain-resolution requires D3D11, D3D12, Vulkan, or OpenGL hooks".into());
+    fn validate_presentation(&self) -> Result<(), Box<dyn Error>> {
+        if !self.target.is_empty() && self.swapchain_resolution.is_none() {
+            return Err(
+                "graphics hooks require --swapchain-resolution WIDTH HEIGHT".into(),
+            );
         }
         Ok(())
     }
@@ -225,7 +206,7 @@ impl ViewerArguments {
         if hooks.is_empty() {
             hooks.extend(AUTO_HOOKS);
         }
-        self.validate_presentation(&hooks)?;
+        self.validate_presentation()?;
         if let Some(targets) = &self.webrtc {
             let mut unique = HashSet::new();
             if targets.iter().any(|target| !unique.insert(*target)) {

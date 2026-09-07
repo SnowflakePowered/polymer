@@ -544,7 +544,6 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
             input: ["sdl3", "bluetooth-api-win32"],
         },
         controllerTopology,
-        renderMode: "swapchain",
         surfaces: [
             { index: 0, pattern: "Dolphin", resolution: [640, 480] }
         ],

@@ -6,7 +6,7 @@ D3D11, D3D12, and Vulkan use native shared swapchains. OpenGL uses fixed WGL pbu
 
 ## 1. Configuration and architectural ownership
 
-- D3D11, D3D12, and Vulkan support only renderMode: "swapchain" (the default). Their interception capture and graph tracking are removed; do not restore compatibility paths. OpenGL also requires "swapchain"; only GDI uses "intercept". Graph tracking, NV/CPU capture fallbacks, and keyed-mutex transports are deleted.
+- D3D11, D3D12, Vulkan, and OpenGL use fixed native swapchains. Render modes, GDI capture, graph tracking, NV/CPU capture fallbacks, and keyed-mutex transports are deleted; do not restore compatibility paths.
 - Every swapchain surface requires an immutable positive resolution: [width, height]. Preserve configured index, public pattern, rotation, and display order.
 - Match actual HWND lifetimes and titles. Image indices and swapchain creation order are not configured surface identities.
 - One active graphics producer owns the assignments for a launch. Support destruction/recreation at the same configured extent, device loss, disconnect, and retirement.

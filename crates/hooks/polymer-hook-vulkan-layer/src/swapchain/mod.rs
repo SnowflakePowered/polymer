@@ -24,7 +24,7 @@ static SWAPCHAINS: LazyLock<DashMap<vk::SwapchainKHR, Arc<wsi::Swapchain>>> =
     LazyLock::new(DashMap::new);
 
 pub(crate) fn enabled() -> bool {
-    polymer_hook::config::render_mode() == Ok(polymer_hook::config::RenderMode::Swapchain)
+    polymer_hook::config::render_configuration().is_ok()
 }
 
 pub(crate) fn device_hook(name: &[u8]) -> vk::PFN_vkVoidFunction {

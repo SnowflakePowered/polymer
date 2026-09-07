@@ -5,7 +5,7 @@ mod read_binding;
 use crate::interop::{Hdc, Hglrc, current_context};
 use native::Pbuffer;
 use parking_lot::Mutex;
-use polymer_hook::config::{self, RenderMode};
+use polymer_hook::config;
 use polymer_platform_windows::{FixedWindowBinding, NativeWindow, WindowLifetime};
 use polymer_presentation::{producer::ProducerWindows, swapchain::*};
 use std::{
@@ -62,7 +62,7 @@ static ASSIGNMENTS: LazyLock<Result<Arc<AssignmentRegistry>, String>> = LazyLock
 pub struct WglSwapchain;
 impl WglSwapchain {
     pub fn enabled() -> bool {
-        !INTERNAL.get() && config::render_mode() == Ok(RenderMode::Swapchain)
+        !INTERNAL.get() && config::render_configuration().is_ok()
     }
 
     pub fn native<T>(operation: impl FnOnce() -> T) -> T {

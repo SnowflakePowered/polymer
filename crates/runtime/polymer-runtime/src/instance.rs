@@ -56,13 +56,11 @@ pub struct EmulatorLaunchConfig {
     pub tracked_surfaces: Vec<TrackedSurfaceConfig>,
     pub tracking_enabled: bool,
     pub skip_surfaces: u32,
-    pub render_mode: crate::RenderMode,
 }
 
 impl EmulatorLaunchConfig {
     pub fn render_configuration(&self) -> crate::RenderConfiguration {
         crate::RenderConfiguration {
-            render_mode: self.render_mode,
             surfaces: self
                 .tracked_surfaces
                 .iter()
@@ -95,10 +93,6 @@ impl EmulatorLaunchConfig {
         self.render_configuration()
             .validate()
             .map_err(LaunchError::InvalidConfig)?;
-        for hook in &self.hooks.graphics {
-            hook.validate_render_mode(self.render_mode)
-                .map_err(LaunchError::InvalidConfig)?;
-        }
         let mut ids = HashSet::new();
         if self
             .tracked_surfaces
@@ -857,7 +851,6 @@ struct ActiveSurface {
 pub(crate) struct SurfaceManager {
     hooks: Arc<[GraphicsHook]>,
     tracked_surfaces: Arc<[TrackedSurfaceConfig]>,
-    render_mode: crate::RenderMode,
     input: InputIpcListener,
     router: RwLock<Option<FrameRouter>>,
     events: SurfaceEventSender,
@@ -879,7 +872,6 @@ impl SurfaceManager {
         Self {
             hooks: Arc::from(config.hooks.graphics.clone()),
             tracked_surfaces: Arc::from(config.tracked_surfaces.clone()),
-            render_mode: config.render_mode,
             input,
             router: RwLock::new(None),
             events,
@@ -1125,43 +1117,19 @@ impl SurfaceManager {
     }
 
     fn unassigned_surface(&self, stream: &StreamReady) -> Option<TrackedSurfaceId> {
-        if self.render_mode == crate::RenderMode::Swapchain {
-            let index = logical_surface_index(stream.surface_id.0)?;
-            return self
-                .tracked_surfaces
-                .iter()
-                .find(|surface| {
-                    surface.render_target_index == index
-                        && surface.resolution == Some([stream.width, stream.height])
-                        && !self.active.contains_key(&surface.id)
-                        && !self
-                            .pending
-                            .iter()
-                            .any(|pending| pending.value().surface_id == surface.id)
-                })
-                .map(|surface| surface.id);
-        }
-
-        logical_surface_index(stream.surface_id.0)
-            .and_then(|index| {
-                self.tracked_surfaces
-                    .iter()
-                    .find(|surface| surface.render_target_index == index)
-                    .map(|surface| surface.id)
+        let index = logical_surface_index(stream.surface_id.0)?;
+        self.tracked_surfaces
+            .iter()
+            .find(|surface| {
+                surface.render_target_index == index
+                    && surface.resolution == Some([stream.width, stream.height])
+                    && !self.active.contains_key(&surface.id)
+                    && !self
+                        .pending
+                        .iter()
+                        .any(|pending| pending.value().surface_id == surface.id)
             })
-            .filter(|id| !self.active.contains_key(id))
-            .or_else(|| {
-                self.tracked_surfaces
-                    .iter()
-                    .find(|surface| {
-                        !self.active.contains_key(&surface.id)
-                            && !self
-                                .pending
-                                .iter()
-                                .any(|pending| pending.value().surface_id == surface.id)
-                    })
-                    .map(|surface| surface.id)
-            })
+            .map(|surface| surface.id)
     }
 
     fn shutdown(&self) {
@@ -1446,7 +1414,6 @@ fn logical_surface_index(surface_id: u64) -> Option<u32> {
 
 fn stream_backend(kind: ExternalImageKind) -> GraphicsHook {
     match kind {
-        ExternalImageKind::GdiD3d12Resource => GraphicsHook::Gdi,
         ExternalImageKind::D3d11D3d12Resource => GraphicsHook::D3d11,
         ExternalImageKind::D3d12Resource | ExternalImageKind::D3d12Heap => GraphicsHook::D3d12,
         ExternalImageKind::OpenGlD3d12Resource => GraphicsHook::OpenGl,
@@ -1481,7 +1448,6 @@ mod tests {
             }],
             tracking_enabled: true,
             skip_surfaces: 0,
-            render_mode: crate::RenderMode::Swapchain,
         }
     }
 
@@ -1521,33 +1487,6 @@ mod tests {
             launch.hooks.graphics = vec![hook];
             assert!(launch.validate().is_ok());
         }
-        for hook in [GraphicsHook::Gdi] {
-            launch.hooks.graphics = vec![GraphicsHook::D3d11, hook];
-            assert!(launch.validate().is_err());
-        }
-    }
-
-    #[test]
-    fn production_launch_rejects_capture_mode() {
-        for hook in [
-            GraphicsHook::D3d11,
-            GraphicsHook::D3d12,
-            GraphicsHook::Vulkan,
-            GraphicsHook::OpenGl,
-        ] {
-            let mut launch = config();
-            launch.hooks.graphics = vec![hook];
-            launch.render_mode = crate::RenderMode::Intercept;
-            assert!(matches!(
-                launch.validate(),
-                Err(LaunchError::InvalidConfig(_))
-            ));
-        }
-        let mut launch = config();
-        launch.hooks.graphics = vec![GraphicsHook::Gdi];
-        launch.render_mode = crate::RenderMode::Intercept;
-        launch.tracked_surfaces[0].resolution = None;
-        assert!(launch.validate().is_ok());
     }
 
     #[test]
@@ -1560,7 +1499,6 @@ mod tests {
     #[test]
     fn maps_every_external_image_kind_to_a_hook() {
         for (kind, expected) in [
-            (ExternalImageKind::GdiD3d12Resource, GraphicsHook::Gdi),
             (ExternalImageKind::D3d11D3d12Resource, GraphicsHook::D3d11),
             (ExternalImageKind::D3d12Resource, GraphicsHook::D3d12),
             (ExternalImageKind::D3d12Heap, GraphicsHook::D3d12),

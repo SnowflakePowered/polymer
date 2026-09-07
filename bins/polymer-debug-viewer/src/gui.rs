@@ -97,19 +97,6 @@ impl LauncherState {
         }
     }
 
-    pub(crate) fn render_mode(&self) -> polymer_runtime::RenderMode {
-        if self.hooks.iter().any(|hook| {
-            matches!(
-                hook,
-                GraphicsHook::D3d11 | GraphicsHook::D3d12 | GraphicsHook::Vulkan | GraphicsHook::OpenGl
-            )
-        }) {
-            polymer_runtime::RenderMode::Swapchain
-        } else {
-            polymer_runtime::RenderMode::Intercept
-        }
-    }
-
     pub(crate) fn target(&self) -> Result<Vec<String>, String> {
         if let Some(target) = &self.cli_target {
             return Ok(target.clone());
@@ -202,14 +189,9 @@ impl LauncherState {
     }
 
     pub(crate) fn validate_render_targets(&self) -> Result<(), String> {
-        let mode = self.render_mode();
-        for hook in &self.hooks {
-            hook.validate_render_mode(mode)?;
-        }
-        if mode == polymer_runtime::RenderMode::Swapchain
-            && !self
-                .swapchain_resolution
-                .is_some_and(|[width, height]| width > 0 && height > 0)
+        if !self
+            .swapchain_resolution
+            .is_some_and(|[width, height]| width > 0 && height > 0)
         {
             return Err("Set a positive swapchain width and height".into());
         }
@@ -387,7 +369,7 @@ pub(crate) fn draw_launcher_window(
             if let Some(row) = remove_target {
                 launcher.render_targets.remove(row);
             }
-            if launcher.render_mode() == polymer_runtime::RenderMode::Swapchain {
+            {
                 let size = launcher.swapchain_resolution.get_or_insert([640, 480]);
                 ui.horizontal(|ui| {
                     ui.label("Swapchain resolution");
