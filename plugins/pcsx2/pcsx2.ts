@@ -116,8 +116,9 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
         isolate: false,
         hooks: { graphics: ["d3d11"], input: ["sdl3"] },
         
+        renderMode: "swapchain",
         surfaces: [
-            { index: 0 },
+            { resolution: [640, 480], index: 0 },
         ],
     };
 };

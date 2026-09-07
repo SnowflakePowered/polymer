@@ -89,13 +89,28 @@ impl LauncherState {
             hooks: options.hooks.clone(),
             render_targets: options.track_render_targets.clone().unwrap_or_default(),
             graph_tracking: options.graph_tracking,
-            swapchain_resolution: options.swapchain_resolution,
+            swapchain_resolution: options.swapchain_resolution.or(Some([640, 480])),
             gamepads: vec![LauncherGamepad {
                 slot: 0,
                 selector: "K".to_owned(),
                 layout: "XBOX_CONTROLLER".to_owned(),
                 force_mouse: true,
             }],
+        }
+    }
+
+    pub(crate) fn render_mode(&self) -> polymer_runtime::RenderMode {
+        if self.hooks.iter().any(|hook| {
+            matches!(
+                hook,
+                GraphicsHook::D3d11 | GraphicsHook::D3d12 | GraphicsHook::Vulkan
+            )
+        }) {
+            polymer_runtime::RenderMode::Swapchain
+        } else if self.graph_tracking {
+            polymer_runtime::RenderMode::GraphTracking
+        } else {
+            polymer_runtime::RenderMode::Intercept
         }
     }
 
@@ -191,6 +206,17 @@ impl LauncherState {
     }
 
     pub(crate) fn validate_render_targets(&self) -> Result<(), String> {
+        let mode = self.render_mode();
+        for hook in &self.hooks {
+            hook.validate_render_mode(mode)?;
+        }
+        if mode == polymer_runtime::RenderMode::Swapchain
+            && !self
+                .swapchain_resolution
+                .is_some_and(|[width, height]| width > 0 && height > 0)
+        {
+            return Err("Set a positive swapchain width and height".into());
+        }
         let mut indices = HashSet::new();
         if self
             .render_targets
@@ -295,6 +321,20 @@ pub(crate) fn draw_launcher_window(
                     let mut enabled = launcher.hooks.contains(&hook);
                     if ui.checkbox(&mut enabled, hook.label()).changed() {
                         if enabled {
+                            let native = matches!(
+                                hook,
+                                GraphicsHook::D3d11 | GraphicsHook::D3d12 | GraphicsHook::Vulkan
+                            );
+                            launcher.hooks.retain(|existing| {
+                                native
+                                    && matches!(
+                                        existing,
+                                        GraphicsHook::D3d11
+                                            | GraphicsHook::D3d12
+                                            | GraphicsHook::Vulkan
+                                    )
+                            });
+                            launcher.graph_tracking = false;
                             launcher.hooks.push(hook);
                         } else {
                             launcher.hooks.retain(|value| *value != hook);
@@ -304,8 +344,8 @@ pub(crate) fn draw_launcher_window(
             });
             ui.separator();
             ui.horizontal(|ui| {
-                ui.strong("Tracked render targets");
-                if ui.small_button("Add target").clicked() {
+                ui.strong("Surfaces");
+                if ui.small_button("Add surface").clicked() {
                     let index = (0..16)
                         .find(|index| {
                             !launcher
@@ -326,7 +366,7 @@ pub(crate) fn draw_launcher_window(
             for (row, target) in launcher.render_targets.iter_mut().enumerate() {
                 ui.horizontal(|ui| {
                     ui.label(format!("Display {}", row));
-                    ui.label("Target index");
+                    ui.label("Surface index");
                     ui.add(egui::DragValue::new(&mut target.index).range(0..=15));
                     egui::ComboBox::from_id_salt(("launcher-target-rotation", row))
                         .selected_text(format!("{}°", u16::from(target.quarter_turns) * 90))
@@ -352,18 +392,29 @@ pub(crate) fn draw_launcher_window(
             if let Some(row) = remove_target {
                 launcher.render_targets.remove(row);
             }
-            if let Some([width, height]) = launcher.swapchain_resolution {
-                ui.label(format!("Virtual swapchain: {width} x {height}"));
-            }
-            ui.add_enabled_ui(
-                !launcher.render_targets.is_empty() && launcher.swapchain_resolution.is_none(),
-                |ui| {
+            if launcher.render_mode() == polymer_runtime::RenderMode::Swapchain {
+                let size = launcher.swapchain_resolution.get_or_insert([640, 480]);
+                ui.horizontal(|ui| {
+                    ui.label("Swapchain resolution");
+                    ui.add(
+                        egui::DragValue::new(&mut size[0])
+                            .range(1..=i32::MAX as u32)
+                            .prefix("Width "),
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut size[1])
+                            .range(1..=i32::MAX as u32)
+                            .prefix("Height "),
+                    );
+                });
+            } else if launcher.hooks == [GraphicsHook::OpenGl] {
+                ui.add_enabled_ui(!launcher.render_targets.is_empty(), |ui| {
                     ui.checkbox(
                         &mut launcher.graph_tracking,
-                        "Resolve targets through the presentation dependency graph",
+                        "Resolve OpenGL targets through the presentation graph",
                     );
-                },
-            );
+                });
+            }
             ui.separator();
             ui.horizontal(|ui| {
                 ui.strong("Virtual controller slots");

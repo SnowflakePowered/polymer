@@ -7,9 +7,11 @@ use std::collections::HashSet;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RenderMode {
-    #[default]
+    /// OpenGL and GDI capture only.
     Intercept,
+    /// OpenGL capture only.
     GraphTracking,
+    #[default]
     Swapchain,
 }
 
@@ -40,9 +42,7 @@ pub struct SurfaceRequest {
 pub struct RenderConfiguration {
     #[serde(default)]
     pub render_mode: RenderMode,
-    #[serde(
-        default,
-    )]
+    #[serde(default)]
     pub surfaces: Vec<SurfaceRequest>,
 }
 

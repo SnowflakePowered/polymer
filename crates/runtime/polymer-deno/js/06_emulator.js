@@ -36,7 +36,6 @@ export function createEmulator(webrtc) {
   }
 
   function validate(options) {
-    if (options && "graphTracking" in options) throw new TypeError("graphTracking was replaced by renderMode");
     if (!options || !Array.isArray(options.surfaces)) {
       throw new TypeError("Emulator launch requires tracked surfaces");
     }
@@ -57,7 +56,7 @@ export function createEmulator(webrtc) {
         graphics: [...options.hooks.graphics],
         input: [...options.hooks.input],
       },
-      renderMode: options.renderMode ?? "intercept",
+      renderMode: options.renderMode ?? "swapchain",
       surfaces: options.surfaces.map((surface) => ({
         index: surface.index,
         rotation: surface.rotation || 0,

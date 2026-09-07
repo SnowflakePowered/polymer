@@ -80,7 +80,7 @@ impl wsi::Swapchain {
         let Some(value) = SWAPCHAINS.get(&handle).map(|v| v.clone()) else {
             return Ok(None);
         };
-        if value.device.capture.device.handle() != device {
+        if value.device.external.device.handle() != device {
             return Err(vk::Result::ERROR_DEVICE_LOST);
         }
         Ok(Some(value))
@@ -125,3 +125,8 @@ impl WsiResult {
 
 #[cfg(test)]
 mod gpu_tests;
+
+pub(crate) use present::present as queue_present;
+pub(crate) use wsi::{
+    create as create_swapchain, destroy as destroy_swapchain, images as swapchain_images,
+};

@@ -533,7 +533,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             viewer_api,
             launcher.tracked_render_target_indices(),
             launcher.render_target_surface_patterns(),
-            launcher.graph_tracking,
             options.force_keyed_mutex,
         ) {
             Ok(started) => {
@@ -1281,7 +1280,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             viewer_api,
                             launcher.tracked_render_target_indices(),
                             launcher.render_target_surface_patterns(),
-                            launcher.graph_tracking,
+
                             options.force_keyed_mutex,
                         ) {
                             Ok(started) => {
@@ -1370,7 +1369,6 @@ fn start_target_session(
     viewer_api: ViewerApi,
     tracked_render_targets: Option<Vec<u32>>,
     tracked_surface_patterns: Vec<Option<String>>,
-    graph_tracking: bool,
     force_keyed_mutex: bool,
 ) -> Result<StartedTarget, Box<dyn Error>> {
     let target = launcher.target().map_err(std::io::Error::other)?;
@@ -1401,13 +1399,15 @@ fn start_target_session(
                     id: polymer_runtime::TrackedSurfaceId(index),
                     render_target_index: index,
                     window_pattern: tracked_surface_patterns.get(slot).cloned().flatten(),
-                    resolution: launcher.swapchain_resolution,
+                    resolution: launcher.swapchain_resolution.filter(|_| {
+                        launcher.render_mode() == polymer_runtime::RenderMode::Swapchain
+                    }),
                     rotation: 0,
                 })
                 .collect::<Vec<_>>()
         })
         .unwrap_or_else(|| {
-            (0..if launcher.swapchain_resolution.is_some() {
+            (0..if launcher.render_mode() == polymer_runtime::RenderMode::Swapchain {
                 1
             } else {
                 surface_limit
@@ -1416,7 +1416,9 @@ fn start_target_session(
                     id: polymer_runtime::TrackedSurfaceId(index),
                     render_target_index: index,
                     window_pattern: None,
-                    resolution: launcher.swapchain_resolution,
+                    resolution: launcher.swapchain_resolution.filter(|_| {
+                        launcher.render_mode() == polymer_runtime::RenderMode::Swapchain
+                    }),
                     rotation: 0,
                 })
                 .collect()
@@ -1439,13 +1441,7 @@ fn start_target_session(
             tracked_surfaces: configured_surfaces,
             tracking_enabled: tracked_render_targets.is_some(),
             skip_surfaces,
-            render_mode: if launcher.swapchain_resolution.is_some() {
-                polymer_runtime::RenderMode::Swapchain
-            } else if graph_tracking {
-                polymer_runtime::RenderMode::GraphTracking
-            } else {
-                polymer_runtime::RenderMode::Intercept
-            },
+            render_mode: launcher.render_mode(),
             force_keyed_mutex,
         })?;
     let provider = InputHub::default();

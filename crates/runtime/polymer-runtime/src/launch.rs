@@ -43,7 +43,7 @@ pub(crate) fn launch(config: &EmulatorLaunchConfig) -> Result<TargetProcess, Lau
         ));
         environment.push((
             OsString::from("VK_INSTANCE_LAYERS"),
-            OsString::from("VK_LAYER_POLYMER_capture"),
+            OsString::from("VK_LAYER_POLYMER_swapchain"),
         ));
     }
 
@@ -162,7 +162,7 @@ fn hook_environment(runtime: &EmulatorLaunchConfig) -> Vec<(OsString, OsString)>
         ),
         (OsString::from("SDL_XINPUT_ENABLED"), OsString::from("0")),
     ];
-    if runtime.tracking_enabled {
+    if runtime.tracking_enabled && runtime.render_mode != crate::RenderMode::Swapchain {
         environment.push((
             OsString::from(config::TRACK_RENDER_TARGET),
             OsString::from("1"),
@@ -225,12 +225,12 @@ fn create_vulkan_layer_manifest(layer_dll: &Path) -> std::io::Result<tempfile::T
     let manifest = serde_json::json!({
         "file_format_version": "1.2.0",
         "layer": {
-            "name": "VK_LAYER_POLYMER_capture",
+            "name": "VK_LAYER_POLYMER_swapchain",
             "type": "GLOBAL",
             "library_path": layer_dll,
             "api_version": "1.4.0",
             "implementation_version": "1",
-            "description": "Polymer Vulkan capture layer",
+            "description": "Polymer Vulkan swapchain layer",
             "functions": {
                 "vkNegotiateLoaderLayerInterfaceVersion":
                     "vkNegotiateLoaderLayerInterfaceVersion"

@@ -2,11 +2,7 @@
 
 pub use polymer_presentation_config::{RenderConfiguration, RenderMode};
 use regex::Regex;
-use std::{
-    ffi::{OsStr, OsString},
-    path::PathBuf,
-    sync::LazyLock,
-};
+use std::{ffi::OsString, path::PathBuf, sync::LazyLock};
 
 pub const SESSION: &str = "POLYMER_SESSION";
 pub const LAYER_LOG_FILE: &str = "POLYMER_LOG_FILE";
@@ -23,33 +19,15 @@ pub const TRACK_RENDER_TARGET: &str = "POLYMER_TRACK_RENDER_TARGET";
 pub const TRACK_RENDER_TARGETS: &str = "POLYMER_TRACK_RENDER_TARGETS";
 pub const TRACK_RENDER_TARGET_SURFACE_PATTERNS: &str =
     "POLYMER_TRACK_RENDER_TARGET_SURFACE_PATTERNS";
-pub const GRAPH_TRACKING: &str = "POLYMER_GRAPH_TRACKING";
 pub const RENDER_CONFIGURATION: &str = "POLYMER_RENDER_CONFIGURATION";
 
 static RENDER: LazyLock<Result<RenderConfiguration, String>> = LazyLock::new(|| {
-    if let Some(payload) = std::env::var_os(RENDER_CONFIGURATION) {
-        let configuration: RenderConfiguration = serde_json::from_str(
-            payload
-                .to_str()
-                .ok_or("render configuration is not Unicode")?,
-        )
+    let payload = std::env::var(RENDER_CONFIGURATION)
+        .map_err(|error| format!("{RENDER_CONFIGURATION} is required: {error}"))?;
+    let configuration: RenderConfiguration = serde_json::from_str(&payload)
         .map_err(|error| format!("invalid {RENDER_CONFIGURATION}: {error}"))?;
-        configuration.validate()?;
-        if is_set(GRAPH_TRACKING) && configuration.render_mode != RenderMode::GraphTracking {
-            tracing::warn!(
-                "POLYMER_GRAPH_TRACKING conflicts with explicit renderMode; renderMode wins"
-            );
-        }
-        return Ok(configuration);
-    }
-    Ok(RenderConfiguration {
-        render_mode: if is_set(GRAPH_TRACKING) {
-            RenderMode::GraphTracking
-        } else {
-            RenderMode::Intercept
-        },
-        surfaces: Vec::new(),
-    })
+    configuration.validate()?;
+    Ok(configuration)
 });
 
 pub fn render_configuration() -> Result<&'static RenderConfiguration, &'static str> {
@@ -59,11 +37,15 @@ pub fn render_configuration() -> Result<&'static RenderConfiguration, &'static s
 pub fn render_mode() -> Result<RenderMode, &'static str> {
     render_configuration().map(|configuration| configuration.render_mode)
 }
+/// Validate before installing a D3D11, D3D12, or Vulkan presentation hook.
+pub fn require_swapchain() -> Result<(), &'static str> {
+    match render_mode()? {
+        RenderMode::Swapchain => Ok(()),
+        _ => Err("D3D11, D3D12, and Vulkan require swapchain mode with fixed surface resolutions"),
+    }
+}
+
 pub const FORCE_KEYED_MUTEX: &str = "POLYMER_FORCE_KEYED_MUTEX";
-/// Removal of application-requested display pacing. This is enabled by default;
-/// set the variable to `0`, `false`, `off`, or `no` for targets that require
-/// their native DXGI/Vulkan present behavior.
-pub const PRESENT_UNTHROTTLED: &str = "POLYMER_PRESENT_UNTHROTTLED";
 
 pub fn session() -> Result<String, std::env::VarError> {
     std::env::var(SESSION)
@@ -183,9 +165,7 @@ pub fn capture_enabled() -> bool {
     static ENABLED: LazyLock<bool> = LazyLock::new(|| match render_mode() {
         Ok(RenderMode::Intercept | RenderMode::GraphTracking) => true,
         Ok(RenderMode::Swapchain) => {
-            tracing::error!(
-                "virtual swapchain frontend is not implemented; native capture is disabled"
-            );
+            tracing::error!("capture is disabled in swapchain mode");
             false
         }
         Err(error) => {
@@ -200,30 +180,12 @@ pub fn force_keyed_mutex() -> bool {
     is_set(FORCE_KEYED_MUTEX)
 }
 
-pub fn present_unthrottled() -> bool {
-    static ENABLED: LazyLock<bool> = LazyLock::new(|| enabled_by_default(PRESENT_UNTHROTTLED));
-    *ENABLED
-}
-
 fn path(variable: &str) -> Option<PathBuf> {
     std::env::var_os(variable).map(PathBuf::from)
 }
 
 fn is_set(variable: &str) -> bool {
     std::env::var_os(variable).is_some()
-}
-
-fn enabled_by_default(variable: &str) -> bool {
-    enabled_by_default_value(std::env::var_os(variable).as_deref())
-}
-
-fn enabled_by_default_value(value: Option<&OsStr>) -> bool {
-    value.is_none_or(|value| {
-        !matches!(
-            value.to_string_lossy().trim().to_ascii_lowercase().as_str(),
-            "0" | "false" | "off" | "no"
-        )
-    })
 }
 
 fn parse_render_target_indices(value: OsString) -> Option<Vec<usize>> {
@@ -294,16 +256,6 @@ mod tests {
         );
         assert_eq!(parse_render_target_indices(OsString::from("")), None);
         assert_eq!(parse_render_target_indices(OsString::from("0,nope")), None);
-    }
-
-    #[test]
-    fn default_enabled_values_support_an_explicit_opt_out() {
-        assert!(enabled_by_default_value(None));
-        assert!(enabled_by_default_value(Some(OsStr::new("1"))));
-        assert!(enabled_by_default_value(Some(OsStr::new("yes"))));
-        for value in ["0", "false", "OFF", " no "] {
-            assert!(!enabled_by_default_value(Some(OsStr::new(value))));
-        }
     }
 
     #[test]

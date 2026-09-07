@@ -34,14 +34,9 @@ impl CreationDispatch {
         }
     }
     pub unsafe fn create(info: &SwapchainCreateInfo, output: *mut *mut c_void) -> Option<i32> {
-        use polymer_hook::config::{self, RenderMode};
-        match config::render_mode() {
-            Ok(RenderMode::Swapchain) => {}
-            Ok(_) => return None,
-            Err(error) => {
-                tracing::error!(%error, "invalid virtual DXGI configuration");
-                return Some(windows::Win32::Foundation::E_INVALIDARG.0);
-            }
+        if let Err(error) = polymer_hook::config::require_swapchain() {
+            tracing::error!(%error, "invalid DXGI presentation configuration");
+            return Some(windows::Win32::Foundation::E_INVALIDARG.0);
         }
         if output.is_null() {
             return Some(windows::Win32::Foundation::E_POINTER.0);
@@ -109,9 +104,6 @@ pub(crate) unsafe fn create_legacy(
         }
     }
     let result = polymer_hook::next!(next, factory, device, desc, output);
-    unsafe {
-        crate::runtime::factory_created_swapchain(device, output, result, &());
-    }
     result
 }
 
@@ -149,8 +141,5 @@ pub(crate) unsafe fn create_for_hwnd(
         restrict_to_output,
         output
     );
-    unsafe {
-        crate::runtime::factory_created_swapchain(device, output, result, &());
-    }
     result
 }

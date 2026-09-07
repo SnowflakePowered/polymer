@@ -11,7 +11,13 @@ use windows::{
         Foundation::{E_INVALIDARG, E_POINTER},
         Graphics::{
             Direct3D12::*,
-            Dxgi::{Common::DXGI_FORMAT, DXGI_ERROR_DEVICE_REMOVED},
+            Dxgi::{
+                Common::{
+                    DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM,
+                    DXGI_FORMAT_R10G10B10A2_UNORM,
+                },
+                DXGI_ERROR_DEVICE_REMOVED,
+            },
         },
     },
     core::{Error, Interface},
@@ -293,10 +299,13 @@ impl SwapchainBackend for D3d12VirtualBackend {
 
 impl D3d12VirtualBackend {
     fn check_format(device: &ID3D12Device, format: DXGI_FORMAT) -> Result<(), Error> {
-        if !matches!(format.0, 28 | 87) {
+        if !matches!(
+            format,
+            DXGI_FORMAT_R8G8B8A8_UNORM | DXGI_FORMAT_B8G8R8A8_UNORM | DXGI_FORMAT_R10G10B10A2_UNORM
+        ) {
             return Err(Error::new(
                 E_INVALIDARG,
-                "virtual D3D12 supports RGBA8/BGRA8 UNORM",
+                "virtual D3D12 supports RGBA8/BGRA8/RGB10A2 UNORM",
             ));
         }
         let mut support = D3D12_FEATURE_DATA_FORMAT_SUPPORT {

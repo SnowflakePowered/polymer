@@ -130,7 +130,8 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
         argv: ["-batch", "-fastboot", "--", path(`/Game/${gameName}`)],
         isolate: true,
         hooks: { graphics: ["d3d11"], input: ["sdl3"] },
-        surfaces: [{ index: 0, pattern: "DuckStation|Crash Bandicoot" }],
+        renderMode: "swapchain",
+        surfaces: [{ resolution: [640, 480], index: 0, pattern: "DuckStation|Crash Bandicoot" }],
     };
 };
 

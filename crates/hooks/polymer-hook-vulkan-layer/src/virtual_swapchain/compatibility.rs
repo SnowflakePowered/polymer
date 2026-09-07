@@ -52,14 +52,6 @@ impl Compatibility {
         let result = unsafe { next(instance, count, output) };
         if !output.is_null() && matches!(result, vk::Result::SUCCESS | vk::Result::INCOMPLETE) {
             let state = crate::layer::hook_state();
-            let capture = unsafe { crate::layer::dispatch_key(instance) }
-                .and_then(|key| {
-                    state
-                        .instance
-                        .get(&key)
-                        .map(|entry| entry.capture_state.clone())
-                })
-                .unwrap_or_default();
             for group in unsafe { std::slice::from_raw_parts(output, *count as usize) } {
                 for &physical in &group.physical_devices[..group.physical_device_count as usize] {
                     state.physical_device.insert(
@@ -67,7 +59,6 @@ impl Compatibility {
                         PhysicalDeviceState {
                             instance,
                             next_gipa: gipa,
-                            capture_state: capture.clone(),
                         },
                     );
                 }

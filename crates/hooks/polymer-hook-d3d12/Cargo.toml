@@ -8,15 +8,11 @@ license.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-dashmap.workspace = true
-parking_lot.workspace = true
 polymer-hook.workspace = true
 polymer-hook-dxgi = { path = "../polymer-hook-dxgi" }
-polymer-platform-windows.workspace = true
 polymer-producer-d3d12 = { path = "../../producers/polymer-producer-d3d12" }
 tracing.workspace = true
 windows.workspace = true
-windows-sys.workspace = true
 
 [lints]
 workspace = true

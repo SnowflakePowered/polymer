@@ -37,15 +37,16 @@ unsafe extern "system-unwind" {
 }
 
 pub(crate) unsafe fn install() -> i32 {
-    polymer_hook_dxgi::register_claim(crate::device::claim_swapchain);
+    if let Err(error) = polymer_hook::config::require_swapchain() {
+        tracing::error!(%error, "D3D11 presentation configuration rejected");
+        return windows_sys::Win32::Foundation::E_INVALIDARG;
+    }
     polymer_hook_dxgi::register_virtual_claim(
         polymer_producer_d3d11::virtual_swapchain::creation::D3d11Creation::claim,
     );
-    if polymer_hook::config::render_mode() == Ok(polymer_hook::config::RenderMode::Swapchain) {
-        if let Err(error) = crate::ddi::Rotation::install() {
-            tracing::error!(%error, "D3D11 driver rotation installation failed");
-            return error.code().0;
-        }
+    if let Err(error) = crate::ddi::Rotation::install() {
+        tracing::error!(%error, "D3D11 driver rotation installation failed");
+        return error.code().0;
     }
     crate::hooks::HookInstallation::install().map_or(E_FAIL, |()| 0)
 }

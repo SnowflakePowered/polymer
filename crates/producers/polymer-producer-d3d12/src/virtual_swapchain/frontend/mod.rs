@@ -4,7 +4,7 @@ mod retirement;
 
 use super::D3d12VirtualBackend;
 use polymer_hook_dxgi::virtual_swapchain::VirtualDxgiDriver;
-use polymer_presentation::{observation::CaptureScope, swapchain::*};
+use polymer_presentation::swapchain::*;
 use std::{
     sync::{
         Arc,

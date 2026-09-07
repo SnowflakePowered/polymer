@@ -3,7 +3,7 @@ use polymer_producer_vulkan::virtual_swapchain::{PresentInfo, native::Semaphore}
 use std::{sync::atomic::Ordering, time::Instant};
 
 pub(super) struct NativePresent {
-    capture: Arc<crate::layer::CaptureDevice>,
+    external: Arc<crate::layer::ExternalDevice>,
     fences: Vec<vk::Fence>,
     bridge: Option<Arc<Semaphore>>,
     submitted: bool,
@@ -11,7 +11,7 @@ pub(super) struct NativePresent {
 impl NativePresent {
     fn new(device: &Device, count: usize, bridge: Arc<Semaphore>) -> Result<Self, vk::Result> {
         let mut work = Self {
-            capture: device.capture.clone(),
+            external: device.external.clone(),
             fences: Vec::new(),
             bridge: Some(bridge),
             submitted: false,
@@ -19,7 +19,7 @@ impl NativePresent {
         for _ in 0..count {
             work.fences.push(unsafe {
                 device
-                    .capture
+                    .external
                     .device
                     .create_fence(&Default::default(), None)?
             });
@@ -31,7 +31,7 @@ impl NativePresent {
             || self
                 .fences
                 .iter()
-                .all(|&fence| unsafe { self.capture.device.get_fence_status(fence) } == Ok(true))
+                .all(|&fence| unsafe { self.external.device.get_fence_status(fence) } == Ok(true))
     }
 }
 impl Drop for NativePresent {
@@ -42,7 +42,7 @@ impl Drop for NativePresent {
         }
         for &fence in &self.fences {
             unsafe {
-                self.capture.device.destroy_fence(fence, None);
+                self.external.device.destroy_fence(fence, None);
             }
         }
     }
@@ -79,7 +79,7 @@ impl PresentBatch {
         let mut entries = Vec::new();
         let mut native_ordinals = Vec::new();
         for (ordinal, (&handle, &index)) in handles.iter().zip(indices).enumerate() {
-            if let Some(swapchain) = wsi::Swapchain::get(device.capture.device.handle(), handle)? {
+            if let Some(swapchain) = wsi::Swapchain::get(device.external.device.handle(), handle)? {
                 entries.push(Entry {
                     ordinal,
                     index,
@@ -90,11 +90,11 @@ impl PresentBatch {
             }
         }
         let next: vk::PFN_vkQueuePresentKHR =
-            crate::layer::device_gdpa(device.capture.device.handle())
+            crate::layer::device_gdpa(device.external.device.handle())
                 .and_then(|g| unsafe {
                     crate::terminal::device_proc(
                         g,
-                        device.capture.device.handle(),
+                        device.external.device.handle(),
                         c"vkQueuePresentKHR",
                     )
                 })
@@ -308,7 +308,7 @@ impl<'a> NativeExtras<'a> {
         Ok(result)
     }
 }
-pub(super) unsafe extern "system" fn present(
+pub(crate) unsafe extern "system" fn present(
     queue: vk::Queue,
     info: *const vk::PresentInfoKHR<'_>,
 ) -> vk::Result {

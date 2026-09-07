@@ -1,4 +1,4 @@
-use crate::capture::CaptureDevice;
+use crate::ExternalDevice;
 use ash::vk;
 use parking_lot::Mutex;
 use std::sync::{
@@ -8,7 +8,7 @@ use std::sync::{
 
 /// Shared with the hook's queue entry points. No map guard crosses a driver call.
 pub struct Queue {
-    pub capture: Arc<CaptureDevice>,
+    pub external: Arc<ExternalDevice>,
     pub handle: vk::Queue,
     pub family: u32,
     pub gate: parking_lot::ReentrantMutex<()>,
@@ -19,20 +19,20 @@ pub struct Queue {
 
 pub struct Semaphore {
     pub handle: vk::Semaphore,
-    capture: Arc<CaptureDevice>,
+    external: Arc<ExternalDevice>,
     alive: Arc<AtomicBool>,
 }
 impl Semaphore {
     pub fn new(queue: &Queue) -> Result<Arc<Self>, vk::Result> {
         let handle = unsafe {
             queue
-                .capture
+                .external
                 .device
                 .create_semaphore(&Default::default(), None)?
         };
         Ok(Arc::new(Self {
             handle,
-            capture: queue.capture.clone(),
+            external: queue.external.clone(),
             alive: queue.alive.clone(),
         }))
     }
@@ -41,7 +41,7 @@ impl Drop for Semaphore {
     fn drop(&mut self) {
         if self.alive.load(Ordering::Acquire) {
             unsafe {
-                self.capture.device.destroy_semaphore(self.handle, None);
+                self.external.device.destroy_semaphore(self.handle, None);
             }
         }
     }
@@ -49,7 +49,7 @@ impl Drop for Semaphore {
 
 /// Only Polymer's ownership handoff lives here. Guest commands are never stored.
 pub struct Submission {
-    capture: Arc<CaptureDevice>,
+    external: Arc<ExternalDevice>,
     alive: Arc<AtomicBool>,
     pool: vk::CommandPool,
     fence: vk::Fence,
@@ -62,7 +62,7 @@ impl Submission {
             return Err(vk::Result::ERROR_DEVICE_LOST);
         }
         unsafe {
-            self.capture
+            self.external
                 .device
                 .wait_for_fences(&[self.fence], true, timeout)
         }
@@ -71,7 +71,7 @@ impl Submission {
         if !self.alive.load(Ordering::Acquire) {
             return Err(vk::Result::ERROR_DEVICE_LOST);
         }
-        unsafe { self.capture.device.get_fence_status(self.fence) }
+        unsafe { self.external.device.get_fence_status(self.fence) }
     }
 }
 impl Drop for Submission {
@@ -86,22 +86,22 @@ impl Drop for Submission {
         }
         unsafe {
             if self.pool != vk::CommandPool::null() {
-                self.capture.device.destroy_command_pool(self.pool, None);
+                self.external.device.destroy_command_pool(self.pool, None);
             }
-            self.capture.device.destroy_fence(self.fence, None);
+            self.external.device.destroy_fence(self.fence, None);
         }
     }
 }
 
 impl Queue {
     pub fn new(
-        capture: Arc<CaptureDevice>,
+        external: Arc<ExternalDevice>,
         handle: vk::Queue,
         family: u32,
         alive: Arc<AtomicBool>,
     ) -> Arc<Self> {
         Arc::new(Self {
-            capture,
+            external,
             handle,
             family,
             gate: parking_lot::ReentrantMutex::new(()),
@@ -127,7 +127,7 @@ impl Queue {
         let mut pending = std::mem::take(&mut *self.pending.lock());
         pending.retain(|work| work.complete() != Ok(true));
         self.pending.lock().extend(pending);
-        let device = &self.capture.device;
+        let device = &self.external.device;
         let fence = unsafe { device.create_fence(&Default::default(), None)? };
         let mut pool = vk::CommandPool::null();
         let commands = match self.handoff(barriers, &mut pool) {
@@ -143,7 +143,7 @@ impl Queue {
             }
         };
         let work = Arc::new(Submission {
-            capture: self.capture.clone(),
+            external: self.external.clone(),
             alive: self.alive.clone(),
             pool,
             fence,
@@ -195,7 +195,7 @@ impl Queue {
         if barriers.is_empty() {
             return Ok(Vec::new());
         }
-        let device = &self.capture.device;
+        let device = &self.external.device;
         unsafe {
             *pool = device.create_command_pool(
                 &vk::CommandPoolCreateInfo::default().queue_family_index(self.family),
@@ -207,7 +207,7 @@ impl Queue {
                     .level(vk::CommandBufferLevel::PRIMARY)
                     .command_buffer_count(1),
             )?;
-            if let Some(set_data) = self.capture.set_loader_data {
+            if let Some(set_data) = self.external.set_loader_data {
                 use ash::vk::Handle;
                 let result = set_data(device.handle(), commands[0].as_raw() as *mut _);
                 if result != vk::Result::SUCCESS {
@@ -239,7 +239,7 @@ impl Queue {
         }
         let _queue = self.gate.lock();
         unsafe {
-            self.capture.device.queue_wait_idle(self.handle)?;
+            self.external.device.queue_wait_idle(self.handle)?;
         }
         let completed = std::mem::take(&mut *self.pending.lock());
         drop(completed);

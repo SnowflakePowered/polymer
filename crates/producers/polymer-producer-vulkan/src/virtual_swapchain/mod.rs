@@ -2,10 +2,7 @@
 //! backend submits only external-ownership handoffs, never application commands.
 pub mod native;
 mod ownership;
-use crate::{
-    ExportImageRing, ExportImageRingDesc, ExportTimelineSemaphore, ExternalHandleMode,
-    capture::CaptureDevice,
-};
+use crate::{ExportImageRing, ExportImageRingDesc, ExportTimelineSemaphore, ExternalDevice};
 use ash::vk;
 use native::{Queue, Semaphore, Submission};
 use polymer_presentation::{producer::ExportDescriptor, swapchain::*};
@@ -13,7 +10,7 @@ use polymer_protocol::{ConsumerApi, ExternalImageKind, ExternalSyncKind, Surface
 use std::sync::Arc;
 
 pub struct CreateInfo {
-    pub capture: Arc<CaptureDevice>,
+    pub external: Arc<ExternalDevice>,
     pub acquire_queue: Arc<Queue>,
     pub queue_families: Vec<u32>,
     pub format: vk::Format,
@@ -37,7 +34,7 @@ pub struct WriteToken {
     acquire: Arc<Submission>,
 }
 pub struct VulkanVirtualBackend {
-    capture: Arc<CaptureDevice>,
+    external: Arc<ExternalDevice>,
     acquire_queue: Arc<Queue>,
     binding: FixedSurfaceBinding,
     ring: ExportImageRing,
@@ -95,13 +92,9 @@ impl SwapchainBackend for VulkanVirtualBackend {
         binding: &FixedSurfaceBinding,
         profile: &BackendProfile,
     ) -> Result<Self, vk::Result> {
-        let capture = &info.capture;
-        let ring = ExportImageRing::create_with_function(
-            capture.device.clone(),
-            capture.get_memory_win32_handle,
-            capture.get_memory_win32_handle_properties,
-            &capture.memory_properties,
-            capture.adapter_luid,
+        let external = &info.external;
+        let ring = ExportImageRing::create(
+            external,
             ExportImageRingDesc {
                 extent: vk::Extent2D {
                     width: binding.extent().width,
@@ -109,21 +102,12 @@ impl SwapchainBackend for VulkanVirtualBackend {
                 },
                 format: info.format,
                 slots: info.count,
-                handle_mode: ExternalHandleMode::D3d12,
                 usage: info.usage,
                 queue_families: info.queue_families.clone(),
             },
         )?;
         let timelines = (0..2)
-            .map(|_| {
-                ExportTimelineSemaphore::create_with_function(
-                    capture.device.clone(),
-                    capture.get_semaphore_win32_handle,
-                    capture.import_semaphore_win32_handle,
-                    capture.adapter_luid,
-                    ExternalHandleMode::D3d12,
-                )
-            })
+            .map(|_| ExportTimelineSemaphore::create(external))
             .collect::<Result<Vec<_>, _>>()?;
         let mut timelines = timelines.into_iter();
         let handles = ring
@@ -132,7 +116,7 @@ impl SwapchainBackend for VulkanVirtualBackend {
             .map(|slot| slot.raw_handle() as i64)
             .collect();
         Ok(Self {
-            capture: info.capture,
+            external: info.external,
             acquire_queue: info.acquire_queue,
             binding: binding.clone(),
             ring,
@@ -149,7 +133,7 @@ impl SwapchainBackend for VulkanVirtualBackend {
     fn export_descriptor(&self) -> ExportDescriptor<'_> {
         ExportDescriptor {
             surface_id: SurfaceId(self.binding.logical_id()),
-            adapter_luid: self.capture.adapter_luid,
+            adapter_luid: self.external.adapter_luid,
             source_window: self.binding.window().handle as i64,
             width: self.binding.extent().width,
             height: self.binding.extent().height,
@@ -174,7 +158,7 @@ impl SwapchainBackend for VulkanVirtualBackend {
     ) -> AcquirePoll<WriteToken, Option<WriteToken>, vk::Result> {
         if let Some(value) = prerequisite.previous_publication {
             match unsafe {
-                self.capture
+                self.external
                     .device
                     .get_semaphore_counter_value(self.released.semaphore())
             } {

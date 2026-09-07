@@ -96,18 +96,14 @@ impl EmulatorLaunchConfig {
         self.render_configuration()
             .validate()
             .map_err(LaunchError::InvalidConfig)?;
-        if self.render_mode == crate::RenderMode::Swapchain
-            && self.hooks.graphics.iter().any(|hook| {
-                !matches!(
-                    hook,
-                    crate::GraphicsHook::D3d11
-                        | crate::GraphicsHook::D3d12
-                        | crate::GraphicsHook::Vulkan
-                )
-            })
-        {
+        for hook in &self.hooks.graphics {
+            hook.validate_render_mode(self.render_mode)
+                .map_err(LaunchError::InvalidConfig)?;
+        }
+        if self.render_mode == crate::RenderMode::Swapchain && self.force_keyed_mutex {
             return Err(LaunchError::InvalidConfig(
-                "swapchain render mode currently requires D3D11, D3D12, or Vulkan hooks".to_owned(),
+                "swapchain presentation requires shared fences; force_keyed_mutex is not supported"
+                    .into(),
             ));
         }
         let mut ids = HashSet::new();
@@ -1489,12 +1485,12 @@ mod tests {
                 id: TrackedSurfaceId(7),
                 render_target_index: 0,
                 window_pattern: None,
-                resolution: None,
+                resolution: Some([640, 480]),
                 rotation: 0,
             }],
             tracking_enabled: true,
             skip_surfaces: 0,
-            render_mode: crate::RenderMode::Intercept,
+            render_mode: crate::RenderMode::Swapchain,
             force_keyed_mutex: false,
         }
     }
@@ -1523,7 +1519,7 @@ mod tests {
     #[test]
     fn virtual_launch_requires_implemented_backend_and_fixed_extent() {
         let mut launch = config();
-        launch.render_mode = crate::RenderMode::Swapchain;
+        launch.tracked_surfaces[0].resolution = None;
         assert!(launch.validate().is_err());
         launch.tracked_surfaces[0].resolution = Some([640, 528]);
         for hook in [
@@ -1538,6 +1534,36 @@ mod tests {
             launch.hooks.graphics = vec![GraphicsHook::D3d11, hook];
             assert!(launch.validate().is_err());
         }
+    }
+
+    #[test]
+    fn production_launch_rejects_capture_modes_and_keyed_mutex() {
+        for hook in [
+            GraphicsHook::D3d11,
+            GraphicsHook::D3d12,
+            GraphicsHook::Vulkan,
+        ] {
+            let mut launch = config();
+            launch.hooks.graphics = vec![hook];
+            for mode in [
+                crate::RenderMode::Intercept,
+                crate::RenderMode::GraphTracking,
+            ] {
+                launch.render_mode = mode;
+                assert!(matches!(
+                    launch.validate(),
+                    Err(LaunchError::InvalidConfig(_))
+                ));
+            }
+            launch.render_mode = crate::RenderMode::Swapchain;
+            launch.force_keyed_mutex = true;
+            assert!(launch.validate().is_err());
+        }
+        let mut launch = config();
+        launch.hooks.graphics = vec![GraphicsHook::OpenGl];
+        launch.render_mode = crate::RenderMode::GraphTracking;
+        launch.tracked_surfaces[0].resolution = None;
+        assert!(launch.validate().is_ok());
     }
 
     #[test]

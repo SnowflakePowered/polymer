@@ -16,6 +16,9 @@ At its core, Polymer consists of five parts:
   
 This is contained in the `consumer` and `producer` directories. These crates hook into an emulator's graphics device, and use GPU shared memory APIs to transfer the emulator's displayed swapchain texture for recomposition in the **GUI**.
 
+For D3D11, D3D12, and Vulkan, Polymer hooks into the emulator's swapchain creation. Instead of getting a swapchain managed by the graphics driver, Polymer provides it's own swapchain to the emulator so it can draw directly to the composed
+display in the **GUI**. This allows Polymer to get frame data from the emulator with zero additional copies.
+
 Graphics IPC is also responsible for supplying swapchain size information for **Input IPC** in order to do screen-space mouse interpolation, as well as containing a number of heuristics to determine which surfaces to expose to the **GUI**. For example, dual screen handheld emulators will merge two surfaces into a single swapchain texture. Heuristics are used to determine from the frame's rendering timeline what the two separate surfaces are before sending those to the **GUI**.
 
 Frame *Producers* interact with the hooked device, and send the texture over to a Frame *Consumer*. We support producing frames from D3D11, D3D12, OpenGL, Vulkan, and GDI; and consuming frames from a host D3D12, or Vulkan device. *Producers* are injected into an emulator ("guest process") via a *hook*; graphics hooks are implemented for D3D11, D3D12, OpenGL, and Vulkan. Frames are signaled to the **GUI** via the IPC protocol in `polymer-ipc`. 

@@ -2,7 +2,8 @@ export interface HTMLTrackedSurfaceElement extends HTMLElement {
   readonly preferredSize: Readonly<{ width: number; height: number }>;
 }
 
-export type GraphicsHook = "opengl" | "vulkan" | "d3d11" | "d3d12";
+export type SwapchainGraphicsHook = "vulkan" | "d3d11" | "d3d12";
+export type GraphicsHook = SwapchainGraphicsHook | "opengl" | "gdi";
 export type InputHook = "sdl3" | "bluetooth-api-win32";
 export type ProjectionMode = "name" | "position" | "custom";
 export type PointerMode = "none" | "relative" | "absoluteDevice" | "absoluteScreen";
@@ -168,8 +169,9 @@ export type EmulatorRenderSelection = RenderSelection<EmulatorSurface>;
 export type RenderMode = "intercept" | "graphTracking" | "swapchain";
 export type Resolution = readonly [number, number];
 export type RenderSelection<S> =
-  | { renderMode?: "intercept" | "graphTracking"; surfaces: S[] }
-  | { renderMode: "swapchain"; surfaces: (S & { resolution: Resolution })[] };
+  | { renderMode?: "swapchain"; hooks: { graphics: SwapchainGraphicsHook[] }; surfaces: (S & { resolution: Resolution })[] }
+  | { renderMode: "intercept"; hooks: { graphics: ("opengl" | "gdi")[] }; surfaces: S[] }
+  | { renderMode: "graphTracking"; hooks: { graphics: "opengl"[] }; surfaces: S[] };
 
 export type LaunchOptions = LaunchFields & RenderSelection<TrackedSurface>;
 

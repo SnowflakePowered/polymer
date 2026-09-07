@@ -2,7 +2,6 @@ mod pacing;
 mod retirement;
 use super::*;
 use polymer_hook_dxgi::virtual_swapchain::VirtualDxgiDriver;
-use polymer_presentation::observation::CaptureScope;
 use std::{sync::Arc, time::Duration};
 use windows::core::{HRESULT, IUnknown};
 
@@ -134,7 +133,6 @@ impl VirtualDxgiDriver for D3d11Frontend {
             Ok(state) => state,
             Err(error) => return error.code(),
         };
-        let _capture = CaptureScope::enter();
         if state.failed {
             return DXGI_ERROR_DEVICE_REMOVED;
         }

@@ -18,10 +18,8 @@ pub struct EmulatorLaunchArguments {
     #[serde(default)]
     pub isolate: bool,
     pub hooks: Hooks,
-    /// Process-wide presentation dependency-graph traversal requested by the
-    /// emulator plugin for its tracked surfaces.
+    /// Presentation mode. D3D11, D3D12, and Vulkan require native swapchains.
     #[serde(default)]
-    #[serde(alias = "graphTracking")]
     pub render_mode: polymer_presentation_config::RenderMode,
     #[serde(default)]
     pub surfaces: Vec<TrackedSurface>,
@@ -46,6 +44,9 @@ pub struct EmulatorLaunchArguments {
 impl EmulatorLaunchArguments {
     pub fn validate_render_configuration(&self) -> Result<(), String> {
         use polymer_presentation_config::{RenderConfiguration, SurfaceRequest};
+        for hook in &self.hooks.graphics {
+            hook.validate_render_mode(self.render_mode)?;
+        }
         RenderConfiguration {
             render_mode: self.render_mode,
             surfaces: self
@@ -63,7 +64,7 @@ impl EmulatorLaunchArguments {
     }
 }
 
-/// A graphics capture hook installed into the target process.
+/// A graphics presentation hook installed into the target process.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GraphicsHook {
@@ -75,6 +76,27 @@ pub enum GraphicsHook {
 }
 
 impl GraphicsHook {
+    pub fn validate_render_mode(
+        self,
+        mode: polymer_presentation_config::RenderMode,
+    ) -> Result<(), String> {
+        use polymer_presentation_config::RenderMode;
+        let supported = match self {
+            Self::D3d11 | Self::D3d12 | Self::Vulkan => mode == RenderMode::Swapchain,
+            Self::OpenGl => matches!(mode, RenderMode::Intercept | RenderMode::GraphTracking),
+            Self::Gdi => mode == RenderMode::Intercept,
+        };
+        if supported {
+            Ok(())
+        } else {
+            Err(format!(
+                "{} does not support renderMode '{}'; D3D11, D3D12, and Vulkan require swapchain mode with fixed surface resolutions",
+                self.label(),
+                mode.as_str()
+            ))
+        }
+    }
+
     pub const ALL: [Self; 5] = [
         Self::Vulkan,
         Self::OpenGl,

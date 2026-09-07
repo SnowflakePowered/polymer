@@ -1,5 +1,5 @@
 use super::*;
-use crate::layer::{CaptureDevice, PhysicalDeviceState};
+use crate::layer::{ExternalDevice, PhysicalDeviceState};
 use parking_lot::Mutex;
 use polymer_producer_vulkan::virtual_swapchain::native::Queue;
 use std::{
@@ -9,7 +9,7 @@ use std::{
 };
 
 pub(crate) struct Device {
-    pub capture: Arc<CaptureDevice>,
+    pub external: Arc<ExternalDevice>,
     pub physical: vk::PhysicalDevice,
     pub instance: PhysicalDeviceState,
     pub queues: BTreeMap<u64, Arc<Queue>>,
@@ -38,10 +38,10 @@ impl Device {
                     .map(|d| d.clone())
             })
             .ok_or(vk::Result::ERROR_INITIALIZATION_FAILED)?;
-        let capture = dispatch
-            .capture
+        let external = dispatch
+            .external
             .ok_or(vk::Result::ERROR_FEATURE_NOT_PRESENT)?;
-        if !capture.supports_foreign_queue {
+        if !external.supports_foreign_queue {
             return Err(vk::Result::ERROR_FEATURE_NOT_PRESENT);
         }
         let instance = dispatch
@@ -64,12 +64,12 @@ impl Device {
             families.push(info.queue_family_index);
             for index in 0..info.queue_count {
                 let queue = unsafe {
-                    capture
+                    external
                         .device
                         .get_device_queue(info.queue_family_index, index)
                 };
                 let owner = Queue::new(
-                    capture.clone(),
+                    external.clone(),
                     queue,
                     info.queue_family_index,
                     alive.clone(),
@@ -86,7 +86,7 @@ impl Device {
                     queue,
                     crate::layer::QueueDispatchTable {
                         device: handle,
-                        queue_family_index: info.queue_family_index,
+
                         dispatch: crate::layer::hook_state()
                             .device
                             .get(&unsafe { crate::layer::dispatch_key(handle) }.unwrap())
@@ -105,7 +105,7 @@ impl Device {
         DEVICES.insert(
             handle,
             Arc::new(Self {
-                capture,
+                external,
                 physical: dispatch.physical_device,
                 instance,
                 queues,
@@ -150,7 +150,7 @@ impl Device {
         }
         let handles = SWAPCHAINS
             .iter()
-            .filter(|s| s.device.capture.device.handle() == handle)
+            .filter(|s| s.device.external.device.handle() == handle)
             .map(|s| *s.key())
             .collect::<Vec<_>>();
         for handle in handles {
@@ -170,7 +170,7 @@ impl Device {
             }
             std::thread::sleep(Duration::from_millis(1));
         }
-        device.layouts.destroy(&device.capture.device);
+        device.layouts.destroy(&device.external.device);
         device.alive.store(false, Ordering::Release);
         DEVICES.remove(&handle);
         true

@@ -44,6 +44,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
         argv: [path(`/Game/${gameName}`)],
         isolate: true,
         hooks: { graphics: ["opengl"], input: ["sdl3"] },
+        renderMode: "intercept",
         surfaces: [{ index: 0, pattern: "mGBA" }],
     };
 };

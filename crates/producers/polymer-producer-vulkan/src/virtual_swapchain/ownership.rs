@@ -72,7 +72,7 @@ impl VulkanVirtualBackend {
             }
         }
         match unsafe {
-            self.capture
+            self.external
                 .device
                 .get_semaphore_counter_value(self.released.semaphore())
         } {

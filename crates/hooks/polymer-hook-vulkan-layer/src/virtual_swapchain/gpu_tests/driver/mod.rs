@@ -2,7 +2,7 @@ use super::*;
 mod render;
 mod render_pass;
 mod surface;
-use crate::layer::{CaptureDevice, DeviceDispatchTable, PhysicalDeviceState};
+use crate::layer::{DeviceDispatchTable, ExternalDevice, PhysicalDeviceState};
 use std::{
     cell::RefCell,
     sync::atomic::{AtomicUsize, Ordering},
@@ -115,7 +115,6 @@ impl Driver {
             let state = PhysicalDeviceState {
                 instance: instance.handle(),
                 next_gipa: entry.static_fn().get_instance_proc_addr,
-                capture_state: Arc::default(),
             };
             let mut info = vk::DeviceCreateInfo::default()
                 .queue_create_infos(&queues)
@@ -154,14 +153,12 @@ impl Driver {
                 &mut vk::PhysicalDeviceProperties2::default().push_next(&mut id),
             );
             assert_eq!(id.device_luid_valid, vk::TRUE);
-            let capture = Arc::new(CaptureDevice {
+            let external = Arc::new(ExternalDevice {
                 device: native.clone(),
                 memory_properties: instance.get_physical_device_memory_properties(physical),
-                get_memory_win32_handle: memory.fp().get_memory_win32_handle_khr,
                 get_memory_win32_handle_properties: memory
                     .fp()
                     .get_memory_win32_handle_properties_khr,
-                get_semaphore_win32_handle: semaphore.fp().get_semaphore_win32_handle_khr,
                 import_semaphore_win32_handle: semaphore.fp().import_semaphore_win32_handle_khr,
                 set_loader_data: None,
                 supports_foreign_queue: true,
@@ -177,12 +174,11 @@ impl Driver {
             crate::layer::register_device_dispatch(
                 native.handle(),
                 DeviceDispatchTable {
+                    handle: native.handle(),
                     next_gdpa: instance.fp_v1_0().get_device_proc_addr,
                     physical_device: physical,
                     physical_state: Some(state.clone()),
-                    capture: Some(capture),
-                    capture_state: state.capture_state,
-                    tracking: Arc::default(),
+                    external: Some(external),
                 },
             );
             Device::install(native.handle(), &info).unwrap();

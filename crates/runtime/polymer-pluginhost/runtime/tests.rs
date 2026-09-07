@@ -183,8 +183,8 @@ fn package() -> (TempDir, PluginRegistry) {
                 command,
                 argv,
                 hooks: { graphics: ["vulkan"], input: ["sdl3"] },
-                renderMode: "graphTracking",
-                surfaces: [{ index: 0 }],
+                renderMode: "swapchain",
+                surfaces: [{ index: 0, resolution: [640, 480] }],
               };
             }
             export async function onControllerChanged(context) {
@@ -611,7 +611,7 @@ async fn facade_on_emulator_launch_materializes_its_invocation_configuration() {
         .await
         .unwrap();
     assert_eq!(result["command"], "emulator.exe");
-    assert_eq!(result["renderMode"], "graphTracking");
+    assert_eq!(result["renderMode"], "swapchain");
 
     let explicit_default = runtime
         .handle()
@@ -912,11 +912,17 @@ async fn invocation_cancellation_does_not_abort_an_unrelated_call() {
     );
 }
 
-
 #[tokio::test(flavor = "current_thread")]
 async fn update_contents_receives_progress_and_publishes_terminal_events() {
-    for (path, fails) in [(vec!["updateContents".to_owned()], false), (vec!["default".to_owned(), "updateContents".to_owned()], true)] {
-        let source = format!(r#"
+    for (path, fails) in [
+        (vec!["updateContents".to_owned()], false),
+        (
+            vec!["default".to_owned(), "updateContents".to_owned()],
+            true,
+        ),
+    ] {
+        let source = format!(
+            r#"
             export default {{
                 async updateContents({{ progress }}) {{
                     progress({{ message: "refresh fixture progress", completed: 2, total: 4 }});
@@ -924,18 +930,32 @@ async fn update_contents_receives_progress_and_publishes_terminal_events() {
                 }}
             }};
             export async function* onScrape() {{}}
-        "#);
+        "#
+        );
         let (_root, registry) = scraper_package(&source);
         let runtime = test_runtime(registry, PluginRuntimeOptions::default());
         let mut events = PluginEvent::subscribe();
         while events.try_recv().is_ok() {}
-        let result = runtime.handle().invoke("scraper-test", &path, Vec::new()).await;
+        let result = runtime
+            .handle()
+            .invoke("scraper-test", &path, Vec::new())
+            .await;
         assert_eq!(result.is_err(), fails);
         let events = std::iter::from_fn(|| events.try_recv().ok()).collect::<Vec<_>>();
-        let progress = events.iter().find(|event| event.detail["message"] == "refresh fixture progress").unwrap();
+        let progress = events
+            .iter()
+            .find(|event| event.detail["message"] == "refresh fixture progress")
+            .unwrap();
         assert_eq!(progress.detail["completed"], 2);
         assert_eq!(progress.detail["total"], 4);
-        let terminal = events.iter().rev().find(|event| event.source_id == progress.source_id).unwrap();
-        assert_eq!(terminal.detail["state"], if fails { "failed" } else { "ready" });
+        let terminal = events
+            .iter()
+            .rev()
+            .find(|event| event.source_id == progress.source_id)
+            .unwrap();
+        assert_eq!(
+            terminal.detail["state"],
+            if fails { "failed" } else { "ready" }
+        );
     }
 }

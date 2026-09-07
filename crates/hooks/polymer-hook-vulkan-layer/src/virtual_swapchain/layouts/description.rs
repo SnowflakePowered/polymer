@@ -106,7 +106,7 @@ impl Pass {
             .enumerate()
             .filter_map(|(index, item)| item.presents().then_some(index))
             .collect::<Vec<_>>();
-        let pass = Self::create(indices.clone(), &owner.capture.device, |mask| {
+        let pass = Self::create(indices.clone(), &owner.external.device, |mask| {
             let mut attachments = attachments.to_vec();
             for (bit, &index) in indices.iter().enumerate() {
                 if mask & (1 << bit) != 0 {
@@ -132,7 +132,7 @@ impl Pass {
         } else {
             for handle in pass.variants.values() {
                 unsafe {
-                    owner.capture.device.destroy_render_pass(*handle, None);
+                    owner.external.device.destroy_render_pass(*handle, None);
                 }
             }
         }

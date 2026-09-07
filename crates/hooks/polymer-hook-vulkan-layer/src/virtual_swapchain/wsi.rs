@@ -41,7 +41,7 @@ impl Swapchain {
         surface: Arc<Surface>,
     ) -> Result<Arc<Self>, vk::Result> {
         if info.old_swapchain != vk::SwapchainKHR::null() {
-            let old = Self::get(device.capture.device.handle(), info.old_swapchain)?
+            let old = Self::get(device.external.device.handle(), info.old_swapchain)?
                 .ok_or(vk::Result::ERROR_INITIALIZATION_FAILED)?;
             if old.surface != info.surface {
                 return Err(vk::Result::ERROR_INITIALIZATION_FAILED);
@@ -64,7 +64,7 @@ impl Swapchain {
         .map_err(|_| vk::Result::ERROR_INITIALIZATION_FAILED)?;
         let controller = SwapchainController::<VulkanVirtualBackend>::create(
             CreateInfo {
-                capture: device.capture.clone(),
+                external: device.external.clone(),
                 acquire_queue: device.acquire_queue.clone(),
                 queue_families: device.families.clone(),
                 format: info.image_format,
@@ -263,7 +263,7 @@ impl Swapchain {
     }
 }
 
-pub(super) unsafe extern "system" fn create(
+pub(crate) unsafe extern "system" fn create(
     device: vk::Device,
     info: *const vk::SwapchainCreateInfoKHR<'_>,
     allocator: *const vk::AllocationCallbacks<'_>,
@@ -303,7 +303,7 @@ pub(super) unsafe extern "system" fn create(
     }
     result
 }
-pub(super) unsafe extern "system" fn destroy(
+pub(crate) unsafe extern "system" fn destroy(
     device: vk::Device,
     swapchain: vk::SwapchainKHR,
     allocator: *const vk::AllocationCallbacks<'_>,
@@ -332,7 +332,7 @@ pub(super) unsafe extern "system" fn destroy(
         }
     }
 }
-pub(super) unsafe extern "system" fn images(
+pub(crate) unsafe extern "system" fn images(
     device: vk::Device,
     swapchain: vk::SwapchainKHR,
     count: *mut u32,

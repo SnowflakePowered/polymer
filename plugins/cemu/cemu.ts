@@ -148,9 +148,10 @@ export function onLaunch(args: EmulatorLaunchArgs) {
         argv: ["-g", game, "--mlc", mlc],
         isolate: true,
         hooks: { graphics: [api], input: ["sdl3"] },
+        renderMode: api === "vulkan" ? "swapchain" : "intercept",
         surfaces: [
-            { index: 0, pattern: "Cemu+" },
-            { index: 1, pattern: "GamePad+" },
+            { index: 0, pattern: "Cemu+", resolution: api === "vulkan" ? [1280, 720] : undefined },
+            { index: 1, pattern: "GamePad+", resolution: api === "vulkan" ? [854, 480] : undefined },
         ],
     };
 }

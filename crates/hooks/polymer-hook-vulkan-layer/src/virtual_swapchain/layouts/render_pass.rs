@@ -60,7 +60,7 @@ unsafe extern "system" fn destroy(
         if let Some((_, pass)) = owner.layouts.passes.remove(&pass) {
             for handle in pass.variants.values() {
                 unsafe {
-                    owner.capture.device.destroy_render_pass(*handle, None);
+                    owner.external.device.destroy_render_pass(*handle, None);
                 }
             }
         }

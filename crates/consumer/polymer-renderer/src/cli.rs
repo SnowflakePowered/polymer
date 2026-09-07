@@ -38,9 +38,8 @@ impl HookChoice {
 
 /// The `--hook auto` selection, ordered from most to least likely to be the
 /// application's real renderer.
-pub const AUTO_HOOKS: [GraphicsHook; 4] = [
+pub const AUTO_HOOKS: [GraphicsHook; 3] = [
     GraphicsHook::Vulkan,
-    GraphicsHook::OpenGl,
     GraphicsHook::D3d12,
     GraphicsHook::D3d11,
 ];
@@ -103,11 +102,9 @@ struct ViewerArguments {
     #[arg(long, value_enum, default_value_t)]
     pub(crate) api: ViewerApi,
 
-    /// Track render targets by index into the detected selection, as a
-    /// comma-separated list. An entry may append `:TURNS` to rotate that
-    /// target counterclockwise by quarter turns, then `:WINDOW_REGEX` to
-    /// resolve the target within a presenting window whose title matches
-    /// (`0:0:GamePad View,1` pins target 0 to the GamePad window).
+    /// Select configured swapchain surface indices (or OpenGL capture targets).
+    /// Comma-separated entries may append `:TURNS:WINDOW_REGEX` to specify
+    /// counterclockwise quarter turns and a presenting-window title pattern.
     #[arg(
         long,
         visible_alias = "track-render-target",
@@ -119,13 +116,11 @@ struct ViewerArguments {
     )]
     pub(crate) track_render_targets: Option<Vec<TrackedRenderTarget>>,
 
-    /// Resolve tracked render targets through the presentation dependency
-    /// graph (offscreen screens behind compositor blits and copies) instead
-    /// of the scissor and one-hop heuristics.
+    /// OpenGL only: resolve capture targets through the presentation graph.
     #[arg(long, action = ArgAction::SetTrue, requires = "track_render_targets")]
     pub(crate) graph_tracking: bool,
 
-    /// Use a virtual swapchain with a fixed width and height.
+    /// D3D11/D3D12/Vulkan: use a native shared swapchain with a fixed width and height.
     #[arg(long, num_args = 2, value_names = ["WIDTH", "HEIGHT"], conflicts_with_all = ["graph_tracking", "force_keyed_mutex"], value_parser = clap::value_parser!(u32).range(1..=i32::MAX as i64))]
     pub(crate) swapchain_resolution: Option<Vec<u32>>,
 
@@ -188,7 +183,7 @@ struct ViewerArguments {
     #[arg(long, action = ArgAction::SetTrue, conflicts_with = "no_isolate")]
     pub(crate) resize: bool,
 
-    /// Force keyed-mutex synchronization for compatible capture backends.
+    /// OpenGL/GDI only: force keyed-mutex synchronization.
     #[arg(long = "force-km")]
     pub(crate) force_keyed_mutex: bool,
 
@@ -208,12 +203,44 @@ struct ViewerArguments {
 }
 
 impl ViewerArguments {
+    fn validate_presentation(&self, hooks: &[GraphicsHook]) -> Result<(), Box<dyn Error>> {
+        let mode = if self.graph_tracking {
+            polymer_runtime::RenderMode::GraphTracking
+        } else if hooks.iter().any(|hook| {
+            matches!(
+                hook,
+                GraphicsHook::D3d11 | GraphicsHook::D3d12 | GraphicsHook::Vulkan
+            )
+        }) {
+            polymer_runtime::RenderMode::Swapchain
+        } else {
+            polymer_runtime::RenderMode::Intercept
+        };
+        for hook in hooks {
+            hook.validate_render_mode(mode)?;
+        }
+        if mode == polymer_runtime::RenderMode::Swapchain {
+            if !self.target.is_empty() && self.swapchain_resolution.is_none() {
+                return Err(
+                    "D3D11, D3D12, and Vulkan require --swapchain-resolution WIDTH HEIGHT".into(),
+                );
+            }
+            if self.force_keyed_mutex {
+                return Err("--force-km is only available for OpenGL/GDI capture".into());
+            }
+        } else if self.swapchain_resolution.is_some() {
+            return Err("--swapchain-resolution requires D3D11, D3D12, or Vulkan hooks".into());
+        }
+        Ok(())
+    }
+
     fn into_options(self) -> Result<ViewerOptions, Box<dyn Error>> {
         let mut hooks = Vec::new();
-        expand_hook_choices(&mut hooks, self.hook_choices)?;
+        expand_hook_choices(&mut hooks, self.hook_choices.iter().copied())?;
         if hooks.is_empty() {
             hooks.extend(AUTO_HOOKS);
         }
+        self.validate_presentation(&hooks)?;
         if let Some(targets) = &self.webrtc {
             let mut unique = HashSet::new();
             if targets.iter().any(|target| !unique.insert(*target)) {

@@ -23,7 +23,6 @@ impl VirtualDxgiDriver for D3d12Frontend {
             Ok(state) => state,
             Err(error) => return Self::owner_error(error).code(),
         };
-        let _capture = CaptureScope::enter();
         if flags.contains(DXGI_PRESENT_TEST) {
             return if state.failed {
                 DXGI_ERROR_DEVICE_REMOVED

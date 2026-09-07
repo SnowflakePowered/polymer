@@ -4,14 +4,14 @@
 use ash::{vk, vk::Handle};
 use dashmap::DashMap;
 use polymer_hook::HookChain;
-use polymer_producer_vulkan::{SetDeviceLoaderData, tracking::Tracking};
+use polymer_producer_vulkan::SetDeviceLoaderData;
 use std::{
     ffi::{c_char, c_void},
     mem,
-    sync::{Arc, LazyLock, OnceLock},
+    sync::{Arc, OnceLock},
 };
 
-pub(crate) use polymer_producer_vulkan::capture::{CaptureDevice, CaptureState};
+pub(crate) use polymer_producer_vulkan::ExternalDevice;
 
 const VK_LAYER_LINK_INFO: u32 = 0;
 
@@ -74,7 +74,6 @@ struct VkLayerDeviceCreateInfo {
 pub(crate) struct InstanceDispatchTable {
     pub(crate) next_gipa: vk::PFN_vkGetInstanceProcAddr,
     pub(crate) next_physical_gpa: Option<PfnGetPhysicalDeviceProcAddr>,
-    pub(crate) capture_state: Arc<CaptureState>,
 }
 
 #[derive(Clone)]
@@ -82,15 +81,13 @@ pub(crate) struct DeviceDispatchTable {
     pub next_gdpa: vk::PFN_vkGetDeviceProcAddr,
     pub physical_device: vk::PhysicalDevice,
     pub physical_state: Option<PhysicalDeviceState>,
-    pub capture: Option<Arc<CaptureDevice>>,
-    pub capture_state: Arc<CaptureState>,
-    pub tracking: Arc<Tracking>,
+    pub external: Option<Arc<ExternalDevice>>,
+    pub handle: vk::Device,
 }
 
 #[derive(Clone)]
 pub(crate) struct QueueDispatchTable {
     pub(crate) device: vk::Device,
-    pub(crate) queue_family_index: u32,
     pub(crate) dispatch: DeviceDispatchTable,
 }
 
@@ -98,7 +95,6 @@ pub(crate) struct QueueDispatchTable {
 pub(crate) struct PhysicalDeviceState {
     pub instance: vk::Instance,
     pub next_gipa: vk::PFN_vkGetInstanceProcAddr,
-    pub capture_state: Arc<CaptureState>,
 }
 
 #[derive(Default)]
@@ -119,12 +115,6 @@ pub(crate) fn install_hook_state(state: Arc<VulkanHookState>) -> Arc<VulkanHookS
 pub(crate) fn hook_state() -> Arc<VulkanHookState> {
     Arc::clone(HOOK_STATE.get_or_init(|| Arc::new(VulkanHookState::default())))
 }
-
-/// Presentation ownership is process-wide, not VkInstance-wide. Applications
-/// such as Azahar create separate Vulkan instances for sibling presentation
-/// windows; giving each instance its own capture state makes both instances
-/// export the same graph targets and race the viewer's stable surface IDs.
-static CAPTURE_STATE: LazyLock<Arc<CaptureState>> = LazyLock::new(Arc::default);
 
 pub(crate) unsafe fn dispatch_key<H: Handle>(handle: H) -> Option<usize> {
     let raw = handle.as_raw() as usize;
@@ -231,7 +221,6 @@ pub(crate) fn register_instance_dispatch(created: vk::Instance, bootstrap: Insta
                 InstanceDispatchTable {
                     next_gipa: bootstrap.next_gipa,
                     next_physical_gpa: bootstrap.next_physical_gpa,
-                    capture_state: CAPTURE_STATE.clone(),
                 },
             );
         }
@@ -305,7 +294,7 @@ pub(crate) fn register_device_dispatch(device: vk::Device, dispatch: DeviceDispa
 
 pub(crate) fn observe_create_device(injected_extension_count: usize) {
     if injected_extension_count != 0 {
-        tracing::debug!("polymer: enabled {injected_extension_count} capture device extensions");
+        tracing::debug!("polymer: enabled {injected_extension_count} swapchain device extensions");
     }
 }
 
@@ -320,21 +309,17 @@ pub(crate) unsafe fn handle_destroy_device(
     let continuation = *next
         .fp_next()
         .expect("Vulkan around chains always have a terminal");
-    let dispatch = unsafe { dispatch_key(device) }.and_then(|key| {
+    let _dispatch = unsafe { dispatch_key(device) }.and_then(|key| {
         hook_state()
             .device
             .remove(&key)
             .map(|(_, dispatch)| dispatch)
     });
-    if let Some(capture) = dispatch.as_ref().and_then(|entry| entry.capture.as_ref()) {
-        let _ = unsafe { capture.device.device_wait_idle() };
-    }
     {
         hook_state()
             .queue
             .retain(|_, dispatch| dispatch.device != device)
     };
-    next.common.device_capture(device).device_destroyed(device);
     unsafe { continuation(device, allocator, next) };
 }
 
@@ -344,10 +329,7 @@ pub(crate) fn command_dispatch_data(
     let state = hook_state();
     let dispatch = unsafe { dispatch_key(command_buffer) }
         .and_then(|key| state.device.get(&key).map(|entry| entry.clone()))?;
-    let device = dispatch
-        .capture
-        .as_ref()
-        .map_or(vk::Device::null(), |capture| capture.device.handle());
+    let device = dispatch.handle;
     Some((dispatch.next_gdpa, device))
 }
 
@@ -372,31 +354,10 @@ pub(crate) fn device_gdpa(device: vk::Device) -> Option<vk::PFN_vkGetDeviceProcA
         .and_then(|key| hook_state().device.get(&key).map(|entry| entry.next_gdpa))
 }
 
-pub(crate) fn device_physical_state(
-    device: vk::Device,
-) -> Option<(vk::PhysicalDevice, PhysicalDeviceState)> {
-    unsafe { dispatch_key(device) }.and_then(|key| {
-        let state = hook_state();
-        let dispatch = state.device.get(&key)?;
-        Some((dispatch.physical_device, dispatch.physical_state.clone()?))
-    })
-}
-
 pub(crate) fn queue_dispatch_data(
     queue: vk::Queue,
 ) -> Option<(vk::PFN_vkGetDeviceProcAddr, vk::Device)> {
     let state = hook_state();
     let state = state.queue.get(&queue)?;
     Some((state.dispatch.next_gdpa, state.device))
-}
-
-pub(crate) fn capture_enabled(device: vk::Device) -> bool {
-    unsafe { dispatch_key(device) }
-        .and_then(|key| {
-            hook_state()
-                .device
-                .get(&key)
-                .map(|entry| entry.capture.is_some())
-        })
-        .unwrap_or(false)
 }

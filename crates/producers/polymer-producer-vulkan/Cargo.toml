@@ -7,13 +7,8 @@ license.workspace = true
 [dependencies]
 polymer-presentation = { workspace = true, features = ["producer"] }
 ash.workspace = true
-dashmap.workspace = true
 parking_lot.workspace = true
-polymer-hook.workspace = true
-polymer-ipc.workspace = true
-polymer-platform-windows.workspace = true
 polymer-protocol.workspace = true
-tracing.workspace = true
 windows.workspace = true
 
 [dev-dependencies]

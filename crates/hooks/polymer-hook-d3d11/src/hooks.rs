@@ -11,45 +11,9 @@ polymer_hook::chain_hooks! {
 
     #[trampoline(abi = "system-unwind")]
     #[terminal(installed(
-        target = crate::install::system_create_device,
-    ), fallback = E_FAIL)]
-    #[postfix(
-        crate::device::create_device(
-            adapter,
-            device,
-            feature_level,
-            immediate_context,
-            result
-        )
-    )]
-    pub(crate) unsafe extern "system" fn create_device(
-        adapter: *mut c_void,
-        driver_type: i32,
-        software: HMODULE,
-        flags: u32,
-        feature_levels: *const i32,
-        feature_level_count: u32,
-        sdk_version: u32,
-        device: *mut *mut c_void,
-        feature_level: *mut i32,
-        immediate_context: *mut *mut c_void,
-    ) -> i32;
-
-    #[trampoline(abi = "system-unwind")]
-    #[terminal(installed(
         target = crate::install::system_create_device_and_swapchain,
     ), fallback = E_FAIL)]
     #[infix(crate::virtual_creation::VirtualCreation::create)]
-    #[postfix(
-        crate::device::create_device_and_swapchain(
-            adapter,
-            swapchain,
-            device,
-            feature_level,
-            immediate_context,
-            result
-        )
-    )]
     pub(crate) unsafe extern "system" fn create_device_and_swapchain(
         adapter: *mut c_void,
         driver_type: i32,

@@ -2,11 +2,11 @@
 
 The active design adds explicit buffer-availability acknowledgments. It supersedes the earlier prohibition against IPC and consumer changes. Do not reintroduce software command replay, logical D3D11 texture/view wrappers, or native recordings duplicated per ring slot.
 
-The complete project still includes D3D11, D3D12, Vulkan WSI, and OpenGL default-framebuffer virtualization. The native Vulkan WSI profile is now implemented and validated with both consumers; OpenGL and broader Vulkan profiles remain. See VIRTUAL_SWAPCHAIN_IMPLEMENTATION.md for current status.
+The complete project still includes D3D11, D3D12, Vulkan WSI, and OpenGL default-framebuffer virtualization. The native Vulkan WSI profile is now implemented and validated with both consumers; OpenGL and optional Vulkan presentation features remain. See VIRTUAL_SWAPCHAIN_IMPLEMENTATION.md for current status.
 
 ## 1. Configuration and architectural ownership
 
-- Use renderMode: "intercept" | "graphTracking" | "swapchain". Preserve the first two modes.
+- D3D11, D3D12, and Vulkan support only renderMode: "swapchain" (the default). Their interception capture and graph tracking are removed; do not restore compatibility paths. Only OpenGL retains explicit "intercept"/"graphTracking", and GDI retains explicit "intercept".
 - Every swapchain surface requires an immutable positive resolution: [width, height]. Preserve configured index, public pattern, rotation, and display order.
 - Match actual HWND lifetimes and titles. Image indices and swapchain creation order are not configured surface identities.
 - One active graphics producer owns the assignments for a launch. Support destruction/recreation at the same configured extent, device loss, disconnect, and retirement.

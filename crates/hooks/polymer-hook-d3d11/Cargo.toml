@@ -15,7 +15,6 @@ polymer-hook.workspace = true
 polymer-hook-dxgi = { path = "../polymer-hook-dxgi" }
 polymer-platform-windows.workspace = true
 polymer-producer-d3d11 = { path = "../../producers/polymer-producer-d3d11" }
-polymer-protocol.workspace = true
 tracing.workspace = true
 windows-sys.workspace = true
 windows = { workspace = true, features = ["Wdk_Graphics_Direct3D", "Win32_System_LibraryLoader"] }

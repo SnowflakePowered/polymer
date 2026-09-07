@@ -26,10 +26,7 @@ impl VirtualCreation {
         context: *mut *mut c_void,
         mut next: crate::hooks::CreateDeviceAndSwapchainContext<'_>,
     ) -> i32 {
-        if polymer_hook::config::render_mode() != Ok(polymer_hook::config::RenderMode::Swapchain)
-            || swapchain.is_null()
-            || desc.is_null()
-        {
+        if swapchain.is_null() || desc.is_null() {
             return polymer_hook::next!(
                 next,
                 adapter,
