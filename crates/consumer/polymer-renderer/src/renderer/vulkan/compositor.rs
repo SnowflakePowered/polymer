@@ -1,8 +1,8 @@
+use crate::renderer::frame_ownership::Retention;
 use crate::renderer::{CompositingPlan, RenderWindow, SurfacePlacement};
 use ash::{Entry, vk};
-use polymer_consumer_vulkan::ImportedImageRing;
 use polymer_ipc::StreamReady;
-use polymer_protocol::{AdapterLuid, FrameReady, RELEASE_ALL_SYNC_VALUE};
+use polymer_protocol::{AdapterLuid, FrameReady};
 use std::error::Error;
 
 use crate::renderer::{
@@ -12,22 +12,10 @@ use crate::renderer::{
 use crate::{fit_inside, renderer::ReceivedSurface, surface_sort_key, webrtc};
 
 use super::VulkanReceiver;
+use super::surface::{ImportedVulkanSurface, SurfaceCache};
 
 const FRAMES_IN_FLIGHT: usize = 2;
 const SURFACE_DESCRIPTOR_COUNT: u32 = 1024;
-
-struct ImportedVulkanSurface {
-    connection: u64,
-    surface_id: u64,
-    target_window: i64,
-    imported: ImportedImageRing,
-    sample_views: Vec<vk::ImageView>,
-    sample_sets: Vec<vk::DescriptorSet>,
-    flip_y: bool,
-    quarter_turns: u8,
-    latest: Option<FrameReady>,
-    last_released_frame: u64,
-}
 
 struct CompositionPipeline {
     descriptor_set_layout: vk::DescriptorSetLayout,
@@ -50,7 +38,6 @@ struct SurfacePush {
 #[derive(Clone, Copy)]
 struct SurfaceDraw {
     image: vk::Image,
-    external_queue: bool,
     descriptor_set: vk::DescriptorSet,
     placement: SurfacePlacement,
     push: SurfacePush,
@@ -566,11 +553,27 @@ impl VulkanCompositor {
         self.disconnect_stream(connection)?;
         let imported = self.receiver.import_stream(stream)?;
         let quarter_turns = quarter_turns % 4;
+        let cache = (stream.slot_count == 1)
+            .then(|| {
+                SurfaceCache::new(
+                    &self.instance,
+                    &self.device,
+                    self.physical_device,
+                    &imported,
+                )
+            })
+            .transpose()?;
+        let mut images: Vec<_> = (0..stream.slot_count)
+            .map(|slot| imported.image(slot).expect("imported slot"))
+            .collect();
+        if let Some(cache) = &cache {
+            images.push(cache.image);
+        }
         let (sample_views, sample_sets) = unsafe {
             create_surface_samples(
                 &self.device,
-                &imported,
-                stream.slot_count,
+                &images,
+                imported.format,
                 &self.composition_pipeline,
             )?
         };
@@ -583,8 +586,9 @@ impl VulkanCompositor {
             sample_sets,
             flip_y: stream.bottom_up,
             quarter_turns,
-            latest: None,
-            last_released_frame: 0,
+            frames: Default::default(),
+            discarded: Vec::new(),
+            cache,
         });
         self.surfaces
             .sort_by_key(|surface| surface_sort_key(surface.surface_id));
@@ -609,7 +613,7 @@ impl VulkanCompositor {
             .iter_mut()
             .find(|surface| surface.connection == connection)
         {
-            surface.latest = Some(frame);
+            surface.offer(frame);
         }
     }
 
@@ -617,7 +621,7 @@ impl VulkanCompositor {
         self.surfaces
             .iter()
             .filter_map(|surface| {
-                let frame = surface.latest?;
+                let frame = surface.frames.latest()?;
                 let image_extent = super::super::frame_image_extent(
                     frame,
                     surface.imported.width,
@@ -638,7 +642,9 @@ impl VulkanCompositor {
     }
 
     pub(crate) fn has_pending_frame(&self) -> bool {
-        self.surfaces.iter().any(|surface| surface.latest.is_some())
+        self.surfaces
+            .iter()
+            .any(|surface| surface.frames.has_pending())
     }
 
     pub(crate) fn disconnect_stream(&mut self, connection: u64) -> Result<(), vk::Result> {
@@ -651,14 +657,13 @@ impl VulkanCompositor {
         };
         unsafe {
             self.device.device_wait_idle()?;
-            if let Some(semaphore) = self.surfaces[index].imported.consumer_timeline() {
-                self.device.signal_semaphore(
-                    &vk::SemaphoreSignalInfo::default()
-                        .semaphore(semaphore)
-                        .value(RELEASE_ALL_SYNC_VALUE),
-                )?;
-            }
         }
+        self.surfaces[index].retire(
+            &self.device,
+            self.queue,
+            self.command_buffers[0],
+            self.queue_family,
+        )?;
         let mut surface = self.surfaces.remove(index);
         unsafe {
             destroy_surface_samples(
@@ -674,15 +679,14 @@ impl VulkanCompositor {
     fn release_imported_streams(&mut self) -> Result<(), vk::Result> {
         unsafe {
             self.device.device_wait_idle()?;
-            for surface in &self.surfaces {
-                if let Some(semaphore) = surface.imported.consumer_timeline() {
-                    self.device.signal_semaphore(
-                        &vk::SemaphoreSignalInfo::default()
-                            .semaphore(semaphore)
-                            .value(RELEASE_ALL_SYNC_VALUE),
-                    )?;
-                }
-            }
+        }
+        for surface in &self.surfaces {
+            surface.retire(
+                &self.device,
+                self.queue,
+                self.command_buffers[0],
+                self.queue_family,
+            )?;
         }
         for mut surface in self.surfaces.drain(..) {
             unsafe {
@@ -834,18 +838,21 @@ impl VulkanCompositor {
                     self.device.unmap_memory(readback.memory);
                 }
             }
-            for surface in self
-                .surfaces
-                .iter()
-                .filter(|surface| surface.latest.is_some() && surface.imported.uses_keyed_mutex())
-            {
-                // A D3D11 shared texture is made visible by both its fence and
-                // its keyed mutex. Waiting for the fence before submission
-                // avoids asking the Vulkan driver to resolve both primitives
-                // inside the same queue operation.
-                surface
-                    .imported
-                    .wait_for(surface.latest.unwrap().sync_value, u64::MAX)?;
+            for surface in &mut self.surfaces {
+                surface.frames.begin();
+                if let Some(frame) = surface.frames.pending() {
+                    // Never queue an uncancellable wait for a producer that
+                    // may exit before signaling. Redraw the leased frame instead.
+                    match surface.imported.wait_for(frame.sync_value, 0) {
+                        Ok(()) => surface.frames.prepare_pending(if surface.cache.is_some() {
+                            Retention::Cached
+                        } else {
+                            Retention::Retained
+                        }),
+                        Err(vk::Result::TIMEOUT) => {}
+                        Err(error) => return Err(error.into()),
+                    }
+                }
             }
             let (image_index, acquire_suboptimal) = match self.swapchain_loader.acquire_next_image(
                 self.swapchain,
@@ -857,7 +864,6 @@ impl VulkanCompositor {
                 Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => return Ok(false),
                 Err(error) => return Err(error.into()),
             };
-            self.device.reset_fences(&[self.fences[flight]])?;
             let command = self.command_buffers[flight];
             self.device
                 .reset_command_buffer(command, vk::CommandBufferResetFlags::empty())?;
@@ -888,7 +894,7 @@ impl VulkanCompositor {
                 &[],
                 &[to_destination],
             );
-            if self.has_pending_frame() || !self.swapchain_initialized[image_index as usize] {
+            {
                 self.device.cmd_clear_color_image(
                     command,
                     destination,
@@ -920,19 +926,28 @@ impl VulkanCompositor {
                 .map_or(0, |(swapchain, _)| swapchain.available());
             let mut surface_draws = Vec::new();
             for (surface_index, surface) in self.surfaces.iter_mut().enumerate() {
+                if surface.frames.prepared().is_some() {
+                    surface.release_displayed(&self.device, command, self.queue_family);
+                    surface.copy_single_slot(&self.device, command, self.queue_family);
+                }
                 let imported = &surface.imported;
-                let Some(frame) = surface.latest else {
+                let Some(frame) = surface.frames.frame() else {
                     continue;
                 };
-                if let Some(source) = imported.image(frame.slot) {
+                if let Some(source) = surface.image() {
                     let mut to_source = vk::ImageMemoryBarrier::default()
                         .src_access_mask(vk::AccessFlags::MEMORY_WRITE)
                         .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
                         .old_layout(vk::ImageLayout::GENERAL)
                         .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                         .image(source)
                         .subresource_range(color_range());
-                    if imported.uses_external_queue_family() {
+                    if surface.cache.is_none()
+                        && surface.frames.prepared().is_some()
+                        && imported.uses_external_queue_family()
+                    {
                         to_source = to_source
                             .src_queue_family_index(vk::QUEUE_FAMILY_EXTERNAL)
                             .dst_queue_family_index(self.queue_family);
@@ -952,7 +967,8 @@ impl VulkanCompositor {
                         imported.width,
                         imported.height,
                     );
-                    if video_publish_ready
+                    if surface.frames.prepared().is_some()
+                        && video_publish_ready
                         && video_publish_budget > 0
                         && let Some(cache) = video_parts
                             .as_mut()
@@ -1015,13 +1031,13 @@ impl VulkanCompositor {
                             &[],
                             &[cache_to_source],
                         );
-                        cache.initialized = true;
                         video_copies.push((surface_index, frame));
                     }
-                    if let Some(readback) = video_parts
-                        .as_mut()
-                        .and_then(|(_, video)| video.streams.get_mut(&surface.connection))
-                        .and_then(|stream| stream.readbacks.get(flight))
+                    if surface.frames.prepared().is_some()
+                        && let Some(readback) = video_parts
+                            .as_mut()
+                            .and_then(|(_, video)| video.streams.get_mut(&surface.connection))
+                            .and_then(|stream| stream.readbacks.get(flight))
                     {
                         self.device.cmd_copy_image_to_buffer(
                             command,
@@ -1060,7 +1076,7 @@ impl VulkanCompositor {
                                 && placement.surface_id == surface.surface_id
                         })
                         .copied();
-                    let descriptor_set = surface.sample_sets.get(frame.slot as usize).copied();
+                    let descriptor_set = surface.descriptor();
                     let drawable = placement.zip(descriptor_set).filter(|(placement, _)| {
                         let content = placement.content;
                         content.opacity.is_finite()
@@ -1087,7 +1103,6 @@ impl VulkanCompositor {
                         );
                         surface_draws.push(SurfaceDraw {
                             image: source,
-                            external_queue: imported.uses_external_queue_family(),
                             descriptor_set,
                             placement,
                             push: SurfacePush {
@@ -1102,18 +1117,13 @@ impl VulkanCompositor {
                             },
                         });
                     } else {
-                        let mut source_to_general = vk::ImageMemoryBarrier::default()
+                        let source_to_general = vk::ImageMemoryBarrier::default()
                             .src_access_mask(vk::AccessFlags::TRANSFER_READ)
                             .dst_access_mask(vk::AccessFlags::MEMORY_READ)
                             .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
                             .new_layout(vk::ImageLayout::GENERAL)
                             .image(source)
                             .subresource_range(color_range());
-                        if imported.uses_external_queue_family() {
-                            source_to_general = source_to_general
-                                .src_queue_family_index(self.queue_family)
-                                .dst_queue_family_index(vk::QUEUE_FAMILY_EXTERNAL);
-                        }
                         self.device.cmd_pipeline_barrier(
                             command,
                             vk::PipelineStageFlags::TRANSFER,
@@ -1169,18 +1179,13 @@ impl VulkanCompositor {
             })?;
             self.device.cmd_end_render_pass(command);
             for draw in &surface_draws {
-                let mut to_general = vk::ImageMemoryBarrier::default()
+                let to_general = vk::ImageMemoryBarrier::default()
                     .src_access_mask(vk::AccessFlags::SHADER_READ)
                     .dst_access_mask(vk::AccessFlags::MEMORY_READ)
                     .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                     .new_layout(vk::ImageLayout::GENERAL)
                     .image(draw.image)
                     .subresource_range(color_range());
-                if draw.external_queue {
-                    to_general = to_general
-                        .src_queue_family_index(self.queue_family)
-                        .dst_queue_family_index(vk::QUEUE_FAMILY_EXTERNAL);
-                }
                 self.device.cmd_pipeline_barrier(
                     command,
                     vk::PipelineStageFlags::FRAGMENT_SHADER,
@@ -1213,7 +1218,7 @@ impl VulkanCompositor {
             let mut wait_values = vec![0];
             let mut wait_stages = vec![vk::PipelineStageFlags::TRANSFER];
             for surface in &self.surfaces {
-                if let Some(frame) = surface.latest
+                if let Some(frame) = surface.frames.prepared().map(|frame| frame.ready())
                     && !surface.imported.uses_keyed_mutex()
                 {
                     waits.push(surface.imported.timeline());
@@ -1226,7 +1231,7 @@ impl VulkanCompositor {
             let video_wait_value = video_parts.as_ref().map_or(0, |(_, video)| {
                 self.surfaces
                     .iter()
-                    .filter(|surface| surface.latest.is_some())
+                    .filter(|surface| surface.frames.prepared().is_some())
                     .filter_map(|surface| video.streams.get(&surface.connection))
                     .filter(|stream| stream.cache.is_some())
                     .map(|stream| stream.completion_value)
@@ -1267,35 +1272,24 @@ impl VulkanCompositor {
                 signals.push(video.ready.expect("video ready semaphore"));
                 signal_values.push(video.ready_value);
             }
-            let mut releases = Vec::new();
-            for (index, surface) in self.surfaces.iter().enumerate() {
-                if let Some(frame) = surface.latest
-                    && frame.frame_number > surface.last_released_frame
+            for surface in &self.surfaces {
+                if let Some(value) = surface.frames.release_value()
                     && let Some(semaphore) = surface.imported.consumer_timeline()
                 {
                     signals.push(semaphore);
-                    signal_values.push(frame.sync_value);
-                    releases.push((index, frame.frame_number));
+                    signal_values.push(value);
                 }
             }
             let mut timeline_submit = vk::TimelineSemaphoreSubmitInfo::default()
                 .wait_semaphore_values(&wait_values)
                 .signal_semaphore_values(&signal_values);
-            let acquire_syncs: Vec<_> = self
-                .surfaces
-                .iter()
-                .filter_map(|surface| {
-                    let frame = surface.latest?;
-                    surface
-                        .imported
-                        .uses_keyed_mutex()
-                        .then(|| surface.imported.memory(frame.slot))
-                        .flatten()
-                })
-                .collect();
+            let mut acquire_syncs = Vec::new();
+            let mut release_syncs = Vec::new();
+            for surface in &self.surfaces {
+                surface.keyed_handoffs(&mut acquire_syncs, &mut release_syncs, false);
+            }
             let acquire_keys = vec![1; acquire_syncs.len()];
-            let acquire_timeouts = vec![u32::MAX; acquire_syncs.len()];
-            let release_syncs = acquire_syncs.clone();
+            let acquire_timeouts = vec![100; acquire_syncs.len()];
             let release_keys = vec![0; release_syncs.len()];
             let mut keyed_mutex = vk::Win32KeyedMutexAcquireReleaseInfoKHR::default()
                 .acquire_syncs(&acquire_syncs)
@@ -1309,11 +1303,15 @@ impl VulkanCompositor {
                 .wait_dst_stage_mask(&wait_stages)
                 .command_buffers(&commands)
                 .signal_semaphores(&signals);
-            if !acquire_syncs.is_empty() {
+            if !acquire_syncs.is_empty() || !release_syncs.is_empty() {
                 submit = submit.push_next(&mut keyed_mutex);
             }
+            self.device.reset_fences(&[self.fences[flight]])?;
             self.device
                 .queue_submit(self.queue, &[submit], self.fences[flight])?;
+            for surface in &mut self.surfaces {
+                surface.commit();
+            }
             for (index, frame) in video_copies {
                 let Some((video_swapchain, video)) = video_parts.as_mut() else {
                     continue;
@@ -1321,9 +1319,12 @@ impl VulkanCompositor {
                 let connection = self.surfaces[index].connection;
                 let cached_image = video
                     .streams
-                    .get(&connection)
-                    .and_then(|stream| stream.cache.as_ref())
-                    .map(|cache| cache.image);
+                    .get_mut(&connection)
+                    .and_then(|stream| stream.cache.as_mut())
+                    .map(|cache| {
+                        cache.initialized = true;
+                        cache.image
+                    });
                 if let Some(image) = cached_image {
                     video.completion_value += 1;
                     let completion_value = video.completion_value;
@@ -1363,9 +1364,6 @@ impl VulkanCompositor {
                     readback.pending = Some(frame);
                 }
             }
-            for (index, frame_number) in releases {
-                self.surfaces[index].last_released_frame = frame_number;
-            }
             let swapchains = [self.swapchain];
             let indices = [image_index];
             let present_suboptimal = match self.swapchain_loader.queue_present(
@@ -1380,11 +1378,6 @@ impl VulkanCompositor {
                 Err(error) => return Err(error.into()),
             };
             self.swapchain_initialized[image_index as usize] = true;
-            for surface in &mut self.surfaces {
-                if surface.imported.uses_keyed_mutex() {
-                    surface.latest = None;
-                }
-            }
             self.frame_index += 1;
             Ok(!(acquire_suboptimal || present_suboptimal))
         }
@@ -1472,8 +1465,19 @@ impl Drop for VulkanCompositor {
     fn drop(&mut self) {
         let _ = self.release_imported_streams();
         unsafe {
-            let _ = self.device.wait_for_fences(&self.fences, true, u64::MAX);
+            // A failed submit can leave a reset frame fence unsignaled forever.
+            // Device idle covers submitted work without waiting on such fences.
             let _ = self.device.device_wait_idle();
+            // Retirement can fail on device loss. Destroy imported children
+            // while their device is still alive even in that case.
+            for mut surface in self.surfaces.drain(..) {
+                destroy_surface_samples(
+                    &self.device,
+                    self.composition_pipeline.descriptor_pool,
+                    &mut surface.sample_views,
+                    &mut surface.sample_sets,
+                );
+            }
             for fence in self.fences.drain(..) {
                 self.device.destroy_fence(fence, None);
             }
@@ -1526,7 +1530,7 @@ fn physical_device_matches_luid(
     id.device_luid_valid == vk::TRUE && id.device_luid[..8] == expected
 }
 
-fn color_range() -> vk::ImageSubresourceRange {
+pub(super) fn color_range() -> vk::ImageSubresourceRange {
     vk::ImageSubresourceRange {
         aspect_mask: vk::ImageAspectFlags::COLOR,
         base_mip_level: 0,
@@ -1887,24 +1891,18 @@ unsafe fn create_composition_pipeline(
 
 unsafe fn create_surface_samples(
     device: &ash::Device,
-    imported: &ImportedImageRing,
-    slot_count: u32,
+    images: &[vk::Image],
+    format: vk::Format,
     pipeline: &CompositionPipeline,
 ) -> Result<(Vec<vk::ImageView>, Vec<vk::DescriptorSet>), vk::Result> {
     unsafe {
-        let mut views = Vec::with_capacity(slot_count as usize);
-        for slot in 0..slot_count {
-            let Some(image) = imported.image(slot) else {
-                for view in views {
-                    device.destroy_image_view(view, None);
-                }
-                return Err(vk::Result::ERROR_INITIALIZATION_FAILED);
-            };
+        let mut views = Vec::with_capacity(images.len());
+        for &image in images {
             match device.create_image_view(
                 &vk::ImageViewCreateInfo::default()
                     .image(image)
                     .view_type(vk::ImageViewType::TYPE_2D)
-                    .format(imported.format)
+                    .format(format)
                     .subresource_range(color_range()),
                 None,
             ) {

@@ -209,6 +209,8 @@ impl Ring {
             // WGL registers a private D3D image. The exported NT-handle image
             // has separate consumer ownership and receives a native copy after
             // GL releases the interop object.
+            // Direct registration of the exported NT texture fails on the tested
+            // NVIDIA driver; see this crate's INTEROP.md for probe results.
             let mut interop_image = None;
             unsafe { device.CreateTexture2D(&desc, None, Some(&mut interop_image)) }
                 .map_err(|error| format!("D3D11 interop image: {error}"))?;

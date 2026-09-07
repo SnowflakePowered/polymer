@@ -6,6 +6,9 @@ use polymer_runtime::SurfaceOffer;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 pub mod d3d12;
+mod frame_ownership;
+#[cfg(test)]
+mod gpu_tests;
 pub mod vulkan;
 pub mod webrtc;
 

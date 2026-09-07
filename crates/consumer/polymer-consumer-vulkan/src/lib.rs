@@ -90,6 +90,30 @@ impl ImportedImageRing {
         self.consumer_timeline
     }
 
+    /// The caller must finish all GPU accesses and release external ownership first.
+    pub fn release_all_idle(&self, last_received: u64) -> Result<(), vk::Result> {
+        let Some(semaphore) = self.consumer_timeline else {
+            return Ok(());
+        };
+        let current = unsafe { self.device.get_semaphore_counter_value(semaphore)? };
+        let produced = unsafe { self.device.get_semaphore_counter_value(self.timeline)? };
+        // Cover the bounded ring, including captures still queued on the producer.
+        // A near-u64::MAX sentinel exceeds Vulkan's permitted timeline difference.
+        let value = produced
+            .max(last_received)
+            .saturating_add(self.images.len() as u64);
+        if value > current {
+            unsafe {
+                self.device.signal_semaphore(
+                    &vk::SemaphoreSignalInfo::default()
+                        .semaphore(semaphore)
+                        .value(value),
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn memory(&self, slot: u32) -> Option<vk::DeviceMemory> {
         self.memories.get(slot as usize).copied()
     }
@@ -773,11 +797,24 @@ unsafe fn import_resources(
             .initial_layout(vk::ImageLayout::UNDEFINED);
         let image = unsafe { device.create_image(&image_info, None)? };
         let requirements = unsafe { device.get_image_memory_requirements(image) };
+        let mut compatible_bits = requirements.memory_type_bits;
+        if memory_handle_type != vk::ExternalMemoryHandleTypeFlags::OPAQUE_WIN32 {
+            let importer = ash::khr::external_memory_win32::Device::new(instance, device);
+            let mut handle_properties = vk::MemoryWin32HandlePropertiesKHR::default();
+            unsafe {
+                importer.get_memory_win32_handle_properties(
+                    memory_handle_type,
+                    *raw_handle as isize,
+                    &mut handle_properties,
+                )?;
+            }
+            compatible_bits &= handle_properties.memory_type_bits;
+        }
         let memory_type_index = memory_properties.memory_types
             [..memory_properties.memory_type_count as usize]
             .iter()
             .enumerate()
-            .find(|(index, _)| requirements.memory_type_bits & (1 << index) != 0)
+            .find(|(index, _)| compatible_bits & (1 << index) != 0)
             .map(|(index, _)| index as u32)
             .ok_or(vk::Result::ERROR_FEATURE_NOT_PRESENT)?;
         let mut import = vk::ImportMemoryWin32HandleInfoKHR::default()
