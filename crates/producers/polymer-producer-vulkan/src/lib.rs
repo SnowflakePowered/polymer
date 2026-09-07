@@ -12,7 +12,7 @@ mod image_ring;
 #[cfg(windows)]
 mod timeline;
 #[cfg(windows)]
-pub mod virtual_swapchain;
+pub mod swapchain;
 
 #[cfg(windows)]
 pub use device::{ExternalDevice, SetDeviceLoaderData};

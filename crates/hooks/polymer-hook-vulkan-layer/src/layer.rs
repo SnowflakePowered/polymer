@@ -232,7 +232,7 @@ pub(crate) unsafe fn handle_destroy_instance(
     allocator: *const vk::AllocationCallbacks<'_>,
     mut next: crate::hooks::DestroyInstanceContext<'_>,
 ) {
-    if crate::virtual_swapchain::Device::retains_instance(instance) {
+    if crate::swapchain::Device::retains_instance(instance) {
         return;
     }
     let continuation = *next
@@ -303,7 +303,7 @@ pub(crate) unsafe fn handle_destroy_device(
     allocator: *const vk::AllocationCallbacks<'_>,
     mut next: crate::hooks::DestroyDeviceContext<'_>,
 ) {
-    if !crate::virtual_swapchain::Device::destroy(device) {
+    if !crate::swapchain::Device::destroy(device) {
         return;
     }
     let continuation = *next

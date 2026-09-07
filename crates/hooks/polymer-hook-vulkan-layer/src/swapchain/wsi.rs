@@ -1,6 +1,6 @@
 use super::*;
 use polymer_presentation::producer::{ProducerSession, ProducerWindows};
-use polymer_producer_vulkan::virtual_swapchain::{AcquireInfo, CreateInfo};
+use polymer_producer_vulkan::swapchain::{AcquireInfo, CreateInfo};
 use std::{
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},

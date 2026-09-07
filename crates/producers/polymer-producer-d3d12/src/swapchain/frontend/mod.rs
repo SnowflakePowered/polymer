@@ -3,7 +3,7 @@ mod presentation;
 mod retirement;
 
 use super::D3d12VirtualBackend;
-use polymer_hook_dxgi::virtual_swapchain::VirtualDxgiDriver;
+use polymer_hook_dxgi::swapchain::VirtualDxgiDriver;
 use polymer_presentation::swapchain::*;
 use std::{
     sync::{

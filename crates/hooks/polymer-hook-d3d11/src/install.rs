@@ -42,7 +42,7 @@ pub(crate) unsafe fn install() -> i32 {
         return windows_sys::Win32::Foundation::E_INVALIDARG;
     }
     polymer_hook_dxgi::register_virtual_claim(
-        polymer_producer_d3d11::virtual_swapchain::creation::D3d11Creation::claim,
+        polymer_producer_d3d11::swapchain::creation::D3d11Creation::claim,
     );
     if let Err(error) = crate::ddi::Rotation::install() {
         tracing::error!(%error, "D3D11 driver rotation installation failed");

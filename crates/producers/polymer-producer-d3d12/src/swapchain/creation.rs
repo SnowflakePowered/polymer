@@ -1,5 +1,5 @@
 use super::{CreateInfo, D3d12VirtualBackend, frontend::D3d12Frontend};
-use polymer_hook_dxgi::{SwapchainCreateInfo, virtual_swapchain::VirtualDxgiSwapchain};
+use polymer_hook_dxgi::{SwapchainCreateInfo, swapchain::VirtualDxgiSwapchain};
 use polymer_platform_windows::{NativeWindow, WindowLifetime};
 use polymer_presentation::{
     producer::{ProducerSession, ProducerWindows},

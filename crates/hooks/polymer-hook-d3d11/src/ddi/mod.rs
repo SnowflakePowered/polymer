@@ -9,7 +9,7 @@ use windows::{
     core::{Error, HRESULT, Result},
 };
 
-use polymer_producer_d3d11::virtual_swapchain::rotation::{
+use polymer_producer_d3d11::swapchain::rotation::{
     ResourceRotation, RotationCapture, RotationHooks, RotationProvider,
 };
 use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;

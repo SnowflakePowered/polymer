@@ -53,7 +53,7 @@ pub(crate) unsafe fn get_physical_device_proc_addr(
         return None;
     }
     if let Some(hook) =
-        crate::virtual_swapchain::instance_hook(unsafe { CStr::from_ptr(name) }.to_bytes())
+        crate::swapchain::instance_hook(unsafe { CStr::from_ptr(name) }.to_bytes())
     {
         return Some(hook);
     }
@@ -168,7 +168,7 @@ pub(crate) unsafe fn create_instance(
         }
         .to_vec()
     };
-    if crate::virtual_swapchain::enabled() {
+    if crate::swapchain::enabled() {
         for required in [
             ash::khr::surface::NAME,
             ash::khr::get_surface_capabilities2::NAME,
@@ -262,7 +262,7 @@ pub(crate) unsafe fn create_device(
     if create_info.is_null() {
         return vk::Result::ERROR_INITIALIZATION_FAILED;
     }
-    if unsafe { crate::virtual_swapchain::features::Features::virtual_device(&*create_info) } {
+    if unsafe { crate::swapchain::features::Features::virtual_device(&*create_info) } {
         for required in [
             ash::khr::synchronization2::NAME,
             ash::ext::swapchain_maintenance1::NAME,
@@ -282,7 +282,7 @@ pub(crate) unsafe fn create_device(
         }
     }
     let mut features = match unsafe {
-        crate::virtual_swapchain::features::Features::new(
+        crate::swapchain::features::Features::new(
             physical_device,
             physical_state.as_ref(),
             create_info,
@@ -392,7 +392,7 @@ pub(crate) unsafe fn create_device(
             handle: created,
         },
     );
-    if let Err(error) = unsafe { crate::virtual_swapchain::Device::install(created, &*create_info) }
+    if let Err(error) = unsafe { crate::swapchain::Device::install(created, &*create_info) }
     {
         let dispatch_key = unsafe { crate::layer::dispatch_key(created) };
         if let Some(destroy) = unsafe {

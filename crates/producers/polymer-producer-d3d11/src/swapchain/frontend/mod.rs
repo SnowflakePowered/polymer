@@ -1,7 +1,7 @@
 mod pacing;
 mod retirement;
 use super::*;
-use polymer_hook_dxgi::virtual_swapchain::VirtualDxgiDriver;
+use polymer_hook_dxgi::swapchain::VirtualDxgiDriver;
 use std::{sync::Arc, time::Duration};
 use windows::core::{HRESULT, IUnknown};
 

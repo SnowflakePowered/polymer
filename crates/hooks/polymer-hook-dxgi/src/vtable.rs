@@ -39,12 +39,12 @@ polymer_hook::impl_com_hook! {
 
         #[base = IDXGIFactory::CreateSwapChain]
         #[fallback = windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL.0]
-        #[infix(crate::virtual_swapchain::create_legacy)]
+        #[infix(crate::swapchain::create_legacy)]
         unsafe extern "system" fn factory_create_swapchain(this: *mut c_void, device: *mut c_void, desc: *const c_void, swapchain: *mut *mut c_void) -> i32;
 
         #[base = IDXGIFactory2::CreateSwapChainForHwnd]
         #[fallback = windows::Win32::Graphics::Dxgi::DXGI_ERROR_INVALID_CALL.0]
-        #[infix(crate::virtual_swapchain::create_for_hwnd)]
+        #[infix(crate::swapchain::create_for_hwnd)]
         unsafe extern "system" fn factory_create_swapchain_for_hwnd(this: *mut c_void, device: *mut c_void, window: *mut c_void, desc: *const c_void, fullscreen_desc: *const c_void, restrict_to_output: *mut c_void, swapchain: *mut *mut c_void) -> i32;
 
     }

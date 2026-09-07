@@ -1,6 +1,6 @@
 use super::*;
 impl Surface {
-    pub(in crate::virtual_swapchain) fn profile(
+    pub(in crate::swapchain) fn profile(
         physical: vk::PhysicalDevice,
     ) -> Result<Profile, vk::Result> {
         let query: vk::PFN_vkGetPhysicalDeviceImageFormatProperties2 = unsafe {

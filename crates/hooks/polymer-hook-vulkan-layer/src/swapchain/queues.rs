@@ -1,5 +1,5 @@
 use super::*;
-use polymer_producer_vulkan::virtual_swapchain::native::Queue;
+use polymer_producer_vulkan::swapchain::native::Queue;
 use std::{ffi::CStr, sync::atomic::Ordering};
 
 struct QueueDispatch {

@@ -1,5 +1,5 @@
 use super::*;
-use polymer_producer_vulkan::virtual_swapchain::{PresentInfo, native::Semaphore};
+use polymer_producer_vulkan::swapchain::{PresentInfo, native::Semaphore};
 use std::{sync::atomic::Ordering, time::Instant};
 
 pub(super) struct NativePresent {

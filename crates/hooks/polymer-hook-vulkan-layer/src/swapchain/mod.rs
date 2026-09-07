@@ -12,7 +12,7 @@ use ash::{vk, vk::Handle};
 use dashmap::DashMap;
 pub(crate) use device::Device;
 use polymer_presentation::swapchain::*;
-use polymer_producer_vulkan::virtual_swapchain::VulkanVirtualBackend;
+use polymer_producer_vulkan::swapchain::VulkanVirtualBackend;
 use std::sync::{Arc, LazyLock};
 pub(crate) use surface::Surface;
 

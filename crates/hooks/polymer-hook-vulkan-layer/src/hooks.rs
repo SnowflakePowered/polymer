@@ -32,7 +32,7 @@ polymer_hook::chain_hooks! {
     );
 
     #[export(vkCreateSwapchainKHR)]
-    #[terminal(direct = crate::virtual_swapchain::create_swapchain)]
+    #[terminal(direct = crate::swapchain::create_swapchain)]
     pub(crate) unsafe extern "system" fn create_swapchain(
         device: vk::Device,
         create_info: *const vk::SwapchainCreateInfoKHR<'_>,
@@ -41,7 +41,7 @@ polymer_hook::chain_hooks! {
     ) -> vk::Result;
 
     #[export(vkDestroySwapchainKHR)]
-    #[terminal(direct = crate::virtual_swapchain::destroy_swapchain)]
+    #[terminal(direct = crate::swapchain::destroy_swapchain)]
     pub(crate) unsafe extern "system" fn destroy_swapchain(
         device: vk::Device,
         swapchain: vk::SwapchainKHR,
@@ -49,7 +49,7 @@ polymer_hook::chain_hooks! {
     );
 
     #[export(vkGetSwapchainImagesKHR)]
-    #[terminal(direct = crate::virtual_swapchain::swapchain_images)]
+    #[terminal(direct = crate::swapchain::swapchain_images)]
     pub(crate) unsafe extern "system" fn get_swapchain_images(
         device: vk::Device,
         swapchain: vk::SwapchainKHR,
@@ -58,7 +58,7 @@ polymer_hook::chain_hooks! {
     ) -> vk::Result;
 
     #[export(vkQueuePresentKHR)]
-    #[terminal(direct = crate::virtual_swapchain::queue_present)]
+    #[terminal(direct = crate::swapchain::queue_present)]
     pub(crate) unsafe extern "system" fn queue_present(
         queue: vk::Queue,
         present_info: *const vk::PresentInfoKHR<'_>,
@@ -68,7 +68,7 @@ polymer_hook::chain_hooks! {
     #[terminal(dynamic(instance, c"vkCreateWin32SurfaceKHR": vk::PFN_vkCreateWin32SurfaceKHR), fallback = vk::Result::ERROR_EXTENSION_NOT_PRESENT)]
     #[postfix(|result, _context| {
         if result == vk::Result::SUCCESS && !create_info.is_null() && !surface.is_null() {
-            crate::virtual_swapchain::Surface::created(instance, unsafe { *surface }, unsafe { (*create_info).hwnd as isize });
+            crate::swapchain::Surface::created(instance, unsafe { *surface }, unsafe { (*create_info).hwnd as isize });
         }
     })]
     pub(crate) unsafe extern "system" fn create_win32_surface(
@@ -80,7 +80,7 @@ polymer_hook::chain_hooks! {
 
     #[export(vkDestroySurfaceKHR)]
     #[terminal(dynamic(instance, c"vkDestroySurfaceKHR": vk::PFN_vkDestroySurfaceKHR), fallback = ())]
-    #[prefix(|_context| crate::virtual_swapchain::Surface::destroyed(surface))]
+    #[prefix(|_context| crate::swapchain::Surface::destroyed(surface))]
     pub(crate) unsafe extern "system" fn destroy_surface(
         instance: vk::Instance,
         surface: vk::SurfaceKHR,

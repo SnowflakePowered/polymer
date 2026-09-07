@@ -63,8 +63,8 @@ pub extern "system" fn PolymerUninstallDxgiHook() -> i32 {
     }
 }
 
-pub mod virtual_swapchain;
-pub use virtual_swapchain::{SwapchainCreateInfo, VirtualSwapchainClaim};
+pub mod swapchain;
+pub use swapchain::{SwapchainCreateInfo, VirtualSwapchainClaim};
 
 pub fn register_virtual_claim(claim: VirtualSwapchainClaim) {
     type Register = unsafe extern "system" fn(VirtualSwapchainClaim);
@@ -75,11 +75,11 @@ pub fn register_virtual_claim(claim: VirtualSwapchainClaim) {
             register(claim);
         }
     } else {
-        virtual_swapchain::CreationDispatch::register(claim);
+        swapchain::CreationDispatch::register(claim);
     }
 }
 
 #[unsafe(no_mangle)]
 pub extern "system" fn PolymerRegisterVirtualDxgiClaim(claim: VirtualSwapchainClaim) {
-    virtual_swapchain::CreationDispatch::register(claim);
+    swapchain::CreationDispatch::register(claim);
 }

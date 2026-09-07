@@ -96,7 +96,7 @@ All 34 debug-viewer tests and 16 runtime tests passed, including CLI extent/conf
 
 ## Vulkan virtual WSI implementation (2026-09-07)
 
-Implemented in the Vulkan hook and producer `virtual_swapchain` modules. Applications receive real native VkImages backed by shared D3D12 allocations. Application command buffers, views, pipelines, and draws remain native. There is no command recorder or replay. The hook translates PRESENT layouts and virtual queue-family transfers at API boundaries, including legacy/synchronization2 barriers and render-pass/render-pass2 paths with imageless framebuffers.
+Implemented in the Vulkan hook and producer `swapchain` modules. Applications receive real native VkImages backed by shared D3D12 allocations. Application command buffers, views, pipelines, and draws remain native. There is no command recorder or replay. The hook translates PRESENT layouts and virtual queue-family transfers at API boundaries, including legacy/synchronization2 barriers and render-pass/render-pass2 paths with imageless framebuffers.
 
 The hook owns dispatch, Win32 surface matching, synthetic swapchain handles, capability enumeration, feature negotiation, and native/virtual present routing. The Vulkan producer owns images and external GPU ownership. Shared presentation owns availability, publication, pacing, and retirement. No Vulkan capture tracking remains.
 

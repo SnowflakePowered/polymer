@@ -1,7 +1,7 @@
 use super::*;
 use crate::layer::{ExternalDevice, PhysicalDeviceState};
 use parking_lot::Mutex;
-use polymer_producer_vulkan::virtual_swapchain::native::Queue;
+use polymer_producer_vulkan::swapchain::native::Queue;
 use std::{
     collections::BTreeMap,
     sync::atomic::{AtomicBool, Ordering},

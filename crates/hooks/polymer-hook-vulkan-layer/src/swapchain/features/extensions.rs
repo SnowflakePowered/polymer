@@ -64,5 +64,5 @@ pub unsafe extern "system" fn vkEnumerateDeviceExtensionProperties(
             unsafe { CStr::from_ptr(property.extension_name.as_ptr()) }.to_bytes(),
         )
     });
-    unsafe { crate::virtual_swapchain::WsiResult::enumerate(&properties, count, output) }
+    unsafe { crate::swapchain::WsiResult::enumerate(&properties, count, output) }
 }
