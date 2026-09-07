@@ -1,15 +1,6 @@
 //! OpenGL resource/subresource adapter for presentation selection.
 use super::{ContextTracking, DrawCandidate, TargetKey};
-use polymer_presentation::{Extent2D, PresentationSelector, Surface};
-
-impl Surface for DrawCandidate {
-    fn extent(&self) -> Option<Extent2D> {
-        Some(Extent2D {
-            width: self.width,
-            height: self.height,
-        })
-    }
-}
+use polymer_presentation::{Extent2D, PresentationSelector};
 
 impl DrawCandidate {
     pub(crate) fn backbuffer(width: u32, height: u32, drawable: u64) -> Self {
@@ -27,8 +18,6 @@ impl DrawCandidate {
             incarnation: drawable,
             width,
             height,
-
-            score: 0,
         }
     }
 }
@@ -51,6 +40,7 @@ impl ContextTracking {
         traverse: bool,
     ) -> (Vec<DrawCandidate>, bool) {
         let mut graph = self.observations.present(traverse);
+        let mut resources = std::collections::HashMap::new();
         graph.resolve(TargetKey::PRESENT, |id| {
             let mut source = *self.resources.get(&id)?;
             if source.target == super::GL_RENDERBUFFER {
@@ -63,8 +53,12 @@ impl ContextTracking {
                 source.width = width.checked_shr(source.mip as u32).unwrap_or(0).max(1);
                 source.height = height.checked_shr(source.mip as u32).unwrap_or(0).max(1);
             }
+            resources.insert(id, source);
             Some((
-                source,
+                Extent2D {
+                    width: source.width,
+                    height: source.height,
+                },
                 (
                     TargetKey {
                         mip: 0,
@@ -79,14 +73,21 @@ impl ContextTracking {
         self.resources
             .retain(|id, _| traverse && graph.surfaces.contains_key(id));
         if let Some(backbuffer) = backbuffer {
-            graph.surfaces.insert(TargetKey::PRESENT, backbuffer);
+            graph.surfaces.insert(
+                TargetKey::PRESENT,
+                Extent2D {
+                    width: backbuffer.width,
+                    height: backbuffer.height,
+                },
+            );
+            resources.insert(TargetKey::PRESENT, backbuffer);
         }
         let selection = PresentationSelector::select(&graph, TargetKey::PRESENT, limit, traverse);
         let candidates = selection
             .surfaces
             .into_iter()
             .filter_map(|source| {
-                let mut candidate = graph.surfaces.get(&source.surface).copied()?;
+                let mut candidate = resources.get(&source.surface).copied()?;
                 candidate.selection = source.selection;
                 // GL observation coordinates are bottom-up. Normalize placement
                 // once; the native copy still uses the original source rectangle.
@@ -114,7 +115,7 @@ mod tests {
 
     #[test]
     fn selection_preserves_native_subresource_and_normalizes_window_y() {
-        let mut source = crate::tracking::tests::candidate(3, 64, 64, 0);
+        let mut source = crate::tracking::tests::candidate(3, 64, 64);
         source.mip = 1;
         source.layer = 2;
         source.incarnation = 9;

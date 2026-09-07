@@ -13,10 +13,9 @@ including multiple screens and cropped content within padded allocations.
 5. History reconciles page flips with stable logical screen slots.
 6. The registry assigns requested slots and windows. Each backend validates its native source and performs capture and synchronization.
 
-`Surface` supplies fallible extent metadata. `PresentationGraph` exposes a
-selection-scoped view of resources and dependencies. Native adapters retain
-resource ownership and execute metadata queries on the appropriate context.
-The selector caches metadata during selection and makes no graphics API calls.
+`GraphSnapshot` contains normalized extents, resource identities, and dependencies.
+Native adapters resolve metadata on the appropriate context and retain resource
+ownership through selection. The selector makes no graphics API calls.
 
 `ObservationStore` deduplicates observations and expires old generations. Ordinary
 tracking considers immediate dependencies; graph tracking traverses intermediate
@@ -26,7 +25,10 @@ placement also supports input-coordinate mapping.
 
 `ResourceHistory` uses `HistorySurface` identity and compatible layout metadata to
 keep screen slots stable across page flips and briefly retain known placement. Providers revalidate native resources
-before capture. Window request matching preserves configured indices and titles.
+before capture. Each history slot owns its held resource, compatible layout, and
+placement age. DXGI producers share `CapturePreparation` for history reconciliation,
+window validation, and request assignment; native capture and submission remain
+in each producer. Window matching preserves configured indices and titles.
 
 ## Dependencies
 

@@ -6,19 +6,19 @@ use crate::{
 };
 
 #[derive(Default)]
-pub(crate) struct CpuBackend(
-    pub GraphSnapshot<u32, Extent2D>,
-    pub ObservationStore<u32>,
-    ResourceHistory<CpuSurface>,
-);
+pub(crate) struct CpuBackend {
+    pub graph: GraphSnapshot<u32>,
+    pub observations: ObservationStore<u32>,
+    history: ResourceHistory<CpuSurface>,
+}
 
 impl CpuBackend {
     pub fn target(&mut self, id: u32, width: u32, height: u32, score: u64) {
-        self.0.surfaces.insert(id, Extent2D { width, height });
-        self.0.targets.push(Target {
+        self.graph.surfaces.insert(id, Extent2D { width, height });
+        self.graph.targets.push(Target {
             id,
             score,
-            order: self.0.targets.len() as u64,
+            order: self.graph.targets.len() as u64,
         });
     }
 
@@ -28,11 +28,11 @@ impl CpuBackend {
             edge.evidence = Evidence::Blit;
             edge.whole_source = true;
         }
-        self.0.edges.entry(destination).or_default().push(edge);
+        self.graph.edges.entry(destination).or_default().push(edge);
     }
 
     pub fn selected(&self, limit: usize) -> Vec<u32> {
-        PresentationSelector::select(self, 0, limit, true)
+        PresentationSelector::select(&self.graph, 0, limit, true)
             .surfaces
             .iter()
             .map(|source| source.surface)
@@ -47,9 +47,30 @@ pub(crate) struct CpuSurface {
     subresource: (u32, u32),
     pub selection: SurfaceSelection,
 }
-impl Surface for CpuSurface {
-    fn extent(&self) -> Option<Extent2D> {
-        Some(self.allocation)
+impl CpuSurface {
+    pub fn new(id: u32, width: u32, height: u32) -> Self {
+        let allocation = Extent2D { width, height };
+        Self {
+            id,
+            allocation,
+            subresource: (0, 0),
+            selection: SurfaceSelection {
+                source_rect: allocation.rect(),
+                target_extent: allocation,
+                ..Default::default()
+            },
+        }
+    }
+    pub fn registry_source(&self, logical_slot: usize) -> crate::registry::RegistrySource {
+        crate::registry::RegistrySource {
+            logical_slot,
+            identity: crate::registry::SourceIdentity {
+                domain: 0,
+                resource: u64::from(self.id),
+                subresource: 0,
+            },
+            extent: self.selection.source_rect.extent,
+        }
     }
 }
 impl HistorySurface for CpuSurface {
@@ -61,51 +82,28 @@ impl HistorySurface for CpuSurface {
     fn layout(&self) -> Self::Layout {
         (self.selection.source_rect.extent, self.subresource)
     }
-    fn selection(&mut self) -> Option<&mut SurfaceSelection> {
-        Some(&mut self.selection)
-    }
-}
-impl PresentationGraph for CpuBackend {
-    type Id = u32;
-    fn surface(&self, id: u32) -> Option<&dyn Surface> {
-        self.0.surface(id)
-    }
-    fn targets(&self) -> impl Iterator<Item = Target<u32>> {
-        self.0.targets()
-    }
-    fn inputs(&self, id: u32) -> impl Iterator<Item = DependencyEdge<u32>> {
-        self.0.inputs(id)
-    }
-    fn resource(&self, id: u32) -> u32 {
-        self.0.resource(id)
-    }
-    fn subresource(&self, id: u32) -> (u32, u32) {
-        self.0.subresource(id)
+    fn selection(&mut self) -> &mut SurfaceSelection {
+        &mut self.selection
     }
 }
 impl CpuBackend {
+    pub fn set_observations(&mut self, snapshot: GraphSnapshot<u32>) {
+        self.graph.targets = snapshot.targets;
+        self.graph.edges = snapshot.edges;
+    }
     pub fn submit(&self, commands: &[DependencyEdge<u32>]) {
         for (order, edge) in commands.iter().enumerate() {
-            self.1.record(DependencyEdge {
-                generation: self.1.generation(),
+            self.observations.record(DependencyEdge {
+                generation: self.observations.generation(),
                 order: order as u64,
                 ..*edge
             });
         }
     }
     pub fn present(&mut self, limit: usize, persistent: bool) -> Reconciliation<CpuSurface> {
-        let mut graph = self.1.present(persistent);
-        graph.resolve(0, |id| {
-            Some((
-                *self.0.surfaces.get(&id)?,
-                (
-                    self.resource(id),
-                    self.subresource(id).0,
-                    self.subresource(id).1,
-                ),
-            ))
-        });
-        let result = PresentationSelector::select(&graph, 0, limit, persistent);
+        self.set_observations(self.observations.present(persistent));
+        let graph = &self.graph;
+        let result = PresentationSelector::select(graph, 0, limit, persistent);
         let surfaces = result
             .surfaces
             .into_iter()
@@ -116,8 +114,8 @@ impl CpuBackend {
                 selection: source.selection,
             })
             .collect();
-        self.2.reconcile(surfaces, result.exact, |source| {
-            self.0.surfaces.get(&source.id).is_some_and(|extent| {
+        self.history.reconcile(surfaces, result.exact, |source| {
+            self.graph.surfaces.get(&source.id).is_some_and(|extent| {
                 *extent == source.allocation
                     && source.selection.source_rect.intersect(extent.rect())
                         == Some(source.selection.source_rect)
@@ -139,7 +137,7 @@ mod tests {
             width: 512,
             height: 512,
         };
-        backend.0.surfaces.extend([
+        backend.graph.surfaces.extend([
             (
                 0,
                 Extent2D {
@@ -237,12 +235,12 @@ mod tests {
                 false
             )
         );
-        backend.0.surfaces.remove(&1);
-        backend.1.forget(1);
+        backend.graph.surfaces.remove(&1);
+        backend.observations.forget(1);
         let remaining = backend.present(2, true);
         assert_eq!(remaining.slots, [1]);
         assert_eq!(remaining.surfaces[0].id, 2);
-        backend.0.surfaces.insert(3, allocation);
+        backend.graph.surfaces.insert(3, allocation);
         backend.submit(&[DependencyEdge {
             source: 3,
             ..commands[0]
@@ -302,7 +300,7 @@ mod tests {
             width: 320,
             height: 240,
         };
-        backend.0.surfaces.extend([(0, extent), (1, extent)]);
+        backend.graph.surfaces.extend([(0, extent), (1, extent)]);
         let known = DependencyEdge {
             evidence: Evidence::Copy,
             mapping: Some(RegionMapping {
@@ -316,13 +314,13 @@ mod tests {
         backend.submit(&[known]);
         backend.present(1, false);
         for frame in 1..=241 {
-            backend.1.target(
+            backend.observations.target(
                 Target {
                     id: 1,
                     score: extent.area(),
                     order: 0,
                 },
-                backend.1.generation(),
+                backend.observations.generation(),
             );
             backend.submit(&[DependencyEdge::sampled(1, 0, 0)]);
             let selected = backend.present(1, false);
@@ -333,20 +331,20 @@ mod tests {
         }
         backend.submit(&[known]);
         backend.present(1, false);
-        backend.0.surfaces.insert(
+        backend.graph.surfaces.insert(
             0,
             Extent2D {
                 width: 640,
                 height: 480,
             },
         );
-        backend.1.target(
+        backend.observations.target(
             Target {
                 id: 1,
                 score: extent.area(),
                 order: 0,
             },
-            backend.1.generation(),
+            backend.observations.generation(),
         );
         backend.submit(&[DependencyEdge::sampled(1, 0, 0)]);
         assert!(
@@ -361,7 +359,7 @@ mod tests {
             width: 960,
             height: 720,
         };
-        backend.0.surfaces.insert(0, resized);
+        backend.graph.surfaces.insert(0, resized);
         // Hysteresis keeps the old screen while the observed fallback changes.
         let held = backend.present(1, false);
         assert_eq!(held.surfaces[0].id, 1);

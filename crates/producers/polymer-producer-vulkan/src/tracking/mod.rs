@@ -56,8 +56,8 @@ pub struct PresentSource {
 }
 
 impl polymer_presentation::history::HistorySurface for PresentSource {
-    fn selection(&mut self) -> Option<&mut polymer_presentation::SurfaceSelection> {
-        Some(&mut self.selection)
+    fn selection(&mut self) -> &mut polymer_presentation::SurfaceSelection {
+        &mut self.selection
     }
     type Id = (vk::Image, u64, u32, u32);
     type Layout = (u32, u32, u32, u32);
@@ -360,7 +360,7 @@ mod tests {
             !tracking
                 .surfaces
                 .observations
-                .graph::<()>(0)
+                .graph(0)
                 .observation_list()
                 .1
                 .is_empty()
@@ -370,7 +370,7 @@ mod tests {
             tracking
                 .surfaces
                 .observations
-                .graph::<()>(0)
+                .graph(0)
                 .observation_list()
                 .1
                 .is_empty()
@@ -459,7 +459,7 @@ impl Tracking {
         if !polymer_hook::config::tracking_enabled() {
             return None;
         }
-        let observations = self.surfaces.observations.graph::<()>(self.generation());
+        let observations = self.surfaces.observations.graph(self.generation());
         let content = polymer_presentation::PresentationSelector::observed_content(
             polymer_presentation::Extent2D {
                 width: bounds.width,

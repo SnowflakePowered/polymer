@@ -66,7 +66,7 @@ impl Tracking {
                         width: rect.extent.width,
                         height: rect.extent.height,
                     },
-                    &[],
+                    None,
                 );
                 for (_, candidate) in &mut state.observations[start..] {
                     candidate.evidence = polymer_presentation::Evidence::Clear;

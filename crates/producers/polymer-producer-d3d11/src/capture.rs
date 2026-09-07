@@ -117,17 +117,6 @@ impl SwapchainOwner for SwapchainCapture {
         } else {
             Vec::new()
         };
-        let exact = !presentations.is_empty()
-            && presentations
-                .iter()
-                .all(|presentation| presentation.selection.exact);
-        let reconciled = self
-            .history
-            .lock()
-            .reconcile(presentations, exact, |presentation| {
-                presentation.revalidate()
-            });
-        let presentations = &reconciled.surfaces;
         let now = self
             .tracking
             .presentation_clock
@@ -138,42 +127,21 @@ impl SwapchainOwner for SwapchainCapture {
         }
         .and_then(|swapchain| unsafe { swapchain.GetDesc().ok() })
         .map_or(0, |desc| desc.OutputWindow.0 as isize);
-        use polymer_presentation::history::HistorySurface;
-        use polymer_presentation::registry::SourceIdentity;
-        polymer_presentation::producer::ProducerWindows::refresh(&self.tracking.registry);
-        let sources = reconciled.registry_sources(|presentation| {
-            let (resource, subresource) = presentation.identity();
-            (
-                SourceIdentity {
-                    domain: 0,
-                    resource: if resource == 0 {
-                        self.stream_id
-                    } else {
-                        resource as u64
-                    },
-                    subresource,
-                },
-                presentation.selection.source_rect.extent,
-            )
-        });
-        self.tracking
-            .registry
-            .observe(self.stream_id, window, sources, now);
-        let resolved = if polymer_hook::config::tracking_enabled() && !presentations.is_empty() {
-            self.tracking
-                .registry
-                .requests(self.stream_id, &requested, now, |slot, window| {
-                    let title = polymer_platform_windows::window_title(
-                        polymer_platform_windows::NativeWindow(window),
-                    );
-                    polymer_hook::config::tracked_render_target_surface_matches(
-                        slot,
-                        title.as_deref().unwrap_or_default(),
-                    )
-                })
-        } else {
-            vec![(0, 0)]
-        };
+        let (reconciled, resolved) = polymer_presentation::producer::CapturePreparation {
+            registry: &self.tracking.registry,
+            owner: self.stream_id,
+            window,
+            generation: now,
+            requested: &requested,
+            tracking: polymer_hook::config::tracking_enabled(),
+        }
+        .prepare(
+            &mut self.history.lock(),
+            presentations,
+            |presentation| presentation.revalidate(),
+            polymer_hook::config::tracked_render_target_surface_matches,
+        );
+        let presentations = &reconciled.surfaces;
         let mut captures = self.capture.lock();
         captures.resize_with(requested.len(), Capture::default);
         captures.truncate(requested.len());

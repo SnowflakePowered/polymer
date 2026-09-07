@@ -1,6 +1,6 @@
 //! Shared, bounded presentation-source selection.
 
-use crate::{DependencyEdge, Evidence, Extent2D, PresentationGraph, Rect};
+use crate::{DependencyEdge, Evidence, Extent2D, GraphSnapshot, Rect};
 use std::collections::{HashMap, HashSet};
 mod components;
 mod geometry;
@@ -64,17 +64,17 @@ impl PresentationSelector {
             .map(|(_, rect)| rect)
     }
 
-    pub fn select<G: PresentationGraph>(
-        graph: &G,
-        presented: G::Id,
+    pub fn select<I: Copy + Eq + std::hash::Hash>(
+        graph: &GraphSnapshot<I>,
+        presented: I,
         limit: usize,
         traverse: bool,
-    ) -> Selection<G::Id> {
+    ) -> Selection<I> {
         let mut view = View::new(graph, presented);
         let mut roots = view.edges.get(&presented).cloned().unwrap_or_default();
         roots.sort_by_key(|edge| view.order(edge.source));
         if !traverse {
-            let mut coverage_scores = HashMap::<G::Id, u64>::new();
+            let mut coverage_scores = HashMap::<I, u64>::new();
             for edge in &roots {
                 if let Some(coverage) = edge.coverage {
                     coverage_scores
@@ -97,16 +97,10 @@ impl PresentationSelector {
             .iter()
             .filter(|edge| {
                 edge.exact()
-                    && view
-                        .extents
-                        .get(&edge.source)
-                        .copied()
-                        .flatten()
-                        .is_some_and(|extent| {
-                            edge.mapping.map_or(edge.whole_source, |mapping| {
-                                mapping.source == extent.rect()
-                            })
-                        })
+                    && view.extent(edge.source).is_some_and(|extent| {
+                        edge.mapping
+                            .map_or(edge.whole_source, |mapping| mapping.source == extent.rect())
+                    })
             })
             .map(|edge| edge.source)
             .collect();
@@ -130,11 +124,7 @@ impl PresentationSelector {
                             (
                                 edge.mapping.is_some(),
                                 edge.coverage.map_or(0, |coverage| coverage.extent.area()),
-                                view.extents
-                                    .get(id)
-                                    .copied()
-                                    .flatten()
-                                    .map_or(0, Extent2D::area),
+                                view.extent(*id).map_or(0, Extent2D::area),
                             )
                         })
                         .max(),
@@ -173,7 +163,7 @@ impl PresentationSelector {
         surfaces.truncate(limit);
         if surfaces.is_empty()
             && limit != 0
-            && let Some(extent) = view.extents.get(&presented).copied().flatten()
+            && let Some(extent) = view.extent(presented)
         {
             let rect = Self::observed_content(
                 extent,
@@ -211,45 +201,52 @@ impl PresentationSelector {
     }
 }
 
-struct View<'a, G: PresentationGraph> {
-    graph: &'a G,
-    extents: HashMap<G::Id, Option<Extent2D>>,
-    scores: HashMap<G::Id, (u64, u64)>,
-    rendered: HashSet<G::Id>,
-    edges: HashMap<G::Id, Vec<DependencyEdge<G::Id>>>,
-    components: components::Components<G::Id>,
+struct View<'a, I: Copy + Eq + std::hash::Hash> {
+    graph: &'a GraphSnapshot<I>,
+    scores: HashMap<I, (u64, u64)>,
+    rendered: HashSet<I>,
+    edges: HashMap<I, Vec<DependencyEdge<I>>>,
+    components: components::Components<I>,
 }
 
-impl<'a, G: PresentationGraph> View<'a, G> {
-    fn new(graph: &'a G, presented: G::Id) -> Self {
+impl<'a, I: Copy + Eq + std::hash::Hash> View<'a, I> {
+    fn new(graph: &'a GraphSnapshot<I>, presented: I) -> Self {
         let scores = graph
-            .targets()
+            .targets
+            .iter()
+            .copied()
             .map(|target| (target.id, (target.score, target.order)))
             .collect();
         let mut result = Self {
             graph,
-            extents: HashMap::new(),
             scores,
-            rendered: graph.targets().map(|target| target.id).collect(),
+            rendered: graph
+                .targets
+                .iter()
+                .copied()
+                .map(|target| target.id)
+                .collect(),
             edges: HashMap::new(),
             components: components::Components::default(),
         };
-        let mut pending = graph.targets().map(|target| target.id).collect::<Vec<_>>();
+        let mut pending = graph
+            .targets
+            .iter()
+            .copied()
+            .map(|target| target.id)
+            .collect::<Vec<_>>();
         pending.push(presented);
         while let Some(id) = pending.pop() {
-            if result.extents.contains_key(&id) {
+            if result.edges.contains_key(&id) {
                 continue;
             }
-            result.extents.insert(
-                id,
-                graph
-                    .surface(id)
-                    .and_then(|surface| surface.extent())
-                    .filter(|extent| extent.area() != 0),
-            );
             let edges = Self::current_inputs(
                 graph
-                    .inputs(id)
+                    .edges
+                    .get(&id)
+                    .into_iter()
+                    .flatten()
+                    .copied()
                     .filter(|edge| edge.evidence != Evidence::Clear)
                     .collect(),
             );
@@ -274,8 +271,8 @@ impl<'a, G: PresentationGraph> View<'a, G> {
 
     /// Keep all conflicting mappings from the latest source observation, but
     /// do not let older exact evidence override a newer sampled binding.
-    fn current_inputs(mut edges: Vec<DependencyEdge<G::Id>>) -> Vec<DependencyEdge<G::Id>> {
-        let mut newest = HashMap::<G::Id, (u64, bool)>::new();
+    fn current_inputs(mut edges: Vec<DependencyEdge<I>>) -> Vec<DependencyEdge<I>> {
+        let mut newest = HashMap::<I, (u64, bool)>::new();
         for edge in &edges {
             let rank = (edge.generation, edge.exact());
             newest
@@ -287,16 +284,21 @@ impl<'a, G: PresentationGraph> View<'a, G> {
         edges
     }
 
-    fn plausible(&self, id: G::Id) -> bool {
-        self.extents
+    fn extent(&self, id: I) -> Option<Extent2D> {
+        self.graph
+            .surfaces
             .get(&id)
             .copied()
-            .flatten()
+            .filter(|extent| extent.area() != 0)
+    }
+
+    fn plausible(&self, id: I) -> bool {
+        self.extent(id)
             .is_some_and(|extent| extent.width >= 32 && extent.height >= 32)
     }
 
-    fn order(&self, id: G::Id) -> (u32, u32, u64) {
-        let extent = self.extents.get(&id).copied().flatten().unwrap_or_default();
+    fn order(&self, id: I) -> (u32, u32, u64) {
+        let extent = self.extent(id).unwrap_or_default();
         (
             u32::MAX - extent.height,
             u32::MAX - extent.width,
@@ -304,7 +306,7 @@ impl<'a, G: PresentationGraph> View<'a, G> {
         )
     }
 
-    fn reachable(&self, start: G::Id, needle: G::Id) -> bool {
+    fn reachable(&self, start: I, needle: I) -> bool {
         let mut pending = vec![start];
         let mut visited = HashSet::new();
         while let Some(id) = pending.pop() {
@@ -321,18 +323,12 @@ impl<'a, G: PresentationGraph> View<'a, G> {
         false
     }
 
-    fn expand(
-        &self,
-        mut roots: Vec<G::Id>,
-        limit: usize,
-        traverse: bool,
-        whole: HashSet<G::Id>,
-    ) -> Vec<G::Id> {
+    fn expand(&self, mut roots: Vec<I>, limit: usize, traverse: bool, whole: HashSet<I>) -> Vec<I> {
         if limit == 0 {
             return Vec::new();
         }
         let mut seen = HashSet::new();
-        roots.retain(|id| self.extents.get(id).is_some_and(Option::is_some) && seen.insert(*id));
+        roots.retain(|id| self.extent(*id).is_some() && seen.insert(*id));
         self.collapse_flips(&mut roots);
         if !traverse {
             return roots;
@@ -380,7 +376,7 @@ impl<'a, G: PresentationGraph> View<'a, G> {
         roots
     }
 
-    fn decomposition(&self, id: G::Id) -> Option<Vec<G::Id>> {
+    fn decomposition(&self, id: I) -> Option<Vec<I>> {
         let component = self.components.index[&id];
         let mut inputs = self.components.members[component]
             .iter()
@@ -390,7 +386,7 @@ impl<'a, G: PresentationGraph> View<'a, G> {
             // Never descend within a strongly connected component.
             .map(|edge| edge.source)
             .filter(|input| self.components.index[input] != component)
-            .filter(|input| self.extents.get(input).is_some_and(Option::is_some))
+            .filter(|input| self.extent(*input).is_some())
             .collect::<Vec<_>>();
         let mut seen = HashSet::new();
         inputs.retain(|input| seen.insert(self.components.index[input]));
@@ -398,20 +394,14 @@ impl<'a, G: PresentationGraph> View<'a, G> {
         if inputs.is_empty() {
             return None;
         }
-        let area = |id| {
-            self.extents
-                .get(&id)
-                .copied()
-                .flatten()
-                .map_or(0, Extent2D::area)
-        };
+        let area = |id| self.extent(id).map_or(0, Extent2D::area);
         if inputs.len() == 1 && area(inputs[0]) >= area(id) {
             return None;
         }
         Some(inputs)
     }
 
-    fn collapse_flips(&self, roots: &mut Vec<G::Id>) {
+    fn collapse_flips(&self, roots: &mut Vec<I>) {
         let mut removed = HashSet::new();
         for (index, &first) in roots.iter().enumerate() {
             for &second in &roots[index + 1..] {
@@ -426,10 +416,10 @@ impl<'a, G: PresentationGraph> View<'a, G> {
         roots.retain(|id| !removed.contains(id));
     }
 
-    fn older_face(&self, first: G::Id, second: G::Id) -> Option<G::Id> {
+    fn older_face(&self, first: I, second: I) -> Option<I> {
         if self.graph.resource(first) == self.graph.resource(second)
             || self.graph.subresource(first) != self.graph.subresource(second)
-            || self.extents.get(&first)? != self.extents.get(&second)?
+            || self.extent(first)? != self.extent(second)?
         {
             return None;
         }
@@ -453,7 +443,7 @@ impl<'a, G: PresentationGraph> View<'a, G> {
         })
     }
 
-    fn cohort(&self, candidates: Vec<G::Id>, limit: usize) -> Vec<G::Id> {
+    fn cohort(&self, candidates: Vec<I>, limit: usize) -> Vec<I> {
         let mut distinct = HashSet::new();
         let candidates = candidates
             .into_iter()
@@ -461,7 +451,7 @@ impl<'a, G: PresentationGraph> View<'a, G> {
             .collect::<Vec<_>>();
         let mut cohorts = HashMap::<Extent2D, (usize, u64)>::new();
         for id in &candidates {
-            if let Some(extent) = self.extents.get(id).copied().flatten() {
+            if let Some(extent) = self.extent(*id) {
                 let cohort = cohorts.entry(extent).or_default();
                 cohort.0 += 1;
                 cohort.1 = cohort.1.max(self.scores.get(id).map_or(0, |value| value.0));
@@ -484,7 +474,7 @@ impl<'a, G: PresentationGraph> View<'a, G> {
         };
         candidates
             .into_iter()
-            .filter(|id| self.extents.get(id).copied().flatten() == Some(best))
+            .filter(|id| self.extent(*id) == Some(best))
             .collect()
     }
 }

@@ -16,7 +16,7 @@ mod descriptors;
 use crate::{D3d12CaptureRegion, D3d12CaptureSourceState};
 use dashmap::DashMap;
 use polymer_presentation::{
-    DependencyEdge, Extent2D, ObservationStore, PresentationSelector, Surface, Target,
+    DependencyEdge, Extent2D, ObservationStore, PresentationSelector, Target,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -55,6 +55,7 @@ struct Candidate {
     draw_area: u64,
     source: Option<TrackedResource>,
     mapping: Option<polymer_presentation::RegionMapping>,
+    bindings: Option<Bindings>,
 }
 
 /// The presentation source resolved for a swapchain backbuffer.
@@ -91,12 +92,9 @@ struct CommandState {
     scissor_set: bool,
     viewport: Option<D3D12_VIEWPORT>,
     scissor: Option<RECT>,
-    render_target: Option<TrackedTarget>,
     render_targets: Vec<TrackedTarget>,
     bindings: Bindings,
-    recorded_targets: HashSet<SurfaceKey>,
     observations: Vec<(SurfaceKey, Candidate)>,
-    draw_tables: HashMap<usize, Bindings>,
     transitions: Vec<(SurfaceKey, Option<D3d12CaptureSourceState>)>,
 }
 
@@ -242,18 +240,8 @@ impl Tracking {
                 .render_targets
                 .retain(|target| !buffer_keys.contains(&target.key.0));
             state.observations.clear();
-            state.draw_tables.clear();
             state.transitions.clear();
             state.bindings.tables.clear();
-            if state
-                .render_target
-                .is_some_and(|target| buffer_keys.contains(&target.key.0))
-            {
-                state.render_target = None;
-            }
-            state
-                .recorded_targets
-                .retain(|key| !buffer_keys.contains(&key.0));
         }
     }
 
@@ -438,7 +426,6 @@ impl Tracking {
             }
         }
         let mut state = self.commands.entry(list as usize).or_default();
-        state.render_target = targets.first().copied();
         state.render_targets = targets;
     }
 
@@ -470,15 +457,9 @@ impl Tracking {
         };
         // Descriptor contents can change after recording. Keep immutable root
         // bindings here and resolve their descriptors in queue submission order.
-        let tables = state.bindings.clone();
-        let start = state.observations.len();
-        let sources = Vec::new();
-        let targets = state.render_targets.clone();
-        for target in targets {
-            Self::draw_target(&mut state, target, region, &sources);
-        }
-        for index in start..state.observations.len() {
-            state.draw_tables.insert(index, tables.clone());
+        let bindings = state.bindings.clone();
+        for target in state.render_targets.clone() {
+            Self::draw_target(&mut state, target, region, Some(bindings.clone()));
         }
     }
 
@@ -486,7 +467,7 @@ impl Tracking {
         state: &mut CommandState,
         target: TrackedTarget,
         region: D3d12CaptureRegion,
-        sources: &[TrackedResource],
+        bindings: Option<Bindings>,
     ) {
         let Some(coverage) = PresentationSelector::observed_content(
             Extent2D {
@@ -507,14 +488,6 @@ impl Tracking {
         ) else {
             return;
         };
-        let sources = sources
-            .iter()
-            .filter(|source| {
-                (Self::identity_key(&source.resource), source.subresource) != target.key
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        let source = sources.first().cloned();
         let candidate = Candidate {
             evidence: polymer_presentation::Evidence::SampledDraw,
             region: D3d12CaptureRegion {
@@ -524,18 +497,11 @@ impl Tracking {
                 height: coverage.extent.height,
             },
             draw_area: coverage.extent.area(),
-            source,
+            source: None,
             mapping: None,
+            bindings,
         };
-        state.recorded_targets.insert(target.key);
-        for source in &sources {
-            let mut observation = candidate.clone();
-            observation.source = Some(source.clone());
-            state.observations.push((target.key, observation));
-        }
-        if sources.is_empty() {
-            state.observations.push((target.key, candidate));
-        }
+        state.observations.push((target.key, candidate));
     }
 
     /// Resolves the presentation source recorded for a swapchain's current
@@ -566,18 +532,24 @@ impl Tracking {
         let graph_tracking = polymer_hook::config::graph_tracking_enabled();
         let mut graph = self.observations.present(graph_tracking);
         graph.resolve(presented, |id| {
-            let source = self.resources.get(&id)?.value().clone();
+            let source = self.resources.get(&id)?;
             let (mip, layer) = source.mip_layer;
-            Some((source, ((id.0, 0), mip, layer)))
+            Some((source.extent(), ((id.0, 0), mip, layer)))
         });
-        graph.surfaces.insert(presented, presented_resource);
+        graph
+            .surfaces
+            .insert(presented, presented_resource.extent());
         let result = PresentationSelector::select(&graph, presented, limit, graph_tracking);
         let presentations = result
             .surfaces
             .into_iter()
             .map(|selected| {
                 let source = (selected.surface != presented)
-                    .then(|| graph.surfaces.get(&selected.surface).cloned())
+                    .then(|| {
+                        self.resources
+                            .get(&selected.surface)
+                            .map(|source| source.value().clone())
+                    })
                     .flatten()
                     .map(|mut source| {
                         source.state =
@@ -631,10 +603,10 @@ impl Tracking {
             self.resource_states.insert(key, transition);
             self.resource_queues.insert(key, queue);
         }
-        for (index, (key, candidate)) in state.observations.iter().enumerate() {
-            let sources = state
-                .draw_tables
-                .get(&index)
+        for (key, candidate) in &state.observations {
+            let sources = candidate
+                .bindings
+                .as_ref()
                 .map(|bindings| {
                     bindings
                         .tables
@@ -654,21 +626,20 @@ impl Tracking {
                 })
                 .unwrap_or_default();
             if sources.is_empty() {
-                self.record_candidate(*key, candidate.clone());
+                self.record_candidate(*key, candidate, candidate.source.as_ref());
             }
-            for source in sources {
-                self.record_candidate(
-                    *key,
-                    Candidate {
-                        source: Some(source),
-                        ..candidate.clone()
-                    },
-                );
+            for source in &sources {
+                self.record_candidate(*key, candidate, Some(source));
             }
         }
     }
 
-    fn record_candidate(&self, key: SurfaceKey, candidate: Candidate) {
+    fn record_candidate(
+        &self,
+        key: SurfaceKey,
+        candidate: &Candidate,
+        resource: Option<&TrackedResource>,
+    ) {
         let now = self.observations.generation();
         let order = self.observation_order.fetch_add(1, Ordering::Relaxed);
         if matches!(
@@ -686,10 +657,10 @@ impl Tracking {
                 now,
             );
         }
-        let source = candidate.source.as_ref().map_or(key, |source| {
+        let source = resource.map_or(key, |source| {
             (Self::identity_key(&source.resource), source.subresource)
         });
-        if let Some(resource) = &candidate.source {
+        if let Some(resource) = resource {
             self.resources.insert(source, resource.clone());
         }
         let mut edge = DependencyEdge::sampled(source, key, now);
@@ -782,18 +753,9 @@ impl Tracking {
 #[cfg(test)]
 mod tests;
 
-impl Surface for TrackedResource {
-    fn extent(&self) -> Option<Extent2D> {
-        Some(Extent2D {
-            width: self.width,
-            height: self.height,
-        })
-    }
-}
-
 impl polymer_presentation::history::HistorySurface for Presentation {
-    fn selection(&mut self) -> Option<&mut polymer_presentation::SurfaceSelection> {
-        Some(&mut self.selection)
+    fn selection(&mut self) -> &mut polymer_presentation::SurfaceSelection {
+        &mut self.selection
     }
     type Id = (usize, u32);
     type Layout = (u32, u32, u32, (u32, u32));
@@ -860,5 +822,14 @@ impl Tracking {
             && source
                 .state
                 .is_some_and(|state| state.capture_supported(self.enhanced_barriers_supported()))
+    }
+}
+
+impl TrackedResource {
+    fn extent(&self) -> Extent2D {
+        Extent2D {
+            width: self.width,
+            height: self.height,
+        }
     }
 }

@@ -44,27 +44,17 @@ mod tests {
             tracking
                 .surfaces
                 .observations
-                .graph::<()>(0)
+                .graph(0)
                 .observation_list()
                 .1
                 .is_empty()
         );
         tracking.commands_submitted(&commands);
-        let first = tracking
-            .surfaces
-            .observations
-            .graph::<()>(0)
-            .observation_list()
-            .1;
+        let first = tracking.surfaces.observations.graph(0).observation_list().1;
         assert_eq!(first.len(), 2);
         assert!(first[0].order < first[1].order);
         tracking.commands_submitted(&[commands[1], commands[0]]);
-        let replay = tracking
-            .surfaces
-            .observations
-            .graph::<()>(0)
-            .observation_list()
-            .1;
+        let replay = tracking.surfaces.observations.graph(0).observation_list().1;
         assert_eq!(replay.len(), 2);
         assert!(
             replay
@@ -75,12 +65,7 @@ mod tests {
         tracking.command_buffer_began(commands[0]);
         tracking.commands_submitted(&[commands[0]]);
         assert_eq!(
-            tracking
-                .surfaces
-                .observations
-                .graph::<()>(0)
-                .observation_list()
-                .1,
+            tracking.surfaces.observations.graph(0).observation_list().1,
             replay
         );
     }
@@ -143,18 +128,13 @@ mod tests {
             tracking
                 .surfaces
                 .observations
-                .graph::<()>(0)
+                .graph(0)
                 .observation_list()
                 .1
                 .is_empty()
         );
         tracking.commands_submitted(&[command]);
-        let edges = tracking
-            .surfaces
-            .observations
-            .graph::<()>(0)
-            .observation_list()
-            .1;
+        let edges = tracking.surfaces.observations.graph(0).observation_list().1;
         assert_eq!(edges.len(), 2);
         assert!(
             edges
@@ -210,19 +190,14 @@ mod tests {
             tracking
                 .surfaces
                 .observations
-                .graph::<()>(0)
+                .graph(0)
                 .observation_list()
                 .1
                 .is_empty()
         );
         tracking.command_executed(primary, &[secondary]);
         tracking.commands_submitted(&[primary]);
-        let edges = tracking
-            .surfaces
-            .observations
-            .graph::<()>(0)
-            .observation_list()
-            .1;
+        let edges = tracking.surfaces.observations.graph(0).observation_list().1;
         assert!(edges[0].exact());
         assert_eq!(edges[0].mapping.unwrap().flip_x, true);
         tracking.surfaces.observations.clear();
@@ -231,7 +206,7 @@ mod tests {
             !tracking
                 .surfaces
                 .observations
-                .graph::<()>(0)
+                .graph(0)
                 .observation_list()
                 .1
                 .is_empty()
@@ -244,7 +219,7 @@ mod tests {
             tracking
                 .surfaces
                 .observations
-                .graph::<()>(0)
+                .graph(0)
                 .observation_list()
                 .1
                 .is_empty()
@@ -288,7 +263,7 @@ mod tests {
                 tracking
                     .surfaces
                     .observations
-                    .graph::<()>(0)
+                    .graph(0)
                     .observation_list()
                     .1
                     .len(),
@@ -301,12 +276,7 @@ mod tests {
             }
             tracking.surfaces.observations.clear();
             tracking.commands_submitted(&[primary, secondary, independent]);
-            let edges = tracking
-                .surfaces
-                .observations
-                .graph::<()>(0)
-                .observation_list()
-                .1;
+            let edges = tracking.surfaces.observations.graph(0).observation_list().1;
             assert_eq!(edges.len(), 1);
             assert_eq!(edges[0].source.image, vk::Image::from_raw(32));
             // A recycled command-buffer handle cannot replay the freed batch.
@@ -318,7 +288,7 @@ mod tests {
                 tracking
                     .surfaces
                     .observations
-                    .graph::<()>(0)
+                    .graph(0)
                     .observation_list()
                     .1
                     .is_empty()

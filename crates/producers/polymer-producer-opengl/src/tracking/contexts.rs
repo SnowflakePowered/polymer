@@ -10,13 +10,13 @@ mod tests {
         let tracking = Tracking::default();
         let first = tracking.context(1);
         let second = tracking.context(2);
-        let mut buffer = crate::tracking::tests::candidate(7, 640, 480, 1);
+        let mut buffer = crate::tracking::tests::candidate(7, 640, 480);
         buffer.target = GL_RENDERBUFFER;
         buffer.incarnation = first.incarnation(true, 7);
         first.upsert_render_target(buffer);
         second.upsert_render_target(buffer);
         first.texture_info.insert(7, (GL_TEXTURE_2D, 640, 480));
-        let texture = crate::tracking::tests::candidate(7, 640, 480, 1);
+        let texture = crate::tracking::tests::candidate(7, 640, 480);
         let texture_incarnation = first.incarnation(false, 7);
         assert_ne!(buffer.incarnation, texture_incarnation);
         assert_ne!(texture.key(), buffer.key());
@@ -30,14 +30,7 @@ mod tests {
         first.forget_renderbuffer(7);
         assert!(first.resources.is_empty());
         assert_eq!(second.resources.len(), 1);
-        assert!(
-            first
-                .observations
-                .graph::<()>(0)
-                .observation_list()
-                .1
-                .is_empty()
-        );
+        assert!(first.observations.graph(0).observation_list().1.is_empty());
         assert_eq!(
             *first.texture_info.get(&7).unwrap(),
             (GL_TEXTURE_2D, 640, 480)
@@ -49,14 +42,7 @@ mod tests {
         assert_ne!(buffer.incarnation, texture_incarnation);
         assert_eq!(first.incarnation(false, 7), texture_incarnation);
         first.upsert_render_target(buffer);
-        assert!(
-            first
-                .observations
-                .graph::<()>(0)
-                .observation_list()
-                .1
-                .is_empty()
-        );
+        assert!(first.observations.graph(0).observation_list().1.is_empty());
         first.forget_texture(7);
         assert_eq!(first.resources.len(), 1);
     }

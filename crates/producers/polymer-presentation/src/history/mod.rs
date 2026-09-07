@@ -5,9 +5,7 @@ pub trait HistorySurface: Clone {
     type Layout: Clone + Eq;
     fn identity(&self) -> Self::Id;
     fn layout(&self) -> Self::Layout;
-    fn selection(&mut self) -> Option<&mut crate::SurfaceSelection> {
-        None
-    }
+    fn selection(&mut self) -> &mut crate::SurfaceSelection;
 }
 pub struct Reconciliation<T> {
     pub surfaces: Vec<T>,
@@ -42,31 +40,31 @@ impl<T> Reconciliation<T> {
     }
 }
 
+struct Slot<T: HistorySurface> {
+    surface: Option<T>,
+    layout: T::Layout,
+    placement_age: u16,
+}
+
 pub struct ResourceHistory<T: HistorySurface> {
-    surfaces: Vec<Option<T>>,
-    slots: Vec<T::Layout>,
+    slots: Vec<Slot<T>>,
     pending: Vec<T::Layout>,
     consecutive: u32,
     missing: u32,
-    placement_age: Vec<u16>,
 }
 impl<T: HistorySurface> Default for ResourceHistory<T> {
     fn default() -> Self {
         Self {
-            surfaces: Vec::new(),
             slots: Vec::new(),
             pending: Vec::new(),
             consecutive: 0,
             missing: 0,
-            placement_age: Vec::new(),
         }
     }
 }
 impl<T: HistorySurface> ResourceHistory<T> {
     pub fn reset(&mut self) {
-        self.surfaces.clear();
         self.slots.clear();
-        self.placement_age.clear();
         self.reset_pending();
     }
     pub fn reconcile(
@@ -75,30 +73,40 @@ impl<T: HistorySurface> ResourceHistory<T> {
         exact: bool,
         mut revalidate: impl FnMut(&mut T) -> bool,
     ) -> Reconciliation<T> {
-        let mut previous = self.surfaces.clone();
-        for source in &mut self.surfaces {
+        let previous = self
+            .slots
+            .iter_mut()
+            .map(|slot| {
+                slot.surface
+                    .as_mut()
+                    .map(|source| (source.identity(), source.layout(), *source.selection()))
+            })
+            .collect::<Vec<_>>();
+        for slot in &mut self.slots {
+            let source = &mut slot.surface;
             if source.as_mut().is_some_and(|source| !revalidate(source)) {
                 *source = None;
             }
         }
         observed.retain_mut(&mut revalidate);
         let current = self
-            .surfaces
+            .slots
             .iter()
-            .flatten()
+            .filter_map(|slot| slot.surface.as_ref())
             .map(T::layout)
             .collect::<Vec<_>>();
         let desired =
             self.reconcile_layout(&current, observed.iter().map(T::layout).collect(), exact);
         let target_extent = observed
-            .iter_mut()
-            .find_map(|source| source.selection().map(|selection| selection.target_extent));
+            .first_mut()
+            .map(|source| source.selection().target_extent);
         let observed_placements = observed
             .iter_mut()
             .filter_map(|source| {
                 source
                     .selection()
-                    .is_some_and(|selection| selection.presentation_rect.is_some())
+                    .presentation_rect
+                    .is_some()
                     .then(|| source.identity())
             })
             .collect::<Vec<_>>();
@@ -108,27 +116,25 @@ impl<T: HistorySurface> ResourceHistory<T> {
             &mut selected,
             &slots,
             &observed_placements,
-            &mut previous,
+            &previous,
             target_extent,
         );
-        let mut next = vec![None; self.slots.len()];
-        for (source, &slot) in selected.iter().zip(&slots) {
-            next[slot] = Some(source.clone());
+        for slot in &mut self.slots {
+            slot.surface = None;
         }
-        let changed_slots = slots
-            .iter()
-            .copied()
-            .filter(|&slot| {
-                let new = next[slot].as_ref().unwrap();
-                !previous
-                    .get(slot)
-                    .and_then(Option::as_ref)
-                    .is_some_and(|old| {
-                        old.identity() == new.identity() && old.layout() == new.layout()
-                    })
-            })
-            .collect();
-        self.surfaces = next;
+        let mut changed_slots = Vec::new();
+        for (source, &slot) in selected.iter().zip(&slots) {
+            if !previous
+                .get(slot)
+                .and_then(Option::as_ref)
+                .is_some_and(|(id, layout, _)| {
+                    *id == source.identity() && *layout == source.layout()
+                })
+            {
+                changed_slots.push(slot);
+            }
+            self.slots[slot].surface = Some(source.clone());
+        }
         Reconciliation {
             surfaces: selected,
             slots,
@@ -141,34 +147,32 @@ impl<T: HistorySurface> ResourceHistory<T> {
         selected: &mut [T],
         slots: &[usize],
         observed_placements: &[T::Id],
-        previous: &mut [Option<T>],
+        previous: &[Option<(T::Id, T::Layout, crate::SurfaceSelection)>],
         target_extent: Option<crate::Extent2D>,
     ) {
-        self.placement_age.resize(self.slots.len(), 0);
         for (source, &slot) in selected.iter_mut().zip(slots) {
-            if let (Some(selection), Some(extent)) = (source.selection(), target_extent) {
-                selection.target_extent = extent;
+            if let Some(extent) = target_extent {
+                source.selection().target_extent = extent;
             }
             if observed_placements.contains(&source.identity()) {
-                self.placement_age[slot] = 0;
+                self.slots[slot].placement_age = 0;
                 continue;
             }
-            self.placement_age[slot] = self.placement_age[slot].saturating_add(1);
+            self.slots[slot].placement_age = self.slots[slot].placement_age.saturating_add(1);
             let old = previous
-                .get_mut(slot)
-                .and_then(Option::as_mut)
-                .filter(|old| old.layout() == source.layout())
-                .and_then(T::selection)
-                .copied();
-            if let Some(selection) = source.selection() {
-                selection.presentation_rect = None;
-                if let Some(old) = old.filter(|old| {
-                    old.target_extent == selection.target_extent && self.placement_age[slot] <= 240
-                }) {
-                    selection.presentation_rect = old.presentation_rect;
-                    selection.flip_x = old.flip_x;
-                    selection.flip_y = old.flip_y;
-                }
+                .get(slot)
+                .and_then(Option::as_ref)
+                .filter(|(_, layout, _)| *layout == source.layout())
+                .map(|(_, _, selection)| *selection);
+            let selection = source.selection();
+            selection.presentation_rect = None;
+            if let Some(old) = old.filter(|old| {
+                old.target_extent == selection.target_extent
+                    && self.slots[slot].placement_age <= 240
+            }) {
+                selection.presentation_rect = old.presentation_rect;
+                selection.flip_x = old.flip_x;
+                selection.flip_y = old.flip_y;
             }
         }
     }
@@ -216,9 +220,19 @@ impl<T: HistorySurface> ResourceHistory<T> {
     fn select_resources(&self, observed: Vec<T>, desired: Vec<T::Layout>, exact: bool) -> Vec<T> {
         let mut remaining = desired;
         let mut selected = Vec::new();
-        // Reserve every observed identity before considering held resources;
-        // equal-size siblings must never both resolve to one observed resource.
-        for source in observed {
+        // Reserve observed identities before held sources, cloning only a held
+        // resource that actually fills a missing compatible layout.
+        let held = self
+            .slots
+            .iter()
+            .filter(|_| !exact)
+            .filter_map(|slot| slot.surface.as_ref())
+            .map(std::borrow::Cow::Borrowed);
+        for source in observed
+            .into_iter()
+            .map(std::borrow::Cow::Owned)
+            .chain(held)
+        {
             if selected
                 .iter()
                 .any(|old: &T| old.identity() == source.identity())
@@ -230,25 +244,7 @@ impl<T: HistorySurface> ResourceHistory<T> {
                 .position(|layout| *layout == source.layout())
             {
                 remaining.remove(index);
-                selected.push(source);
-            }
-        }
-        if exact {
-            return selected;
-        }
-        for source in self.surfaces.iter().flatten() {
-            if selected
-                .iter()
-                .any(|old| old.identity() == source.identity())
-            {
-                continue;
-            }
-            if let Some(index) = remaining
-                .iter()
-                .position(|layout| *layout == source.layout())
-            {
-                remaining.remove(index);
-                selected.push(source.clone());
+                selected.push(source.into_owned());
             }
         }
         selected
@@ -258,8 +254,9 @@ impl<T: HistorySurface> ResourceHistory<T> {
         let mut assigned = selected
             .iter()
             .map(|source| {
-                self.surfaces.iter().position(|old| {
-                    old.as_ref()
+                self.slots.iter().position(|old| {
+                    old.surface
+                        .as_ref()
                         .is_some_and(|old| old.identity() == source.identity())
                 })
             })
@@ -275,30 +272,38 @@ impl<T: HistorySurface> ResourceHistory<T> {
             }
             let layout = source.layout();
             let slot = self
-                .surfaces
+                .slots
                 .iter()
                 .enumerate()
-                .position(|(slot, old)| {
-                    !occupied.contains(&slot)
-                        && old.as_ref().is_some_and(|old| old.layout() == layout)
+                .filter(|(slot, _)| !occupied.contains(slot))
+                .min_by_key(|(slot, old)| {
+                    let priority = if old
+                        .surface
+                        .as_ref()
+                        .is_some_and(|source| source.layout() == layout)
+                    {
+                        0
+                    } else if old.layout == layout {
+                        1
+                    } else {
+                        2
+                    };
+                    (priority, *slot)
                 })
-                .or_else(|| {
-                    self.slots
-                        .iter()
-                        .enumerate()
-                        .position(|(slot, old)| !occupied.contains(&slot) && *old == layout)
-                })
-                .or_else(|| (0..self.slots.len()).find(|slot| !occupied.contains(slot)))
-                .unwrap_or(self.slots.len());
+                .map_or(self.slots.len(), |(slot, _)| slot);
             if slot == self.slots.len() {
-                self.slots.push(layout);
+                self.slots.push(Slot {
+                    surface: None,
+                    layout,
+                    placement_age: 0,
+                });
             }
             *assigned = Some(slot);
             occupied.insert(slot);
         }
         let assigned = assigned.into_iter().map(Option::unwrap).collect::<Vec<_>>();
         for (source, &slot) in selected.iter().zip(&assigned) {
-            self.slots[slot] = source.layout();
+            self.slots[slot].layout = source.layout();
         }
         assigned
     }
@@ -307,44 +312,33 @@ impl<T: HistorySurface> ResourceHistory<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[derive(Clone)]
-    struct Source(u32, u32, bool);
-    impl HistorySurface for Source {
-        type Id = u32;
-        type Layout = u32;
-        fn identity(&self) -> u32 {
-            self.0
-        }
-        fn layout(&self) -> u32 {
-            self.1
-        }
-    }
+    use crate::testing::CpuSurface;
     #[test]
     fn uncertain_layout_changes_and_missing_sources_must_persist() {
         let mut history = ResourceHistory::default();
-        history.reconcile(vec![Source(1, 400, true)], true, |v| v.2);
+        history.reconcile(vec![CpuSurface::new(1, 400, 240)], true, |_| true);
         for _ in 0..59 {
             assert_eq!(
                 history
-                    .reconcile(vec![Source(2, 320, true)], false, |v| v.2)
+                    .reconcile(vec![CpuSurface::new(2, 320, 240)], false, |_| true)
                     .surfaces[0]
-                    .0,
+                    .id,
                 1
             );
         }
         assert_eq!(
             history
-                .reconcile(vec![Source(2, 320, true)], false, |v| v.2)
+                .reconcile(vec![CpuSurface::new(2, 320, 240)], false, |_| true)
                 .surfaces[0]
-                .0,
+                .id,
             2
         );
         for _ in 0..120 {
-            assert_eq!(history.reconcile(vec![], false, |v| v.2).surfaces[0].0, 2);
+            assert_eq!(history.reconcile(vec![], false, |_| true).surfaces[0].id, 2);
         }
         assert!(
             history
-                .reconcile(vec![], false, |v| v.2)
+                .reconcile(vec![], false, |_| true)
                 .surfaces
                 .is_empty()
         );
@@ -353,48 +347,51 @@ mod tests {
     fn page_flips_keep_slots_invalid_sources_leave_immediately_and_exact_shrink_is_complete() {
         let mut history = ResourceHistory::default();
         history.reconcile(
-            vec![Source(1, 400, true), Source(2, 320, true)],
+            vec![CpuSurface::new(1, 400, 240), CpuSurface::new(2, 320, 240)],
             true,
-            |v| v.2,
+            |_| true,
         );
-        let flipped = history.reconcile(vec![Source(3, 400, true)], false, |v| v.2);
+        let flipped = history.reconcile(vec![CpuSurface::new(3, 400, 240)], false, |_| true);
         assert_eq!(
-            flipped.surfaces.iter().map(|v| v.0).collect::<Vec<_>>(),
+            flipped.surfaces.iter().map(|v| v.id).collect::<Vec<_>>(),
             [3, 2]
         );
         assert_eq!(flipped.changed_slots, [0]);
-        let invalid = history.reconcile(vec![], false, |v| v.0 != 3);
+        let invalid = history.reconcile(vec![], false, |v| v.id != 3);
         assert_eq!(
-            invalid.surfaces.iter().map(|v| v.0).collect::<Vec<_>>(),
+            invalid.surfaces.iter().map(|v| v.id).collect::<Vec<_>>(),
             [2]
         );
         assert_eq!(invalid.slots, [1]);
         assert!(invalid.changed_slots.is_empty());
-        let shrunk = history.reconcile(vec![Source(5, 240, true)], true, |v| v.2);
-        assert_eq!(shrunk.surfaces.iter().map(|v| v.0).collect::<Vec<_>>(), [5]);
+        let shrunk = history.reconcile(vec![CpuSurface::new(5, 240, 240)], true, |_| true);
+        assert_eq!(
+            shrunk.surfaces.iter().map(|v| v.id).collect::<Vec<_>>(),
+            [5]
+        );
     }
     #[test]
     fn equal_size_reorder_and_page_flips_reserve_surviving_identities_before_slots() {
         let mut history = ResourceHistory::default();
         history.reconcile(
-            vec![Source(1, 400, true), Source(2, 400, true)],
+            vec![CpuSurface::new(1, 400, 240), CpuSurface::new(2, 400, 240)],
             true,
-            |v| v.2,
+            |_| true,
         );
         let changed = history.reconcile(
-            vec![Source(3, 400, true), Source(1, 400, true)],
+            vec![CpuSurface::new(3, 400, 240), CpuSurface::new(1, 400, 240)],
             true,
-            |v| v.2,
+            |_| true,
         );
         assert_eq!(changed.slots, [1, 0]);
-        let removed = history.reconcile(vec![Source(3, 400, true)], true, |v| v.2);
+        let removed = history.reconcile(vec![CpuSurface::new(3, 400, 240)], true, |_| true);
         assert_eq!(removed.slots, [1]);
-        let resized = history.reconcile(vec![Source(3, 500, true)], true, |v| v.2);
+        let resized = history.reconcile(vec![CpuSurface::new(3, 500, 240)], true, |_| true);
         assert_eq!(resized.slots, [1]);
         let added = history.reconcile(
-            vec![Source(4, 400, true), Source(3, 500, true)],
+            vec![CpuSurface::new(4, 400, 240), CpuSurface::new(3, 500, 240)],
             true,
-            |v| v.2,
+            |_| true,
         );
         assert_eq!(added.slots, [0, 1]);
     }

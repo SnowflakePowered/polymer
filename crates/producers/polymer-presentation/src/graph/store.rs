@@ -41,7 +41,7 @@ impl<I: Copy + Eq + Hash> ObservationStore<I> {
     /// One shared presentation boundary: advance the recording generation,
     /// snapshot the live evidence, and clear it in single-frame tracking mode.
     /// Callers hold the transaction while resolving native metadata.
-    pub fn present<S>(&self, persistent: bool) -> super::GraphSnapshot<I, S> {
+    pub fn present(&self, persistent: bool) -> super::GraphSnapshot<I> {
         let now = self
             .generation
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -126,7 +126,7 @@ impl<I: Copy + Eq + Hash> ObservationStore<I> {
     /// presentation boundary adapters advance the recording generation first,
     /// retaining the eight completed generations `[generation - 8, generation)`.
     /// Queries during recording also include observations in the current one.
-    pub fn graph<S>(&self, generation: u64) -> super::GraphSnapshot<I, S> {
+    pub fn graph(&self, generation: u64) -> super::GraphSnapshot<I> {
         let horizon = generation.saturating_sub(8);
         self.targets.retain(|_, (_, _, used, _)| *used >= horizon);
         self.edges.retain(|_, edges| {
@@ -150,7 +150,7 @@ impl<I: Copy + Eq + Hash> ObservationStore<I> {
     /// the grouped graph directly.
     #[cfg(test)]
     pub fn snapshot(&self, generation: u64) -> (Vec<Target<I>>, Vec<DependencyEdge<I>>) {
-        let graph = self.graph::<()>(generation);
+        let graph = self.graph(generation);
         (graph.targets, graph.edges.into_values().flatten().collect())
     }
 

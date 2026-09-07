@@ -16,9 +16,7 @@ pub mod selection;
 
 pub use frame::{CapturedFrame, FramePlacement};
 pub use geometry::{Extent2D, Rect, RegionMapping};
-pub use graph::{
-    DependencyEdge, Evidence, GraphSnapshot, ObservationStore, PresentationGraph, Surface, Target,
-};
+pub use graph::{DependencyEdge, Evidence, GraphSnapshot, ObservationStore, Target};
 pub use selection::{PresentationSelector, SelectedSurface, Selection, SurfaceSelection};
 
 #[cfg(test)]

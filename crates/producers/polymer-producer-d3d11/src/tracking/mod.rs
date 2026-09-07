@@ -13,7 +13,7 @@ use commands::{DeferredState, RecordedObservation};
 use dashmap::{DashMap, DashSet};
 use polymer_presentation::{
     DependencyEdge, Evidence, Extent2D, ObservationStore, PresentationSelector, Rect,
-    RegionMapping, Surface, Target,
+    RegionMapping, Target,
 };
 use std::{
     ffi::c_void,
@@ -241,24 +241,17 @@ impl Tracking {
         let _observations = self.observations.transaction();
         let mut graph = self.observations.present(self.graph_tracking);
         graph.resolve(presented, |id| {
-            let source = self.resources.get(&id)?.value().clone();
+            let source = self.resources.get(&id)?;
             let (mip, layer) = source.mip_layer;
-            Some((source, ((id.0, 0), mip, layer)))
+            Some((source.extent(), ((id.0, 0), mip, layer)))
         });
         let mut desc = D3D11_TEXTURE2D_DESC::default();
         unsafe { texture.GetDesc(&mut desc) };
         graph.surfaces.insert(
             presented,
-            TrackedResource {
-                texture: texture.clone(),
-                x: 0,
-                y: 0,
+            Extent2D {
                 width: desc.Width,
                 height: desc.Height,
-                format: desc.Format.0 as u32,
-                subresource: 0,
-                mip_layer: (0, 0),
-                sample_count: desc.SampleDesc.Count,
             },
         );
         let selection = PresentationSelector::select(&graph, presented, limit, self.graph_tracking);
@@ -267,7 +260,11 @@ impl Tracking {
             .into_iter()
             .map(|selected| {
                 let source = (selected.surface != presented)
-                    .then(|| graph.surfaces.get(&selected.surface).cloned())
+                    .then(|| {
+                        self.resources
+                            .get(&selected.surface)
+                            .map(|source| source.value().clone())
+                    })
                     .flatten();
                 Presentation {
                     source,
@@ -319,7 +316,7 @@ impl Tracking {
         if source_key == destination_key {
             return;
         }
-        let mut crop = source.extent().unwrap().rect();
+        let mut crop = source.extent().rect();
         if !source_box.is_null() {
             let bounds = unsafe { *source_box };
             let Some(width) = bounds.right.checked_sub(bounds.left) else {
@@ -339,8 +336,8 @@ impl Tracking {
             y: y as i32,
             extent: crop.extent,
         };
-        if crop.intersect(source.extent().unwrap().rect()) != Some(crop)
-            || placement.intersect(destination.extent().unwrap().rect()) != Some(placement)
+        if crop.intersect(source.extent().rect()) != Some(crop)
+            || placement.intersect(destination.extent().rect()) != Some(placement)
         {
             return;
         }
@@ -865,15 +862,6 @@ impl TrackedResource {
     }
 }
 
-impl Surface for TrackedResource {
-    fn extent(&self) -> Option<Extent2D> {
-        Some(Extent2D {
-            width: self.width,
-            height: self.height,
-        })
-    }
-}
-
 impl From<D3d11CaptureRegion> for Rect {
     fn from(region: D3d11CaptureRegion) -> Self {
         Self {
@@ -898,8 +886,8 @@ impl From<Rect> for D3d11CaptureRegion {
 }
 
 impl polymer_presentation::history::HistorySurface for Presentation {
-    fn selection(&mut self) -> Option<&mut polymer_presentation::SurfaceSelection> {
-        Some(&mut self.selection)
+    fn selection(&mut self) -> &mut polymer_presentation::SurfaceSelection {
+        &mut self.selection
     }
     type Id = (usize, u32);
     type Layout = (u32, u32, u32, (u32, u32));
@@ -945,5 +933,14 @@ impl Presentation {
             && source.format == desc.Format.0 as u32
             && self.selection.source_rect.intersect(extent.rect())
                 == Some(self.selection.source_rect)
+    }
+}
+
+impl TrackedResource {
+    fn extent(&self) -> Extent2D {
+        Extent2D {
+            width: self.width,
+            height: self.height,
+        }
     }
 }

@@ -44,7 +44,7 @@ impl Tracking {
         else {
             return;
         };
-        let mut crop = source.extent().unwrap().rect();
+        let mut crop = source.extent().rect();
         if let Some(bounds) = unsafe { source_box.as_ref() } {
             let (Some(width), Some(height)) = (
                 bounds.right.checked_sub(bounds.left),
@@ -67,7 +67,7 @@ impl Tracking {
             y: y as i32,
             extent: crop.extent,
         };
-        if crop.intersect(source.extent().unwrap().rect()) != Some(crop)
+        if crop.intersect(source.extent().rect()) != Some(crop)
             || placement.intersect(target_extent.rect()) != Some(placement)
         {
             return;
@@ -88,6 +88,7 @@ impl Tracking {
                     },
                     draw_area: crop.extent.area(),
                     source: Some(source),
+                    bindings: None,
                     mapping: Some(RegionMapping {
                         source: crop,
                         destination: placement,
@@ -165,8 +166,8 @@ impl Tracking {
         source: TrackedResource,
         evidence: polymer_presentation::Evidence,
     ) {
-        let extent = source.extent().unwrap();
-        if destination.extent() != Some(extent) {
+        let extent = source.extent();
+        if destination.extent() != extent {
             return;
         }
         let candidate = Candidate {
@@ -179,6 +180,7 @@ impl Tracking {
             },
             draw_area: extent.area(),
             source: Some(source),
+            bindings: None,
             mapping: Some(RegionMapping {
                 source: extent.rect(),
                 destination: extent.rect(),

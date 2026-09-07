@@ -400,45 +400,35 @@ mod tests {
         registry.forget_owner(2);
         assert!(registry.requests(2, &[0], 244, |_, _| None).is_empty());
     }
-    impl crate::history::HistorySurface for RegistrySource {
-        type Id = SourceIdentity;
-        type Layout = Extent2D;
-        fn identity(&self) -> SourceIdentity {
-            self.identity
-        }
-        fn layout(&self) -> Extent2D {
-            self.extent
-        }
-    }
     #[test]
     fn history_slots_survive_removal_page_flip_resize_and_window_reorder() {
+        use crate::testing::CpuSurface;
         let mut history = crate::history::ResourceHistory::default();
         let registry = PresentationRegistry::default();
-        let first = history.reconcile(vec![source(1), source(2)], true, |_| true);
+        let first = history.reconcile(
+            vec![CpuSurface::new(1, 320, 240), CpuSurface::new(2, 320, 240)],
+            true,
+            |_| true,
+        );
         let observations = first
             .surfaces
             .into_iter()
             .zip(first.slots)
-            .map(|(mut source, slot)| {
-                source.logical_slot = slot;
-                source
-            })
+            .map(|(source, slot)| source.registry_source(slot))
             .collect();
         registry.observe(1, 10, observations, 1);
         assert_eq!(
             registry.requests(1, &[0, 1], 1, |_, _| None),
             [(0, 0), (1, 1)]
         );
-        let missing = history.reconcile(vec![], false, |source| source.identity.resource != 1);
+        let missing = history.reconcile(vec![], false, |source| source.id != 1);
         assert_eq!(missing.slots, [1]);
-        let mut kept = missing.surfaces[0];
-        kept.logical_slot = missing.slots[0];
+        let kept = missing.surfaces[0].registry_source(missing.slots[0]);
         registry.observe(1, 10, vec![kept], 2);
         assert_eq!(registry.requests(1, &[0, 1], 2, |_, _| None), [(1, 0)]);
-        let flipped = history.reconcile(vec![source(3)], true, |_| true);
+        let flipped = history.reconcile(vec![CpuSurface::new(3, 320, 240)], true, |_| true);
         assert_eq!(flipped.slots, [1]);
-        let mut kept = flipped.surfaces[0];
-        kept.logical_slot = flipped.slots[0];
+        let mut kept = flipped.surfaces[0].registry_source(flipped.slots[0]);
         registry.observe(1, 10, vec![kept], 3);
         assert_eq!(registry.requests(1, &[0, 1], 3, |_, _| None), [(1, 0)]);
         kept.extent.height = 800;

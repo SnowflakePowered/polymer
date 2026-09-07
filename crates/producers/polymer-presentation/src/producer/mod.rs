@@ -3,7 +3,9 @@
 mod descriptor;
 mod export;
 mod failure;
+mod preparation;
 mod retry;
+pub use preparation::CapturePreparation;
 mod session;
 mod window;
 pub use descriptor::ExportDescriptor;

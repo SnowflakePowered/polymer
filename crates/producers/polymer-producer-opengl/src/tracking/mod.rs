@@ -43,7 +43,6 @@ pub(crate) struct DrawCandidate {
     pub(crate) layer: i32,
     pub(crate) width: u32,
     pub(crate) height: u32,
-    pub(crate) score: u64,
 }
 
 impl DrawCandidate {
@@ -57,8 +56,8 @@ impl DrawCandidate {
 }
 
 impl polymer_presentation::history::HistorySurface for DrawCandidate {
-    fn selection(&mut self) -> Option<&mut polymer_presentation::SurfaceSelection> {
-        Some(&mut self.selection)
+    fn selection(&mut self) -> &mut polymer_presentation::SurfaceSelection {
+        &mut self.selection
     }
     type Id = SurfaceIdentity;
     type Layout = (u32, i32, i32, u32, u32);
@@ -479,8 +478,6 @@ impl ContextTracking {
                     layer: 0,
                     width: width as u32,
                     height: height as u32,
-
-                    score: raster_area,
                 });
                 self.texture_info
                     .insert(texture as u32, (target, width as u32, height as u32));
@@ -544,10 +541,8 @@ impl ContextTracking {
                     continue;
                 }
                 if object_type == GL_RENDERBUFFER as i32 {
-                    if let Some(mut candidate) =
-                        unsafe { self.renderbuffer_candidate(texture as u32) }
+                    if let Some(candidate) = unsafe { self.renderbuffer_candidate(texture as u32) }
                     {
-                        candidate.score = raster_area;
                         self.upsert_render_target(candidate);
                         self.observations.target(
                             polymer_presentation::Target {
@@ -574,8 +569,6 @@ impl ContextTracking {
                     layer,
                     width: bounds.width,
                     height: bounds.height,
-
-                    score: raster_area,
                 };
                 self.upsert_render_target(candidate);
                 self.observations.target(
@@ -905,8 +898,8 @@ mod tests {
     #[test]
     fn recovered_quad_requires_one_distinct_sampled_source() {
         let tracking = ContextTracking::default();
-        let first = candidate(1, 320, 240, 100);
-        let second = candidate(2, 640, 480, 200);
+        let first = candidate(1, 320, 240);
+        let second = candidate(2, 640, 480);
         tracking.record_present_sources(
             vec![first, second, first],
             Some(QuadBounds {
@@ -917,7 +910,7 @@ mod tests {
             }),
             1,
         );
-        assert!(tracking.observations.graph::<()>(0).edges.is_empty());
+        assert!(tracking.observations.graph(0).edges.is_empty());
         tracking.record_present_sources(
             vec![first, first],
             Some(QuadBounds {
@@ -928,7 +921,7 @@ mod tests {
             }),
             2,
         );
-        let graph = tracking.observations.graph::<()>(0);
+        let graph = tracking.observations.graph(0);
         let edge = graph.edges.values().flatten().next().unwrap();
         assert!(edge.mapping.is_some());
         assert!(!edge.exact());
@@ -947,10 +940,10 @@ mod tests {
             }),
             3
         ));
-        assert!(tracking.observations.graph::<()>(0).edges.is_empty());
+        assert!(tracking.observations.graph(0).edges.is_empty());
     }
 
-    pub(super) fn candidate(texture: u32, width: u32, height: u32, score: u64) -> DrawCandidate {
+    pub(super) fn candidate(texture: u32, width: u32, height: u32) -> DrawCandidate {
         DrawCandidate {
             selection: polymer_presentation::SurfaceSelection {
                 source_rect: polymer_presentation::Extent2D { width, height }.rect(),
@@ -964,8 +957,6 @@ mod tests {
             layer: 0,
             width,
             height,
-
-            score,
         }
     }
 
@@ -979,7 +970,7 @@ mod tests {
             .get_texture_level_parameter
             .set(Some(query))
             .unwrap();
-        let mut source = candidate(1, 64, 64, 1);
+        let mut source = candidate(1, 64, 64);
         source.target = super::GL_TEXTURE_2D_ARRAY;
         source.incarnation = tracking.incarnation(false, source.texture);
         let mut removed_layer = source;
@@ -994,9 +985,9 @@ mod tests {
         use super::TargetKey;
         let tracking = ContextTracking::default();
         for _ in 0..7 {
-            tracking.observations.present::<()>(true);
+            tracking.observations.present(true);
         }
-        let first = candidate(3, 320, 240, 1);
+        let first = candidate(3, 320, 240);
         let mut second = first;
         second.layer = 1;
         for source in [first, second] {
@@ -1004,7 +995,7 @@ mod tests {
         }
         tracking.record_dependencies(TargetKey::PRESENT, &[3], 42);
         let observations = &tracking.observations;
-        let (_, edges) = observations.graph::<()>(8).observation_list();
+        let (_, edges) = observations.graph(8).observation_list();
         assert_eq!(edges.len(), 2);
         assert!(
             edges
@@ -1020,9 +1011,9 @@ mod tests {
                 .iter()
                 .all(|edge| edge.mapping.is_none() && !edge.whole_source)
         );
-        tracking.observations.present::<()>(true);
+        tracking.observations.present(true);
         tracking.record_dependencies(TargetKey::PRESENT, &[3], 43);
-        let (_, edges) = tracking.observations.graph::<()>(9).observation_list();
+        let (_, edges) = tracking.observations.graph(9).observation_list();
         assert_eq!(edges.len(), 2);
         assert!(
             edges
@@ -1037,8 +1028,8 @@ mod tests {
         let second = ContextTracking::default();
         first.texture_info.insert(7, (0x0de1, 640, 480));
         second.texture_info.insert(7, (0x0de1, 320, 240));
-        let deleted = candidate(7, 640, 480, 1);
-        let sibling = candidate(8, 320, 240, 1);
+        let deleted = candidate(7, 640, 480);
+        let sibling = candidate(8, 320, 240);
         first
             .observations
             .record(polymer_presentation::DependencyEdge::sampled(
@@ -1049,14 +1040,7 @@ mod tests {
         first.forget_texture(7);
         assert!(!first.texture_info.contains_key(&7));
         assert_eq!(*second.texture_info.get(&7).unwrap(), (0x0de1, 320, 240));
-        assert!(
-            first
-                .observations
-                .graph::<()>(1)
-                .observation_list()
-                .1
-                .is_empty()
-        );
+        assert!(first.observations.graph(1).observation_list().1.is_empty());
     }
 
     #[test]

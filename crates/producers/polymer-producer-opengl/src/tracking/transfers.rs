@@ -100,8 +100,6 @@ impl ContextTracking {
             layer,
             width,
             height,
-
-            score: 0,
         })
     }
 

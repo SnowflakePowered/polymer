@@ -22,7 +22,7 @@ fn clear_records_explicit_rectangles_at_execution_without_draw_bindings() {
     assert!(
         tracking
             .observations
-            .graph::<()>(0)
+            .graph(0)
             .observation_list()
             .0
             .is_empty()
@@ -30,7 +30,7 @@ fn clear_records_explicit_rectangles_at_execution_without_draw_bindings() {
     // RTV descriptors are consumed at recording time, unlike sampled tables.
     tracking.rtv_descriptors.remove(&handle.ptr);
     unsafe { tracking.execute(7, 1, &list, || {}) };
-    let (targets, edges) = tracking.observations.graph::<()>(0).observation_list();
+    let (targets, edges) = tracking.observations.graph(0).observation_list();
     assert_eq!(targets.len(), 1);
     assert_eq!(targets[0].id, target.key);
     assert_eq!(targets[0].score, 0);
@@ -39,14 +39,14 @@ fn clear_records_explicit_rectangles_at_execution_without_draw_bindings() {
     assert_eq!(edges[0].destination, target.key);
     assert!(edges[0].mapping.is_none());
     unsafe { tracking.execute(7, 1, &list, || {}) };
-    assert!(tracking.observations.graph::<()>(0).observation_list().1[0].order > edges[0].order);
+    assert!(tracking.observations.graph(0).observation_list().1[0].order > edges[0].order);
     tracking.command_reset(list);
     tracking.observations.clear();
     unsafe { tracking.execute(7, 1, &list, || {}) };
     assert!(
         tracking
             .observations
-            .graph::<()>(0)
+            .graph(0)
             .observation_list()
             .0
             .is_empty()
@@ -71,7 +71,7 @@ fn submitted_batch_waits_for_presentation_clear_and_enters_the_next_generation()
             width: 640,
             height: 480,
         },
-        &[],
+        None,
     );
     tracking.commands.insert(1, command);
     let (started_tx, started_rx) = std::sync::mpsc::channel();
@@ -87,7 +87,7 @@ fn submitted_batch_waits_for_presentation_clear_and_enters_the_next_generation()
                     assert!(
                         tracking
                             .observations
-                            .graph::<()>(1)
+                            .graph(1)
                             .observation_list()
                             .0
                             .is_empty()
@@ -105,13 +105,13 @@ fn submitted_batch_waits_for_presentation_clear_and_enters_the_next_generation()
         tracking.observations.clear();
         assert!(!native_submitted.load(Ordering::SeqCst));
         tracking.resources.clear();
-        tracking.observations.present::<()>(true);
+        tracking.observations.present(true);
         drop(boundary);
         finished_rx
             .recv_timeout(std::time::Duration::from_secs(2))
             .unwrap();
     });
-    let (targets, edges) = tracking.observations.graph::<()>(1).observation_list();
+    let (targets, edges) = tracking.observations.graph(1).observation_list();
     assert!(native_submitted.load(Ordering::SeqCst));
     assert_eq!(targets.len(), 1);
     assert_eq!(targets[0].id, target.key);
@@ -119,8 +119,7 @@ fn submitted_batch_waits_for_presentation_clear_and_enters_the_next_generation()
     assert_eq!(edges[0].generation, 1);
     let lists = [std::ptr::dangling_mut::<c_void>()];
     unsafe { tracking.execute(7, 1, lists.as_ptr(), || {}) };
-    let (replayed_targets, replayed_edges) =
-        tracking.observations.graph::<()>(1).observation_list();
+    let (replayed_targets, replayed_edges) = tracking.observations.graph(1).observation_list();
     assert_eq!(replayed_edges.len(), 1);
     assert_eq!(replayed_edges[0].generation, 1);
     assert!(replayed_edges[0].order > edges[0].order);
@@ -211,20 +210,21 @@ fn bundle_draw_inherits_targets_and_bindings_only_when_executed() {
     tracking.execute_bundle(parent, bundle);
     {
         let state = tracking.commands.get(&1).unwrap();
+        let bindings = state.draw_bindings();
         assert_eq!(state.observations[0].0, (100, 1));
-        assert_eq!(state.draw_tables[&0].signature, Some(7));
-        assert_eq!(state.draw_tables[&0].tables[&0], 200);
+        assert_eq!(bindings[0].signature, Some(7));
+        assert_eq!(bindings[0].tables[&0], 200);
     }
     assert!(
         tracking
             .observations
-            .graph::<()>(0)
+            .graph(0)
             .observation_list()
             .1
             .is_empty()
     );
     tracking.commit_list(1, 3);
-    let (_, edges) = tracking.observations.graph::<()>(0).observation_list();
+    let (_, edges) = tracking.observations.graph(0).observation_list();
     assert_eq!(edges.len(), 1);
     assert_eq!(edges[0].destination, (100, 1));
     assert_eq!(edges[0].source, (100, 1));
@@ -276,4 +276,13 @@ fn tracking_instances_do_not_share_command_state() {
 
     assert!(first.commands.contains_key(&1));
     assert!(!second.commands.contains_key(&1));
+}
+
+impl CommandState {
+    pub(super) fn draw_bindings(&self) -> Vec<&Bindings> {
+        self.observations
+            .iter()
+            .filter_map(|(_, candidate)| candidate.bindings.as_ref())
+            .collect()
+    }
 }

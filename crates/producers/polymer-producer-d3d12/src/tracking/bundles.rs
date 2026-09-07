@@ -51,14 +51,15 @@ impl Tracking {
             return;
         };
         let mut state = self.commands.entry(parent as usize).or_default();
-        let offset = state.observations.len();
         let parent_bindings = state.bindings.clone();
-        for (index, bindings) in bundle.draw_tables {
-            state
-                .draw_tables
-                .insert(offset + index, bindings.inherited(&parent_bindings));
-        }
-        state.observations.extend(bundle.observations);
+        state
+            .observations
+            .extend(bundle.observations.into_iter().map(|(key, mut candidate)| {
+                candidate.bindings = candidate
+                    .bindings
+                    .map(|bindings| bindings.inherited(&parent_bindings));
+                (key, candidate)
+            }));
         state.transitions.extend(bundle.transitions);
         for draw in bundle.inherited_draws {
             Self::inherit_bundle_draw(&mut state, draw);
@@ -89,12 +90,8 @@ impl Tracking {
             return;
         };
         let bindings = draw.bindings.inherited(&state.bindings);
-        let start = state.observations.len();
         for target in state.render_targets.clone() {
-            Self::draw_target(state, target, region, &[]);
-        }
-        for index in start..state.observations.len() {
-            state.draw_tables.insert(index, bindings.clone());
+            Self::draw_target(state, target, region, Some(bindings.clone()));
         }
     }
 }
@@ -160,11 +157,12 @@ mod tests {
         tracking.execute_bundle(parent, bundle);
         tracking.record_draw(parent);
         let state = tracking.commands.get(&1).unwrap();
-        assert_eq!(state.draw_tables[&0].tables[&0], 1100);
-        assert_eq!(state.draw_tables[&1].tables[&0], 1300);
-        assert_eq!(state.draw_tables[&1].tables[&1], 1200);
-        assert_eq!(state.draw_tables[&2].tables[&0], 1300);
-        assert_eq!(state.draw_tables[&2].heaps, Some(vec![1000]));
+        let bindings = state.draw_bindings();
+        assert_eq!(bindings[0].tables[&0], 1100);
+        assert_eq!(bindings[1].tables[&0], 1300);
+        assert_eq!(bindings[1].tables[&1], 1200);
+        assert_eq!(bindings[2].tables[&0], 1300);
+        assert_eq!(bindings[2].heaps, Some(vec![1000]));
         assert_eq!(state.viewport.unwrap().Width, 320.0);
     }
     #[test]
@@ -180,8 +178,9 @@ mod tests {
         tracking.execute_bundle(parent, bundle);
         tracking.record_draw(parent);
         let state = tracking.commands.get(&1).unwrap();
-        assert!(state.draw_tables[&0].tables.is_empty());
-        assert!(state.draw_tables[&1].tables.is_empty());
+        let bindings = state.draw_bindings();
+        assert!(bindings[0].tables.is_empty());
+        assert!(bindings[1].tables.is_empty());
     }
     #[test]
     fn explicit_unbinding_is_not_inherited_and_empty_viewports_propagate() {
@@ -200,9 +199,10 @@ mod tests {
         tracking.execute_bundle(parent, bundle);
         tracking.record_draw(parent);
         let state = tracking.commands.get(&1).unwrap();
+        let bindings = state.draw_bindings();
         assert_eq!(state.observations.len(), 1);
-        assert_eq!(state.draw_tables[&0].heaps, Some(vec![]));
-        assert!(state.draw_tables[&0].tables.is_empty());
+        assert_eq!(bindings[0].heaps, Some(vec![]));
+        assert!(bindings[0].tables.is_empty());
         assert!(state.viewport.is_none());
     }
 }

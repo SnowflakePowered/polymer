@@ -1,14 +1,10 @@
 use super::{SelectedSurface, SurfaceSelection, View};
-use crate::{DependencyEdge, Evidence, PresentationGraph, Rect};
+use crate::{DependencyEdge, Evidence, Rect};
 use std::collections::HashSet;
 
-impl<G: PresentationGraph> View<'_, G> {
-    pub(super) fn resolve(
-        &self,
-        presented: G::Id,
-        selected: G::Id,
-    ) -> Option<SelectedSurface<G::Id>> {
-        let extent = self.extents.get(&selected).copied().flatten()?;
+impl<I: Copy + Eq + std::hash::Hash> View<'_, I> {
+    pub(super) fn resolve(&self, presented: I, selected: I) -> Option<SelectedSurface<I>> {
+        let extent = self.extent(selected)?;
         let mut paths = Vec::new();
         let mut budget = 4096;
         self.paths(
@@ -48,12 +44,7 @@ impl<G: PresentationGraph> View<'_, G> {
         let mut result = SelectedSurface {
             surface: selected,
             selection: SurfaceSelection {
-                target_extent: self
-                    .extents
-                    .get(&presented)
-                    .copied()
-                    .flatten()
-                    .unwrap_or_default(),
+                target_extent: self.extent(presented).unwrap_or_default(),
                 exact: false,
                 source_rect: extent.rect(),
                 presentation_rect: None,
@@ -78,11 +69,11 @@ impl<G: PresentationGraph> View<'_, G> {
 
     fn paths(
         &self,
-        node: G::Id,
-        selected: G::Id,
-        visited: &mut HashSet<G::Id>,
-        path: &mut Vec<DependencyEdge<G::Id>>,
-        paths: &mut Vec<Vec<DependencyEdge<G::Id>>>,
+        node: I,
+        selected: I,
+        visited: &mut HashSet<I>,
+        path: &mut Vec<DependencyEdge<I>>,
+        paths: &mut Vec<Vec<DependencyEdge<I>>>,
         budget: &mut usize,
     ) {
         // An exponential graph must not stall a hooked present. An incomplete
@@ -118,11 +109,7 @@ impl<G: PresentationGraph> View<'_, G> {
         visited.remove(&node);
     }
 
-    fn map_path(
-        &self,
-        path: &[DependencyEdge<G::Id>],
-        full: Rect,
-    ) -> Option<(Rect, Rect, bool, bool)> {
+    fn map_path(&self, path: &[DependencyEdge<I>], full: Rect) -> Option<(Rect, Rect, bool, bool)> {
         let mut source = path.last()?.mapping?.source.intersect(full)?;
         let mut destination = source;
         let (mut flip_x, mut flip_y) = (false, false);
@@ -151,7 +138,7 @@ impl<G: PresentationGraph> View<'_, G> {
             flip_x ^= mapping.flip_x;
             flip_y ^= mapping.flip_y;
             prefix.push(mapping);
-            if let Some(extent) = self.extents.get(&edge.destination).copied().flatten() {
+            if let Some(extent) = self.extent(edge.destination) {
                 let clipped = destination.intersect(extent.rect())?;
                 if clipped != destination {
                     let mut original = clipped;

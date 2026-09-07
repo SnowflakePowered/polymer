@@ -46,8 +46,6 @@ impl ContextTracking {
             layer: 0,
             width,
             height,
-
-            score: 0,
         })
     }
 

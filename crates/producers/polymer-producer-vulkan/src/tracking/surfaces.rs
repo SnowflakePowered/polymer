@@ -313,11 +313,7 @@ mod tests {
             );
         }
         tracking.forget_image(vk::Image::from_raw(1));
-        let (targets, edges) = tracking
-            .surfaces
-            .observations
-            .graph::<()>(0)
-            .observation_list();
+        let (targets, edges) = tracking.surfaces.observations.graph(0).observation_list();
         assert!(edges.is_empty());
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].id.image, vk::Image::from_raw(2));
