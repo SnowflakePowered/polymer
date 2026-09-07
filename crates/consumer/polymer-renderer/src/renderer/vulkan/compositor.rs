@@ -71,7 +71,6 @@ pub struct VulkanCompositor {
     mode: SwapchainMode,
     surfaces: Vec<ImportedVulkanSurface>,
     composition_pipeline: CompositionPipeline,
-    keyed_mutex_enabled: bool,
 }
 
 /// Open Vulkan render pass after game composition and before presentation.
@@ -113,30 +112,17 @@ impl VulkanCompositor {
     pub fn new(
         window: &impl RenderWindow,
         preferred_adapter: Option<AdapterLuid>,
-        enable_keyed_mutex: bool,
     ) -> Result<Self, Box<dyn Error>> {
-        Self::with_mode(
-            window,
-            preferred_adapter,
-            enable_keyed_mutex,
-            false,
-            SwapchainMode::Shared,
-        )
-        .map(|(compositor, _)| compositor)
+        Self::with_mode(window, preferred_adapter, false, SwapchainMode::Shared)
+            .map(|(compositor, _)| compositor)
     }
 
     pub fn new_with_webrtc(
         window: &impl RenderWindow,
         preferred_adapter: Option<AdapterLuid>,
-        enable_keyed_mutex: bool,
     ) -> Result<(Self, WebRtcCompositor), Box<dyn Error>> {
-        let (compositor, webrtc) = Self::with_mode(
-            window,
-            preferred_adapter,
-            enable_keyed_mutex,
-            true,
-            SwapchainMode::Shared,
-        )?;
+        let (compositor, webrtc) =
+            Self::with_mode(window, preferred_adapter, true, SwapchainMode::Shared)?;
         Ok((
             compositor,
             webrtc.expect("WebRTC was requested during Vulkan device creation"),
@@ -147,13 +133,11 @@ impl VulkanCompositor {
     pub fn new_for_stream(
         window: &impl RenderWindow,
         preferred_adapter: Option<AdapterLuid>,
-        enable_keyed_mutex: bool,
         connection: u64,
     ) -> Result<Self, Box<dyn Error>> {
         Self::with_mode(
             window,
             preferred_adapter,
-            enable_keyed_mutex,
             false,
             SwapchainMode::Dedicated(connection),
         )
@@ -163,13 +147,11 @@ impl VulkanCompositor {
     pub fn new_for_stream_with_webrtc(
         window: &impl RenderWindow,
         preferred_adapter: Option<AdapterLuid>,
-        enable_keyed_mutex: bool,
         connection: u64,
     ) -> Result<(Self, WebRtcCompositor), Box<dyn Error>> {
         let (compositor, webrtc) = Self::with_mode(
             window,
             preferred_adapter,
-            enable_keyed_mutex,
             true,
             SwapchainMode::Dedicated(connection),
         )?;
@@ -182,7 +164,6 @@ impl VulkanCompositor {
     fn with_mode(
         window: &impl RenderWindow,
         preferred_adapter: Option<AdapterLuid>,
-        enable_keyed_mutex: bool,
         publish_video: bool,
         mode: SwapchainMode,
     ) -> Result<(Self, Option<WebRtcCompositor>), Box<dyn Error>> {
@@ -205,15 +186,12 @@ impl VulkanCompositor {
             let surface =
                 ash_window::create_surface(&entry, &instance, display, window_handle, None)?;
             let surface_loader = ash::khr::surface::Instance::new(&entry, &instance);
-            let mut required = vec![
+            let required = vec![
                 ash::khr::swapchain::NAME,
                 ash::khr::external_memory_win32::NAME,
                 ash::khr::external_semaphore_win32::NAME,
                 ash::khr::timeline_semaphore::NAME,
             ];
-            if enable_keyed_mutex {
-                required.push(ash::khr::win32_keyed_mutex::NAME);
-            }
             let (physical_device, queue_family, video_queue_family) = instance
                 .enumerate_physical_devices()?
                 .into_iter()
@@ -513,7 +491,6 @@ impl VulkanCompositor {
                     mode,
                     surfaces: Vec::new(),
                     composition_pipeline,
-                    keyed_mutex_enabled: enable_keyed_mutex,
                 },
                 webrtc,
             ))
@@ -596,7 +573,6 @@ impl VulkanCompositor {
             flip_y: stream.bottom_up,
             quarter_turns,
             frames: Default::default(),
-            discarded: Vec::new(),
             cache,
         });
         self.surfaces
@@ -610,10 +586,6 @@ impl VulkanCompositor {
 
     pub const fn swapchain_mode(&self) -> SwapchainMode {
         self.mode
-    }
-
-    pub fn keyed_mutex_enabled(&self) -> bool {
-        self.keyed_mutex_enabled
     }
 
     pub(crate) fn set_latest(&mut self, connection: u64, frame: FrameReady) {
@@ -1227,9 +1199,7 @@ impl VulkanCompositor {
             let mut wait_values = vec![0];
             let mut wait_stages = vec![vk::PipelineStageFlags::TRANSFER];
             for surface in &self.surfaces {
-                if let Some(frame) = surface.frames.prepared().map(|frame| frame.ready())
-                    && !surface.imported.uses_keyed_mutex()
-                {
+                if let Some(frame) = surface.frames.prepared().map(|frame| frame.ready()) {
                     waits.push(surface.imported.timeline());
                     wait_values.push(frame.sync_value);
                     wait_stages.push(
@@ -1292,29 +1262,12 @@ impl VulkanCompositor {
             let mut timeline_submit = vk::TimelineSemaphoreSubmitInfo::default()
                 .wait_semaphore_values(&wait_values)
                 .signal_semaphore_values(&signal_values);
-            let mut acquire_syncs = Vec::new();
-            let mut release_syncs = Vec::new();
-            for surface in &self.surfaces {
-                surface.keyed_handoffs(&mut acquire_syncs, &mut release_syncs, false);
-            }
-            let acquire_keys = vec![1; acquire_syncs.len()];
-            let acquire_timeouts = vec![100; acquire_syncs.len()];
-            let release_keys = vec![0; release_syncs.len()];
-            let mut keyed_mutex = vk::Win32KeyedMutexAcquireReleaseInfoKHR::default()
-                .acquire_syncs(&acquire_syncs)
-                .acquire_keys(&acquire_keys)
-                .acquire_timeouts(&acquire_timeouts)
-                .release_syncs(&release_syncs)
-                .release_keys(&release_keys);
-            let mut submit = vk::SubmitInfo::default()
+            let submit = vk::SubmitInfo::default()
                 .push_next(&mut timeline_submit)
                 .wait_semaphores(&waits)
                 .wait_dst_stage_mask(&wait_stages)
                 .command_buffers(&commands)
                 .signal_semaphores(&signals);
-            if !acquire_syncs.is_empty() || !release_syncs.is_empty() {
-                submit = submit.push_next(&mut keyed_mutex);
-            }
             self.device.reset_fences(&[self.fences[flight]])?;
             self.device
                 .queue_submit(self.queue, &[submit], self.fences[flight])?;

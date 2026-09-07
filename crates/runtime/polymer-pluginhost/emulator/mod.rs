@@ -83,7 +83,7 @@ impl GraphicsHook {
         use polymer_presentation_config::RenderMode;
         let supported = match self {
             Self::D3d11 | Self::D3d12 | Self::Vulkan => mode == RenderMode::Swapchain,
-            Self::OpenGl => matches!(mode, RenderMode::Intercept | RenderMode::GraphTracking),
+            Self::OpenGl => matches!(mode, RenderMode::Intercept),
             Self::Gdi => mode == RenderMode::Intercept,
         };
         if supported {

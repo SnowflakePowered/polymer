@@ -21,7 +21,6 @@ fn defaults_to_d3d12() -> Result<(), Box<dyn Error>> {
     assert_eq!(options.surfaces, 16);
     assert_eq!(options.skip_surfaces, 0);
     assert!(options.isolate);
-    assert!(!options.force_keyed_mutex);
     assert_eq!(options.hooks, AUTO_HOOKS);
     assert_eq!(options.target, ["game.exe"]);
     assert_eq!(options.webrtc, None);
@@ -107,16 +106,10 @@ fn launcher_supports_sparse_virtual_slot_indices() -> Result<(), Box<dyn Error>>
 
 #[test]
 fn launcher_preserves_render_target_order_and_rotation() -> Result<(), Box<dyn Error>> {
-    let options = arguments(&[
-        "--hook",
-        "opengl",
-        "--track-render-targets=4:1,2:3",
-        "--graph-tracking",
-    ])?;
+    let options = arguments(&["--hook", "opengl", "--track-render-targets=4:1,2:3"])?;
     let launcher = LauncherState::from_options(&options);
     assert_eq!(launcher.tracked_render_target_indices(), Some(vec![4, 2]));
     assert_eq!(launcher.render_target_rotations(), [1, 3]);
-    assert!(launcher.graph_tracking);
     assert!(launcher.validate_render_targets().is_ok());
     Ok(())
 }
@@ -220,7 +213,6 @@ fn accepts_vulkan_override_and_options_in_either_order() -> Result<(), Box<dyn E
         "opengl",
         "--track-render-target",
         "--no-isolate",
-        "--force-km",
         "--api=vulkan",
         "--",
         "game.exe",
@@ -230,7 +222,6 @@ fn accepts_vulkan_override_and_options_in_either_order() -> Result<(), Box<dyn E
     assert_eq!(options.api, ViewerApi::Vulkan);
     assert_eq!(options.track_render_targets, Some(vec![tracked(0, 0)]));
     assert!(!options.isolate);
-    assert!(options.force_keyed_mutex);
     assert_eq!(options.target, ["game.exe", "--api", "target-argument"]);
     Ok(())
 }
@@ -678,9 +669,9 @@ fn virtual_swapchain_cli_preserves_extent_and_rejects_conflicting_modes() {
             "--swapchain-resolution",
             "640",
             "528",
-            "--graph-tracking",
             "--track-render-targets",
             "0",
+            "--graph-tracking",
         ],
     ] {
         assert!(arguments(&args).is_err(), "accepted {args:?}");
@@ -726,7 +717,6 @@ fn production_apis_reject_capture_options_and_require_fixed_extent() {
     assert!(
         arguments(&[
             "--hook=opengl",
-            "--graph-tracking",
             "--track-render-targets=0",
             "--",
             "game.exe"

@@ -10,7 +10,7 @@ fn vulkan_retains_until_replacement_and_returns_ownership_on_disconnect() {
     let adapter = D3d12ConsumerDevice::new_default().unwrap().adapter_luid();
     let producer = Producer::new(adapter, 3);
     let window = TestWindow::new();
-    let mut compositor = VulkanCompositor::new(&window, Some(adapter), false).unwrap();
+    let mut compositor = VulkanCompositor::new(&window, Some(adapter)).unwrap();
     compositor.import_stream(1, &producer.stream(), 0).unwrap();
     let plan = CompositingPlan::new(
         [0.0, 0.0, 0.0, 1.0],
@@ -47,7 +47,7 @@ fn vulkan_single_slot_keeps_producer_progressing() {
     let adapter = D3d12ConsumerDevice::new_default().unwrap().adapter_luid();
     let producer = Producer::new(adapter, 1);
     let window = TestWindow::new();
-    let mut compositor = VulkanCompositor::new(&window, Some(adapter), false).unwrap();
+    let mut compositor = VulkanCompositor::new(&window, Some(adapter)).unwrap();
     compositor.import_stream(1, &producer.stream(), 0).unwrap();
     let plan = CompositingPlan::new(
         [0.0, 0.0, 0.0, 1.0],

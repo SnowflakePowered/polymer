@@ -5,7 +5,6 @@ pub(super) struct Prepared {
     retention: Retention,
 }
 pub(super) struct Displayed;
-pub(super) struct Discarded;
 
 #[derive(Clone, Copy)]
 pub(super) enum Retention {
@@ -32,13 +31,6 @@ impl FrameOwnership<Pending> {
         FrameOwnership {
             ready: self.ready,
             state: Prepared { retention },
-        }
-    }
-
-    fn discard(self) -> FrameOwnership<Discarded> {
-        FrameOwnership {
-            ready: self.ready,
-            state: Discarded,
         }
     }
 }
@@ -106,19 +98,16 @@ impl SurfaceFrames {
         }
         Ok(())
     }
-    /// A superseded lease must be recycled by keyed-mutex backends. Fence
-    /// backends reclaim it through the next submitted release watermark.
-    pub fn offer(&mut self, ready: FrameReady) -> Option<FrameOwnership<Discarded>> {
+    /// Superseded frames are reclaimed by the next submitted release watermark.
+    pub fn offer(&mut self, ready: FrameReady) {
         if ready.sync_value <= self.received {
-            return None;
+            return;
         }
         self.received = ready.sync_value;
-        self.replacement
-            .replace(Replacement::Pending(FrameOwnership {
-                ready,
-                state: Pending,
-            }))
-            .map(|previous| previous.abort().discard())
+        self.replacement = Some(Replacement::Pending(FrameOwnership {
+            ready,
+            state: Pending,
+        }));
     }
 
     /// Roll back any recording that did not reach GPU submission.
@@ -201,7 +190,7 @@ mod tests {
     use polymer_protocol::{PresentationTransform, StreamId};
 
     impl SurfaceFrames {
-        fn incoming(&mut self, value: u64) -> Option<FrameOwnership<Discarded>> {
+        fn incoming(&mut self, value: u64) {
             self.offer(FrameReady {
                 stream_id: StreamId(1),
                 slot: (value % 3) as u32,
@@ -229,7 +218,7 @@ mod tests {
         assert_eq!(frames.release_value(), None);
         frames.commit();
         frames.incoming(2);
-        assert_eq!(frames.incoming(3).unwrap().ready().sync_value, 2);
+        frames.incoming(3);
         assert_eq!(frames.frame().unwrap().sync_value, 1);
         assert_eq!(frames.release_value(), None);
         frames.prepare_pending(Retention::Retained);
@@ -253,7 +242,7 @@ mod tests {
         assert_eq!(frames.frame().unwrap().sync_value, 4);
         assert_eq!(frames.pending().unwrap().sync_value, 7);
         assert_eq!(frames.release_value(), None);
-        assert!(frames.incoming(4).is_none());
+        frames.incoming(4);
         assert_eq!(frames.pending().unwrap().sync_value, 7);
     }
 
@@ -267,8 +256,7 @@ mod tests {
         frames.prepare_pending(Retention::Cached);
         assert_eq!(frames.release_value(), Some(2));
 
-        let discarded: FrameOwnership<Discarded> = frames.incoming(3).unwrap();
-        assert_eq!(discarded.ready().sync_value, 2);
+        frames.incoming(3);
         frames.commit(); // No prepared replacement was submitted.
         assert_eq!(frames.displayed().unwrap().sync_value, 1);
         assert_eq!(frames.pending().unwrap().sync_value, 3);

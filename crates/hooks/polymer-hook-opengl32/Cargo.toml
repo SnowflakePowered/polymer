@@ -9,7 +9,6 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 polymer-hook.workspace = true
-polymer-presentation.workspace = true
 polymer-platform-windows.workspace = true
 polymer-producer-opengl = { path = "../../producers/polymer-producer-opengl" }
 windows-sys.workspace = true

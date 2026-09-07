@@ -8,7 +8,7 @@ D3D11, D3D12, and Vulkan now support only native zero-copy swapchain presentatio
 
 `renderMode` defaults to `"swapchain"`; every requested surface requires a fixed positive `resolution`. Pluginhost and runtime reject `"intercept"` and `"graphTracking"` with these three APIs, including mixed launch requests with capture-only backends. Hook installation independently requires a valid swapchain configuration. The old environment-only render-mode fallback and `POLYMER_GRAPH_TRACKING`/`POLYMER_PRESENT_UNTHROTTLED` controls are removed.
 
-OpenGL retains explicit `"intercept"`/`"graphTracking"` modes, and GDI retains explicit `"intercept"`. Shared allocation utilities needed by those producers remain. D3D11's scoped DDI resource-identity collection also remains: it enables native allocation rotation and does not capture application rendering.
+OpenGL and GDI use explicit `"intercept"` mode. The removed `"graphTracking"` mode is no longer part of the launch schema. Shared allocation utilities needed by those producers remain. D3D11's scoped DDI resource-identity collection also remains: it enables native allocation rotation and does not capture application rendering.
 
 The debug viewer's automatic hook set is D3D11/D3D12/Vulkan. Command-line launches require `--swapchain-resolution WIDTH HEIGHT`; the interactive launcher offers editable dimensions. Graph tracking and keyed-mutex options are limited to the capture backends. Built-in plugin declarations now provide fixed output extents: DuckStation/PCSX2/RetroArch 640x480, Flycast 960x720, and Cemu Vulkan 1280x720 TV plus 854x480 GamePad. Dolphin retains its configured extent. These declarations were migrated; this change does not claim a new gameplay validation of every plugin.
 
@@ -21,6 +21,28 @@ The human-maintained ARCHITECTURE.md still describes graph-based capture general
 - Rebuilt DXGI/D3D11/D3D12/Vulkan hooks and the debug viewer. Dolphin application runs passed for each producer with both consumers, using fixed 640x528 RGB10A2 buffers and shared fences. Each successful run advanced thousands of publications and exited normally. The Vulkan/D3D12 run also underwent repeated application swapchain recreation before settling on a stable generation; no graphics errors were logged.
 - The first D3D12 run exposed an old RGBA8/BGRA8-only format restriction. RGB10A2 now passes the existing device format-capability check and uses the same native shared-resource path. Both subsequent consumer runs passed; the animated output was visually checked with D3D12.
 - Evidence is in `target/swapchain-only-validation/`, including separate initial-failure logs, successful hook/viewer logs, and `d3d12-frame.png`. Viewer logs contain unrelated pointer-routing warnings; input/controller behavior was not part of this verification. Existing unrelated compiler warnings remain.
+
+## OpenGL and tracking removal (2026-09-08)
+
+OpenGL now captures only the presenting window framebuffer, using one GPU blit into the EXT external-memory ring. NV intermediate textures, PBO/CPU readback, target tracking, graph traversal, texture/renderbuffer observers, draw/copy/blit hooks, and `wglGetProcAddress` interception are removed. Hooking is limited to swap boundaries and context deletion.
+
+The shared presentation crate no longer contains graph observations, selectors, resource history, source ownership, or capture preparation. Logical surface identity, window selection, fixed swapchain assignment, IPC, scheduling, and retirement remain. Title-qualified OpenGL requests select matching windows; they do not refer to internal rendering targets.
+
+`--graph-tracking`, `--force-km`, their runtime fields, the old tracking environment controls, keyed-mutex image allocation, D3D11On12 import, Vulkan keyed-mutex handoffs, and their protocol profiles are deleted. D3D11/GDI ring fences are mandatory. OpenGL requires both EXT memory-object and semaphore Win32 support; unsupported contexts report an initialization error without falling back.
+
+The human-maintained ARCHITECTURE.md still describes heuristics that split internal screen surfaces out of a rendering timeline. That description is now obsolete; the file was not modified.
+
+### OpenGL removal verification
+
+Passed: presentation (4), OpenGL lifecycle (1), protocol (3), renderer (52), runtime (17), pluginhost (30), debug-viewer CLI (27), and the four remaining native consumer GPU regressions. GUI checks, all graphics-hook/debug-viewer builds, and Horizon app/node TypeScript checks passed. Existing unrelated warnings remain.
+
+Live Dolphin/Melee runs used the existing separate test profile:
+
+- OpenGL to D3D12: 640x480 EXT ring, at least 1,920 published frames, visible game output, clean exit.
+- OpenGL to Vulkan: 640x480 EXT ring with explicit window selection, at least 2,520 published frames, visible game output, clean exit.
+- D3D11 to Vulkan after keyed-mutex removal: 640x528 RGB10A2 native ring, at least 3,960 frames in one generation, clean exit.
+
+Logs and OpenGL screenshots are in `target/opengl-ext-validation/`. The `.hook.log` files contain only the current run's timestamp interval; original process-wide append logs remain under `target/debug/`. No warning/error records occurred in those three current-run graphics logs.
 
 ## Shared IPC and ownership
 
@@ -46,7 +68,7 @@ The producer defines RotationProvider, RotationCapture, and ResourceRotation int
 
 GetBuffer(0) returns a native texture. The driver exchanges its allocation with the acquired destination. Native views, bindings, and command lists remain native. All logical texture/RTV wrappers, deferred recorders, software replay, and compiled per-slot recordings have been removed.
 
-Virtual D3D11 uses shared fences for both consumers. Vulkan imports the existing D3d11D3d12Resource profile as D3D11_TEXTURE external memory. OpenGL/GDI keyed-mutex paths remain.
+Virtual D3D11 uses shared fences for both consumers. Vulkan imports the existing D3d11D3d12Resource profile as D3D11_TEXTURE external memory. All producers use shared fences; keyed-mutex production and import paths are removed.
 
 Factory creation is registered with shared DXGI dispatch. D3D11CreateDeviceAndSwapChain routes through the same virtual factory boundary. ID3D11Multithread protection serializes raw rotation and native ownership operations.
 
@@ -122,5 +144,5 @@ Reproduce with the earlier viewer command using `--hook vulkan` and Dolphin `-v 
 
 ## Broader remaining work
 
-OpenGL default-framebuffer virtualization remains unfinished. Broader Vulkan WSI profiles, production DDI coverage, concurrent deferred recording, other vendors/drivers, and additional guest lifecycle scenarios remain to be demonstrated. See VIRTUAL_SWAPCHAIN_HANDOFF.md.
+OpenGL default-framebuffer virtualization was explicitly dropped in favor of EXT presentation capture. Broader Vulkan WSI profiles, production DDI coverage, concurrent deferred recording, other vendors/drivers, and additional guest lifecycle scenarios remain to be demonstrated. See VIRTUAL_SWAPCHAIN_HANDOFF.md.
 

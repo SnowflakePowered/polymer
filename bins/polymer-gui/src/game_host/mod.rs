@@ -721,7 +721,6 @@ impl GameHost {
             tracking_enabled: !options.surfaces.is_empty(),
             skip_surfaces: 0,
             render_mode: options.render_mode,
-            force_keyed_mutex: false,
         };
         let dirty = self.dirty.clone();
         let wake_pending = self.wake_pending.clone();

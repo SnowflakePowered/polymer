@@ -1,52 +1,18 @@
 # polymer-presentation
 
-Shared presentation-source selection for OpenGL, Vulkan, D3D11, and D3D12.
-The selector identifies emulator screen textures before swapchain composition,
-including multiple screens and cropped content within padded allocations.
+Shared presentation lifecycle and image publication for Polymer graphics producers.
 
-## Data flow
+D3D11, D3D12, and Vulkan render directly into fixed-resolution shared swapchain images. OpenGL captures the native window framebuffer with one GPU blit into an EXT external-memory image ring. GDI paints into shared DXGI surfaces.
 
-1. API adapters record rendered targets and sampled/copy/blit/resolve dependencies.
-2. Deferred adapters publish observations when command lists execute.
-3. `ObservationStore::present` advances and expires evidence, returning grouped dependencies.
-4. The selector produces `SurfaceSelection`, carried intact through history to frame publication.
-5. History reconciles page flips with stable logical screen slots.
-6. The registry assigns requested slots and windows. Each backend validates its native source and performs capture and synchronization.
+The crate owns fixed-surface matching, swapchain controllers, buffer acknowledgments, pacing, retirement, frame placement, and IPC publication. Native allocation and synchronization remain in each backend. The small presentation registry retains logical surface identifiers and window selection; title-qualified requests claim matching windows before positional requests.
 
-`GraphSnapshot` contains normalized extents, resource identities, and dependencies.
-Native adapters resolve metadata on the appropriate context and retain resource
-ownership through selection. The selector makes no graphics API calls.
+There is no render-target observation, dependency graph, graph selection, resource history, capture preparation, or render-command interception. Internal emulator screen textures are not selected or split out of a window.
 
-`ObservationStore` deduplicates observations and expires old generations. Ordinary
-tracking considers immediate dependencies; graph tracking traverses intermediate
-surfaces. Exact mapping evidence takes precedence over sampled guesses. Source
-crop and destination placement remain separate, including reflection, because
-placement also supports input-coordinate mapping.
+The default feature set contains computational presentation policy. The `producer` feature adds Windows IPC publication and lifecycle integration.
 
-`ResourceHistory` uses `HistorySurface` identity and compatible layout metadata to
-keep screen slots stable across page flips and briefly retain known placement. Providers revalidate native resources
-before capture. Each history slot owns its held resource, compatible layout, and
-placement age. DXGI producers share `CapturePreparation` for history reconciliation,
-window validation, and request assignment; native capture and submission remain
-in each producer. Window matching preserves configured indices and titles.
-
-## Dependencies
-
-Default features are computational and do not depend on graphics, hooks, Windows,
-or IPC. The optional `producer` feature supplies shared IPC session and export
-publication support and a small connection retry helper. Graphics allocation and
-synchronization remain backend-owned. Vulkan window-routing compatibility stays
-in its producer.
-
-## Verification
-
-The CPU-only `CpuBackend` submits metadata through the real store, selector, history,
-registry, and frame construction. It needs no graphics runtime, windows, or IPC.
-Shared fixtures cover padded allocations, unequal dual screens, intermediate
-mappings, ambiguous sampled inputs, reflections, page flips, subresources, cycles,
-and selection limits. Backend recording tests cover submission and reset behavior.
+Verification:
 
 ```powershell
-cargo test -p polymer-presentation --no-default-features --lib
+cargo test -p polymer-presentation --lib
 cargo test -p polymer-presentation --features producer --lib
 ```

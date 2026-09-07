@@ -1,26 +1,15 @@
-//! API-independent presentation observations and capture policy.
-//!
-//! Graph adapters own native resources and may query their APIs through
-//! [`Surface`]. Selection never performs capture or synchronization.
-
+//! Shared presentation, image publication, and swapchain lifecycle.
 pub mod frame;
 pub mod geometry;
-pub mod graph;
-pub mod history;
-pub mod observation;
+
 #[cfg(all(feature = "producer", windows))]
 pub mod producer;
 pub mod registry;
 pub mod scheduling;
-pub mod selection;
+
 pub use polymer_presentation_config as configuration;
 
 pub use frame::{CapturedFrame, FramePlacement};
-pub use geometry::{Extent2D, Rect, RegionMapping};
-pub use graph::{DependencyEdge, Evidence, GraphSnapshot, ObservationStore, Target};
-pub use selection::{PresentationSelector, SelectedSurface, Selection, SurfaceSelection};
-
-#[cfg(test)]
-mod testing;
+pub use geometry::{Extent2D, Rect};
 
 pub mod swapchain;

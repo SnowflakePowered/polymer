@@ -81,7 +81,6 @@ pub struct TrackedRenderTarget {
 pub struct ViewerOptions {
     pub target: Vec<String>,
     pub track_render_targets: Option<Vec<TrackedRenderTarget>>,
-    pub graph_tracking: bool,
     pub swapchain_resolution: Option<[u32; 2]>,
     pub layout_css: Option<String>,
     pub surfaces: u32,
@@ -89,7 +88,6 @@ pub struct ViewerOptions {
     pub isolate: bool,
     pub resize: bool,
     pub api: ViewerApi,
-    pub force_keyed_mutex: bool,
     pub hooks: Vec<GraphicsHook>,
     pub webrtc: Option<Vec<u32>>,
     pub bind_webrtc: SocketAddr,
@@ -102,7 +100,7 @@ struct ViewerArguments {
     #[arg(long, value_enum, default_value_t)]
     pub(crate) api: ViewerApi,
 
-    /// Select configured swapchain surface indices (or OpenGL capture targets).
+    /// Select configured swapchain surface indices (or OpenGL presentation windows).
     /// Comma-separated entries may append `:TURNS:WINDOW_REGEX` to specify
     /// counterclockwise quarter turns and a presenting-window title pattern.
     #[arg(
@@ -116,12 +114,8 @@ struct ViewerArguments {
     )]
     pub(crate) track_render_targets: Option<Vec<TrackedRenderTarget>>,
 
-    /// OpenGL only: resolve capture targets through the presentation graph.
-    #[arg(long, action = ArgAction::SetTrue, requires = "track_render_targets")]
-    pub(crate) graph_tracking: bool,
-
     /// D3D11/D3D12/Vulkan: use a native shared swapchain with a fixed width and height.
-    #[arg(long, num_args = 2, value_names = ["WIDTH", "HEIGHT"], conflicts_with_all = ["graph_tracking", "force_keyed_mutex"], value_parser = clap::value_parser!(u32).range(1..=i32::MAX as i64))]
+    #[arg(long, num_args = 2, value_names = ["WIDTH", "HEIGHT"], value_parser = clap::value_parser!(u32).range(1..=i32::MAX as i64))]
     pub(crate) swapchain_resolution: Option<Vec<u32>>,
 
     /// CSS declarations applied to the Taffy container that holds render
@@ -183,10 +177,6 @@ struct ViewerArguments {
     #[arg(long, action = ArgAction::SetTrue, conflicts_with = "no_isolate")]
     pub(crate) resize: bool,
 
-    /// OpenGL/GDI only: force keyed-mutex synchronization.
-    #[arg(long = "force-km")]
-    pub(crate) force_keyed_mutex: bool,
-
     /// Capture hooks to install, as an ordered comma-separated list.
     #[arg(
         long = "hook",
@@ -204,9 +194,7 @@ struct ViewerArguments {
 
 impl ViewerArguments {
     fn validate_presentation(&self, hooks: &[GraphicsHook]) -> Result<(), Box<dyn Error>> {
-        let mode = if self.graph_tracking {
-            polymer_runtime::RenderMode::GraphTracking
-        } else if hooks.iter().any(|hook| {
+        let mode = if hooks.iter().any(|hook| {
             matches!(
                 hook,
                 GraphicsHook::D3d11 | GraphicsHook::D3d12 | GraphicsHook::Vulkan
@@ -224,9 +212,6 @@ impl ViewerArguments {
                 return Err(
                     "D3D11, D3D12, and Vulkan require --swapchain-resolution WIDTH HEIGHT".into(),
                 );
-            }
-            if self.force_keyed_mutex {
-                return Err("--force-km is only available for OpenGL/GDI capture".into());
             }
         } else if self.swapchain_resolution.is_some() {
             return Err("--swapchain-resolution requires D3D11, D3D12, or Vulkan hooks".into());
@@ -263,7 +248,6 @@ impl ViewerArguments {
         Ok(ViewerOptions {
             target: self.target,
             track_render_targets: self.track_render_targets,
-            graph_tracking: self.graph_tracking,
             swapchain_resolution: self.swapchain_resolution.map(|size| [size[0], size[1]]),
             layout_css: self.layout_css,
             surfaces: self.surfaces,
@@ -271,7 +255,6 @@ impl ViewerArguments {
             isolate: !self.no_isolate,
             resize: self.resize,
             api: self.api,
-            force_keyed_mutex: self.force_keyed_mutex,
             hooks,
             webrtc: self.webrtc,
             bind_webrtc: self.bind_webrtc,
@@ -408,7 +391,10 @@ mod tests {
 
     #[test]
     fn defaults_are_shared_by_renderer_hosts() {
-        let options = parse_arguments(["--".to_owned(), "game.exe".to_owned()]).unwrap();
+        let options = parse_arguments(
+            ["--swapchain-resolution", "640", "480", "--", "game.exe"].map(str::to_owned),
+        )
+        .unwrap();
         assert_eq!(options.api, ViewerApi::D3d12);
         assert_eq!(options.hooks, AUTO_HOOKS);
         assert_eq!(options.target, ["game.exe"]);
@@ -419,6 +405,8 @@ mod tests {
     fn validates_deduplicated_render_and_video_targets() {
         assert!(
             parse_arguments([
+                "--swapchain-resolution=640".to_owned(),
+                "480".to_owned(),
                 "--track-render-targets=0,0".to_owned(),
                 "--".to_owned(),
                 "game.exe".to_owned(),
@@ -427,6 +415,8 @@ mod tests {
         );
         assert!(
             parse_arguments([
+                "--swapchain-resolution=640".to_owned(),
+                "480".to_owned(),
                 "--webrtc=0,0".to_owned(),
                 "--".to_owned(),
                 "game.exe".to_owned(),

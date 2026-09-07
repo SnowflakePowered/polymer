@@ -113,10 +113,8 @@ pub unsafe fn begin_paint(hwnd: isize, width: u32, height: u32, dirty: [i32; 4])
         };
     }
     let capture = state.capture.as_mut()?;
-    let released = capture
-        .ring
-        .consumer_fence()
-        .is_some_and(|fence| unsafe { fence.GetCompletedValue() } >= capture.sync_value);
+    let released =
+        unsafe { capture.ring.consumer_fence().GetCompletedValue() } >= capture.sync_value;
     if capture.sync_value != 0 && !released {
         return None;
     }
@@ -165,10 +163,7 @@ pub unsafe fn end_paint(hwnd: isize, dc: isize) {
     }
     capture.active_dc = None;
     let value = capture.sync_value.wrapping_add(1).max(1);
-    let fence = capture
-        .ring
-        .fence()
-        .expect("GDI rings carry a producer fence");
+    let fence = capture.ring.fence();
     if let Err(error) = unsafe { capture.context.Signal(fence, value) } {
         tracing::debug!("polymer: GDI producer-fence signal failed: {error}");
         return;
@@ -315,15 +310,9 @@ fn connect_viewer(
     let mut image_handles = [0; MAX_IMAGE_SLOTS];
     image_handles[0] =
         duplicate_handle_into_process(ring.slots()[0].raw_handle() as isize, viewer)? as i64;
-    let producer = duplicate_handle_into_process(
-        ring.raw_fence_handle().expect("GDI producer fence") as isize,
-        viewer,
-    )? as i64;
-    let consumer = duplicate_handle_into_process(
-        ring.raw_consumer_fence_handle()
-            .expect("GDI consumer fence") as isize,
-        viewer,
-    )? as i64;
+    let producer = duplicate_handle_into_process(ring.raw_fence_handle() as isize, viewer)? as i64;
+    let consumer =
+        duplicate_handle_into_process(ring.raw_consumer_fence_handle() as isize, viewer)? as i64;
     let desc = ring.desc();
     socket.send(Message::StreamReady(StreamReady {
         producer_process_id: std::process::id(),

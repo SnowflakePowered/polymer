@@ -57,7 +57,6 @@ pub struct EmulatorLaunchConfig {
     pub tracking_enabled: bool,
     pub skip_surfaces: u32,
     pub render_mode: crate::RenderMode,
-    pub force_keyed_mutex: bool,
 }
 
 impl EmulatorLaunchConfig {
@@ -99,12 +98,6 @@ impl EmulatorLaunchConfig {
         for hook in &self.hooks.graphics {
             hook.validate_render_mode(self.render_mode)
                 .map_err(LaunchError::InvalidConfig)?;
-        }
-        if self.render_mode == crate::RenderMode::Swapchain && self.force_keyed_mutex {
-            return Err(LaunchError::InvalidConfig(
-                "swapchain presentation requires shared fences; force_keyed_mutex is not supported"
-                    .into(),
-            ));
         }
         let mut ids = HashSet::new();
         if self
@@ -1133,7 +1126,7 @@ impl SurfaceManager {
 
     fn unassigned_surface(&self, stream: &StreamReady) -> Option<TrackedSurfaceId> {
         if self.render_mode == crate::RenderMode::Swapchain {
-            let index = graph_surface_index(stream.surface_id.0)?;
+            let index = logical_surface_index(stream.surface_id.0)?;
             return self
                 .tracked_surfaces
                 .iter()
@@ -1149,7 +1142,7 @@ impl SurfaceManager {
                 .map(|surface| surface.id);
         }
 
-        graph_surface_index(stream.surface_id.0)
+        logical_surface_index(stream.surface_id.0)
             .and_then(|index| {
                 self.tracked_surfaces
                     .iter()
@@ -1443,7 +1436,7 @@ impl Drop for InstanceLifecycle {
     }
 }
 
-fn graph_surface_index(surface_id: u64) -> Option<u32> {
+fn logical_surface_index(surface_id: u64) -> Option<u32> {
     const TAG: u64 = 0x5347_0000_0000_0000;
     const MASK: u64 = 0xffff_0000_0000_0000;
     (surface_id & MASK == TAG)
@@ -1454,9 +1447,7 @@ fn graph_surface_index(surface_id: u64) -> Option<u32> {
 fn stream_backend(kind: ExternalImageKind) -> GraphicsHook {
     match kind {
         ExternalImageKind::GdiD3d12Resource => GraphicsHook::Gdi,
-        ExternalImageKind::D3d11SharedResourceNt | ExternalImageKind::D3d11D3d12Resource => {
-            GraphicsHook::D3d11
-        }
+        ExternalImageKind::D3d11D3d12Resource => GraphicsHook::D3d11,
         ExternalImageKind::D3d12Resource | ExternalImageKind::D3d12Heap => GraphicsHook::D3d12,
         ExternalImageKind::OpenGlD3d12Resource => GraphicsHook::OpenGl,
         ExternalImageKind::VulkanOpaqueWin32 | ExternalImageKind::VulkanD3d12Resource => {
@@ -1491,7 +1482,6 @@ mod tests {
             tracking_enabled: true,
             skip_surfaces: 0,
             render_mode: crate::RenderMode::Swapchain,
-            force_keyed_mutex: false,
         }
     }
 
@@ -1537,7 +1527,7 @@ mod tests {
     }
 
     #[test]
-    fn production_launch_rejects_capture_modes_and_keyed_mutex() {
+    fn production_launch_rejects_capture_mode() {
         for hook in [
             GraphicsHook::D3d11,
             GraphicsHook::D3d12,
@@ -1545,42 +1535,30 @@ mod tests {
         ] {
             let mut launch = config();
             launch.hooks.graphics = vec![hook];
-            for mode in [
-                crate::RenderMode::Intercept,
-                crate::RenderMode::GraphTracking,
-            ] {
-                launch.render_mode = mode;
-                assert!(matches!(
-                    launch.validate(),
-                    Err(LaunchError::InvalidConfig(_))
-                ));
-            }
-            launch.render_mode = crate::RenderMode::Swapchain;
-            launch.force_keyed_mutex = true;
-            assert!(launch.validate().is_err());
+            launch.render_mode = crate::RenderMode::Intercept;
+            assert!(matches!(
+                launch.validate(),
+                Err(LaunchError::InvalidConfig(_))
+            ));
         }
         let mut launch = config();
         launch.hooks.graphics = vec![GraphicsHook::OpenGl];
-        launch.render_mode = crate::RenderMode::GraphTracking;
+        launch.render_mode = crate::RenderMode::Intercept;
         launch.tracked_surfaces[0].resolution = None;
         assert!(launch.validate().is_ok());
     }
 
     #[test]
-    fn decodes_graph_surface_indices() {
-        assert_eq!(graph_surface_index(0x5347_0000_0000_0003), Some(3));
-        assert_eq!(graph_surface_index(3), None);
-        assert_eq!(graph_surface_index(0x5348_0000_0000_0003), None);
+    fn decodes_logical_surface_indices() {
+        assert_eq!(logical_surface_index(0x5347_0000_0000_0003), Some(3));
+        assert_eq!(logical_surface_index(3), None);
+        assert_eq!(logical_surface_index(0x5348_0000_0000_0003), None);
     }
 
     #[test]
     fn maps_every_external_image_kind_to_a_hook() {
         for (kind, expected) in [
             (ExternalImageKind::GdiD3d12Resource, GraphicsHook::Gdi),
-            (
-                ExternalImageKind::D3d11SharedResourceNt,
-                GraphicsHook::D3d11,
-            ),
             (ExternalImageKind::D3d11D3d12Resource, GraphicsHook::D3d11),
             (ExternalImageKind::D3d12Resource, GraphicsHook::D3d12),
             (ExternalImageKind::D3d12Heap, GraphicsHook::D3d12),

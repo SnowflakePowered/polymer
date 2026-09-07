@@ -75,14 +75,13 @@ impl D3d11VirtualBackend {
     }
 
     fn retire_publications(&self, work: &mut RetirementWork<Self>) -> RetirementProgress {
-        if let Some(fence) = self.ring.consumer_fence() {
-            let value = unsafe { fence.GetCompletedValue() };
-            if value == u64::MAX {
-                return RetirementProgress::Quarantined;
-            }
-            if work.publications.iter().any(|(_, needed)| value < *needed) {
-                return RetirementProgress::Pending;
-            }
+        let fence = self.ring.consumer_fence();
+        let value = unsafe { fence.GetCompletedValue() };
+        if value == u64::MAX {
+            return RetirementProgress::Quarantined;
+        }
+        if work.publications.iter().any(|(_, needed)| value < *needed) {
+            return RetirementProgress::Pending;
         }
         RetirementProgress::Safe
     }

@@ -9,9 +9,8 @@ dashmap.workspace = true
 polymer-presentation = { workspace = true, features = ["producer"] }
 parking_lot.workspace = true
 polymer-hook.workspace = true
-polymer-ipc.workspace = true
 polymer-platform-windows.workspace = true
 polymer-protocol.workspace = true
-polymer-producer-d3d11 = { path = "../polymer-producer-d3d11" }
+regex.workspace = true
 tracing.workspace = true
 windows.workspace = true

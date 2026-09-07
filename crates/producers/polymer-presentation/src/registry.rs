@@ -1,15 +1,5 @@
-//! Window/source assignment using metadata supplied by the presentation backend.
-
-mod windows;
-pub use windows::{RegistrySource, SourceAssignment, SourceIdentity};
-#[derive(Default)]
-pub struct PresentationRegistry {
-    claim_lock: std::sync::Mutex<()>,
-    assignments: dashmap::DashMap<usize, windows::Assignment>,
-    windows: dashmap::DashMap<u64, windows::WindowObservation>,
-    owners: dashmap::DashMap<SourceIdentity, (u64, u64)>,
-}
-
+//! Deterministic presentation-window selection.
+pub struct PresentationRegistry;
 impl PresentationRegistry {
     pub fn logical_surface_id(slot: usize) -> u64 {
         0x5347_0000_0000_0000 | slot as u64
@@ -49,8 +39,8 @@ impl PresentationRegistry {
         matches: &mut impl FnMut(usize, W) -> Option<bool>,
     ) -> (Vec<Option<I>>, Vec<I>) {
         let mut resolved = vec![None; requested.len()];
-        let mut used = Vec::new();
-        for (slot, &index) in requested.iter().enumerate() {
+        let mut used: Vec<I> = Vec::new();
+        for (slot, _) in requested.iter().enumerate() {
             if matches(slot, W::default()).is_none() {
                 continue;
             }
@@ -59,20 +49,30 @@ impl PresentationRegistry {
                 .filter(|(_, window)| matches(slot, *window) == Some(true))
                 .map(|(id, _)| *id)
                 .collect::<Vec<_>>();
-            let candidate = matching
-                .get(index)
-                .copied()
-                .filter(|id| !used.contains(id))
-                .or_else(|| {
-                    matching
-                        .get(index)
-                        .and_then(|_| matching.iter().find(|id| !used.contains(id)).copied())
-                });
+            let candidate = matching.iter().find(|id| !used.contains(*id)).copied();
             if let Some(candidate) = candidate {
                 resolved[slot] = Some(candidate);
                 used.push(candidate);
             }
         }
         (resolved, used)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn title_requests_claim_windows_before_positional_requests() {
+        let selection = [(10, "GamePad"), (20, "TV")];
+        let result = PresentationRegistry::resolve(&[0, 1], &selection, |slot, title| {
+            (slot == 1).then_some(title == "GamePad")
+        });
+        assert_eq!(result, [(0, 20), (1, 10)]);
+        let missing = PresentationRegistry::resolve(&[0, 1], &selection, |slot, title| {
+            (slot == 1).then_some(title == "Missing")
+        });
+        assert_eq!(missing, [(0, 10)]);
     }
 }

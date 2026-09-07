@@ -1,36 +1,13 @@
-# NV interop texture investigation
+# OpenGL presentation capture
 
-Investigated on 2026-09-07 using an NVIDIA GeForce RTX 5070 Ti, driver
-32.0.16.1062. The existing NV path blits into a private WGL-registered D3D11
-texture, unlocks it, and copies it into the exported NT-handle keyed-mutex slot.
+OpenGL uses `renderMode: "intercept"`. Immediately before native `SwapBuffers` (or the main plane of `wglSwapLayerBuffers`), Polymer blits the current window framebuffer into one of three shared D3D12 resources imported as GL textures.
 
-A separate hidden-window probe created RGBA8, single-sample D3D11 textures
-with render-target and shader-resource bindings. It registered each texture
-using `wglDXRegisterObjectNV`, then attempted 16 alternating red/green frames.
-For shared textures, a second D3D11 device opened the handle and checked the
-pixels through a staging readback. This was a two-device, same-process probe;
-it did not validate cross-process behavior or other GPU drivers.
+Required extensions: `GL_EXT_memory_object`, `GL_EXT_memory_object_win32`, `GL_EXT_semaphore`, and `GL_EXT_semaphore_win32`. Support and framebuffer completeness are checked before publishing a stream. Missing support reports an initialization error; there is no NV interop intermediate or CPU/PBO readback fallback.
 
-| Texture flags | Result |
-| --- | --- |
-| No sharing flags (existing private intermediate) | Registration, lock, rendering and unlock succeeded for 16 frames |
-| `SHARED_NTHANDLE \| SHARED_KEYEDMUTEX` | Registration failed; `GetLastError = 0xC007006E` |
-| `SHARED_NTHANDLE \| SHARED` | Registration failed with the same error |
-| `SHARED` (legacy handle) | Registration succeeded; second-device readback verified all 16 frames |
+The backbuffer is selected explicitly (front buffer for single-buffered contexts). Capture restores the read/draw framebuffer bindings, the default framebuffer's read selector, scissor enable, and framebuffer sRGB enable. Image creation restores texture binding. Pixel rows remain bottom-up and the consumer applies the existing orientation metadata.
 
-The registration failures occur before WGL locking, so changing keyed-mutex
-acquisition order cannot resolve the observed failure. Removing the keyed
-mutex alone also did not help. Keep the private intermediate for the current
-NT-handle transport. The legacy result motivates a separate transport
-experiment, not switching the flags on the current exported images: handle
-import and cross-process synchronization would also need to change.
+Ready and consumer-release fences are imported as GL semaphores. The producer checks slot availability, reacquires external image access with a semaphore wait, performs one blit, and signals readiness. If all slots are busy, it skips capture for that swap. The native application swap still runs.
 
-The EXT external-memory path already avoids this intermediate and remains
-the preferred path when its extensions are available.
+Selection operates on presenting windows, using configured indices and optional title patterns. It never observes draw calls, textures, renderbuffers, copies, or internal FBOs. Only swap and context-deletion entry points are hooked. Context-affine resources are retired on their owning context; window resize creates a new capture generation.
 
-References:
-
-- [WGL_NV_DX_interop](https://registry.khronos.org/OpenGL/extensions/NV/WGL_NV_DX_interop.txt): registration and lock/unlock contract.
-- [WGL_NV_DX_interop2](https://registry.khronos.org/OpenGL/extensions/NV/WGL_NV_DX_interop2.txt): D3D11 resource support and restrictions. Its support for D3D11 textures is not evidence that every later sharing-flag combination works on every driver.
-
-The local probe source and logs are in `.smoke-artifacts/ipc-texture-sharing/`.
+The previous NV/NT-handle registration investigation and keyed-mutex transports are retired. Native D3D11 and GDI also use shared fences exclusively.

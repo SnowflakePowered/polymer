@@ -38,13 +38,6 @@ impl CapturedFrame {
 }
 
 impl FramePlacement {
-    pub fn from_selection(selection: Option<&crate::SurfaceSelection>, extent: Extent2D) -> Self {
-        selection.map_or_else(
-            || Self::new(extent, Some(extent.rect()), (false, false)),
-            crate::SurfaceSelection::frame_placement,
-        )
-    }
-
     pub fn new(extent: Extent2D, bounds: Option<Rect>, orientation: (bool, bool)) -> Self {
         Self {
             extent,
@@ -83,12 +76,48 @@ impl FramePlacement {
     }
 }
 
-impl crate::SurfaceSelection {
-    pub fn frame_placement(&self) -> FramePlacement {
-        FramePlacement::new(
-            self.target_extent,
-            self.presentation_rect,
-            (self.flip_x, self.flip_y),
-        )
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn signed_reflected_placement_survives_legacy_unsigned_frame_fields() {
+        use polymer_protocol::{PresentationPoint, PresentationTransform};
+        let extent = Extent2D {
+            width: 640,
+            height: 480,
+        };
+        let bounds = Rect {
+            x: -12,
+            y: -8,
+            extent: Extent2D {
+                width: 320,
+                height: 240,
+            },
+        };
+        for (flip_x, flip_y, corners) in [
+            (false, false, [(-12, -8), (308, -8), (-12, 232)]),
+            (true, false, [(308, -8), (-12, -8), (308, 232)]),
+            (false, true, [(-12, 232), (308, 232), (-12, -8)]),
+        ] {
+            let frame = CapturedFrame {
+                stream_id: StreamId(1),
+                slot: 0,
+                extent: bounds.extent,
+                sync_value: 1,
+                timestamp_qpc: 2,
+            }
+            .present(FramePlacement::new(extent, Some(bounds), (flip_x, flip_y)));
+            assert_eq!((frame.capture_x, frame.capture_y), (0, 0));
+            let expected = corners.map(|(x, y)| PresentationPoint::from_pixels(x, y));
+            let actual = frame.presentation_transform;
+            assert_eq!(
+                [actual.upper_left, actual.upper_right, actual.lower_left],
+                expected
+            );
+        }
+        assert_eq!(
+            FramePlacement::new(extent, None, (false, false)).transform,
+            PresentationTransform::UNAVAILABLE
+        );
     }
 }

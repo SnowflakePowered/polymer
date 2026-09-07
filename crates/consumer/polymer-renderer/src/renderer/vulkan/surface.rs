@@ -3,7 +3,7 @@ use polymer_consumer_vulkan::ImportedImageRing;
 use polymer_protocol::FrameReady;
 
 use super::compositor::color_range;
-use crate::renderer::frame_ownership::{Discarded, FrameOwnership, SurfaceFrames};
+use crate::renderer::frame_ownership::{FrameOwnership, SurfaceFrames};
 
 pub(super) struct ImportedVulkanSurface {
     pub connection: u64,
@@ -15,7 +15,6 @@ pub(super) struct ImportedVulkanSurface {
     pub flip_y: bool,
     pub quarter_turns: u8,
     pub frames: SurfaceFrames,
-    pub discarded: Vec<FrameOwnership<Discarded>>,
     pub cache: Option<SurfaceCache>,
 }
 
@@ -24,12 +23,7 @@ impl ImportedVulkanSurface {
         if self.imported.image(frame.slot).is_none() {
             return;
         }
-        if let Some(previous) = self.frames.offer(frame)
-            && previous.ready().slot != frame.slot
-            && self.imported.uses_keyed_mutex()
-        {
-            self.discarded.push(previous);
-        }
+        self.frames.offer(frame);
     }
 
     pub fn image(&self) -> Option<vk::Image> {
@@ -169,50 +163,8 @@ impl ImportedVulkanSurface {
         }
     }
 
-    pub fn keyed_handoffs(
-        &self,
-        acquire: &mut Vec<vk::DeviceMemory>,
-        release: &mut Vec<vk::DeviceMemory>,
-        teardown: bool,
-    ) {
-        if !self.imported.uses_keyed_mutex() {
-            return;
-        }
-        let prepared = if teardown {
-            self.frames
-                .pending()
-                .or_else(|| self.frames.prepared().map(FrameOwnership::ready))
-        } else {
-            self.frames.prepared().map(FrameOwnership::ready)
-        };
-        if prepared.is_none() && !teardown {
-            return;
-        }
-        for frame in self
-            .discarded
-            .iter()
-            .map(FrameOwnership::ready)
-            .chain(prepared)
-        {
-            let memory = self.imported.memory(frame.slot).expect("queued slot");
-            acquire.push(memory);
-            if teardown
-                || self.cache.is_some()
-                || Some(frame.sync_value) != prepared.map(|f| f.sync_value)
-            {
-                release.push(memory);
-            }
-        }
-        if self.cache.is_none()
-            && let Some(frame) = self.frames.displayed()
-        {
-            release.push(self.imported.memory(frame.slot).expect("displayed slot"));
-        }
-    }
-
     pub fn commit(&mut self) {
         if self.frames.prepared().is_some() {
-            self.discarded.clear();
             if let Some(cache) = &mut self.cache {
                 cache.initialized = true;
             }
@@ -221,7 +173,7 @@ impl ImportedVulkanSurface {
     }
 
     /// The caller has idled the device and supplies an unused command buffer.
-    /// Return queue-family ownership and mutex leases before releasing the ring.
+    /// Return queue-family ownership before releasing the ring.
     pub fn retire(
         &self,
         device: &ash::Device,
@@ -238,23 +190,8 @@ impl ImportedVulkanSurface {
             )?;
             self.release_displayed(device, command, family);
             device.end_command_buffer(command)?;
-            let mut acquire = Vec::new();
-            let mut release = Vec::new();
-            self.keyed_handoffs(&mut acquire, &mut release, true);
-            let acquire_keys = vec![1; acquire.len()];
-            let release_keys = vec![0; release.len()];
-            let timeouts = vec![100; acquire.len()];
-            let mut mutexes = vk::Win32KeyedMutexAcquireReleaseInfoKHR::default()
-                .acquire_syncs(&acquire)
-                .acquire_keys(&acquire_keys)
-                .acquire_timeouts(&timeouts)
-                .release_syncs(&release)
-                .release_keys(&release_keys);
             let commands = [command];
-            let mut submit = vk::SubmitInfo::default().command_buffers(&commands);
-            if !acquire.is_empty() || !release.is_empty() {
-                submit = submit.push_next(&mut mutexes);
-            }
+            let submit = vk::SubmitInfo::default().command_buffers(&commands);
             device.queue_submit(queue, &[submit], vk::Fence::null())?;
             device.queue_wait_idle(queue)?;
         }

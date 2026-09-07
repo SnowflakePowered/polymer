@@ -3,7 +3,7 @@ pub mod creation;
 pub mod frontend;
 mod ownership;
 pub mod rotation;
-use crate::{D3d11ImageRing, D3d11RingMode};
+use crate::D3d11ImageRing;
 use polymer_presentation::{producer::ExportDescriptor, swapchain::*};
 use polymer_protocol::{AdapterLuid, ConsumerApi, ExternalImageKind, ExternalSyncKind, SurfaceId};
 use windows::{
@@ -161,14 +161,7 @@ impl SwapchainBackend for D3d11VirtualBackend {
             ..Default::default()
         };
         let capture = rotation::RotationHooks::begin()?;
-        let ring = unsafe {
-            D3d11ImageRing::new(
-                &info.device,
-                &description,
-                profile.image_count,
-                D3d11RingMode::Fence,
-            )
-        }?;
+        let ring = unsafe { D3d11ImageRing::new(&info.device, &description, profile.image_count) }?;
         let rotation = capture.finish(
             &ring
                 .slots()
@@ -220,11 +213,8 @@ impl SwapchainBackend for D3d11VirtualBackend {
             image_kind: self.profile.image_kind,
             sync_kind: self.profile.sync_kind,
             image_handles: &self.handles,
-            timeline_semaphore_handle: self.ring.raw_fence_handle().expect("fence profile") as i64,
-            consumer_semaphore_handle: self
-                .ring
-                .raw_consumer_fence_handle()
-                .map_or(0, |handle| handle as i64),
+            timeline_semaphore_handle: self.ring.raw_fence_handle() as i64,
+            consumer_semaphore_handle: self.ring.raw_consumer_fence_handle() as i64,
             bottom_up: false,
         }
     }
@@ -242,7 +232,7 @@ impl SwapchainBackend for D3d11VirtualBackend {
             slot,
             generation: prerequisite.generation,
         };
-        let fence = self.ring.consumer_fence().expect("shared release fence");
+        let fence = self.ring.consumer_fence();
         let completed = unsafe { fence.GetCompletedValue() };
         if completed == u64::MAX {
             return AcquirePoll::Failed(Error::from_hresult(DXGI_ERROR_DEVICE_REMOVED));
@@ -285,7 +275,7 @@ impl SwapchainBackend for D3d11VirtualBackend {
                 error: Error::new(E_INVALIDARG, "stale D3D11 write token"),
             };
         }
-        let fence = self.ring.fence().expect("fence profile").clone();
+        let fence = self.ring.fence().clone();
         match self.release(token, &fence, signal.value()) {
             Ok(submission) => SubmitOutcome::Submitted(submission),
             Err((work, error)) => SubmitOutcome::Indeterminate { work, error },

@@ -162,40 +162,6 @@ fn hook_environment(runtime: &EmulatorLaunchConfig) -> Vec<(OsString, OsString)>
         ),
         (OsString::from("SDL_XINPUT_ENABLED"), OsString::from("0")),
     ];
-    if runtime.tracking_enabled && runtime.render_mode != crate::RenderMode::Swapchain {
-        environment.push((
-            OsString::from(config::TRACK_RENDER_TARGET),
-            OsString::from("1"),
-        ));
-        environment.push((
-            OsString::from(config::TRACK_RENDER_TARGETS),
-            OsString::from(
-                runtime
-                    .tracked_surfaces
-                    .iter()
-                    .map(|surface| surface.render_target_index.to_string())
-                    .collect::<Vec<_>>()
-                    .join(","),
-            ),
-        ));
-        if runtime
-            .tracked_surfaces
-            .iter()
-            .any(|surface| surface.window_pattern.is_some())
-        {
-            let patterns = runtime
-                .tracked_surfaces
-                .iter()
-                .map(|surface| surface.window_pattern.as_deref())
-                .collect::<Vec<_>>();
-            environment.push((
-                OsString::from(config::TRACK_RENDER_TARGET_SURFACE_PATTERNS),
-                OsString::from(
-                    serde_json::to_string(&patterns).expect("surface patterns always serialize"),
-                ),
-            ));
-        }
-    }
     environment.push((
         OsString::from(config::RENDER_CONFIGURATION),
         OsString::from(
@@ -203,12 +169,6 @@ fn hook_environment(runtime: &EmulatorLaunchConfig) -> Vec<(OsString, OsString)>
                 .expect("render configuration serializes"),
         ),
     ));
-    if runtime.force_keyed_mutex {
-        environment.push((
-            OsString::from(config::FORCE_KEYED_MUTEX),
-            OsString::from("1"),
-        ));
-    }
     environment
 }
 

@@ -30,9 +30,8 @@ impl ImportedSurface {
         quarter_turns: u8,
     ) -> windows::core::Result<Self> {
         // Single-slot producers must get their only image back after each
-        // capture. Keyed mutexes keep the existing synchronous copy path.
-        let needs_cache = imported.uses_keyed_mutex()
-            || imported.resources().len() == 1
+        // capture.
+        let needs_cache = imported.resources().len() == 1
             || imported.resources().iter().any(|resource| unsafe {
                 resource
                     .GetDesc()

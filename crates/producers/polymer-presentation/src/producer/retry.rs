@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-/// Connection rejection waits for a source change; transient failures retry later.
+/// Connection rejection parks the current capture generation; transient failures retry later.
 #[derive(Default)]
 pub enum ConnectionRetry {
     #[default]
@@ -18,11 +18,6 @@ impl ConnectionRetry {
                 *self = Self::After(now + Duration::from_secs(1));
                 true
             }
-        }
-    }
-    pub fn source_changed(&mut self) {
-        if matches!(self, Self::Parked) {
-            *self = Self::Ready;
         }
     }
 }

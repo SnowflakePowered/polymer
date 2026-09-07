@@ -37,7 +37,6 @@ use super::surface::{ImportedSurface, SURFACE_DESCRIPTORS};
 const FRAME_COUNT: usize = 2;
 const DESCRIPTOR_COUNT: u32 = 1024;
 
-const KEYED_MUTEX_TIMEOUT_MS: u32 = 100;
 /// Liveness bound on waiting for DXGI presentation capacity. Long enough that
 /// it never truncates a legitimate wait for the next refresh, short enough that
 /// a swapchain which stops signalling cannot stall an event loop.
@@ -286,9 +285,6 @@ pub struct D3d12Compositor {
     frame_garbage: [Vec<ID3D12Resource>; FRAME_COUNT],
     frame_uploads: [UploadArena; FRAME_COUNT],
     surfaces: Vec<ImportedSurface>,
-    // Standalone copy submission used to bound keyed-mutex holds; the main
-    // command list executes too late to release the mutex promptly.
-    mutex_copy: Option<(ID3D12CommandAllocator, ID3D12GraphicsCommandList)>,
     display_latency: DisplayLatency,
     /// QPC ticks per second, for turning vblank stamps into milliseconds.
     counter_frequency: f64,
@@ -689,7 +685,6 @@ impl D3d12Compositor {
                 frame_garbage: std::array::from_fn(|_| Vec::new()),
                 frame_uploads: std::array::from_fn(|_| UploadArena::new()),
                 surfaces: Vec::new(),
-                mutex_copy: None,
                 display_latency: DisplayLatency::default(),
                 counter_frequency: counter_frequency(),
             })
@@ -821,22 +816,6 @@ impl D3d12Compositor {
             return Err("D3D12 surface descriptor heap is full".into());
         }
         let imported = self.receiver.import_stream(stream)?;
-        if imported.uses_keyed_mutex() && self.mutex_copy.is_none() {
-            unsafe {
-                let allocator: ID3D12CommandAllocator = self
-                    .receiver
-                    .device()
-                    .CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
-                let list: ID3D12GraphicsCommandList = self.receiver.device().CreateCommandList(
-                    0,
-                    D3D12_COMMAND_LIST_TYPE_DIRECT,
-                    &allocator,
-                    None,
-                )?;
-                list.Close()?;
-                self.mutex_copy = Some((allocator, list));
-            }
-        }
         self.surfaces.push(ImportedSurface::new(
             self.receiver.device(),
             imported,
@@ -871,11 +850,7 @@ impl D3d12Compositor {
         if surface.imported.resource(frame.slot).is_none() {
             return;
         }
-        if let Some(previous) = surface.frames.offer(frame)
-            && previous.ready().slot != frame.slot
-        {
-            surface.imported.recycle_slot(previous.ready().slot);
-        }
+        surface.frames.offer(frame);
     }
 
     pub fn received_surfaces(&self) -> Vec<ReceivedSurface> {
@@ -1037,27 +1012,7 @@ impl D3d12Compositor {
                         .resource(frame.slot)
                         .expect("validated slot")
                         .clone();
-                    if surface.imported.uses_keyed_mutex() {
-                        if surface
-                            .imported
-                            .acquire_slot(frame.slot, KEYED_MUTEX_TIMEOUT_MS)
-                            .is_ok()
-                        {
-                            let copied = self.copy_to_cache_sync(
-                                &source,
-                                surface.cache.as_ref().expect("keyed cache"),
-                            );
-                            let released = surface.imported.release_slot(frame.slot);
-                            copied?;
-                            released?;
-                            surface.frames.prepare_pending(Retention::Cached);
-                            surface.frames.acknowledge_release(frame.sync_value)?;
-                            // The synchronous copy really was submitted even
-                            // if recording the main frame subsequently fails.
-                            surface.frames.commit();
-                            captured = Some(frame);
-                        }
-                    } else if surface.imported.producer_ready(frame.sync_value) {
+                    if surface.imported.producer_ready(frame.sync_value) {
                         if let Some(cache) = &surface.cache {
                             ImportedSurface::copy(&self.command_list, &source, cache);
                         }
@@ -1494,31 +1449,6 @@ impl D3d12Compositor {
             self.command_list
                 .DrawIndexedInstanced(indices.len() as u32, 1, 0, 0, 0);
         }
-        Ok(())
-    }
-
-    /// Copies `source` into `cache` and blocks until the GPU finishes. Used
-    /// for keyed-mutex streams, where the mutex must not be released before
-    /// every read of the slot has completed.
-    fn copy_to_cache_sync(
-        &mut self,
-        source: &ID3D12Resource,
-        cache: &ID3D12Resource,
-    ) -> Result<(), Box<dyn Error>> {
-        let (allocator, list) = self
-            .mutex_copy
-            .as_ref()
-            .ok_or("keyed-mutex stream has no copy command list")?
-            .clone();
-        unsafe {
-            allocator.Reset()?;
-            list.Reset(&allocator, None)?;
-            ImportedSurface::copy(&list, source, cache);
-            list.Close()?;
-            let command: ID3D12CommandList = list.cast()?;
-            self.receiver.queue().ExecuteCommandLists(&[Some(command)]);
-        }
-        self.wait_idle()?;
         Ok(())
     }
 

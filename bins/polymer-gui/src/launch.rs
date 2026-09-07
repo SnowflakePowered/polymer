@@ -15,10 +15,8 @@ pub struct AttachedLaunchPlan {
     #[serde(default)]
     pub isolated: bool,
     pub hooks: Hooks,
-    /// Enables presentation dependency-graph traversal for every tracked
-    /// surface in this process. The hook exposes this as a process-wide mode.
+    /// Selects native swapchain presentation or OpenGL/GDI capture.
     #[serde(default)]
-    #[serde(alias = "graphTracking")]
     pub render_mode: polymer_runtime::RenderMode,
     #[serde(default)]
     pub surfaces: Vec<AttachedTrackedSurface>,
@@ -119,22 +117,20 @@ mod tests {
                     "graphics": ["d3d12"],
                     "input": ["sdl3"]
                 },
-                "renderMode": "graphTracking",
+                "renderMode": "swapchain",
                 "surfaces": [{
                     "index": 0,
                     "rotation": 0,
                     "selector": "Game",
-                    "attach": 4
+                    "attach": 4,
+                    "resolution": [640, 480]
                 }],
                 "controllerTopology": { "mappings": [] },
                 "machine": "MICROSOFT_XBOX"
             }"#,
         )
         .unwrap();
-        assert_eq!(
-            launch.render_mode,
-            polymer_runtime::RenderMode::GraphTracking
-        );
+        assert_eq!(launch.render_mode, polymer_runtime::RenderMode::Swapchain);
         launch.validate().unwrap();
     }
 }

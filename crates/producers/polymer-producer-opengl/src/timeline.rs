@@ -58,6 +58,24 @@ impl Timeline {
             (functions.signal_semaphore)(self.semaphore, 0, std::ptr::null(), 1, &texture, &layout);
         }
     }
+
+    /// Reacquire external image access after the consumer releases this slot.
+    pub(crate) unsafe fn wait(&self, texture: Gluint, value: u64) {
+        if value == 0 {
+            return;
+        }
+        unsafe {
+            (self.functions.semaphore_parameter)(self.semaphore, GL_D3D12_FENCE_VALUE_EXT, &value);
+            (self.functions.wait_semaphore)(
+                self.semaphore,
+                0,
+                std::ptr::null(),
+                1,
+                &texture,
+                &GL_LAYOUT_GENERAL_EXT,
+            );
+        }
+    }
 }
 
 impl Drop for Timeline {

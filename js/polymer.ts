@@ -166,12 +166,11 @@ export type EmulatorSurface = {
 };
 export type EmulatorRenderSelection = RenderSelection<EmulatorSurface>;
 
-export type RenderMode = "intercept" | "graphTracking" | "swapchain";
+export type RenderMode = "intercept" | "swapchain";
 export type Resolution = readonly [number, number];
 export type RenderSelection<S> =
   | { renderMode?: "swapchain"; hooks: { graphics: SwapchainGraphicsHook[] }; surfaces: (S & { resolution: Resolution })[] }
-  | { renderMode: "intercept"; hooks: { graphics: ("opengl" | "gdi")[] }; surfaces: S[] }
-  | { renderMode: "graphTracking"; hooks: { graphics: "opengl"[] }; surfaces: S[] };
+  | { renderMode: "intercept"; hooks: { graphics: ("opengl" | "gdi")[] }; surfaces: S[] };
 
 export type LaunchOptions = LaunchFields & RenderSelection<TrackedSurface>;
 

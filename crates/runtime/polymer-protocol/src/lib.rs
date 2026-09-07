@@ -108,7 +108,6 @@ pub struct AdapterLuid {
 #[repr(u32)]
 pub enum ExternalImageKind {
     VulkanOpaqueWin32 = 1,
-    D3d11SharedResourceNt = 2,
     D3d12Resource = 3,
     D3d12Heap = 4,
     /// D3D12 shared resource owned and written through OpenGL EXT external objects.
@@ -131,7 +130,6 @@ impl TryFrom<u32> for ExternalImageKind {
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         match value {
             1 => Ok(Self::VulkanOpaqueWin32),
-            2 => Ok(Self::D3d11SharedResourceNt),
             3 => Ok(Self::D3d12Resource),
             4 => Ok(Self::D3d12Heap),
             5 => Ok(Self::OpenGlD3d12Resource),
@@ -148,8 +146,6 @@ impl TryFrom<u32> for ExternalImageKind {
 pub enum ExternalSyncKind {
     VulkanBinarySemaphore = 1,
     VulkanTimelineSemaphore = 2,
-    D3d11Fence = 3,
-    D3d11KeyedMutex = 4,
     D3d12Fence = 5,
 }
 
@@ -160,8 +156,6 @@ impl TryFrom<u32> for ExternalSyncKind {
         match value {
             1 => Ok(Self::VulkanBinarySemaphore),
             2 => Ok(Self::VulkanTimelineSemaphore),
-            3 => Ok(Self::D3d11Fence),
-            4 => Ok(Self::D3d11KeyedMutex),
             5 => Ok(Self::D3d12Fence),
             _ => Err(()),
         }

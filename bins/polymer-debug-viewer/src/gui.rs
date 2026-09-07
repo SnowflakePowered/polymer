@@ -23,7 +23,6 @@ pub(crate) struct LauncherState {
     pub(crate) isolate: bool,
     pub(crate) hooks: Vec<GraphicsHook>,
     pub(crate) render_targets: Vec<TrackedRenderTarget>,
-    pub(crate) graph_tracking: bool,
     pub(crate) swapchain_resolution: Option<[u32; 2]>,
     pub(crate) gamepads: Vec<LauncherGamepad>,
 }
@@ -88,7 +87,6 @@ impl LauncherState {
             isolate: options.isolate,
             hooks: options.hooks.clone(),
             render_targets: options.track_render_targets.clone().unwrap_or_default(),
-            graph_tracking: options.graph_tracking,
             swapchain_resolution: options.swapchain_resolution.or(Some([640, 480])),
             gamepads: vec![LauncherGamepad {
                 slot: 0,
@@ -107,8 +105,6 @@ impl LauncherState {
             )
         }) {
             polymer_runtime::RenderMode::Swapchain
-        } else if self.graph_tracking {
-            polymer_runtime::RenderMode::GraphTracking
         } else {
             polymer_runtime::RenderMode::Intercept
         }
@@ -334,7 +330,6 @@ pub(crate) fn draw_launcher_window(
                                             | GraphicsHook::Vulkan
                                     )
                             });
-                            launcher.graph_tracking = false;
                             launcher.hooks.push(hook);
                         } else {
                             launcher.hooks.retain(|value| *value != hook);
@@ -405,13 +400,6 @@ pub(crate) fn draw_launcher_window(
                         egui::DragValue::new(&mut size[1])
                             .range(1..=i32::MAX as u32)
                             .prefix("Height "),
-                    );
-                });
-            } else if launcher.hooks == [GraphicsHook::OpenGl] {
-                ui.add_enabled_ui(!launcher.render_targets.is_empty(), |ui| {
-                    ui.checkbox(
-                        &mut launcher.graph_tracking,
-                        "Resolve OpenGL targets through the presentation graph",
                     );
                 });
             }

@@ -2,7 +2,6 @@
 //! --lib gpu_tests -- --ignored --test-threads=1` on a Windows GPU host.
 
 mod d3d12;
-mod keyed;
 mod vulkan;
 
 use super::RenderWindow;

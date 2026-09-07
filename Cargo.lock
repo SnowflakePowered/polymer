@@ -9622,7 +9622,6 @@ version = "0.1.0"
 dependencies = [
  "polymer-hook",
  "polymer-platform-windows",
- "polymer-presentation",
  "polymer-producer-opengl",
  "windows-sys 0.61.2",
 ]
@@ -9846,7 +9845,6 @@ dependencies = [
 name = "polymer-presentation"
 version = "0.1.0"
 dependencies = [
- "dashmap",
  "polymer-ipc",
  "polymer-platform-windows",
  "polymer-presentation-config",
@@ -9912,11 +9910,10 @@ dependencies = [
  "dashmap",
  "parking_lot",
  "polymer-hook",
- "polymer-ipc",
  "polymer-platform-windows",
  "polymer-presentation",
- "polymer-producer-d3d11",
  "polymer-protocol",
+ "regex",
  "tracing",
  "windows 0.61.3",
 ]

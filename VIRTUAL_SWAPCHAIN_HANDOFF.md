@@ -2,11 +2,11 @@
 
 The active design adds explicit buffer-availability acknowledgments. It supersedes the earlier prohibition against IPC and consumer changes. Do not reintroduce software command replay, logical D3D11 texture/view wrappers, or native recordings duplicated per ring slot.
 
-The complete project still includes D3D11, D3D12, Vulkan WSI, and OpenGL default-framebuffer virtualization. The native Vulkan WSI profile is now implemented and validated with both consumers; OpenGL and optional Vulkan presentation features remain. See VIRTUAL_SWAPCHAIN_IMPLEMENTATION.md for current status.
+D3D11, D3D12, and Vulkan use native shared swapchains. OpenGL uses presentation-time capture through EXT external memory with one GPU blit; do not implement default-framebuffer virtualization. Optional Vulkan presentation features remain. See VIRTUAL_SWAPCHAIN_IMPLEMENTATION.md for current status.
 
 ## 1. Configuration and architectural ownership
 
-- D3D11, D3D12, and Vulkan support only renderMode: "swapchain" (the default). Their interception capture and graph tracking are removed; do not restore compatibility paths. Only OpenGL retains explicit "intercept"/"graphTracking", and GDI retains explicit "intercept".
+- D3D11, D3D12, and Vulkan support only renderMode: "swapchain" (the default). Their interception capture and graph tracking are removed; do not restore compatibility paths. OpenGL and GDI use explicit "intercept". Graph tracking, NV/CPU capture fallbacks, and keyed-mutex transports are deleted.
 - Every swapchain surface requires an immutable positive resolution: [width, height]. Preserve configured index, public pattern, rotation, and display order.
 - Match actual HWND lifetimes and titles. Image indices and swapchain creation order are not configured surface identities.
 - One active graphics producer owns the assignments for a launch. Support destruction/recreation at the same configured extent, device loss, disconnect, and retirement.
@@ -25,7 +25,7 @@ Protocol version 18 adds RequestBufferAvailability before StreamReady for virtua
 
 The acknowledgment is cumulative through the specified publication value. The connection identifies the immutable resource generation. Ordinary capture streams do not subscribe and do not accumulate unread responses.
 
-Send the acknowledgment only after submitting the native consumer release signal, or completing an existing synchronous keyed-mutex release. The message authorizes reuse; it does not prove GPU completion. The producer additionally checks the shared release fence and establishes the API acquire dependency.
+Send the acknowledgment only after submitting the native consumer release signal. The message authorizes reuse; it does not prove GPU completion. The producer additionally checks the shared release fence and establishes the API acquire dependency.
 
 - A retained image releases only older publications, through current.sync_value - 1.
 - A cached image releases through current.sync_value after its copy/read is ordered.
@@ -50,7 +50,7 @@ Initial creation acquires buffer zero. Before successful Present returns, acquir
 
 DO_NOT_WAIT must reserve the next buffer before publication so a retryable busy result cannot publish twice. A failure after publication terminates the generation rather than inviting a duplicate Present retry.
 
-Remove virtual-only command resource census, shader/descriptor access scanning, ExecuteCommandLists routing, resource-owner tombstones, cross-queue bridges, private-submission exemptions, reconstructed resource states, and per-image release command lists/allocators. Remove their obsolete tests and switches. Preserve graph-tracking machinery for the original capture modes.
+Remove virtual-only command resource census, shader/descriptor access scanning, ExecuteCommandLists routing, resource-owner tombstones, cross-queue bridges, private-submission exemptions, reconstructed resource states, and per-image release command lists/allocators. Remove their obsolete tests and switches. Graph-tracking machinery has been removed for every backend.
 
 Polymer does not repair application queue-ordering or resource-state errors in swapchain mode.
 
@@ -71,7 +71,7 @@ The producer maps native texture identities to exported physical allocations. Af
 
 The DDI contract requires the driver to update native views and bound state during rotation: [DXGI_DDI_BASE_FUNCTIONS](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/dxgiddi/ns-dxgiddi-dxgi_ddi_base_functions).
 
-Use shared fences with both consumers. Virtual D3D11 no longer needs keyed-mutex alternatives; ordinary capture and OpenGL NV interop still do. Serialize raw rotation through ID3D11Multithread protection. Retain native textures for the rotation object's lifetime. Reject missing capture instead of guessing COM offsets or falling back to replay.
+Use shared fences with both consumers. Keyed-mutex alternatives and OpenGL NV interop have been removed. Serialize raw rotation through ID3D11Multithread protection. Retain native textures for the rotation object's lifetime. Reject missing capture instead of guessing COM offsets or falling back to replay.
 
 Cover factory creation and D3D11CreateDeviceAndSwapChain. Route the combined export through the same virtual factory boundary before exposing buffers.
 
@@ -153,64 +153,15 @@ Do not free an old image because a new `StreamReady` was accepted. Wait for app 
 
 The prototype demonstrated feasibility for a narrow path. Full completion requires the hook and extension inventory above, realistic queue use, and validation of render-pass layouts; merely moving its fake handle map into presentation is insufficient.
 
-## 7. OpenGL: virtual default framebuffer and interop backends
+## 7. OpenGL: presentation-time EXT capture
 
-### Entry points, contexts, and default framebuffer semantics
+Use the existing native WGL context and window framebuffer. Intercept only presentation and context deletion. At `SwapBuffers`, blit the window framebuffer once into an available shared image and publish it through the existing EXT external-memory/semaphore transport. Do not virtualize framebuffer zero or maintain an application GL state machine.
 
-Intercept `SwapBuffers`, `wglSwapLayerBuffers`, context creation/deletion, `wglMakeCurrent`, and the supported `wglMakeContextCurrentARB/EXT` variants. Hook functions returned through `wglGetProcAddress` as well as exported entry points and relevant aliases. Preserve the function availability behavior for the current context.
+Require `GL_EXT_memory_object`, `GL_EXT_memory_object_win32`, `GL_EXT_semaphore`, and `GL_EXT_semaphore_win32`. Check actual extension support and shared framebuffer completeness. There is no NV intermediate-copy branch, keyed-mutex transport, or CPU/PBO readback fallback.
 
-Bind an HDC/target HWND to its configured fixed surface before the first operation that touches its default framebuffer. User FBOs continue to address their own resources. OpenGL has no swapchain object whose images can simply be replaced: this implementation virtualizes framebuffer **name zero** and its implicit state.
+Capture preserves the framebuffer bindings, default read-buffer selector, scissor enable, and sRGB enable it touches. Shared images retain bottom-up orientation metadata. Fence availability and GL semaphore waits/signals govern slot reuse. Full rings skip capture; the application's native swap continues.
 
-Maintain logical draw/read framebuffer bindings separately from physical FBO names. When the app binds zero, bind the appropriate private FBO for the current acquired export slot (EXT) or private interop target (NV). A GL FBO is context-local even when its texture is shared across a share group. Track HGLRC/share-group membership, draw/read DCs, and per-context default-FBO state; do not reuse a context-local FBO name in another context.
-
-The hook inventory must cover:
-
-- Draw/read framebuffer binds and separate read/draw targets, including extension aliases.
-- Draw/read buffer selection and legal `FRONT`, `BACK`, left/right, and multi-buffer semantics for the supported pixel format. Translate to attachment selectors internally and return logical selectors in queries.
-- Queries reporting framebuffer bindings, default attachment properties, dimensions, samples, bit depths, and relevant default-buffer state. Never leak a private nonzero FBO name as the app's default framebuffer.
-- Clears, blits, framebuffer copy/readback, invalidate/discard operations, direct-state-access default framebuffer operations where defined, and draw paths. Hooking only draw calls misses the first actual write or read.
-- Initial viewport/scissor defaults and preservation of explicit application subrects. Do not blindly replace every viewport with the configured full size.
-- Context switching, state save/restore around producer work, GL error semantics, context loss and deletion.
-
-Honor the chosen pixel format's supported color/depth/stencil and multisample behavior. Allocate fixed depth/stencil attachments when requested. If multisampling needs a resolve into a single-sample shared image, make that a declared profile cost; do not claim a single-sample FBO implements multisample default-buffer semantics. Stereo/unsupported buffer modes need an explicit capability decision before rendering, not an incomplete FBO that silently produces nothing.
-
-All interop locks, FBO operations and GL semaphore calls run with the correct context current. Use the existing `ContextBinding` support when appropriate, restoring the previous context/DC bindings. Do not make a render context current on a worker while the application still owns it on another thread. Retirement queues work back to a valid owner context or retains resources safely until that can happen.
-
-### EXT external memory / semaphore path
-
-1. Create fixed shared D3D12 render-target resources with the existing supported flags, including the existing simultaneous-access requirements. Import them into GL with the current `GL_HANDLE_TYPE_D3D12_RESOURCE_EXT` path.
-2. Create context-local FBO attachments to the imported slot textures, plus fixed auxiliary depth/stencil/MSAA resources as required. The application renders directly through the remapped default framebuffer; remove the old default-FBO-to-export blit for the direct profile.
-3. Import the existing producer-ready and consumer-release D3D12 fences as GL external semaphore objects. Extend the current timeline helper: it presently has completed-value inspection and signal support, but virtual write reuse also needs a correct wait/acquire path.
-4. Before rendering to a recycled slot, require IPC buffer availability and wait on the consumer-release fence using the required `GL_D3D12_FENCE_VALUE_EXT` value and `glWaitSemaphoreEXT` resource/layout barriers. A CPU `GetCompletedValue` check is useful for scheduling but does not replace required GL external-memory synchronization.
-5. At swap, finish the relevant rendering/resolve dependencies, signal the ready fence with `glSignalSemaphoreEXT` and the correct texture layout list, and flush so work actually reaches the GPU before relying on consumer progress. Publish via the common controller.
-6. Acquire a new writable slot and rebind its physical default FBO before any later default-framebuffer operation. Keep `bottom_up = true` and current consumer orientation handling.
-
-Verify function availability and extension requirements from the actual context. Primary contracts: [EXT_external_objects](https://registry.khronos.org/OpenGL/extensions/EXT/EXT_external_objects.txt) and [EXT_external_objects_win32](https://registry.khronos.org/OpenGL/extensions/EXT/EXT_external_objects_win32.txt).
-
-### NV interop path: preserve the measured transport constraint
-
-The repository's measured RTX 5070 Ti / driver `32.0.16.1062` result is:
-
-- Private D3D11 WGL interop textures registered and rendered successfully.
-- `SHARED_NTHANDLE | SHARED_KEYEDMUTEX` and `SHARED_NTHANDLE | SHARED` textures failed WGL registration with `0xC007006E`.
-- Legacy shared handles worked in a two-device local probe, but those are not the current transport and are outside this task.
-
-Consequently, keep the private WGL-registered D3D11 target and the exported NT-handle keyed ring. Virtual framebuffer zero can render directly into the private interop target, eliminating the current GL blit into that target, but the D3D11 `CopyResource(private -> export slot)` remains.
-
-The ordering is:
-
-1. Reserve/acquire the destination export slot's keyed mutex at key 0 when it is safe to do so.
-2. Lock the private interop object through `wglDXLockObjectsNV` before GL writes to it.
-3. Render through the private FBO, then complete the required GL work and unlock the interop object.
-4. Copy from the private D3D11 interop texture into the owned exported slot using the current interop ordering guarantees.
-5. Complete/order the existing producer fence and mutex handoff, release key 1, and publish the export slot.
-6. Do not lock/rewrite the private source again until its D3D11 copy read is complete or properly ordered by the supported interop synchronization.
-
-Track private-target reuse separately from exported-slot consumer release. The common controller still owns export-slot scheduling; the NV implementation owns its private-target/copy dependencies in the backend token/submission.
-
-Report this profile as `InteropCopy`, prefer EXT where available, and include its copy count in validation. Do not substitute legacy handles or add a consumer import path. PBO/CPU readback fallback belongs to the existing capture modes; it is not silent success for the virtual shared-image profile. Further driver experiments can improve capabilities later without weakening this handoff's acceptance criteria.
-
-References: [WGL_NV_DX_interop](https://registry.khronos.org/OpenGL/extensions/NV/WGL_NV_DX_interop.txt) and [WGL_NV_DX_interop2](https://registry.khronos.org/OpenGL/extensions/NV/WGL_NV_DX_interop2.txt). The measured sharing-flag restriction is repository evidence, not a universal claim about all NV drivers.
+Select whole presentation windows using configured indices and optional title patterns. Never inspect draws, resource histories, internal FBOs, or rendering dependencies. Resize replaces that window's capture generation. Cleanup remains bound to the owning GL context and restores the caller's context/DC binding.
 
 ## 8. Validation and remaining work
 
@@ -222,5 +173,5 @@ Required production DDI evidence includes cached RTV/SRV use, a native command l
 
 Validate D3D12 application barriers and queue ordering, native cached buffers, blocking/nonblocking Present, and waitable pacing with real acknowledgments. Do not preserve tests that expect Polymer to infer arbitrary application accesses.
 
-The broader matrix remains all four producers, their consumer profiles, Vulkan WSI/queue-family semantics, and OpenGL context/default-framebuffer semantics. Unimplemented software is remaining work, not an unsupported hardware profile.
+The broader matrix remains all four producers, their consumer profiles, Vulkan WSI/queue-family semantics, and OpenGL presentation capture and context cleanup. Unimplemented software is remaining work, not an unsupported hardware profile.
 

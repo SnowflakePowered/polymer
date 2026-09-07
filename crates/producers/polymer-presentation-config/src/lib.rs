@@ -9,8 +9,6 @@ use std::collections::HashSet;
 pub enum RenderMode {
     /// OpenGL and GDI capture only.
     Intercept,
-    /// OpenGL capture only.
-    GraphTracking,
     #[default]
     Swapchain,
 }
@@ -19,7 +17,6 @@ impl RenderMode {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Intercept => "intercept",
-            Self::GraphTracking => "graphTracking",
             Self::Swapchain => "swapchain",
         }
     }

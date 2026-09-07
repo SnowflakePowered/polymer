@@ -133,7 +133,7 @@ pub enum Message {
     RequestBufferAvailability,
     /// The consumer has submitted release of every publication through this
     /// value. Rendering also requires completion of the shared release fence
-    /// (or acquisition of the shared keyed mutex). The connection identifies
+    /// before reusing an image. The connection identifies
     /// the immutable resource generation; values never cross connections.
     BufferAvailable {
         stream_id: StreamId,
