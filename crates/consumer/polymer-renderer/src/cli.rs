@@ -100,7 +100,7 @@ struct ViewerArguments {
     #[arg(long, value_enum, default_value_t)]
     pub(crate) api: ViewerApi,
 
-    /// Select configured swapchain surface indices (or OpenGL presentation windows).
+    /// Select configured swapchain surface indices.
     /// Comma-separated entries may append `:TURNS:WINDOW_REGEX` to specify
     /// counterclockwise quarter turns and a presenting-window title pattern.
     #[arg(
@@ -114,7 +114,7 @@ struct ViewerArguments {
     )]
     pub(crate) track_render_targets: Option<Vec<TrackedRenderTarget>>,
 
-    /// D3D11/D3D12/Vulkan: use a native shared swapchain with a fixed width and height.
+    /// D3D11/D3D12/Vulkan/OpenGL: use a swapchain with a fixed width and height.
     #[arg(long, num_args = 2, value_names = ["WIDTH", "HEIGHT"], value_parser = clap::value_parser!(u32).range(1..=i32::MAX as i64))]
     pub(crate) swapchain_resolution: Option<Vec<u32>>,
 
@@ -197,7 +197,7 @@ impl ViewerArguments {
         let mode = if hooks.iter().any(|hook| {
             matches!(
                 hook,
-                GraphicsHook::D3d11 | GraphicsHook::D3d12 | GraphicsHook::Vulkan
+                GraphicsHook::D3d11 | GraphicsHook::D3d12 | GraphicsHook::Vulkan | GraphicsHook::OpenGl
             )
         }) {
             polymer_runtime::RenderMode::Swapchain
@@ -210,11 +210,11 @@ impl ViewerArguments {
         if mode == polymer_runtime::RenderMode::Swapchain {
             if !self.target.is_empty() && self.swapchain_resolution.is_none() {
                 return Err(
-                    "D3D11, D3D12, and Vulkan require --swapchain-resolution WIDTH HEIGHT".into(),
+                    "D3D11, D3D12, Vulkan, and OpenGL require --swapchain-resolution WIDTH HEIGHT".into(),
                 );
             }
         } else if self.swapchain_resolution.is_some() {
-            return Err("--swapchain-resolution requires D3D11, D3D12, or Vulkan hooks".into());
+            return Err("--swapchain-resolution requires D3D11, D3D12, Vulkan, or OpenGL hooks".into());
         }
         Ok(())
     }

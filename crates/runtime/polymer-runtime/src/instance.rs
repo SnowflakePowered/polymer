@@ -1516,11 +1516,12 @@ mod tests {
             GraphicsHook::D3d11,
             GraphicsHook::D3d12,
             GraphicsHook::Vulkan,
+            GraphicsHook::OpenGl,
         ] {
             launch.hooks.graphics = vec![hook];
             assert!(launch.validate().is_ok());
         }
-        for hook in [GraphicsHook::OpenGl, GraphicsHook::Gdi] {
+        for hook in [GraphicsHook::Gdi] {
             launch.hooks.graphics = vec![GraphicsHook::D3d11, hook];
             assert!(launch.validate().is_err());
         }
@@ -1532,6 +1533,7 @@ mod tests {
             GraphicsHook::D3d11,
             GraphicsHook::D3d12,
             GraphicsHook::Vulkan,
+            GraphicsHook::OpenGl,
         ] {
             let mut launch = config();
             launch.hooks.graphics = vec![hook];
@@ -1542,7 +1544,7 @@ mod tests {
             ));
         }
         let mut launch = config();
-        launch.hooks.graphics = vec![GraphicsHook::OpenGl];
+        launch.hooks.graphics = vec![GraphicsHook::Gdi];
         launch.render_mode = crate::RenderMode::Intercept;
         launch.tracked_surfaces[0].resolution = None;
         assert!(launch.validate().is_ok());

@@ -46,17 +46,6 @@ impl Capture {
             }
         }
     }
-    pub(super) fn set_requirements(&mut self, width: u32, height: u32, window: isize) {
-        if (self.extent, self.window) != ((width, height), window) {
-            self.native = None;
-            self.retry = Default::default();
-        }
-        self.extent = (width, height);
-        self.window = window;
-    }
-    pub(super) fn surface_id(&self) -> SurfaceId {
-        self.surface
-    }
     pub(super) unsafe fn copy_frame(&mut self, stream: StreamId) {
         if let Some(native) = self.native.as_mut() {
             unsafe { native.copy_frame(stream) };

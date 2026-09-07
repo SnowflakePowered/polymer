@@ -1,6 +1,6 @@
 //! Environment-backed configuration shared by hook and producer crates.
 
-pub use polymer_presentation_config::{RenderConfiguration, RenderMode};
+pub use polymer_protocol::{RenderConfiguration, RenderMode};
 use std::{path::PathBuf, sync::LazyLock};
 
 pub const SESSION: &str = "POLYMER_SESSION";
@@ -32,11 +32,11 @@ pub fn render_configuration() -> Result<&'static RenderConfiguration, &'static s
 pub fn render_mode() -> Result<RenderMode, &'static str> {
     render_configuration().map(|configuration| configuration.render_mode)
 }
-/// Validate before installing a D3D11, D3D12, or Vulkan presentation hook.
+/// Validate before installing a D3D11, D3D12, Vulkan, or OpenGL presentation hook.
 pub fn require_swapchain() -> Result<(), &'static str> {
     match render_mode()? {
         RenderMode::Swapchain => Ok(()),
-        _ => Err("D3D11, D3D12, and Vulkan require swapchain mode with fixed surface resolutions"),
+        _ => Err("D3D11, D3D12, Vulkan, and OpenGL require swapchain mode with fixed surface resolutions"),
     }
 }
 

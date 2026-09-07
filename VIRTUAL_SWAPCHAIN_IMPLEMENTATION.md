@@ -8,9 +8,9 @@ D3D11, D3D12, and Vulkan now support only native zero-copy swapchain presentatio
 
 `renderMode` defaults to `"swapchain"`; every requested surface requires a fixed positive `resolution`. Pluginhost and runtime reject `"intercept"` and `"graphTracking"` with these three APIs, including mixed launch requests with capture-only backends. Hook installation independently requires a valid swapchain configuration. The old environment-only render-mode fallback and `POLYMER_GRAPH_TRACKING`/`POLYMER_PRESENT_UNTHROTTLED` controls are removed.
 
-OpenGL and GDI use explicit `"intercept"` mode. The removed `"graphTracking"` mode is no longer part of the launch schema. Shared allocation utilities needed by those producers remain. D3D11's scoped DDI resource-identity collection also remains: it enables native allocation rotation and does not capture application rendering.
+OpenGL now requires `"swapchain"` using independent WGL pbuffers; only GDI uses `"intercept"` mode. The removed `"graphTracking"` mode is no longer part of the launch schema. Shared allocation utilities needed by those producers remain. D3D11's scoped DDI resource-identity collection also remains: it enables native allocation rotation and does not capture application rendering.
 
-The debug viewer's automatic hook set is D3D11/D3D12/Vulkan. Command-line launches require `--swapchain-resolution WIDTH HEIGHT`; the interactive launcher offers editable dimensions. Graph tracking and keyed-mutex options are limited to the capture backends. Built-in plugin declarations now provide fixed output extents: DuckStation/PCSX2/RetroArch 640x480, Flycast 960x720, and Cemu Vulkan 1280x720 TV plus 854x480 GamePad. Dolphin retains its configured extent. These declarations were migrated; this change does not claim a new gameplay validation of every plugin.
+The debug viewer's automatic hook set is D3D11/D3D12/Vulkan. Command-line launches require `--swapchain-resolution WIDTH HEIGHT`; the interactive launcher offers editable dimensions. Graph tracking and keyed-mutex options are removed. Built-in plugin declarations now provide fixed output extents: DuckStation/PCSX2/RetroArch 640x480, Flycast 960x720, and Cemu Vulkan 1280x720 TV plus 854x480 GamePad. Dolphin retains its configured extent. These declarations were migrated; this change does not claim a new gameplay validation of every plugin.
 
 The human-maintained ARCHITECTURE.md still describes graph-based capture generally. That description no longer applies to D3D11, D3D12, or Vulkan; it was left unchanged as instructed.
 
@@ -24,7 +24,7 @@ The human-maintained ARCHITECTURE.md still describes graph-based capture general
 
 ## OpenGL and tracking removal (2026-09-08)
 
-OpenGL now captures only the presenting window framebuffer, using one GPU blit into the EXT external-memory ring. NV intermediate textures, PBO/CPU readback, target tracking, graph traversal, texture/renderbuffer observers, draw/copy/blit hooks, and `wglGetProcAddress` interception are removed. Hooking is limited to swap boundaries and context deletion.
+The earlier OpenGL simplification retained one GPU blit into the EXT external-memory ring. The subsequent pbuffer implementation below replaces window capture entirely. NV intermediate textures, PBO/CPU readback, target tracking, graph traversal, texture/renderbuffer observers, draw/copy/blit hooks, and `wglGetProcAddress` interception are removed. The subsequent pbuffer path adds WGL drawable routing and fixed-size queries.
 
 The shared presentation crate no longer contains graph observations, selectors, resource history, source ownership, or capture preparation. Logical surface identity, window selection, fixed swapchain assignment, IPC, scheduling, and retirement remain. Title-qualified OpenGL requests select matching windows; they do not refer to internal rendering targets.
 
@@ -144,5 +144,5 @@ Reproduce with the earlier viewer command using `--hook vulkan` and Dolphin `-v 
 
 ## Broader remaining work
 
-OpenGL default-framebuffer virtualization was explicitly dropped in favor of EXT presentation capture. Broader Vulkan WSI profiles, production DDI coverage, concurrent deferred recording, other vendors/drivers, and additional guest lifecycle scenarios remain to be demonstrated. See VIRTUAL_SWAPCHAIN_HANDOFF.md.
+OpenGL now uses native WGL pbuffers for independent default-framebuffer sizing, retaining the EXT export blit. Broader Vulkan WSI profiles, production DDI coverage, concurrent deferred recording, other vendors/drivers, and additional guest lifecycle scenarios remain to be demonstrated. See VIRTUAL_SWAPCHAIN_HANDOFF.md.
 

@@ -10,7 +10,6 @@ producer = ["dep:polymer-ipc", "dep:polymer-platform-windows", "dep:windows", "d
 
 [dependencies]
 regex.workspace = true
-polymer-presentation-config.workspace = true
 polymer-ipc = { workspace = true, optional = true }
 polymer-protocol.workspace = true
 polymer-platform-windows = { workspace = true, optional = true }

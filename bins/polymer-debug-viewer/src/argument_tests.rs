@@ -211,6 +211,9 @@ fn accepts_vulkan_override_and_options_in_either_order() -> Result<(), Box<dyn E
     let options = arguments(&[
         "--hook",
         "opengl",
+        "--swapchain-resolution",
+        "640",
+        "480",
         "--track-render-target",
         "--no-isolate",
         "--api=vulkan",
@@ -680,7 +683,7 @@ fn virtual_swapchain_cli_preserves_extent_and_rejects_conflicting_modes() {
 
 #[test]
 fn production_apis_reject_capture_options_and_require_fixed_extent() {
-    for hook in ["d3d11", "d3d12", "vulkan"] {
+    for hook in ["d3d11", "d3d12", "vulkan", "opengl"] {
         assert!(arguments(&["--hook", hook, "--", "game.exe"]).is_err());
         assert!(
             arguments(&[
@@ -712,7 +715,7 @@ fn production_apis_reject_capture_options_and_require_fixed_extent() {
             "640",
             "480"
         ])
-        .is_err()
+        .is_ok()
     );
     assert!(
         arguments(&[
@@ -721,6 +724,6 @@ fn production_apis_reject_capture_options_and_require_fixed_extent() {
             "--",
             "game.exe"
         ])
-        .is_ok()
+        .is_err()
     );
 }

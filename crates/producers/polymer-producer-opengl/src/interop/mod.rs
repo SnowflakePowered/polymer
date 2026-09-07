@@ -27,7 +27,6 @@ pub(crate) const GL_FRAMEBUFFER_SRGB: Glenum = 0x8DB9;
 #[link(name = "opengl32")]
 unsafe extern "system" {
     fn wglGetCurrentContext() -> Hglrc;
-    pub(crate) fn wglGetCurrentDC() -> Hdc;
     fn wglGetProcAddress(name: *const u8) -> *const c_void;
     pub(crate) fn glGenTextures(count: Glsizei, textures: *mut Gluint);
     pub(crate) fn glDeleteTextures(count: Glsizei, textures: *const Gluint);

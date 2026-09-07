@@ -101,7 +101,7 @@ impl LauncherState {
         if self.hooks.iter().any(|hook| {
             matches!(
                 hook,
-                GraphicsHook::D3d11 | GraphicsHook::D3d12 | GraphicsHook::Vulkan
+                GraphicsHook::D3d11 | GraphicsHook::D3d12 | GraphicsHook::Vulkan | GraphicsHook::OpenGl
             )
         }) {
             polymer_runtime::RenderMode::Swapchain
@@ -319,7 +319,7 @@ pub(crate) fn draw_launcher_window(
                         if enabled {
                             let native = matches!(
                                 hook,
-                                GraphicsHook::D3d11 | GraphicsHook::D3d12 | GraphicsHook::Vulkan
+                                GraphicsHook::D3d11 | GraphicsHook::D3d12 | GraphicsHook::Vulkan | GraphicsHook::OpenGl
                             );
                             launcher.hooks.retain(|existing| {
                                 native

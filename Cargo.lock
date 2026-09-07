@@ -9479,7 +9479,7 @@ dependencies = [
  "dashmap",
  "parking_lot",
  "paste",
- "polymer-presentation-config",
+ "polymer-protocol",
  "regex",
  "seq-macro",
  "serde_json",
@@ -9824,7 +9824,7 @@ dependencies = [
  "polymer-input",
  "polymer-ipc",
  "polymer-library",
- "polymer-presentation-config",
+ "polymer-protocol",
  "polymer-vfs",
  "reqwest",
  "semver",
@@ -9847,20 +9847,10 @@ version = "0.1.0"
 dependencies = [
  "polymer-ipc",
  "polymer-platform-windows",
- "polymer-presentation-config",
  "polymer-protocol",
  "regex",
  "tracing",
  "windows 0.61.3",
-]
-
-[[package]]
-name = "polymer-presentation-config"
-version = "0.1.0"
-dependencies = [
- "regex",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -9913,7 +9903,6 @@ dependencies = [
  "polymer-platform-windows",
  "polymer-presentation",
  "polymer-protocol",
- "regex",
  "tracing",
  "windows 0.61.3",
 ]
@@ -9932,6 +9921,10 @@ dependencies = [
 [[package]]
 name = "polymer-protocol"
 version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+]
 
 [[package]]
 name = "polymer-renderer"
@@ -9989,7 +9982,6 @@ dependencies = [
  "polymer-library",
  "polymer-platform-windows",
  "polymer-pluginhost",
- "polymer-presentation-config",
  "polymer-protocol",
  "polymer-scraping",
  "polymer-statistics",

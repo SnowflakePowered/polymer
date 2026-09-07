@@ -1,4 +1,4 @@
-//! The launch contract shared by hosts and graphics producers.
+//! Graphics presentation configuration shared by hosts and producers.
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -7,7 +7,7 @@ use std::collections::HashSet;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RenderMode {
-    /// OpenGL and GDI capture only.
+    /// GDI capture only.
     Intercept,
     #[default]
     Swapchain,

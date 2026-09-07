@@ -5,7 +5,6 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-polymer-presentation-config.workspace = true
 # pin to force prebuild nasm feature
 aws-lc-rs = { version = "=1.16.3", features = ["prebuilt-nasm"] }
 axum = "0.8.8"

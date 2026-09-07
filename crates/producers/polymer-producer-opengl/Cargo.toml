@@ -11,6 +11,5 @@ parking_lot.workspace = true
 polymer-hook.workspace = true
 polymer-platform-windows.workspace = true
 polymer-protocol.workspace = true
-regex.workspace = true
 tracing.workspace = true
 windows.workspace = true

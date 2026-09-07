@@ -3,9 +3,11 @@
 #![forbid(unsafe_code)]
 
 mod capture;
+pub mod configuration;
 pub mod input;
 
 pub use capture::{CaptureError, FrameConsumer, FrameProducer, SurfaceDesc};
+pub use configuration::{RenderConfiguration, RenderMode, SurfaceRequest};
 
 pub const PROTOCOL_VERSION: u32 = 18;
 /// Fractional bits used by coordinates in [`PresentationPoint`].

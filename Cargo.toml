@@ -19,7 +19,6 @@ repository = "https://github.com/polymer/polymer"
 rust-version = "1.94"
 
 [workspace.dependencies]
-polymer-presentation-config = { path = "crates/producers/polymer-presentation-config" }
 polymer-presentation = { path = "crates/producers/polymer-presentation" }
 async-trait = "0.1.89"
 atomic-write-file = "0.3.1"

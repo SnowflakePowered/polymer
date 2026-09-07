@@ -56,4 +56,4 @@ pub enum RuntimeState {
     ShuttingDown,
 }
 
-pub use polymer_presentation_config::{RenderConfiguration, RenderMode, SurfaceRequest};
+pub use polymer_protocol::{RenderConfiguration, RenderMode, SurfaceRequest};

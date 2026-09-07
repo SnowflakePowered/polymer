@@ -2,11 +2,11 @@
 
 The active design adds explicit buffer-availability acknowledgments. It supersedes the earlier prohibition against IPC and consumer changes. Do not reintroduce software command replay, logical D3D11 texture/view wrappers, or native recordings duplicated per ring slot.
 
-D3D11, D3D12, and Vulkan use native shared swapchains. OpenGL uses presentation-time capture through EXT external memory with one GPU blit; do not implement default-framebuffer virtualization. Optional Vulkan presentation features remain. See VIRTUAL_SWAPCHAIN_IMPLEMENTATION.md for current status.
+D3D11, D3D12, and Vulkan use native shared swapchains. OpenGL uses fixed WGL pbuffer swapchains with one GPU blit through EXT external memory; framebuffer zero remains driver-managed. Optional Vulkan presentation features remain. See VIRTUAL_SWAPCHAIN_IMPLEMENTATION.md for current status.
 
 ## 1. Configuration and architectural ownership
 
-- D3D11, D3D12, and Vulkan support only renderMode: "swapchain" (the default). Their interception capture and graph tracking are removed; do not restore compatibility paths. OpenGL and GDI use explicit "intercept". Graph tracking, NV/CPU capture fallbacks, and keyed-mutex transports are deleted.
+- D3D11, D3D12, and Vulkan support only renderMode: "swapchain" (the default). Their interception capture and graph tracking are removed; do not restore compatibility paths. OpenGL also requires "swapchain"; only GDI uses "intercept". Graph tracking, NV/CPU capture fallbacks, and keyed-mutex transports are deleted.
 - Every swapchain surface requires an immutable positive resolution: [width, height]. Preserve configured index, public pattern, rotation, and display order.
 - Match actual HWND lifetimes and titles. Image indices and swapchain creation order are not configured surface identities.
 - One active graphics producer owns the assignments for a launch. Support destruction/recreation at the same configured extent, device loss, disconnect, and retirement.
@@ -17,7 +17,7 @@ D3D11, D3D12, and Vulkan use native shared swapchains. OpenGL uses presentation-
 - The D3D11 producer receives a rotation interface. It must not load UMDs, patch DDI tables, or inspect private runtime COM layouts.
 - Keep ARCHITECTURE.md unchanged; it is human-maintained.
 
-The polymer-presentation-config schema leaf avoids a dependency cycle through the hook crate. polymer-presentation reexports it.
+The presentation configuration schema lives in polymer-protocol to avoid a dependency cycle through the hook crate. polymer-presentation reexports its configuration module.
 
 ## 2. IPC availability and native GPU ownership
 
@@ -153,15 +153,11 @@ Do not free an old image because a new `StreamReady` was accepted. Wait for app 
 
 The prototype demonstrated feasibility for a narrow path. Full completion requires the hook and extension inventory above, realistic queue use, and validation of render-pass layouts; merely moving its fake handle map into presentation is insufficient.
 
-## 7. OpenGL: presentation-time EXT capture
+## 7. OpenGL: fixed WGL pbuffer swapchains
 
-Use the existing native WGL context and window framebuffer. Intercept only presentation and context deletion. At `SwapBuffers`, blit the window framebuffer once into an available shared image and publish it through the existing EXT external-memory/semaphore transport. Do not virtualize framebuffer zero or maintain an application GL state machine.
+OpenGL requires swapchain mode and configured extents. Route WGL draw/read bindings and swaps to independent `WGL_ARB_pbuffer` drawables. Preserve application-facing DC identity, native framebuffer-zero behavior, and context-affine cleanup. Report the bound fixed extent through `GetClientRect`; physical HWND resize must not recreate presentation resources.
 
-Require `GL_EXT_memory_object`, `GL_EXT_memory_object_win32`, `GL_EXT_semaphore`, and `GL_EXT_semaphore_win32`. Check actual extension support and shared framebuffer completeness. There is no NV intermediate-copy branch, keyed-mutex transport, or CPU/PBO readback fallback.
-
-Capture preserves the framebuffer bindings, default read-buffer selector, scissor enable, and sRGB enable it touches. Shared images retain bottom-up orientation metadata. Fence availability and GL semaphore waits/signals govern slot reuse. Full rings skip capture; the application's native swap continues.
-
-Select whole presentation windows using configured indices and optional title patterns. Never inspect draws, resource histories, internal FBOs, or rendering dependencies. Resize replaces that window's capture generation. Cleanup remains bound to the owning GL context and restores the caller's context/DC binding.
+Reuse the EXT external-memory/semaphore ring with one blit per published frame. There is no HWND capture path, NV intermediate, keyed mutex, CPU readback, or application rendering-state tracker. Pixel-format compatibility and exact pbuffer allocation are mandatory. Preserve separate read/draw DCs around publication. Details and the native WGL regression command are in `crates/producers/polymer-producer-opengl/INTEROP.md`.
 
 ## 8. Validation and remaining work
 
@@ -173,5 +169,5 @@ Required production DDI evidence includes cached RTV/SRV use, a native command l
 
 Validate D3D12 application barriers and queue ordering, native cached buffers, blocking/nonblocking Present, and waitable pacing with real acknowledgments. Do not preserve tests that expect Polymer to infer arbitrary application accesses.
 
-The broader matrix remains all four producers, their consumer profiles, Vulkan WSI/queue-family semantics, and OpenGL presentation capture and context cleanup. Unimplemented software is remaining work, not an unsupported hardware profile.
+The broader matrix remains all four producers, their consumer profiles, Vulkan WSI/queue-family semantics, and OpenGL pbuffer presentation, resize independence, and context cleanup. Unimplemented software is remaining work, not an unsupported hardware profile.
 

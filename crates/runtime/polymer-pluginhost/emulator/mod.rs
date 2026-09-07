@@ -20,7 +20,7 @@ pub struct EmulatorLaunchArguments {
     pub hooks: Hooks,
     /// Presentation mode. D3D11, D3D12, and Vulkan require native swapchains.
     #[serde(default)]
-    pub render_mode: polymer_presentation_config::RenderMode,
+    pub render_mode: polymer_protocol::RenderMode,
     #[serde(default)]
     pub surfaces: Vec<TrackedSurface>,
     #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
@@ -43,7 +43,7 @@ pub struct EmulatorLaunchArguments {
 
 impl EmulatorLaunchArguments {
     pub fn validate_render_configuration(&self) -> Result<(), String> {
-        use polymer_presentation_config::{RenderConfiguration, SurfaceRequest};
+        use polymer_protocol::{RenderConfiguration, SurfaceRequest};
         for hook in &self.hooks.graphics {
             hook.validate_render_mode(self.render_mode)?;
         }
@@ -78,19 +78,18 @@ pub enum GraphicsHook {
 impl GraphicsHook {
     pub fn validate_render_mode(
         self,
-        mode: polymer_presentation_config::RenderMode,
+        mode: polymer_protocol::RenderMode,
     ) -> Result<(), String> {
-        use polymer_presentation_config::RenderMode;
+        use polymer_protocol::RenderMode;
         let supported = match self {
-            Self::D3d11 | Self::D3d12 | Self::Vulkan => mode == RenderMode::Swapchain,
-            Self::OpenGl => matches!(mode, RenderMode::Intercept),
+            Self::D3d11 | Self::D3d12 | Self::Vulkan | Self::OpenGl => mode == RenderMode::Swapchain,
             Self::Gdi => mode == RenderMode::Intercept,
         };
         if supported {
             Ok(())
         } else {
             Err(format!(
-                "{} does not support renderMode '{}'; D3D11, D3D12, and Vulkan require swapchain mode with fixed surface resolutions",
+                "{} does not support renderMode '{}'; D3D11, D3D12, Vulkan, and OpenGL require swapchain mode with fixed surface resolutions",
                 self.label(),
                 mode.as_str()
             ))
