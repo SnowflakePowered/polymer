@@ -56,10 +56,12 @@ export function createEmulator(webrtc) {
         graphics: [...options.hooks.graphics],
         input: [...options.hooks.input],
       },
-      graphTracking: Boolean(options.graphTracking),
       surfaces: options.surfaces.map((surface) => ({
         index: surface.index,
         rotation: surface.rotation || 0,
+        // Copy the extent out of whatever the shell handed us: a framework
+        // proxy over an array is not an array to the op boundary.
+        resolution: Array.isArray(surface.resolution) ? [...surface.resolution] : surface.resolution,
         selector: surface.selector,
         attach: attachmentFor(surface.attach),
       })),

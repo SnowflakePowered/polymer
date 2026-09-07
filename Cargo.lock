@@ -9479,6 +9479,7 @@ dependencies = [
  "dashmap",
  "parking_lot",
  "paste",
+ "polymer-protocol",
  "regex",
  "seq-macro",
  "serde_json",
@@ -9506,14 +9507,10 @@ version = "0.1.0"
 dependencies = [
  "dashmap",
  "parking_lot",
- "polymer-consumer-d3d12",
- "polymer-consumer-vulkan",
  "polymer-hook",
  "polymer-hook-dxgi",
- "polymer-ipc",
  "polymer-platform-windows",
  "polymer-producer-d3d11",
- "polymer-protocol",
  "tracing",
  "windows 0.61.3",
  "windows-sys 0.61.2",
@@ -9523,18 +9520,11 @@ dependencies = [
 name = "polymer-hook-d3d12"
 version = "0.1.0"
 dependencies = [
- "dashmap",
- "parking_lot",
- "polymer-consumer-vulkan",
  "polymer-hook",
  "polymer-hook-dxgi",
- "polymer-ipc",
- "polymer-platform-windows",
  "polymer-producer-d3d12",
- "polymer-protocol",
  "tracing",
  "windows 0.61.3",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9556,21 +9546,12 @@ dependencies = [
 name = "polymer-hook-dxgi"
 version = "0.1.0"
 dependencies = [
+ "dashmap",
  "parking_lot",
  "polymer-hook",
  "polymer-platform-windows",
  "tracing",
  "windows 0.61.3",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "polymer-hook-gdi"
-version = "0.1.0"
-dependencies = [
- "polymer-hook",
- "polymer-platform-windows",
- "polymer-producer-gdi",
  "windows-sys 0.61.2",
 ]
 
@@ -9685,9 +9666,13 @@ version = "0.1.0"
 dependencies = [
  "ash",
  "dashmap",
+ "parking_lot",
+ "polymer-consumer-d3d12",
+ "polymer-consumer-vulkan",
  "polymer-hook",
  "polymer-ipc",
  "polymer-platform-windows",
+ "polymer-presentation",
  "polymer-producer-vulkan",
  "polymer-protocol",
  "tracing",
@@ -9829,6 +9814,7 @@ dependencies = [
  "polymer-input",
  "polymer-ipc",
  "polymer-library",
+ "polymer-protocol",
  "polymer-vfs",
  "reqwest",
  "semver",
@@ -9846,15 +9832,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "polymer-presentation"
+version = "0.1.0"
+dependencies = [
+ "polymer-ipc",
+ "polymer-platform-windows",
+ "polymer-protocol",
+ "regex",
+ "tracing",
+ "windows 0.61.3",
+]
+
+[[package]]
 name = "polymer-producer-d3d11"
 version = "0.1.0"
 dependencies = [
- "dashmap",
- "parking_lot",
  "polymer-hook",
  "polymer-hook-dxgi",
- "polymer-ipc",
  "polymer-platform-windows",
+ "polymer-presentation",
  "polymer-protocol",
  "tracing",
  "windows 0.61.3",
@@ -9864,27 +9860,10 @@ dependencies = [
 name = "polymer-producer-d3d12"
 version = "0.1.0"
 dependencies = [
- "dashmap",
- "parking_lot",
  "polymer-hook",
  "polymer-hook-dxgi",
- "polymer-ipc",
  "polymer-platform-windows",
- "polymer-protocol",
- "tracing",
- "windows 0.61.3",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "polymer-producer-gdi"
-version = "0.1.0"
-dependencies = [
- "parking_lot",
- "polymer-hook",
- "polymer-ipc",
- "polymer-platform-windows",
- "polymer-producer-d3d11",
+ "polymer-presentation",
  "polymer-protocol",
  "tracing",
  "windows 0.61.3",
@@ -9894,11 +9873,11 @@ dependencies = [
 name = "polymer-producer-opengl"
 version = "0.1.0"
 dependencies = [
+ "dashmap",
  "parking_lot",
  "polymer-hook",
- "polymer-ipc",
  "polymer-platform-windows",
- "polymer-producer-d3d11",
+ "polymer-presentation",
  "polymer-protocol",
  "tracing",
  "windows 0.61.3",
@@ -9909,19 +9888,19 @@ name = "polymer-producer-vulkan"
 version = "0.1.0"
 dependencies = [
  "ash",
- "dashmap",
  "parking_lot",
- "polymer-hook",
- "polymer-ipc",
- "polymer-platform-windows",
+ "polymer-presentation",
  "polymer-protocol",
- "tracing",
  "windows 0.61.3",
 ]
 
 [[package]]
 name = "polymer-protocol"
 version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+]
 
 [[package]]
 name = "polymer-renderer"

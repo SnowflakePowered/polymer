@@ -103,7 +103,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
         isolate: true,
         hooks: { graphics: ["d3d11"], input: ["sdl3"] },
         surfaces: [
-            { index: 0, pattern: "RetroArch" },
+            { resolution: [640, 480], index: 0, pattern: "RetroArch" },
         ],
     };
 };

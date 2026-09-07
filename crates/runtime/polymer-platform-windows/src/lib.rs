@@ -30,3 +30,8 @@ pub use window::{
     forward_key, forward_mouse_button, forward_mouse_move, forward_mouse_wheel, forward_raw_key,
     is_borderless_window, is_process_window, keyboard_code, resize_client, window_title,
 };
+
+mod fixed_window;
+pub use fixed_window::FixedWindowBinding;
+mod window_lifetime;
+pub use window_lifetime::WindowLifetime;

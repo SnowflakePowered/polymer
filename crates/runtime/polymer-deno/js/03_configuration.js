@@ -109,10 +109,10 @@ export function createConfiguration(pluginApi) {
           graphics: [...plugin.hooks.graphics],
           input: [...plugin.hooks.input],
         },
-        graphTracking: Boolean(plugin.graphTracking),
         surfaces: (plugin.surfaces || []).map((surface) => Object.freeze({
           index: surface.index,
           rotation: surface.rotation || 0,
+          resolution: surface.resolution,
           selector: surface.pattern,
           webrtc: targets.has(surface.index),
         })),

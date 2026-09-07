@@ -54,6 +54,7 @@ pub(crate) fn create_resource(
     device: &ID3D12Device,
     extent: vk::Extent2D,
     format: vk::Format,
+    usage: vk::ImageUsageFlags,
 ) -> Result<SharedResource, vk::Result> {
     let desc = D3D12_RESOURCE_DESC {
         Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
@@ -67,7 +68,17 @@ pub(crate) fn create_resource(
             Quality: 0,
         },
         Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
-        Flags: D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS,
+        Flags: D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS
+            | if usage.contains(vk::ImageUsageFlags::COLOR_ATTACHMENT) {
+                windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET
+            } else {
+                Default::default()
+            }
+            | if usage.contains(vk::ImageUsageFlags::STORAGE) {
+                windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS
+            } else {
+                Default::default()
+            },
         ..Default::default()
     };
     let heap = D3D12_HEAP_PROPERTIES {

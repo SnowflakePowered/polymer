@@ -230,9 +230,7 @@ fn vulkan_viewer(compositor: VulkanCompositor) -> Result<VulkanViewer, Box<dyn E
     })
 }
 
-/// Whether the native D3D12 consumer can import this stream: either a
-/// fence-synchronized D3D12-shareable resource, or a keyed-mutex D3D11
-/// resource acquired through D3D11On12 (which needs the adapter LUID).
+/// Whether the native D3D12 consumer supports this shared-resource profile.
 fn d3d12_consumable(stream: &StreamReady) -> bool {
     matches!(
         stream.image_kind,
@@ -240,10 +238,7 @@ fn d3d12_consumable(stream: &StreamReady) -> bool {
             | ExternalImageKind::OpenGlD3d12Resource
             | ExternalImageKind::VulkanD3d12Resource
             | ExternalImageKind::D3d11D3d12Resource
-            | ExternalImageKind::GdiD3d12Resource
-    ) || (stream.image_kind == ExternalImageKind::D3d11SharedResourceNt
-        && stream.sync_kind == ExternalSyncKind::D3d11KeyedMutex
-        && (stream.adapter_luid.low_part != 0 || stream.adapter_luid.high_part != 0))
+    ) && stream.sync_kind == ExternalSyncKind::D3d12Fence
 }
 
 impl ViewerCompositor {
@@ -267,7 +262,7 @@ impl ViewerCompositor {
                 None,
             )),
             ViewerApi::Vulkan if publish_video => {
-                let (compositor, webrtc) = VulkanCompositor::new_with_webrtc(window, None, true)?;
+                let (compositor, webrtc) = VulkanCompositor::new_with_webrtc(window, None)?;
                 Ok((
                     Self::Vulkan(Box::new(vulkan_viewer(compositor)?)),
                     Some(webrtc),
@@ -275,7 +270,7 @@ impl ViewerCompositor {
             }
             ViewerApi::Vulkan => Ok((
                 Self::Vulkan(Box::new(vulkan_viewer(VulkanCompositor::new(
-                    window, None, true,
+                    window, None,
                 )?)?)),
                 None,
             )),
@@ -333,26 +328,21 @@ impl ViewerCompositor {
             return Ok(());
         }
 
-        let needs_keyed_mutex = stream.image_kind == ExternalImageKind::D3d11SharedResourceNt;
         let adapter = stream.adapter_luid;
         let matches = matches!(self, Self::Vulkan(value)
-            if (!needs_keyed_mutex || value.compositor.keyed_mutex_enabled())
-                && ((adapter.low_part == 0 && adapter.high_part == 0)
+            if ((adapter.low_part == 0 && adapter.high_part == 0)
                     || value.compositor.matches_adapter(adapter)));
         if !matches {
             *video = None;
             drop(std::mem::replace(self, Self::Empty));
             let preferred = (adapter.low_part != 0 || adapter.high_part != 0).then_some(adapter);
             if publish_video {
-                let (compositor, webrtc) =
-                    VulkanCompositor::new_with_webrtc(window, preferred, needs_keyed_mutex)?;
+                let (compositor, webrtc) = VulkanCompositor::new_with_webrtc(window, preferred)?;
                 *self = Self::Vulkan(Box::new(vulkan_viewer(compositor)?));
                 *video = Some(webrtc);
             } else {
                 *self = Self::Vulkan(Box::new(vulkan_viewer(VulkanCompositor::new(
-                    window,
-                    preferred,
-                    needs_keyed_mutex,
+                    window, preferred,
                 )?)?));
                 *video = None;
             }
@@ -528,13 +518,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             &launcher,
             &executable_dir,
             &session,
-            surface_limit,
             options.skip_surfaces,
             viewer_api,
             launcher.tracked_render_target_indices(),
             launcher.render_target_surface_patterns(),
-            launcher.graph_tracking,
-            options.force_keyed_mutex,
         ) {
             Ok(started) => {
                 gamepad_layouts = started.layouts;
@@ -801,14 +788,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     continue;
                                 }
                                 active_backend = match stream.image_kind {
-                                    ExternalImageKind::D3d11SharedResourceNt
-                                    | ExternalImageKind::D3d11D3d12Resource => "D3D11",
+                                    ExternalImageKind::D3d11D3d12Resource => "D3D11",
                                     ExternalImageKind::VulkanOpaqueWin32 => "Vulkan",
                                     ExternalImageKind::D3d12Resource
                                     | ExternalImageKind::D3d12Heap => "D3D12",
                                     ExternalImageKind::OpenGlD3d12Resource => "OpenGL",
                                     ExternalImageKind::VulkanD3d12Resource => "Vulkan",
-                                    ExternalImageKind::GdiD3d12Resource => "GDI",
                                 };
                                 if stream.source_window != 0 {
                                     let source = NativeWindow(stream.source_window as isize);
@@ -970,12 +955,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 }
                             }
                         }
-                    }
-                    if active_backend == "D3D11" && !compositor.has_pending_frame() {
-                        // Each viewer swapchain image contains a different historical capture.
-                        // Without a new keyed-mutex frame, presenting another image would rotate
-                        // an older capture back onto the screen and look like temporal ghosting.
-                        return;
                     }
                     let has_pending_frame = compositor.has_pending_frame();
                     stats.sample();
@@ -1276,13 +1255,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                             &launcher,
                             &executable_dir,
                             &session,
-                            surface_limit,
                             options.skip_surfaces,
                             viewer_api,
                             launcher.tracked_render_target_indices(),
                             launcher.render_target_surface_patterns(),
-                            launcher.graph_tracking,
-                            options.force_keyed_mutex,
+
                         ) {
                             Ok(started) => {
                                 render_target_rotations = launcher.render_target_rotations();
@@ -1365,13 +1342,10 @@ fn start_target_session(
     launcher: &LauncherState,
     executable_dir: &Path,
     session: &str,
-    surface_limit: u32,
     skip_surfaces: u32,
     viewer_api: ViewerApi,
     tracked_render_targets: Option<Vec<u32>>,
     tracked_surface_patterns: Vec<Option<String>>,
-    graph_tracking: bool,
-    force_keyed_mutex: bool,
 ) -> Result<StartedTarget, Box<dyn Error>> {
     let target = launcher.target().map_err(std::io::Error::other)?;
     if launcher.hooks.is_empty() {
@@ -1401,15 +1375,19 @@ fn start_target_session(
                     id: polymer_runtime::TrackedSurfaceId(index),
                     render_target_index: index,
                     window_pattern: tracked_surface_patterns.get(slot).cloned().flatten(),
+                    resolution: launcher.swapchain_resolution,
+                    rotation: 0,
                 })
                 .collect::<Vec<_>>()
         })
         .unwrap_or_else(|| {
-            (0..surface_limit)
+            (0..1)
                 .map(|index| polymer_runtime::TrackedSurfaceConfig {
                     id: polymer_runtime::TrackedSurfaceId(index),
                     render_target_index: index,
                     window_pattern: None,
+                    resolution: launcher.swapchain_resolution,
+                    rotation: 0,
                 })
                 .collect()
         });
@@ -1431,8 +1409,6 @@ fn start_target_session(
             tracked_surfaces: configured_surfaces,
             tracking_enabled: tracked_render_targets.is_some(),
             skip_surfaces,
-            graph_tracking,
-            force_keyed_mutex,
         })?;
     let provider = InputHub::default();
     let backend = Arc::new(

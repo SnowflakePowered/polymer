@@ -1,6 +1,7 @@
 //! Native D3D12/DXGI viewer compositor.
 #![allow(unsafe_code)]
 
+use crate::renderer::frame_ownership::Retention;
 use std::{
     collections::VecDeque,
     error::Error,
@@ -13,7 +14,7 @@ use std::{
 use crate::renderer::{
     CompositingPlan, ReceivedSurface, RenderWindow, SwapchainMode, webrtc::WebRtcCompositor,
 };
-use polymer_consumer_d3d12::{D3d12ConsumerDevice, ImportedD3d12Stream};
+use polymer_consumer_d3d12::D3d12ConsumerDevice;
 use polymer_ipc::StreamReady;
 use polymer_protocol::{AdapterLuid, FrameReady, RELEASE_ALL_SYNC_VALUE};
 use raw_window_handle::RawWindowHandle;
@@ -31,11 +32,11 @@ use windows::{
 };
 
 use super::D3d12Receiver;
+use super::surface::{ImportedSurface, SURFACE_DESCRIPTORS};
 
 const FRAME_COUNT: usize = 2;
 const DESCRIPTOR_COUNT: u32 = 1024;
 
-const KEYED_MUTEX_TIMEOUT_MS: u32 = 100;
 /// Liveness bound on waiting for DXGI presentation capacity. Long enough that
 /// it never truncates a legitimate wait for the next refresh, short enough that
 /// a swapchain which stops signalling cannot stall an event loop.
@@ -185,20 +186,6 @@ impl UploadArena {
     }
 }
 
-struct ImportedSurface {
-    connection: u64,
-    surface_id: u64,
-    target_window: i64,
-    descriptor: u32,
-    imported: ImportedD3d12Stream,
-    flip_y: bool,
-    quarter_turns: u8,
-    cache: ID3D12Resource,
-    cache_state: D3D12_RESOURCE_STATES,
-    latest: Option<FrameReady>,
-    display_frame: Option<FrameReady>,
-}
-
 /// One present, linked back to the guest frame it carried.
 #[derive(Clone, Copy, Debug)]
 struct PresentedFrame {
@@ -298,9 +285,6 @@ pub struct D3d12Compositor {
     frame_garbage: [Vec<ID3D12Resource>; FRAME_COUNT],
     frame_uploads: [UploadArena; FRAME_COUNT],
     surfaces: Vec<ImportedSurface>,
-    // Standalone copy submission used to bound keyed-mutex holds; the main
-    // command list executes too late to release the mutex promptly.
-    mutex_copy: Option<(ID3D12CommandAllocator, ID3D12GraphicsCommandList)>,
     display_latency: DisplayLatency,
     /// QPC ticks per second, for turning vblank stamps into milliseconds.
     counter_frequency: f64,
@@ -701,7 +685,6 @@ impl D3d12Compositor {
                 frame_garbage: std::array::from_fn(|_| Vec::new()),
                 frame_uploads: std::array::from_fn(|_| UploadArena::new()),
                 surfaces: Vec::new(),
-                mutex_copy: None,
                 display_latency: DisplayLatency::default(),
                 counter_frequency: counter_frequency(),
             })
@@ -827,59 +810,33 @@ impl D3d12Compositor {
             );
         }
         self.disconnect_stream(connection)?;
-        let imported = self.receiver.import_stream(stream)?;
-        if imported.uses_keyed_mutex() && self.mutex_copy.is_none() {
-            unsafe {
-                let allocator: ID3D12CommandAllocator = self
-                    .receiver
-                    .device()
-                    .CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT)?;
-                let list: ID3D12GraphicsCommandList = self.receiver.device().CreateCommandList(
-                    0,
-                    D3D12_COMMAND_LIST_TYPE_DIRECT,
-                    &allocator,
-                    None,
-                )?;
-                list.Close()?;
-                self.mutex_copy = Some((allocator, list));
-            }
+        if FIRST_CONTENT_DESCRIPTOR + (self.surfaces.len() as u32 + 1) * SURFACE_DESCRIPTORS
+            > DESCRIPTOR_COUNT
+        {
+            return Err("D3D12 surface descriptor heap is full".into());
         }
-        // The private texture decouples viewer redraws from producer slot reuse.
-        let cache = unsafe {
-            create_texture(
-                self.receiver.device(),
-                imported.width,
-                imported.height,
-                DXGI_FORMAT(imported.format as i32),
-                D3D12_RESOURCE_STATE_COMMON,
-            )?
-        };
-        unsafe {
-            create_srv(
-                self.receiver.device(),
-                &self.srv_heap,
-                self.srv_stride,
-                FIRST_CONTENT_DESCRIPTOR + self.surfaces.len() as u32,
-                &cache,
-            )
-        };
-        self.surfaces.push(ImportedSurface {
-            connection,
-            surface_id: stream.surface_id.0,
-            target_window: stream.source_window,
-            descriptor: FIRST_CONTENT_DESCRIPTOR + self.surfaces.len() as u32,
+        let imported = self.receiver.import_stream(stream)?;
+        self.surfaces.push(ImportedSurface::new(
+            self.receiver.device(),
             imported,
-            flip_y: stream.bottom_up,
-            quarter_turns: quarter_turns % 4,
-            cache,
-            cache_state: D3D12_RESOURCE_STATE_COMMON,
-            latest: None,
-            display_frame: None,
-        });
+            stream,
+            connection,
+            quarter_turns,
+        )?);
         self.surfaces
             .sort_by_key(|surface| crate::surface_sort_key(surface.surface_id));
         self.refresh_surface_descriptors()?;
         Ok(())
+    }
+
+    pub(crate) fn set_buffer_release_sender(&mut self, offer: &polymer_runtime::SurfaceOffer) {
+        if let Some(surface) = self
+            .surfaces
+            .iter_mut()
+            .find(|surface| surface.connection == offer.connection_id())
+        {
+            surface.frames.release_sender = offer.buffer_release_sender();
+        }
     }
 
     pub(crate) fn set_latest(&mut self, connection: u64, frame: FrameReady) {
@@ -890,18 +847,17 @@ impl D3d12Compositor {
         else {
             return;
         };
-        if let Some(previous) = surface.latest.replace(frame)
-            && previous.slot != frame.slot
-        {
-            surface.imported.recycle_slot(previous.slot);
+        if surface.imported.resource(frame.slot).is_none() {
+            return;
         }
+        surface.frames.offer(frame);
     }
 
     pub fn received_surfaces(&self) -> Vec<ReceivedSurface> {
         self.surfaces
             .iter()
             .filter_map(|surface| {
-                let frame = surface.latest.or(surface.display_frame)?;
+                let frame = surface.frames.latest()?;
                 let image_extent = super::super::frame_image_extent(
                     frame,
                     surface.imported.width,
@@ -922,7 +878,9 @@ impl D3d12Compositor {
     }
 
     pub(crate) fn has_pending_frame(&self) -> bool {
-        self.surfaces.iter().any(|surface| surface.latest.is_some())
+        self.surfaces
+            .iter()
+            .any(|surface| surface.frames.has_pending())
     }
 
     pub(crate) fn disconnect_stream(&mut self, connection: u64) -> Result<(), Box<dyn Error>> {
@@ -953,17 +911,12 @@ impl D3d12Compositor {
     }
 
     fn refresh_surface_descriptors(&mut self) -> windows::core::Result<()> {
+        // Sorting or removing a surface moves descriptor ranges. Retire every
+        // draw using the old ranges before writing any descriptors.
+        self.wait_idle()?;
         for (index, surface) in self.surfaces.iter_mut().enumerate() {
-            surface.descriptor = FIRST_CONTENT_DESCRIPTOR + index as u32;
-            unsafe {
-                create_srv(
-                    self.receiver.device(),
-                    &self.srv_heap,
-                    self.srv_stride,
-                    surface.descriptor,
-                    &surface.cache,
-                )
-            };
+            surface.descriptor = FIRST_CONTENT_DESCRIPTOR + index as u32 * SURFACE_DESCRIPTORS;
+            surface.write_descriptors(self.receiver.device(), &self.srv_heap, self.srv_stride);
         }
         Ok(())
     }
@@ -1041,96 +994,91 @@ impl D3d12Compositor {
         let mut oldest_capture_qpc = None::<u64>;
         for index in 0..self.surfaces.len() {
             let mut surface = self.surfaces.remove(index);
-            let mut captured = None;
-            let pending = surface.latest.and_then(|frame| {
-                surface
-                    .imported
-                    .resource(frame.slot)
-                    .map(|source| (frame, source.clone(), surface.imported.uses_keyed_mutex()))
-            });
-            if let Some((frame, source, keyed_mutex)) = pending {
-                if let Some(webrtc) = webrtc.as_deref() {
-                    webrtc.wait_d3d12_stream(self.receiver.queue(), surface.connection)?;
+            // Always reinsert the surface, including on recording errors: its
+            // retained slot and native resources must survive failed frames.
+            let result = (|| -> Result<(), Box<dyn Error>> {
+                surface.frames.begin();
+                if surface.cache.is_some()
+                    && let Some(video) = webrtc.as_deref()
+                {
+                    // Cached textures may be read by an encoder even on a
+                    // redraw without a new producer frame.
+                    video.wait_d3d12_stream(self.receiver.queue(), surface.connection)?;
                 }
-                if keyed_mutex {
-                    let acquired = surface
+                let mut captured = None;
+                if let Some(frame) = surface.frames.pending() {
+                    let source = surface
                         .imported
-                        .acquire_slot(frame.slot, KEYED_MUTEX_TIMEOUT_MS)
-                        .is_ok();
-                    if acquired {
-                        let copied = self.copy_to_cache_sync(
-                            &source,
-                            &surface.cache,
-                            &mut surface.cache_state,
-                        );
-                        let _ = surface.imported.release_slot(frame.slot);
-                        copied?;
-                        surface.display_frame = Some(frame);
-                        surface.latest = None;
+                        .resource(frame.slot)
+                        .expect("validated slot")
+                        .clone();
+                    if surface.imported.producer_ready(frame.sync_value) {
+                        if let Some(cache) = &surface.cache {
+                            ImportedSurface::copy(&self.command_list, &source, cache);
+                        }
+                        surface.frames.prepare_pending(if surface.cache.is_some() {
+                            Retention::Cached
+                        } else {
+                            Retention::Retained
+                        });
                         captured = Some(frame);
+                        if let Some(value) = surface.frames.release_value() {
+                            release_values.push((surface.connection, value));
+                        }
                     }
-                } else {
-                    if !surface.imported.producer_ready(frame.sync_value) {
-                        self.surfaces.insert(index, surface);
-                        continue;
-                    }
+                }
+                if video_publish_budget > 0
+                    && captured.is_some()
+                    && webrtc
+                        .as_deref()
+                        .is_some_and(|video| video.accepts_d3d12_stream(surface.connection))
+                {
+                    let texture = if let Some(cache) = &surface.cache {
+                        cache.clone()
+                    } else {
+                        // Encoding owns a private snapshot. It must never
+                        // outlive the lease on a producer's displayed slot.
+                        if surface.video_cache.is_none() {
+                            surface.video_cache =
+                                Some(surface.create_cache(self.receiver.device())?);
+                        }
+                        let cache = surface.video_cache.as_ref().expect("video cache");
+                        ImportedSurface::copy(
+                            &self.command_list,
+                            surface.texture().expect("displayed texture"),
+                            cache,
+                        );
+                        cache.clone()
+                    };
+                    video_publish_budget -= 1;
+                    video_captures.push((
+                        surface.connection,
+                        texture,
+                        surface.imported.width,
+                        surface.imported.height,
+                        DXGI_FORMAT(surface.imported.format as i32),
+                    ));
+                }
+                if let Some(texture) = surface.texture() {
                     unsafe {
                         transition(
                             &self.command_list,
-                            &source,
+                            texture,
                             D3D12_RESOURCE_STATE_COMMON,
-                            D3D12_RESOURCE_STATE_COPY_SOURCE,
-                        );
-                        transition(
-                            &self.command_list,
-                            &surface.cache,
-                            surface.cache_state,
-                            D3D12_RESOURCE_STATE_COPY_DEST,
-                        );
-                        self.command_list.CopyResource(&surface.cache, &source);
-                        transition(
-                            &self.command_list,
-                            &source,
-                            D3D12_RESOURCE_STATE_COPY_SOURCE,
-                            D3D12_RESOURCE_STATE_COMMON,
-                        );
-                        transition(
-                            &self.command_list,
-                            &surface.cache,
-                            D3D12_RESOURCE_STATE_COPY_DEST,
                             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                        );
-                    }
-                    surface.cache_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-                    surface.display_frame = Some(frame);
-                    surface.latest = None;
-                    captured = Some(frame);
-                    release_values.push((surface.connection, frame.sync_value));
+                        )
+                    };
                 }
-            }
-            if video_publish_budget > 0
-                && captured.is_some()
-                && webrtc
-                    .as_deref()
-                    .is_some_and(|webrtc| webrtc.accepts_d3d12_stream(surface.connection))
-            {
-                video_publish_budget -= 1;
-                video_captures.push((
-                    surface.connection,
-                    surface.cache.clone(),
-                    surface.imported.width,
-                    surface.imported.height,
-                    DXGI_FORMAT(surface.imported.format as i32),
-                ));
-            }
-            if let Some(frame) = captured {
-                oldest_capture_qpc = Some(
-                    oldest_capture_qpc.map_or(frame.timestamp_qpc, |oldest: u64| {
-                        oldest.min(frame.timestamp_qpc)
-                    }),
-                );
-            }
+                if let Some(frame) = captured {
+                    oldest_capture_qpc =
+                        Some(oldest_capture_qpc.map_or(frame.timestamp_qpc, |oldest| {
+                            oldest.min(frame.timestamp_qpc)
+                        }));
+                }
+                Ok(())
+            })();
             self.surfaces.insert(index, surface);
+            result?;
         }
 
         let backbuffer = self.backbuffers[frame_index].clone();
@@ -1165,6 +1113,18 @@ impl D3d12Compositor {
             extent: self.extent,
         })?;
 
+        for surface in &self.surfaces {
+            if let Some(texture) = surface.texture() {
+                unsafe {
+                    transition(
+                        &self.command_list,
+                        texture,
+                        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                        D3D12_RESOURCE_STATE_COMMON,
+                    )
+                };
+            }
+        }
         unsafe {
             transition(
                 &self.command_list,
@@ -1175,6 +1135,9 @@ impl D3d12Compositor {
             self.command_list.Close()?;
             let list: ID3D12CommandList = self.command_list.cast()?;
             self.receiver.queue().ExecuteCommandLists(&[Some(list)]);
+            for surface in &mut self.surfaces {
+                surface.frames.commit();
+            }
             for (connection, value) in release_values {
                 if let Some(surface) = self
                     .surfaces
@@ -1184,6 +1147,7 @@ impl D3d12Compositor {
                     surface
                         .imported
                         .signal_release(self.receiver.queue(), value)?;
+                    surface.frames.acknowledge_release(value)?;
                 }
             }
             self.fence_value += 1;
@@ -1197,7 +1161,7 @@ impl D3d12Compositor {
                         connection,
                         self.receiver.device().clone(),
                         resource,
-                        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                        D3D12_RESOURCE_STATE_COMMON,
                         format,
                         width,
                         height,
@@ -1235,17 +1199,19 @@ impl D3d12Compositor {
 
     /// Reads the primary imported surface's last displayed frame as normalized RGBA pixels.
     pub fn snapshot_rgba(&mut self) -> Result<Option<(u32, u32, Vec<u8>)>, Box<dyn Error>> {
-        let Some((texture, state, flip_y, quarter_turns)) = self
-            .surfaces
-            .first()
-            .filter(|surface| surface.display_frame.is_some())
-            .map(|surface| {
-                (
-                    surface.cache.clone(),
-                    surface.cache_state,
+        let Some((texture, state, flip_y, quarter_turns)) =
+            self.surfaces.first().and_then(|surface| {
+                let frame = surface.frames.displayed()?;
+                Some((
+                    surface
+                        .cache
+                        .as_ref()
+                        .or_else(|| surface.imported.resource(frame.slot))?
+                        .clone(),
+                    D3D12_RESOURCE_STATE_COMMON,
                     surface.flip_y,
                     surface.quarter_turns,
-                )
+                ))
             })
         else {
             return Ok(None);
@@ -1306,8 +1272,10 @@ impl D3d12Compositor {
         let height = desc.Height as usize;
         let row_pitch = footprint.Footprint.RowPitch as usize;
         let mut rgba = Vec::with_capacity(width * height * 4);
-        for row in bytes.chunks_exact(row_pitch).take(height) {
-            for pixel in row[..width * 4].chunks_exact(4) {
+        // GetCopyableFootprints need not include padding after the final row.
+        for y in 0..height {
+            let start = footprint.Offset as usize + y * row_pitch;
+            for pixel in bytes[start..start + width * 4].chunks_exact(4) {
                 if matches!(
                     desc.Format,
                     DXGI_FORMAT_B8G8R8A8_UNORM | DXGI_FORMAT_B8G8R8A8_UNORM_SRGB
@@ -1371,7 +1339,7 @@ impl D3d12Compositor {
                     surface.connection == placement.connection
                         && surface.surface_id == placement.surface_id
                 })?;
-                let frame = surface.display_frame?;
+                let frame = surface.frames.frame()?;
                 let (crop_w, crop_h) = crate::fit_inside(
                     frame.render_width.max(1),
                     frame.render_height.max(1),
@@ -1386,7 +1354,7 @@ impl D3d12Compositor {
                 let opacity = (placement.content.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
                 Some((
                     placement.corner_radius > 0.0 || opacity < 255,
-                    surface.descriptor,
+                    surface.sample_descriptor(),
                     quad(
                         l,
                         t,
@@ -1481,52 +1449,6 @@ impl D3d12Compositor {
             self.command_list
                 .DrawIndexedInstanced(indices.len() as u32, 1, 0, 0, 0);
         }
-        Ok(())
-    }
-
-    /// Copies `source` into `cache` and blocks until the GPU finishes. Used
-    /// for keyed-mutex streams, where the mutex must not be released before
-    /// every read of the slot has completed.
-    fn copy_to_cache_sync(
-        &mut self,
-        source: &ID3D12Resource,
-        cache: &ID3D12Resource,
-        cache_state: &mut D3D12_RESOURCE_STATES,
-    ) -> Result<(), Box<dyn Error>> {
-        let (allocator, list) = self
-            .mutex_copy
-            .as_ref()
-            .ok_or("keyed-mutex stream has no copy command list")?
-            .clone();
-        unsafe {
-            allocator.Reset()?;
-            list.Reset(&allocator, None)?;
-            transition(
-                &list,
-                source,
-                D3D12_RESOURCE_STATE_COMMON,
-                D3D12_RESOURCE_STATE_COPY_SOURCE,
-            );
-            transition(&list, cache, *cache_state, D3D12_RESOURCE_STATE_COPY_DEST);
-            list.CopyResource(cache, source);
-            transition(
-                &list,
-                source,
-                D3D12_RESOURCE_STATE_COPY_SOURCE,
-                D3D12_RESOURCE_STATE_COMMON,
-            );
-            transition(
-                &list,
-                cache,
-                D3D12_RESOURCE_STATE_COPY_DEST,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            );
-            list.Close()?;
-            let command: ID3D12CommandList = list.cast()?;
-            self.receiver.queue().ExecuteCommandLists(&[Some(command)]);
-        }
-        *cache_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-        self.wait_idle()?;
         Ok(())
     }
 
@@ -1674,7 +1596,7 @@ unsafe fn create_backbuffers(
     Ok(result)
 }
 
-unsafe fn create_texture(
+pub(super) unsafe fn create_texture(
     device: &ID3D12Device,
     width: u32,
     height: u32,
@@ -1713,7 +1635,7 @@ unsafe fn create_texture(
         .ok_or_else(|| windows::core::Error::from_hresult(windows::Win32::Foundation::E_POINTER))
 }
 
-unsafe fn create_srv(
+pub(super) unsafe fn create_srv(
     device: &ID3D12Device,
     heap: &ID3D12DescriptorHeap,
     stride: u32,
@@ -1808,7 +1730,7 @@ unsafe fn create_readback_buffer(
         .ok_or_else(|| windows::core::Error::from_hresult(windows::Win32::Foundation::E_POINTER))
 }
 
-unsafe fn transition(
+pub(super) unsafe fn transition(
     list: &ID3D12GraphicsCommandList,
     resource: &ID3D12Resource,
     before: D3D12_RESOURCE_STATES,

@@ -149,8 +149,8 @@ export function onLaunch(args: EmulatorLaunchArgs) {
         isolate: true,
         hooks: { graphics: [api], input: ["sdl3"] },
         surfaces: [
-            { index: 0, pattern: "Cemu+" },
-            { index: 1, pattern: "GamePad+" },
+            { index: 0, pattern: "Cemu+", resolution: [1280, 720] },
+            { index: 1, pattern: "GamePad+", resolution: [854, 480] },
         ],
     };
 }

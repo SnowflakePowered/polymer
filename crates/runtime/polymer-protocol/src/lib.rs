@@ -3,11 +3,13 @@
 #![forbid(unsafe_code)]
 
 mod capture;
+pub mod configuration;
 pub mod input;
 
 pub use capture::{CaptureError, FrameConsumer, FrameProducer, SurfaceDesc};
+pub use configuration::{RenderConfiguration, SurfaceRequest};
 
-pub const PROTOCOL_VERSION: u32 = 17;
+pub const PROTOCOL_VERSION: u32 = 19;
 /// Fractional bits used by coordinates in [`PresentationPoint`].
 pub const PRESENTATION_COORD_FRACTIONAL_BITS: u32 = 16;
 pub const MAX_IMAGE_SLOTS: usize = 4;
@@ -108,7 +110,6 @@ pub struct AdapterLuid {
 #[repr(u32)]
 pub enum ExternalImageKind {
     VulkanOpaqueWin32 = 1,
-    D3d11SharedResourceNt = 2,
     D3d12Resource = 3,
     D3d12Heap = 4,
     /// D3D12 shared resource owned and written through OpenGL EXT external objects.
@@ -117,11 +118,9 @@ pub enum ExternalImageKind {
     OpenGlD3d12Resource = 5,
     /// D3D12 shared resource owned by D3D12 and written through Vulkan external memory.
     VulkanD3d12Resource = 6,
-    /// D3D11 shared resource opened by D3D12 through its NT handle.
+    /// Fence-synchronized D3D11 shared resource, opened through its NT handle
+    /// by D3D12 or as D3D11_TEXTURE external memory by Vulkan.
     D3d11D3d12Resource = 7,
-    /// D3D11 shared resource painted through a GDI surface DC and opened by
-    /// D3D12 through its NT handle.
-    GdiD3d12Resource = 8,
 }
 
 impl TryFrom<u32> for ExternalImageKind {
@@ -130,13 +129,11 @@ impl TryFrom<u32> for ExternalImageKind {
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         match value {
             1 => Ok(Self::VulkanOpaqueWin32),
-            2 => Ok(Self::D3d11SharedResourceNt),
             3 => Ok(Self::D3d12Resource),
             4 => Ok(Self::D3d12Heap),
             5 => Ok(Self::OpenGlD3d12Resource),
             6 => Ok(Self::VulkanD3d12Resource),
             7 => Ok(Self::D3d11D3d12Resource),
-            8 => Ok(Self::GdiD3d12Resource),
             _ => Err(()),
         }
     }
@@ -147,8 +144,6 @@ impl TryFrom<u32> for ExternalImageKind {
 pub enum ExternalSyncKind {
     VulkanBinarySemaphore = 1,
     VulkanTimelineSemaphore = 2,
-    D3d11Fence = 3,
-    D3d11KeyedMutex = 4,
     D3d12Fence = 5,
 }
 
@@ -159,8 +154,6 @@ impl TryFrom<u32> for ExternalSyncKind {
         match value {
             1 => Ok(Self::VulkanBinarySemaphore),
             2 => Ok(Self::VulkanTimelineSemaphore),
-            3 => Ok(Self::D3d11Fence),
-            4 => Ok(Self::D3d11KeyedMutex),
             5 => Ok(Self::D3d12Fence),
             _ => Err(()),
         }
