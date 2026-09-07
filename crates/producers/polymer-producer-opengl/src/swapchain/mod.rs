@@ -2,7 +2,6 @@ mod context;
 mod ext;
 mod lifecycle;
 mod nv;
-mod presentation;
 mod readback;
 mod source_attachment;
 mod storage;
@@ -20,7 +19,7 @@ use crate::{
         nv_dx, pbo,
     },
     timeline::Timeline,
-    tracking::{DrawCandidate, QuadBounds, Tracking},
+    tracking::{DrawCandidate, Tracking},
 };
 use parking_lot::Mutex;
 use polymer_hook::config;
@@ -218,37 +217,6 @@ struct WindowCaptures {
     last_swap: u64,
 }
 
-impl WindowCaptures {
-    fn registry_sources(
-        &self,
-        context: usize,
-    ) -> Vec<polymer_presentation::registry::RegistrySource> {
-        self.tracked_sources
-            .iter()
-            .enumerate()
-            .map(
-                |(logical_slot, source)| polymer_presentation::registry::RegistrySource {
-                    logical_slot: self
-                        .source_slots
-                        .get(logical_slot)
-                        .copied()
-                        .unwrap_or(logical_slot),
-                    identity: polymer_presentation::registry::SourceIdentity {
-                        domain: context as u64,
-                        resource: source.incarnation,
-                        subresource: source.mip as u32 | ((source.layer as u32) << 8),
-                    },
-                    extent: polymer_presentation::Extent2D {
-                        width: source.width,
-                        height: source.height,
-                    },
-                    placement: None,
-                },
-            )
-            .collect()
-    }
-}
-
 impl Default for WindowCaptures {
     fn default() -> Self {
         static NEXT_OWNER: AtomicU64 = AtomicU64::new(1);
@@ -277,11 +245,6 @@ fn captures() -> &'static CaptureStore {
 /// Global swap counter used as the staleness clock for the cross-window
 /// selection.
 static SWAP_CLOCK: AtomicU64 = AtomicU64::new(0);
-
-/// Swaps (across all windows) a window may go without presenting before its
-/// tracked sources leave the cross-window selection.
-const SELECTION_HORIZON: u64 =
-    polymer_presentation::registry::PresentationRegistry::OWNERSHIP_HORIZON;
 
 /// Graph selections are indexed independently of the window that presents
 /// them, exactly like the Vulkan producer. Keeping this identity stable
@@ -366,7 +329,6 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
             hdc as u64,
         )),
     );
-    let present_quads = tracking.take_present_quads(context as usize);
     let key = (hdc as usize, context as usize);
     let now = SWAP_CLOCK.fetch_add(1, Ordering::Relaxed) + 1;
     let _presentation = PRESENTATION_LOCK.lock();
@@ -391,66 +353,40 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
             *source = refreshed;
             true
         });
-        changes = reconciled.changes;
+        registry.observe(
+            entry.owner_id,
+            hwnd as isize,
+            reconciled.registry_sources(|source| {
+                (
+                    polymer_presentation::registry::SourceIdentity {
+                        domain: context as u64,
+                        resource: source.incarnation,
+                        subresource: source.mip as u32 | ((source.layer as u32) << 8),
+                    },
+                    source.selection.source_rect.extent,
+                )
+            }),
+            now,
+        );
+        changes = reconciled.changed_slots;
         entry.source_slots = reconciled.slots;
         entry.tracked_sources = reconciled.surfaces;
         entry.hwnd = hwnd as isize;
         entry.last_swap = now;
     }
-    // The requested indices select from the deterministic cross-window
-    // selection — the union of every live window's tracked sources, tallest/
-    // widest first — so `--track-render-targets 0,1` means the same screens
-    // whether an application presents them in one window or several. Each
-    // window then streams only the selected sources it presents itself,
-    // which makes the stream's input HWND simply the presenting window.
-    let selection = map
-        .iter()
-        .flat_map(|stored| {
-            let captures = stored.lock();
-            captures
-                .tracked_sources
-                .iter()
-                .enumerate()
-                .filter(|_| captures.last_swap.saturating_add(SELECTION_HORIZON) >= now)
-                .map(|(index, _source)| ((captures.owner_id, index), captures.hwnd))
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
-    let titles = selection
-        .iter()
-        .filter_map(|&(_, hwnd)| window_title(NativeWindow(hwnd)).map(|title| (hwnd, title)))
-        .collect::<HashMap<_, _>>();
     let requested = config::tracked_render_target_indices().unwrap_or_default();
-    for stored in map.iter() {
-        let context = stored.key().1;
-        let captures = stored.lock();
-        registry.observe(
-            captures.owner_id,
-            captures.hwnd,
-            captures.registry_sources(context),
-            captures.last_swap,
-        );
-    }
-    // Entries from other contexts can outlive their HWND until their own
-    // context can retire native resources. Exclude their destroyed windows
-    // after importing observations and before assigning output slots.
     polymer_presentation::producer::ProducerWindows::refresh(registry);
-    let mut resolved = Vec::new();
-    for stored in map.iter() {
-        let captures = stored.lock();
-        for (slot, index) in registry.requests(captures.owner_id, &requested, now, |slot, hwnd| {
-            if !config::tracked_render_target_has_surface_pattern(slot) {
-                return None;
-            }
-            Some(titles.get(&hwnd).is_some_and(|title| {
-                config::tracked_render_target_surface_matches(slot, title) == Some(true)
-            }))
-        }) {
-            if captures.tracked_sources.get(index).is_some() {
-                resolved.push((slot, (captures.owner_id, index)));
-            }
-        }
-    }
+    let titles = registry
+        .observed_windows()
+        .into_iter()
+        .filter_map(|window| window_title(NativeWindow(window)).map(|title| (window, title)))
+        .collect::<HashMap<_, _>>();
+    let resolved = registry.assign(&requested, now, |slot, window| {
+        config::tracked_render_target_surface_matches(
+            slot,
+            titles.get(&window).map_or("", String::as_str),
+        )
+    });
     let fallback_slots =
         config::tracked_render_target_surface_slots(&registry.ordered_windows(now), |window| {
             window_title(NativeWindow(window))
@@ -470,16 +406,11 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
                 }
             }
         } else {
-            for &(slot, identity) in &resolved {
-                if let Some(&(_, window)) = selection
-                    .iter()
-                    .find(|&&(candidate, _)| candidate == identity)
-                {
-                    allowed
-                        .entry(window)
-                        .or_default()
-                        .push(graph_surface_id(slot));
-                }
+            for assignment in &resolved {
+                allowed
+                    .entry(assignment.window)
+                    .or_default()
+                    .push(graph_surface_id(assignment.slot));
             }
         }
         for stored in map.iter() {
@@ -501,52 +432,14 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
         .iter()
         .enumerate()
         .filter_map(|(index, source)| {
-            let identity = (entry.owner_id, index);
             let slot = resolved
                 .iter()
-                .find_map(|&(slot, selected)| (selected == identity).then_some(slot))?;
+                .find(|assignment| assignment.owner == entry.owner_id && assignment.index == index)?
+                .slot;
             Some((slot, *source))
         })
         .collect::<Vec<_>>();
     chosen.sort_unstable_by_key(|&(slot, _)| slot);
-    let presentation_extent = polymer_presentation::Extent2D {
-        width: window_width,
-        height: window_height,
-    };
-    let pairings = polymer_presentation::registry::PresentationRegistry::pair_placements(
-        chosen
-            .iter()
-            .map(|(_, source)| polymer_presentation::history::HistorySurface::identity(source)),
-        &present_quads,
-    );
-    let registered = entry.registry_sources(context as usize);
-    let placement_sources = chosen
-        .iter()
-        .zip(pairings)
-        .filter_map(|(&(slot, source), pairing)| {
-            let index = resolved.iter().find_map(|&(requested, (owner, index))| {
-                (requested == slot && owner == entry.owner_id).then_some(index)
-            })?;
-            let mut registered = *registered.get(index)?;
-            registered.placement = if source.window_bounds {
-                source.bounds.presentation_rect(presentation_extent)
-            } else {
-                pairing.and_then(|bounds| bounds.presentation_rect(presentation_extent))
-            };
-            Some(registered)
-        })
-        .collect::<Vec<_>>();
-    let placements =
-        registry.remember_placements(entry.owner_id, presentation_extent, &placement_sources, now);
-    for ((_, source), placement) in chosen.iter_mut().zip(placements) {
-        if !source.window_bounds
-            && let Some(bounds) = placement
-                .and_then(|bounds| QuadBounds::from_presentation_rect(bounds, presentation_extent))
-        {
-            source.bounds = bounds;
-            source.window_bounds = true;
-        }
-    }
     // One stream per selected source, or the classic whole-window stream
     // when nothing resolves. Tracked layouts ride out short selection gaps
     // and hold off layout changes until they persist, rather than churning
@@ -557,7 +450,13 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
         .unwrap_or(SurfaceId(hwnd as u64));
     let proposed = chosen
         .iter()
-        .map(|&(slot, source)| (source.width, source.height, graph_surface_id(slot)))
+        .map(|&(slot, source)| {
+            (
+                source.selection.source_rect.extent.width,
+                source.selection.source_rect.extent.height,
+                graph_surface_id(slot),
+            )
+        })
         .collect::<Vec<_>>();
     let fallback = if config::tracking_enabled() && (!resolved.is_empty() || tracked_slot.is_none())
     {
@@ -608,14 +507,13 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
             }
         };
         capture.set_requirements(width, height, bottom_up, hwnd as isize);
-        let source_slot = resolved.iter().find_map(|&(slot, (owner, index))| {
-            (owner == entry.owner_id && graph_surface_id(slot) == surface)
-                .then(|| entry.source_slots.get(index).copied())
-                .flatten()
-        });
-        if source_slot.is_some_and(|source_slot| changes.iter().any(|change| matches!(change,
-            polymer_presentation::history::SurfaceChange::Add { slot }
-            | polymer_presentation::history::SurfaceChange::Replace { slot } if *slot == source_slot))) {
+        let source_slot = resolved
+            .iter()
+            .find(|assignment| {
+                assignment.owner == entry.owner_id && graph_surface_id(assignment.slot) == surface
+            })
+            .and_then(|assignment| entry.source_slots.get(assignment.index).copied());
+        if source_slot.is_some_and(|source_slot| changes.contains(&source_slot)) {
             capture.source_changed();
         }
         capture.set_window_extent(window_width, window_height);
@@ -636,6 +534,3 @@ pub unsafe fn before_swap_buffers(tracking: &Tracking, hdc: isize) {
         let _ = unsafe { capture.copy_frame(stream_id, source) };
     }
 }
-
-#[cfg(test)]
-mod tests;

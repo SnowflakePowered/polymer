@@ -7,7 +7,7 @@ use polymer_platform_windows::performance_counter;
 use polymer_presentation::producer::ExportDescriptor;
 use polymer_presentation::producer::ProducerSession;
 use polymer_protocol::{
-    AdapterLuid, ExternalImageKind, ExternalSyncKind, PresentationTransform, StreamId, SurfaceId,
+    AdapterLuid, ExternalImageKind, ExternalSyncKind, StreamId, SurfaceId,
     transport_unorm_dxgi_format,
 };
 use std::{ffi::c_void, sync::Arc};
@@ -109,7 +109,7 @@ impl SwapchainOwner for SwapchainCapture {
         let exact = !presentations.is_empty()
             && presentations
                 .iter()
-                .all(|presentation| presentation.exact_selection);
+                .all(|presentation| presentation.selection.exact);
         let reconciled = self
             .history
             .lock()
@@ -117,7 +117,7 @@ impl SwapchainOwner for SwapchainCapture {
                 self.tracking
                     .refresh_presentation(presentation, self.queue.as_raw() as usize)
             });
-        let presentations = reconciled.surfaces;
+        let presentations = &reconciled.surfaces;
         let now = self
             .tracking
             .presentation_clock
@@ -130,29 +130,22 @@ impl SwapchainOwner for SwapchainCapture {
         .map_or(0, |desc| desc.OutputWindow.0 as isize);
         use polymer_presentation::history::HistorySurface;
         polymer_presentation::producer::ProducerWindows::refresh(&self.tracking.registry);
-        use polymer_presentation::registry::{RegistrySource, SourceIdentity};
-        let sources = presentations
-            .iter()
-            .zip(&reconciled.slots)
-            .map(|(presentation, &logical_slot)| {
-                let (resource, subresource) = presentation.identity();
-                let (width, height, _, _) = presentation.layout();
-                RegistrySource {
-                    logical_slot,
-                    identity: SourceIdentity {
-                        domain: 0,
-                        resource: if resource == 0 {
-                            self.stream_id
-                        } else {
-                            resource as u64
-                        },
-                        subresource,
+        use polymer_presentation::registry::SourceIdentity;
+        let sources = reconciled.registry_sources(|presentation| {
+            let (resource, subresource) = presentation.identity();
+            (
+                SourceIdentity {
+                    domain: 0,
+                    resource: if resource == 0 {
+                        self.stream_id
+                    } else {
+                        resource as u64
                     },
-                    extent: polymer_presentation::Extent2D { width, height },
-                    placement: None,
-                }
-            })
-            .collect();
+                    subresource,
+                },
+                presentation.selection.source_rect.extent,
+            )
+        });
         self.tracking
             .registry
             .observe(self.stream_id, window, sources, now);
@@ -174,24 +167,15 @@ impl SwapchainOwner for SwapchainCapture {
         let mut captures = self.capture.lock();
         captures.resize_with(requested.len(), Capture::default);
         captures.truncate(requested.len());
-        for change in reconciled.changes {
-            let source_slot = match change {
-                polymer_presentation::history::SurfaceChange::Replace { slot }
-                | polymer_presentation::history::SurfaceChange::Add { slot } => slot,
-                _ => continue,
-            };
-            for &(slot, index) in &resolved {
-                if reconciled.slots.get(index) == Some(&source_slot) {
-                    captures[slot].source_changed();
-                }
-            }
-        }
         for (slot, capture) in captures.iter_mut().enumerate() {
             if !resolved.iter().any(|(selected, _)| *selected == slot) {
                 capture.park();
             }
         }
         for (slot, index) in resolved {
+            if reconciled.changed(index) {
+                captures[slot].source_changed();
+            }
             let presentation = presentations.get(index);
             if presentation.is_none() && (!presentations.is_empty() || slot != 0) {
                 captures[slot].invalidate();
@@ -247,13 +231,20 @@ impl SwapchainCapture {
         // A tracked source is copied in its own coordinate system. The draw
         // region belongs to the destination backbuffer and is carried only as
         // presentation metadata for pointer mapping.
-        let copy_region = presentation.and_then(|value| {
-            if tracked_source.is_some() {
-                value.source_region
-            } else {
-                value.region
-            }
-        });
+        let copy_region = presentation
+            .and_then(|value| {
+                if tracked_source.is_some() {
+                    Some(value.selection.source_rect)
+                } else {
+                    value.selection.presentation_rect
+                }
+            })
+            .map(|rect| crate::D3d12CaptureRegion {
+                x: rect.x.max(0) as u32,
+                y: rect.y.max(0) as u32,
+                width: rect.extent.width,
+                height: rect.extent.height,
+            });
         let requirements = (
             requested_index,
             tracked_source.map(|source| {
@@ -425,21 +416,30 @@ impl CaptureState {
         };
 
         let capture_desc = self.capture.desc();
-        let presentation_extent = presentation
-            .as_ref()
-            .map_or((capture_desc.width, capture_desc.height), |value| {
-                value.target_extent
-            });
-        let presentation_rect = presentation.as_ref().and_then(|value| value.region).map_or(
-            (
-                submission.capture_x,
-                submission.capture_y,
-                submission.width,
-                submission.height,
-            ),
-            |region| (region.x, region.y, region.width, region.height),
-        );
-        let message = polymer_presentation::producer::CapturedFrame {
+        let placement =
+            if let Some(presentation) = presentation.filter(|_| tracked_source.is_some()) {
+                presentation.selection.frame_placement()
+            } else {
+                polymer_presentation::FramePlacement::new(
+                    presentation.map_or(
+                        polymer_presentation::Extent2D {
+                            width: capture_desc.width,
+                            height: capture_desc.height,
+                        },
+                        |value| value.selection.target_extent,
+                    ),
+                    Some(polymer_presentation::Rect {
+                        x: submission.capture_x as i32,
+                        y: submission.capture_y as i32,
+                        extent: polymer_presentation::Extent2D {
+                            width: submission.width,
+                            height: submission.height,
+                        },
+                    }),
+                    (false, false),
+                )
+            };
+        let message = polymer_presentation::CapturedFrame {
             stream_id,
             slot: submission.slot,
             sync_value: submission.sync_value,
@@ -449,32 +449,7 @@ impl CaptureState {
                 height: submission.height,
             },
         }
-        .present(polymer_presentation::producer::FramePlacement {
-            extent: polymer_presentation::Extent2D {
-                width: presentation_extent.0,
-                height: presentation_extent.1,
-            },
-            bounds: polymer_presentation::Rect {
-                x: (presentation_rect.0) as i32,
-                y: (presentation_rect.1) as i32,
-                extent: polymer_presentation::Extent2D {
-                    width: presentation_rect.2,
-                    height: presentation_rect.3,
-                },
-            },
-            transform: if tracked_source.is_some()
-                && presentation.is_some_and(|value| !value.placement_known)
-            {
-                PresentationTransform::UNAVAILABLE
-            } else {
-                PresentationTransform::axis_aligned(
-                    presentation_rect.0,
-                    presentation_rect.1,
-                    presentation_rect.2,
-                    presentation_rect.3,
-                )
-            },
-        });
+        .present(placement);
         ProducerSession::publish_frame(&mut self.ipc, message);
         Ok(Some(()))
     }

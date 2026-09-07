@@ -205,14 +205,23 @@ mod tests {
             assert_eq!(selected.len(), 1);
             assert_eq!(selected[0].image, source);
             assert_eq!(
-                (selected[0].source_offset.x, selected[0].source_offset.y),
+                (
+                    selected[0].selection.source_rect.x,
+                    selected[0].selection.source_rect.y
+                ),
                 (8, 4)
             );
             assert_eq!(
-                (selected[0].extent.width, selected[0].extent.height),
+                (
+                    selected[0].selection.source_rect.extent.width,
+                    selected[0].selection.source_rect.extent.height
+                ),
                 (24, 32)
             );
-            assert_eq!(selected[0].orientation, (operation == 2, false));
+            assert_eq!(
+                (selected[0].selection.flip_x, selected[0].selection.flip_y),
+                (operation == 2, false)
+            );
             tracking.command_buffer_began(command);
             tracking.reset_graph();
             tracking.commands_submitted(&[command]);

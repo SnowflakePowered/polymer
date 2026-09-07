@@ -20,13 +20,24 @@ mod tests {
         let texture_incarnation = first.incarnation(false, 7);
         assert_ne!(buffer.incarnation, texture_incarnation);
         assert_ne!(texture.key(), buffer.key());
-        first.observations.entry(1).or_default().record(
-            polymer_presentation::DependencyEdge::sampled(texture.key(), buffer.key(), 0),
-        );
+        first
+            .observations
+            .record(polymer_presentation::DependencyEdge::sampled(
+                texture.key(),
+                buffer.key(),
+                0,
+            ));
         first.forget_renderbuffer(7);
-        assert!(first.render_targets.lock().is_empty());
-        assert_eq!(second.render_targets.lock().len(), 1);
-        assert!(first.observations.get(&1).unwrap().snapshot(0).1.is_empty());
+        assert!(first.resources.is_empty());
+        assert_eq!(second.resources.len(), 1);
+        assert!(
+            first
+                .observations
+                .graph::<()>(0)
+                .observation_list()
+                .1
+                .is_empty()
+        );
         assert_eq!(
             *first.texture_info.get(&7).unwrap(),
             (GL_TEXTURE_2D, 640, 480)
@@ -38,9 +49,16 @@ mod tests {
         assert_ne!(buffer.incarnation, texture_incarnation);
         assert_eq!(first.incarnation(false, 7), texture_incarnation);
         first.upsert_render_target(buffer);
-        assert!(first.observations.get(&1).unwrap().snapshot(0).1.is_empty());
+        assert!(
+            first
+                .observations
+                .graph::<()>(0)
+                .observation_list()
+                .1
+                .is_empty()
+        );
         first.forget_texture(7);
-        assert_eq!(first.render_targets.lock().len(), 1);
+        assert_eq!(first.resources.len(), 1);
     }
 
     #[test]
@@ -114,12 +132,7 @@ impl Tracking {
         context: usize,
         backbuffer: Option<DrawCandidate>,
     ) -> (Vec<DrawCandidate>, bool) {
-        self.context(context)
-            .take_draw_candidates(context, backbuffer)
-    }
-
-    pub(crate) fn take_present_quads(&self, context: usize) -> Vec<(SurfaceIdentity, QuadBounds)> {
-        self.context(context).take_present_quads(context)
+        self.context(context).take_draw_candidates(backbuffer)
     }
 
     pub(crate) fn refresh_sources(&self, sources: &[DrawCandidate]) -> Vec<DrawCandidate> {
@@ -178,23 +191,13 @@ impl Tracking {
 
 impl ContextTracking {
     fn forget_resource_observations(&self, name: Gluint, renderbuffer: bool) {
-        for observations in self.observations.iter() {
-            let (targets, edges) = observations.snapshot(self.generation());
-            for key in targets.into_iter().map(|target| target.id).chain(
-                edges
-                    .into_iter()
-                    .flat_map(|edge| [edge.source, edge.destination]),
-            ) {
-                if key.renderbuffer == renderbuffer && key.texture == name {
-                    observations.forget(key);
-                }
-            }
-        }
+        self.observations
+            .forget_matching(|key| key.renderbuffer == renderbuffer && key.texture == name);
     }
 
     fn forget_renderbuffer(&self, name: Gluint) {
         self.incarnations.remove(&(true, name));
-        self.render_targets.lock().retain(|(candidate, _)| {
+        self.resources.retain(|_, candidate| {
             candidate.target != GL_RENDERBUFFER || candidate.texture != name
         });
         self.forget_resource_observations(name, true);
@@ -203,15 +206,9 @@ impl ContextTracking {
     pub(super) fn forget_texture(&self, texture: Gluint) {
         self.incarnations.remove(&(false, texture));
         self.texture_info.remove(&texture);
-        self.render_targets.lock().retain(|(candidate, _)| {
+        self.resources.retain(|_, candidate| {
             candidate.target == GL_RENDERBUFFER || candidate.texture != texture
         });
         self.forget_resource_observations(texture, false);
-        for mut candidates in self.draw_candidates.iter_mut() {
-            candidates.retain(|source| source.texture != texture);
-        }
-        for mut quads in self.presented_quads.iter_mut() {
-            quads.retain(|(source, _)| source.0 != texture);
-        }
     }
 }

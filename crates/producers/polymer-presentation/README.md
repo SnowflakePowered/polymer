@@ -8,9 +8,10 @@ including multiple screens and cropped content within padded allocations.
 
 1. API adapters record rendered targets and sampled/copy/blit/resolve dependencies.
 2. Deferred adapters publish observations when command lists execute.
-3. The shared selector chooses source IDs, source crops, and known presentation placement.
-4. History reconciles page flips with stable logical screen slots.
-5. Each backend validates its native source and performs capture and synchronization.
+3. `ObservationStore::present` advances and expires evidence, returning grouped dependencies.
+4. The selector produces `SurfaceSelection`, carried intact through history to frame publication.
+5. History reconciles page flips with stable logical screen slots.
+6. The registry assigns requested slots and windows. Each backend validates its native source and performs capture and synchronization.
 
 `Surface` supplies fallible extent metadata. `PresentationGraph` exposes a
 selection-scoped view of resources and dependencies. Native adapters retain
@@ -24,7 +25,7 @@ crop and destination placement remain separate, including reflection, because
 placement also supports input-coordinate mapping.
 
 `ResourceHistory` uses `HistorySurface` identity and compatible layout metadata to
-keep screen slots stable across page flips. Providers revalidate native resources
+keep screen slots stable across page flips and briefly retain known placement. Providers revalidate native resources
 before capture. Window request matching preserves configured indices and titles.
 
 ## Dependencies
@@ -37,7 +38,9 @@ in its producer.
 
 ## Verification
 
-The CPU fixtures cover padded allocations, unequal dual screens, intermediate
+The CPU-only `CpuBackend` submits metadata through the real store, selector, history,
+registry, and frame construction. It needs no graphics runtime, windows, or IPC.
+Shared fixtures cover padded allocations, unequal dual screens, intermediate
 mappings, ambiguous sampled inputs, reflections, page flips, subresources, cycles,
 and selection limits. Backend recording tests cover submission and reset behavior.
 

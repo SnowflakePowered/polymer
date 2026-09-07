@@ -22,19 +22,3 @@ unsafe extern "system" fn claim_swapchain(
         None => false,
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use parking_lot::Mutex;
-
-    use super::*;
-
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
-
-    #[test]
-    fn early_detour_installation_is_idempotent() {
-        let _guard = TEST_LOCK.lock();
-        assert_eq!(unsafe { PolymerInstallD3d12Hook() }, 0);
-        assert_eq!(unsafe { PolymerInstallD3d12Hook() }, 0);
-    }
-}

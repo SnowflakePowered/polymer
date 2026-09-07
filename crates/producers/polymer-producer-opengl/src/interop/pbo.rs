@@ -65,7 +65,7 @@ pub(crate) struct Transport {
     height: u32,
     issued: u64,
     next_pbo: usize,
-    frames: Vec<Option<(u64, polymer_presentation::producer::FramePlacement)>>,
+    frames: Vec<Option<(u64, polymer_presentation::FramePlacement)>>,
     scheduler: polymer_presentation::scheduling::SlotScheduler,
     pub(crate) adapter_luid: AdapterLuid,
 }
@@ -165,8 +165,8 @@ impl Transport {
         &mut self,
         x: i32,
         y: i32,
-        placement: polymer_presentation::producer::FramePlacement,
-    ) -> Result<Option<(usize, u64, polymer_presentation::producer::FramePlacement)>, String> {
+        placement: polymer_presentation::FramePlacement,
+    ) -> Result<Option<(usize, u64, polymer_presentation::FramePlacement)>, String> {
         let mut old_pixel_pack_buffer = 0;
         unsafe { super::glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &mut old_pixel_pack_buffer) };
         let write_index = self.next_pbo;

@@ -98,7 +98,7 @@ function quickResumeEnabled(configuration?: UserConfiguration): boolean {
 }
 
 export const onConfigure = (
-    package: Package,
+    pkg: Package,
     userConfiguration?: UserConfiguration,
 ): ConfigurationResult => ({
     schema: "dolphin/v1",
@@ -115,7 +115,7 @@ export const onConfigure = (
     }],
     values: {
         polymer: {
-            quickResume: !isNKit(package.filename) && quickResumeEnabled(userConfiguration),
+            quickResume: !isNKit(pkg.filename) && quickResumeEnabled(userConfiguration),
         },
     },
 });
@@ -473,7 +473,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     // Telemetry remains disabled and Dolphin does not open its consent dialog.
     options.analytics.enabled = false;
     options.analytics.permission_asked = true;
-    options.core.gfx_backend = "D3D";
+    options.core.gfx_backend = "Vulkan";
     options.core.gci_folder_a_path = args.filesystem.path("/MemoryCard/USA");
     // Dolphin disables save states by default in current development builds.
     // Polymer uses them for both explicit state slots and quick resume.
@@ -540,7 +540,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
         argv,
         isolate: true,
         hooks: {
-            graphics: ["d3d11"],
+            graphics: ["vulkan"],
             input: ["sdl3", "bluetooth-api-win32"],
         },
         controllerTopology,

@@ -23,7 +23,6 @@ impl ContextTracking {
         {
             return;
         }
-        let context = unsafe { current_context() } as usize;
         let order = self.observation_order.fetch_add(1, Ordering::Relaxed);
         for layer in 0..extent[2] {
             let Some(source_candidate) = (unsafe {
@@ -65,7 +64,7 @@ impl ContextTracking {
             edge.coverage = Some(mapping.destination);
             self.upsert_render_target(source_candidate);
             self.upsert_render_target(destination_candidate);
-            self.observations.entry(context).or_default().record(edge);
+            self.observations.record(edge);
         }
     }
 
@@ -92,23 +91,16 @@ impl ContextTracking {
             .get(&texture)
             .map_or(target, |info| info.0);
         Some(DrawCandidate {
+            selection: Default::default(),
             mip,
             incarnation: self.incarnation(false, texture),
-            orientation: (false, false),
-            source_origin: (0, 0),
-            allocation_extent: None,
+
             texture,
             target,
             layer,
             width,
             height,
-            bounds: QuadBounds {
-                x: 0,
-                y: 0,
-                width,
-                height,
-            },
-            window_bounds: false,
+
             score: 0,
         })
     }
@@ -173,7 +165,7 @@ impl ContextTracking {
                 continue;
             }
             if framebuffer == 0 {
-                destinations.push(SelectionView::PRESENT);
+                destinations.push(TargetKey::PRESENT);
                 break;
             }
             if let Some(candidate) =
@@ -254,10 +246,7 @@ impl ContextTracking {
             edge.evidence = polymer_presentation::Evidence::Blit;
             edge.mapping = Some(mapping);
             edge.coverage = Some(mapping.destination);
-            self.observations
-                .entry(context as usize)
-                .or_default()
-                .record(edge);
+            self.observations.record(edge);
         }
     }
 }

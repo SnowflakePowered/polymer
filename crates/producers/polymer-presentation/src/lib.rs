@@ -3,6 +3,7 @@
 //! Graph adapters own native resources and may query their APIs through
 //! [`Surface`]. Selection never performs capture or synchronization.
 
+pub mod frame;
 pub mod geometry;
 pub mod graph;
 pub mod history;
@@ -13,8 +14,12 @@ pub mod registry;
 pub mod scheduling;
 pub mod selection;
 
+pub use frame::{CapturedFrame, FramePlacement};
 pub use geometry::{Extent2D, Rect, RegionMapping};
 pub use graph::{
     DependencyEdge, Evidence, GraphSnapshot, ObservationStore, PresentationGraph, Surface, Target,
 };
-pub use selection::{PresentationSelector, SelectedSurface, Selection};
+pub use selection::{PresentationSelector, SelectedSurface, Selection, SurfaceSelection};
+
+#[cfg(test)]
+mod testing;

@@ -15,6 +15,3 @@ polymer-protocol.workspace = true
 polymer-producer-d3d11 = { path = "../polymer-producer-d3d11" }
 tracing.workspace = true
 windows.workspace = true
-
-[dev-dependencies]
-windows-sys.workspace = true

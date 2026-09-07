@@ -1,5 +1,5 @@
 use super::PresentationRegistry;
-use crate::{Extent2D, Rect};
+use crate::Extent2D;
 use std::collections::HashSet;
 
 /// Each registry belongs to one backend/device/context domain.
@@ -14,7 +14,12 @@ pub struct RegistrySource {
     pub logical_slot: usize,
     pub identity: SourceIdentity,
     pub extent: Extent2D,
-    pub placement: Option<Rect>,
+}
+pub struct SourceAssignment {
+    pub slot: usize,
+    pub owner: u64,
+    pub index: usize,
+    pub window: isize,
 }
 pub(super) struct WindowObservation {
     window: isize,
@@ -88,8 +93,6 @@ impl PresentationRegistry {
         self.assignments
             .retain(|_, assignment| assignment.owner != owner);
         self.windows.remove(&owner);
-        self.placements
-            .retain(|(old_owner, _), _| *old_owner != owner);
         self.owners.retain(|_, (old, _)| *old != owner);
     }
     /// Native adapters validate this metadata without holding registry guards.
@@ -143,8 +146,23 @@ impl PresentationRegistry {
         owner: u64,
         requested: &[usize],
         now: u64,
-        mut matches: impl FnMut(usize, isize) -> Option<bool>,
+        matches: impl FnMut(usize, isize) -> Option<bool>,
     ) -> Vec<(usize, usize)> {
+        self.assign(requested, now, matches)
+            .into_iter()
+            .filter_map(|assignment| {
+                (assignment.owner == owner).then_some((assignment.slot, assignment.index))
+            })
+            .collect()
+    }
+
+    /// Resolves the whole live source set once, including each output's owner.
+    pub fn assign(
+        &self,
+        requested: &[usize],
+        now: u64,
+        mut matches: impl FnMut(usize, isize) -> Option<bool>,
+    ) -> Vec<SourceAssignment> {
         let _guard = self
             .claim_lock
             .lock()
@@ -177,12 +195,18 @@ impl PresentationRegistry {
         resolved.sort_by_key(|(slot, ..)| *slot);
         resolved
             .into_iter()
-            .filter_map(|(slot, candidate, index, identity)| {
-                if candidate != owner {
-                    return None;
+            .map(|(slot, owner, index, identity)| {
+                let (window, seen) = self
+                    .windows
+                    .get(&owner)
+                    .map_or((0, 0), |entry| (entry.window, entry.seen));
+                self.owners.insert(identity, (owner, seen));
+                SourceAssignment {
+                    slot,
+                    owner,
+                    index,
+                    window,
                 }
-                self.owners.insert(identity, (owner, now));
-                Some((slot, index))
             })
             .collect()
     }
@@ -309,7 +333,6 @@ mod tests {
                 width: 320,
                 height: 240,
             },
-            placement: None,
         }
     }
     #[test]

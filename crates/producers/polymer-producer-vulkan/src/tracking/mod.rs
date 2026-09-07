@@ -26,7 +26,6 @@ pub struct Tracking {
     command_pools: DashMap<vk::CommandBuffer, vk::CommandPool>,
     surfaces: surfaces::Surfaces,
     command_observations: DashMap<vk::CommandBuffer, Vec<commands::RecordedCommand>>,
-    generation: AtomicU64,
     image_extent: DashMap<vk::Image, vk::Extent2D>,
     image_info: DashMap<vk::Image, (vk::Format, vk::ImageUsageFlags)>,
     image_view: DashMap<vk::ImageView, Vec<surfaces::SurfaceId>>,
@@ -50,17 +49,16 @@ pub struct PresentSource {
     pub logical_slot: Option<usize>,
     pub subresource: (u32, u32),
     pub incarnation: u64,
-    pub orientation: (bool, bool),
-    pub exact_selection: bool,
-    pub source_offset: vk::Offset2D,
+    pub selection: polymer_presentation::SurfaceSelection,
     pub allocation_extent: vk::Extent2D,
     pub image: vk::Image,
-    pub extent: vk::Extent2D,
     pub layout: vk::ImageLayout,
-    pub presentation_rect: Option<vk::Rect2D>,
 }
 
 impl polymer_presentation::history::HistorySurface for PresentSource {
+    fn selection(&mut self) -> Option<&mut polymer_presentation::SurfaceSelection> {
+        Some(&mut self.selection)
+    }
     type Id = (vk::Image, u64, u32, u32);
     type Layout = (u32, u32, u32, u32);
     fn identity(&self) -> Self::Id {
@@ -73,8 +71,8 @@ impl polymer_presentation::history::HistorySurface for PresentSource {
     }
     fn layout(&self) -> Self::Layout {
         (
-            self.extent.width,
-            self.extent.height,
+            self.selection.source_rect.extent.width,
+            self.selection.source_rect.extent.height,
             self.subresource.0,
             self.subresource.1,
         )
@@ -83,7 +81,7 @@ impl polymer_presentation::history::HistorySurface for PresentSource {
 
 impl Tracking {
     fn generation(&self) -> u64 {
-        self.generation.load(Ordering::Relaxed)
+        self.surfaces.observations.generation()
     }
 
     pub fn note_image(&self, image: vk::Image, extent: vk::Extent2D) {
@@ -121,10 +119,10 @@ impl Tracking {
         {
             return None;
         }
-        let x = u32::try_from(source.source_offset.x).ok()?;
-        let y = u32::try_from(source.source_offset.y).ok()?;
-        if x.checked_add(source.extent.width)? > extent.width
-            || y.checked_add(source.extent.height)? > extent.height
+        let x = u32::try_from(source.selection.source_rect.x).ok()?;
+        let y = u32::try_from(source.selection.source_rect.y).ok()?;
+        if x.checked_add(source.selection.source_rect.extent.width)? > extent.width
+            || y.checked_add(source.selection.source_rect.extent.height)? > extent.height
         {
             return None;
         }
@@ -166,12 +164,7 @@ impl Tracking {
         limit: usize,
     ) -> Vec<PresentSource> {
         let _observations = self.surfaces.observations.transaction();
-        self.generation.fetch_add(1, Ordering::Relaxed);
-        let result = self.select_presented(presented_image, limit);
-        if !polymer_hook::config::graph_tracking_enabled() {
-            self.surfaces.observations.clear();
-        }
-        result
+        self.select_presented(presented_image, limit)
     }
 }
 
@@ -306,52 +299,18 @@ mod tests {
         assert!(!tracking.is_swapchain_image(image));
     }
 
-    #[test]
-    fn selected_source_carries_the_resolved_presentation_rectangle() {
-        let tracking = Tracking::default();
-        let source = image(1);
-        let presented_image = image(2);
-        let source_extent = extent(400, 240);
-        tracking.note_image(source, source_extent);
-        tracking.swapchain_image_added(presented_image, extent(1280, 720));
-        let command = vk::CommandBuffer::from_raw(3);
-        tracking.command_blitted(
-            command,
-            source,
-            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-            presented_image,
-            vk::Offset2D::default(),
-            source_extent,
-            vk::Offset2D { x: 50, y: 75 },
-            extent(800, 480),
-            (false, false),
-        );
-        tracking.commands_submitted(&[command]);
-
-        let selected = tracking.take_present_sources(presented_image, 1);
-
-        assert_eq!(selected.len(), 1);
-        assert!(rect_eq(
-            selected[0]
-                .presentation_rect
-                .expect("selected source should carry its placement"),
-            rect(50, 75, 800, 480),
-        ));
-    }
-
     fn present_source(image: vk::Image, width: u32, height: u32) -> PresentSource {
         PresentSource {
             logical_slot: None,
             subresource: (0, 0),
             incarnation: 0,
-            orientation: (false, false),
-            exact_selection: false,
-            source_offset: vk::Offset2D::default(),
+            selection: polymer_presentation::SurfaceSelection {
+                source_rect: polymer_presentation::Extent2D { width, height }.rect(),
+                ..Default::default()
+            },
             allocation_extent: extent(width, height),
             image,
-            extent: extent(width, height),
             layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            presentation_rect: None,
         }
     }
 
@@ -374,7 +333,7 @@ mod tests {
         // with it, and the held selection is now reallocated.
         tracking.forget_image(bottom);
         assert_eq!(tracking.refresh_sources(&sources).len(), 1);
-        sources[0].source_offset.x = 1;
+        sources[0].selection.source_rect.x = 1;
         assert!(tracking.refresh_source(&sources[0]).is_none());
     }
 
@@ -397,9 +356,25 @@ mod tests {
             (false, false),
         );
         tracking.commands_submitted(&[command]);
-        assert!(!tracking.surfaces.observations.snapshot(0).1.is_empty());
+        assert!(
+            !tracking
+                .surfaces
+                .observations
+                .graph::<()>(0)
+                .observation_list()
+                .1
+                .is_empty()
+        );
         tracking.reset_graph();
-        assert!(tracking.surfaces.observations.snapshot(0).1.is_empty());
+        assert!(
+            tracking
+                .surfaces
+                .observations
+                .graph::<()>(0)
+                .observation_list()
+                .1
+                .is_empty()
+        );
         // Live-object descriptors survive: the images still exist.
         assert!(tracking.image_extent(destination).is_some());
         assert!(tracking.image_extent(source).is_some());
@@ -484,14 +459,16 @@ impl Tracking {
         if !polymer_hook::config::tracking_enabled() {
             return None;
         }
-        let (_, observations) = self.surfaces.observations.snapshot(self.generation());
+        let observations = self.surfaces.observations.graph::<()>(self.generation());
         let content = polymer_presentation::PresentationSelector::observed_content(
             polymer_presentation::Extent2D {
                 width: bounds.width,
                 height: bounds.height,
             },
             observations
-                .iter()
+                .edges
+                .values()
+                .flatten()
                 .filter(|edge| edge.destination.image == image)
                 .filter_map(|edge| edge.coverage.map(|rect| (edge.generation, rect))),
         )?;

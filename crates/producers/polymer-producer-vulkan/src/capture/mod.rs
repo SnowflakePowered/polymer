@@ -20,8 +20,7 @@ use polymer_platform_windows::{NativeWindow, performance_counter, window_title};
 use polymer_presentation::producer::ExportDescriptor;
 use polymer_presentation::producer::ProducerSession;
 use polymer_protocol::{
-    AdapterLuid, ConsumerApi, ExternalImageKind, ExternalSyncKind, PresentationTransform, StreamId,
-    SurfaceId,
+    AdapterLuid, ConsumerApi, ExternalImageKind, ExternalSyncKind, StreamId, SurfaceId,
 };
 use std::{
     collections::HashMap,
@@ -250,7 +249,7 @@ struct GraphPresentation {
 struct PresentationTarget {
     source_window: isize,
     presentation_extent: vk::Extent2D,
-    presentation_rect: Option<vk::Rect2D>,
+    presentation_rect: Option<polymer_presentation::Rect>,
 }
 
 /// Capture state shared by the hook contexts associated with one Vulkan
@@ -312,13 +311,13 @@ impl CaptureState {
                     format!(
                         "{:?}:{}x{}:{}",
                         source.image,
-                        source.extent.width,
-                        source.extent.height,
-                        source.presentation_rect.map_or_else(
+                        source.selection.source_rect.extent.width,
+                        source.selection.source_rect.extent.height,
+                        source.selection.presentation_rect.map_or_else(
                             || "?".to_owned(),
                             |rect| format!(
                                 "{},{}+{}x{}",
-                                rect.offset.x, rect.offset.y, rect.extent.width, rect.extent.height
+                                rect.x, rect.y, rect.extent.width, rect.extent.height
                             )
                         )
                     )
@@ -409,24 +408,8 @@ fn direct_surface_selected(tracking_enabled: bool, tracked_slot: Option<usize>) 
     !tracking_enabled || tracked_slot.is_some()
 }
 
-struct ViewerConnection {
-    socket: ProducerSession,
-    process_id: u32,
-    preferred_consumer: ConsumerApi,
-}
-
-fn begin_viewer_connection() -> std::io::Result<ViewerConnection> {
-    let session = config::session().map_err(|error| std::io::Error::other(error.to_string()))?;
-    let socket = ProducerSession::connect(&session)?;
-    Ok(ViewerConnection {
-        process_id: socket.viewer_pid(),
-        preferred_consumer: socket.preferred_consumer(),
-        socket,
-    })
-}
-
 fn publish_stream(
-    mut connection: ViewerConnection,
+    mut connection: ProducerSession,
     ring: &ExportImageRing,
     producer_timeline: &ExportTimelineSemaphore,
     consumer_timeline: Option<&ExportTimelineSemaphore>,
@@ -436,7 +419,7 @@ fn publish_stream(
     surface_id: SurfaceId,
     source_window: isize,
 ) -> std::io::Result<ProducerSession> {
-    let viewer_pid = connection.process_id;
+    let viewer_pid = connection.viewer_pid();
 
     let handles = ring
         .slots()
@@ -484,9 +467,9 @@ fn publish_stream(
             .map_or(0, |timeline| timeline.raw_handle() as i64),
         bottom_up: false,
     };
-    connection.socket.publish(ready)?;
+    connection.publish(ready)?;
     tracing::debug!("polymer: connected export ring to viewer process {viewer_pid}");
-    Ok(connection.socket)
+    Ok(connection)
 }
 
 fn dxgi_format(format: vk::Format) -> Option<u32> {
@@ -539,7 +522,11 @@ fn create_transport(
     source_window: isize,
 ) -> Transport {
     let format = presentation_export_format(format);
-    let connection = match ProducerSession::setup_result(begin_viewer_connection()) {
+    let connection = match ProducerSession::setup_result((|| {
+        let session =
+            config::session().map_err(|error| std::io::Error::other(error.to_string()))?;
+        ProducerSession::connect(&session)
+    })()) {
         Ok(Some(connection)) => Some(connection),
         Ok(None) => {
             return Transport {
@@ -554,7 +541,7 @@ fn create_transport(
     };
     let handle_mode = if connection
         .as_ref()
-        .is_some_and(|value| value.preferred_consumer == ConsumerApi::D3d12)
+        .is_some_and(|value| value.preferred_consumer() == ConsumerApi::D3d12)
         && capture.is_some_and(|capture| {
             capture.supports_foreign_queue
                 && (capture.adapter_luid.low_part != 0 || capture.adapter_luid.high_part != 0)
@@ -563,7 +550,7 @@ fn create_transport(
     } else {
         if connection
             .as_ref()
-            .is_some_and(|value| value.preferred_consumer == ConsumerApi::D3d12)
+            .is_some_and(|value| value.preferred_consumer() == ConsumerApi::D3d12)
         {
             tracing::debug!(
                 "polymer: Vulkan device cannot provide D3D12 interop; using Vulkan opaque handles",
@@ -905,7 +892,7 @@ impl CaptureState {
                 )
             })
             .unwrap_or_default();
-        let exact = !observed.is_empty() && observed.iter().all(|source| source.exact_selection);
+        let exact = !observed.is_empty() && observed.iter().all(|source| source.selection.exact);
         let reconciled = state.history.reconcile(observed, exact, |source| {
             let Some(refreshed) = tracking.refresh_source(source) else {
                 return false;
@@ -970,7 +957,10 @@ impl CaptureState {
             .enumerate()
             .map(|(index, source)| {
                 (
-                    source.extent,
+                    vk::Extent2D {
+                        width: source.selection.source_rect.extent.width,
+                        height: source.selection.source_rect.extent.height,
+                    },
                     graph_surface_id(graph_request_slots[index]),
                     graph_targets.get(index).copied().unwrap_or(fallback),
                 )
@@ -994,12 +984,11 @@ impl CaptureState {
         };
         let format = state.format;
         for (extent, surface_id, target) in desired {
-            let source_changed = graph_request_slots.iter().position(|&slot| graph_surface_id(slot) == surface_id)
-                .and_then(|index| graph_sources[index].logical_slot).is_some_and(|source_slot| {
-                    reconciled.changes.iter().any(|change| matches!(change,
-                        polymer_presentation::history::SurfaceChange::Add { slot }
-                        | polymer_presentation::history::SurfaceChange::Replace { slot } if *slot == source_slot))
-                });
+            let source_changed = graph_request_slots
+                .iter()
+                .position(|&slot| graph_surface_id(slot) == surface_id)
+                .and_then(|index| graph_sources[index].logical_slot)
+                .is_some_and(|source_slot| reconciled.changed_slots.contains(&source_slot));
             let mut stream = old_streams.remove(&surface_id).unwrap_or_else(|| {
                 CaptureStream::new(
                     extent,
@@ -1052,7 +1041,10 @@ impl CaptureState {
                 continue;
             }
             let render_extent = match source {
-                Some(source) => source.extent,
+                Some(source) => vk::Extent2D {
+                    width: source.selection.source_rect.extent.width,
+                    height: source.selection.source_rect.extent.height,
+                },
                 None => capture_rect.map_or(swapchain_extent, |rect| rect.extent),
             };
             let Some(native) = stream.native.as_mut() else {
@@ -1084,14 +1076,24 @@ impl CaptureState {
                             .and_then(|source| graph_targets.get(source))
                             .and_then(|target| target.presentation_rect)
                     } else if cropped {
-                        capture_rect
-                    } else {
-                        Some(vk::Rect2D {
-                            offset: vk::Offset2D { x: 0, y: 0 },
-                            extent: render_extent,
+                        capture_rect.map(|rect| polymer_presentation::Rect {
+                            x: rect.offset.x,
+                            y: rect.offset.y,
+                            extent: polymer_presentation::Extent2D {
+                                width: rect.extent.width,
+                                height: rect.extent.height,
+                            },
                         })
+                    } else {
+                        Some(
+                            polymer_presentation::Extent2D {
+                                width: render_extent.width,
+                                height: render_extent.height,
+                            }
+                            .rect(),
+                        )
                     };
-                    let notification = polymer_presentation::producer::CapturedFrame {
+                    let notification = polymer_presentation::CapturedFrame {
                         stream_id: StreamId(
                             swapchain.as_raw() ^ stream.surface_id.0.rotate_left(17),
                         ),
@@ -1103,38 +1105,17 @@ impl CaptureState {
                             height: render_extent.height,
                         },
                     }
-                    .present(polymer_presentation::producer::FramePlacement {
-                        extent: polymer_presentation::Extent2D {
+                    .present(polymer_presentation::FramePlacement::new(
+                        polymer_presentation::Extent2D {
                             width: stream.presentation_extent.width,
                             height: stream.presentation_extent.height,
                         },
-                        bounds: polymer_presentation::Rect {
-                            x: (presentation_rect.map_or(0, |rect| rect.offset.x as u32)) as i32,
-                            y: (presentation_rect.map_or(0, |rect| rect.offset.y as u32)) as i32,
-                            extent: polymer_presentation::Extent2D {
-                                width: presentation_rect
-                                    .map_or(render_extent.width, |rect| rect.extent.width),
-                                height: presentation_rect
-                                    .map_or(render_extent.height, |rect| rect.extent.height),
-                            },
-                        },
-                        transform: if let Some(rect) = presentation_rect {
-                            polymer_presentation::producer::FramePlacement::mapped(
-                                polymer_presentation::Rect {
-                                    x: rect.offset.x,
-                                    y: rect.offset.y,
-                                    extent: polymer_presentation::Extent2D {
-                                        width: rect.extent.width,
-                                        height: rect.extent.height,
-                                    },
-                                },
-                                source.is_some_and(|source| source.orientation.0),
-                                source.is_some_and(|source| source.orientation.1),
-                            )
-                        } else {
-                            PresentationTransform::UNAVAILABLE
-                        },
-                    });
+                        presentation_rect,
+                        (
+                            source.is_some_and(|source| source.selection.flip_x),
+                            source.is_some_and(|source| source.selection.flip_y),
+                        ),
+                    ));
                     if let Some(native) = stream.native.as_mut() {
                         ProducerSession::publish_frame(&mut native.ipc, notification);
                     }
@@ -1215,20 +1196,24 @@ mod tests {
             logical_slot: None,
             subresource: (0, 0),
             incarnation: image,
-            orientation: (false, false),
-            exact_selection: false,
-            source_offset: vk::Offset2D::default(),
-            allocation_extent: vk::Extent2D { width, height },
-            image: vk::Image::from_raw(image),
-            extent: vk::Extent2D { width, height },
-            layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            presentation_rect: Some(vk::Rect2D {
-                offset: vk::Offset2D { x: 0, y: 0 },
-                extent: vk::Extent2D {
+            selection: polymer_presentation::SurfaceSelection {
+                source_rect: polymer_presentation::Extent2D { width, height }.rect(),
+                presentation_rect: Some(
+                    polymer_presentation::Extent2D {
+                        width: 400,
+                        height: 480,
+                    }
+                    .rect(),
+                ),
+                target_extent: polymer_presentation::Extent2D {
                     width: 400,
                     height: 480,
                 },
-            }),
+                ..Default::default()
+            },
+            allocation_extent: vk::Extent2D { width, height },
+            image: vk::Image::from_raw(image),
+            layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
         }
     }
 
@@ -1531,13 +1516,14 @@ mod tests {
             width: 800,
             height: 600,
         };
-        let resized_rect = vk::Rect2D {
-            offset: vk::Offset2D { x: 0, y: 0 },
-            extent: resized_extent,
-        };
-        let resized_sources = sources.map(|source| tracking::PresentSource {
-            presentation_rect: Some(resized_rect),
-            ..source
+        let resized_rect = polymer_presentation::Extent2D {
+            width: 800,
+            height: 600,
+        }
+        .rect();
+        let resized_sources = sources.map(|mut source| {
+            source.selection.presentation_rect = Some(resized_rect);
+            source
         });
         {
             let presentations = &capture.graph_presentations;
@@ -1559,8 +1545,8 @@ mod tests {
         let rect = refreshed[1]
             .presentation_rect
             .expect("resized placement is carried through");
-        assert_eq!((rect.offset.x, rect.offset.y), (0, 0));
-        assert_eq!(dimensions(rect.extent), (800, 600));
+        assert_eq!((rect.x, rect.y), (0, 0));
+        assert_eq!((rect.extent.width, rect.extent.height), (800, 600));
 
         // The refreshed geometry is retained as the last-known value while
         // the window's presents drop out (a minimized window keeps routing

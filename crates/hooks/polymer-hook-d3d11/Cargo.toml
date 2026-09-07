@@ -20,10 +20,5 @@ tracing.workspace = true
 windows-sys.workspace = true
 windows.workspace = true
 
-[dev-dependencies]
-polymer-consumer-d3d12 = { path = "../../consumer/polymer-consumer-d3d12" }
-polymer-consumer-vulkan = { path = "../../consumer/polymer-consumer-vulkan" }
-polymer-ipc.workspace = true
-
 [lints]
 workspace = true

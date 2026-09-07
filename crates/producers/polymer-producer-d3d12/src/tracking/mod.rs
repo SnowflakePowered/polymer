@@ -16,8 +16,7 @@ mod descriptors;
 use crate::{D3d12CaptureRegion, D3d12CaptureSourceState};
 use dashmap::DashMap;
 use polymer_presentation::{
-    DependencyEdge, Extent2D, GraphSnapshot, ObservationStore, PresentationSelector, Surface,
-    Target,
+    DependencyEdge, Extent2D, ObservationStore, PresentationSelector, Surface, Target,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -61,12 +60,8 @@ struct Candidate {
 /// The presentation source resolved for a swapchain backbuffer.
 #[derive(Clone)]
 pub struct Presentation {
-    pub exact_selection: bool,
-    pub placement_known: bool,
-    pub region: Option<D3d12CaptureRegion>,
-    pub source_region: Option<D3d12CaptureRegion>,
     pub source: Option<TrackedResource>,
-    pub target_extent: (u32, u32),
+    pub selection: polymer_presentation::SurfaceSelection,
 }
 
 /// A render target tracked as a candidate capture source.
@@ -126,8 +121,7 @@ pub struct Tracking {
     pub(crate) presentation_clock: AtomicU64,
     commands: DashMap<usize, CommandState>,
     observations: ObservationStore<SurfaceKey>,
-    resources: DashMap<SurfaceKey, (TrackedResource, u64)>,
-    generation: AtomicU64,
+    resources: DashMap<SurfaceKey, TrackedResource>,
     observation_order: AtomicU64,
     cpu_descriptors: DashMap<usize, Vec<TrackedResource>>,
     rtv_descriptors: DashMap<usize, Vec<TrackedTarget>>,
@@ -568,27 +562,15 @@ impl Tracking {
             return Vec::new();
         };
         let presented = (Self::identity_key(&resource), 0);
-        let extent = (presented_resource.width, presented_resource.height);
         let _observations = self.observations.transaction();
-        let now = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
-        let (targets, edges) = self.observations.snapshot(now);
-        self.resources
-            .retain(|_, (_, seen)| *seen >= now.saturating_sub(8));
-        let mut graph = GraphSnapshot::default();
-        for entry in self.resources.iter() {
-            let source = &entry.value().0;
-            graph.resources.insert(
-                *entry.key(),
-                ((entry.key().0, 0), source.mip_layer.0, source.mip_layer.1),
-            );
-            graph.surfaces.insert(*entry.key(), source.clone());
-        }
-        graph.surfaces.insert(presented, presented_resource);
-        graph.targets = targets;
-        for edge in edges {
-            graph.edges.entry(edge.destination).or_default().push(edge);
-        }
         let graph_tracking = polymer_hook::config::graph_tracking_enabled();
+        let mut graph = self.observations.present(graph_tracking);
+        graph.resolve(presented, |id| {
+            let source = self.resources.get(&id)?.value().clone();
+            let (mip, layer) = source.mip_layer;
+            Some((source, ((id.0, 0), mip, layer)))
+        });
+        graph.surfaces.insert(presented, presented_resource);
         let result = PresentationSelector::select(&graph, presented, limit, graph_tracking);
         let presentations = result
             .surfaces
@@ -603,29 +585,16 @@ impl Tracking {
                         source
                     });
                 Presentation {
-                    exact_selection: result.exact,
-                    placement_known: selected.presentation_rect.is_some(),
-                    source_region: Some(D3d12CaptureRegion {
-                        x: selected.source_rect.x.max(0) as u32,
-                        y: selected.source_rect.y.max(0) as u32,
-                        width: selected.source_rect.extent.width,
-                        height: selected.source_rect.extent.height,
-                    }),
-                    region: selected.presentation_rect.map(|rect| D3d12CaptureRegion {
-                        x: rect.x.max(0) as u32,
-                        y: rect.y.max(0) as u32,
-                        width: rect.extent.width,
-                        height: rect.extent.height,
-                    }),
                     source,
-                    target_extent: extent,
+                    selection: selected.selection,
                 }
             })
             .collect();
         if !graph_tracking {
-            self.observations.clear();
             self.resources.clear();
         }
+        self.resources
+            .retain(|id, _| graph.surfaces.contains_key(id));
         presentations
     }
 
@@ -700,7 +669,7 @@ impl Tracking {
     }
 
     fn record_candidate(&self, key: SurfaceKey, candidate: Candidate) {
-        let now = self.generation.load(Ordering::Relaxed);
+        let now = self.observations.generation();
         let order = self.observation_order.fetch_add(1, Ordering::Relaxed);
         if matches!(
             candidate.evidence,
@@ -721,7 +690,7 @@ impl Tracking {
             (Self::identity_key(&source.resource), source.subresource)
         });
         if let Some(resource) = &candidate.source {
-            self.resources.insert(source, (resource.clone(), now));
+            self.resources.insert(source, resource.clone());
         }
         let mut edge = DependencyEdge::sampled(source, key, now);
         edge.order = order;
@@ -823,6 +792,9 @@ impl Surface for TrackedResource {
 }
 
 impl polymer_presentation::history::HistorySurface for Presentation {
+    fn selection(&mut self) -> Option<&mut polymer_presentation::SurfaceSelection> {
+        Some(&mut self.selection)
+    }
     type Id = (usize, u32);
     type Layout = (u32, u32, u32, (u32, u32));
     fn identity(&self) -> Self::Id {
@@ -832,8 +804,20 @@ impl polymer_presentation::history::HistorySurface for Presentation {
     }
     fn layout(&self) -> Self::Layout {
         self.source.as_ref().map_or(
-            (self.target_extent.0, self.target_extent.1, 0, (0, 0)),
-            |source| (source.width, source.height, source.format, source.mip_layer),
+            (
+                self.selection.source_rect.extent.width,
+                self.selection.source_rect.extent.height,
+                0,
+                (0, 0),
+            ),
+            |source| {
+                (
+                    self.selection.source_rect.extent.width,
+                    self.selection.source_rect.extent.height,
+                    source.format,
+                    source.mip_layer,
+                )
+            },
         )
     }
 }

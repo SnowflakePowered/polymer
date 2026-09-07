@@ -99,7 +99,10 @@ impl ProducerSession {
     }
 
     /// Publish to an optional stream and release a failed connection.
-    pub fn publish_frame(connection: &mut Option<Self>, frame: Message) -> bool {
+    pub fn publish_frame(
+        connection: &mut Option<Self>,
+        frame: polymer_protocol::FrameReady,
+    ) -> bool {
         let Some(session) = connection else {
             return false;
         };
@@ -113,25 +116,14 @@ impl ProducerSession {
         }
     }
 
-    pub fn send(&mut self, message: Message) -> io::Result<()> {
+    pub fn send(&mut self, mut frame: polymer_protocol::FrameReady) -> io::Result<()> {
         if !self.accepted {
             return Err(io::Error::new(
                 io::ErrorKind::NotConnected,
                 "stream has not been accepted",
             ));
         }
-        let frame = match message {
-            Message::FrameReady(mut frame) => {
-                frame.frame_number = self.frame_number.wrapping_add(1);
-                frame
-            }
-            _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "producer session expects a captured frame",
-                ));
-            }
-        };
+        frame.frame_number = self.frame_number.wrapping_add(1);
         let diagnostic = (
             frame.stream_id,
             frame.slot,

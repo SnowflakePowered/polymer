@@ -6,12 +6,12 @@ license.workspace = true
 
 [features]
 default = []
-producer = ["dep:polymer-ipc", "dep:polymer-protocol", "dep:polymer-platform-windows", "dep:windows", "dep:tracing"]
+producer = ["dep:polymer-ipc", "dep:polymer-platform-windows", "dep:windows", "dep:tracing"]
 
 [dependencies]
 dashmap.workspace = true
 polymer-ipc = { workspace = true, optional = true }
-polymer-protocol = { workspace = true, optional = true }
+polymer-protocol.workspace = true
 polymer-platform-windows = { workspace = true, optional = true }
 windows = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }

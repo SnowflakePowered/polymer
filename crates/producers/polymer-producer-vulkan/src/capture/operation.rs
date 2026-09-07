@@ -18,8 +18,14 @@ impl StreamResources {
                 image_index,
                 source.image,
                 source.subresource,
-                source.source_offset,
-                source.extent,
+                vk::Offset2D {
+                    x: source.selection.source_rect.x,
+                    y: source.selection.source_rect.y,
+                },
+                vk::Extent2D {
+                    width: source.selection.source_rect.extent.width,
+                    height: source.selection.source_rect.extent.height,
+                },
                 source.layout,
                 waits,
             )

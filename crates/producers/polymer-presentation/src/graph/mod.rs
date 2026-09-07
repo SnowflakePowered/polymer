@@ -109,6 +109,37 @@ impl<I, S> Default for GraphSnapshot<I, S> {
     }
 }
 
+impl<I: Copy + Eq + Hash, S> GraphSnapshot<I, S> {
+    pub fn observation_list(self) -> (Vec<Target<I>>, Vec<DependencyEdge<I>>) {
+        (self.targets, self.edges.into_values().flatten().collect())
+    }
+
+    pub fn resolve(
+        &mut self,
+        presented: I,
+        mut surface: impl FnMut(I) -> Option<(S, (I, u32, u32))>,
+    ) {
+        let ids = self
+            .targets
+            .iter()
+            .map(|target| target.id)
+            .chain(
+                self.edges
+                    .values()
+                    .flatten()
+                    .flat_map(|edge| [edge.source, edge.destination]),
+            )
+            .chain([presented])
+            .collect::<std::collections::HashSet<_>>();
+        for id in ids {
+            if let Some((source, resource)) = surface(id) {
+                self.surfaces.insert(id, source);
+                self.resources.insert(id, resource);
+            }
+        }
+    }
+}
+
 impl<I: Copy + Eq + Hash, S: Surface> PresentationGraph for GraphSnapshot<I, S> {
     type Id = I;
     fn surface(&self, id: I) -> Option<&dyn Surface> {

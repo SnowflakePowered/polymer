@@ -10,11 +10,33 @@ mod tests;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SelectedSurface<I> {
     pub surface: I,
+    pub selection: SurfaceSelection,
+}
+
+/// Selection geometry carried unchanged from the graph through history to capture.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SurfaceSelection {
+    pub target_extent: Extent2D,
+    pub exact: bool,
     pub source_rect: Rect,
     pub presentation_rect: Option<Rect>,
     pub flip_x: bool,
     pub flip_y: bool,
     pub evidence: Evidence,
+}
+
+impl Default for SurfaceSelection {
+    fn default() -> Self {
+        Self {
+            target_extent: Extent2D::default(),
+            source_rect: Rect::default(),
+            presentation_rect: None,
+            exact: false,
+            flip_x: false,
+            flip_y: false,
+            evidence: Evidence::SampledDraw,
+        }
+    }
 }
 
 pub struct Selection<I> {
@@ -123,12 +145,12 @@ impl PresentationSelector {
             .into_iter()
             .filter_map(|id| view.resolve(presented, id))
             .filter(|source| {
-                source.evidence != Evidence::SampledDraw || view.plausible(source.surface)
+                source.selection.evidence != Evidence::SampledDraw || view.plausible(source.surface)
             })
             .collect::<Vec<_>>();
         let uncertain = surfaces
             .iter()
-            .filter(|source| source.evidence == Evidence::SampledDraw)
+            .filter(|source| source.selection.evidence == Evidence::SampledDraw)
             .map(|source| source.surface)
             .collect();
         let cohort = view
@@ -136,15 +158,15 @@ impl PresentationSelector {
             .into_iter()
             .collect::<HashSet<_>>();
         surfaces.retain(|source| {
-            source.evidence != Evidence::SampledDraw || cohort.contains(&source.surface)
+            source.selection.evidence != Evidence::SampledDraw || cohort.contains(&source.surface)
         });
         if !traverse {
             surfaces.truncate(limit);
         }
         surfaces.sort_by_key(|source| {
             (
-                u32::MAX - source.source_rect.extent.height,
-                u32::MAX - source.source_rect.extent.width,
+                u32::MAX - source.selection.source_rect.extent.height,
+                u32::MAX - source.selection.source_rect.extent.width,
                 view.order(source.surface).2,
             )
         });
@@ -163,11 +185,15 @@ impl PresentationSelector {
             return Selection {
                 surfaces: vec![SelectedSurface {
                     surface: presented,
-                    source_rect: rect,
-                    presentation_rect: Some(rect),
-                    flip_x: false,
-                    flip_y: false,
-                    evidence: Evidence::SampledDraw,
+                    selection: SurfaceSelection {
+                        target_extent: extent,
+                        exact: false,
+                        source_rect: rect,
+                        presentation_rect: Some(rect),
+                        flip_x: false,
+                        flip_y: false,
+                        evidence: Evidence::SampledDraw,
+                    },
                 }],
                 exact: false,
             };
@@ -175,8 +201,12 @@ impl PresentationSelector {
         let exact = trusted
             && !surfaces.is_empty()
             && surfaces.iter().all(|source| {
-                source.evidence != Evidence::SampledDraw && source.presentation_rect.is_some()
+                source.selection.evidence != Evidence::SampledDraw
+                    && source.selection.presentation_rect.is_some()
             });
+        for source in &mut surfaces {
+            source.selection.exact = exact;
+        }
         Selection { surfaces, exact }
     }
 }

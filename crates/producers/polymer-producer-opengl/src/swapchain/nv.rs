@@ -96,13 +96,15 @@ impl NvCapture {
                     f.framebuffer_renderbuffer,
                 );
                 (f.blit_framebuffer)(
-                    source.source_origin.0,
-                    source.source_origin.1,
-                    source.source_origin.0 + source.width as i32,
-                    source.source_origin.1 + source.height as i32,
+                    source.selection.source_rect.x,
+                    source.selection.source_rect.y,
+                    source.selection.source_rect.x
+                        + source.selection.source_rect.extent.width as i32,
+                    source.selection.source_rect.y
+                        + source.selection.source_rect.extent.height as i32,
                     0,
                     0,
-                    source.width as i32,
+                    source.selection.source_rect.extent.width as i32,
                     self.height as i32,
                     GL_COLOR_BUFFER_BIT,
                     GL_NEAREST,
@@ -130,7 +132,7 @@ impl NvCapture {
         reservation.1.finish()?;
         self.scheduler.commit(slot_index, count);
         self.frame_number = self.frame_number.wrapping_add(1);
-        let message = polymer_presentation::producer::CapturedFrame {
+        let message = polymer_presentation::CapturedFrame {
             stream_id,
             slot: slot_index as u32,
             sync_value: self.frame_number,
@@ -140,8 +142,8 @@ impl NvCapture {
                 height: self.height,
             },
         }
-        .present(DrawCandidate::frame_placement(
-            source,
+        .present(polymer_presentation::FramePlacement::from_selection(
+            source.map(|source| &source.selection),
             polymer_presentation::Extent2D {
                 width: self.window_width,
                 height: self.window_height,

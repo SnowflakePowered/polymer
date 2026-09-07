@@ -1,10 +1,7 @@
 //! Typed OpenGL hook declarations and capture callbacks.
 
 use polymer_hook::HookChain;
-use std::{
-    cell::Cell,
-    ffi::{CStr, c_void},
-};
+use std::ffi::{CStr, c_void};
 
 pub(crate) type Hdc = *mut c_void;
 
@@ -101,7 +98,7 @@ polymer_hook::chain_hooks! {
     #[prefix(|context| {
         // The capture path issues its own blits through the hooked entry points;
         // observing those would feed the external image textures into the graph.
-        if !CAPTURING.with(|capturing| capturing.get()) {
+        if !polymer_presentation::observation::CaptureScope::active() {
             unsafe { context.state.tracking.record_blit_candidate([src_x0, src_y0, src_x1, src_y1], [dst_x0, dst_y0, dst_x1, dst_y1], mask) }
         }
     })]
@@ -115,7 +112,7 @@ polymer_hook::chain_hooks! {
     #[trampoline]
     #[terminal(direct = crate::install::unavailable_copy_image_sub_data)]
     #[prefix(|context| {
-        if !CAPTURING.with(|capturing| capturing.get()) {
+        if !polymer_presentation::observation::CaptureScope::active() {
             unsafe {
                 context.state.tracking.record_copy_candidate(
                     src_name, src_target, [src_level, src_x, src_y, src_z], dst_name, dst_target, [dst_level, dst_x, dst_y, dst_z], [width, height, depth],
@@ -140,30 +137,20 @@ polymer_hook::chain_hooks! {
     ) -> *const c_void;
 }
 
-thread_local! { static CAPTURING: Cell<bool> = const { Cell::new(false) }; }
-
 pub(crate) unsafe fn capture_swap_buffers(hdc: Hdc, context: &SwapBuffersContext) {
-    CAPTURING.with(|capturing| {
-        if capturing.replace(true) {
-            return;
-        }
-        unsafe {
-            polymer_producer_opengl::before_swap_buffers(&context.state.tracking, hdc as isize)
-        };
-        capturing.set(false);
-    });
+    if polymer_presentation::observation::CaptureScope::active() {
+        return;
+    }
+    let _capture = polymer_presentation::observation::CaptureScope::enter();
+    unsafe { polymer_producer_opengl::before_swap_buffers(&context.state.tracking, hdc as isize) };
 }
 
 pub(crate) unsafe fn capture_swap_layer_buffers(hdc: Hdc, context: &SwapLayerBuffersContext) {
-    CAPTURING.with(|capturing| {
-        if capturing.replace(true) {
-            return;
-        }
-        unsafe {
-            polymer_producer_opengl::before_swap_buffers(&context.state.tracking, hdc as isize)
-        };
-        capturing.set(false);
-    });
+    if polymer_presentation::observation::CaptureScope::active() {
+        return;
+    }
+    let _capture = polymer_presentation::observation::CaptureScope::enter();
+    unsafe { polymer_producer_opengl::before_swap_buffers(&context.state.tracking, hdc as isize) };
 }
 
 pub(crate) unsafe fn route_draw_arrays(

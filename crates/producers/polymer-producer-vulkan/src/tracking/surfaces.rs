@@ -178,19 +178,9 @@ impl Tracking {
     pub(super) fn forget_surfaces(&self, image: vk::Image) {
         self.surfaces.shapes.remove(&image);
         self.surfaces.incarnations.remove(&image);
-        let (targets, edges) = self.surfaces.observations.snapshot(self.generation());
-        for id in targets
-            .into_iter()
-            .map(|target| target.id)
-            .chain(
-                edges
-                    .into_iter()
-                    .flat_map(|edge| [edge.source, edge.destination]),
-            )
-            .filter(|id| id.image == image)
-        {
-            self.surfaces.observations.forget(id);
-        }
+        self.surfaces
+            .observations
+            .forget_matching(|id| id.image == image);
         self.surfaces.layouts.retain(|id, _| id.image != image);
     }
 
@@ -323,7 +313,11 @@ mod tests {
             );
         }
         tracking.forget_image(vk::Image::from_raw(1));
-        let (targets, edges) = tracking.surfaces.observations.snapshot(0);
+        let (targets, edges) = tracking
+            .surfaces
+            .observations
+            .graph::<()>(0)
+            .observation_list();
         assert!(edges.is_empty());
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].id.image, vk::Image::from_raw(2));
@@ -412,7 +406,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             [(1, 0), (1, 1)]
         );
-        assert!(selected.iter().all(|source| source.extent == extent));
+        assert!(selected.iter().all(|source| (
+            source.selection.source_rect.extent.width,
+            source.selection.source_rect.extent.height
+        ) == (extent.width, extent.height)));
         assert_eq!(tracking.refresh_sources(&selected).len(), 2);
         tracking.image_destroyed(source);
         tracking.note_image(
@@ -500,7 +497,7 @@ mod tests {
         let selected = tracking.select_presented(destination, 1);
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].image, replacement);
-        assert!(selected[0].presentation_rect.is_none());
+        assert!(selected[0].selection.presentation_rect.is_none());
     }
 }
 impl Tracking {

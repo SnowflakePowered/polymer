@@ -1,4 +1,4 @@
-use super::{SelectedSurface, View};
+use super::{SelectedSurface, SurfaceSelection, View};
 use crate::{DependencyEdge, Evidence, PresentationGraph, Rect};
 use std::collections::HashSet;
 
@@ -47,11 +47,20 @@ impl<G: PresentationGraph> View<'_, G> {
             .collect::<Option<Vec<_>>>();
         let mut result = SelectedSurface {
             surface: selected,
-            source_rect: extent.rect(),
-            presentation_rect: None,
-            flip_x: false,
-            flip_y: false,
-            evidence,
+            selection: SurfaceSelection {
+                target_extent: self
+                    .extents
+                    .get(&presented)
+                    .copied()
+                    .flatten()
+                    .unwrap_or_default(),
+                exact: false,
+                source_rect: extent.rect(),
+                presentation_rect: None,
+                flip_x: false,
+                flip_y: false,
+                evidence,
+            },
         };
         if let Some(mapped) = mapped
             && let Some(first) = mapped
@@ -59,10 +68,10 @@ impl<G: PresentationGraph> View<'_, G> {
                 .copied()
                 .filter(|first| mapped.iter().all(|item| item == first))
         {
-            result.source_rect = first.0;
-            result.presentation_rect = Some(first.1);
-            result.flip_x = first.2;
-            result.flip_y = first.3;
+            result.selection.source_rect = first.0;
+            result.selection.presentation_rect = Some(first.1);
+            result.selection.flip_x = first.2;
+            result.selection.flip_y = first.3;
         }
         Some(result)
     }

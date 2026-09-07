@@ -1,7 +1,7 @@
 //! Native metadata adapter for the common presentation selector.
 use super::{PresentSource, Tracking};
 use ash::vk;
-use polymer_presentation::{GraphSnapshot, PresentationSelector};
+use polymer_presentation::PresentationSelector;
 
 impl Tracking {
     pub(super) fn select_presented(
@@ -9,36 +9,17 @@ impl Tracking {
         presented_image: vk::Image,
         limit: usize,
     ) -> Vec<PresentSource> {
-        let mut graph = GraphSnapshot::default();
-        let (targets, edges) = self.surfaces.observations.snapshot(self.generation());
         let presented = self.surface_id(presented_image, 0, 0);
-        graph.targets = targets;
-        let ids = graph
-            .targets
-            .iter()
-            .map(|target| target.id)
-            .chain(
-                edges
-                    .iter()
-                    .flat_map(|edge| [edge.source, edge.destination]),
-            )
-            .chain([presented])
-            .collect::<std::collections::HashSet<_>>();
-        for id in ids {
-            if let Some(extent) = self.surface_extent(id) {
-                graph.surfaces.insert(id, extent);
-                graph
-                    .resources
-                    .insert(id, (self.surface_id(id.image, 0, 0), id.mip, id.layer));
-            }
-        }
-        for edge in edges {
-            graph
-                .edges
-                .entry(edge.destination)
-                .or_insert_with(Vec::new)
-                .push(edge);
-        }
+        let mut graph = self
+            .surfaces
+            .observations
+            .present(polymer_hook::config::graph_tracking_enabled());
+        graph.resolve(presented, |id| {
+            Some((
+                self.surface_extent(id)?,
+                (self.surface_id(id.image, 0, 0), id.mip, id.layer),
+            ))
+        });
         let selection = PresentationSelector::select(
             &graph,
             presented,
@@ -62,32 +43,13 @@ impl Tracking {
                     logical_slot: None,
                     subresource: (source.surface.mip, source.surface.layer),
                     incarnation: source.surface.incarnation,
-                    orientation: (source.flip_x, source.flip_y),
-                    exact_selection: selection.exact,
+                    selection: source.selection,
                     image: source.surface.image,
-                    source_offset: vk::Offset2D {
-                        x: source.source_rect.x,
-                        y: source.source_rect.y,
-                    },
                     allocation_extent: vk::Extent2D {
                         width: extent.width,
                         height: extent.height,
                     },
-                    extent: vk::Extent2D {
-                        width: source.source_rect.extent.width,
-                        height: source.source_rect.extent.height,
-                    },
                     layout,
-                    presentation_rect: source.presentation_rect.map(|rect| vk::Rect2D {
-                        offset: vk::Offset2D {
-                            x: rect.x,
-                            y: rect.y,
-                        },
-                        extent: vk::Extent2D {
-                            width: rect.extent.width,
-                            height: rect.extent.height,
-                        },
-                    }),
                 })
             })
             .collect()

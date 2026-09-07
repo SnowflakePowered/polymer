@@ -38,6 +38,7 @@ impl ContextTracking {
         let (width, height, _) = unsafe { self.measure_renderbuffer(name) }?;
         let incarnation = self.incarnation(true, name);
         Some(DrawCandidate {
+            selection: Default::default(),
             texture: name,
             target: GL_RENDERBUFFER,
             incarnation,
@@ -45,16 +46,7 @@ impl ContextTracking {
             layer: 0,
             width,
             height,
-            source_origin: (0, 0),
-            allocation_extent: None,
-            orientation: (false, false),
-            bounds: QuadBounds {
-                x: 0,
-                y: 0,
-                width,
-                height,
-            },
-            window_bounds: false,
+
             score: 0,
         })
     }
@@ -67,11 +59,7 @@ impl ContextTracking {
                 .is_some_and(|id| *id == source.incarnation)
             && unsafe { self.measure_renderbuffer(source.texture) }.is_some_and(
                 |(width, height, samples)| {
-                    samples <= 1
-                        && (width, height)
-                            == source
-                                .allocation_extent
-                                .unwrap_or((source.width, source.height))
+                    samples <= 1 && (width, height) == (source.width, source.height)
                 },
             )
     }

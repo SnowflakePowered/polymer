@@ -5,6 +5,7 @@ use std::hash::Hash;
 /// Generation-stamped evidence. Native resource lifetime is owned by adapters.
 pub struct ObservationStore<I: Eq + Hash> {
     transaction: std::sync::Mutex<()>,
+    generation: std::sync::atomic::AtomicU64,
     edges: DashMap<I, Vec<DependencyEdge<I>>>,
     // First observation, write generation, last use, and latest write order.
     // Stable selection ordering is distinct from temporal content provenance.
@@ -15,6 +16,7 @@ impl<I: Copy + Eq + Hash> Default for ObservationStore<I> {
     fn default() -> Self {
         Self {
             transaction: std::sync::Mutex::new(()),
+            generation: std::sync::atomic::AtomicU64::new(0),
             edges: DashMap::new(),
             targets: DashMap::new(),
         }
@@ -30,6 +32,25 @@ impl<I: Copy + Eq + Hash> ObservationStore<I> {
         self.transaction
             .lock()
             .unwrap_or_else(|error| error.into_inner())
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// One shared presentation boundary: advance the recording generation,
+    /// snapshot the live evidence, and clear it in single-frame tracking mode.
+    /// Callers hold the transaction while resolving native metadata.
+    pub fn present<S>(&self, persistent: bool) -> super::GraphSnapshot<I, S> {
+        let now = self
+            .generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+        let graph = self.graph(now);
+        if !persistent {
+            self.clear();
+        }
+        graph
     }
 
     pub fn record(&self, edge: DependencyEdge<I>) {
@@ -105,7 +126,7 @@ impl<I: Copy + Eq + Hash> ObservationStore<I> {
     /// presentation boundary adapters advance the recording generation first,
     /// retaining the eight completed generations `[generation - 8, generation)`.
     /// Queries during recording also include observations in the current one.
-    pub fn snapshot(&self, generation: u64) -> (Vec<Target<I>>, Vec<DependencyEdge<I>>) {
+    pub fn graph<S>(&self, generation: u64) -> super::GraphSnapshot<I, S> {
         let horizon = generation.saturating_sub(8);
         self.targets.retain(|_, (_, _, used, _)| *used >= horizon);
         self.edges.retain(|_, edges| {
@@ -114,13 +135,34 @@ impl<I: Copy + Eq + Hash> ObservationStore<I> {
         });
         let mut targets = self.targets.iter().map(|entry| entry.0).collect::<Vec<_>>();
         targets.sort_by_key(|target| target.order);
-        (
+        super::GraphSnapshot {
             targets,
-            self.edges
+            edges: self
+                .edges
                 .iter()
-                .flat_map(|entry| entry.value().clone())
+                .map(|entry| (*entry.key(), entry.value().clone()))
                 .collect(),
-        )
+            ..Default::default()
+        }
+    }
+
+    /// Flat diagnostics for observation tests; production selection consumes
+    /// the grouped graph directly.
+    #[cfg(test)]
+    pub fn snapshot(&self, generation: u64) -> (Vec<Target<I>>, Vec<DependencyEdge<I>>) {
+        let graph = self.graph::<()>(generation);
+        (graph.targets, graph.edges.into_values().flatten().collect())
+    }
+
+    pub fn forget_matching(&self, matches: impl Fn(I) -> bool) {
+        self.targets.retain(|id, _| !matches(*id));
+        self.edges.retain(|id, edges| {
+            if matches(*id) {
+                return false;
+            }
+            edges.retain(|edge| !matches(edge.source));
+            !edges.is_empty()
+        });
     }
 
     pub fn forget(&self, id: I) {

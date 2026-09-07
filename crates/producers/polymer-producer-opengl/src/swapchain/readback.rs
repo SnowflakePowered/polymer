@@ -88,10 +88,10 @@ impl PboCapture {
         }
         let result = unsafe {
             self.transport.transfer(
-                source.map_or(0, |source| source.source_origin.0),
-                source.map_or(0, |source| source.source_origin.1),
-                DrawCandidate::frame_placement(
-                    source,
+                source.map_or(0, |source| source.selection.source_rect.x),
+                source.map_or(0, |source| source.selection.source_rect.y),
+                polymer_presentation::FramePlacement::from_selection(
+                    source.map(|source| &source.selection),
                     polymer_presentation::Extent2D {
                         width: self.window_width,
                         height: self.window_height,
@@ -104,7 +104,7 @@ impl PboCapture {
             return Ok(None);
         };
         self.frame_number = self.frame_number.wrapping_add(1);
-        let message = polymer_presentation::producer::CapturedFrame {
+        let message = polymer_presentation::CapturedFrame {
             stream_id,
             slot: slot_index as u32,
             sync_value: self.frame_number,

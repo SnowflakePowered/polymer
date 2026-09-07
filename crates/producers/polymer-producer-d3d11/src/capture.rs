@@ -7,8 +7,8 @@ use polymer_platform_windows::performance_counter;
 use polymer_presentation::producer::ExportDescriptor;
 use polymer_presentation::producer::ProducerSession;
 use polymer_protocol::{
-    AdapterLuid, ConsumerApi, ExternalImageKind, ExternalSyncKind, PresentationTransform, StreamId,
-    SurfaceId, transport_unorm_dxgi_format,
+    AdapterLuid, ConsumerApi, ExternalImageKind, ExternalSyncKind, StreamId, SurfaceId,
+    transport_unorm_dxgi_format,
 };
 use std::{ffi::c_void, sync::Arc};
 use windows::{
@@ -120,14 +120,14 @@ impl SwapchainOwner for SwapchainCapture {
         let exact = !presentations.is_empty()
             && presentations
                 .iter()
-                .all(|presentation| presentation.exact_selection);
+                .all(|presentation| presentation.selection.exact);
         let reconciled = self
             .history
             .lock()
             .reconcile(presentations, exact, |presentation| {
                 presentation.revalidate()
             });
-        let presentations = reconciled.surfaces;
+        let presentations = &reconciled.surfaces;
         let now = self
             .tracking
             .presentation_clock
@@ -139,30 +139,23 @@ impl SwapchainOwner for SwapchainCapture {
         .and_then(|swapchain| unsafe { swapchain.GetDesc().ok() })
         .map_or(0, |desc| desc.OutputWindow.0 as isize);
         use polymer_presentation::history::HistorySurface;
-        use polymer_presentation::registry::{RegistrySource, SourceIdentity};
+        use polymer_presentation::registry::SourceIdentity;
         polymer_presentation::producer::ProducerWindows::refresh(&self.tracking.registry);
-        let sources = presentations
-            .iter()
-            .zip(&reconciled.slots)
-            .map(|(presentation, &logical_slot)| {
-                let (resource, subresource) = presentation.identity();
-                let (width, height, _, _) = presentation.layout();
-                RegistrySource {
-                    logical_slot,
-                    identity: SourceIdentity {
-                        domain: 0,
-                        resource: if resource == 0 {
-                            self.stream_id
-                        } else {
-                            resource as u64
-                        },
-                        subresource,
+        let sources = reconciled.registry_sources(|presentation| {
+            let (resource, subresource) = presentation.identity();
+            (
+                SourceIdentity {
+                    domain: 0,
+                    resource: if resource == 0 {
+                        self.stream_id
+                    } else {
+                        resource as u64
                     },
-                    extent: polymer_presentation::Extent2D { width, height },
-                    placement: None,
-                }
-            })
-            .collect();
+                    subresource,
+                },
+                presentation.selection.source_rect.extent,
+            )
+        });
         self.tracking
             .registry
             .observe(self.stream_id, window, sources, now);
@@ -184,24 +177,15 @@ impl SwapchainOwner for SwapchainCapture {
         let mut captures = self.capture.lock();
         captures.resize_with(requested.len(), Capture::default);
         captures.truncate(requested.len());
-        for change in reconciled.changes {
-            let source_slot = match change {
-                polymer_presentation::history::SurfaceChange::Replace { slot }
-                | polymer_presentation::history::SurfaceChange::Add { slot } => slot,
-                _ => continue,
-            };
-            for &(slot, index) in &resolved {
-                if reconciled.slots.get(index) == Some(&source_slot) {
-                    captures[slot].source_changed();
-                }
-            }
-        }
         for (slot, capture) in captures.iter_mut().enumerate() {
             if !resolved.iter().any(|(selected, _)| *selected == slot) {
                 capture.park();
             }
         }
         for (slot, index) in resolved {
+            if reconciled.changed(index) {
+                captures[slot].source_changed();
+            }
             let presentation = presentations.get(index);
             if presentation.is_none() && (!presentations.is_empty() || slot != 0) {
                 captures[slot].invalidate();
@@ -243,24 +227,37 @@ impl SwapchainCapture {
         requested_index: usize,
         capture: &mut Capture,
     ) {
-        let tracked_source = presentation
-            .as_ref()
-            .and_then(|value| value.source.as_ref())
-            .filter(|source| {
-                if source.sample_count == 1 {
-                    return true;
-                }
-                let mut desc = Default::default();
-                unsafe { source.texture.GetDesc(&mut desc) };
-                // The existing MSAA path resolves a full subresource directly.
-                source.x == 0
-                    && source.y == 0
-                    && source.width == desc.Width
-                    && source.height == desc.Height
-            });
+        let tracked_source = presentation.and_then(|value| {
+            let mut source = value.source.clone()?;
+            let crop = value.selection.source_rect;
+            if source.sample_count != 1
+                && crop
+                    != (polymer_presentation::Extent2D {
+                        width: source.width,
+                        height: source.height,
+                    })
+                    .rect()
+            {
+                return None;
+            }
+            source.x = crop.x.max(0) as u32;
+            source.y = crop.y.max(0) as u32;
+            source.width = crop.extent.width;
+            source.height = crop.extent.height;
+            Some(source)
+        });
+        let tracked_source = tracked_source.as_ref();
         let tracked_region = tracked_source
             .is_none()
-            .then(|| presentation.as_ref().map(|value| value.region))
+            .then(|| {
+                presentation.map(|value| {
+                    value
+                        .selection
+                        .presentation_rect
+                        .unwrap_or(value.selection.target_extent.rect())
+                        .into()
+                })
+            })
             .flatten();
         let requirements = (
             requested_index,
@@ -299,29 +296,12 @@ impl SwapchainCapture {
     }
 }
 
-struct ViewerConnection {
-    socket: ProducerSession,
-    viewer_pid: u32,
-    preferred_consumer: ConsumerApi,
-}
-
-fn begin_viewer_connection() -> std::io::Result<ViewerConnection> {
-    let session = polymer_hook::config::session()
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::NotFound, error))?;
-    let socket = ProducerSession::connect(&session)?;
-    Ok(ViewerConnection {
-        viewer_pid: socket.viewer_pid(),
-        preferred_consumer: socket.preferred_consumer(),
-        socket,
-    })
-}
-
 fn send_stream_ready(
-    connection: &mut ViewerConnection,
+    connection: &mut ProducerSession,
     capture: &D3d11SwapchainCapture,
     slot: usize,
 ) -> std::io::Result<()> {
-    let viewer_pid = connection.viewer_pid;
+    let viewer_pid = connection.viewer_pid();
     let ring = capture.ring();
 
     let image_handles = ring
@@ -367,7 +347,7 @@ fn send_stream_ready(
         ),
     };
     let desc = ring.desc();
-    connection.socket.publish(ExportDescriptor {
+    connection.publish(ExportDescriptor {
         surface_id: SurfaceId(if polymer_hook::config::tracking_enabled() {
             polymer_presentation::registry::PresentationRegistry::logical_surface_id(slot)
         } else {
@@ -407,13 +387,18 @@ impl CaptureState {
         tracked_source: Option<&crate::tracking::TrackedResource>,
         slot: usize,
     ) -> Result<Option<Self>, String> {
-        let Some(mut connection) = ProducerSession::setup_result(begin_viewer_connection())
-            .map_err(|error| error.to_string())?
+        let Some(mut connection) = ProducerSession::setup_result((|| {
+            let session = polymer_hook::config::session()
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::NotFound, error))?;
+            ProducerSession::connect(&session)
+        })())
+        .map_err(|error| error.to_string())?
         else {
             return Ok(None);
         };
 
-        let mode_chain: &[D3d11RingMode] = if connection.preferred_consumer == ConsumerApi::D3d12 {
+        let mode_chain: &[D3d11RingMode] = if connection.preferred_consumer() == ConsumerApi::D3d12
+        {
             if polymer_hook::config::force_keyed_mutex() {
                 &[D3d11RingMode::KeyedMutexNoFence, D3d11RingMode::KeyedMutex]
             } else {
@@ -453,7 +438,7 @@ impl CaptureState {
         {
             return Ok(None);
         }
-        let ipc = Some(connection.socket);
+        let ipc = Some(connection);
         let desc = ring.ring().desc();
         tracing::debug!(
             "polymer: attached D3D11 {}x{} {}-slot shared texture ring",
@@ -482,28 +467,30 @@ impl CaptureState {
         };
 
         let capture_desc = self.capture.ring().desc();
-        let presentation_extent = presentation
-            .as_ref()
-            .map_or((capture_desc.width, capture_desc.height), |presentation| {
-                presentation.target_extent
-            });
-        let presentation_rect = presentation.as_ref().map_or(
-            (
-                submission.capture_x,
-                submission.capture_y,
-                submission.width,
-                submission.height,
-            ),
-            |presentation| {
-                (
-                    presentation.region.x,
-                    presentation.region.y,
-                    presentation.region.width,
-                    presentation.region.height,
+        let placement =
+            if let Some(presentation) = presentation.filter(|_| tracked_source.is_some()) {
+                presentation.selection.frame_placement()
+            } else {
+                polymer_presentation::FramePlacement::new(
+                    presentation.map_or(
+                        polymer_presentation::Extent2D {
+                            width: capture_desc.width,
+                            height: capture_desc.height,
+                        },
+                        |value| value.selection.target_extent,
+                    ),
+                    Some(polymer_presentation::Rect {
+                        x: submission.capture_x as i32,
+                        y: submission.capture_y as i32,
+                        extent: polymer_presentation::Extent2D {
+                            width: submission.width,
+                            height: submission.height,
+                        },
+                    }),
+                    (false, false),
                 )
-            },
-        );
-        let message = polymer_presentation::producer::CapturedFrame {
+            };
+        let message = polymer_presentation::CapturedFrame {
             stream_id,
             slot: submission.slot,
             sync_value: submission.sync_value,
@@ -513,38 +500,7 @@ impl CaptureState {
                 height: submission.height,
             },
         }
-        .present(polymer_presentation::producer::FramePlacement {
-            extent: polymer_presentation::Extent2D {
-                width: presentation_extent.0,
-                height: presentation_extent.1,
-            },
-            bounds: polymer_presentation::Rect {
-                x: (presentation_rect.0) as i32,
-                y: (presentation_rect.1) as i32,
-                extent: polymer_presentation::Extent2D {
-                    width: presentation_rect.2,
-                    height: presentation_rect.3,
-                },
-            },
-            transform: if tracked_source.is_some()
-                && presentation.is_some_and(|value| !value.placement_known)
-            {
-                PresentationTransform::UNAVAILABLE
-            } else {
-                polymer_presentation::producer::FramePlacement::mapped(
-                    polymer_presentation::Rect {
-                        x: presentation_rect.0 as i32,
-                        y: presentation_rect.1 as i32,
-                        extent: polymer_presentation::Extent2D {
-                            width: presentation_rect.2,
-                            height: presentation_rect.3,
-                        },
-                    },
-                    presentation.is_some_and(|value| value.orientation.0),
-                    presentation.is_some_and(|value| value.orientation.1),
-                )
-            },
-        });
+        .present(placement);
         ProducerSession::publish_frame(&mut self.ipc, message);
         Ok(Some(()))
     }

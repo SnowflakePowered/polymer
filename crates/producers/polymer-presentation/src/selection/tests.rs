@@ -2,36 +2,7 @@ use crate::{
     DependencyEdge, Evidence, Extent2D, GraphSnapshot, PresentationSelector, RegionMapping, Target,
 };
 
-#[derive(Default)]
-struct Fixture(GraphSnapshot<u32, Extent2D>);
-
-impl Fixture {
-    fn target(&mut self, id: u32, width: u32, height: u32, score: u64) {
-        self.0.surfaces.insert(id, Extent2D { width, height });
-        self.0.targets.push(Target {
-            id,
-            score,
-            order: self.0.targets.len() as u64,
-        });
-    }
-
-    fn edge(&mut self, source: u32, destination: u32, seen: u64, exact: bool) {
-        let mut edge = DependencyEdge::sampled(source, destination, seen);
-        if exact {
-            edge.evidence = Evidence::Blit;
-            edge.whole_source = true;
-        }
-        self.0.edges.entry(destination).or_default().push(edge);
-    }
-
-    fn selected(&self, limit: usize) -> Vec<u32> {
-        PresentationSelector::select(&self.0, 0, limit, true)
-            .surfaces
-            .iter()
-            .map(|source| source.surface)
-            .collect()
-    }
-}
+use crate::testing::CpuBackend as Fixture;
 
 #[test]
 fn explicit_unrendered_sources_use_observation_order_before_limiting() {
@@ -110,7 +81,7 @@ fn allocation_clear_does_not_override_padded_backbuffer_draw_bounds() {
     for traverse in [false, true] {
         let selection = PresentationSelector::select(&graph.0, 0, 1, traverse);
         assert_eq!(selection.surfaces[0].surface, 0);
-        assert_eq!(selection.surfaces[0].source_rect, content);
+        assert_eq!(selection.surfaces[0].selection.source_rect, content);
         assert!(!selection.exact);
     }
 }
@@ -205,7 +176,7 @@ fn backbuffer_content_tracks_smaller_layouts_and_expires_with_observations() {
     graph.0.edges.insert(0, observations.snapshot(2).1);
     let selection = PresentationSelector::select(&graph.0, 0, 1, true);
     assert_eq!(
-        selection.surfaces[0].source_rect,
+        selection.surfaces[0].selection.source_rect,
         crate::Rect {
             x: 0,
             y: 40,
@@ -218,7 +189,7 @@ fn backbuffer_content_tracks_smaller_layouts_and_expires_with_observations() {
     graph.0.edges.insert(0, observations.snapshot(11).1);
     let selection = PresentationSelector::select(&graph.0, 0, 1, true);
     assert_eq!(
-        selection.surfaces[0].source_rect,
+        selection.surfaces[0].selection.source_rect,
         graph.0.surfaces[&0].rect()
     );
     assert!(!selection.exact);
@@ -263,8 +234,11 @@ fn exhausted_path_budget_cannot_hide_a_conflicting_placement() {
     let selected = PresentationSelector::select(&graph.0, 0, 1, false);
     assert_eq!(selected.surfaces.len(), 1);
     assert!(!selected.exact);
-    assert_eq!(selected.surfaces[0].presentation_rect, None);
-    assert_eq!(selected.surfaces[0].evidence, Evidence::SampledDraw);
+    assert_eq!(selected.surfaces[0].selection.presentation_rect, None);
+    assert_eq!(
+        selected.surfaces[0].selection.evidence,
+        Evidence::SampledDraw
+    );
     // If loss of proof makes a tiny source ineligible, validation must still
     // fall back to observed backbuffer content rather than returning nothing.
     graph.0.surfaces.insert(
@@ -287,7 +261,7 @@ fn exhausted_path_budget_cannot_hide_a_conflicting_placement() {
     let selected = PresentationSelector::select(&graph.0, 0, 1, false);
     assert_eq!(selected.surfaces.len(), 1);
     assert_eq!(selected.surfaces[0].surface, 0);
-    assert_eq!(selected.surfaces[0].source_rect, content);
+    assert_eq!(selected.surfaces[0].selection.source_rect, content);
     assert!(!selected.exact);
 }
 
@@ -329,8 +303,11 @@ fn exact_composite_does_not_promote_uncertain_inputs_or_require_copy_source_writ
     assert_eq!(graph.selected(3), [10, 11, 40]);
     let selection = PresentationSelector::select(&graph.0, 0, 3, true);
     assert!(!selection.exact);
-    assert_eq!(selection.surfaces[0].evidence, Evidence::SampledDraw);
-    assert_eq!(selection.surfaces[2].evidence, Evidence::Blit);
+    assert_eq!(
+        selection.surfaces[0].selection.evidence,
+        Evidence::SampledDraw
+    );
+    assert_eq!(selection.surfaces[2].selection.evidence, Evidence::Blit);
 }
 
 #[test]
@@ -478,14 +455,19 @@ fn padded_source_crop_is_distinct_from_scaled_placement() {
     });
     graph.0.edges.insert(0, vec![edge]);
     let result = PresentationSelector::select(&graph.0, 0, 1, true);
-    assert_eq!(result.surfaces[0].source_rect, crop);
-    assert_eq!(result.surfaces[0].presentation_rect, Some(destination));
-    assert!(result.surfaces[0].flip_y);
+    assert_eq!(result.surfaces[0].selection.source_rect, crop);
+    assert_eq!(
+        result.surfaces[0].selection.presentation_rect,
+        Some(destination)
+    );
+    assert!(result.surfaces[0].selection.flip_y);
     let mut other = edge;
     other.mapping.as_mut().unwrap().destination.x += 100;
     graph.0.edges.get_mut(&0).unwrap().push(other);
     assert_eq!(
-        PresentationSelector::select(&graph.0, 0, 1, true).surfaces[0].presentation_rect,
+        PresentationSelector::select(&graph.0, 0, 1, true).surfaces[0]
+            .selection
+            .presentation_rect,
         None
     );
 }
@@ -533,9 +515,12 @@ fn reflected_multihop_coverage_preserves_crop_and_requires_every_mapping() {
     assert_eq!(selection.surfaces.len(), 1);
     let source = selection.surfaces[0];
     assert_eq!(source.surface, 1);
-    assert_eq!(source.source_rect, rect(160, 20, 100, 200));
-    assert_eq!(source.presentation_rect, Some(rect(70, 30, 100, 200)));
-    assert!(!source.flip_x && !source.flip_y);
+    assert_eq!(source.selection.source_rect, rect(160, 20, 100, 200));
+    assert_eq!(
+        source.selection.presentation_rect,
+        Some(rect(70, 30, 100, 200))
+    );
+    assert!(!source.selection.flip_x && !source.selection.flip_y);
     // Destination raster coverage cannot recover a missing sampled-source map.
     let input = &mut graph.0.edges.get_mut(&2).unwrap()[0];
     input.mapping = None;
@@ -544,10 +529,10 @@ fn reflected_multihop_coverage_preserves_crop_and_requires_every_mapping() {
     let selection = PresentationSelector::select(&graph.0, 0, 2, true);
     assert!(!selection.exact);
     assert_eq!(
-        selection.surfaces[0].source_rect,
+        selection.surfaces[0].selection.source_rect,
         graph.0.surfaces[&1].rect()
     );
-    assert_eq!(selection.surfaces[0].presentation_rect, None);
+    assert_eq!(selection.surfaces[0].selection.presentation_rect, None);
 }
 
 #[test]
@@ -595,7 +580,7 @@ fn intermediate_clipping_maps_back_to_the_source_crop() {
     );
     let result = PresentationSelector::select(&graph.0, 0, 2, true);
     assert_eq!(
-        result.surfaces[0].source_rect,
+        result.surfaces[0].selection.source_rect,
         crate::Rect {
             x: 100,
             y: 0,
@@ -606,7 +591,7 @@ fn intermediate_clipping_maps_back_to_the_source_crop() {
         }
     );
     assert_eq!(
-        result.surfaces[0].presentation_rect,
+        result.surfaces[0].selection.presentation_rect,
         Some(crate::Rect {
             x: 0,
             y: 50,
@@ -725,7 +710,7 @@ fn reflected_mapping_clips_to_the_presented_extent_and_limits_use_crop_size() {
     let selection = PresentationSelector::select(&graph.0, 0, 1, true);
     let source = selection.surfaces[0];
     assert_eq!(
-        source.source_rect,
+        source.selection.source_rect,
         Extent2D {
             width: 100,
             height: 200
@@ -733,7 +718,7 @@ fn reflected_mapping_clips_to_the_presented_extent_and_limits_use_crop_size() {
         .rect()
     );
     assert_eq!(
-        source.presentation_rect,
+        source.selection.presentation_rect,
         Some(
             Extent2D {
                 width: 50,
@@ -742,7 +727,7 @@ fn reflected_mapping_clips_to_the_presented_extent_and_limits_use_crop_size() {
             .rect()
         )
     );
-    assert!(source.flip_x);
+    assert!(source.selection.flip_x);
     graph.target(2, 256, 256, 100);
     graph.edge(2, 0, 1, true);
     assert_eq!(graph.selected(1), [2]);

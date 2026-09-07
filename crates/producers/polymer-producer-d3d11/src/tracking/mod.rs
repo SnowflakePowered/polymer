@@ -12,8 +12,8 @@ use crate::D3d11CaptureRegion;
 use commands::{DeferredState, RecordedObservation};
 use dashmap::{DashMap, DashSet};
 use polymer_presentation::{
-    DependencyEdge, Evidence, Extent2D, GraphSnapshot, ObservationStore, PresentationSelector,
-    Rect, RegionMapping, Surface, Target,
+    DependencyEdge, Evidence, Extent2D, ObservationStore, PresentationSelector, Rect,
+    RegionMapping, Surface, Target,
 };
 use std::{
     ffi::c_void,
@@ -57,12 +57,8 @@ pub struct TrackedResource {
 /// The presentation edge resolved for a swapchain backbuffer.
 #[derive(Clone)]
 pub struct Presentation {
-    pub orientation: (bool, bool),
-    pub exact_selection: bool,
-    pub placement_known: bool,
-    pub region: D3d11CaptureRegion,
     pub source: Option<TrackedResource>,
-    pub target_extent: (u32, u32),
+    pub selection: polymer_presentation::SurfaceSelection,
 }
 
 /// Device-scoped state shared by the D3D11 hook contexts.
@@ -71,8 +67,7 @@ pub struct Tracking {
     pub(crate) presentation_clock: AtomicU64,
     /// Strongest observed composition edge keyed by destination texture.
     observations: ObservationStore<(usize, u32)>,
-    resources: DashMap<(usize, u32), (TrackedResource, u64)>,
-    generation: AtomicU64,
+    resources: DashMap<(usize, u32), TrackedResource>,
     observation_order: AtomicU64,
     /// Backbuffers that are graph sinks. Restricting dependency queries and
     /// tiny geometry readbacks to these targets keeps ordinary draws cheap.
@@ -89,7 +84,6 @@ impl Default for Tracking {
             presentation_clock: AtomicU64::new(0),
             observations: ObservationStore::default(),
             resources: DashMap::new(),
-            generation: AtomicU64::new(0),
             observation_order: AtomicU64::new(0),
             swapchain_targets: DashSet::new(),
             deferred: DashMap::new(),
@@ -157,7 +151,7 @@ impl Tracking {
             let Some(region) = region else {
                 continue;
             };
-            let generation = self.generation.load(Ordering::Relaxed);
+            let generation = self.observations.generation();
             for destination_resource in Self::render_target_resources(target) {
                 let Ok(resource) = destination_resource.texture.cast::<ID3D11Resource>() else {
                     continue;
@@ -245,22 +239,12 @@ impl Tracking {
         };
         let presented = (Self::identity_key(&resource), 0);
         let _observations = self.observations.transaction();
-        let now = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
-        let (targets, edges) = self.observations.snapshot(now);
-        self.resources
-            .retain(|_, (_, seen)| *seen >= now.saturating_sub(8));
-        let mut graph = GraphSnapshot::default();
-        for entry in self.resources.iter() {
-            graph.surfaces.insert(*entry.key(), entry.value().0.clone());
-            let (mip, layer) = entry.value().0.mip_layer;
-            graph
-                .resources
-                .insert(*entry.key(), ((entry.key().0, 0), mip, layer));
-        }
-        graph.targets = targets;
-        for edge in edges {
-            graph.edges.entry(edge.destination).or_default().push(edge);
-        }
+        let mut graph = self.observations.present(self.graph_tracking);
+        graph.resolve(presented, |id| {
+            let source = self.resources.get(&id)?.value().clone();
+            let (mip, layer) = source.mip_layer;
+            Some((source, ((id.0, 0), mip, layer)))
+        });
         let mut desc = D3D11_TEXTURE2D_DESC::default();
         unsafe { texture.GetDesc(&mut desc) };
         graph.surfaces.insert(
@@ -284,37 +268,18 @@ impl Tracking {
             .map(|selected| {
                 let source = (selected.surface != presented)
                     .then(|| graph.surfaces.get(&selected.surface).cloned())
-                    .flatten()
-                    .map(|mut source| {
-                        source.x = selected.source_rect.x.max(0) as u32;
-                        source.y = selected.source_rect.y.max(0) as u32;
-                        source.width = selected.source_rect.extent.width;
-                        source.height = selected.source_rect.extent.height;
-                        source
-                    });
+                    .flatten();
                 Presentation {
-                    orientation: (selected.flip_x, selected.flip_y),
-                    exact_selection: selection.exact,
-                    placement_known: selected.presentation_rect.is_some(),
-                    region: selected
-                        .presentation_rect
-                        .unwrap_or(
-                            Extent2D {
-                                width: desc.Width,
-                                height: desc.Height,
-                            }
-                            .rect(),
-                        )
-                        .into(),
                     source,
-                    target_extent: (desc.Width, desc.Height),
+                    selection: selected.selection,
                 }
             })
             .collect();
         if !self.graph_tracking {
-            self.observations.clear();
             self.resources.clear();
         }
+        self.resources
+            .retain(|id, _| graph.surfaces.contains_key(id));
         result
     }
 
@@ -379,7 +344,7 @@ impl Tracking {
         {
             return;
         }
-        let generation = self.generation.load(Ordering::Relaxed);
+        let generation = self.observations.generation();
         let mut edge = DependencyEdge::sampled(source_key, destination_key, generation);
         edge.evidence = if resolve {
             Evidence::Resolve
@@ -933,6 +898,9 @@ impl From<Rect> for D3d11CaptureRegion {
 }
 
 impl polymer_presentation::history::HistorySurface for Presentation {
+    fn selection(&mut self) -> Option<&mut polymer_presentation::SurfaceSelection> {
+        Some(&mut self.selection)
+    }
     type Id = (usize, u32);
     type Layout = (u32, u32, u32, (u32, u32));
     fn identity(&self) -> Self::Id {
@@ -942,8 +910,20 @@ impl polymer_presentation::history::HistorySurface for Presentation {
     }
     fn layout(&self) -> Self::Layout {
         self.source.as_ref().map_or(
-            (self.target_extent.0, self.target_extent.1, 0, (0, 0)),
-            |source| (source.width, source.height, source.format, source.mip_layer),
+            (
+                self.selection.source_rect.extent.width,
+                self.selection.source_rect.extent.height,
+                0,
+                (0, 0),
+            ),
+            |source| {
+                (
+                    self.selection.source_rect.extent.width,
+                    self.selection.source_rect.extent.height,
+                    source.format,
+                    source.mip_layer,
+                )
+            },
         )
     }
 }
@@ -957,15 +937,13 @@ impl Presentation {
         unsafe { source.texture.GetDesc(&mut desc) };
         let levels = desc.MipLevels.max(1);
         let mip = source.subresource % levels;
+        let extent = Extent2D {
+            width: (desc.Width >> mip).max(1),
+            height: (desc.Height >> mip).max(1),
+        };
         source.subresource < levels.saturating_mul(desc.ArraySize)
             && source.format == desc.Format.0 as u32
-            && source
-                .x
-                .checked_add(source.width)
-                .is_some_and(|right| right <= (desc.Width >> mip).max(1))
-            && source
-                .y
-                .checked_add(source.height)
-                .is_some_and(|bottom| bottom <= (desc.Height >> mip).max(1))
+            && self.selection.source_rect.intersect(extent.rect())
+                == Some(self.selection.source_rect)
     }
 }

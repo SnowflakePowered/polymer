@@ -40,13 +40,31 @@ mod tests {
                 }],
             );
         }
-        assert!(tracking.surfaces.observations.snapshot(0).1.is_empty());
+        assert!(
+            tracking
+                .surfaces
+                .observations
+                .graph::<()>(0)
+                .observation_list()
+                .1
+                .is_empty()
+        );
         tracking.commands_submitted(&commands);
-        let first = tracking.surfaces.observations.snapshot(0).1;
+        let first = tracking
+            .surfaces
+            .observations
+            .graph::<()>(0)
+            .observation_list()
+            .1;
         assert_eq!(first.len(), 2);
         assert!(first[0].order < first[1].order);
         tracking.commands_submitted(&[commands[1], commands[0]]);
-        let replay = tracking.surfaces.observations.snapshot(0).1;
+        let replay = tracking
+            .surfaces
+            .observations
+            .graph::<()>(0)
+            .observation_list()
+            .1;
         assert_eq!(replay.len(), 2);
         assert!(
             replay
@@ -56,7 +74,15 @@ mod tests {
         assert!(replay[1].order < replay[0].order);
         tracking.command_buffer_began(commands[0]);
         tracking.commands_submitted(&[commands[0]]);
-        assert_eq!(tracking.surfaces.observations.snapshot(0).1, replay);
+        assert_eq!(
+            tracking
+                .surfaces
+                .observations
+                .graph::<()>(0)
+                .observation_list()
+                .1,
+            replay
+        );
     }
 
     #[test]
@@ -113,9 +139,22 @@ mod tests {
                 evidence,
             );
         }
-        assert!(tracking.surfaces.observations.snapshot(0).1.is_empty());
+        assert!(
+            tracking
+                .surfaces
+                .observations
+                .graph::<()>(0)
+                .observation_list()
+                .1
+                .is_empty()
+        );
         tracking.commands_submitted(&[command]);
-        let edges = tracking.surfaces.observations.snapshot(0).1;
+        let edges = tracking
+            .surfaces
+            .observations
+            .graph::<()>(0)
+            .observation_list()
+            .1;
         assert_eq!(edges.len(), 2);
         assert!(
             edges
@@ -167,20 +206,49 @@ mod tests {
             extent,
             (true, false),
         );
-        assert!(tracking.surfaces.observations.snapshot(0).1.is_empty());
+        assert!(
+            tracking
+                .surfaces
+                .observations
+                .graph::<()>(0)
+                .observation_list()
+                .1
+                .is_empty()
+        );
         tracking.command_executed(primary, &[secondary]);
         tracking.commands_submitted(&[primary]);
-        let edges = tracking.surfaces.observations.snapshot(0).1;
+        let edges = tracking
+            .surfaces
+            .observations
+            .graph::<()>(0)
+            .observation_list()
+            .1;
         assert!(edges[0].exact());
         assert_eq!(edges[0].mapping.unwrap().flip_x, true);
         tracking.surfaces.observations.clear();
         tracking.commands_submitted(&[primary]);
-        assert!(!tracking.surfaces.observations.snapshot(0).1.is_empty());
+        assert!(
+            !tracking
+                .surfaces
+                .observations
+                .graph::<()>(0)
+                .observation_list()
+                .1
+                .is_empty()
+        );
         // Resetting a referenced secondary also invalidates its primary batch.
         tracking.command_buffer_began(secondary);
         tracking.surfaces.observations.clear();
         tracking.commands_submitted(&[primary, secondary]);
-        assert!(tracking.surfaces.observations.snapshot(0).1.is_empty());
+        assert!(
+            tracking
+                .surfaces
+                .observations
+                .graph::<()>(0)
+                .observation_list()
+                .1
+                .is_empty()
+        );
     }
     #[test]
     fn pool_reset_free_and_destroy_invalidate_dependents_but_preserve_other_pools() {
@@ -216,7 +284,16 @@ mod tests {
             }
             tracking.command_executed(primary, &[secondary]);
             tracking.commands_submitted(&[primary, independent]);
-            assert_eq!(tracking.surfaces.observations.snapshot(0).1.len(), 2);
+            assert_eq!(
+                tracking
+                    .surfaces
+                    .observations
+                    .graph::<()>(0)
+                    .observation_list()
+                    .1
+                    .len(),
+                2
+            );
             match operation {
                 0 => tracking.command_pool_reset(secondary_pool, false),
                 1 => tracking.commands_freed(&[secondary]),
@@ -224,7 +301,12 @@ mod tests {
             }
             tracking.surfaces.observations.clear();
             tracking.commands_submitted(&[primary, secondary, independent]);
-            let edges = tracking.surfaces.observations.snapshot(0).1;
+            let edges = tracking
+                .surfaces
+                .observations
+                .graph::<()>(0)
+                .observation_list()
+                .1;
             assert_eq!(edges.len(), 1);
             assert_eq!(edges[0].source.image, vk::Image::from_raw(32));
             // A recycled command-buffer handle cannot replay the freed batch.
@@ -232,7 +314,15 @@ mod tests {
             tracking.surfaces.observations.clear();
             tracking.command_executed(primary, &[secondary]);
             tracking.commands_submitted(&[primary, secondary]);
-            assert!(tracking.surfaces.observations.snapshot(0).1.is_empty());
+            assert!(
+                tracking
+                    .surfaces
+                    .observations
+                    .graph::<()>(0)
+                    .observation_list()
+                    .1
+                    .is_empty()
+            );
             assert_eq!(
                 *tracking.command_pools.get(&independent).unwrap(),
                 primary_pool

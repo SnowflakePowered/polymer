@@ -15,17 +15,27 @@ impl CaptureState {
             presentation_extent: owner_extent,
             presentation_rect: sources
                 .get(index)
-                .and_then(|source| source.presentation_rect),
+                .and_then(|source| source.selection.presentation_rect),
         };
         let same_layout = |candidate: &GraphPresentation| {
             let mut candidate_extents = candidate
                 .sources
                 .iter()
-                .map(|source| (source.extent.width, source.extent.height))
+                .map(|source| {
+                    (
+                        source.selection.source_rect.extent.width,
+                        source.selection.source_rect.extent.height,
+                    )
+                })
                 .collect::<Vec<_>>();
             let mut source_extents = sources
                 .iter()
-                .map(|source| (source.extent.width, source.extent.height))
+                .map(|source| {
+                    (
+                        source.selection.source_rect.extent.width,
+                        source.selection.source_rect.extent.height,
+                    )
+                })
                 .collect::<Vec<_>>();
             candidate_extents.sort_unstable();
             source_extents.sort_unstable();
@@ -70,7 +80,8 @@ impl CaptureState {
                     PresentationTarget {
                         source_window: candidate.source_window,
                         presentation_extent: candidate.presentation_extent,
-                        presentation_rect: candidate.placement(sources[index].extent),
+                        presentation_rect: candidate
+                            .placement(sources[index].selection.source_rect.extent),
                     }
                 })
                 .collect::<Vec<_>>()
@@ -79,13 +90,15 @@ impl CaptureState {
         let layouts = &self.graph_target_layouts;
         if let Some(discovered) = discovered {
             for (source, target) in sources.iter().zip(discovered) {
-                if let dashmap::mapref::entry::Entry::Vacant(entry) =
-                    layouts.entry((domain, source.extent.width, source.extent.height))
-                {
+                if let dashmap::mapref::entry::Entry::Vacant(entry) = layouts.entry((
+                    domain,
+                    source.selection.source_rect.extent.width,
+                    source.selection.source_rect.extent.height,
+                )) {
                     tracing::debug!(
                         "polymer: graph target layout {}x{} -> window {:#x} ({}x{})",
-                        source.extent.width,
-                        source.extent.height,
+                        source.selection.source_rect.extent.width,
+                        source.selection.source_rect.extent.height,
                         target.source_window,
                         target.presentation_extent.width,
                         target.presentation_extent.height,
@@ -95,70 +108,59 @@ impl CaptureState {
             }
         }
 
-        let mut resolved = vec![None; requested_indices.len()];
-        let mut used = Vec::new();
-        if let Some(assignment) = &assignment {
-            for slot in 0..requested_indices.len() {
-                if !config::tracked_render_target_has_surface_pattern(slot) {
-                    continue;
-                }
-                let Some(candidate_index) = candidates.iter().position(|candidate| {
-                    window_title(NativeWindow(candidate.source_window)).is_some_and(|title| {
-                        config::tracked_render_target_surface_matches(slot, &title) == Some(true)
-                    })
-                }) else {
-                    continue;
-                };
-                let Some(source_index) = assignment
-                    .iter()
-                    .position(|&assigned| assigned == candidate_index)
-                else {
-                    continue;
-                };
-                resolved[slot] = Some((source_index, Some(candidate_index)));
-                used.push(source_index);
-            }
-        }
-        for (slot, &requested_index) in requested_indices.iter().enumerate() {
-            if resolved[slot].is_some() || config::tracked_render_target_has_surface_pattern(slot) {
-                continue;
-            }
-            let requested_source = sources.iter().enumerate().position(|(index, source)| {
-                source.logical_slot.unwrap_or(index) == requested_index
-            });
-            let source_index = requested_source
-                .filter(|index| !used.contains(index))
-                .or_else(|| {
-                    requested_source
-                        .and_then(|_| (0..sources.len()).find(|index| !used.contains(index)))
-                });
-            if let Some(source_index) = source_index {
-                resolved[slot] = Some((source_index, None));
-                used.push(source_index);
-            }
-        }
-        let resolved = resolved
-            .into_iter()
+        let slots = sources
+            .iter()
             .enumerate()
-            .filter_map(|(slot, resolved)| {
-                resolved.map(|(index, candidate)| (slot, index, candidate))
-            })
-            .collect::<Vec<_>>();
+            .map(|(index, source)| source.logical_slot.unwrap_or(index))
+            .max()
+            .map_or(0, |slot| slot + 1);
+        let mut selection = vec![(None, 0isize); slots];
+        for (index, source) in sources.iter().enumerate() {
+            let window = assignment.as_ref().map_or(owner_window, |assignment| {
+                candidates[assignment[index]].source_window
+            });
+            selection[source.logical_slot.unwrap_or(index)] = (Some(index), window);
+        }
+        let resolved = polymer_presentation::registry::PresentationRegistry::resolve(
+            requested_indices,
+            &selection,
+            |slot, window| {
+                if !config::tracked_render_target_has_surface_pattern(slot) {
+                    return None;
+                }
+                let title = window_title(NativeWindow(window));
+                config::tracked_render_target_surface_matches(
+                    slot,
+                    title.as_deref().unwrap_or_default(),
+                )
+            },
+        )
+        .into_iter()
+        .filter_map(|(slot, index)| index.map(|index| (slot, index)))
+        .collect::<Vec<_>>();
         let targets = resolved
             .iter()
-            .map(|&(_, index, matched_candidate)| {
-                if let Some(candidate_index) = matched_candidate {
+            .map(|&(slot, index)| {
+                if config::tracked_render_target_has_surface_pattern(slot)
+                    && let Some(candidate_index) =
+                        assignment.as_ref().map(|assignment| assignment[index])
+                {
                     let candidate = &candidates[candidate_index];
                     return PresentationTarget {
                         source_window: candidate.source_window,
                         presentation_extent: candidate.presentation_extent,
-                        presentation_rect: candidate.placement(sources[index].extent),
+                        presentation_rect: candidate
+                            .placement(sources[index].selection.source_rect.extent),
                     };
                 }
                 let Some(source) = sources.get(index) else {
                     return fallback(index);
                 };
-                let key = (domain, source.extent.width, source.extent.height);
+                let key = (
+                    domain,
+                    source.selection.source_rect.extent.width,
+                    source.selection.source_rect.extent.height,
+                );
                 let Some(cached) = layouts.get(&key).map(|entry| *entry) else {
                     return fallback(index);
                 };
@@ -176,19 +178,13 @@ impl CaptureState {
                     presentation_rect: live
                         .sources
                         .get(index)
-                        .and_then(|source| source.presentation_rect),
+                        .and_then(|source| source.selection.presentation_rect),
                 };
                 layouts.insert(key, refreshed);
                 refreshed
             })
             .collect();
-        (
-            resolved
-                .into_iter()
-                .map(|(slot, index, _)| (slot, index))
-                .collect(),
-            targets,
-        )
+        (resolved, targets)
     }
 }
 
@@ -199,7 +195,7 @@ impl GraphPresentation {
             .map(|source| {
                 candidates
                     .iter()
-                    .map(|candidate| candidate.cost(source.extent))
+                    .map(|candidate| candidate.cost(source.selection.source_rect.extent))
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
@@ -239,7 +235,7 @@ impl GraphPresentation {
             .min()
             .map_or_else(|| (0..sources.len()).collect(), |(_, path)| path)
     }
-    fn cost(&self, source: vk::Extent2D) -> u128 {
+    fn cost(&self, source: polymer_presentation::Extent2D) -> u128 {
         let target = self.presentation_extent;
         let direct = (u128::from(source.width) * u128::from(target.height))
             .abs_diff(u128::from(source.height) * u128::from(target.width));
@@ -256,10 +252,13 @@ impl GraphPresentation {
         (missing_placement << 120) | (aspect_error << 48) | uncovered_area.min((1u128 << 48) - 1)
     }
 
-    fn placement(&self, source_extent: vk::Extent2D) -> Option<vk::Rect2D> {
+    fn placement(
+        &self,
+        source_extent: polymer_presentation::Extent2D,
+    ) -> Option<polymer_presentation::Rect> {
         self.sources
             .iter()
-            .find(|source| source.extent == source_extent)
-            .and_then(|source| source.presentation_rect)
+            .find(|source| source.selection.source_rect.extent == source_extent)
+            .and_then(|source| source.selection.presentation_rect)
     }
 }

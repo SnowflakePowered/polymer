@@ -1,5 +1,4 @@
 use crate::{Extent2D, Rect};
-use polymer_ipc::Message;
 use polymer_protocol::{FrameReady, PresentationTransform, StreamId};
 
 pub struct CapturedFrame {
@@ -18,8 +17,8 @@ pub struct FramePlacement {
 }
 
 impl CapturedFrame {
-    pub fn present(self, placement: FramePlacement) -> Message {
-        Message::FrameReady(FrameReady {
+    pub fn present(self, placement: FramePlacement) -> FrameReady {
+        FrameReady {
             stream_id: self.stream_id,
             slot: self.slot,
             render_width: self.extent.width,
@@ -34,11 +33,28 @@ impl CapturedFrame {
             frame_number: 0, // Assigned only when ProducerSession publishes it.
             sync_value: self.sync_value,
             timestamp_qpc: self.timestamp_qpc,
-        })
+        }
     }
 }
 
 impl FramePlacement {
+    pub fn from_selection(selection: Option<&crate::SurfaceSelection>, extent: Extent2D) -> Self {
+        selection.map_or_else(
+            || Self::new(extent, Some(extent.rect()), (false, false)),
+            crate::SurfaceSelection::frame_placement,
+        )
+    }
+
+    pub fn new(extent: Extent2D, bounds: Option<Rect>, orientation: (bool, bool)) -> Self {
+        Self {
+            extent,
+            bounds: bounds.unwrap_or(extent.rect()),
+            transform: bounds.map_or(PresentationTransform::UNAVAILABLE, |bounds| {
+                Self::mapped(bounds, orientation.0, orientation.1)
+            }),
+        }
+    }
+
     /// Converts a normalized rectangle and reflections without losing signed origins.
     pub fn mapped(bounds: Rect, flip_x: bool, flip_y: bool) -> PresentationTransform {
         if !flip_x && !flip_y && bounds.x >= 0 && bounds.y >= 0 {
@@ -64,5 +80,15 @@ impl FramePlacement {
         let (x0, x1) = if flip_x { (right, left) } else { (left, right) };
         let (y0, y1) = if flip_y { (bottom, top) } else { (top, bottom) };
         PresentationTransform::affine(point(x0, y0), point(x1, y0), point(x0, y1))
+    }
+}
+
+impl crate::SurfaceSelection {
+    pub fn frame_placement(&self) -> FramePlacement {
+        FramePlacement::new(
+            self.target_extent,
+            self.presentation_rect,
+            (self.flip_x, self.flip_y),
+        )
     }
 }

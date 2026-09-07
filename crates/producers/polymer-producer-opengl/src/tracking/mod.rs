@@ -5,7 +5,6 @@ mod renderbuffers;
 mod selection;
 mod transfers;
 pub use contexts::Tracking;
-use selection::SelectionView;
 
 use crate::interop::{
     GL_ACTIVE_TEXTURE, GL_DRAW_FRAMEBUFFER, GL_DRAW_FRAMEBUFFER_BINDING, GL_READ_FRAMEBUFFER,
@@ -23,8 +22,6 @@ use std::{
     },
 };
 
-const STALE_HORIZON: u64 = 8;
-
 pub(crate) type SurfaceIdentity = (u32, u64, i32, u32, i32);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -37,44 +34,32 @@ pub(crate) struct QuadBounds {
 
 #[derive(Clone, Copy)]
 pub(crate) struct DrawCandidate {
+    pub(crate) selection: polymer_presentation::SurfaceSelection,
     pub(crate) mip: i32,
     pub(crate) incarnation: u64,
-    pub(crate) orientation: (bool, bool),
-    pub(crate) source_origin: (i32, i32),
-    pub(crate) allocation_extent: Option<(u32, u32)>,
+
     pub(crate) texture: Gluint,
     pub(crate) target: Glenum,
     pub(crate) layer: i32,
     pub(crate) width: u32,
     pub(crate) height: u32,
-    pub(crate) bounds: QuadBounds,
-    /// Whether `bounds` is the raster area of a draw into the default
-    /// framebuffer. Only such bounds describe where the content lands in the
-    /// window; bounds observed on offscreen draws are in that framebuffer's
-    /// own coordinate space and must not be used as presentation placement.
-    pub(crate) window_bounds: bool,
     pub(crate) score: u64,
 }
 
 impl DrawCandidate {
     fn valid_crop(&self) -> bool {
-        let Some(x) = u32::try_from(self.source_origin.0).ok() else {
-            return false;
+        let extent = polymer_presentation::Extent2D {
+            width: self.width,
+            height: self.height,
         };
-        let Some(y) = u32::try_from(self.source_origin.1).ok() else {
-            return false;
-        };
-        let (width, height) = self.allocation_extent.unwrap_or((self.width, self.height));
-        self.width > 0
-            && self.height > 0
-            && x.checked_add(self.width)
-                .is_some_and(|right| right <= width)
-            && y.checked_add(self.height)
-                .is_some_and(|bottom| bottom <= height)
+        self.selection.source_rect.intersect(extent.rect()) == Some(self.selection.source_rect)
     }
 }
 
 impl polymer_presentation::history::HistorySurface for DrawCandidate {
+    fn selection(&mut self) -> Option<&mut polymer_presentation::SurfaceSelection> {
+        Some(&mut self.selection)
+    }
     type Id = SurfaceIdentity;
     type Layout = (u32, i32, i32, u32, u32);
     fn identity(&self) -> Self::Id {
@@ -87,7 +72,13 @@ impl polymer_presentation::history::HistorySurface for DrawCandidate {
         )
     }
     fn layout(&self) -> Self::Layout {
-        (self.target, self.mip, self.layer, self.width, self.height)
+        (
+            self.target,
+            self.mip,
+            self.layer,
+            self.selection.source_rect.extent.width,
+            self.selection.source_rect.extent.height,
+        )
     }
 }
 
@@ -138,15 +129,10 @@ struct ContextTracking {
     drawable_incarnations: dashmap::DashMap<u64, u64>,
     incarnations: dashmap::DashMap<(bool, Gluint), u64>,
     next_incarnation: AtomicU64,
-    observations: dashmap::DashMap<usize, polymer_presentation::ObservationStore<TargetKey>>,
-    generation: AtomicU64,
+    observations: polymer_presentation::ObservationStore<TargetKey>,
     observation_order: AtomicU64,
-    draw_candidates: dashmap::DashMap<usize, Vec<DrawCandidate>>,
-    render_targets: Mutex<Vec<(DrawCandidate, u64)>>,
+    resources: dashmap::DashMap<TargetKey, DrawCandidate>,
     texture_info: dashmap::DashMap<Gluint, (Glenum, u32, u32)>,
-    /// Present-draw quads observed this frame, in draw order: the sampled
-    /// texture and where its quad lands in the window (bottom-up).
-    presented_quads: dashmap::DashMap<usize, Vec<(SurfaceIdentity, QuadBounds)>>,
     active_texture: OnceLock<GlActiveTexture>,
     get_framebuffer_attachment: OnceLock<GlGetFramebufferAttachmentParameteriv>,
     get_texture_level_parameter: OnceLock<Option<GlGetTextureLevelParameteriv>>,
@@ -184,34 +170,23 @@ impl ContextTracking {
             .or_insert_with(|| self.next_incarnation.fetch_add(1, Ordering::Relaxed))
     }
     fn generation(&self) -> u64 {
-        self.generation.load(Ordering::Relaxed)
+        self.observations.generation()
     }
 
     fn upsert_render_target(&self, candidate: DrawCandidate) {
-        let now = self.generation();
-        let mut targets = self.render_targets.lock();
-        if let Some((existing, seen)) = targets
-            .iter_mut()
-            .find(|(existing, _)| existing.key() == candidate.key())
-        {
-            if candidate.score >= existing.score || *seen + STALE_HORIZON < now {
-                *existing = candidate;
-            }
-            *seen = now;
-        } else {
-            targets.push((candidate, now));
-        }
+        self.resources.insert(candidate.key(), candidate);
     }
 
-    fn record_dependencies(&self, context: usize, key: TargetKey, sources: &[Gluint], order: u64) {
-        let targets = self.render_targets.lock();
+    fn record_dependencies(&self, key: TargetKey, sources: &[Gluint], order: u64) {
+        let targets = &self.resources;
         for &texture in sources {
             let mut ids = targets
                 .iter()
-                .filter(|(candidate, _)| {
-                    candidate.texture == texture && candidate.target != GL_RENDERBUFFER
+                .filter(|candidate| {
+                    candidate.value().texture == texture
+                        && candidate.value().target != GL_RENDERBUFFER
                 })
-                .map(|(candidate, _)| candidate.key())
+                .map(|candidate| *candidate.key())
                 .collect::<Vec<_>>();
             if ids.is_empty() {
                 ids.push(TargetKey {
@@ -222,35 +197,18 @@ impl ContextTracking {
                     layer: 0,
                 });
             }
+            ids.sort_unstable_by_key(|id| (id.incarnation, id.mip, id.layer));
             for source in ids {
                 if source != key {
-                    self.observations.entry(context).or_default().record(
-                        polymer_presentation::DependencyEdge {
+                    self.observations
+                        .record(polymer_presentation::DependencyEdge {
                             order,
                             ..polymer_presentation::DependencyEdge::sampled(
                                 source,
                                 key,
                                 self.generation(),
                             )
-                        },
-                    );
-                }
-            }
-        }
-    }
-
-    /// Refreshes the staleness stamps of render targets that are still reaching
-    /// the screen. A static scene re-presents buffers without redrawing them, and
-    /// their history must not decay while that lasts.
-    fn touch_render_targets(&self, context: usize, sources: &[Gluint]) {
-        let now = self.generation();
-        let mut targets = self.render_targets.lock();
-        let observations = self.observations.get(&context);
-        for (candidate, seen) in targets.iter_mut() {
-            if candidate.target != GL_RENDERBUFFER && sources.contains(&candidate.texture) {
-                *seen = now;
-                if let Some(observations) = &observations {
-                    observations.observe_use(candidate.key(), now);
+                        });
                 }
             }
         }
@@ -285,7 +243,6 @@ impl QuadBounds {
 impl ContextTracking {
     pub(crate) fn take_draw_candidates(
         &self,
-        context: usize,
         backbuffer: Option<DrawCandidate>,
     ) -> (Vec<DrawCandidate>, bool) {
         let backbuffer = backbuffer.map(|mut source| {
@@ -299,68 +256,11 @@ impl ContextTracking {
         let Some(limit) = polymer_hook::config::tracked_render_target_count() else {
             return (Vec::new(), false);
         };
-        let now = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
-        let horizon = now.saturating_sub(STALE_HORIZON);
-        let fallback = self
-            .draw_candidates
-            .remove(&context)
-            .map(|(_, candidates)| candidates)
-            .unwrap_or_default();
-        let mut targets = {
-            let mut store = self.render_targets.lock();
-            store.retain(|(_, seen)| *seen >= horizon);
-            store
-                .iter()
-                .map(|(candidate, _)| *candidate)
-                .collect::<Vec<_>>()
-        };
-        {
-            targets.retain_mut(|candidate| {
-                if candidate.target == GL_RENDERBUFFER {
-                    let Some((width, height, _)) =
-                        (unsafe { self.measure_renderbuffer(candidate.texture) })
-                    else {
-                        return false;
-                    };
-                    candidate.width = width;
-                    candidate.height = height;
-                    return true;
-                }
-                let Some(info) = self.texture_info.get(&candidate.texture) else {
-                    return false;
-                };
-                let (target, width, height) = *info;
-                candidate.target = target;
-                candidate.width = width.checked_shr(candidate.mip as u32).unwrap_or(0).max(1);
-                candidate.height = height.checked_shr(candidate.mip as u32).unwrap_or(0).max(1);
-                true
-            });
-        }
-        let traverse = polymer_hook::config::graph_tracking_enabled();
-        if !traverse {
-            targets.extend(fallback.iter().copied());
-            self.render_targets.lock().clear();
-        }
-        let (raster_targets, mappings) = self.observations.get(&context).map_or_else(
-            || (Vec::new(), Vec::new()),
-            |observations| observations.snapshot(self.generation()),
-        );
-        if !traverse {
-            self.observations.remove(&context);
-        }
-        SelectionView::new(&targets, raster_targets)
-            .with_backbuffer(backbuffer)
-            .select(limit, mappings, traverse)
-    }
-
-    /// Takes the present-draw quads observed since the last swap: the sampled
-    /// texture and where its quad lands in the window (bottom-up), in draw
-    /// order. The capture layer pairs these with the final selection.
-    pub(crate) fn take_present_quads(&self, context: usize) -> Vec<(SurfaceIdentity, QuadBounds)> {
-        self.presented_quads
-            .remove(&context)
-            .map(|(_, quads)| quads)
-            .unwrap_or_default()
+        self.select(
+            backbuffer,
+            limit,
+            polymer_hook::config::graph_tracking_enabled(),
+        )
     }
 
     /// Re-validates a held selection against the live GPU texture state,
@@ -389,7 +289,7 @@ impl ContextTracking {
                     return source.valid_crop()
                         && self.backbuffer.lock().as_ref().is_some_and(|current| {
                             current.incarnation == source.incarnation
-                                && source.allocation_extent == current.allocation_extent
+                                && (source.width, source.height) == (current.width, current.height)
                         });
                 }
                 if source.target == GL_RENDERBUFFER {
@@ -417,12 +317,22 @@ impl ContextTracking {
                     entry.1 = width as u32;
                     entry.2 = height as u32;
                 }
-                (width as u32, height as u32)
-                    == source
-                        .allocation_extent
-                        .unwrap_or((source.width, source.height))
+                (width as u32, height as u32) == (source.width, source.height)
             })
             .copied()
+            .map(|mut source| {
+                if let Some(window) = self.backbuffer.lock().as_ref() {
+                    let extent = polymer_presentation::Extent2D {
+                        width: window.width,
+                        height: window.height,
+                    };
+                    if source.selection.target_extent != extent {
+                        source.selection.target_extent = extent;
+                        source.selection.presentation_rect = None;
+                    }
+                }
+                source
+            })
             .collect()
     }
 }
@@ -560,18 +470,16 @@ impl ContextTracking {
                     continue;
                 }
                 sampled.push(DrawCandidate {
+                    selection: Default::default(),
                     mip: 0,
                     incarnation: self.incarnation(false, texture as u32),
-                    orientation: (false, false),
-                    source_origin: (0, 0),
-                    allocation_extent: None,
+
                     texture: texture as u32,
                     target,
                     layer: 0,
                     width: width as u32,
                     height: height as u32,
-                    bounds,
-                    window_bounds: draw_framebuffer == 0,
+
                     score: raster_area,
                 });
                 self.texture_info
@@ -641,23 +549,15 @@ impl ContextTracking {
                     {
                         candidate.score = raster_area;
                         self.upsert_render_target(candidate);
-                        self.observations
-                            .entry(context as usize)
-                            .or_default()
-                            .target(
-                                polymer_presentation::Target {
-                                    id: candidate.key(),
-                                    score: raster_area,
-                                    order,
-                                },
-                                self.generation(),
-                            );
-                        self.record_dependencies(
-                            context as usize,
-                            candidate.key(),
-                            &sampled_names,
-                            order,
+                        self.observations.target(
+                            polymer_presentation::Target {
+                                id: candidate.key(),
+                                score: raster_area,
+                                order,
+                            },
+                            self.generation(),
                         );
+                        self.record_dependencies(candidate.key(), &sampled_names, order);
                     }
                     continue;
                 }
@@ -665,39 +565,34 @@ impl ContextTracking {
                     continue;
                 }
                 let candidate = DrawCandidate {
+                    selection: Default::default(),
                     mip,
                     incarnation: self.incarnation(false, texture as u32),
-                    orientation: (false, false),
-                    source_origin: (0, 0),
-                    allocation_extent: None,
+
                     texture: texture as u32,
                     target: 0,
                     layer,
                     width: bounds.width,
                     height: bounds.height,
-                    bounds,
-                    window_bounds: false,
+
                     score: raster_area,
                 };
                 self.upsert_render_target(candidate);
-                self.observations
-                    .entry(context as usize)
-                    .or_default()
-                    .target(
-                        polymer_presentation::Target {
-                            id: candidate.key(),
-                            score: raster_area,
-                            order,
-                        },
-                        self.generation(),
-                    );
-                self.record_dependencies(context as usize, candidate.key(), &sampled_names, order);
+                self.observations.target(
+                    polymer_presentation::Target {
+                        id: candidate.key(),
+                        score: raster_area,
+                        order,
+                    },
+                    self.generation(),
+                );
+                self.record_dependencies(candidate.key(), &sampled_names, order);
             }
             return;
         }
         let mut raster = polymer_presentation::DependencyEdge::sampled(
-            SelectionView::PRESENT,
-            SelectionView::PRESENT,
+            TargetKey::PRESENT,
+            TargetKey::PRESENT,
             self.generation(),
         );
         raster.order = order;
@@ -709,47 +604,60 @@ impl ContextTracking {
                 height: bounds.height,
             },
         });
-        self.observations
-            .entry(context as usize)
-            .or_default()
-            .record(raster);
-        self.record_dependencies(
-            context as usize,
-            SelectionView::PRESENT,
-            &sampled_names,
-            order,
-        );
-        self.touch_render_targets(context as usize, &sampled_names);
-        self.record_present_candidates(context as usize, sampled, present_quad);
+        self.observations.record(raster);
+        if !self.record_present_sources(sampled, present_quad, order) {
+            self.record_dependencies(TargetKey::PRESENT, &sampled_names, order);
+        }
     }
 
-    fn record_present_candidates(
+    fn record_present_sources(
         &self,
-        context: usize,
         mut sampled: Vec<DrawCandidate>,
         present_quad: Option<QuadBounds>,
-    ) {
+        order: u64,
+    ) -> bool {
+        use polymer_presentation::{DependencyEdge, Extent2D, Rect, RegionMapping};
         let mut seen = std::collections::HashSet::new();
         sampled.retain(|candidate| seen.insert(candidate.key()));
+        // Native metadata does not establish rendered-content evidence.
+        for &candidate in &sampled {
+            self.upsert_render_target(candidate);
+        }
         if let (Some(quad), [candidate]) = (present_quad, sampled.as_slice()) {
-            self.presented_quads.entry(context).or_default().push((
-                polymer_presentation::history::HistorySurface::identity(candidate),
-                quad,
-            ));
-        }
-        let mut candidates = self.draw_candidates.entry(context).or_default();
-        for candidate in sampled {
-            if let Some(existing) = candidates
-                .iter_mut()
-                .find(|existing| existing.key() == candidate.key())
-            {
-                if candidate.score > existing.score {
-                    *existing = candidate;
-                }
-            } else {
-                candidates.push(candidate);
+            if self.resources.iter().any(|other| {
+                other.texture == candidate.texture
+                    && other.target != GL_RENDERBUFFER
+                    && *other.key() != candidate.key()
+            }) {
+                return false;
             }
+            let mut edge =
+                DependencyEdge::sampled(candidate.key(), TargetKey::PRESENT, self.generation());
+            edge.order = order;
+            // Position recovery supplies placement, not proof that every
+            // sampled texture is a rendered screen. Keep sampled-draw policy.
+            edge.mapping = Some(RegionMapping {
+                source: Extent2D {
+                    width: candidate.width,
+                    height: candidate.height,
+                }
+                .rect(),
+                destination: Rect {
+                    x: quad.x,
+                    y: quad.y,
+                    extent: Extent2D {
+                        width: quad.width,
+                        height: quad.height,
+                    },
+                },
+                flip_x: false,
+                flip_y: false,
+            });
+            edge.coverage = edge.mapping.map(|mapping| mapping.destination);
+            self.observations.record(edge);
+            return true;
         }
+        false
     }
 
     fn quad_reader(&self) -> Option<QuadReader> {
@@ -995,77 +903,70 @@ mod tests {
     use super::{ContextTracking, DrawCandidate, QuadBounds};
 
     #[test]
-    fn present_recording_retains_all_sources_without_guessing_quad_ownership() {
-        use polymer_presentation::history::HistorySurface;
+    fn recovered_quad_requires_one_distinct_sampled_source() {
         let tracking = ContextTracking::default();
         let first = candidate(1, 320, 240, 100);
         let second = candidate(2, 640, 480, 200);
-        tracking.record_present_candidates(1, vec![first, second, first], Some(first.bounds));
-        assert_eq!(tracking.draw_candidates.get(&1).unwrap().len(), 2);
-        assert!(tracking.take_present_quads(1).is_empty());
-        tracking.record_present_candidates(1, vec![first, first], Some(first.bounds));
-        let quads = tracking.take_present_quads(1);
-        assert_eq!(quads.len(), 1);
-        assert_eq!(quads[0].0, first.identity());
-        let mut mip = first;
-        mip.mip = 1;
-        tracking.record_present_candidates(1, vec![mip], None);
-        assert_eq!(tracking.draw_candidates.get(&1).unwrap().len(), 3);
+        tracking.record_present_sources(
+            vec![first, second, first],
+            Some(QuadBounds {
+                x: 0,
+                y: 0,
+                width: 640,
+                height: 480,
+            }),
+            1,
+        );
+        assert!(tracking.observations.graph::<()>(0).edges.is_empty());
+        tracking.record_present_sources(
+            vec![first, first],
+            Some(QuadBounds {
+                x: 0,
+                y: 0,
+                width: 640,
+                height: 480,
+            }),
+            2,
+        );
+        let graph = tracking.observations.graph::<()>(0);
+        let edge = graph.edges.values().flatten().next().unwrap();
+        assert!(edge.mapping.is_some());
+        assert!(!edge.exact());
+        assert_eq!(edge.source, first.key());
+        assert_eq!(edge.order, 2);
+        tracking.observations.clear();
+        let sibling = DrawCandidate { layer: 1, ..first };
+        tracking.resources.insert(sibling.key(), sibling);
+        assert!(!tracking.record_present_sources(
+            vec![first],
+            Some(QuadBounds {
+                x: 0,
+                y: 0,
+                width: 640,
+                height: 480,
+            }),
+            3
+        ));
+        assert!(tracking.observations.graph::<()>(0).edges.is_empty());
     }
 
     pub(super) fn candidate(texture: u32, width: u32, height: u32, score: u64) -> DrawCandidate {
         DrawCandidate {
+            selection: polymer_presentation::SurfaceSelection {
+                source_rect: polymer_presentation::Extent2D { width, height }.rect(),
+                ..Default::default()
+            },
             mip: 0,
             incarnation: 0,
-            orientation: (false, false),
-            source_origin: (0, 0),
-            allocation_extent: None,
+
             texture,
             target: 0x0de1,
             layer: 0,
             width,
             height,
-            bounds: QuadBounds {
-                x: 0,
-                y: 0,
-                width: 256,
-                height: 384,
-            },
-            window_bounds: false,
+
             score,
         }
-    }
-
-    #[test]
-    fn quad_placement_preserves_layers_and_rejects_reused_texture_names() {
-        use polymer_presentation::{history::HistorySurface, registry::PresentationRegistry};
-        let tracking = ContextTracking::default();
-        let mut first = candidate(11, 256, 192, 1);
-        first.incarnation = tracking.incarnation(false, first.texture);
-        let mut second = first;
-        second.layer = 1;
-        let mut lower = first.bounds;
-        lower.y = 192;
-        tracking.presented_quads.insert(
-            1,
-            vec![(first.identity(), first.bounds), (second.identity(), lower)],
-        );
-        let observations = tracking.take_present_quads(1);
-        assert_eq!(
-            PresentationRegistry::pair_placements(
-                [second.identity(), first.identity()],
-                &observations
-            ),
-            [Some(lower), Some(first.bounds)],
-        );
-        tracking.forget_texture(first.texture);
-        first.incarnation = tracking.incarnation(false, first.texture);
-        // Different cardinality precludes ordered page-flip inference. The
-        // reused name must not inherit an old incarnation's placement.
-        assert_eq!(
-            PresentationRegistry::pair_placements([first.identity()], &observations),
-            [None],
-        );
     }
 
     #[test]
@@ -1089,47 +990,21 @@ mod tests {
     }
 
     #[test]
-    fn refresh_without_live_metadata_rejects_held_resources() {
-        // A cached incarnation alone cannot establish native capture validity.
-        let tracking = ContextTracking::default();
-        let mut sources = [candidate(11, 256, 192, 1), candidate(12, 256, 192, 1)];
-        for source in &mut sources {
-            source.incarnation = tracking.incarnation(false, source.texture);
-        }
-        let refreshed = tracking.refresh_sources(&sources);
-        assert_eq!(
-            refreshed
-                .iter()
-                .map(|source| source.texture)
-                .collect::<Vec<_>>(),
-            Vec::<u32>::new()
-        );
-        tracking.forget_texture(11);
-        tracking.incarnation(false, 11);
-        assert_eq!(
-            tracking
-                .refresh_sources(&sources)
-                .iter()
-                .map(|source| source.texture)
-                .collect::<Vec<_>>(),
-            Vec::<u32>::new()
-        );
-    }
-
-    #[test]
     fn present_draws_keep_recording_stamps_and_distinct_known_subresources() {
-        use super::{Ordering, SelectionView};
+        use super::TargetKey;
         let tracking = ContextTracking::default();
-        tracking.generation.store(7, Ordering::Relaxed);
+        for _ in 0..7 {
+            tracking.observations.present::<()>(true);
+        }
         let first = candidate(3, 320, 240, 1);
         let mut second = first;
         second.layer = 1;
         for source in [first, second] {
             tracking.upsert_render_target(source);
         }
-        tracking.record_dependencies(1, SelectionView::PRESENT, &[3], 42);
-        let observations = tracking.observations.get(&1).unwrap();
-        let (_, edges) = observations.snapshot(8);
+        tracking.record_dependencies(TargetKey::PRESENT, &[3], 42);
+        let observations = &tracking.observations;
+        let (_, edges) = observations.graph::<()>(8).observation_list();
         assert_eq!(edges.len(), 2);
         assert!(
             edges
@@ -1145,10 +1020,9 @@ mod tests {
                 .iter()
                 .all(|edge| edge.mapping.is_none() && !edge.whole_source)
         );
-        drop(observations);
-        tracking.generation.store(8, Ordering::Relaxed);
-        tracking.record_dependencies(1, SelectionView::PRESENT, &[3], 43);
-        let (_, edges) = tracking.observations.get(&1).unwrap().snapshot(9);
+        tracking.observations.present::<()>(true);
+        tracking.record_dependencies(TargetKey::PRESENT, &[3], 43);
+        let (_, edges) = tracking.observations.graph::<()>(9).observation_list();
         assert_eq!(edges.len(), 2);
         assert!(
             edges
@@ -1165,36 +1039,24 @@ mod tests {
         second.texture_info.insert(7, (0x0de1, 320, 240));
         let deleted = candidate(7, 640, 480, 1);
         let sibling = candidate(8, 320, 240, 1);
-        first.draw_candidates.insert(1, vec![deleted, sibling]);
-        use polymer_presentation::history::HistorySurface;
-        first.presented_quads.insert(
-            1,
-            vec![
-                (deleted.identity(), deleted.bounds),
-                (sibling.identity(), sibling.bounds),
-            ],
-        );
-        first.observations.entry(1).or_default().record(
-            polymer_presentation::DependencyEdge::sampled(deleted.key(), sibling.key(), 1),
-        );
+        first
+            .observations
+            .record(polymer_presentation::DependencyEdge::sampled(
+                deleted.key(),
+                sibling.key(),
+                1,
+            ));
         first.forget_texture(7);
         assert!(!first.texture_info.contains_key(&7));
         assert_eq!(*second.texture_info.get(&7).unwrap(), (0x0de1, 320, 240));
-        assert_eq!(
+        assert!(
             first
-                .draw_candidates
-                .get(&1)
-                .unwrap()
-                .iter()
-                .map(|source| source.texture)
-                .collect::<Vec<_>>(),
-            [8]
+                .observations
+                .graph::<()>(1)
+                .observation_list()
+                .1
+                .is_empty()
         );
-        assert_eq!(
-            first.take_present_quads(1),
-            [(sibling.identity(), sibling.bounds)]
-        );
-        assert!(first.observations.get(&1).unwrap().snapshot(1).1.is_empty());
     }
 
     #[test]

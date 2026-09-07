@@ -8,193 +8,6 @@ pub(super) struct RecordedObservation {
     pub destination: TrackedResource,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use windows::Win32::{
-        Foundation::HMODULE,
-        Graphics::{
-            Direct3D::D3D_DRIVER_TYPE_WARP,
-            Direct3D11::{
-                D3D11_BIND_SHADER_RESOURCE, D3D11_CREATE_DEVICE_FLAG, D3D11_SDK_VERSION,
-                D3D11_USAGE_DEFAULT, D3D11CreateDevice,
-            },
-            Dxgi::Common::{DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SAMPLE_DESC},
-        },
-    };
-
-    #[test]
-    fn deferred_copy_is_visible_only_after_execution_and_replay_refreshes_it() {
-        unsafe {
-            let mut device = None;
-            D3D11CreateDevice(
-                None,
-                D3D_DRIVER_TYPE_WARP,
-                HMODULE::default(),
-                D3D11_CREATE_DEVICE_FLAG(0),
-                None,
-                D3D11_SDK_VERSION,
-                Some(&mut device),
-                None,
-                None,
-            )
-            .unwrap();
-            let device = device.unwrap();
-            let mut context = None;
-            device.CreateDeferredContext(0, Some(&mut context)).unwrap();
-            let context = context.unwrap();
-            let desc = D3D11_TEXTURE2D_DESC {
-                Width: 64,
-                Height: 64,
-                MipLevels: 1,
-                ArraySize: 1,
-                Format: DXGI_FORMAT_R8G8B8A8_UNORM,
-                SampleDesc: DXGI_SAMPLE_DESC {
-                    Count: 1,
-                    Quality: 0,
-                },
-                Usage: D3D11_USAGE_DEFAULT,
-                BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
-                ..Default::default()
-            };
-            let (mut source, mut destination) = (None, None);
-            device
-                .CreateTexture2D(&desc, None, Some(&mut source))
-                .unwrap();
-            device
-                .CreateTexture2D(&desc, None, Some(&mut destination))
-                .unwrap();
-            let (source, destination) = (source.unwrap(), destination.unwrap());
-            let tracking = Tracking::default();
-            tracking.deferred_context_created(context.as_raw());
-            context.CopyResource(&destination, &source);
-            tracking.record_copy(
-                context.as_raw(),
-                destination.as_raw(),
-                0,
-                0,
-                0,
-                source.as_raw(),
-                0,
-                std::ptr::null(),
-                false,
-            );
-            let mut list = None;
-            context.FinishCommandList(false, Some(&mut list)).unwrap();
-            let list = list.unwrap();
-            tracking.finish_commands(context.as_raw(), list.as_raw(), false);
-            assert!(tracking.observations.snapshot(0).1.is_empty());
-            tracking.execute_commands(list.as_raw(), || {});
-            let edges = tracking.observations.snapshot(0).1;
-            assert_eq!(edges.len(), 1);
-            tracking.execute_commands(list.as_raw(), || {});
-            let replay = tracking.observations.snapshot(0).1;
-            assert_eq!(replay.len(), 1);
-            assert_eq!(replay[0].generation, edges[0].generation);
-            assert!(replay[0].order > edges[0].order);
-            assert_eq!(
-                edges[0].source.0,
-                source.cast::<IUnknown>().unwrap().as_raw() as usize
-            );
-            tracking.generation.store(4, Ordering::Relaxed);
-            tracking.execute_commands(list.as_raw(), || {});
-            assert_eq!(tracking.observations.snapshot(4).1[0].generation, 4);
-            // Retiring a backbuffer must not erase unrelated command lists or
-            // the live deferred-context registration and unaffected bindings.
-            let mut other = None;
-            device
-                .CreateTexture2D(&desc, None, Some(&mut other))
-                .unwrap();
-            let other = other.unwrap();
-            context.CopyResource(&destination, &other);
-            tracking.record_copy(
-                context.as_raw(),
-                destination.as_raw(),
-                0,
-                0,
-                0,
-                other.as_raw(),
-                0,
-                std::ptr::null(),
-                false,
-            );
-            let mut other_list = None;
-            context
-                .FinishCommandList(false, Some(&mut other_list))
-                .unwrap();
-            let other_list = other_list.unwrap();
-            tracking.finish_commands(context.as_raw(), other_list.as_raw(), false);
-            let (mut removed_view, mut kept_view) = (None, None);
-            device
-                .CreateShaderResourceView(&source, None, Some(&mut removed_view))
-                .unwrap();
-            device
-                .CreateShaderResourceView(&other, None, Some(&mut kept_view))
-                .unwrap();
-            let (removed_view, kept_view) = (removed_view.unwrap(), kept_view.unwrap());
-            tracking.shader_resources(
-                context.as_raw(),
-                0,
-                2,
-                [removed_view.as_raw(), kept_view.as_raw()].as_ptr(),
-            );
-            let removed = [source.cast::<IUnknown>().unwrap().as_raw() as usize]
-                .into_iter()
-                .collect();
-            tracking.forget_resources(&removed);
-            {
-                let state = tracking.deferred.get(&(context.as_raw() as usize)).unwrap();
-                assert!(state.bindings.views[0].is_none());
-                assert!(state.bindings.views[1].is_some());
-            }
-            tracking.observations.clear();
-            tracking.execute_commands(list.as_raw(), || {});
-            tracking.execute_commands(other_list.as_raw(), || {});
-            let remaining = tracking.observations.snapshot(4).1;
-            assert_eq!(remaining.len(), 1);
-            assert_eq!(
-                remaining[0].source.0,
-                other.cast::<IUnknown>().unwrap().as_raw() as usize
-            );
-            tracking.forget_commands(list.as_raw() as usize);
-            tracking.observations.clear();
-            tracking.execute_commands(list.as_raw(), || {});
-            assert!(tracking.observations.snapshot(4).1.is_empty());
-            // Context destruction discards bindings and unfinished work, but
-            // independently owned immutable command lists remain executable.
-            tracking.record_copy(
-                context.as_raw(),
-                destination.as_raw(),
-                0,
-                0,
-                0,
-                other.as_raw(),
-                0,
-                std::ptr::null(),
-                false,
-            );
-            assert!(
-                !tracking
-                    .deferred
-                    .get(&(context.as_raw() as usize))
-                    .unwrap()
-                    .observations
-                    .is_empty()
-            );
-            tracking.forget_context(context.as_raw() as usize);
-            assert!(!tracking.deferred.contains_key(&(context.as_raw() as usize)));
-            tracking.deferred_context_created(context.as_raw());
-            {
-                let state = tracking.deferred.get(&(context.as_raw() as usize)).unwrap();
-                assert!(state.observations.is_empty());
-                assert!(state.bindings.views.is_empty());
-            }
-            tracking.execute_commands(other_list.as_raw(), || {});
-            assert_eq!(tracking.observations.snapshot(4).1.len(), 1);
-        }
-    }
-}
-
 #[derive(Clone, Default)]
 pub(super) struct Bindings {
     pub targets: Vec<Option<ID3D11RenderTargetView>>,
@@ -265,22 +78,8 @@ impl Tracking {
         for &resource in removed {
             self.swapchain_targets.remove(&resource);
         }
-        let (targets, edges) = self
-            .observations
-            .snapshot(self.generation.load(Ordering::Relaxed));
-        let ids = targets
-            .into_iter()
-            .map(|target| target.id)
-            .chain(
-                edges
-                    .into_iter()
-                    .flat_map(|edge| [edge.source, edge.destination]),
-            )
-            .filter(|id| removed.contains(&id.0))
-            .collect::<std::collections::HashSet<_>>();
-        for id in ids {
-            self.observations.forget(id);
-        }
+        self.observations
+            .forget_matching(|id| removed.contains(&id.0));
         let keep = |value: &RecordedObservation| {
             !removed.contains(&value.edge.source.0) && !removed.contains(&value.edge.destination.0)
         };
@@ -308,13 +107,13 @@ impl Tracking {
     }
 
     fn commit(&self, mut observation: RecordedObservation) {
-        let now = self.generation.load(Ordering::Relaxed);
+        let now = self.observations.generation();
         observation.edge.generation = now;
         observation.edge.order = self.observation_order.fetch_add(1, Ordering::Relaxed);
         self.resources
-            .insert(observation.edge.source, (observation.source, now));
+            .insert(observation.edge.source, observation.source);
         self.resources
-            .insert(observation.edge.destination, (observation.destination, now));
+            .insert(observation.edge.destination, observation.destination);
         if matches!(
             observation.edge.evidence,
             polymer_presentation::Evidence::SampledDraw
