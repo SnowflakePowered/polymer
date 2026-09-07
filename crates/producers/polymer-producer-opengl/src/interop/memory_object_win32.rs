@@ -2,9 +2,8 @@
 
 use super::{
     GL_RGBA8, GL_TEXTURE_2D, GL_TEXTURE_BINDING_2D, GlBindFramebuffer, GlBlitFramebuffer,
-    GlDeleteFramebuffers, GlFramebufferTexture2D, GlFramebufferTextureLayer, GlGenFramebuffers,
-    Glenum, Glint, Glsizei, Gluint, glBindTexture, glDeleteTextures, glGenTextures, glGetIntegerv,
-    proc,
+    GlDeleteFramebuffers, GlFramebufferTexture2D, GlGenFramebuffers, Glenum, Glint, Glsizei,
+    Gluint, glBindTexture, glDeleteTextures, glGenTextures, glGetIntegerv, proc,
 };
 use polymer_protocol::AdapterLuid;
 use std::ffi::c_void;
@@ -55,8 +54,8 @@ pub(crate) struct GlFunctions {
     pub(crate) gen_framebuffers: GlGenFramebuffers,
     pub(crate) delete_framebuffers: GlDeleteFramebuffers,
     pub(crate) bind_framebuffer: GlBindFramebuffer,
+    pub(crate) check_framebuffer: unsafe extern "system" fn(Glenum) -> Glenum,
     pub(crate) framebuffer_texture_2d: GlFramebufferTexture2D,
-    pub(crate) framebuffer_texture_layer: GlFramebufferTextureLayer,
     pub(crate) blit_framebuffer: GlBlitFramebuffer,
     create_memory_objects: GlCreateMemoryObjects,
     pub(crate) delete_memory_objects: GlDeleteMemoryObjects,
@@ -68,17 +67,21 @@ pub(crate) struct GlFunctions {
     pub(crate) import_semaphore: GlImportSemaphoreWin32Handle,
     pub(crate) semaphore_parameter: GlSemaphoreParameterui64v,
     pub(crate) signal_semaphore: GlSignalSemaphore,
+    pub(crate) wait_semaphore: GlSignalSemaphore,
 }
 
 impl GlFunctions {
     pub(crate) unsafe fn load() -> Option<Self> {
+        if !unsafe { Self::extensions_supported() } {
+            return None;
+        }
         Some(Self {
             get_unsigned_byte: unsafe { proc(b"glGetUnsignedBytevEXT\0")? },
             gen_framebuffers: unsafe { proc(b"glGenFramebuffers\0")? },
             delete_framebuffers: unsafe { proc(b"glDeleteFramebuffers\0")? },
             bind_framebuffer: unsafe { proc(b"glBindFramebuffer\0")? },
+            check_framebuffer: unsafe { proc(b"glCheckFramebufferStatus\0")? },
             framebuffer_texture_2d: unsafe { proc(b"glFramebufferTexture2D\0")? },
-            framebuffer_texture_layer: unsafe { proc(b"glFramebufferTextureLayer\0")? },
             blit_framebuffer: unsafe { proc(b"glBlitFramebuffer\0")? },
             create_memory_objects: unsafe { proc(b"glCreateMemoryObjectsEXT\0")? },
             delete_memory_objects: unsafe { proc(b"glDeleteMemoryObjectsEXT\0")? },
@@ -90,7 +93,37 @@ impl GlFunctions {
             import_semaphore: unsafe { proc(b"glImportSemaphoreWin32HandleEXT\0")? },
             semaphore_parameter: unsafe { proc(b"glSemaphoreParameterui64vEXT\0")? },
             signal_semaphore: unsafe { proc(b"glSignalSemaphoreEXT\0")? },
+            wait_semaphore: unsafe { proc(b"glWaitSemaphoreEXT\0")? },
         })
+    }
+
+    unsafe fn extensions_supported() -> bool {
+        const GL_EXTENSIONS: Glenum = 0x1F03;
+        const GL_NUM_EXTENSIONS: Glenum = 0x821D;
+        type GetStringi = unsafe extern "system" fn(Glenum, Gluint) -> *const u8;
+        let Some(get_string) = (unsafe { proc::<GetStringi>(b"glGetStringi\0") }) else {
+            return false;
+        };
+        let mut count = 0;
+        unsafe { glGetIntegerv(GL_NUM_EXTENSIONS, &mut count) };
+        let mut supported = [false; 4];
+        let required = [
+            c"GL_EXT_memory_object",
+            c"GL_EXT_memory_object_win32",
+            c"GL_EXT_semaphore",
+            c"GL_EXT_semaphore_win32",
+        ];
+        for index in 0..count.max(0) as u32 {
+            let name = unsafe { get_string(GL_EXTENSIONS, index) };
+            if name.is_null() {
+                continue;
+            }
+            let name = unsafe { std::ffi::CStr::from_ptr(name.cast()) };
+            for (supported, required) in supported.iter_mut().zip(required) {
+                *supported |= name == required;
+            }
+        }
+        supported.into_iter().all(|value| value)
     }
 }
 

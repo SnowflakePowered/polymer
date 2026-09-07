@@ -20,7 +20,6 @@ enum HookChoice {
     OpenGl,
     D3d12,
     D3d11,
-    Gdi,
 }
 
 impl HookChoice {
@@ -31,16 +30,14 @@ impl HookChoice {
             Self::OpenGl => Some(GraphicsHook::OpenGl),
             Self::D3d12 => Some(GraphicsHook::D3d12),
             Self::D3d11 => Some(GraphicsHook::D3d11),
-            Self::Gdi => Some(GraphicsHook::Gdi),
         }
     }
 }
 
 /// The `--hook auto` selection, ordered from most to least likely to be the
 /// application's real renderer.
-pub const AUTO_HOOKS: [GraphicsHook; 4] = [
+pub const AUTO_HOOKS: [GraphicsHook; 3] = [
     GraphicsHook::Vulkan,
-    GraphicsHook::OpenGl,
     GraphicsHook::D3d12,
     GraphicsHook::D3d11,
 ];
@@ -82,14 +79,13 @@ pub struct TrackedRenderTarget {
 pub struct ViewerOptions {
     pub target: Vec<String>,
     pub track_render_targets: Option<Vec<TrackedRenderTarget>>,
-    pub graph_tracking: bool,
+    pub swapchain_resolution: Option<[u32; 2]>,
     pub layout_css: Option<String>,
     pub surfaces: u32,
     pub skip_surfaces: u32,
     pub isolate: bool,
     pub resize: bool,
     pub api: ViewerApi,
-    pub force_keyed_mutex: bool,
     pub hooks: Vec<GraphicsHook>,
     pub webrtc: Option<Vec<u32>>,
     pub bind_webrtc: SocketAddr,
@@ -102,11 +98,9 @@ struct ViewerArguments {
     #[arg(long, value_enum, default_value_t)]
     pub(crate) api: ViewerApi,
 
-    /// Track render targets by index into the detected selection, as a
-    /// comma-separated list. An entry may append `:TURNS` to rotate that
-    /// target counterclockwise by quarter turns, then `:WINDOW_REGEX` to
-    /// resolve the target within a presenting window whose title matches
-    /// (`0:0:GamePad View,1` pins target 0 to the GamePad window).
+    /// Select configured swapchain surface indices.
+    /// Comma-separated entries may append `:TURNS:WINDOW_REGEX` to specify
+    /// counterclockwise quarter turns and a presenting-window title pattern.
     #[arg(
         long,
         visible_alias = "track-render-target",
@@ -118,11 +112,9 @@ struct ViewerArguments {
     )]
     pub(crate) track_render_targets: Option<Vec<TrackedRenderTarget>>,
 
-    /// Resolve tracked render targets through the presentation dependency
-    /// graph (offscreen screens behind compositor blits and copies) instead
-    /// of the scissor and one-hop heuristics.
-    #[arg(long, action = ArgAction::SetTrue, requires = "track_render_targets")]
-    pub(crate) graph_tracking: bool,
+    /// D3D11/D3D12/Vulkan/OpenGL: use a swapchain with a fixed width and height.
+    #[arg(long, num_args = 2, value_names = ["WIDTH", "HEIGHT"], value_parser = clap::value_parser!(u32).range(1..=i32::MAX as i64))]
+    pub(crate) swapchain_resolution: Option<Vec<u32>>,
 
     /// CSS declarations applied to the Taffy container that holds render
     /// targets. Without this option the viewer uses its original vertical
@@ -183,10 +175,6 @@ struct ViewerArguments {
     #[arg(long, action = ArgAction::SetTrue, conflicts_with = "no_isolate")]
     pub(crate) resize: bool,
 
-    /// Force keyed-mutex synchronization for compatible capture backends.
-    #[arg(long = "force-km")]
-    pub(crate) force_keyed_mutex: bool,
-
     /// Capture hooks to install, as an ordered comma-separated list.
     #[arg(
         long = "hook",
@@ -203,12 +191,22 @@ struct ViewerArguments {
 }
 
 impl ViewerArguments {
+    fn validate_presentation(&self) -> Result<(), Box<dyn Error>> {
+        if !self.target.is_empty() && self.swapchain_resolution.is_none() {
+            return Err(
+                "graphics hooks require --swapchain-resolution WIDTH HEIGHT".into(),
+            );
+        }
+        Ok(())
+    }
+
     fn into_options(self) -> Result<ViewerOptions, Box<dyn Error>> {
         let mut hooks = Vec::new();
-        expand_hook_choices(&mut hooks, self.hook_choices)?;
+        expand_hook_choices(&mut hooks, self.hook_choices.iter().copied())?;
         if hooks.is_empty() {
             hooks.extend(AUTO_HOOKS);
         }
+        self.validate_presentation()?;
         if let Some(targets) = &self.webrtc {
             let mut unique = HashSet::new();
             if targets.iter().any(|target| !unique.insert(*target)) {
@@ -231,14 +229,13 @@ impl ViewerArguments {
         Ok(ViewerOptions {
             target: self.target,
             track_render_targets: self.track_render_targets,
-            graph_tracking: self.graph_tracking,
+            swapchain_resolution: self.swapchain_resolution.map(|size| [size[0], size[1]]),
             layout_css: self.layout_css,
             surfaces: self.surfaces,
             skip_surfaces: self.skip_surfaces,
             isolate: !self.no_isolate,
             resize: self.resize,
             api: self.api,
-            force_keyed_mutex: self.force_keyed_mutex,
             hooks,
             webrtc: self.webrtc,
             bind_webrtc: self.bind_webrtc,
@@ -375,7 +372,10 @@ mod tests {
 
     #[test]
     fn defaults_are_shared_by_renderer_hosts() {
-        let options = parse_arguments(["--".to_owned(), "game.exe".to_owned()]).unwrap();
+        let options = parse_arguments(
+            ["--swapchain-resolution", "640", "480", "--", "game.exe"].map(str::to_owned),
+        )
+        .unwrap();
         assert_eq!(options.api, ViewerApi::D3d12);
         assert_eq!(options.hooks, AUTO_HOOKS);
         assert_eq!(options.target, ["game.exe"]);
@@ -386,6 +386,8 @@ mod tests {
     fn validates_deduplicated_render_and_video_targets() {
         assert!(
             parse_arguments([
+                "--swapchain-resolution=640".to_owned(),
+                "480".to_owned(),
                 "--track-render-targets=0,0".to_owned(),
                 "--".to_owned(),
                 "game.exe".to_owned(),
@@ -394,6 +396,8 @@ mod tests {
         );
         assert!(
             parse_arguments([
+                "--swapchain-resolution=640".to_owned(),
+                "480".to_owned(),
                 "--webrtc=0,0".to_owned(),
                 "--".to_owned(),
                 "game.exe".to_owned(),

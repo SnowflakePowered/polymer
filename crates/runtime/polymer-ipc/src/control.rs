@@ -10,7 +10,7 @@ use std::{
     io::{self, Read, Write},
     mem,
     net::{Shutdown, TcpStream},
-    os::windows::io::FromRawSocket,
+    os::windows::io::{AsRawSocket, FromRawSocket},
     path::PathBuf,
     sync::{
         Arc, OnceLock,
@@ -56,6 +56,8 @@ const MESSAGE_FRAME_AVAILABLE: u32 = 10;
 const MESSAGE_MAP_ACCEPTED: u32 = 11;
 const MESSAGE_RESIZE_WINDOW: u32 = 13;
 const MESSAGE_GAMEPAD_FEEDBACK: u32 = 14;
+const MESSAGE_BUFFER_AVAILABLE: u32 = 15;
+const MESSAGE_REQUEST_BUFFER_AVAILABILITY: u32 = 16;
 const PAYLOAD_SIZE: usize = payload_size();
 
 const fn payload_size() -> usize {
@@ -126,6 +128,17 @@ pub enum Message {
     },
     /// The viewer has imported the stream resources and released its previous stream.
     StreamAccepted,
+    /// Subscribe before publishing a virtual stream. Ordinary capture streams
+    /// do not need acknowledgments and must not accumulate unread responses.
+    RequestBufferAvailability,
+    /// The consumer has submitted release of every publication through this
+    /// value. Rendering also requires completion of the shared release fence
+    /// before reusing an image. The connection identifies
+    /// the immutable resource generation; values never cross connections.
+    BufferAvailable {
+        stream_id: StreamId,
+        through_sync_value: u64,
+    },
     /// A file handle already duplicated into the receiving process.
     MapOffer(MapOffer),
     FrameAvailable,
@@ -145,6 +158,13 @@ struct WireHello {
     protocol_version: U32,
     process_id: U32,
     preferred_consumer: U32,
+}
+
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct WireBufferAvailable {
+    stream_id: U64,
+    through_sync_value: U64,
 }
 
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
@@ -337,6 +357,23 @@ pub struct LocalSocket {
 }
 
 impl LocalSocket {
+    /// Polls connection termination without consuming control messages or
+    /// changing the socket's blocking mode and read/write timeouts.
+    pub fn peer_disconnected(&self) -> io::Result<bool> {
+        use windows_sys::Win32::Networking::WinSock::{
+            POLLERR, POLLHUP, POLLNVAL, POLLRDNORM, WSAPOLLFD, WSAPoll,
+        };
+        let mut poll = WSAPOLLFD {
+            fd: self.stream.as_raw_socket() as SOCKET,
+            events: POLLRDNORM,
+            revents: 0,
+        };
+        if unsafe { WSAPoll(&mut poll, 1, 0) } < 0 {
+            return Err(winsock_error());
+        }
+        Ok(poll.revents & (POLLERR | POLLHUP | POLLNVAL) != 0)
+    }
+
     pub fn try_clone(&self) -> io::Result<Self> {
         Ok(Self {
             stream: self.stream.try_clone()?,
@@ -349,9 +386,14 @@ impl LocalSocket {
     }
 
     pub fn connect(name: &str) -> io::Result<Self> {
+        Self::connect_timeout(name, CONNECT_TIMEOUT)
+    }
+
+    /// A zero timeout attempts once; hook callers schedule their own retries.
+    pub fn connect_timeout(name: &str, timeout: Duration) -> io::Result<Self> {
         initialize_winsock()?;
         let (address, _) = socket_address(name)?;
-        let deadline = Instant::now() + CONNECT_TIMEOUT;
+        let deadline = Instant::now() + timeout;
         loop {
             let socket = create_socket()?;
             // SAFETY: address points to an initialized SOCKADDR_UN and socket is
@@ -416,6 +458,27 @@ impl LocalSocket {
         let wire = WireMessage::ref_from_bytes(&bytes)
             .map_err(|_| invalid_data("invalid wire message layout"))?;
         decode(wire)
+    }
+
+    /// Never consume a partial fixed-size control message. This keeps polling
+    /// safe even when the peer's write is split across transport packets.
+    pub fn try_receive(&mut self) -> io::Result<Option<Message>> {
+        use windows_sys::Win32::Networking::WinSock::{FIONREAD, ioctlsocket};
+        let mut available = 0;
+        if unsafe {
+            ioctlsocket(
+                self.stream.as_raw_socket() as SOCKET,
+                FIONREAD,
+                &mut available,
+            )
+        } != 0
+        {
+            return Err(io::Error::from_raw_os_error(unsafe { WSAGetLastError() }));
+        }
+        if (available as usize) < mem::size_of::<WireMessage>() {
+            return Ok(None);
+        }
+        self.receive().map(Some)
     }
 
     pub fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
@@ -612,6 +675,22 @@ fn encode(message: Message) -> WireMessage {
         Message::StreamAccepted => {
             wire.kind = U32::new(MESSAGE_STREAM_ACCEPTED);
         }
+        Message::RequestBufferAvailability => {
+            wire.kind = U32::new(MESSAGE_REQUEST_BUFFER_AVAILABILITY);
+        }
+        Message::BufferAvailable {
+            stream_id,
+            through_sync_value,
+        } => {
+            set_payload(
+                &mut wire,
+                MESSAGE_BUFFER_AVAILABLE,
+                &WireBufferAvailable {
+                    stream_id: U64::new(stream_id.0),
+                    through_sync_value: U64::new(through_sync_value),
+                },
+            );
+        }
         Message::MapOffer(value) => {
             set_payload(
                 &mut wire,
@@ -720,6 +799,14 @@ fn decode(wire: &WireMessage) -> io::Result<Message> {
             }))
         }
         MESSAGE_STREAM_ACCEPTED => Ok(Message::StreamAccepted),
+        MESSAGE_REQUEST_BUFFER_AVAILABILITY => Ok(Message::RequestBufferAvailability),
+        MESSAGE_BUFFER_AVAILABLE => {
+            let value = payload::<WireBufferAvailable>(wire)?;
+            Ok(Message::BufferAvailable {
+                stream_id: StreamId(value.stream_id.get()),
+                through_sync_value: value.through_sync_value.get(),
+            })
+        }
         MESSAGE_GAMEPAD_FEEDBACK => {
             let value = payload::<WireGamepadFeedback>(wire)?;
             let player = u8::try_from(value.player.get())
@@ -859,6 +946,11 @@ mod tests {
                 duration_ms: 250,
             }),
             Message::StreamAccepted,
+            Message::RequestBufferAvailability,
+            Message::BufferAvailable {
+                stream_id: StreamId(9),
+                through_sync_value: 101,
+            },
         ];
         for message in messages {
             assert_eq!(decode(&encode(message)).unwrap(), message);
@@ -891,6 +983,40 @@ mod tests {
             .unwrap();
         assert_eq!(client.receive().unwrap(), Message::Shutdown);
         server.join().unwrap();
+    }
+
+    #[test]
+    fn partial_acknowledgment_does_not_consume_the_next_message() {
+        let name = format!("polymer-fragmented-ack-{}", std::process::id());
+        let listener = LocalSocketListener::bind(&name).unwrap();
+        let mut client = LocalSocket::connect(&name).unwrap();
+        let mut server = listener.accept().unwrap();
+        let first = Message::BufferAvailable {
+            stream_id: StreamId(9),
+            through_sync_value: 3,
+        };
+        let second = Message::BufferAvailable {
+            stream_id: StreamId(9),
+            through_sync_value: 7,
+        };
+        let packet = encode(first);
+        server.stream.write_all(&packet.as_bytes()[..11]).unwrap();
+        assert_eq!(client.try_receive().unwrap(), None);
+        server.stream.write_all(&packet.as_bytes()[11..]).unwrap();
+        server.send(second).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut received = Vec::new();
+        while received.len() < 2 {
+            if let Some(message) = client.try_receive().unwrap() {
+                received.push(message);
+            }
+            assert!(
+                Instant::now() < deadline,
+                "fragmented acknowledgment stalled"
+            );
+            thread::yield_now();
+        }
+        assert_eq!(received, [first, second]);
     }
 
     #[test]

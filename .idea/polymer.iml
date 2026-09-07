@@ -62,6 +62,13 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/runtime/polymer-automation/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/runtime/polymer-controllers/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/runtime/polymer-platform-windows/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/producers/polymer-presentation-config/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/producers/polymer-presentation/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/runtime/polymer-command-macros/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/runtime/polymer-command/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/runtime/polymer-command/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/runtime/polymer-scraping/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/runtime/polymer-scraping/tests" isTestSource="true" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />

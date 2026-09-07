@@ -18,10 +18,7 @@ pub struct EmulatorLaunchArguments {
     #[serde(default)]
     pub isolate: bool,
     pub hooks: Hooks,
-    /// Process-wide presentation dependency-graph traversal requested by the
-    /// emulator plugin for its tracked surfaces.
     #[serde(default)]
-    pub graph_tracking: bool,
     pub surfaces: Vec<TrackedSurface>,
     #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub prepared_filesystem: Option<String>,
@@ -41,7 +38,26 @@ pub struct EmulatorLaunchArguments {
     pub quick_resume_screenshot: Option<Vec<u8>>,
 }
 
-/// A graphics capture hook installed into the target process.
+impl EmulatorLaunchArguments {
+    pub fn validate_render_configuration(&self) -> Result<(), String> {
+        use polymer_protocol::{RenderConfiguration, SurfaceRequest};
+        RenderConfiguration {
+            surfaces: self
+                .surfaces
+                .iter()
+                .map(|surface| SurfaceRequest {
+                    index: surface.index,
+                    pattern: surface.pattern.clone(),
+                    resolution: surface.resolution,
+                    rotation: surface.rotation,
+                })
+                .collect(),
+        }
+        .validate()
+    }
+}
+
+/// A graphics presentation hook installed into the target process.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GraphicsHook {
@@ -49,16 +65,14 @@ pub enum GraphicsHook {
     Vulkan,
     D3d11,
     D3d12,
-    Gdi,
 }
 
 impl GraphicsHook {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 4] = [
         Self::Vulkan,
         Self::OpenGl,
         Self::D3d12,
         Self::D3d11,
-        Self::Gdi,
     ];
 
     pub const fn label(self) -> &'static str {
@@ -67,17 +81,15 @@ impl GraphicsHook {
             Self::OpenGl => "OpenGL",
             Self::D3d12 => "D3D12",
             Self::D3d11 => "D3D11",
-            Self::Gdi => "GDI",
         }
     }
 
     pub const fn class(self) -> u8 {
         match self {
-            Self::Gdi => 0,
-            Self::D3d11 => 1,
-            Self::D3d12 => 2,
-            Self::OpenGl => 3,
-            Self::Vulkan => 4,
+            Self::D3d11 => 0,
+            Self::D3d12 => 1,
+            Self::OpenGl => 2,
+            Self::Vulkan => 3,
         }
     }
 }
@@ -106,6 +118,8 @@ pub struct TrackedSurface {
     pub rotation: i32,
     #[serde(default)]
     pub pattern: Option<String>,
+    #[serde(default)]
+    pub resolution: Option<[u32; 2]>,
 }
 
 pub struct EmulatorLaunchInvocation {

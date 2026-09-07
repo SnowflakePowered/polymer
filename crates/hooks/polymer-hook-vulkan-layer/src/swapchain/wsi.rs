@@ -1,0 +1,433 @@
+use super::*;
+use polymer_presentation::producer::{ProducerSession, ProducerWindows};
+use polymer_producer_vulkan::swapchain::{AcquireInfo, CreateInfo};
+use std::{
+    sync::atomic::{AtomicBool, Ordering},
+    time::{Duration, Instant},
+};
+
+pub(super) struct NativeSwapchain {
+    pub device: vk::Device,
+    surface: Arc<Surface>,
+}
+impl Drop for NativeSwapchain {
+    fn drop(&mut self) {
+        self.surface
+            .native_swapchains
+            .fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+pub(super) struct Live {
+    pub controller: Option<SwapchainController<VulkanVirtualBackend>>,
+    pub leases: Vec<Option<AppLease>>,
+    pub next_present: Instant,
+}
+pub(super) struct Swapchain {
+    pub device: Arc<Device>,
+    pub surface: vk::SurfaceKHR,
+    pub images: Vec<vk::Image>,
+    pub live: OwnerCell<Live>,
+    pub closed: AtomicBool,
+    pub mode: vk::PresentModeKHR,
+    pub period: Duration,
+    _window: polymer_platform_windows::FixedWindowBinding,
+}
+
+impl Swapchain {
+    unsafe fn create(
+        device: Arc<Device>,
+        info: &vk::SwapchainCreateInfoKHR<'_>,
+        surface: Arc<Surface>,
+    ) -> Result<Arc<Self>, vk::Result> {
+        if info.old_swapchain != vk::SwapchainKHR::null() {
+            let old = Self::get(device.external.device.handle(), info.old_swapchain)?
+                .ok_or(vk::Result::ERROR_INITIALIZATION_FAILED)?;
+            if old.surface != info.surface {
+                return Err(vk::Result::ERROR_INITIALIZATION_FAILED);
+            }
+            old.closed.store(true, Ordering::Release);
+        }
+        let reservation = surface
+            .generation()
+            .ok_or(vk::Result::ERROR_NATIVE_WINDOW_IN_USE_KHR)?;
+        let binding = reservation.shared_binding();
+        unsafe {
+            Self::validate(&device, info, &binding)?;
+        }
+        let window = ProducerWindows::bind_fixed(&binding)
+            .map_err(|_| vk::Result::ERROR_SURFACE_LOST_KHR)?;
+        let session = ProducerSession::connect(
+            &polymer_hook::config::session()
+                .map_err(|_| vk::Result::ERROR_INITIALIZATION_FAILED)?,
+        )
+        .map_err(|_| vk::Result::ERROR_INITIALIZATION_FAILED)?;
+        let controller = SwapchainController::<VulkanVirtualBackend>::create(
+            CreateInfo {
+                external: device.external.clone(),
+                acquire_queue: device.acquire_queue.clone(),
+                queue_families: device.families.clone(),
+                format: info.image_format,
+                usage: info.image_usage,
+                count: info.min_image_count,
+            },
+            binding,
+            session,
+        )
+        .map_err(|failure| {
+            if let Some(retirement) = failure.retirement {
+                device.retired.lock().push(retirement);
+            }
+            WsiResult::controller(failure.error)
+        })?;
+        let images = (0..controller.profile().image_count)
+            .map(|i| {
+                controller
+                    .api_access(ImageSlot::new(i, controller.profile().image_count).unwrap())
+                    .map_err(WsiResult::controller)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        for &image in &images {
+            device.images.insert(image, ());
+        }
+        let count = images.len();
+        let committed = reservation
+            .commit()
+            .map_err(|_| vk::Result::ERROR_SURFACE_LOST_KHR)?;
+        surface.commit(committed);
+        Ok(Arc::new(Self {
+            device,
+            surface: info.surface,
+            images,
+            live: OwnerCell::new(Live {
+                controller: Some(controller),
+                leases: (0..count).map(|_| None).collect(),
+                next_present: Instant::now(),
+            }),
+            closed: AtomicBool::new(false),
+            mode: info.present_mode,
+            period: surface.refresh_period(),
+            _window: window,
+        }))
+    }
+    unsafe fn validate(
+        device: &Device,
+        info: &vk::SwapchainCreateInfoKHR<'_>,
+        binding: &FixedSurfaceBinding,
+    ) -> Result<(), vk::Result> {
+        if !info.flags.is_empty() {
+            return Err(vk::Result::ERROR_FEATURE_NOT_PRESENT);
+        }
+        unsafe {
+            Self::validate_chain(info)?;
+        }
+        if info.image_extent.width != binding.extent().width
+            || info.image_extent.height != binding.extent().height
+        {
+            return Err(vk::Result::ERROR_OUT_OF_DATE_KHR);
+        }
+        let profile = Surface::profile(device.physical)?;
+        if !profile
+            .formats
+            .iter()
+            .any(|f| f.format == info.image_format && f.color_space == info.image_color_space)
+            || !profile.usage.contains(info.image_usage)
+            || info.image_usage.is_empty()
+        {
+            return Err(vk::Result::ERROR_FORMAT_NOT_SUPPORTED);
+        }
+        if !(2..=4).contains(&info.min_image_count)
+            || info.image_array_layers != 1
+            || info.pre_transform != vk::SurfaceTransformFlagsKHR::IDENTITY
+            || info.composite_alpha != vk::CompositeAlphaFlagsKHR::OPAQUE
+            || !matches!(
+                info.present_mode,
+                vk::PresentModeKHR::FIFO | vk::PresentModeKHR::IMMEDIATE
+            )
+        {
+            return Err(vk::Result::ERROR_INITIALIZATION_FAILED);
+        }
+        if info.image_sharing_mode == vk::SharingMode::CONCURRENT {
+            let families = unsafe {
+                std::slice::from_raw_parts(
+                    info.p_queue_family_indices,
+                    info.queue_family_index_count as usize,
+                )
+            };
+            if families.len() < 2 || families.iter().any(|f| !device.families.contains(f)) {
+                return Err(vk::Result::ERROR_INITIALIZATION_FAILED);
+            }
+        }
+        Ok(())
+    }
+    unsafe fn validate_chain(info: &vk::SwapchainCreateInfoKHR<'_>) -> Result<(), vk::Result> {
+        let mut current = info.p_next.cast::<vk::BaseInStructure<'_>>();
+        while let Some(base) = unsafe { current.as_ref() } {
+            match base.s_type {
+                vk::StructureType::DEVICE_GROUP_SWAPCHAIN_CREATE_INFO_KHR => {
+                    let modes = unsafe {
+                        (*current.cast::<vk::DeviceGroupSwapchainCreateInfoKHR<'_>>()).modes
+                    };
+                    if modes != vk::DeviceGroupPresentModeFlagsKHR::LOCAL {
+                        return Err(vk::Result::ERROR_FEATURE_NOT_PRESENT);
+                    }
+                }
+                vk::StructureType::IMAGE_FORMAT_LIST_CREATE_INFO => {
+                    let formats = unsafe { &*current.cast::<vk::ImageFormatListCreateInfo<'_>>() };
+                    let values = if formats.view_format_count == 0 {
+                        &[]
+                    } else {
+                        unsafe {
+                            std::slice::from_raw_parts(
+                                formats.p_view_formats,
+                                formats.view_format_count as usize,
+                            )
+                        }
+                    };
+                    if values.iter().any(|format| *format != info.image_format) {
+                        return Err(vk::Result::ERROR_FORMAT_NOT_SUPPORTED);
+                    }
+                }
+                _ => return Err(vk::Result::ERROR_FEATURE_NOT_PRESENT),
+            }
+            current = base.p_next;
+        }
+        Ok(())
+    }
+    fn acquire(
+        &self,
+        timeout: u64,
+        semaphore: vk::Semaphore,
+        fence: vk::Fence,
+    ) -> Result<u32, vk::Result> {
+        let until = (timeout != u64::MAX)
+            .then(|| Instant::now().checked_add(Duration::from_nanos(timeout)))
+            .flatten();
+        let info = AcquireInfo { semaphore, fence };
+        loop {
+            if self.device.lost.load(Ordering::Acquire) {
+                return Err(vk::Result::ERROR_DEVICE_LOST);
+            }
+            self.device.poll_retired();
+            if self.closed.load(Ordering::Acquire) {
+                return Err(vk::Result::ERROR_OUT_OF_DATE_KHR);
+            }
+            if let Some(mut state) = self.live.enter() {
+                let controller = state
+                    .controller
+                    .as_mut()
+                    .ok_or(vk::Result::ERROR_OUT_OF_DATE_KHR)?;
+                match controller.acquire_with_info(None, AcquireDeadline::Nonblocking, None, &info)
+                {
+                    Ok(lease) => {
+                        let index = lease.slot().index();
+                        state.leases[index as usize] = Some(lease);
+                        return Ok(index);
+                    }
+                    Err(ControllerError::WouldBlock) => {}
+                    Err(error) => {
+                        let error = WsiResult::controller(error);
+                        if error == vk::Result::ERROR_DEVICE_LOST {
+                            self.device.lost.store(true, Ordering::Release);
+                        }
+                        return Err(error);
+                    }
+                }
+            }
+            if timeout == 0 {
+                return Err(vk::Result::NOT_READY);
+            }
+            if until.is_some_and(|until| Instant::now() >= until) {
+                return Err(vk::Result::TIMEOUT);
+            }
+            std::thread::sleep(Duration::from_micros(100));
+        }
+    }
+    pub(super) fn retire(&self) {
+        self.closed.store(true, Ordering::Release);
+        if let Ok(mut state) = self
+            .live
+            .enter_until(AcquireDeadline::after(Duration::from_secs(2)))
+        {
+            if let Some(controller) = state.controller.take() {
+                self.device
+                    .retired
+                    .lock()
+                    .push(controller.retire(RetireReason::ApplicationDestroyed));
+            }
+        }
+        for image in &self.images {
+            self.device.images.remove(image);
+        }
+        self.device.poll_retired();
+    }
+}
+
+pub(crate) unsafe extern "system" fn create(
+    device: vk::Device,
+    info: *const vk::SwapchainCreateInfoKHR<'_>,
+    allocator: *const vk::AllocationCallbacks<'_>,
+    output: *mut vk::SwapchainKHR,
+) -> vk::Result {
+    if let Some(surface) =
+        Surface::get(unsafe { (*info).surface }).filter(|s| s.binding().is_some())
+    {
+        return match Device::get(device)
+            .and_then(|device| unsafe { Swapchain::create(device, &*info, surface) })
+        {
+            Ok(swapchain) => {
+                let handle = vk::SwapchainKHR::from_raw(Arc::as_ptr(&swapchain) as u64);
+                SWAPCHAINS.insert(handle, swapchain);
+                unsafe {
+                    *output = handle;
+                }
+                vk::Result::SUCCESS
+            }
+            Err(error) => {
+                tracing::error!(?error, "virtual Vulkan swapchain creation failed");
+                error
+            }
+        };
+    }
+    let Some(next): Option<vk::PFN_vkCreateSwapchainKHR> = crate::layer::device_gdpa(device)
+        .and_then(|g| unsafe { crate::terminal::device_proc(g, device, c"vkCreateSwapchainKHR") })
+    else {
+        return vk::Result::ERROR_DEVICE_LOST;
+    };
+    let result = unsafe { next(device, info, allocator, output) };
+    if result == vk::Result::SUCCESS {
+        if let Some(surface) = Surface::get(unsafe { (*info).surface }) {
+            surface.native_swapchains.fetch_add(1, Ordering::AcqRel);
+            NATIVES.insert(unsafe { *output }, NativeSwapchain { device, surface });
+        }
+    }
+    result
+}
+pub(crate) unsafe extern "system" fn destroy(
+    device: vk::Device,
+    swapchain: vk::SwapchainKHR,
+    allocator: *const vk::AllocationCallbacks<'_>,
+) {
+    match Swapchain::get(device, swapchain) {
+        Ok(Some(value)) => {
+            if value.device.lost.load(Ordering::Acquire) {
+                value.closed.store(true, Ordering::Release);
+                return;
+            }
+            SWAPCHAINS.remove(&swapchain);
+            value.retire();
+        }
+        Err(_) => {}
+        Ok(None) => {
+            let next: Option<vk::PFN_vkDestroySwapchainKHR> = crate::layer::device_gdpa(device)
+                .and_then(|g| unsafe {
+                    crate::terminal::device_proc(g, device, c"vkDestroySwapchainKHR")
+                });
+            if let Some(next) = next {
+                unsafe {
+                    next(device, swapchain, allocator);
+                }
+            }
+            NATIVES.remove(&swapchain);
+        }
+    }
+}
+pub(crate) unsafe extern "system" fn images(
+    device: vk::Device,
+    swapchain: vk::SwapchainKHR,
+    count: *mut u32,
+    output: *mut vk::Image,
+) -> vk::Result {
+    match Swapchain::get(device, swapchain) {
+        Ok(Some(value)) => unsafe { WsiResult::enumerate(&value.images, count, output) },
+        Err(error) => error,
+        Ok(None) => {
+            let Some(next): Option<vk::PFN_vkGetSwapchainImagesKHR> =
+                crate::layer::device_gdpa(device).and_then(|g| unsafe {
+                    crate::terminal::device_proc(g, device, c"vkGetSwapchainImagesKHR")
+                })
+            else {
+                return vk::Result::ERROR_DEVICE_LOST;
+            };
+            unsafe { next(device, swapchain, count, output) }
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn vkAcquireNextImageKHR(
+    device: vk::Device,
+    swapchain: vk::SwapchainKHR,
+    timeout: u64,
+    semaphore: vk::Semaphore,
+    fence: vk::Fence,
+    output: *mut u32,
+) -> vk::Result {
+    match Swapchain::get(device, swapchain) {
+        Ok(Some(value)) => match value.acquire(timeout, semaphore, fence) {
+            Ok(index) => {
+                unsafe {
+                    *output = index;
+                }
+                vk::Result::SUCCESS
+            }
+            Err(e) => e,
+        },
+        Err(error) => error,
+        Ok(None) => unsafe {
+            {
+                let replacement = fence;
+                let Some(next): Option<vk::PFN_vkAcquireNextImageKHR> =
+                    crate::layer::device_gdpa(device).and_then(|g| {
+                        crate::terminal::device_proc(g, device, c"vkAcquireNextImageKHR")
+                    })
+                else {
+                    return vk::Result::ERROR_DEVICE_LOST;
+                };
+                next(device, swapchain, timeout, semaphore, replacement, output)
+            }
+        },
+    }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn vkAcquireNextImage2KHR(
+    device: vk::Device,
+    info: *const vk::AcquireNextImageInfoKHR<'_>,
+    output: *mut u32,
+) -> vk::Result {
+    let info = unsafe { &*info };
+    match Swapchain::get(device, info.swapchain) {
+        Ok(Some(value)) => {
+            if info.device_mask != 1 || !info.p_next.is_null() {
+                return vk::Result::ERROR_FEATURE_NOT_PRESENT;
+            }
+            match value.acquire(info.timeout, info.semaphore, info.fence) {
+                Ok(index) => {
+                    unsafe {
+                        *output = index;
+                    }
+                    vk::Result::SUCCESS
+                }
+                Err(e) => e,
+            }
+        }
+        Err(error) => error,
+        Ok(None) => unsafe {
+            {
+                let replacement = info.fence;
+                let Some(next): Option<vk::PFN_vkAcquireNextImage2KHR> =
+                    crate::layer::device_gdpa(device).and_then(|g| {
+                        crate::terminal::device_proc(g, device, c"vkAcquireNextImage2KHR")
+                    })
+                else {
+                    return vk::Result::ERROR_DEVICE_LOST;
+                };
+                let modified = vk::AcquireNextImageInfoKHR {
+                    fence: replacement,
+                    ..*info
+                };
+                next(device, &modified, output)
+            }
+        },
+    }
+}

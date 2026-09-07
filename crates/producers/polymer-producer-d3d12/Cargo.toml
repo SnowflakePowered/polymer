@@ -5,13 +5,10 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-dashmap.workspace = true
-parking_lot.workspace = true
+polymer-presentation = { workspace = true, features = ["producer"] }
 polymer-hook.workspace = true
 polymer-hook-dxgi = { path = "../../hooks/polymer-hook-dxgi" }
-polymer-ipc.workspace = true
 polymer-platform-windows.workspace = true
 polymer-protocol.workspace = true
 tracing.workspace = true
 windows.workspace = true
-windows-sys.workspace = true

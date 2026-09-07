@@ -1,28 +1,24 @@
-//! Vulkan swapchain capture and Win32 external-memory export.
+//! Native Vulkan swapchain presentation and Win32 external-memory sharing.
 //!
 //! Unsafe Vulkan calls are contained in this backend instead of leaking into
 //! the API-neutral Polymer crates.
 
 #[cfg(windows)]
-pub mod capture;
-#[cfg(windows)]
 mod d3d12_interop;
-mod environment;
+#[cfg(windows)]
+mod device;
+#[cfg(windows)]
 mod image_ring;
-mod swapchain;
 #[cfg(windows)]
 mod timeline;
-pub mod tracking;
+#[cfg(windows)]
+pub mod swapchain;
 
-pub use environment::{
-    REQUIRED_DEVICE_EXTENSIONS, VulkanAdapter, VulkanEnvironment, VulkanProbeError,
-    format_api_version,
-};
 #[cfg(windows)]
-pub use image_ring::{ExportImageRing, ExportImageSlot};
-pub use image_ring::{ExportImageRingDesc, ExternalHandleMode};
-pub use swapchain::{CopySubmission, SetDeviceLoaderData, SwapchainCopyEngine};
+pub use device::{ExternalDevice, SetDeviceLoaderData};
 #[cfg(windows)]
-pub use timeline::ExportTimelineSemaphore;
+pub(crate) use image_ring::{ExportImageRing, ExportImageRingDesc};
+#[cfg(windows)]
+pub(crate) use timeline::ExportTimelineSemaphore;
 
 pub const BACKEND_NAME: &str = "vulkan";

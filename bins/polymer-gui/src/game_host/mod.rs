@@ -62,9 +62,8 @@ type SurfaceSnapshotResult = Result<Option<polymer_runtime::RgbaScreenshot>, Str
 type SurfaceSnapshotRequest = mpsc::SyncSender<SurfaceSnapshotResult>;
 
 /// Owns one captured stream and its opaque WUC swapchain on a presentation
-/// thread. The compositor copies a producer slot into its private cache and
-/// signals that slot's release without waiting for Blitz/Deno to finish a UI
-/// turn.
+/// thread. The compositor retains the displayed producer slot until replacement
+/// (or caches single-slot/keyed streams), independently of Blitz/Deno UI turns.
 struct SurfacePresentationWorker {
     stopping: Arc<AtomicBool>,
     snapshots: mpsc::Sender<SurfaceSnapshotRequest>,
@@ -715,12 +714,12 @@ impl GameHost {
                     id: polymer_runtime::TrackedSurfaceId(surface.index),
                     render_target_index: surface.index,
                     window_pattern: surface.selector.clone(),
+                    resolution: surface.resolution,
+                    rotation: surface.rotation,
                 })
                 .collect(),
             tracking_enabled: !options.surfaces.is_empty(),
             skip_surfaces: 0,
-            graph_tracking: options.graph_tracking,
-            force_keyed_mutex: false,
         };
         let dirty = self.dirty.clone();
         let wake_pending = self.wake_pending.clone();

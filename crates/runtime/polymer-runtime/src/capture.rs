@@ -34,6 +34,7 @@ pub(crate) struct FrameRouter {
 }
 
 struct CaptureShared {
+    availability: DashMap<u64, Arc<Mutex<LocalSocket>>>,
     routes: DashMap<u64, Watchable<Option<FrameReady>>>,
     revoked: DashSet<u64>,
     wake: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -49,6 +50,12 @@ struct CaptureWorkers {
 }
 
 impl FrameRouter {
+    pub(crate) fn buffer_release_sender(&self, connection: u64) -> BufferReleaseSender {
+        BufferReleaseSender {
+            shared: Arc::downgrade(&self.shared),
+            connection,
+        }
+    }
     pub(crate) fn wake(&self) {
         if let Some(wake) = &self.shared.wake {
             wake();
@@ -61,6 +68,7 @@ impl FrameRouter {
     }
 
     pub(crate) fn revoke(&self, connection: u64) {
+        self.shared.availability.remove(&connection);
         self.shared.revoked.insert(connection);
         self.shared.routes.remove(&connection);
         if let Some((_, socket)) = self.shared.sockets.remove(&connection) {
@@ -92,6 +100,7 @@ impl CaptureShared {
     }
 
     fn revoke(&self, connection: u64) {
+        self.availability.remove(&connection);
         self.revoked.insert(connection);
         self.routes.remove(&connection);
         self.sockets.remove(&connection);
@@ -115,6 +124,7 @@ impl CaptureWorkers {
         }
         self.shared.routes.clear();
         self.shared.sockets.clear();
+        self.shared.availability.clear();
     }
 }
 
@@ -132,6 +142,7 @@ pub(crate) fn bind(
 ) -> std::io::Result<FrameRouter> {
     let listener = LocalSocketListener::bind(session)?;
     let shared = Arc::new(CaptureShared {
+        availability: DashMap::new(),
         routes: DashMap::new(),
         revoked: DashSet::new(),
         wake,
@@ -231,6 +242,13 @@ fn receive_connection(
                 return Ok(());
             }
             match message {
+                Message::RequestBufferAvailability if !accepted_stream => {
+                    let sender = socket.try_clone()?;
+                    sender.set_write_timeout(Some(std::time::Duration::from_secs(2)))?;
+                    shared
+                        .availability
+                        .insert(connection, Arc::new(Mutex::new(sender)));
+                }
                 Message::StreamReady(stream) => {
                     let (accepted, mut response) = oneshot::oneshot();
                     (callbacks.offer)(connection, stream, accepted);
@@ -282,6 +300,37 @@ fn receive_connection(
     }
     shared.revoke(connection);
     (callbacks.disconnected)(connection);
+}
+
+/// A release endpoint bound to a single capture connection, never to a mutable
+/// surface identity. Old imported resources cannot acknowledge a replacement.
+#[derive(Clone)]
+pub struct BufferReleaseSender {
+    shared: std::sync::Weak<CaptureShared>,
+    connection: u64,
+}
+
+impl BufferReleaseSender {
+    pub fn release(
+        &self,
+        stream_id: polymer_protocol::StreamId,
+        through_sync_value: u64,
+    ) -> std::io::Result<()> {
+        let Some(shared) = self.shared.upgrade() else {
+            return Ok(());
+        };
+        let sender = shared
+            .availability
+            .get(&self.connection)
+            .map(|entry| entry.value().clone());
+        if let Some(sender) = sender {
+            sender.lock().send(Message::BufferAvailable {
+                stream_id,
+                through_sync_value,
+            })?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

@@ -43,7 +43,7 @@ pub(crate) fn launch(config: &EmulatorLaunchConfig) -> Result<TargetProcess, Lau
         ));
         environment.push((
             OsString::from("VK_INSTANCE_LAYERS"),
-            OsString::from("VK_LAYER_POLYMER_capture"),
+            OsString::from("VK_LAYER_POLYMER_swapchain"),
         ));
     }
 
@@ -136,13 +136,6 @@ fn hook_environment(runtime: &EmulatorLaunchConfig) -> Vec<(OsString, OsString)>
                 .into_os_string(),
         ),
         (
-            OsString::from(config::GDI_LOG_FILE),
-            runtime
-                .artifact_root
-                .join("polymer-gdi.log")
-                .into_os_string(),
-        ),
-        (
             OsString::from(config::BLUETOOTH_API_LOG_FILE),
             runtime
                 .artifact_root
@@ -162,49 +155,13 @@ fn hook_environment(runtime: &EmulatorLaunchConfig) -> Vec<(OsString, OsString)>
         ),
         (OsString::from("SDL_XINPUT_ENABLED"), OsString::from("0")),
     ];
-    if runtime.tracking_enabled {
-        environment.push((
-            OsString::from(config::TRACK_RENDER_TARGET),
-            OsString::from("1"),
-        ));
-        environment.push((
-            OsString::from(config::TRACK_RENDER_TARGETS),
-            OsString::from(
-                runtime
-                    .tracked_surfaces
-                    .iter()
-                    .map(|surface| surface.render_target_index.to_string())
-                    .collect::<Vec<_>>()
-                    .join(","),
-            ),
-        ));
-        if runtime
-            .tracked_surfaces
-            .iter()
-            .any(|surface| surface.window_pattern.is_some())
-        {
-            let patterns = runtime
-                .tracked_surfaces
-                .iter()
-                .map(|surface| surface.window_pattern.as_deref())
-                .collect::<Vec<_>>();
-            environment.push((
-                OsString::from(config::TRACK_RENDER_TARGET_SURFACE_PATTERNS),
-                OsString::from(
-                    serde_json::to_string(&patterns).expect("surface patterns always serialize"),
-                ),
-            ));
-        }
-    }
-    if runtime.tracking_enabled && runtime.graph_tracking {
-        environment.push((OsString::from(config::GRAPH_TRACKING), OsString::from("1")));
-    }
-    if runtime.force_keyed_mutex {
-        environment.push((
-            OsString::from(config::FORCE_KEYED_MUTEX),
-            OsString::from("1"),
-        ));
-    }
+    environment.push((
+        OsString::from(config::RENDER_CONFIGURATION),
+        OsString::from(
+            serde_json::to_string(&runtime.render_configuration())
+                .expect("render configuration serializes"),
+        ),
+    ));
     environment
 }
 
@@ -221,12 +178,12 @@ fn create_vulkan_layer_manifest(layer_dll: &Path) -> std::io::Result<tempfile::T
     let manifest = serde_json::json!({
         "file_format_version": "1.2.0",
         "layer": {
-            "name": "VK_LAYER_POLYMER_capture",
+            "name": "VK_LAYER_POLYMER_swapchain",
             "type": "GLOBAL",
             "library_path": layer_dll,
             "api_version": "1.4.0",
             "implementation_version": "1",
-            "description": "Polymer Vulkan capture layer",
+            "description": "Polymer Vulkan swapchain layer",
             "functions": {
                 "vkNegotiateLoaderLayerInterfaceVersion":
                     "vkNegotiateLoaderLayerInterfaceVersion"
@@ -279,13 +236,6 @@ fn hook_libraries(
             "OpenGL",
             "polymer_hook_opengl32.dll",
             c"PolymerInstallOpenGlHook",
-        ));
-    }
-    if hooks.contains(&GraphicsHook::Gdi) {
-        libraries.push(InjectionLibrary::new(
-            "GDI",
-            "polymer_hook_gdi.dll",
-            c"PolymerInstallGdiHook",
         ));
     }
     libraries.push(InjectionLibrary::new(

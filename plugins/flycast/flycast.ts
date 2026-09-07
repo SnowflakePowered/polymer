@@ -81,7 +81,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
         ],
         isolate: true,
         hooks: { graphics: ["d3d11"], input: ["sdl3"] },
-        surfaces: [{ index: 0, pattern: "Flycast|Sonic Adventure" }],
+        surfaces: [{ resolution: [960, 720], index: 0, pattern: "Flycast|Sonic Adventure" }],
     };
 };
 

@@ -1,12 +1,12 @@
 {
     "file_format_version": "1.2.0",
     "layer": {
-        "name": "VK_LAYER_POLYMER_capture",
+        "name": "VK_LAYER_POLYMER_swapchain",
         "type": "GLOBAL",
         "library_path": "../../../target/debug/polymer_hook_vulkan_layer.dll",
         "api_version": "1.4.0",
         "implementation_version": "1",
-        "description": "Polymer Vulkan capture layer",
+        "description": "Polymer Vulkan swapchain layer",
         "functions": {
             "vkNegotiateLoaderLayerInterfaceVersion": "vkNegotiateLoaderLayerInterfaceVersion"
         },

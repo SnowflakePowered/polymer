@@ -52,6 +52,11 @@ pub(crate) unsafe fn get_physical_device_proc_addr(
     if name.is_null() {
         return None;
     }
+    if let Some(hook) =
+        crate::swapchain::instance_hook(unsafe { CStr::from_ptr(name) }.to_bytes())
+    {
+        return Some(hook);
+    }
     if let Some(next) = crate::layer::instance_physical_gpa(instance) {
         unsafe { next(instance, name) }
     } else {
@@ -67,9 +72,7 @@ pub(crate) unsafe fn get_device_proc_addr(
         return None;
     }
     let name = unsafe { CStr::from_ptr(name) };
-    if let Some(hook) =
-        crate::registered_device_hook(name.to_bytes(), polymer_hook::config::tracking_enabled())
-    {
+    if let Some(hook) = crate::registered_device_hook(name.to_bytes()) {
         return Some(hook);
     }
     crate::layer::device_gdpa(device).and_then(|next| unsafe { next(device, name.as_ptr()) })
@@ -137,6 +140,10 @@ pub(crate) unsafe fn create_instance(
     allocator: *const vk::AllocationCallbacks<'_>,
     instance: *mut vk::Instance,
 ) -> vk::Result {
+    if let Err(error) = polymer_hook::config::require_swapchain() {
+        tracing::error!(%error, "Vulkan presentation configuration rejected");
+        return vk::Result::ERROR_INITIALIZATION_FAILED;
+    }
     let Some(bootstrap) = (unsafe { crate::layer::take_instance_bootstrap(create_info) }) else {
         return vk::Result::ERROR_INITIALIZATION_FAILED;
     };
@@ -149,7 +156,36 @@ pub(crate) unsafe fn create_instance(
     }) else {
         return vk::Result::ERROR_INITIALIZATION_FAILED;
     };
-    let result = unsafe { next(create_info, allocator, instance) };
+    let mut modified = unsafe { *create_info };
+    let mut extensions = if modified.enabled_extension_count == 0 {
+        Vec::new()
+    } else {
+        unsafe {
+            std::slice::from_raw_parts(
+                modified.pp_enabled_extension_names,
+                modified.enabled_extension_count as usize,
+            )
+        }
+        .to_vec()
+    };
+    if crate::swapchain::enabled() {
+        for required in [
+            ash::khr::surface::NAME,
+            ash::khr::get_surface_capabilities2::NAME,
+            ash::ext::surface_maintenance1::NAME,
+            ash::khr::get_physical_device_properties2::NAME,
+        ] {
+            if !extensions
+                .iter()
+                .any(|&name| unsafe { CStr::from_ptr(name) } == required)
+            {
+                extensions.push(required.as_ptr());
+            }
+        }
+        modified.enabled_extension_count = extensions.len() as u32;
+        modified.pp_enabled_extension_names = extensions.as_ptr();
+    }
+    let result = unsafe { next(&modified, allocator, instance) };
     if result == vk::Result::SUCCESS && !instance.is_null() {
         let created = unsafe { *instance };
         crate::layer::register_instance_dispatch(created, bootstrap);
@@ -188,14 +224,14 @@ pub(crate) unsafe fn create_device(
                 .to_vec()
             }
         };
-    let capture_extensions = [
+    let external_extensions = [
         ash::khr::external_memory_win32::NAME,
         ash::khr::external_semaphore_win32::NAME,
         ash::khr::timeline_semaphore::NAME,
     ];
     let foreign_queue_extension = ash::ext::queue_family_foreign::NAME;
     let mut injected_extensions = Vec::new();
-    for required in capture_extensions {
+    for required in external_extensions {
         let enabled = extension_names
             .iter()
             .any(|name| !name.is_null() && unsafe { CStr::from_ptr(*name) } == required);
@@ -218,23 +254,50 @@ pub(crate) unsafe fn create_device(
             injected_extensions.push(foreign_queue_extension);
             true
         });
-    let capture_supported = capture_extensions.iter().all(|required| {
+    let external_supported = external_extensions.iter().all(|required| {
         extension_names
             .iter()
             .any(|name| !name.is_null() && unsafe { CStr::from_ptr(*name) } == *required)
     });
-    let mut modified = (!create_info.is_null()).then(|| unsafe { *create_info });
-    let mut timeline = vk::PhysicalDeviceTimelineSemaphoreFeatures::default()
-        .timeline_semaphore(capture_supported);
+    if create_info.is_null() {
+        return vk::Result::ERROR_INITIALIZATION_FAILED;
+    }
+    if unsafe { crate::swapchain::features::Features::virtual_device(&*create_info) } {
+        for required in [
+            ash::khr::synchronization2::NAME,
+            ash::ext::swapchain_maintenance1::NAME,
+        ] {
+            if !extension_names
+                .iter()
+                .any(|name| unsafe { CStr::from_ptr(*name) } == required)
+            {
+                if !physical_state.as_ref().is_some_and(|state| unsafe {
+                    device_supports_extension(state, physical_device, required)
+                }) {
+                    return vk::Result::ERROR_EXTENSION_NOT_PRESENT;
+                }
+                extension_names.push(required.as_ptr());
+                injected_extensions.push(required);
+            }
+        }
+    }
+    let mut features = match unsafe {
+        crate::swapchain::features::Features::new(
+            physical_device,
+            physical_state.as_ref(),
+            create_info,
+            external_supported,
+        )
+    } {
+        Ok(features) => features,
+        Err(error) => return error,
+    };
+    let external_supported = features.supported;
+    let mut modified = Some(unsafe { *create_info });
     if let Some(info) = modified.as_mut() {
-        if !injected_extensions.is_empty() {
-            info.enabled_extension_count = extension_names.len() as u32;
-            info.pp_enabled_extension_names = extension_names.as_ptr();
-        }
-        if capture_supported {
-            timeline.p_next = info.p_next as *mut c_void;
-            info.p_next = (&timeline as *const _) as *const c_void;
-        }
+        info.enabled_extension_count = extension_names.len() as u32;
+        info.pp_enabled_extension_names = extension_names.as_ptr();
+        features.attach(info);
     }
     let result = unsafe {
         next_create(
@@ -248,23 +311,10 @@ pub(crate) unsafe fn create_device(
         return result;
     }
     let created = unsafe { *device };
-    let capture_state = physical_state
-        .as_ref()
-        .map(|state| state.capture_state.clone())
-        .unwrap_or_default();
-    let capture = physical_state.as_ref().and_then(|state| {
-        if !capture_supported {
+    let external = physical_state.as_ref().and_then(|state| {
+        if !external_supported {
             return None;
         }
-        let get_memory_win32_handle =
-            unsafe { device_proc(bootstrap.next_gdpa, created, c"vkGetMemoryWin32HandleKHR") }?;
-        let get_semaphore_win32_handle = unsafe {
-            device_proc(
-                bootstrap.next_gdpa,
-                created,
-                c"vkGetSemaphoreWin32HandleKHR",
-            )
-        }?;
         let get_memory_win32_handle_properties = unsafe {
             device_proc(
                 bootstrap.next_gdpa,
@@ -321,12 +371,10 @@ pub(crate) unsafe fn create_device(
             low_part: 0,
             high_part: 0,
         });
-        Some(Arc::new(crate::layer::CaptureDevice {
+        Some(Arc::new(crate::layer::ExternalDevice {
             device: ash_device,
             memory_properties,
-            get_memory_win32_handle,
             get_memory_win32_handle_properties,
-            get_semaphore_win32_handle,
             import_semaphore_win32_handle,
             set_loader_data: bootstrap.set_loader_data,
             supports_foreign_queue: foreign_queue_enabled,
@@ -340,183 +388,30 @@ pub(crate) unsafe fn create_device(
             next_gdpa: bootstrap.next_gdpa,
             physical_device,
             physical_state,
-            capture,
-            capture_state,
-            tracking: Arc::default(),
+            external,
+            handle: created,
         },
     );
-    result
-}
-
-pub(crate) unsafe fn create_image(
-    device: vk::Device,
-    create_info: *const vk::ImageCreateInfo<'_>,
-    allocator: *const vk::AllocationCallbacks<'_>,
-    image: *mut vk::Image,
-) -> vk::Result {
-    let Some(next) = crate::layer::device_gdpa(device).and_then(|gdpa| unsafe {
-        device_proc::<vk::PFN_vkCreateImage>(gdpa, device, c"vkCreateImage")
-    }) else {
-        return vk::Result::ERROR_INITIALIZATION_FAILED;
-    };
-    let mut modified = (!create_info.is_null()).then(|| unsafe { *create_info });
-    if let Some(info) = modified.as_mut() {
-        info.usage |= vk::ImageUsageFlags::TRANSFER_SRC;
-    }
-    unsafe {
-        next(
-            device,
-            modified.as_ref().map_or(create_info, |info| info),
-            allocator,
-            image,
-        )
-    }
-}
-
-pub(crate) unsafe fn create_swapchain(
-    device: vk::Device,
-    create_info: *const vk::SwapchainCreateInfoKHR<'_>,
-    allocator: *const vk::AllocationCallbacks<'_>,
-    swapchain: *mut vk::SwapchainKHR,
-) -> vk::Result {
-    let Some(next) = crate::layer::device_gdpa(device).and_then(|gdpa| unsafe {
-        device_proc::<vk::PFN_vkCreateSwapchainKHR>(gdpa, device, c"vkCreateSwapchainKHR")
-    }) else {
-        return vk::Result::ERROR_EXTENSION_NOT_PRESENT;
-    };
-    let mut capture_info = (!create_info.is_null()).then(|| unsafe { *create_info });
-    if crate::layer::capture_enabled(device)
-        && let Some(info) = capture_info.as_mut()
+    if let Err(error) = unsafe { crate::swapchain::Device::install(created, &*create_info) }
     {
-        info.image_usage |= vk::ImageUsageFlags::TRANSFER_SRC;
-    }
-    let pacing_override = capture_info
-        .as_ref()
-        .and_then(|info| unsafe { unthrottled_swapchain_info(device, info) });
-    let forwarded = pacing_override.as_ref().or(capture_info.as_ref());
-    let result = unsafe {
-        next(
-            device,
-            forwarded.map_or(create_info, |info| info),
-            allocator,
-            swapchain,
-        )
-    };
-    if result != vk::Result::SUCCESS && pacing_override.is_some() {
-        tracing::debug!("polymer: unthrottled vkCreateSwapchainKHR failed with {result}");
+        let dispatch_key = unsafe { crate::layer::dispatch_key(created) };
+        if let Some(destroy) = unsafe {
+            device_proc::<vk::PFN_vkDestroyDevice>(bootstrap.next_gdpa, created, c"vkDestroyDevice")
+        } {
+            unsafe {
+                destroy(created, allocator);
+            }
+        }
+        if let Some(key) = dispatch_key {
+            crate::layer::hook_state().device.remove(&key);
+        }
+        crate::layer::hook_state()
+            .queue
+            .retain(|_, dispatch| dispatch.device != created);
+        unsafe {
+            *device = vk::Device::null();
+        }
+        return error;
     }
     result
-}
-
-unsafe fn unthrottled_swapchain_info<'a>(
-    device: vk::Device,
-    original: &vk::SwapchainCreateInfoKHR<'a>,
-) -> Option<vk::SwapchainCreateInfoKHR<'a>> {
-    if !polymer_hook::config::present_unthrottled() {
-        return None;
-    }
-    let (physical_device, state) = crate::layer::device_physical_state(device)?;
-    let get_present_modes: vk::PFN_vkGetPhysicalDeviceSurfacePresentModesKHR = unsafe {
-        instance_proc(
-            state.next_gipa,
-            state.instance,
-            c"vkGetPhysicalDeviceSurfacePresentModesKHR",
-        )
-    }?;
-    let mut count = 0;
-    let result = unsafe {
-        get_present_modes(
-            physical_device,
-            original.surface,
-            &mut count,
-            ptr::null_mut(),
-        )
-    };
-    if result != vk::Result::SUCCESS || count == 0 {
-        tracing::debug!(
-            "polymer: present-mode query failed with {result}; preserving {}",
-            original.present_mode.as_raw()
-        );
-        return None;
-    }
-    let mut modes = vec![vk::PresentModeKHR::FIFO; count as usize];
-    let result = unsafe {
-        get_present_modes(
-            physical_device,
-            original.surface,
-            &mut count,
-            modes.as_mut_ptr(),
-        )
-    };
-    if !matches!(result, vk::Result::SUCCESS | vk::Result::INCOMPLETE) {
-        tracing::debug!(
-            "polymer: present-mode enumeration failed with {result}; preserving {}",
-            original.present_mode.as_raw()
-        );
-        return None;
-    }
-    modes.truncate(count as usize);
-    let present_mode = preferred_unthrottled_present_mode(&modes);
-    let Some(present_mode) = present_mode else {
-        tracing::debug!(
-            "polymer: neither IMMEDIATE nor MAILBOX is supported; preserving {}",
-            original.present_mode.as_raw()
-        );
-        return None;
-    };
-
-    let mut modified = *original;
-    modified.present_mode = present_mode;
-    let get_capabilities: Option<vk::PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR> = unsafe {
-        instance_proc(
-            state.next_gipa,
-            state.instance,
-            c"vkGetPhysicalDeviceSurfaceCapabilitiesKHR",
-        )
-    };
-    if let Some(get_capabilities) = get_capabilities {
-        let mut capabilities = vk::SurfaceCapabilitiesKHR::default();
-        if unsafe { get_capabilities(physical_device, original.surface, &mut capabilities) }
-            == vk::Result::SUCCESS
-        {
-            modified.min_image_count = capabilities.min_image_count;
-        }
-    }
-    tracing::debug!(
-        "polymer: overriding Vulkan present mode {}->{}, image count {}->{}",
-        original.present_mode.as_raw(),
-        present_mode.as_raw(),
-        original.min_image_count,
-        modified.min_image_count
-    );
-    Some(modified)
-}
-
-fn preferred_unthrottled_present_mode(modes: &[vk::PresentModeKHR]) -> Option<vk::PresentModeKHR> {
-    [vk::PresentModeKHR::IMMEDIATE, vk::PresentModeKHR::MAILBOX]
-        .into_iter()
-        .find(|candidate| modes.contains(candidate))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn immediate_is_preferred_then_mailbox() {
-        assert!(
-            preferred_unthrottled_present_mode(&[
-                vk::PresentModeKHR::FIFO,
-                vk::PresentModeKHR::MAILBOX,
-                vk::PresentModeKHR::IMMEDIATE,
-            ]) == Some(vk::PresentModeKHR::IMMEDIATE)
-        );
-        assert!(
-            preferred_unthrottled_present_mode(&[
-                vk::PresentModeKHR::FIFO,
-                vk::PresentModeKHR::MAILBOX,
-            ]) == Some(vk::PresentModeKHR::MAILBOX)
-        );
-        assert!(preferred_unthrottled_present_mode(&[vk::PresentModeKHR::FIFO]).is_none());
-    }
 }

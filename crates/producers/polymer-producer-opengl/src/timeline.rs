@@ -16,6 +16,7 @@ pub(crate) struct Timeline {
     fence: ID3D12Fence,
     handle: HANDLE,
     semaphore: Gluint,
+    functions: GlFunctions,
 }
 
 unsafe impl Send for Timeline {}
@@ -38,6 +39,7 @@ impl Timeline {
             fence,
             handle,
             semaphore,
+            functions: *functions,
         })
     }
 
@@ -57,9 +59,29 @@ impl Timeline {
         }
     }
 
-    pub(crate) unsafe fn destroy(&self, functions: &GlFunctions) {
+    /// Reacquire external image access after the consumer releases this slot.
+    pub(crate) unsafe fn wait(&self, texture: Gluint, value: u64) {
+        if value == 0 {
+            return;
+        }
         unsafe {
-            (functions.delete_semaphores)(1, &self.semaphore);
+            (self.functions.semaphore_parameter)(self.semaphore, GL_D3D12_FENCE_VALUE_EXT, &value);
+            (self.functions.wait_semaphore)(
+                self.semaphore,
+                0,
+                std::ptr::null(),
+                1,
+                &texture,
+                &GL_LAYOUT_GENERAL_EXT,
+            );
+        }
+    }
+}
+
+impl Drop for Timeline {
+    fn drop(&mut self) {
+        unsafe {
+            (self.functions.delete_semaphores)(1, &self.semaphore);
             let _ = CloseHandle(self.handle);
         }
     }

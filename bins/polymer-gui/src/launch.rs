@@ -15,10 +15,7 @@ pub struct AttachedLaunchPlan {
     #[serde(default)]
     pub isolated: bool,
     pub hooks: Hooks,
-    /// Enables presentation dependency-graph traversal for every tracked
-    /// surface in this process. The hook exposes this as a process-wide mode.
     #[serde(default)]
-    pub graph_tracking: bool,
     pub surfaces: Vec<AttachedTrackedSurface>,
     #[serde(default)]
     pub controller_topology: ControllerTopology,
@@ -46,6 +43,8 @@ pub struct AttachedTrackedSurface {
     #[serde(default)]
     pub rotation: i32,
     pub selector: Option<String>,
+    #[serde(default)]
+    pub resolution: Option<[u32; 2]>,
     /// Blitz node ID validated by the shell DOM at attachment time.
     pub attach: usize,
 }
@@ -80,6 +79,19 @@ impl AttachedLaunchPlan {
                     .map_err(|error| format!("invalid surface selector '{selector}': {error}"))?;
             }
         }
+        polymer_runtime::RenderConfiguration {
+            surfaces: self
+                .surfaces
+                .iter()
+                .map(|surface| polymer_runtime::SurfaceRequest {
+                    index: surface.index,
+                    pattern: surface.selector.clone(),
+                    resolution: surface.resolution,
+                    rotation: surface.rotation,
+                })
+                .collect(),
+        }
+        .validate()?;
         self.controller_topology
             .validate_for_machine(&self.machine)?;
         Ok(())
@@ -101,19 +113,18 @@ mod tests {
                     "graphics": ["d3d12"],
                     "input": ["sdl3"]
                 },
-                "graphTracking": true,
                 "surfaces": [{
                     "index": 0,
                     "rotation": 0,
                     "selector": "Game",
-                    "attach": 4
+                    "attach": 4,
+                    "resolution": [640, 480]
                 }],
                 "controllerTopology": { "mappings": [] },
                 "machine": "MICROSOFT_XBOX"
             }"#,
         )
         .unwrap();
-        assert!(launch.graph_tracking);
         launch.validate().unwrap();
     }
 }
