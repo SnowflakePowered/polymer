@@ -130,14 +130,27 @@ impl VirtualDxgiSwapchain {
         S_OK
     }
     pub(super) unsafe extern "system" fn resize(
-        _: *mut c_void,
-        _: u32,
-        _: u32,
-        _: u32,
-        _: DXGI_FORMAT,
-        _: u32,
+        this: *mut c_void,
+        buffer_count: u32,
+        width: u32,
+        height: u32,
+        format: DXGI_FORMAT,
+        flags: u32,
     ) -> HRESULT {
-        DXGI_ERROR_INVALID_CALL
+        let desc = unsafe { Self::from_this(this) }.description;
+        let count_matches = buffer_count == 0 || buffer_count == desc.BufferCount;
+        let width_matches = width == 0 || width == desc.Width;
+        let height_matches = height == 0 || height == desc.Height;
+        let format_matches = format == DXGI_FORMAT_UNKNOWN || format == desc.Format;
+        if count_matches && width_matches && height_matches && format_matches && flags == desc.Flags
+        {
+            // The backing allocation is already the fixed requested profile.
+            // Treat an application's resize acknowledgement as a successful
+            // no-op so a host-window resize does not stall presentation.
+            S_OK
+        } else {
+            DXGI_ERROR_INVALID_CALL
+        }
     }
     pub(super) unsafe extern "system" fn resize1(
         _: *mut c_void,

@@ -1,6 +1,12 @@
 use super::*;
 
 impl VirtualDxgiDriver for D3d12Frontend {
+    fn destroyed(&self) {
+        if let Some(registration) = &self.registration {
+            registration.release();
+        }
+    }
+
     fn buffer(&self, index: u32) -> windows::core::Result<IUnknown> {
         self.resources
             .get(index as usize)

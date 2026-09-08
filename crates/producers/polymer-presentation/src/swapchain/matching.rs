@@ -1,8 +1,4 @@
-use crate::{
-    Extent2D,
-    configuration::RenderConfiguration,
-    registry::PresentationRegistry,
-};
+use crate::{Extent2D, configuration::RenderConfiguration, registry::PresentationRegistry};
 use regex::Regex;
 use std::sync::{Arc, Mutex};
 
@@ -228,6 +224,12 @@ pub struct SourceRegistration {
     source: SourceIdentity,
 }
 impl SourceRegistration {
+    /// Ends eligibility before remaining frontend references finish retiring.
+    /// Repeated release (including Drop) cannot affect a replacement source.
+    pub fn release(&self) {
+        self.registry.forget(self.source);
+    }
+
     pub fn reserve(&self) -> Option<ProvisionalBinding> {
         self.registry.reserve(self.source)
     }
@@ -254,7 +256,7 @@ impl SourceRegistration {
 }
 impl Drop for SourceRegistration {
     fn drop(&mut self) {
-        self.registry.forget(self.source);
+        self.release();
     }
 }
 

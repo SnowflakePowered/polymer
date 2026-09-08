@@ -42,7 +42,8 @@ impl VirtualDxgiSwapchain {
             // The producer driver's Drop owns retirement; releasing this COM
             // frontend does not by itself authorize destruction of GPU work.
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
-                drop(Box::from_raw(this.cast::<Self>()));
+                let object = Box::from_raw(this.cast::<Self>());
+                object.driver.destroyed();
             }));
         }
         count

@@ -116,6 +116,12 @@ impl State {
     }
 }
 impl VirtualDxgiDriver for D3d11Frontend {
+    fn destroyed(&self) {
+        if let Some(registration) = &self.registration {
+            registration.release();
+        }
+    }
+
     fn buffer(&self, index: u32) -> Result<IUnknown, Error> {
         if index != 0 {
             return Err(Error::from_hresult(DXGI_ERROR_INVALID_CALL));

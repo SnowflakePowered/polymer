@@ -883,6 +883,17 @@ impl D3d12Compositor {
             .any(|surface| surface.frames.has_pending())
     }
 
+    pub fn wait_for_ready_pending_frame(&self, timeout: Duration) -> windows::core::Result<bool> {
+        for surface in &self.surfaces {
+            if let Some(frame) = surface.frames.pending() {
+                return surface
+                    .imported
+                    .wait_until_producer_ready(frame.sync_value, timeout);
+            }
+        }
+        Ok(false)
+    }
+
     pub(crate) fn disconnect_stream(&mut self, connection: u64) -> Result<(), Box<dyn Error>> {
         if let Some(index) = self
             .surfaces
