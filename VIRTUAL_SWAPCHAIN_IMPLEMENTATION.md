@@ -1,3 +1,9 @@
+> Creation extents now come from the guest (DXGI descriptors, Vulkan imageExtent,
+> or the initial OpenGL client area). The surface `resolution` key and viewer
+> `--swapchain-resolution` option have been removed. Resource extents remain
+> immutable per generation; guest resize support is not added by this change.
+> The fixed configured extents and commands below describe historical validation.
+
 # Virtual swapchains: implementation status
 
 This records the refined acknowledgment/DDI design. It replaces the historical submission-census/software-replay progress log. The user removed the standalone probe; it has not been recreated.

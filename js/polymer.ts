@@ -131,7 +131,6 @@ export type TrackedSurface = {
   index: number;
   rotation: number;
   selector?: string;
-  resolution?: Resolution;
   attach: HTMLTrackedSurfaceElement;
   webrtc: boolean;
 };
@@ -161,14 +160,13 @@ export type EmulatorSurface = {
   index: number;
   pattern?: string;
   rotation?: number;
-  resolution?: Resolution;
 };
 export type EmulatorRenderSelection = RenderSelection<EmulatorSurface>;
 
 export type Resolution = readonly [number, number];
 export type RenderSelection<S> = {
   hooks: { graphics: GraphicsHook[] };
-  surfaces: (S & { resolution: Resolution })[];
+  surfaces: S[];
 };
 
 export type LaunchOptions = LaunchFields & RenderSelection<TrackedSurface>;

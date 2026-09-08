@@ -183,7 +183,7 @@ fn package() -> (TempDir, PluginRegistry) {
                 command,
                 argv,
                 hooks: { graphics: ["vulkan"], input: ["sdl3"] },
-                surfaces: [{ index: 0, resolution: [640, 480] }],
+                surfaces: [{ index: 0, }],
               };
             }
             export async function onControllerChanged(context) {
@@ -238,7 +238,7 @@ fn configuration_mount_package() -> (TempDir, PluginRegistry) {
                 command: args.filesystem.path("/Emulator/emulator.exe"),
                 argv: [],
                 hooks: { graphics: [], input: ["sdl3"] },
-                surfaces: [{ index: 0, resolution: [640, 480] }],
+                surfaces: [{ index: 0, }],
               };
             }
         "#,

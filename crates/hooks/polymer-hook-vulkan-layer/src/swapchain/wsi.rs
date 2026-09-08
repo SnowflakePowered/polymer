@@ -38,7 +38,10 @@ impl Swapchain {
             old.closed.store(true, Ordering::Release);
         }
         let reservation = surface
-            .generation()
+            .generation(polymer_presentation::Extent2D {
+                width: info.image_extent.width,
+                height: info.image_extent.height,
+            })
             .ok_or(vk::Result::ERROR_NATIVE_WINDOW_IN_USE_KHR)?;
         let binding = reservation.shared_binding();
         unsafe {
@@ -118,6 +121,11 @@ impl Swapchain {
             return Err(vk::Result::ERROR_OUT_OF_DATE_KHR);
         }
         let profile = Surface::profile(device.physical)?;
+        if info.image_extent.width > profile.max_extent.width
+            || info.image_extent.height > profile.max_extent.height
+        {
+            return Err(vk::Result::ERROR_INITIALIZATION_FAILED);
+        }
         if !profile
             .formats
             .iter()

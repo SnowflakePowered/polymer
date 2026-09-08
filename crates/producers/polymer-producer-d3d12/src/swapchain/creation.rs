@@ -90,7 +90,20 @@ impl D3d12Creation {
                 title: polymer_platform_windows::window_title(window).unwrap_or_default(),
             })
             .map_err(|error| Error::new(E_FAIL, error))?;
-        let Some(reservation) = registration.reserve() else {
+        let mut extent = polymer_presentation::Extent2D {
+            width: info.description.Width,
+            height: info.description.Height,
+        };
+        if extent.width == 0 || extent.height == 0 {
+            let client = ProducerWindows::client_extent(window)?;
+            if extent.width == 0 {
+                extent.width = client.width;
+            }
+            if extent.height == 0 {
+                extent.height = client.height;
+            }
+        }
+        let Some(reservation) = registration.reserve(extent) else {
             return Ok(None);
         };
         let binding = reservation.shared_binding();
@@ -123,11 +136,7 @@ impl D3d12Creation {
                     description.Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0 as u32
                         != 0,
                 )?
-                .bind(
-                    registration,
-                    fixed,
-                    (window, description.Width, description.Height),
-                ),
+                .bind(registration, fixed),
         );
         let object = VirtualDxgiSwapchain::create(
             factory,

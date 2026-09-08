@@ -1375,7 +1375,7 @@ fn start_target_session(
                     id: polymer_runtime::TrackedSurfaceId(index),
                     render_target_index: index,
                     window_pattern: tracked_surface_patterns.get(slot).cloned().flatten(),
-                    resolution: launcher.swapchain_resolution,
+
                     rotation: 0,
                 })
                 .collect::<Vec<_>>()
@@ -1386,7 +1386,6 @@ fn start_target_session(
                     id: polymer_runtime::TrackedSurfaceId(index),
                     render_target_index: index,
                     window_pattern: None,
-                    resolution: launcher.swapchain_resolution,
                     rotation: 0,
                 })
                 .collect()

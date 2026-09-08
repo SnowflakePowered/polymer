@@ -722,7 +722,6 @@ impl GameHost {
                     id: polymer_runtime::TrackedSurfaceId(surface.index),
                     render_target_index: surface.index,
                     window_pattern: surface.selector.clone(),
-                    resolution: surface.resolution,
                     rotation: surface.rotation,
                 })
                 .collect(),

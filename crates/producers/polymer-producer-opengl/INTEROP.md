@@ -1,6 +1,6 @@
 # OpenGL pbuffer swapchains
 
-OpenGL uses a native swapchain and requires a fixed positive resolution for each requested surface.
+OpenGL creates a native pbuffer at the initial window client extent. The extent stays fixed for that drawable; resizing is not implemented.
 
 `WGL_ARB_pbuffer` provides an independent, driver-managed default framebuffer at the configured extent. Polymer uses the application's pixel format and context, redirects `wglMakeCurrent` and the ARB/EXT separate-read variants to the pbuffer DC, and routes presentation to that DC. Framebuffer zero remains native; application FBOs, shaders, resource bindings, and rendering calls are not intercepted.
 

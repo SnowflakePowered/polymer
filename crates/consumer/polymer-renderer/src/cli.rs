@@ -79,7 +79,6 @@ pub struct TrackedRenderTarget {
 pub struct ViewerOptions {
     pub target: Vec<String>,
     pub track_render_targets: Option<Vec<TrackedRenderTarget>>,
-    pub swapchain_resolution: Option<[u32; 2]>,
     pub layout_css: Option<String>,
     pub surfaces: u32,
     pub skip_surfaces: u32,
@@ -112,16 +111,11 @@ struct ViewerArguments {
     )]
     pub(crate) track_render_targets: Option<Vec<TrackedRenderTarget>>,
 
-    /// D3D11/D3D12/Vulkan/OpenGL: use a swapchain with a fixed width and height.
-    #[arg(long, num_args = 2, value_names = ["WIDTH", "HEIGHT"], value_parser = clap::value_parser!(u32).range(1..=i32::MAX as i64))]
-    pub(crate) swapchain_resolution: Option<Vec<u32>>,
-
     /// CSS declarations applied to the Taffy container that holds render
     /// targets. Without this option the viewer uses its original vertical
     /// layout. Example: `display: flex; flex-direction: row; gap: 12px`.
     #[arg(long, value_name = "CSS")]
     pub(crate) layout_css: Option<String>,
-
     /// Publish selected render-target indices as tracks on one WebRTC stream.
     #[arg(
         long,
@@ -192,9 +186,6 @@ struct ViewerArguments {
 
 impl ViewerArguments {
     fn validate_presentation(&self) -> Result<(), Box<dyn Error>> {
-        if !self.target.is_empty() && self.swapchain_resolution.is_none() {
-            return Err("graphics hooks require --swapchain-resolution WIDTH HEIGHT".into());
-        }
         Ok(())
     }
 
@@ -227,7 +218,6 @@ impl ViewerArguments {
         Ok(ViewerOptions {
             target: self.target,
             track_render_targets: self.track_render_targets,
-            swapchain_resolution: self.swapchain_resolution.map(|size| [size[0], size[1]]),
             layout_css: self.layout_css,
             surfaces: self.surfaces,
             skip_surfaces: self.skip_surfaces,
@@ -370,10 +360,7 @@ mod tests {
 
     #[test]
     fn defaults_are_shared_by_renderer_hosts() {
-        let options = parse_arguments(
-            ["--swapchain-resolution", "640", "480", "--", "game.exe"].map(str::to_owned),
-        )
-        .unwrap();
+        let options = parse_arguments(["--", "game.exe"].map(str::to_owned)).unwrap();
         assert_eq!(options.api, ViewerApi::D3d12);
         assert_eq!(options.hooks, AUTO_HOOKS);
         assert_eq!(options.target, ["game.exe"]);
@@ -384,8 +371,6 @@ mod tests {
     fn validates_deduplicated_render_and_video_targets() {
         assert!(
             parse_arguments([
-                "--swapchain-resolution=640".to_owned(),
-                "480".to_owned(),
                 "--track-render-targets=0,0".to_owned(),
                 "--".to_owned(),
                 "game.exe".to_owned(),
@@ -394,8 +379,6 @@ mod tests {
         );
         assert!(
             parse_arguments([
-                "--swapchain-resolution=640".to_owned(),
-                "480".to_owned(),
                 "--webrtc=0,0".to_owned(),
                 "--".to_owned(),
                 "game.exe".to_owned(),

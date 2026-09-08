@@ -1,4 +1,5 @@
 use super::*;
+use polymer_presentation::producer::ProducerWindows;
 mod capabilities;
 mod profile;
 use crate::layer::PhysicalDeviceState;
@@ -89,13 +90,24 @@ impl Surface {
             return Some(binding.clone());
         }
         if state.0.is_none() {
-            state.0 = self.registration.reserve();
+            state.0 = self
+                .registration
+                .reserve(ProducerWindows::client_extent(self.window).ok()?);
         }
         state.0.as_ref().map(ProvisionalBinding::shared_binding)
     }
-    pub(super) fn generation(&self) -> Option<ProvisionalBinding> {
+    pub(super) fn generation(
+        &self,
+        extent: polymer_presentation::Extent2D,
+    ) -> Option<ProvisionalBinding> {
         let reservation = self.binding.lock().0.take();
-        reservation.or_else(|| self.registration.next_generation())
+        if let Some(reservation) = reservation {
+            if reservation.shared_binding().extent() == extent {
+                return Some(reservation);
+            }
+            drop(reservation);
+        }
+        self.registration.next_generation(extent)
     }
     pub(super) fn commit(&self, binding: Arc<FixedSurfaceBinding>) {
         self.binding.lock().1 = Some(binding);

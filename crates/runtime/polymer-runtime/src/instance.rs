@@ -40,7 +40,6 @@ pub struct TrackedSurfaceConfig {
     pub id: TrackedSurfaceId,
     pub render_target_index: u32,
     pub window_pattern: Option<String>,
-    pub resolution: Option<[u32; 2]>,
     pub rotation: i32,
 }
 
@@ -67,7 +66,6 @@ impl EmulatorLaunchConfig {
                 .map(|surface| crate::SurfaceRequest {
                     index: surface.render_target_index,
                     pattern: surface.window_pattern.clone(),
-                    resolution: surface.resolution,
                     rotation: surface.rotation,
                 })
                 .collect(),
@@ -1122,7 +1120,6 @@ impl SurfaceManager {
             .iter()
             .find(|surface| {
                 surface.render_target_index == index
-                    && surface.resolution == Some([stream.width, stream.height])
                     && !self.active.contains_key(&surface.id)
                     && !self
                         .pending
@@ -1443,7 +1440,6 @@ mod tests {
                 id: TrackedSurfaceId(7),
                 render_target_index: 0,
                 window_pattern: None,
-                resolution: Some([640, 480]),
                 rotation: 0,
             }],
             tracking_enabled: true,
@@ -1473,11 +1469,8 @@ mod tests {
     }
 
     #[test]
-    fn virtual_launch_requires_implemented_backend_and_fixed_extent() {
+    fn virtual_launch_accepts_guest_extent_backends() {
         let mut launch = config();
-        launch.tracked_surfaces[0].resolution = None;
-        assert!(launch.validate().is_err());
-        launch.tracked_surfaces[0].resolution = Some([640, 528]);
         for hook in [
             GraphicsHook::D3d11,
             GraphicsHook::D3d12,

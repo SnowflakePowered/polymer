@@ -66,7 +66,6 @@ impl FixedSurfaceBinding {
 struct Request {
     index: u32,
     pattern: Option<Regex>,
-    extent: Extent2D,
     rotation: i32,
     previous_window: Option<WindowIdentity>,
     binding: Option<Arc<FixedSurfaceBinding>>,
@@ -113,7 +112,6 @@ impl AssignmentRegistry {
             .surfaces
             .iter()
             .map(|request| {
-                let [width, height] = request.resolution.expect("validated resolution");
                 Ok(Request {
                     index: request.index,
                     pattern: request
@@ -122,7 +120,6 @@ impl AssignmentRegistry {
                         .map(Regex::new)
                         .transpose()
                         .map_err(|error| error.to_string())?,
-                    extent: Extent2D { width, height },
                     rotation: request.rotation,
                     previous_window: None,
                     binding: None,
@@ -156,7 +153,18 @@ impl AssignmentRegistry {
         }
     }
 
-    pub fn reserve(self: &Arc<Self>, source: SourceIdentity) -> Option<ProvisionalBinding> {
+    pub fn reserve(
+        self: &Arc<Self>,
+        source: SourceIdentity,
+        extent: Extent2D,
+    ) -> Option<ProvisionalBinding> {
+        if extent.width == 0
+            || extent.height == 0
+            || extent.width > i32::MAX as u32
+            || extent.height > i32::MAX as u32
+        {
+            return None;
+        }
         let mut state = self.state.lock().unwrap();
         if state.requests.iter().any(|request| {
             request
@@ -182,7 +190,7 @@ impl AssignmentRegistry {
             ordinal,
             configured_index: request.index,
             logical_id: PresentationRegistry::logical_surface_id(request.index as usize),
-            extent: request.extent,
+            extent,
             rotation: request.rotation,
             source,
             window: candidate.window,
@@ -230,12 +238,12 @@ impl SourceRegistration {
         self.registry.forget(self.source);
     }
 
-    pub fn reserve(&self) -> Option<ProvisionalBinding> {
-        self.registry.reserve(self.source)
+    pub fn reserve(&self, extent: Extent2D) -> Option<ProvisionalBinding> {
+        self.registry.reserve(self.source, extent)
     }
     /// A WSI surface outlives its swapchain generations. Old bindings retain
     /// their immutable identity while allocation of a replacement begins.
-    pub fn next_generation(&self) -> Option<ProvisionalBinding> {
+    pub fn next_generation(&self, extent: Extent2D) -> Option<ProvisionalBinding> {
         {
             let mut state = self.registry.state.lock().unwrap();
             for request in &mut state.requests {
@@ -251,7 +259,7 @@ impl SourceRegistration {
                 }
             }
         }
-        self.reserve()
+        self.reserve(extent)
     }
 }
 impl Drop for SourceRegistration {
