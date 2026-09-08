@@ -1,5 +1,48 @@
+use blitz_traits::net::{Bytes, NetHandler, NetProvider, NetWaker, Request};
 use blitz_traits::shell::{ClipboardError, ShellProvider};
 use parking_lot::Mutex;
+use std::sync::Arc;
+
+pub(super) struct ShellNetProvider {
+    remote: Arc<dyn NetProvider>,
+    waker: Arc<dyn NetWaker>,
+}
+
+impl ShellNetProvider {
+    pub(super) fn new(waker: Arc<dyn NetWaker>) -> Self {
+        Self {
+            remote: blitz_net::Provider::shared(Some(waker.clone())),
+            waker,
+        }
+    }
+}
+
+impl NetProvider for ShellNetProvider {
+    fn fetch(&self, doc_id: usize, request: Request, handler: Box<dyn NetHandler>) {
+        if request.url.scheme() != "file" {
+            self.remote.fetch(doc_id, request, handler);
+            return;
+        }
+        // URL paths retain percent escapes and a leading slash before Windows
+        // drive letters. Convert the URL instead of passing its path to read.
+        let result = request
+            .url
+            .to_file_path()
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid file URL"))
+            .and_then(std::fs::read);
+        let bytes = match result {
+            Ok(bytes) => Bytes::from(bytes),
+            Err(error) => {
+                tracing::warn!(url = %request.url, %error, "polymer: loading shell asset failed");
+                // Complete failed stylesheets too, so they cannot leave layout
+                // waiting permanently for a critical resource.
+                Bytes::new()
+            }
+        };
+        handler.bytes(request.url.to_string(), bytes);
+        self.waker.wake(doc_id);
+    }
+}
 
 pub(super) struct NativeShellProvider {
     proxy: crate::window_manager::EventLoopProxy<crate::app::UserEvent>,

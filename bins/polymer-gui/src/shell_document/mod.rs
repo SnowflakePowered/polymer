@@ -145,7 +145,7 @@ impl ShellDocumentFactory {
                 crate::window_manager::WindowCommand::RedrawShell,
             ));
         });
-        let net: Arc<dyn NetProvider> = blitz_net::Provider::shared(Some(waker));
+        let net: Arc<dyn NetProvider> = Arc::new(providers::ShellNetProvider::new(waker));
         let shell_provider: Arc<dyn blitz_traits::shell::ShellProvider> =
             Arc::new(NativeShellProvider::new(self.event_proxy.clone()));
         let mut document = blitz_html::HtmlDocument::from_html(
