@@ -324,7 +324,12 @@ export const onPluginLoad: OnPluginLoad = async (context) => {
   try {
     version = (await db.prepare("SELECT value FROM content_state WHERE key = 'ready'").get<{ value: string }>())?.value;
   } catch { /* first use has no schema */ }
-  if (version === "2") return;
+  if (version === "2") {
+    // Startup requests an update after loading the plugin. The persistent index
+    // satisfies that first request even when it was built by an earlier process.
+    updatedDuringLoad = true;
+    return;
+  }
   let cached = false;
   try { cached = caches.download.open(DOWNLOAD_FILE).size > 0; } catch { /* no cached archive */ }
   if (cached) await buildIndex(context);
