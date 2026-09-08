@@ -110,7 +110,7 @@ impl SurfacePresentationWorker {
                         let _ = response.send(snapshot);
                     }
                     let timeout = if Renderer::has_pending_frame(&compositor) {
-                        Duration::from_millis(1)
+                        Duration::ZERO
                     } else {
                         Duration::from_millis(100)
                     };
@@ -129,14 +129,22 @@ impl SurfacePresentationWorker {
                         Err(_) => break,
                     }
 
-                    if Renderer::has_pending_frame(&compositor)
-                        && compositor.begin_frame_within(Duration::from_millis(2))
-                        && let Err(error) = compositor.present_with_webrtc(&plan, None)
-                    {
-                        tracing::error!(
-                            "polymer: presenting surface {connection} on its worker failed: {error}"
-                        );
-                        break;
+                    match compositor.wait_for_ready_pending_frame(Duration::from_millis(50)) {
+                        Ok(true) if compositor.begin_frame_within(Duration::from_millis(50)) => {
+                            if let Err(error) = compositor.present_with_webrtc(&plan, None) {
+                                tracing::error!(
+                                    "polymer: presenting surface {connection} on its worker failed: {error}"
+                                );
+                                break;
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            tracing::error!(
+                                "polymer: waiting for surface {connection} failed: {error}"
+                            );
+                            break;
+                        }
                     }
                 }
             })

@@ -3,10 +3,10 @@
 
 use polymer_ipc::StreamReady;
 use polymer_protocol::{AdapterLuid, ExternalImageKind, ExternalSyncKind, MAX_IMAGE_SLOTS};
-use std::ffi::c_void;
+use std::{ffi::c_void, time::Duration};
 use windows::{
     Win32::{
-        Foundation::{CloseHandle, E_INVALIDARG, E_POINTER, HANDLE, LUID},
+        Foundation::{CloseHandle, E_INVALIDARG, E_POINTER, HANDLE, LUID, WAIT_OBJECT_0},
         Graphics::{
             Direct3D::D3D_FEATURE_LEVEL_11_0,
             Direct3D12::{
@@ -16,6 +16,7 @@ use windows::{
             },
             Dxgi::{CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, IDXGIAdapter1, IDXGIFactory4},
         },
+        System::Threading::{CreateEventW, ResetEvent, WaitForSingleObject},
     },
     core::Interface,
 };
@@ -151,6 +152,7 @@ impl D3d12ConsumerDevice {
                 resources,
                 producer,
                 consumer,
+                producer_event: CreateEventW(None, false, false, None)?,
                 width: stream.width,
                 height: stream.height,
                 format: stream.format,
@@ -183,6 +185,7 @@ pub struct ImportedD3d12Stream {
     resources: Vec<ID3D12Resource>,
     producer: ID3D12Fence,
     consumer: ID3D12Fence,
+    producer_event: HANDLE,
     pub width: u32,
     pub height: u32,
     pub format: u32,
@@ -215,12 +218,40 @@ impl ImportedD3d12Stream {
         unsafe { self.producer.GetCompletedValue() >= value }
     }
 
+    pub fn wait_until_producer_ready(
+        &self,
+        value: u64,
+        timeout: Duration,
+    ) -> windows::core::Result<bool> {
+        if self.producer_ready(value) {
+            return Ok(true);
+        }
+        unsafe {
+            ResetEvent(self.producer_event)?;
+            self.producer
+                .SetEventOnCompletion(value, self.producer_event)?;
+            Ok(WaitForSingleObject(
+                self.producer_event,
+                timeout.as_millis().min(u128::from(u32::MAX)) as u32,
+            ) == WAIT_OBJECT_0
+                && self.producer_ready(value))
+        }
+    }
+
     pub fn signal_release(
         &self,
         queue: &ID3D12CommandQueue,
         value: u64,
     ) -> windows::core::Result<()> {
         unsafe { queue.Signal(&self.consumer, value) }
+    }
+}
+
+impl Drop for ImportedD3d12Stream {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.producer_event);
+        }
     }
 }
 

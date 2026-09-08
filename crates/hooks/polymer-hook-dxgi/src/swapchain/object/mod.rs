@@ -23,6 +23,8 @@ use windows::{
 /// Native frontends implement this on their producer-owned controller owner.
 /// Calls must release map/state guards before invoking drivers or IPC.
 pub trait VirtualDxgiDriver: Send + Sync + 'static {
+    /// Release the source claim at final COM release, independently of GPU retirement.
+    fn destroyed(&self);
     fn buffer(&self, index: u32) -> windows::core::Result<IUnknown>;
     fn present(&self, interval: u32, flags: DXGI_PRESENT) -> HRESULT;
     fn current_index(&self) -> u32;
