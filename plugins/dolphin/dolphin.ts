@@ -42,6 +42,7 @@ type Configuration = HostConfiguration<{
             },
             display: {
                 render_to_main: boolean,
+                render_window_auto_size: boolean,
             },
             input: {
                 background_input: boolean,
@@ -49,6 +50,11 @@ type Configuration = HostConfiguration<{
             interface: {
                 confirm_stop: boolean,
                 skip_n_kit_warning: boolean,
+            },
+        },
+        gfx: {
+            settings: {
+                aspect_ratio: string,
             },
         },
         ports: {
@@ -473,7 +479,8 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     // Telemetry remains disabled and Dolphin does not open its consent dialog.
     options.analytics.enabled = false;
     options.analytics.permission_asked = true;
-    options.core.gfx_backend = "Vulkan";
+    options.core.gfx_backend = "D3D12";
+    args.configuration.options().gfx.settings.aspect_ratio = "Stretch";
     options.core.gci_folder_a_path = args.filesystem.path("/MemoryCard/USA");
     // Dolphin disables save states by default in current development builds.
     // Polymer uses them for both explicit state slots and quick resume.
@@ -485,6 +492,9 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     // Keep Dolphin's control window available for live settings automation;
     // the D3D render surface remains a separate tracked window.
     options.display.render_to_main = false;
+    // The fixed swapchain owns the render size; XFB-driven Qt resizes can
+    // otherwise replace the client dimensions after Polymer sets them.
+    options.display.render_window_auto_size = false;
     if (isWii) {
         options.general.nand_root_path = args.filesystem.path("/User/Wii");
     }
@@ -540,7 +550,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
         argv,
         isolate: false,
         hooks: {
-            graphics: ["vulkan"],
+            graphics: ["d3d12"],
             input: ["sdl3", "bluetooth-api-win32"],
         },
         controllerTopology,

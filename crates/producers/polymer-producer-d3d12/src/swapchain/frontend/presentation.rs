@@ -14,6 +14,19 @@ impl VirtualDxgiDriver for D3d12Frontend {
             .cast()
     }
     fn present(&self, _: u32, flags: DXGI_PRESENT) -> HRESULT {
+        // Dolphin caches the client size before creating its swapchain, and
+        // ignores resize events until its presenter exists. Resize on the first
+        // real Present so it refreshes those cached dimensions through GetDesc.
+        // Do this outside the owner guard: window messages can reenter DXGI.
+        if !flags.contains(DXGI_PRESENT_TEST) && !self.window_resized.swap(true, Ordering::AcqRel) {
+            if let Some((window, width, height)) = self.window_resize {
+                if let Err(error) = polymer_platform_windows::resize_client(window, width, height) {
+                    self.window_resized.store(false, Ordering::Release);
+                    tracing::error!(%error, width, height, "failed to size D3D12 render window");
+                    return E_FAIL;
+                }
+            }
+        }
         let deadline =
             if flags.contains(DXGI_PRESENT_DO_NOT_WAIT) || flags.contains(DXGI_PRESENT_TEST) {
                 AcquireDeadline::Nonblocking
