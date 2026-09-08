@@ -2,7 +2,7 @@
 
 Shared presentation lifecycle and image publication for Polymer graphics producers.
 
-D3D11, D3D12, and Vulkan render directly into fixed-resolution shared swapchain images. OpenGL renders into fixed WGL pbuffers and exports them with one GPU blit into an EXT external-memory image ring. GDI paints into shared DXGI surfaces.
+D3D11, D3D12, and Vulkan render directly into shared swapchain images at the guest-requested creation extent. OpenGL renders into WGL pbuffers sized from the initial client area and exports them with one GPU blit into an EXT external-memory image ring. GDI paints into shared DXGI surfaces.
 
 The crate owns fixed-surface matching, swapchain controllers, buffer acknowledgments, pacing, retirement, frame placement, and IPC publication. Native allocation and synchronization remain in each backend. The small presentation registry retains logical surface identifiers and window selection; title-qualified requests claim matching windows before positional requests.
 

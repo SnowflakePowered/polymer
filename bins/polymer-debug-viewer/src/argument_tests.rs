@@ -14,7 +14,7 @@ fn tracked(index: u32, quarter_turns: u8) -> TrackedRenderTarget {
 
 #[test]
 fn defaults_to_d3d12() -> Result<(), Box<dyn Error>> {
-    let options = arguments(&["--swapchain-resolution", "640", "480", "--", "game.exe"])?;
+    let options = arguments(&["--", "game.exe"])?;
     assert_eq!(options.api, ViewerApi::D3d12);
     assert_eq!(options.track_render_targets, None);
     assert_eq!(options.layout_css, None);
@@ -31,9 +31,6 @@ fn defaults_to_d3d12() -> Result<(), Box<dyn Error>> {
 #[test]
 fn accepts_render_target_layout_css() -> Result<(), Box<dyn Error>> {
     let options = arguments(&[
-        "--swapchain-resolution",
-        "640",
-        "480",
         "--layout-css",
         "display: grid; grid-template-columns: 1fr 2fr",
         "--",
@@ -49,9 +46,6 @@ fn accepts_render_target_layout_css() -> Result<(), Box<dyn Error>> {
 #[test]
 fn cli_target_arguments_are_not_reparsed_or_requoted() -> Result<(), Box<dyn Error>> {
     let options = arguments(&[
-        "--swapchain-resolution",
-        "640",
-        "480",
         "--track-render-targets",
         "0",
         "--hook",
@@ -117,16 +111,7 @@ fn launcher_preserves_render_target_order_and_rotation() -> Result<(), Box<dyn E
 #[test]
 fn hook_selection_defaults_to_auto() -> Result<(), Box<dyn Error>> {
     assert_eq!(
-        arguments(&[
-            "--swapchain-resolution",
-            "640",
-            "480",
-            "--hook",
-            "auto",
-            "--",
-            "game.exe"
-        ])?
-        .hooks,
+        arguments(&["--hook", "auto", "--", "game.exe"])?.hooks,
         AUTO_HOOKS
     );
     Ok(())
@@ -135,9 +120,6 @@ fn hook_selection_defaults_to_auto() -> Result<(), Box<dyn Error>> {
 #[test]
 fn hook_order_defines_priority() -> Result<(), Box<dyn Error>> {
     let options = arguments(&[
-        "--swapchain-resolution",
-        "640",
-        "480",
         "--hook",
         "d3d12,d3d11",
         "--hook",
@@ -159,15 +141,7 @@ fn hook_order_defines_priority() -> Result<(), Box<dyn Error>> {
 #[test]
 fn hook_auto_appends_the_remaining_backends() -> Result<(), Box<dyn Error>> {
     assert_eq!(
-        arguments(&[
-            "--swapchain-resolution",
-            "640",
-            "480",
-            "--hook=d3d11,auto",
-            "--",
-            "game.exe"
-        ])?
-        .hooks,
+        arguments(&["--hook=d3d11,auto", "--", "game.exe"])?.hooks,
         [
             GraphicsHook::D3d11,
             GraphicsHook::Vulkan,
@@ -179,30 +153,8 @@ fn hook_auto_appends_the_remaining_backends() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn rejects_unknown_and_repeated_hooks() {
-    assert!(
-        arguments(&[
-            "--swapchain-resolution",
-            "640",
-            "480",
-            "--hook",
-            "metal",
-            "--",
-            "game.exe"
-        ])
-        .is_err()
-    );
-    assert!(
-        arguments(&[
-            "--swapchain-resolution",
-            "640",
-            "480",
-            "--hook",
-            "vulkan,vulkan",
-            "--",
-            "game.exe"
-        ])
-        .is_err()
-    );
+    assert!(arguments(&["--hook", "metal", "--", "game.exe"]).is_err());
+    assert!(arguments(&["--hook", "vulkan,vulkan", "--", "game.exe"]).is_err());
 }
 
 #[test]
@@ -210,9 +162,6 @@ fn accepts_vulkan_override_and_options_in_either_order() -> Result<(), Box<dyn E
     let options = arguments(&[
         "--hook",
         "opengl",
-        "--swapchain-resolution",
-        "640",
-        "480",
         "--track-render-target",
         "--no-isolate",
         "--api=vulkan",
@@ -230,69 +179,23 @@ fn accepts_vulkan_override_and_options_in_either_order() -> Result<(), Box<dyn E
 
 #[test]
 fn resize_is_available_only_with_isolation() -> Result<(), Box<dyn Error>> {
-    assert!(
-        arguments(&[
-            "--swapchain-resolution",
-            "640",
-            "480",
-            "--resize",
-            "--",
-            "game.exe"
-        ])?
-        .resize
-    );
-    assert!(
-        arguments(&[
-            "--swapchain-resolution",
-            "640",
-            "480",
-            "--resize",
-            "--no-isolate",
-            "--",
-            "game.exe"
-        ])
-        .is_err()
-    );
+    assert!(arguments(&["--resize", "--", "game.exe"])?.resize);
+    assert!(arguments(&["--resize", "--no-isolate", "--", "game.exe"]).is_err());
     Ok(())
 }
 
 #[test]
 fn accepts_render_target_indices_and_defaults_to_zero() -> Result<(), Box<dyn Error>> {
     assert_eq!(
-        arguments(&[
-            "--swapchain-resolution",
-            "640",
-            "480",
-            "--track-render-targets",
-            "0,1",
-            "--",
-            "game.exe"
-        ])?
-        .track_render_targets,
+        arguments(&["--track-render-targets", "0,1", "--", "game.exe"])?.track_render_targets,
         Some(vec![tracked(0, 0), tracked(1, 0)])
     );
     assert_eq!(
-        arguments(&[
-            "--swapchain-resolution",
-            "640",
-            "480",
-            "--track-render-targets",
-            "--",
-            "game.exe"
-        ])?
-        .track_render_targets,
+        arguments(&["--track-render-targets", "--", "game.exe"])?.track_render_targets,
         Some(vec![tracked(0, 0)])
     );
     assert_eq!(
-        arguments(&[
-            "--swapchain-resolution",
-            "640",
-            "480",
-            "--track-render-targets=1",
-            "--",
-            "game.exe"
-        ])?
-        .track_render_targets,
+        arguments(&["--track-render-targets=1", "--", "game.exe"])?.track_render_targets,
         Some(vec![tracked(1, 0)])
     );
     Ok(())
@@ -301,29 +204,12 @@ fn accepts_render_target_indices_and_defaults_to_zero() -> Result<(), Box<dyn Er
 #[test]
 fn accepts_render_target_rotations_in_quarter_turns() -> Result<(), Box<dyn Error>> {
     assert_eq!(
-        arguments(&[
-            "--swapchain-resolution",
-            "640",
-            "480",
-            "--track-render-targets",
-            "0:1,1",
-            "--",
-            "game.exe"
-        ])?
-        .track_render_targets,
+        arguments(&["--track-render-targets", "0:1,1", "--", "game.exe"])?.track_render_targets,
         Some(vec![tracked(0, 1), tracked(1, 0)])
     );
     // Quarter turns wrap around the unit circle.
     assert_eq!(
-        arguments(&[
-            "--swapchain-resolution",
-            "640",
-            "480",
-            "--track-render-targets=0:4,1:7",
-            "--",
-            "game.exe"
-        ])?
-        .track_render_targets,
+        arguments(&["--track-render-targets=0:4,1:7", "--", "game.exe"])?.track_render_targets,
         Some(vec![tracked(0, 0), tracked(1, 3)])
     );
     Ok(())
@@ -332,9 +218,6 @@ fn accepts_render_target_rotations_in_quarter_turns() -> Result<(), Box<dyn Erro
 #[test]
 fn accepts_render_target_surface_regexes() -> Result<(), Box<dyn Error>> {
     let options = arguments(&[
-        "--swapchain-resolution",
-        "640",
-        "480",
         "--track-render-targets",
         "0:0:(?i)gamepad view,1:3:Main: [0-9]+",
         "--",
@@ -350,97 +233,25 @@ fn accepts_render_target_surface_regexes() -> Result<(), Box<dyn Error>> {
     assert_eq!(targets[1].index, 1);
     assert_eq!(targets[1].quarter_turns, 3);
     assert_eq!(targets[1].surface_pattern.as_deref(), Some("Main: [0-9]+"));
-    assert!(
-        arguments(&[
-            "--swapchain-resolution",
-            "640",
-            "480",
-            "--track-render-targets",
-            "0:0:(",
-            "--",
-            "game.exe"
-        ])
-        .is_err()
-    );
+    assert!(arguments(&["--track-render-targets", "0:0:(", "--", "game.exe"]).is_err());
     Ok(())
 }
 
 #[test]
 fn rejects_invalid_render_target_indices() {
-    assert!(
-        arguments(&[
-            "--swapchain-resolution",
-            "640",
-            "480",
-            "--track-render-targets",
-            "16",
-            "--",
-            "game.exe"
-        ])
-        .is_err()
-    );
-    assert!(
-        arguments(&[
-            "--swapchain-resolution",
-            "640",
-            "480",
-            "--track-render-targets=0,0",
-            "--",
-            "game.exe"
-        ])
-        .is_err()
-    );
-    assert!(
-        arguments(&[
-            "--swapchain-resolution",
-            "640",
-            "480",
-            "--track-render-targets=0:x",
-            "--",
-            "game.exe"
-        ])
-        .is_err()
-    );
-    assert!(
-        arguments(&[
-            "--swapchain-resolution",
-            "640",
-            "480",
-            "--track-render-targets=0:",
-            "--",
-            "game.exe"
-        ])
-        .is_err()
-    );
+    assert!(arguments(&["--track-render-targets", "16", "--", "game.exe"]).is_err());
+    assert!(arguments(&["--track-render-targets=0,0", "--", "game.exe"]).is_err());
+    assert!(arguments(&["--track-render-targets=0:x", "--", "game.exe"]).is_err());
+    assert!(arguments(&["--track-render-targets=0:", "--", "game.exe"]).is_err());
     // Rotation does not distinguish otherwise duplicate indices.
-    assert!(
-        arguments(&[
-            "--swapchain-resolution",
-            "640",
-            "480",
-            "--track-render-targets=0:1,0:2",
-            "--",
-            "game.exe"
-        ])
-        .is_err()
-    );
+    assert!(arguments(&["--track-render-targets=0:1,0:2", "--", "game.exe"]).is_err());
 }
 
 #[test]
 fn accepts_webrtc_defaults_and_target_indices() -> Result<(), Box<dyn Error>> {
-    let defaults = arguments(&[
-        "--swapchain-resolution",
-        "640",
-        "480",
-        "--webrtc",
-        "--",
-        "game.exe",
-    ])?;
+    let defaults = arguments(&["--webrtc", "--", "game.exe"])?;
     assert_eq!(defaults.webrtc, Some(vec![0]));
     let explicit = arguments(&[
-        "--swapchain-resolution",
-        "640",
-        "480",
         "--webrtc=0,1",
         "--bind-webrtc",
         "0.0.0.0:9000",
@@ -454,147 +265,40 @@ fn accepts_webrtc_defaults_and_target_indices() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn rejects_invalid_webrtc_options() {
-    assert!(
-        arguments(&[
-            "--swapchain-resolution",
-            "640",
-            "480",
-            "--webrtc=16",
-            "--",
-            "game.exe"
-        ])
-        .is_err()
-    );
-    assert!(
-        arguments(&[
-            "--swapchain-resolution",
-            "640",
-            "480",
-            "--webrtc=0,0",
-            "--",
-            "game.exe"
-        ])
-        .is_err()
-    );
-    assert!(
-        arguments(&[
-            "--swapchain-resolution",
-            "640",
-            "480",
-            "--bind-webrtc=0.0.0.0:9000",
-            "--",
-            "game.exe"
-        ])
-        .is_err()
-    );
+    assert!(arguments(&["--webrtc=16", "--", "game.exe"]).is_err());
+    assert!(arguments(&["--webrtc=0,0", "--", "game.exe"]).is_err());
+    assert!(arguments(&["--bind-webrtc=0.0.0.0:9000", "--", "game.exe"]).is_err());
 }
 
 #[test]
 fn accepts_a_surface_count_and_defaults_to_one() -> Result<(), Box<dyn Error>> {
     assert_eq!(
-        arguments(&[
-            "--swapchain-resolution",
-            "640",
-            "480",
-            "--surfaces",
-            "2",
-            "--",
-            "game.exe"
-        ])?
-        .surfaces,
+        arguments(&["--surfaces", "2", "--", "game.exe"])?.surfaces,
         2
     );
-    assert_eq!(
-        arguments(&[
-            "--swapchain-resolution",
-            "640",
-            "480",
-            "--surfaces",
-            "--",
-            "game.exe"
-        ])?
-        .surfaces,
-        16
-    );
-    assert_eq!(
-        arguments(&[
-            "--swapchain-resolution",
-            "640",
-            "480",
-            "--surfaces=3",
-            "--",
-            "game.exe"
-        ])?
-        .surfaces,
-        3
-    );
+    assert_eq!(arguments(&["--surfaces", "--", "game.exe"])?.surfaces, 16);
+    assert_eq!(arguments(&["--surfaces=3", "--", "game.exe"])?.surfaces, 3);
     Ok(())
 }
 
 #[test]
 fn rejects_an_invalid_surface_count() {
-    assert!(
-        arguments(&[
-            "--swapchain-resolution",
-            "640",
-            "480",
-            "--surfaces",
-            "0",
-            "--",
-            "game.exe"
-        ])
-        .is_err()
-    );
-    assert!(
-        arguments(&[
-            "--swapchain-resolution",
-            "640",
-            "480",
-            "--surfaces=17",
-            "--",
-            "game.exe"
-        ])
-        .is_err()
-    );
+    assert!(arguments(&["--surfaces", "0", "--", "game.exe"]).is_err());
+    assert!(arguments(&["--surfaces=17", "--", "game.exe"]).is_err());
 }
 
 #[test]
 fn accepts_a_surface_skip_count_and_defaults_to_one() -> Result<(), Box<dyn Error>> {
     assert_eq!(
-        arguments(&[
-            "--swapchain-resolution",
-            "640",
-            "480",
-            "--skip-surfaces",
-            "2",
-            "--",
-            "game.exe"
-        ])?
-        .skip_surfaces,
+        arguments(&["--skip-surfaces", "2", "--", "game.exe"])?.skip_surfaces,
         2
     );
     assert_eq!(
-        arguments(&[
-            "--swapchain-resolution",
-            "640",
-            "480",
-            "--skip-surfaces",
-            "--",
-            "game.exe"
-        ])?
-        .skip_surfaces,
+        arguments(&["--skip-surfaces", "--", "game.exe"])?.skip_surfaces,
         1
     );
     assert_eq!(
-        arguments(&[
-            "--swapchain-resolution",
-            "640",
-            "480",
-            "--skip-windows=3",
-            "--",
-            "game.exe"
-        ])?
-        .skip_surfaces,
+        arguments(&["--skip-windows=3", "--", "game.exe"])?.skip_surfaces,
         3
     );
     Ok(())
@@ -602,17 +306,7 @@ fn accepts_a_surface_skip_count_and_defaults_to_one() -> Result<(), Box<dyn Erro
 
 #[test]
 fn rejects_an_invalid_surface_skip_count() {
-    assert!(
-        arguments(&[
-            "--swapchain-resolution",
-            "640",
-            "480",
-            "--skip-surfaces=menu",
-            "--",
-            "game.exe"
-        ])
-        .is_err()
-    );
+    assert!(arguments(&["--skip-surfaces=menu", "--", "game.exe"]).is_err());
 }
 
 fn offset_tuples(offsets: [ash::vk::Offset3D; 2]) -> [(i32, i32, i32); 2] {
@@ -656,34 +350,9 @@ fn half_turns_mirror_vulkan_blit_source_offsets() {
 }
 
 #[test]
-fn virtual_swapchain_cli_preserves_extent_and_rejects_conflicting_modes() {
-    let options = arguments(&["--swapchain-resolution", "640", "528", "--hook", "d3d11"]).unwrap();
-    assert_eq!(
-        LauncherState::from_options(&options).swapchain_resolution,
-        Some([640, 528])
-    );
-    for args in [
-        vec!["--swapchain-resolution", "0", "528"],
-        vec!["--swapchain-resolution", "640"],
-        vec!["--swapchain-resolution", "2147483648", "528"],
-        vec!["--swapchain-resolution", "640", "528", "--force-km"],
-        vec![
-            "--swapchain-resolution",
-            "640",
-            "528",
-            "--track-render-targets",
-            "0",
-            "--graph-tracking",
-        ],
-    ] {
-        assert!(arguments(&args).is_err(), "accepted {args:?}");
-    }
-}
-
-#[test]
-fn production_apis_reject_capture_options_and_require_fixed_extent() {
+fn production_apis_reject_capture_options_and_accept_guest_extent() {
     for hook in ["d3d11", "d3d12", "vulkan", "opengl"] {
-        assert!(arguments(&["--hook", hook, "--", "game.exe"]).is_err());
+        assert!(arguments(&["--hook", hook, "--", "game.exe"]).is_ok());
         assert!(
             arguments(&[
                 "--hook",
@@ -694,28 +363,9 @@ fn production_apis_reject_capture_options_and_require_fixed_extent() {
             .is_err()
         );
         assert!(arguments(&["--hook", hook, "--force-km"]).is_err());
-        assert!(
-            arguments(&[
-                "--hook",
-                hook,
-                "--swapchain-resolution",
-                "640",
-                "480",
-                "--",
-                "game.exe"
-            ])
-            .is_ok()
-        );
+        assert!(arguments(&["--hook", hook, "--", "game.exe"]).is_ok());
     }
-    assert!(
-        arguments(&[
-            "--hook=opengl,vulkan",
-            "--swapchain-resolution",
-            "640",
-            "480"
-        ])
-        .is_ok()
-    );
+    assert!(arguments(&["--hook=opengl,vulkan",]).is_ok());
     assert!(
         arguments(&[
             "--hook=opengl",
@@ -723,6 +373,6 @@ fn production_apis_reject_capture_options_and_require_fixed_extent() {
             "--",
             "game.exe"
         ])
-        .is_err()
+        .is_ok()
     );
 }

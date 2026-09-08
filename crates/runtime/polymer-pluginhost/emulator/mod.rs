@@ -48,7 +48,6 @@ impl EmulatorLaunchArguments {
                 .map(|surface| SurfaceRequest {
                     index: surface.index,
                     pattern: surface.pattern.clone(),
-                    resolution: surface.resolution,
                     rotation: surface.rotation,
                 })
                 .collect(),
@@ -68,12 +67,7 @@ pub enum GraphicsHook {
 }
 
 impl GraphicsHook {
-    pub const ALL: [Self; 4] = [
-        Self::Vulkan,
-        Self::OpenGl,
-        Self::D3d12,
-        Self::D3d11,
-    ];
+    pub const ALL: [Self; 4] = [Self::Vulkan, Self::OpenGl, Self::D3d12, Self::D3d11];
 
     pub const fn label(self) -> &'static str {
         match self {
@@ -118,8 +112,6 @@ pub struct TrackedSurface {
     pub rotation: i32,
     #[serde(default)]
     pub pattern: Option<String>,
-    #[serde(default)]
-    pub resolution: Option<[u32; 2]>,
 }
 
 pub struct EmulatorLaunchInvocation {

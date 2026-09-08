@@ -558,7 +558,6 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
             {
                 index: 0,
                 pattern: "Dolphin",
-                resolution: isWii ? [854, 480] : [640, 528],
             },
         ],
         quickResume,

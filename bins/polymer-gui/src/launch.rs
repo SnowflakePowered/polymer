@@ -43,8 +43,6 @@ pub struct AttachedTrackedSurface {
     #[serde(default)]
     pub rotation: i32,
     pub selector: Option<String>,
-    #[serde(default)]
-    pub resolution: Option<[u32; 2]>,
     /// Blitz node ID validated by the shell DOM at attachment time.
     pub attach: usize,
 }
@@ -86,7 +84,6 @@ impl AttachedLaunchPlan {
                 .map(|surface| polymer_runtime::SurfaceRequest {
                     index: surface.index,
                     pattern: surface.selector.clone(),
-                    resolution: surface.resolution,
                     rotation: surface.rotation,
                 })
                 .collect(),
@@ -117,8 +114,7 @@ mod tests {
                     "index": 0,
                     "rotation": 0,
                     "selector": "Game",
-                    "attach": 4,
-                    "resolution": [640, 480]
+                    "attach": 4
                 }],
                 "controllerTopology": { "mappings": [] },
                 "machine": "MICROSOFT_XBOX"

@@ -46,7 +46,6 @@ struct Drawable {
     _registration: SourceRegistration,
     _fixed: FixedWindowBinding,
     contexts: HashSet<usize>,
-    initialize_window: bool,
     read: Option<read_binding::ReadFunctions>,
 }
 
@@ -88,7 +87,6 @@ impl WglSwapchain {
             let result = unsafe { Self::bind(draw, read, context, native) };
             if result != 0 {
                 BINDING.set((draw as usize, read as usize, context as usize));
-                unsafe { Self::initialize_window(draw) };
             } else {
                 BINDING.set((0, 0, 0));
             }
@@ -151,7 +149,9 @@ impl WglSwapchain {
                 title: polymer_platform_windows::window_title(window).unwrap_or_default(),
             })
             .map_err(str::to_owned)?;
-        let Some(reservation) = registration.reserve() else {
+        let Some(reservation) = registration
+            .reserve(ProducerWindows::client_extent(window).map_err(|error| error.to_string())?)
+        else {
             return Ok(dc);
         };
         let binding = reservation.shared_binding();
@@ -174,34 +174,10 @@ impl WglSwapchain {
                 _registration: registration,
                 _fixed: fixed,
                 contexts: HashSet::from([context as usize]),
-                initialize_window: true,
                 read: unsafe { read_binding::ReadFunctions::load() },
             }),
         );
         Ok(routed)
-    }
-
-    unsafe fn initialize_window(dc: Hdc) {
-        let hwnd = unsafe { WindowFromDC(dc) } as isize;
-        let extent = DRAWABLES.iter().find_map(|entry| {
-            let mut drawable = entry.lock();
-            if entry.key().0 != hwnd || !drawable.initialize_window {
-                return None;
-            }
-            drawable.initialize_window = false;
-            Some(drawable.binding.extent())
-        });
-        if let Some(extent) = extent {
-            // Initialize application-side size caches once, just as the DXGI
-            // frontends do. No resize messages govern the pbuffer's lifetime.
-            if let Err(error) = polymer_platform_windows::resize_client(
-                NativeWindow(hwnd),
-                extent.width,
-                extent.height,
-            ) {
-                tracing::warn!(%error, "could not initialize OpenGL window dimensions");
-            }
-        }
     }
 
     unsafe fn prepare_binding(draw: Hdc, read: Hdc, context: Hglrc) -> Result<(Hdc, Hdc), String> {

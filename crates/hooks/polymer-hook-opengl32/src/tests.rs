@@ -19,14 +19,14 @@ struct Window {
     context: HGLRC,
 }
 impl Window {
-    unsafe fn new(title: &str) -> Self {
+    unsafe fn new(title: &str, width: i32, height: i32) -> Self {
         let title = title.encode_utf16().chain([0]).collect::<Vec<_>>();
         let hwnd = unsafe {
             CreateWindowExW(
                 0,
                 windows_sys::w!("STATIC"),
                 title.as_ptr(),
-                WS_OVERLAPPEDWINDOW,
+                WS_POPUP,
                 0,
                 0,
                 320,
@@ -38,6 +38,30 @@ impl Window {
             )
         };
         assert!(!hwnd.is_null());
+        let mut rect = RECT {
+            left: 0,
+            top: 0,
+            right: width,
+            bottom: height,
+        };
+        assert_ne!(
+            unsafe { AdjustWindowRectEx(&mut rect, WS_POPUP, 0, 0) },
+            0
+        );
+        assert_ne!(
+            unsafe {
+                SetWindowPos(
+                    hwnd,
+                    null_mut(),
+                    0,
+                    0,
+                    rect.right - rect.left,
+                    rect.bottom - rect.top,
+                    SWP_NOMOVE | SWP_NOZORDER,
+                )
+            },
+            0
+        );
         let dc = unsafe { GetDC(hwnd) };
         let descriptor = PIXELFORMATDESCRIPTOR {
             nSize: std::mem::size_of::<PIXELFORMATDESCRIPTOR>() as u16,
@@ -120,12 +144,12 @@ fn native_pbuffer_survives_resize_rebind_and_separate_read_dc() {
     unsafe {
         std::env::set_var(
             polymer_hook::config::RENDER_CONFIGURATION,
-            r#"{"surfaces":[{"index":0,"pattern":"^pbuffer-regression-A$","resolution":[64,48]},{"index":1,"pattern":"^pbuffer-regression-B$","resolution":[96,72]}]}"#,
+            r#"{"surfaces":[{"index":0,"pattern":"^pbuffer-regression-A$"},{"index":1,"pattern":"^pbuffer-regression-B$"}]}"#,
         );
         assert_eq!(crate::install::install(), 0);
         let _installed = Installed;
-        let mut left = Window::new("pbuffer-regression-A");
-        let right = Window::new("pbuffer-regression-B");
+        let mut left = Window::new("pbuffer-regression-A", 64, 48);
+        let right = Window::new("pbuffer-regression-B", 96, 72);
         let left_buffer = left.bind();
         assert_ne!(left_buffer, left.dc);
         assert_eq!(left.extent(), [64, 48]);

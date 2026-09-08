@@ -23,7 +23,6 @@ pub(crate) struct LauncherState {
     pub(crate) isolate: bool,
     pub(crate) hooks: Vec<GraphicsHook>,
     pub(crate) render_targets: Vec<TrackedRenderTarget>,
-    pub(crate) swapchain_resolution: Option<[u32; 2]>,
     pub(crate) gamepads: Vec<LauncherGamepad>,
 }
 
@@ -87,7 +86,6 @@ impl LauncherState {
             isolate: options.isolate,
             hooks: options.hooks.clone(),
             render_targets: options.track_render_targets.clone().unwrap_or_default(),
-            swapchain_resolution: options.swapchain_resolution.or(Some([640, 480])),
             gamepads: vec![LauncherGamepad {
                 slot: 0,
                 selector: "K".to_owned(),
@@ -189,12 +187,6 @@ impl LauncherState {
     }
 
     pub(crate) fn validate_render_targets(&self) -> Result<(), String> {
-        if !self
-            .swapchain_resolution
-            .is_some_and(|[width, height]| width > 0 && height > 0)
-        {
-            return Err("Set a positive swapchain width and height".into());
-        }
         let mut indices = HashSet::new();
         if self
             .render_targets
@@ -301,7 +293,10 @@ pub(crate) fn draw_launcher_window(
                         if enabled {
                             let native = matches!(
                                 hook,
-                                GraphicsHook::D3d11 | GraphicsHook::D3d12 | GraphicsHook::Vulkan | GraphicsHook::OpenGl
+                                GraphicsHook::D3d11
+                                    | GraphicsHook::D3d12
+                                    | GraphicsHook::Vulkan
+                                    | GraphicsHook::OpenGl
                             );
                             launcher.hooks.retain(|existing| {
                                 native
@@ -368,22 +363,6 @@ pub(crate) fn draw_launcher_window(
             }
             if let Some(row) = remove_target {
                 launcher.render_targets.remove(row);
-            }
-            {
-                let size = launcher.swapchain_resolution.get_or_insert([640, 480]);
-                ui.horizontal(|ui| {
-                    ui.label("Swapchain resolution");
-                    ui.add(
-                        egui::DragValue::new(&mut size[0])
-                            .range(1..=i32::MAX as u32)
-                            .prefix("Width "),
-                    );
-                    ui.add(
-                        egui::DragValue::new(&mut size[1])
-                            .range(1..=i32::MAX as u32)
-                            .prefix("Height "),
-                    );
-                });
             }
             ui.separator();
             ui.horizontal(|ui| {
