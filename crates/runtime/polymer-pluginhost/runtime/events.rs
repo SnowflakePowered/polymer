@@ -110,4 +110,3 @@ pub(super) fn op_plugin_emit_event(
 ) {
     state.borrow::<Arc<EventEmitter>>().publish(&name, detail);
 }
-

@@ -193,9 +193,7 @@ struct ViewerArguments {
 impl ViewerArguments {
     fn validate_presentation(&self) -> Result<(), Box<dyn Error>> {
         if !self.target.is_empty() && self.swapchain_resolution.is_none() {
-            return Err(
-                "graphics hooks require --swapchain-resolution WIDTH HEIGHT".into(),
-            );
+            return Err("graphics hooks require --swapchain-resolution WIDTH HEIGHT".into());
         }
         Ok(())
     }
