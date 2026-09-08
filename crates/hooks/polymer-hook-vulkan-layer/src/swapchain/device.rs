@@ -20,7 +20,6 @@ pub(crate) struct Device {
     pub images: DashMap<vk::Image, ()>,
     pub layouts: layouts::Layouts,
     pub retired: Mutex<Vec<BackendRetirement<VulkanVirtualBackend>>>,
-    pub(super) native_presents: Mutex<Vec<present::NativePresent>>,
 }
 impl Device {
     pub(crate) unsafe fn install(
@@ -116,15 +115,11 @@ impl Device {
                 images: DashMap::new(),
                 layouts: Default::default(),
                 retired: Mutex::new(Vec::new()),
-                native_presents: Mutex::new(Vec::new()),
             }),
         );
         Ok(())
     }
     pub(super) fn poll_retired(&self) {
-        let mut presents = std::mem::take(&mut *self.native_presents.lock());
-        presents.retain(|present| !present.complete());
-        self.native_presents.lock().extend(presents);
         let mut work = std::mem::take(&mut *self.retired.lock());
         work.retain_mut(|item| item.poll() != RetirementProgress::Safe);
         self.retired.lock().extend(work);
@@ -135,7 +130,6 @@ impl Device {
             .any(|device| device.instance.instance == instance)
     }
     pub(crate) fn destroy(handle: vk::Device) -> bool {
-        NATIVES.retain(|_, native| native.device != handle);
         let Ok(device) = Self::get(handle) else {
             return true;
         };
@@ -161,7 +155,7 @@ impl Device {
         let until = Instant::now() + Duration::from_secs(2);
         loop {
             device.poll_retired();
-            if device.retired.lock().is_empty() && device.native_presents.lock().is_empty() {
+            if device.retired.lock().is_empty() {
                 break;
             }
             if Instant::now() >= until {

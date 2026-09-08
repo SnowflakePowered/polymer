@@ -1,4 +1,4 @@
-//! Install factory creation hooks; native swapchains are not captured.
+//! Install factory creation hooks for Polymer-owned virtual swapchains.
 use crate::vtable::IDXGIFactoryHook;
 use std::ffi::c_void;
 use windows::{Win32::Graphics::Dxgi::IDXGIFactory, core::GUID};

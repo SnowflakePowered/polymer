@@ -11,7 +11,6 @@ static ASSIGNMENTS: LazyLock<Result<Arc<AssignmentRegistry>, String>> = LazyLock
 });
 
 pub(crate) struct Surface {
-    pub(super) native_swapchains: std::sync::atomic::AtomicU32,
     source: SourceIdentity,
     pub window: NativeWindow,
     registration: SourceRegistration,
@@ -50,7 +49,6 @@ impl Surface {
             SURFACES.insert(
                 handle,
                 Arc::new(Self {
-                    native_swapchains: std::sync::atomic::AtomicU32::new(0),
                     source: SourceIdentity {
                         device: instance.as_raw(),
                         object: handle.as_raw(),
@@ -73,13 +71,6 @@ impl Surface {
         SURFACES.get(&handle).map(|v| v.clone())
     }
     pub(super) fn binding(&self) -> Option<Arc<FixedSurfaceBinding>> {
-        if self
-            .native_swapchains
-            .load(std::sync::atomic::Ordering::Acquire)
-            != 0
-        {
-            return None;
-        }
         if WindowLifetime::identify(self.window).ok() != Some(self.source.lifetime) {
             return None;
         }

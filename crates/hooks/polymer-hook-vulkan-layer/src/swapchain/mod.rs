@@ -18,8 +18,6 @@ pub(crate) use surface::Surface;
 
 static DEVICES: LazyLock<DashMap<vk::Device, Arc<Device>>> = LazyLock::new(DashMap::new);
 static SURFACES: LazyLock<DashMap<vk::SurfaceKHR, Arc<Surface>>> = LazyLock::new(DashMap::new);
-static NATIVES: LazyLock<DashMap<vk::SwapchainKHR, wsi::NativeSwapchain>> =
-    LazyLock::new(DashMap::new);
 static SWAPCHAINS: LazyLock<DashMap<vk::SwapchainKHR, Arc<wsi::Swapchain>>> =
     LazyLock::new(DashMap::new);
 

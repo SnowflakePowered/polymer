@@ -24,8 +24,8 @@ impl Extensions {
     }
 }
 
-/// Device extensions describe the whole virtual WSI profile, including devices
-/// that also contain native swapchains. Do not advertise unsupported WSI paths.
+/// Device extensions describe the whole virtual WSI profile. Do not advertise
+/// unsupported WSI paths.
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn vkEnumerateDeviceExtensionProperties(
     physical: vk::PhysicalDevice,
