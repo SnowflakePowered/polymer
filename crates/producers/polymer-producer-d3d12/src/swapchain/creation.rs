@@ -123,7 +123,11 @@ impl D3d12Creation {
                     description.Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0 as u32
                         != 0,
                 )?
-                .bind(registration, fixed),
+                .bind(
+                    registration,
+                    fixed,
+                    (window, description.Width, description.Height),
+                ),
         );
         let object = VirtualDxgiSwapchain::create(
             factory,
@@ -136,8 +140,6 @@ impl D3d12Creation {
             .commit()
             .map_err(|error| Error::new(E_FAIL, error))?;
         driver.register()?;
-        polymer_platform_windows::resize_client(window, description.Width, description.Height)
-            .map_err(|error| Error::new(E_FAIL, error.to_string()))?;
         Ok(Some(object))
     }
 

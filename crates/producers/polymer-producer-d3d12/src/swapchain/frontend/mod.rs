@@ -8,7 +8,7 @@ use polymer_presentation::swapchain::*;
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
     time::Duration,
 };
@@ -33,6 +33,8 @@ pub struct D3d12Frontend {
     current: AtomicU32,
     registration: Option<SourceRegistration>,
     fixed_window: Option<polymer_platform_windows::FixedWindowBinding>,
+    window_resize: Option<(polymer_platform_windows::NativeWindow, u32, u32)>,
+    window_resized: AtomicBool,
     pacing: Option<FrameLatency>,
 }
 
@@ -66,6 +68,8 @@ impl D3d12Frontend {
             current: AtomicU32::new(0),
             registration: None,
             fixed_window: None,
+            window_resize: None,
+            window_resized: AtomicBool::new(false),
             pacing: None,
         })
     }
@@ -73,9 +77,11 @@ impl D3d12Frontend {
         mut self,
         registration: SourceRegistration,
         fixed_window: polymer_platform_windows::FixedWindowBinding,
+        window_resize: (polymer_platform_windows::NativeWindow, u32, u32),
     ) -> Self {
         self.registration = Some(registration);
         self.fixed_window = Some(fixed_window);
+        self.window_resize = Some(window_resize);
         self
     }
 
