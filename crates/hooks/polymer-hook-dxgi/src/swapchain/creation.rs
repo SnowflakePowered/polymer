@@ -33,13 +33,16 @@ impl CreationDispatch {
             claims.push(claim);
         }
     }
-    pub unsafe fn create(info: &SwapchainCreateInfo, output: *mut *mut c_void) -> Option<i32> {
+    pub unsafe fn create(info: &SwapchainCreateInfo, output: *mut *mut c_void) -> i32 {
         if let Err(error) = polymer_hook::config::require_swapchain() {
             tracing::error!(%error, "invalid DXGI presentation configuration");
-            return Some(windows::Win32::Foundation::E_INVALIDARG.0);
+            return windows::Win32::Foundation::E_INVALIDARG.0;
         }
         if output.is_null() {
-            return Some(windows::Win32::Foundation::E_POINTER.0);
+            return windows::Win32::Foundation::E_POINTER.0;
+        }
+        unsafe {
+            output.write(std::ptr::null_mut());
         }
         // No registry lock survives a backend call (driver calls can reenter).
         let claims = CLAIMS.read().clone();
@@ -51,15 +54,15 @@ impl CreationDispatch {
             }
             if result == 0 && created.is_null() {
                 tracing::error!("virtual DXGI backend returned success without an object");
-                return Some(windows::Win32::Foundation::E_FAIL.0);
+                return windows::Win32::Foundation::E_FAIL.0;
             }
             unsafe {
                 output.write(created);
             }
-            return Some(result);
+            return result;
         }
-        tracing::warn!(window = ?info.window, "virtual DXGI creation unclaimed; leaving object native and unexported");
-        None
+        tracing::error!(window = ?info.window, "virtual DXGI creation unclaimed");
+        DXGI_ERROR_UNSUPPORTED.0
     }
 }
 
@@ -68,43 +71,40 @@ pub(crate) unsafe fn create_legacy(
     device: *mut c_void,
     desc: *const c_void,
     output: *mut *mut c_void,
-    mut next: crate::vtable::FactoryCreateSwapchainContext<'_>,
+    _next: crate::vtable::FactoryCreateSwapchainContext<'_>,
 ) -> i32 {
-    if !desc.is_null() {
-        let native = unsafe { &*desc.cast::<DXGI_SWAP_CHAIN_DESC>() };
-        let fullscreen = DXGI_SWAP_CHAIN_FULLSCREEN_DESC {
-            RefreshRate: native.BufferDesc.RefreshRate,
-            ScanlineOrdering: native.BufferDesc.ScanlineOrdering,
-            Scaling: native.BufferDesc.Scaling,
-            Windowed: native.Windowed,
-        };
-        let info = SwapchainCreateInfo {
-            factory,
-            device_or_queue: device,
-            window: native.OutputWindow.0,
-            description: DXGI_SWAP_CHAIN_DESC1 {
-                Width: native.BufferDesc.Width,
-                Height: native.BufferDesc.Height,
-                Format: native.BufferDesc.Format,
-                Stereo: windows::core::BOOL(0),
-                SampleDesc: native.SampleDesc,
-                BufferUsage: native.BufferUsage,
-                BufferCount: native.BufferCount,
-                Scaling: DXGI_SCALING_STRETCH,
-                SwapEffect: native.SwapEffect,
-                AlphaMode: Common::DXGI_ALPHA_MODE_IGNORE,
-                Flags: native.Flags,
-            },
-            fullscreen: &fullscreen,
-            restrict_to_output: std::ptr::null_mut(),
-            legacy: true,
-        };
-        if let Some(result) = unsafe { CreationDispatch::create(&info, output) } {
-            return result;
-        }
+    if desc.is_null() {
+        return windows::Win32::Foundation::E_POINTER.0;
     }
-    let result = polymer_hook::next!(next, factory, device, desc, output);
-    result
+    let native = unsafe { &*desc.cast::<DXGI_SWAP_CHAIN_DESC>() };
+    let fullscreen = DXGI_SWAP_CHAIN_FULLSCREEN_DESC {
+        RefreshRate: native.BufferDesc.RefreshRate,
+        ScanlineOrdering: native.BufferDesc.ScanlineOrdering,
+        Scaling: native.BufferDesc.Scaling,
+        Windowed: native.Windowed,
+    };
+    let info = SwapchainCreateInfo {
+        factory,
+        device_or_queue: device,
+        window: native.OutputWindow.0,
+        description: DXGI_SWAP_CHAIN_DESC1 {
+            Width: native.BufferDesc.Width,
+            Height: native.BufferDesc.Height,
+            Format: native.BufferDesc.Format,
+            Stereo: windows::core::BOOL(0),
+            SampleDesc: native.SampleDesc,
+            BufferUsage: native.BufferUsage,
+            BufferCount: native.BufferCount,
+            Scaling: DXGI_SCALING_STRETCH,
+            SwapEffect: native.SwapEffect,
+            AlphaMode: Common::DXGI_ALPHA_MODE_IGNORE,
+            Flags: native.Flags,
+        },
+        fullscreen: &fullscreen,
+        restrict_to_output: std::ptr::null_mut(),
+        legacy: true,
+    };
+    unsafe { CreationDispatch::create(&info, output) }
 }
 
 pub(crate) unsafe fn create_for_hwnd(
@@ -115,31 +115,19 @@ pub(crate) unsafe fn create_for_hwnd(
     fullscreen: *const c_void,
     restrict_to_output: *mut c_void,
     output: *mut *mut c_void,
-    mut next: crate::vtable::FactoryCreateSwapchainForHwndContext<'_>,
+    _next: crate::vtable::FactoryCreateSwapchainForHwndContext<'_>,
 ) -> i32 {
-    if !desc.is_null() {
-        let info = SwapchainCreateInfo {
-            factory,
-            device_or_queue: device,
-            window,
-            description: unsafe { *desc.cast::<DXGI_SWAP_CHAIN_DESC1>() },
-            fullscreen: fullscreen.cast(),
-            restrict_to_output,
-            legacy: false,
-        };
-        if let Some(result) = unsafe { CreationDispatch::create(&info, output) } {
-            return result;
-        }
+    if desc.is_null() {
+        return windows::Win32::Foundation::E_POINTER.0;
     }
-    let result = polymer_hook::next!(
-        next,
+    let info = SwapchainCreateInfo {
         factory,
-        device,
+        device_or_queue: device,
         window,
-        desc,
-        fullscreen,
+        description: unsafe { *desc.cast::<DXGI_SWAP_CHAIN_DESC1>() },
+        fullscreen: fullscreen.cast(),
         restrict_to_output,
-        output
-    );
-    result
+        legacy: false,
+    };
+    unsafe { CreationDispatch::create(&info, output) }
 }

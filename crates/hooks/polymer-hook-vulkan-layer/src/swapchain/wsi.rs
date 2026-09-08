@@ -6,18 +6,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub(super) struct NativeSwapchain {
-    pub device: vk::Device,
-    surface: Arc<Surface>,
-}
-impl Drop for NativeSwapchain {
-    fn drop(&mut self) {
-        self.surface
-            .native_swapchains
-            .fetch_sub(1, Ordering::AcqRel);
-    }
-}
-
 pub(super) struct Live {
     pub controller: Option<SwapchainController<VulkanVirtualBackend>>,
     pub leases: Vec<Option<AppLease>>,
@@ -266,47 +254,33 @@ impl Swapchain {
 pub(crate) unsafe extern "system" fn create(
     device: vk::Device,
     info: *const vk::SwapchainCreateInfoKHR<'_>,
-    allocator: *const vk::AllocationCallbacks<'_>,
+    _allocator: *const vk::AllocationCallbacks<'_>,
     output: *mut vk::SwapchainKHR,
 ) -> vk::Result {
-    if let Some(surface) =
-        Surface::get(unsafe { (*info).surface }).filter(|s| s.binding().is_some())
-    {
-        return match Device::get(device)
-            .and_then(|device| unsafe { Swapchain::create(device, &*info, surface) })
-        {
-            Ok(swapchain) => {
-                let handle = vk::SwapchainKHR::from_raw(Arc::as_ptr(&swapchain) as u64);
-                SWAPCHAINS.insert(handle, swapchain);
-                unsafe {
-                    *output = handle;
-                }
-                vk::Result::SUCCESS
+    let result = Surface::get(unsafe { (*info).surface })
+        .filter(|surface| surface.binding().is_some())
+        .ok_or(vk::Result::ERROR_NATIVE_WINDOW_IN_USE_KHR)
+        .and_then(|surface| Device::get(device).map(|device| (device, surface)))
+        .and_then(|(device, surface)| unsafe { Swapchain::create(device, &*info, surface) });
+    match result {
+        Ok(swapchain) => {
+            let handle = vk::SwapchainKHR::from_raw(Arc::as_ptr(&swapchain) as u64);
+            SWAPCHAINS.insert(handle, swapchain);
+            unsafe {
+                *output = handle;
             }
-            Err(error) => {
-                tracing::error!(?error, "virtual Vulkan swapchain creation failed");
-                error
-            }
-        };
-    }
-    let Some(next): Option<vk::PFN_vkCreateSwapchainKHR> = crate::layer::device_gdpa(device)
-        .and_then(|g| unsafe { crate::terminal::device_proc(g, device, c"vkCreateSwapchainKHR") })
-    else {
-        return vk::Result::ERROR_DEVICE_LOST;
-    };
-    let result = unsafe { next(device, info, allocator, output) };
-    if result == vk::Result::SUCCESS {
-        if let Some(surface) = Surface::get(unsafe { (*info).surface }) {
-            surface.native_swapchains.fetch_add(1, Ordering::AcqRel);
-            NATIVES.insert(unsafe { *output }, NativeSwapchain { device, surface });
+            vk::Result::SUCCESS
+        }
+        Err(error) => {
+            tracing::error!(?error, "virtual Vulkan swapchain creation failed");
+            error
         }
     }
-    result
 }
 pub(crate) unsafe extern "system" fn destroy(
     device: vk::Device,
     swapchain: vk::SwapchainKHR,
-    allocator: *const vk::AllocationCallbacks<'_>,
+    _allocator: *const vk::AllocationCallbacks<'_>,
 ) {
     match Swapchain::get(device, swapchain) {
         Ok(Some(value)) => {
@@ -317,19 +291,7 @@ pub(crate) unsafe extern "system" fn destroy(
             SWAPCHAINS.remove(&swapchain);
             value.retire();
         }
-        Err(_) => {}
-        Ok(None) => {
-            let next: Option<vk::PFN_vkDestroySwapchainKHR> = crate::layer::device_gdpa(device)
-                .and_then(|g| unsafe {
-                    crate::terminal::device_proc(g, device, c"vkDestroySwapchainKHR")
-                });
-            if let Some(next) = next {
-                unsafe {
-                    next(device, swapchain, allocator);
-                }
-            }
-            NATIVES.remove(&swapchain);
-        }
+        Err(_) | Ok(None) => {}
     }
 }
 pub(crate) unsafe extern "system" fn images(
@@ -341,16 +303,7 @@ pub(crate) unsafe extern "system" fn images(
     match Swapchain::get(device, swapchain) {
         Ok(Some(value)) => unsafe { WsiResult::enumerate(&value.images, count, output) },
         Err(error) => error,
-        Ok(None) => {
-            let Some(next): Option<vk::PFN_vkGetSwapchainImagesKHR> =
-                crate::layer::device_gdpa(device).and_then(|g| unsafe {
-                    crate::terminal::device_proc(g, device, c"vkGetSwapchainImagesKHR")
-                })
-            else {
-                return vk::Result::ERROR_DEVICE_LOST;
-            };
-            unsafe { next(device, swapchain, count, output) }
-        }
+        Ok(None) => vk::Result::ERROR_OUT_OF_DATE_KHR,
     }
 }
 
@@ -374,19 +327,7 @@ pub unsafe extern "system" fn vkAcquireNextImageKHR(
             Err(e) => e,
         },
         Err(error) => error,
-        Ok(None) => unsafe {
-            {
-                let replacement = fence;
-                let Some(next): Option<vk::PFN_vkAcquireNextImageKHR> =
-                    crate::layer::device_gdpa(device).and_then(|g| {
-                        crate::terminal::device_proc(g, device, c"vkAcquireNextImageKHR")
-                    })
-                else {
-                    return vk::Result::ERROR_DEVICE_LOST;
-                };
-                next(device, swapchain, timeout, semaphore, replacement, output)
-            }
-        },
+        Ok(None) => vk::Result::ERROR_OUT_OF_DATE_KHR,
     }
 }
 #[unsafe(no_mangle)]
@@ -412,22 +353,6 @@ pub unsafe extern "system" fn vkAcquireNextImage2KHR(
             }
         }
         Err(error) => error,
-        Ok(None) => unsafe {
-            {
-                let replacement = info.fence;
-                let Some(next): Option<vk::PFN_vkAcquireNextImage2KHR> =
-                    crate::layer::device_gdpa(device).and_then(|g| {
-                        crate::terminal::device_proc(g, device, c"vkAcquireNextImage2KHR")
-                    })
-                else {
-                    return vk::Result::ERROR_DEVICE_LOST;
-                };
-                let modified = vk::AcquireNextImageInfoKHR {
-                    fence: replacement,
-                    ..*info
-                };
-                next(device, &modified, output)
-            }
-        },
+        Ok(None) => vk::Result::ERROR_OUT_OF_DATE_KHR,
     }
 }

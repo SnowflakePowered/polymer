@@ -62,7 +62,7 @@ static ASSIGNMENTS: LazyLock<Result<Arc<AssignmentRegistry>, String>> = LazyLock
 pub struct WglSwapchain;
 impl WglSwapchain {
     pub fn enabled() -> bool {
-        !INTERNAL.get() && config::render_configuration().is_ok()
+        !INTERNAL.get()
     }
 
     pub fn native<T>(operation: impl FnOnce() -> T) -> T {
