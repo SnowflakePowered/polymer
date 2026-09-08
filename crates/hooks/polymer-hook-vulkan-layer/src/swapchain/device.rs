@@ -72,7 +72,7 @@ impl Device {
                     queue,
                     info.queue_family_index,
                     alive.clone(),
-                );
+                )?;
                 if acquire_queue.is_none()
                     && properties[info.queue_family_index as usize]
                         .queue_flags
@@ -165,6 +165,9 @@ impl Device {
             std::thread::sleep(Duration::from_millis(1));
         }
         device.layouts.destroy(&device.external.device);
+        for queue in device.queues.values() {
+            queue.release_resources();
+        }
         device.alive.store(false, Ordering::Release);
         DEVICES.remove(&handle);
         true

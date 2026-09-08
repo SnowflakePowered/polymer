@@ -10,9 +10,9 @@ mod device;
 #[cfg(windows)]
 mod image_ring;
 #[cfg(windows)]
-mod timeline;
-#[cfg(windows)]
 pub mod swapchain;
+#[cfg(windows)]
+mod timeline;
 
 #[cfg(windows)]
 pub use device::{ExternalDevice, SetDeviceLoaderData};

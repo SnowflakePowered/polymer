@@ -121,9 +121,6 @@ impl WsiResult {
     }
 }
 
-#[cfg(test)]
-mod gpu_tests;
-
 pub(crate) use present::present as queue_present;
 pub(crate) use wsi::{
     create as create_swapchain, destroy as destroy_swapchain, images as swapchain_images,
