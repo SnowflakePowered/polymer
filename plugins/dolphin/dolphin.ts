@@ -473,7 +473,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     // Telemetry remains disabled and Dolphin does not open its consent dialog.
     options.analytics.enabled = false;
     options.analytics.permission_asked = true;
-    options.core.gfx_backend = "OGL";
+    options.core.gfx_backend = "Vulkan";
     options.core.gci_folder_a_path = args.filesystem.path("/MemoryCard/USA");
     // Dolphin disables save states by default in current development builds.
     // Polymer uses them for both explicit state slots and quick resume.
@@ -540,12 +540,16 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
         argv,
         isolate: false,
         hooks: {
-            graphics: ["opengl"],
+            graphics: ["vulkan"],
             input: ["sdl3", "bluetooth-api-win32"],
         },
         controllerTopology,
         surfaces: [
-            { index: 0, pattern: "Dolphin", resolution: [640, 480] }
+            {
+                index: 0,
+                pattern: "Dolphin",
+                resolution: isWii ? [854, 480] : [640, 528],
+            },
         ],
         quickResume,
     }
