@@ -117,6 +117,10 @@ impl PresentBatch {
                 result
             };
         }
+        drop(owners);
+        for entry in &entries {
+            entry.swapchain.availability.notify();
+        }
         if results.contains(&vk::Result::ERROR_DEVICE_LOST) {
             device.lost.store(true, Ordering::Release);
         }

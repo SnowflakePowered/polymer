@@ -11,5 +11,5 @@ mod window;
 pub use descriptor::ExportDescriptor;
 pub use failure::SessionFailure;
 pub use retry::ConnectionRetry;
-pub use session::ProducerSession;
+pub use session::{AvailabilityWaiter, ProducerSession};
 pub use window::ProducerWindows;

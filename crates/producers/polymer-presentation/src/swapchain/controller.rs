@@ -1,5 +1,8 @@
 use super::*;
-use crate::{CapturedFrame, FramePlacement, producer::ProducerSession};
+use crate::{
+    CapturedFrame, FramePlacement,
+    producer::{AvailabilityWaiter, ProducerSession},
+};
 use polymer_protocol::StreamId;
 use std::{io, sync::Arc};
 
@@ -108,6 +111,9 @@ impl<B: SwapchainBackend> SwapchainController<B> {
 
     pub fn profile(&self) -> &BackendProfile {
         &self.profile
+    }
+    pub fn availability(&self) -> AvailabilityWaiter {
+        self.publisher.availability()
     }
     pub fn api_access(&self, slot: ImageSlot) -> Result<B::ApiAccess, ControllerError<B::Error>> {
         if slot.index() >= self.profile.image_count {
