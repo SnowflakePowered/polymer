@@ -156,17 +156,6 @@ impl SwapchainBackend for VulkanVirtualBackend {
         prerequisite: &ReusePrerequisite,
         info: &AcquireInfo,
     ) -> AcquirePoll<WriteToken, Option<WriteToken>, vk::Result> {
-        if let Some(value) = prerequisite.previous_publication {
-            match unsafe {
-                self.external
-                    .device
-                    .get_semaphore_counter_value(self.released.semaphore())
-            } {
-                Ok(completed) if completed < value => return AcquirePoll::Pending,
-                Err(error) => return AcquirePoll::Failed(error),
-                _ => {}
-            }
-        }
         let barrier = self.acquire_barrier(slot);
         let waits = prerequisite
             .previous_publication

@@ -6,10 +6,11 @@ license.workspace = true
 
 [features]
 default = []
-producer = ["dep:polymer-ipc", "dep:polymer-platform-windows", "dep:windows", "dep:tracing"]
+producer = ["dep:parking_lot", "dep:polymer-ipc", "dep:polymer-platform-windows", "dep:windows", "dep:tracing"]
 
 [dependencies]
 regex.workspace = true
+parking_lot = { workspace = true, optional = true }
 polymer-ipc = { workspace = true, optional = true }
 polymer-protocol.workspace = true
 polymer-platform-windows = { workspace = true, optional = true }

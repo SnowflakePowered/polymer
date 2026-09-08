@@ -1,5 +1,5 @@
 use super::*;
-use polymer_presentation::producer::{ProducerSession, ProducerWindows};
+use polymer_presentation::producer::{AvailabilityWaiter, ProducerSession, ProducerWindows};
 use polymer_producer_vulkan::swapchain::{AcquireInfo, CreateInfo};
 use std::{
     sync::atomic::{AtomicBool, Ordering},
@@ -19,6 +19,7 @@ pub(super) struct Swapchain {
     pub closed: AtomicBool,
     pub mode: vk::PresentModeKHR,
     pub period: Duration,
+    pub availability: AvailabilityWaiter,
     _window: polymer_platform_windows::FixedWindowBinding,
 }
 
@@ -75,6 +76,7 @@ impl Swapchain {
                     .map_err(WsiResult::controller)
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let availability = controller.availability();
         for &image in &images {
             device.images.insert(image, ());
         }
@@ -95,6 +97,7 @@ impl Swapchain {
             closed: AtomicBool::new(false),
             mode: info.present_mode,
             period: surface.refresh_period(),
+            availability,
             _window: window,
         }))
     }
@@ -193,6 +196,7 @@ impl Swapchain {
             .flatten();
         let info = AcquireInfo { semaphore, fence };
         loop {
+            let observed = self.availability.epoch();
             if self.device.lost.load(Ordering::Acquire) {
                 return Err(vk::Result::ERROR_DEVICE_LOST);
             }
@@ -228,11 +232,15 @@ impl Swapchain {
             if until.is_some_and(|until| Instant::now() >= until) {
                 return Err(vk::Result::TIMEOUT);
             }
-            std::thread::sleep(Duration::from_micros(100));
+            self.availability.wait(
+                observed,
+                until.map(|until| until.saturating_duration_since(Instant::now())),
+            );
         }
     }
     pub(super) fn retire(&self) {
         self.closed.store(true, Ordering::Release);
+        self.availability.notify();
         if let Ok(mut state) = self
             .live
             .enter_until(AcquireDeadline::after(Duration::from_secs(2)))

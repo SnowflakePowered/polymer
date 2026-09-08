@@ -9835,6 +9835,7 @@ dependencies = [
 name = "polymer-presentation"
 version = "0.1.0"
 dependencies = [
+ "parking_lot",
  "polymer-ipc",
  "polymer-platform-windows",
  "polymer-protocol",
