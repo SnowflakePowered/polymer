@@ -102,6 +102,20 @@ test("onPluginLoad batches and finishes indexing before scraping aliases", async
   fixture.sql.close();
 });
 
+test("a ready index satisfies the startup update after a process restart", async () => {
+  const fixture = new ImportFixture();
+  const firstProcess = await fixture.load();
+  await firstProcess.onPluginLoad({ progress() {} });
+  const calls = fixture.calls;
+
+  const restartedProcess = await fixture.load();
+  await restartedProcess.onPluginLoad({ progress() {} });
+  await restartedProcess.updateContents({ progress() {} });
+
+  assert.equal(fixture.calls, calls, "startup must not rebuild a persistent ready index");
+  fixture.sql.close();
+});
+
 test("failed archive extraction rejects plugin loading instead of hanging", async () => {
   const fixture = new ImportFixture();
   fixture.failExtraction = true;
