@@ -5,6 +5,54 @@ use blitz_dom::LocalName;
 use std::sync::Arc;
 
 #[test]
+fn file_stylesheets_unblock_layout_with_escaped_paths_and_missing_assets() {
+    let directory = tempfile::tempdir().unwrap();
+    let stylesheet = directory.path().join("theme #1.css");
+    std::fs::write(&stylesheet, "body { background: red; width: 321px; }").unwrap();
+    let url = blitz_traits::net::Url::from_file_path(&stylesheet).unwrap();
+    let net = Arc::new(providers::ShellNetProvider::new(Arc::new(|_| {})));
+    let mut document = blitz_html::HtmlDocument::from_html(
+        &format!(
+            "<html><head><link rel=stylesheet href='{url}'><link rel=stylesheet href='missing.css'></head><body>Hello</body></html>"
+        ),
+        blitz_dom::DocumentConfig {
+            base_url: Some(url.to_string()),
+            net_provider: Some(net),
+            ..Default::default()
+        },
+    );
+    document
+        .as_mut()
+        .set_viewport(blitz_traits::shell::Viewport::new(
+            800,
+            600,
+            1.0,
+            blitz_traits::shell::ColorScheme::Dark,
+        ));
+    document.as_mut().resolve(0.0);
+    let body = document
+        .as_ref()
+        .tree()
+        .iter()
+        .find_map(|(id, node)| {
+            node.element_data()
+                .filter(|element| element.name.local.as_ref() == "body")
+                .map(|_| id)
+        })
+        .unwrap();
+    assert_eq!(
+        document.as_ref().resolved_style_value(body, "width"),
+        "321px"
+    );
+    let mut scene = Scene::new();
+    blitz_paint::paint_scene(&mut scene, document.as_mut(), 1.0, 800, 600, 0, 0);
+    assert!(
+        !scene.commands.is_empty(),
+        "linked stylesheets must not leave painting blocked"
+    );
+}
+
+#[test]
 fn removing_a_focused_dialog_ignores_its_late_focus_request() {
     let mut document = blitz_html::HtmlDocument::from_html(
         r#"<main id="root"><section id="dialog"><button id="resume">Resume</button></section></main>"#,
