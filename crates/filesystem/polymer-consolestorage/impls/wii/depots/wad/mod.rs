@@ -1,11 +1,9 @@
 mod crypto;
 mod depot;
-mod index;
 mod ticket;
 mod tmd;
 
 pub use depot::WiiWadDepot;
-pub(super) use index::{INITIAL_UID_SYS, SharedContentMap, UidMap};
 
 use crate::Error;
 

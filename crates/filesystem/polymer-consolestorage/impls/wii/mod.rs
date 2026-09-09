@@ -1,10 +1,10 @@
 pub mod nand;
 pub mod save_repo;
-pub mod wad;
+pub mod depots;
+mod index;
 
 pub use nand::WiiNand;
 pub use save_repo::WiiSaveRepo;
-pub use wad::WiiWadDepot;
 
 use crate::savegame::SaveDepotId;
 

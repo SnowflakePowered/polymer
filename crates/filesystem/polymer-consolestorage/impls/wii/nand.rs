@@ -12,6 +12,8 @@ use crate::{
     VersionedStorage, ensure_structure, requires_structure,
 };
 
+use super::index;
+
 const LAYOUT: PermissionsTable = PermissionsTable::new(&[
     ("", Permissions::all()),
     ("import", Permissions::all()),
@@ -49,7 +51,7 @@ impl VirtualNand for WiiNand {
             "shared2/sys/",
             "shared2/wc24/",
             "sys/",
-            "sys/uid.sys": super::wad::INITIAL_UID_SYS,
+            "sys/uid.sys": index::INITIAL_UID_SYS,
             "ticket/",
             "ticket/00000001/",
             "ticket/00010001/",
@@ -91,9 +93,9 @@ impl VirtualNand for WiiNand {
         match completion {
             NandCompletion::Minimal => {
                 Self::has_structure(&*self.storage)
-                    && super::wad::SharedContentMap::load(&*self.storage)
+                    && index::SharedContentMap::load(&*self.storage)
                         .is_ok_and(|map| map.is_valid())
-                    && super::wad::UidMap::load(&*self.storage).is_ok_and(|map| map.is_valid())
+                    && index::UidMap::load(&*self.storage).is_ok_and(|map| map.is_valid())
             }
             NandCompletion::Full | NandCompletion::Verified => false,
         }
