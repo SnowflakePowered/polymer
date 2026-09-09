@@ -48,11 +48,6 @@ pub trait VirtualNand: Send + Sync {
     /// layout policy, so it does not touch the storage.
     fn permissions(&self, path: &str) -> Permissions;
 
-    /// Clone the base, ignoring save games.
-    async fn clone<St: VolumeStorage + 'static>(&self, storage: St) -> Result<Self, Error>
-    where
-        Self: Sized;
-
     async fn metadata(&self) -> Result<VolumeInfo, Error> {
         self.root().volumeinfo().await?.ok_or(Error::UnclaimedNand)
     }

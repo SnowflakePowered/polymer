@@ -1,4 +1,3 @@
-use std::io::{Cursor, Read};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -106,44 +105,6 @@ impl VirtualNand for WiiNand {
         } else {
             LAYOUT.get(path)
         }
-    }
-
-    async fn clone<St: VolumeStorage + 'static>(&self, storage: St) -> Result<Self, Error> {
-        let label = self.label().await?;
-        let cloned = Self::new_empty(storage, Uuid::now_v7(), label).await?;
-        for entry in self.storage.read_dir("", true)? {
-            let path = entry.path;
-            if path == "import"
-                || path.starts_with("import/")
-                || path == "tmp"
-                || path.starts_with("tmp/")
-            {
-                continue;
-            }
-            match entry.metadata.kind {
-                crate::EntryKind::Directory => cloned.storage.create_dir_all(&path)?,
-                crate::EntryKind::File => {
-                    let mut bytes = Vec::new();
-                    self.storage
-                        .open_read(&path)?
-                        .read_to_end(&mut bytes)
-                        .map_err(|source| Error::Io {
-                            path: path.clone(),
-                            source,
-                        })?;
-                    cloned
-                        .storage
-                        .install_file(Box::new(Cursor::new(bytes)), &path)
-                        .await?;
-                }
-            }
-        }
-        for summary in self.artifacts().await? {
-            if let Some(artifact) = self.storage.artifacts().artifact(&summary.id).await? {
-                cloned.record(&artifact).await?;
-            }
-        }
-        Ok(cloned)
     }
 }
 
