@@ -125,10 +125,6 @@ impl VirtualNand for WiiUNand {
             NandCompletion::Full | NandCompletion::Verified => false,
         }
     }
-
-    async fn clone<St: VolumeStorage + 'static>(&self, _storage: St) -> Result<Self, Error> {
-        todo!()
-    }
 }
 
 trait WiiUSaveLayout {
