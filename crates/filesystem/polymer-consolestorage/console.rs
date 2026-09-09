@@ -9,6 +9,7 @@ use crate::impls::gamecube::GameCubeMemoryCard;
 use crate::impls::ps1::PlaystationMemoryCard;
 use crate::impls::ps2::Playstation2MemoryCard;
 use crate::impls::ps3::Ps3Nand;
+use crate::impls::psp::PspMemoryStick;
 use crate::impls::wii::nand::WiiNand;
 use crate::impls::wiiu::nand::WiiUNand;
 use crate::nand::VirtualNand;
@@ -66,7 +67,10 @@ impl ConsoleStorage {
             StorageKind::Nand | StorageKind::SaveRepo => {
                 matches!(
                     platform,
-                    WiiNand::PLATFORM | WiiUNand::PLATFORM | Ps3Nand::PLATFORM
+                    WiiNand::PLATFORM
+                        | WiiUNand::PLATFORM
+                        | Ps3Nand::PLATFORM
+                        | PspMemoryStick::PLATFORM
                 )
             }
             StorageKind::MemoryCard => matches!(
@@ -97,6 +101,9 @@ impl ConsoleStorage {
             (StorageKind::Nand, Ps3Nand::PLATFORM) => Ok(Self::Nand(Arc::new(
                 Ps3Nand::new_empty(storage, id, label).await?,
             ))),
+            (StorageKind::Nand, PspMemoryStick::PLATFORM) => Ok(Self::Nand(Arc::new(
+                PspMemoryStick::new_empty(storage, id, label).await?,
+            ))),
             (StorageKind::SaveRepo, WiiUNand::PLATFORM) => Ok(Self::SaveRepo(
                 WiiUNand::new_save_repo(VersionedStorage::new(storage)?, id, label).await?,
             )),
@@ -105,6 +112,9 @@ impl ConsoleStorage {
             )),
             (StorageKind::SaveRepo, Ps3Nand::PLATFORM) => Ok(Self::SaveRepo(
                 Ps3Nand::new_save_repo(VersionedStorage::new(storage)?, id, label).await?,
+            )),
+            (StorageKind::SaveRepo, PspMemoryStick::PLATFORM) => Ok(Self::SaveRepo(
+                PspMemoryStick::new_save_repo(VersionedStorage::new(storage)?, id, label).await?,
             )),
             (StorageKind::MemoryCard, DreamcastMemoryCard::PLATFORM) => {
                 Ok(Self::MemoryCard(Arc::new(
@@ -155,6 +165,9 @@ impl ConsoleStorage {
             (StorageKind::Nand, Ps3Nand::PLATFORM) => {
                 Ok(Self::Nand(Arc::new(Ps3Nand::open(storage).await?)))
             }
+            (StorageKind::Nand, PspMemoryStick::PLATFORM) => {
+                Ok(Self::Nand(Arc::new(PspMemoryStick::open(storage).await?)))
+            }
             (StorageKind::SaveRepo, WiiUNand::PLATFORM) => Ok(Self::SaveRepo(
                 WiiUNand::open_save_repo(VersionedStorage::new(storage)?).await?,
             )),
@@ -163,6 +176,9 @@ impl ConsoleStorage {
             )),
             (StorageKind::SaveRepo, Ps3Nand::PLATFORM) => Ok(Self::SaveRepo(
                 Ps3Nand::open_save_repo(VersionedStorage::new(storage)?).await?,
+            )),
+            (StorageKind::SaveRepo, PspMemoryStick::PLATFORM) => Ok(Self::SaveRepo(
+                PspMemoryStick::open_save_repo(VersionedStorage::new(storage)?).await?,
             )),
             (StorageKind::MemoryCard, DreamcastMemoryCard::PLATFORM) => Ok(Self::MemoryCard(
                 Arc::new(DreamcastMemoryCard::open(VersionedStorage::new(storage)?).await?),

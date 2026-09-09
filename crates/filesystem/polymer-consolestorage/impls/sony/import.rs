@@ -7,7 +7,7 @@ use crate::Error;
 use crate::savegame::{SaveBlob, SaveBlobStream};
 
 /// Validate the complete family before replacing any of its live files.
-pub(super) struct SaveImport {
+pub(crate) struct SaveImport {
     pub title: TitleId,
     pub files: BTreeMap<String, SaveBlob>,
 }
@@ -20,13 +20,13 @@ impl SaveImport {
             let (path, candidate) = Self::validate(&blob, save_root)?;
             if title.is_some_and(|title| title != candidate) {
                 return Err(Error::InvalidPath(
-                    "a PS3 save depot cannot contain multiple TITLE_ID families".to_owned(),
+                    "a Sony save depot cannot contain multiple TITLE_ID families".to_owned(),
                 ));
             }
             title = Some(candidate);
             if files.insert(path.clone(), blob).is_some() {
                 return Err(Error::InvalidPath(format!(
-                    "duplicate PS3 save file `{path}`"
+                    "duplicate Sony save file `{path}`"
                 )));
             }
         }
@@ -35,7 +35,7 @@ impl SaveImport {
             while let Some((parent, _)) = ancestor.rsplit_once('/') {
                 if files.contains_key(parent) {
                     return Err(Error::InvalidPath(format!(
-                        "PS3 save file `{parent}` is also used as a directory"
+                        "Sony save file `{parent}` is also used as a directory"
                     )));
                 }
                 ancestor = parent;
@@ -43,7 +43,7 @@ impl SaveImport {
         }
         Ok(Self {
             title: title
-                .ok_or_else(|| Error::InvalidPath("a PS3 save depot is empty".to_owned()))?,
+                .ok_or_else(|| Error::InvalidPath("a Sony save depot is empty".to_owned()))?,
             files,
         })
     }
@@ -52,7 +52,7 @@ impl SaveImport {
         let path = blob
             .target_path
             .to_str()
-            .ok_or_else(|| Error::InvalidPath("PS3 save path is not valid UTF-8".to_owned()))?
+            .ok_or_else(|| Error::InvalidPath("Sony save path is not valid UTF-8".to_owned()))?
             .replace('\\', "/");
         if path.split('/').any(|component| {
             matches!(component, "" | "." | ".." | ".git")
@@ -68,7 +68,7 @@ impl SaveImport {
             .split_once('/')
             .ok_or_else(|| Error::InvalidPath(path.clone()))?;
         let title = TitleId::from_directory(directory)
-            .ok_or_else(|| Error::InvalidPath(format!("`{directory}` has no PS3 title ID")))?;
+            .ok_or_else(|| Error::InvalidPath(format!("`{directory}` has no Sony title ID")))?;
         if *blake3::hash(&blob.bytes).as_bytes() != blob.blake3 {
             return Err(Error::IntegrityMatchFailed { failed: path });
         }
