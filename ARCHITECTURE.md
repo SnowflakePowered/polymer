@@ -19,7 +19,9 @@ This is contained in the `consumer` and `producer` directories. These crates hoo
 
 Graphics IPC is also responsible for supplying swapchain size information for **Input IPC** in order to do screen-space mouse interpolation. Instead of getting a swapchain managed by the graphics driver, Polymer provides it's own swapchain to the emulator so it can draw directly to the composed display in the **GUI**. This allows Polymer to get frame data from the emulator with zero additional copies (with the exception of OpenGL which requires one copy). It is important for multi-screen handhelds that each screen is rendered to its own dedicated swapchain for proper recomposition in the **GUI**. 
 
-Frame *Producers* interact with the hooked device, and send the texture over to a Frame *Consumer*. We support producing frames from D3D11, D3D12, OpenGL, Vulkan, and GDI; and consuming frames from a host D3D12, or Vulkan device. *Producers* are injected into an emulator ("guest process") via a *hook*; graphics hooks are implemented for D3D11, D3D12, OpenGL, and Vulkan. Frames are signaled to the **GUI** via the IPC protocol in `polymer-ipc`. 
+Frame *Producers* interact with the hooked device, and send the texture over to a Frame *Consumer*. We support producing frames from D3D11, D3D12, Vulkan, and OpenGL; and consuming frames from a host D3D12, or Vulkan device. *Producers* are injected into an emulator ("guest process") via a *hook*; graphics hooks are implemented for D3D11, D3D12, OpenGL, and Vulkan. Frames are signaled to the **GUI** via the IPC protocol in `polymer-ipc`. 
+
+The Polymer-owned swapchain will respect resize events at startup. Once created, Polymer will refuse to resize the swapchain. For best results, the emulator guest should be configured to size its window to the internal resolution of the rendering game, and render to one window per screen (i.e. one swapchain per screen). 
 
 The **graphics IPC** system is contained in the following crates
 
@@ -28,7 +30,6 @@ The **graphics IPC** system is contained in the following crates
 * `polymer-hook-d3d11` -- D3D11 entrypoint Hook 
 * `polymer-hook-d3d12` -- D3D12 entrypoint Hook 
 * `polymer-hook-dxgi` -- DXGI entrypoint Hook 
-* `polymer-hook-gdi` -- GDI entrypoint Hook 
 * `polymer-hook-vulkan-layer` -- Vulkan layer hook
 * `polymer-hook-opengl32` -- OpenGL entrypoint hook
 * `polymer-producer-d3d11` -- D3D11 frame producer
@@ -120,6 +121,8 @@ Emulator plugins are used to orchestrate the execution of guest emulator process
   * `storage` -- The console storage resources for this system, such as the emulated NAND or any memory cards.
   * `userConfiguration` -- User provided configuration options as declared at time of launch
   * `saveStates` -- Save states for quick resume, if present.
+
+  `onLaunch` must return an object describing the launch shape of the guest process, including which hooks to use, and surfaces to track.
   
 * `onConfigure`  -- Called when retrieving user-facing configuration options. Returns the set of options exposed to the user.
 

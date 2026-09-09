@@ -479,7 +479,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     // Telemetry remains disabled and Dolphin does not open its consent dialog.
     options.analytics.enabled = false;
     options.analytics.permission_asked = true;
-    options.core.gfx_backend = "D3D12";
+    options.core.gfx_backend = "D3D";
     args.configuration.options().gfx.settings.aspect_ratio = "Stretch";
     options.core.gci_folder_a_path = args.filesystem.path("/MemoryCard/USA");
     // Dolphin disables save states by default in current development builds.
@@ -550,7 +550,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
         argv,
         isolate: false,
         hooks: {
-            graphics: ["d3d12"],
+            graphics: ["d3d11"],
             input: ["sdl3", "bluetooth-api-win32"],
         },
         controllerTopology,

@@ -4,6 +4,7 @@ pub mod gamecube;
 pub mod memorycard;
 pub mod ps1;
 pub mod ps2;
+pub mod ps3;
 pub mod wii;
 pub mod wiiu;
 

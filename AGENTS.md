@@ -13,5 +13,6 @@
 * Do not write tests that just test the obvious behaviour of a function or existence tests like struct layouts. Prefer static asserts where applicable.
 * Do not write tiny one-off helper functions.
 * For concurrent hashmaps, use `dashmap` rather than a RwLock or Mutex around a std HashMap.
+* To launch a game winthin `polymer-gui`, you can use Chrome's inspector protocol. Don't forget to pass in the `--debug` flag to start the debug server.
 
 Read ARCHITECTURE.md for a high level overview of the architecture.
