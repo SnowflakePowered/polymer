@@ -9,7 +9,7 @@ use futures::stream::{self, StreamExt};
 use zerocopy::byteorder::big_endian::{U16, U32};
 use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
-use super::index::{SharedContentMap, UidMap};
+use crate::impls::wii::index::{SharedContentMap, UidMap};
 use super::ticket::Ticket;
 use super::tmd::{Content, Tmd, align};
 use crate::Error;
