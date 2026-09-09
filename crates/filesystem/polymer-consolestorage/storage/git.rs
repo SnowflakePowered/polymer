@@ -1321,6 +1321,7 @@ impl MountableStorage for GitVolumeStorage {
                     .expect("descendant begins with its requested root")
                     .trim_start_matches('/');
                 let target = join(to, relative);
+                working.entries.insert(path, OverlayEntry::Deleted);
                 working.entries.insert(
                     target,
                     match kind {
