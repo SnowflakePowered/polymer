@@ -1,0 +1,138 @@
+use std::fs::File;
+use std::io::{Cursor, Read};
+use std::path::{Path, PathBuf};
+
+use futures::channel::oneshot;
+use futures::future::TryFutureExt;
+use futures::stream;
+
+use super::super::{GUEST_USER_ROOT, Ps3Nand, TitleId};
+use crate::Error;
+use crate::installable::artifacts::{Artifact, DescribeArtifact};
+use crate::installable::{Depot, DepotFile, DepotType, IconHint};
+use crate::nand::VirtualNand;
+
+/// A standalone 16-byte RAP license named `<CONTENT_ID>.rap`.
+pub struct Ps3RapDepot {
+    content_id: String,
+    bytes: [u8; 16],
+}
+
+impl Ps3RapDepot {
+    pub fn open(path: &Path) -> Result<Self, Error> {
+        let content_id = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .ok_or_else(|| Error::InvalidPath(path.display().to_string()))?;
+        let id = content_id.as_bytes();
+        if id.len() != 36
+            || !id
+                .iter()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            || id[6] != b'-'
+            || id[16] != b'_'
+            || !id[17..19].iter().all(u8::is_ascii_digit)
+            || id[19] != b'-'
+            || TitleId::parse(&content_id[7..16]).is_none()
+        {
+            return Err(Error::malformed(
+                path.display().to_string(),
+                "RAP filename must contain a PS3 content ID",
+            ));
+        }
+        let mut bytes = Vec::new();
+        File::open(path)
+            .and_then(|file| file.take(17).read_to_end(&mut bytes))
+            .map_err(|error| Error::io(path, error))?;
+        let bytes = bytes.try_into().map_err(|_| {
+            Error::malformed(path.display().to_string(), "a RAP must be exactly 16 bytes")
+        })?;
+        Ok(Self {
+            content_id: content_id.to_owned(),
+            bytes,
+        })
+    }
+
+    pub fn content_id(&self) -> &str {
+        &self.content_id
+    }
+
+    pub fn install_path(&self) -> String {
+        format!("{GUEST_USER_ROOT}/exdata/{}.rap", self.content_id)
+    }
+}
+
+impl DescribeArtifact for Ps3RapDepot {
+    fn describe(&self) -> Artifact {
+        Artifact::new(
+            format!("{}:rap", self.content_id),
+            DepotType::AppContent,
+            Vec::new(),
+            format!("{} license", self.content_id),
+            None,
+            IconHint::Builtin(DepotType::AppContent),
+        )
+    }
+}
+
+impl Depot for Ps3RapDepot {
+    fn satisfies<N: VirtualNand>(&self, nand: &N) -> bool {
+        nand.platform() == Ps3Nand::PLATFORM && Ps3Nand::has_structure(&*nand.root())
+    }
+
+    fn validate_contents(&self) -> Vec<String> {
+        // Length is checked on open. A RAP has no embedded integrity digest.
+        Vec::new()
+    }
+
+    fn depot_type(&self) -> DepotType {
+        DepotType::AppContent
+    }
+
+    fn install<'a, N: VirtualNand>(
+        &'a self,
+        nand: &'a N,
+    ) -> (
+        Box<dyn Future<Output = Result<Artifact, Error>>>,
+        Box<dyn futures::Stream<Item = Result<String, Error>> + 'a>,
+    ) {
+        let (sender, receiver) = oneshot::channel();
+        let operation = stream::once(async move {
+            let result = async {
+                if !self.satisfies(nand) {
+                    return Err(Error::Unsupported(format!(
+                        "a PS3 RAP cannot be installed to {}",
+                        nand.platform()
+                    )));
+                }
+                let path = self.install_path();
+                let copied = nand
+                    .root()
+                    .install_file(Box::new(Cursor::new(self.bytes)), &path)
+                    .await?;
+                let artifact = self.describe().with_manifest(vec![DepotFile::new(
+                    PathBuf::from(&path),
+                    copied.blake3,
+                    copied.byte_length,
+                )]);
+                nand.record(&artifact).await?;
+                Ok((artifact, path))
+            }
+            .await;
+            match result {
+                Ok((artifact, path)) => {
+                    let _ = sender.send(Ok(artifact));
+                    Ok(path)
+                }
+                Err(error) => {
+                    let _ = sender.send(Err(error.clone()));
+                    Err(error)
+                }
+            }
+        });
+        (
+            Box::new(receiver.unwrap_or_else(|_| Err(Error::InstallIncomplete))),
+            Box::new(operation),
+        )
+    }
+}
