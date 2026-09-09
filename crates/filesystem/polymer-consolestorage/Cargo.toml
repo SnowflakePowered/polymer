@@ -32,6 +32,7 @@ parking_lot.workspace = true
 zerocopy.workspace = true
 phf.workspace = true
 orbis-unpkg = "0.1.1"
+pkgrip = "2.0.0"
 
 gltf = "1.4.1"
 zenwebp = "0.4.4"
