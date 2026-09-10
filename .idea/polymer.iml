@@ -69,6 +69,8 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/runtime/polymer-command/tests" isTestSource="true" />
       <sourceFolder url="file://$MODULE_DIR$/crates/runtime/polymer-scraping/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/runtime/polymer-scraping/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/filesystem/csis/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/hooks/polymer-hook-d3d12/examples" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />

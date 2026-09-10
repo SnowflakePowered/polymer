@@ -7,6 +7,7 @@ impl Layout {
     pub const SD: &str =
         "sdmc/Nintendo 3DS/00000000000000000000000000000000/00000000000000000000000000000000";
     pub const NAND_DATA: &str = "nand/data/00000000000000000000000000000000";
+    pub const NAND_TITLE: &str = "nand/00000000000000000000000000000000/title";
 
     pub fn valid_path(path: &str) -> bool {
         path.split('/').all(|part| {

@@ -38,7 +38,7 @@ impl CtrNand {
         }
         let storage: Arc<dyn VolumeStorage> = Arc::new(storage);
         for path in [
-            "nand/title".to_owned(),
+            Layout::NAND_TITLE.to_owned(),
             "nand/dbs".to_owned(),
             Layout::NAND_DATA.to_owned(),
             format!("{}/title", Layout::SD),
@@ -128,9 +128,14 @@ impl VirtualNand for CtrNand {
     fn is_complete(&self, completion: NandCompletion) -> bool {
         match completion {
             // Minimal means an HLE storage layout, not installed system firmware.
-            NandCompletion::Minimal => ["nand/title", "nand/dbs", Layout::NAND_DATA, Layout::SD]
-                .iter()
-                .all(|path| self.storage.read_dir(path, false).is_ok()),
+            NandCompletion::Minimal => [
+                Layout::NAND_TITLE,
+                "nand/dbs",
+                Layout::NAND_DATA,
+                Layout::SD,
+            ]
+            .iter()
+            .all(|path| self.storage.read_dir(path, false).is_ok()),
             NandCompletion::Full | NandCompletion::Verified => false,
         }
     }
