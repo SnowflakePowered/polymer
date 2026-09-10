@@ -3,16 +3,15 @@ use std::fs::File;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use futures::TryFutureExt;
 use futures::channel::oneshot;
 use futures::stream::{self, StreamExt};
 use zerocopy::byteorder::big_endian::{U16, U32};
 use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
-use crate::impls::wii::index::{SharedContentMap, UidMap};
 use super::ticket::Ticket;
 use super::tmd::{Content, Tmd, align};
 use crate::Error;
+use crate::impls::wii::index::{SharedContentMap, UidMap};
 use crate::impls::wii::nand::WiiNand;
 use crate::installable::artifacts::Artifact;
 use crate::installable::{Depot, DepotFile, DepotType, IconHint};
@@ -173,13 +172,7 @@ impl Depot for WiiWadDepot {
         }
     }
 
-    fn install<'a, N: VirtualNand>(
-        &'a self,
-        nand: &'a N,
-    ) -> (
-        Box<dyn Future<Output = Result<Artifact, Error>>>,
-        Box<dyn futures::Stream<Item = Result<String, Error>> + 'a>,
-    ) {
+    fn install<'a, N: VirtualNand>(&'a self, nand: &'a N) -> crate::installable::Installation<'a> {
         let (sender, receiver) = oneshot::channel();
         let operation = stream::once(async move {
             let result = async {
@@ -330,10 +323,7 @@ impl Depot for WiiWadDepot {
         })
         .map(stream::iter)
         .flatten();
-        (
-            Box::new(receiver.unwrap_or_else(|_| Err(Error::InstallIncomplete))),
-            Box::new(operation),
-        )
+        crate::installable::Installation::from_progress(operation, receiver)
     }
 }
 
@@ -341,7 +331,6 @@ impl Depot for WiiWadDepot {
 mod tests {
     use aes::Aes128;
     use aes::cipher::{BlockEncrypt, KeyInit, generic_array::GenericArray};
-    use futures::StreamExt;
     use sha1::{Digest, Sha1};
     use uuid::Uuid;
 
@@ -391,13 +380,7 @@ mod tests {
         let storage = platform.volume(StorageKind::Nand, id);
         let nand = WiiNand::new_empty(storage, id, None).await.unwrap();
         assert!(wad.satisfies(&nand));
-        let (artifact, progress) = wad.install(&nand);
-        let mut progress = Box::into_pin(progress);
-        while let Some(path) = progress.as_mut().next().await {
-            path.unwrap();
-        }
-        let artifact = Box::into_pin(artifact);
-        let artifact = artifact.await.unwrap();
+        let artifact = wad.install(&nand).finish().await.unwrap();
         assert_eq!(artifact.id(), format!("{title_id:016x}"));
 
         let path = "title/00010001/57414445/content/00000001.app";

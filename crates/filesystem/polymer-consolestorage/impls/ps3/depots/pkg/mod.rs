@@ -6,9 +6,6 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use futures::channel::oneshot;
-use futures::future::{Either, TryFutureExt};
-use futures::{StreamExt, stream};
 use orbis_unpkg::Psf;
 use pkgrip::PkgArchive;
 use sha1::{Digest, Sha1};
@@ -251,35 +248,16 @@ impl Depot for Ps3PkgDepot {
         self.kind
     }
 
-    fn install<'a, N: VirtualNand>(
-        &'a self,
-        nand: &'a N,
-    ) -> (
-        Box<dyn Future<Output = Result<Artifact, Error>>>,
-        Box<dyn futures::Stream<Item = Result<String, Error>> + 'a>,
-    ) {
-        let (sender, receiver) = oneshot::channel();
-        let operation = stream::once(async move {
-            let state = if self.satisfies(nand) {
+    fn install<'a, N: VirtualNand>(&'a self, nand: &'a N) -> crate::installable::Installation<'a> {
+        crate::installable::Installation::prepare(async move {
+            if self.satisfies(nand) {
                 install::Ps3PkgInstall::new(self, nand.root()).await
             } else {
                 Err(Error::Unsupported(format!(
                     "a PS3 PKG cannot be installed to {}",
                     nand.platform()
                 )))
-            };
-            match state {
-                Ok(state) => Either::Left(state.run(sender)),
-                Err(error) => {
-                    let _ = sender.send(Err(error.clone()));
-                    Either::Right(stream::once(async move { Err(error) }))
-                }
             }
         })
-        .flatten();
-        (
-            Box::new(receiver.unwrap_or_else(|_| Err(Error::InstallIncomplete))),
-            Box::new(operation),
-        )
     }
 }

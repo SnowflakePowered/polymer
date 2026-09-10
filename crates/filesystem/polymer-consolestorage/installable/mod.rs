@@ -1,7 +1,4 @@
-use crate::Error;
 use crate::nand::VirtualNand;
-use artifacts::Artifact;
-use futures::prelude::Stream;
 use std::path::{Path, PathBuf};
 
 pub mod artifacts;
@@ -11,7 +8,7 @@ mod writer;
 pub(crate) use writer::StorageWriter;
 
 pub use directory::DirectoryInstall;
-pub use installation::Installation;
+pub use installation::{Installable, Installation};
 
 /// Discriminants are persisted in the artifact database, so they are fixed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,31 +58,13 @@ pub trait Depot {
 
     fn depot_type(&self) -> DepotType;
 
-    /// Install the depot to the nand `N`.
-    ///
-    /// Note that this does not take a mutable reference to
-    /// `N` otherwise a borrow would need to be held for the length
-    /// of `N`. Instead, the virtual nand should have interior
-    /// mutability.
-    ///
-    /// This function must return a future and a stream.
-    ///
-    /// The future returns the resultant `Artifact` once installation is complete.
-    /// Polling this future **does not** drive the installation process and will hang forever, until
-    /// the stream is polled, which drives the installation and must be polled to completion.
-    ///
-    /// If the stream encounters an error, it will terminate. Only after, will the future return
-    /// the same error as the last poll of the stream returned.
+    /// Install a depot, exposing progress through `next().await` and its result
+    /// through `finish().await`. Calling `finish` also drives any remaining work.
     #[must_use]
-    fn install<'a, N: VirtualNand>(
-        &'a self,
-        nand: &'a N,
-    ) -> (
-        Box<dyn Future<Output = Result<Artifact, Error>>>,
-        Box<dyn Stream<Item = Result<String, Error>> + 'a>,
-    );
+    fn install<'a, N: VirtualNand>(&'a self, nand: &'a N) -> Installation<'a>;
 }
 
+#[derive(Clone)]
 pub enum IconHint {
     /// No custom icon.
     Builtin(DepotType),
@@ -93,6 +72,7 @@ pub enum IconHint {
     File(PathBuf),
 }
 
+#[derive(Clone)]
 pub struct DepotFile {
     path: PathBuf,
     blake3: [u8; 32],

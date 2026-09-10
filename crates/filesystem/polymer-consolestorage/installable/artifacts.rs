@@ -1,5 +1,6 @@
 use crate::installable::{DepotFile, DepotType, IconHint};
 
+#[derive(Clone)]
 pub struct Artifact {
     id: String,
     depot_type: DepotType,

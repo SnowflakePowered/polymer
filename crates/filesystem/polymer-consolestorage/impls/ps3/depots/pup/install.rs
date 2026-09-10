@@ -1,11 +1,9 @@
 use super::super::writer::StorageWriter;
 use super::{Ps3PupDepot, sce::Sce};
 use crate::installable::DepotFile;
-use crate::installable::Installation;
+use crate::installable::Installable;
 use crate::installable::artifacts::{Artifact, DescribeArtifact};
 use crate::{Error, VolumeStorage};
-use futures::channel::oneshot;
-use futures::{TryStreamExt, stream};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
@@ -16,43 +14,13 @@ use std::sync::Arc;
 pub(super) struct PupInstall {
     file: File,
     packages: Vec<(String, u64, u64)>,
-    artifact: Option<Artifact>,
+    artifact: Artifact,
     manifest: Vec<DepotFile>,
     paths: std::collections::BTreeSet<String>,
     index: usize,
     storage: Arc<dyn VolumeStorage>,
 }
 impl PupInstall {
-    pub fn run(
-        mut self,
-        outcome: oneshot::Sender<Result<Artifact, Error>>,
-    ) -> Installation<'static> {
-        let artifact = self
-            .artifact
-            .take()
-            .unwrap()
-            .with_manifest(std::mem::take(&mut self.manifest));
-        let storage = self.storage.clone();
-        let batches = stream::try_unfold(self, |mut install| async move {
-            if install.index == install.packages.len() {
-                return Ok::<_, Error>(None);
-            }
-            tokio::task::spawn_blocking(move || {
-                install.next_file()?;
-                let files = std::mem::take(&mut install.manifest);
-                Ok(Some((stream::iter(files.into_iter().map(Ok)), install)))
-            })
-            .await
-            .map_err(|error| Error::Unsupported(format!("PUP worker failed: {error}")))?
-        });
-        Installation::new(
-            batches.try_flatten(),
-            artifact,
-            move |artifact| Self::finish(storage, artifact),
-            outcome,
-        )
-    }
-
     pub async fn new(depot: &Ps3PupDepot, storage: Arc<dyn VolumeStorage>) -> Result<Self, Error> {
         let depot = depot.clone();
         tokio::task::spawn_blocking(move || {
@@ -88,7 +56,7 @@ impl PupInstall {
             Ok(Self {
                 file: pup.file,
                 packages,
-                artifact: Some(depot.describe()),
+                artifact: depot.describe(),
                 manifest: Vec::new(),
                 paths: std::collections::BTreeSet::new(),
                 index: 0,
@@ -165,16 +133,31 @@ impl PupInstall {
         self.index += 1;
         Ok(name)
     }
-    async fn finish(
-        storage: Arc<dyn VolumeStorage>,
-        artifact: Artifact,
-    ) -> Result<Artifact, Error> {
+}
+
+impl Installable for PupInstall {
+    fn artifact(&self) -> &Artifact {
+        &self.artifact
+    }
+    async fn next_batch(mut self) -> Result<(Self, Option<Vec<DepotFile>>), Error> {
+        if self.index == self.packages.len() {
+            return Ok((self, None));
+        }
+        tokio::task::spawn_blocking(move || {
+            self.next_file()?;
+            let files = std::mem::take(&mut self.manifest);
+            Ok((self, Some(files)))
+        })
+        .await
+        .map_err(|error| Error::Unsupported(format!("PUP worker failed: {error}")))?
+    }
+    async fn finish(self, artifact: Artifact) -> Result<Artifact, Error> {
         if artifact.manifest().is_empty() {
             return Err(Error::malformed("PUP", "empty firmware image"));
         }
         // A firmware image replaces the previous image. Remove only files owned
         // by its previous artifact, preserving unrelated NAND contents.
-        if let Some(previous) = storage.artifacts().artifact(artifact.id()).await? {
+        if let Some(previous) = self.storage.artifacts().artifact(artifact.id()).await? {
             for file in previous.manifest() {
                 if !artifact
                     .manifest()
@@ -182,13 +165,13 @@ impl PupInstall {
                     .any(|new| new.path() == file.path())
                 {
                     let path = file.path().to_string_lossy();
-                    if path.starts_with("dev_flash/") && storage.exists(&path) {
-                        storage.remove(&path)?;
+                    if path.starts_with("dev_flash/") && self.storage.exists(&path) {
+                        self.storage.remove(&path)?;
                     }
                 }
             }
         }
-        storage.artifacts().record(&artifact).await?;
+        self.storage.artifacts().record(&artifact).await?;
         Ok(artifact)
     }
 }

@@ -5,57 +5,110 @@ use futures::{Stream, StreamExt, stream};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-/// A file installation driven by polling progress, including finalization.
-/// Completion is driven by the stream, not by awaiting the outcome receiver.
-pub struct Installation<'a> {
-    progress: Pin<Box<dyn Stream<Item = Result<String, Error>> + 'a>>,
+/// Archive-specific extraction and completion for an installation.
+#[allow(async_fn_in_trait)]
+pub trait Installable: Sized {
+    /// Describe the artifact, including any files retained from a previous install.
+    fn artifact(&self) -> &Artifact;
+    /// Install the next batch. `None` means extraction is complete.
+    /// Ownership permits blocking archive implementations to move into a worker.
+    async fn next_batch(self) -> Result<(Self, Option<Vec<DepotFile>>), Error>;
+    /// Complete a successfully extracted installation, recording it when required.
+    async fn finish(self, artifact: Artifact) -> Result<Artifact, Error>;
 }
 
+/// Installation progress driven directly by `next().await`.
+/// Use `finish().await` to drain remaining progress and obtain the final artifact.
+pub struct Installation<'a> {
+    progress: Pin<Box<dyn Stream<Item = Result<String, Error>> + 'a>>,
+    outcome: oneshot::Receiver<Result<Artifact, Error>>,
+}
 impl<'a> Installation<'a> {
-    /// Wrap installed files with manifest collection and a completion callback.
-    /// Existing manifest entries are retained unless a new file replaces their path.
-    /// The callback runs only after the source is exhausted successfully. Its
-    /// result is sent to `outcome`; failures also appear as the last stream item.
-    pub fn new<S, F, Fut>(
-        files: S,
-        artifact: Artifact,
-        finish: F,
-        outcome: oneshot::Sender<Result<Artifact, Error>>,
+    pub fn new<I: Installable + 'a>(installable: I) -> Self {
+        Self::prepare(std::future::ready(Ok(installable)))
+    }
+
+    /// Lazily prepare an archive when progress or completion is polled.
+    pub fn prepare<I, F>(prepare: F) -> Self
+    where
+        I: Installable + 'a,
+        F: Future<Output = Result<I, Error>> + 'a,
+    {
+        let (sender, outcome) = oneshot::channel();
+        let progress = stream::once(async move {
+            match prepare.await {
+                Ok(installable) => futures::future::Either::Left(Self::drive(installable, sender)),
+                Err(error) => {
+                    let _ = sender.send(Err(error.clone()));
+                    futures::future::Either::Right(stream::once(async { Err(error) }))
+                }
+            }
+        })
+        .flatten();
+        Self::from_progress(progress, outcome)
+    }
+
+    pub(crate) fn from_progress<S>(
+        progress: S,
+        outcome: oneshot::Receiver<Result<Artifact, Error>>,
     ) -> Self
     where
-        S: Stream<Item = Result<DepotFile, Error>> + 'a,
-        F: FnOnce(Artifact) -> Fut + 'a,
-        Fut: Future<Output = Result<Artifact, Error>> + 'a,
+        S: Stream<Item = Result<String, Error>> + 'a,
     {
-        let manifest = artifact
-            .manifest()
-            .iter()
-            .map(|file| DepotFile::new(file.path().to_owned(), *file.blake3(), file.byte_length()))
-            .collect::<Vec<_>>();
-        let state = Some((Box::pin(files), artifact, manifest, finish, outcome));
+        Self {
+            progress: Box::pin(progress.fuse()),
+            outcome,
+        }
+    }
+
+    /// Consume remaining progress and return the installation result.
+    /// Also returns an error previously observed through `next()`.
+    pub async fn finish(mut self) -> Result<Artifact, Error> {
+        while self.next().await.is_some() {}
+        self.outcome.await.unwrap_or(Err(Error::InstallIncomplete))
+    }
+
+    fn drive<I: Installable + 'a>(
+        installable: I,
+        outcome: oneshot::Sender<Result<Artifact, Error>>,
+    ) -> impl Stream<Item = Result<String, Error>> + 'a {
+        let artifact = installable.artifact().clone();
+        let manifest = artifact.manifest().to_vec();
+        let state = Some((
+            installable,
+            artifact,
+            manifest,
+            std::collections::VecDeque::<DepotFile>::new(),
+            outcome,
+        ));
         let progress = stream::unfold(state, |state| async move {
-            let (mut files, artifact, mut manifest, finish, sender) = state?;
-            let result = match files.next().await {
-                Some(Ok(file)) => {
+            let (mut installable, artifact, mut manifest, mut pending, sender) = state?;
+            let result = loop {
+                if let Some(file) = pending.pop_front() {
                     let path = file.path().to_string_lossy().into_owned();
                     manifest.retain(|old| old.path() != file.path());
                     manifest.push(file);
-                    return Some((Ok(path), Some((files, artifact, manifest, finish, sender))));
+                    return Some((
+                        Ok(path),
+                        Some((installable, artifact, manifest, pending, sender)),
+                    ));
                 }
-                Some(Err(error)) => Err(error),
-                None => finish(artifact.with_manifest(manifest)).await,
+                match installable.next_batch().await {
+                    Ok((next, Some(files))) => {
+                        installable = next;
+                        pending.extend(files);
+                    }
+                    Ok((next, None)) => break next.finish(artifact.with_manifest(manifest)).await,
+                    Err(error) => break Err(error),
+                }
             };
-            // No further polling or writes after a terminal result.
             let error = result.as_ref().err().cloned();
             let _ = sender.send(result);
             error.map(|error| (Err(error), None))
         });
-        Self {
-            progress: Box::pin(progress.fuse()),
-        }
+        progress
     }
 }
-
 impl Stream for Installation<'_> {
     type Item = Result<String, Error>;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -69,161 +122,167 @@ mod tests {
     use crate::installable::{DepotType, IconHint};
     use futures::FutureExt;
     use std::cell::Cell;
-    use std::path::PathBuf;
+    use std::collections::VecDeque;
 
-    struct Fixture;
-    impl Fixture {
-        fn artifact() -> Artifact {
-            Artifact::new(
+    struct Archive<'a> {
+        artifact: Artifact,
+        batches: VecDeque<Result<Vec<DepotFile>, Error>>,
+        finished: &'a Cell<bool>,
+        wait: Option<oneshot::Receiver<()>>,
+        fail_finish: bool,
+    }
+    impl Installable for Archive<'_> {
+        fn artifact(&self) -> &Artifact {
+            &self.artifact
+        }
+        async fn next_batch(mut self) -> Result<(Self, Option<Vec<DepotFile>>), Error> {
+            let batch = self.batches.pop_front().transpose()?;
+            Ok((self, batch))
+        }
+        async fn finish(self, artifact: Artifact) -> Result<Artifact, Error> {
+            if let Some(wait) = self.wait {
+                wait.await.unwrap();
+            }
+            self.finished.set(true);
+            if self.fail_finish {
+                return Err(Error::Unsupported("finish failed".into()));
+            }
+            Ok(artifact)
+        }
+    }
+
+    #[tokio::test]
+    async fn next_drives_batches_and_pending_completion() {
+        let finished = Cell::new(false);
+        let (release, wait) = oneshot::channel();
+        let mut install = Installation::new(Archive {
+            artifact: Artifact::new(
                 "test".into(),
                 DepotType::App,
                 Vec::new(),
                 "Test".into(),
                 None,
                 IconHint::Builtin(DepotType::App),
-            )
-        }
-        fn file(path: &str, data: &[u8]) -> DepotFile {
-            DepotFile::new(
-                PathBuf::from(path),
-                *blake3::hash(data).as_bytes(),
-                data.len() as u64,
-            )
-        }
-    }
-
-    impl super::super::artifacts::DescribeArtifact for Fixture {
-        fn describe(&self) -> Artifact {
-            Self::artifact()
-        }
-    }
-
-    #[tokio::test]
-    async fn directory_stream_copies_nested_files_and_reports_destination_paths() {
-        let source = tempfile::tempdir().unwrap();
-        let destination = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(source.path().join("nested/empty")).unwrap();
-        std::fs::write(source.path().join("nested/data"), b"payload").unwrap();
-        let storage = std::sync::Arc::new(
-            crate::storage::DirectoryStorage::new(destination.path())
-                .await
-                .unwrap(),
-        );
-        let (sender, outcome) = oneshot::channel();
-        let description = Fixture;
-        let mut install = super::super::DirectoryInstall {
-            root: source.path().to_owned(),
-            base: "game".into(),
-            storage,
-            artifact: &description,
-        }
-        .run(sender);
-        assert_eq!(install.next().await.unwrap().unwrap(), "game/nested/data");
-        assert!(install.next().await.is_none());
-        let artifact = outcome.await.unwrap().unwrap();
-        assert_eq!(artifact.manifest().len(), 1);
-        assert_eq!(
-            artifact.manifest()[0].blake3(),
-            blake3::hash(b"payload").as_bytes()
-        );
-        assert_eq!(
-            std::fs::read(destination.path().join("game/nested/data")).unwrap(),
-            b"payload"
-        );
-        assert!(destination.path().join("game/nested/empty").is_dir());
-    }
-
-    #[tokio::test]
-    async fn next_drives_pending_finalization_and_merges_manifest() {
-        let artifact = Fixture::artifact().with_manifest(vec![
-            Fixture::file("retained", b"old"),
-            Fixture::file("replaced", b"old"),
-        ]);
-        let (sender, mut outcome) = oneshot::channel();
-        let (release, wait) = oneshot::channel();
-        let finished = Cell::new(false);
-        let mut install = Installation::new(
-            stream::iter([Ok(Fixture::file("replaced", b"new"))]),
-            artifact,
-            |artifact| async {
-                wait.await.unwrap();
-                finished.set(true);
-                Ok(artifact)
-            },
-            sender,
-        );
-        assert_eq!(install.next().await.unwrap().unwrap(), "replaced");
-        assert!(outcome.try_recv().unwrap().is_none());
+            ),
+            batches: [
+                Ok(vec![]),
+                Ok(vec![
+                    DepotFile::new("file".into(), [1; 32], 1),
+                    DepotFile::new("file".into(), [2; 32], 2),
+                ]),
+            ]
+            .into(),
+            finished: &finished,
+            wait: Some(wait),
+            fail_finish: false,
+        });
+        assert_eq!(install.next().await.unwrap().unwrap(), "file");
+        assert_eq!(install.next().await.unwrap().unwrap(), "file");
         assert!(install.next().now_or_never().is_none());
         assert!(!finished.get());
         release.send(()).unwrap();
         assert!(install.next().await.is_none());
-        let artifact = outcome.await.unwrap().unwrap();
+        let artifact = install.finish().await.unwrap();
+        assert_eq!(artifact.manifest().len(), 1);
+        assert_eq!(artifact.manifest()[0].blake3(), &[2; 32]);
         assert!(finished.get());
-        assert_eq!(artifact.manifest().len(), 2);
-        assert_eq!(
-            artifact.manifest()[1].blake3(),
-            blake3::hash(b"new").as_bytes()
-        );
-        assert!(install.next().await.is_none());
     }
 
     #[tokio::test]
-    async fn source_error_skips_finalization_and_is_terminal() {
-        let (sender, outcome) = oneshot::channel();
-        let finished = Cell::new(false);
-        let files = stream::iter([
-            Err(Error::Unsupported("source failed".into())),
-            Ok(Fixture::file("unreachable", b"x")),
-        ]);
-        let mut install = Installation::new(
-            files,
-            Fixture::artifact(),
-            |artifact| async {
-                finished.set(true);
-                Ok(artifact)
-            },
-            sender,
-        );
-        let error = install.next().await.unwrap().unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            outcome.await.unwrap().err().unwrap().to_string()
-        );
-        assert!(install.next().await.is_none());
-        assert!(!finished.get());
+    async fn extraction_and_completion_errors_reach_both_outputs() {
+        for fail_finish in [false, true] {
+            let finished = Cell::new(false);
+            let batches = if fail_finish {
+                VecDeque::new()
+            } else {
+                [Err(Error::Unsupported("extraction failed".into()))].into()
+            };
+            let mut install = Installation::new(Archive {
+                artifact: Artifact::new(
+                    "test".into(),
+                    DepotType::App,
+                    Vec::new(),
+                    "Test".into(),
+                    None,
+                    IconHint::Builtin(DepotType::App),
+                ),
+                batches,
+                finished: &finished,
+                wait: None,
+                fail_finish,
+            });
+            let error = install.next().await.unwrap().unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                install.finish().await.err().unwrap().to_string()
+            );
+            assert_eq!(finished.get(), fail_finish);
+        }
     }
 
     #[tokio::test]
-    async fn finalization_error_is_reported_and_drop_does_not_finalize() {
-        let (sender, outcome) = oneshot::channel();
-        let mut install = Installation::new(
-            stream::empty(),
-            Fixture::artifact(),
-            |_| async { Err(Error::Unsupported("commit failed".into())) },
-            sender,
-        );
-        let error = install.next().await.unwrap().unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            outcome.await.unwrap().err().unwrap().to_string()
-        );
-        assert!(install.next().await.is_none());
-
-        let (sender, outcome) = oneshot::channel();
+    async fn dropping_progress_does_not_start_completion() {
         let finished = Cell::new(false);
-        let mut install = Installation::new(
-            stream::iter([Ok(Fixture::file("partial", b"x"))]),
-            Fixture::artifact(),
-            |artifact| async {
-                finished.set(true);
-                Ok(artifact)
-            },
-            sender,
-        );
+        let mut install = Installation::new(Archive {
+            artifact: Artifact::new(
+                "test".into(),
+                DepotType::App,
+                Vec::new(),
+                "Test".into(),
+                None,
+                IconHint::Builtin(DepotType::App),
+            ),
+            batches: [Ok(vec![DepotFile::new("file".into(), [0; 32], 0)])].into(),
+            finished: &finished,
+            wait: None,
+            fail_finish: false,
+        });
         install.next().await.unwrap().unwrap();
         drop(install);
-        assert!(outcome.await.is_err());
         assert!(!finished.get());
+    }
+
+    #[tokio::test]
+    async fn finish_drains_unpolled_or_partially_consumed_installation() {
+        for consume_progress in [false, true] {
+            let finished = Cell::new(false);
+            let mut install = Installation::new(Archive {
+                artifact: Artifact::new(
+                    "test".into(),
+                    DepotType::App,
+                    Vec::new(),
+                    "Test".into(),
+                    None,
+                    IconHint::Builtin(DepotType::App),
+                ),
+                batches: [Ok(vec![
+                    DepotFile::new("first".into(), [1; 32], 1),
+                    DepotFile::new("second".into(), [2; 32], 2),
+                ])]
+                .into(),
+                finished: &finished,
+                wait: None,
+                fail_finish: false,
+            });
+            if consume_progress {
+                assert_eq!(install.next().await.unwrap().unwrap(), "first");
+            }
+            let artifact = install.finish().await.unwrap();
+            assert_eq!(artifact.manifest().len(), 2);
+            assert!(finished.get());
+        }
+    }
+
+    #[tokio::test]
+    async fn preparation_error_is_retained_after_progress_reports_it() {
+        let mut install = Installation::prepare(async {
+            Err::<Archive<'static>, _>(Error::Unsupported("cannot open archive".into()))
+        });
+        let error = install.next().await.unwrap().unwrap_err();
+        assert!(install.next().await.is_none());
+        assert_eq!(
+            install.finish().await.err().unwrap().to_string(),
+            error.to_string()
+        );
     }
 }
