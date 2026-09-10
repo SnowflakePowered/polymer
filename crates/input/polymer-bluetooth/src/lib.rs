@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod cable_pairing;
 pub mod devices;
 mod error;
 pub mod firmware;

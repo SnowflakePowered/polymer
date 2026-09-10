@@ -20,6 +20,7 @@ mice, audio, or BLE.
 
 ```text
 src/
+├── cable_pairing/ USB pairing handshakes and verified wireless registration
 ├── transport/
 │   ├── ble/       OS GATT transport
 │   └── bredr/     USB HCI, ACL, L2CAP, SDP, pairing, raw HID
@@ -46,6 +47,42 @@ reports. `SqliteControllerStore` persists bonds in Polymer's shared
 Minimal SDP queries identify HID and PnP records before a caller applies
 product-specific policy. Unknown HID devices use the generic profile, while
 unattended reconnect is restricted to persisted controllers.
+
+## USB cable pairing
+
+`CablePairing::enumerate()` finds supported USB interfaces. Open a candidate
+to obtain a `CablePairingSession`, inspect it with `read_pairing()`, and pass
+the session and a `CablePairingHost` to `CablePairing::pair()`. Use the address
+from the dedicated BR/EDR `HciHost::info()`, rather than the OS BLE adapter.
+The coordinator saves the verified controller profile and optional link key
+to the supplied `ControllerStore`, enables reconnect, and retains its player
+slot. A registration error after verification explicitly reports that the
+controller hardware has already been paired; the operation can be repeated.
+
+The first implementation supports Sony DS3/SIXAXIS (`054c:0268`): read the
+controller address with feature `F2`, read/write the host address with `F5`,
+and verify both addresses before committing the registry entry. The address
+remains stored after closing the USB handle or unplugging the cable. DS3 uses
+no standard Bluetooth link key. Other cable-pairing protocols can implement
+the session trait and return optional bond material without implementing USB
+input. Switch Pro cable pairing is not implemented yet.
+
+USB access uses HIDAPI where supported and raw endpoint-zero control transfers
+through `nusb` for WinUSB-bound DS3 controllers on Windows. Windows `HidUsb`
+rejects the DS3's undeclared `F2`/`F5` pairing reports with error 87, regardless
+of buffer size. Bind the controller to WinUSB for this pairing path; `polymer-bttest`
+provides a per-controller switch button that attempts this without requesting
+elevation and reports Windows access errors. Restore a compatible USB input driver afterward if
+needed for SDL; the stored wireless host is unaffected. No USB input stream is opened, and closing a
+pairing session sends no reset/unpair command. DS3 Bluetooth report activation
+and decoding are separate work.
+
+The reference for DS3 report sizes and address ordering is
+[BlueZ's sixaxis plugin](https://github.com/bluez/bluez/blob/master/plugins/sixaxis.c).
+`polymer-bttest` exposes the workflow in its Classic BR/EDR tab.
+Raw USB host writes use `wValue=0x03f5` and an `01 00 <address>` payload, as in
+[sixpair](https://www.pabr.org/sixlinux/sixpair.c); the HIDAPI report prefix is
+not copied into that raw payload. `cable_probe` is a read-only diagnostic example.
 
 ## Realtek firmware
 

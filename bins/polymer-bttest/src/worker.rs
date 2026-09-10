@@ -105,6 +105,7 @@ pub enum RadioKind {
 }
 
 pub enum Command {
+    CablePairing(crate::cable_pairing::Action),
     BeginControllerOrder {
         adapter_index: usize,
     },
@@ -137,6 +138,7 @@ pub enum Command {
 }
 
 pub enum Event {
+    CablePairing(crate::cable_pairing::Event),
     BrReady(String),
     BleReady(Vec<String>),
     Scanning {
@@ -444,20 +446,24 @@ pub fn spawn() -> (tokio_mpsc::UnboundedSender<Command>, mpsc::Receiver<Event>) 
 }
 
 async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc::Sender<Event>) {
-    let controller_store: Arc<dyn ControllerStore> = match polymer_library::Directories::discover()
-        .map_err(|error| error.to_string())
-        .and_then(|directories| {
-            SqliteControllerStore::open(directories.storage().join("input.db"))
-                .map_err(|error| error.to_string())
-        }) {
-        Ok(store) => Arc::new(store),
-        Err(error) => {
-            let _ = events.send(Event::Log(format!(
-                "controller registry unavailable; using memory only: {error}"
-            )));
-            Arc::new(MemoryControllerStore::default())
-        }
-    };
+    let (controller_store, cable_registry_error): (Arc<dyn ControllerStore>, Option<String>) =
+        match polymer_library::Directories::discover()
+            .map_err(|error| error.to_string())
+            .and_then(|directories| {
+                SqliteControllerStore::open(directories.storage().join("input.db"))
+                    .map_err(|error| error.to_string())
+            }) {
+            Ok(store) => (Arc::new(store), None),
+            Err(error) => {
+                let _ = events.send(Event::Log(format!(
+                    "controller registry unavailable; using memory only: {error}"
+                )));
+                let _ = events.send(Event::CablePairing(
+                    crate::cable_pairing::Event::RegistryUnavailable(error.clone()),
+                ));
+                (Arc::new(MemoryControllerStore::default()), Some(error))
+            }
+        };
     let ble_adapter_count = match BleGatt::adapter_names().await {
         Ok(names) if !names.is_empty() => {
             let count = names.len();
@@ -506,6 +512,11 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
     });
     if let Some(host) = &host {
         let info = host.info();
+        let _ = events.send(Event::CablePairing(crate::cable_pairing::Event::Host(
+            polymer_bluetooth::cable_pairing::CablePairingHost {
+                address: info.address,
+            },
+        )));
         diagnostic(&format!(
             "BR/EDR adapter ready: {} (HCI {} rev {:04X}, LMP {} subver {:04X}, manufacturer {}; ACL {} bytes / {} buffers)",
             info.address,
@@ -605,12 +616,28 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
     let mut ble_scan_task: Option<(usize, JoinHandle<()>)> = None;
     let mut controller_order_adapter = None;
     let mut identities = load_controller_identities(controller_store.as_ref());
+    let mut cable_pairing = crate::cable_pairing::worker::CablePairingWorker::new(
+        host.as_ref()
+            .map(|host| polymer_bluetooth::cable_pairing::CablePairingHost {
+                address: host.info().address,
+            }),
+        controller_store.clone(),
+        cable_registry_error,
+    );
     let mut listen_inbound = true;
     let _ = events.send(Event::Log(
         "Inbound reconnects enabled for known bonded controllers".into(),
     ));
     loop {
         tokio::select! {
+            Some(result) = cable_pairing.receive() => {
+                if let Ok(crate::cable_pairing::Outcome::Paired { device, state }) = &result {
+                    identities.insert(state.controller_address, BrIdentity::new(Some(device.profile_id.clone())));
+                }
+                let _ = events.send(Event::CablePairing(crate::cable_pairing::Event::Finished(
+                    result.map_err(|error| error.to_string()),
+                )));
+            }
             Some(recovery) = ble_recovery_rx.recv() => {
                 if let Some((_, task)) = ble_recovery_task.take() {
                     let _ = task.await;
@@ -981,6 +1008,7 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
             command = commands.recv() => {
                 let Some(command) = command else { break; };
                 match command {
+                    Command::CablePairing(action) => cable_pairing.start(action),
                     Command::BeginControllerOrder { adapter_index } => {
                         controller_order_adapter = Some(adapter_index);
                         listen_inbound = true;

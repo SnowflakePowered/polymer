@@ -1,0 +1,99 @@
+use hidapi::{BusType, HidApi, HidDevice};
+
+use super::CableDeviceIdentity;
+use crate::{Error, Result, devices::ProfileId};
+
+/// Only feature transfers used by cable provisioning; never reads USB input.
+pub(super) trait UsbFeatureReports {
+    fn get_feature(&mut self, report: &mut [u8]) -> Result<usize>;
+    fn set_feature(&mut self, report: &[u8]) -> Result<()>;
+}
+
+pub(super) struct CableHid(HidDevice);
+
+impl CableHid {
+    pub async fn enumerate() -> Result<Vec<CableDeviceIdentity>> {
+        tokio::task::spawn_blocking(|| {
+            let api = HidApi::new().map_err(Self::error)?;
+            Ok(api
+                .device_list()
+                .filter(|device| Self::supported(device))
+                .map(|device| CableDeviceIdentity {
+                    profile_id: ProfileId::new("sony.dualshock3"),
+                    vendor_id: device.vendor_id(),
+                    product_id: device.product_id(),
+                    name: device
+                        .product_string()
+                        .unwrap_or("DualShock 3 / SIXAXIS")
+                        .into(),
+                    serial: device.serial_number().map(str::to_owned),
+                    path: device.path().to_owned(),
+                    usb: None,
+                })
+                .collect())
+        })
+        .await
+        .map_err(|error| Error::Platform(format!("USB enumeration task failed: {error}")))?
+    }
+
+    fn supported(device: &hidapi::DeviceInfo) -> bool {
+        // 054c:042f is the Navigation controller, not a DS3.
+        matches!(device.bus_type(), BusType::Usb)
+            && device.vendor_id() == 0x054c
+            && device.product_id() == 0x0268
+    }
+
+    pub async fn open(identity: CableDeviceIdentity) -> Result<Self> {
+        tokio::task::spawn_blocking(move || {
+            let api = HidApi::new().map_err(Self::error)?;
+            let info = api
+                .device_list()
+                .find(|device| device.path() == identity.path())
+                .ok_or_else(|| {
+                    Error::Platform(
+                        "USB controller disconnected; refresh the cable device list".into(),
+                    )
+                })?;
+            if !Self::supported(info)
+                || info.vendor_id() != identity.vendor_id
+                || info.product_id() != identity.product_id
+            {
+                return Err(Error::Unsupported(
+                    "USB interface no longer matches the selected cable controller",
+                ));
+            }
+            info.open_device(&api).map(Self).map_err(Self::error)
+        })
+        .await
+        .map_err(|error| Error::Platform(format!("USB open task failed: {error}")))?
+    }
+
+    fn error(error: hidapi::HidError) -> Error {
+        Error::Platform(format!("USB pairing HID access failed: {error}"))
+    }
+}
+
+impl UsbFeatureReports for CableHid {
+    fn get_feature(&mut self, report: &mut [u8]) -> Result<usize> {
+        let id = report[0];
+        let size = report.len();
+        self.0.get_feature_report(report).map_err(|error| {
+            Error::Platform(format!(
+                "USB pairing GET_FEATURE 0x{id:02X} ({size} bytes) failed: {error}. {}",
+                if cfg!(windows) {
+                    "The standard Windows HidUsb driver blocks the DS3's undeclared F2/F5 pairing reports. Cable pairing requires the controller to use WinUSB; refresh after changing its driver. Restore a compatible USB input driver afterward if needed."
+                } else { "Check that the controller supports DS3 pairing feature reports." },
+            ))
+        })
+    }
+
+    fn set_feature(&mut self, report: &[u8]) -> Result<()> {
+        self.0.send_feature_report(report).map_err(|error| {
+            Error::Platform(format!(
+                "USB pairing SET_FEATURE 0x{:02X} ({} bytes) failed: {error}",
+                report[0],
+                report.len(),
+            ))
+        })
+    }
+}

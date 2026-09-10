@@ -1,3 +1,4 @@
+mod cable_pairing;
 mod controller_model;
 mod input;
 mod motion_capture;
@@ -59,6 +60,7 @@ fn main() -> eframe::Result<()> {
 }
 
 struct BluetoothTestApp {
+    cable_pairing: cable_pairing::CablePairingPanel,
     commands: tokio::sync::mpsc::UnboundedSender<Command>,
     events: mpsc::Receiver<Event>,
     status: String,
@@ -173,6 +175,7 @@ impl BluetoothTestApp {
         Self {
             commands,
             events,
+            cable_pairing: cable_pairing::CablePairingPanel::default(),
             status: "Opening dedicated adapter…".into(),
             br_ready: false,
             ble_adapters: Vec::new(),
@@ -221,6 +224,11 @@ impl BluetoothTestApp {
     fn drain_events(&mut self) {
         while let Ok(event) = self.events.try_recv() {
             match event {
+                Event::CablePairing(event) => {
+                    if let Some(message) = self.cable_pairing.handle(event) {
+                        self.log(message);
+                    }
+                }
                 Event::BrReady(message) => {
                     self.br_ready = true;
                     self.busy = false;
@@ -671,6 +679,11 @@ impl eframe::App for BluetoothTestApp {
                     self.discovery_ui(&mut columns[0]);
                     self.connection_ui(&mut columns[1]);
                 });
+                if self.radio == RadioKind::BrEdr
+                    && let Some(action) = self.cable_pairing.show(ui)
+                {
+                    self.send(Command::CablePairing(action));
+                }
                 self.motion_capture_ui(ui);
                 if !self.controller_inputs.is_empty() {
                     ui.separator();
