@@ -7,6 +7,7 @@ use crate::{
     },
 };
 use csis::{CiaArchive, CiaSection};
+use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
 use std::{
     fs::File,
@@ -25,7 +26,7 @@ pub(in crate::impls::ctr) struct Entry {
 }
 
 pub(in crate::impls::ctr) struct CiaInstall {
-    archive: CiaArchive<File>,
+    archive: Arc<Mutex<CiaArchive<File>>>,
     entries: std::vec::IntoIter<Entry>,
     artifact: Artifact,
     old_paths: Vec<String>,
@@ -53,7 +54,7 @@ impl CiaInstall {
                 })
                 .unwrap_or_default();
             Ok(Self {
-                archive,
+                archive: Arc::new(Mutex::new(archive)),
                 entries: entries.into_iter(),
                 artifact: artifact.with_manifest(retained),
                 old_paths,
@@ -127,15 +128,19 @@ impl CiaInstall {
         Ok(hash.finalize().as_slice() == record.sha256)
     }
 
-    fn write_entry(&mut self, entry: Entry) -> Result<DepotFile, Error> {
+    fn write_entry(
+        archive: &mut CiaArchive<File>,
+        storage: &dyn VolumeStorage,
+        entry: Entry,
+    ) -> Result<DepotFile, Error> {
         let mut writer = StorageWriter {
-            file: self.storage.create(&entry.path)?,
+            file: storage.create(&entry.path)?,
             position: 0,
             hash: blake3::Hasher::new(),
         };
         match entry.content {
-            Content::Item(index) => self.archive.stream_item(index, &mut writer),
-            Content::Section(section) => self.archive.stream_section(section, &mut writer),
+            Content::Item(index) => archive.stream_item(index, &mut writer),
+            Content::Section(section) => archive.stream_section(section, &mut writer),
         }
         .map_err(|e| Error::malformed("CIA", e.to_string()))?;
         writer
@@ -152,13 +157,16 @@ impl Installable for CiaInstall {
     fn artifact(&self) -> &Artifact {
         &self.artifact
     }
-    async fn next_batch(mut self) -> Result<(Self, Option<Vec<DepotFile>>), Error> {
+    async fn next_batch(&mut self) -> Result<Option<Vec<DepotFile>>, Error> {
         let Some(entry) = self.entries.next() else {
-            return Ok((self, None));
+            return Ok(None);
         };
+        let archive = self.archive.clone();
+        let storage = self.storage.clone();
         tokio::task::spawn_blocking(move || {
-            let file = self.write_entry(entry)?;
-            Ok((self, Some(vec![file])))
+            let mut archive = archive.lock();
+            let file = Self::write_entry(&mut archive, &*storage, entry)?;
+            Ok(Some(vec![file]))
         })
         .await
         .map_err(|e| Error::Unsupported(format!("CIA worker failed: {e}")))?

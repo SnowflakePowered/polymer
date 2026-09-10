@@ -123,6 +123,8 @@ impl Depot for Ps3RapDepot {
                 }
             }
         });
-        crate::installable::Installation::from_progress(operation, receiver)
+        crate::installable::Installation::from_progress(operation, async move {
+            receiver.await.unwrap_or(Err(Error::InstallIncomplete))
+        })
     }
 }

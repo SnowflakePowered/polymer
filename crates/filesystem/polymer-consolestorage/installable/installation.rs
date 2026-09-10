@@ -11,8 +11,7 @@ pub trait Installable: Sized {
     /// Describe the artifact, including any files retained from a previous install.
     fn artifact(&self) -> &Artifact;
     /// Install the next batch. `None` means extraction is complete.
-    /// Ownership permits blocking archive implementations to move into a worker.
-    async fn next_batch(self) -> Result<(Self, Option<Vec<DepotFile>>), Error>;
+    async fn next_batch(&mut self) -> Result<Option<Vec<DepotFile>>, Error>;
     /// Complete a successfully extracted installation, recording it when required.
     async fn finish(self, artifact: Artifact) -> Result<Artifact, Error>;
 }
@@ -21,7 +20,7 @@ pub trait Installable: Sized {
 /// Use `finish().await` to drain remaining progress and obtain the final artifact.
 pub struct Installation<'a> {
     progress: Pin<Box<dyn Stream<Item = Result<String, Error>> + 'a>>,
-    outcome: oneshot::Receiver<Result<Artifact, Error>>,
+    outcome: Pin<Box<dyn Future<Output = Result<Artifact, Error>> + 'a>>,
 }
 impl<'a> Installation<'a> {
     pub fn new<I: Installable + 'a>(installable: I) -> Self {
@@ -34,30 +33,18 @@ impl<'a> Installation<'a> {
         I: Installable + 'a,
         F: Future<Output = Result<I, Error>> + 'a,
     {
-        let (sender, outcome) = oneshot::channel();
-        let progress = stream::once(async move {
-            match prepare.await {
-                Ok(installable) => futures::future::Either::Left(Self::drive(installable, sender)),
-                Err(error) => {
-                    let _ = sender.send(Err(error.clone()));
-                    futures::future::Either::Right(stream::once(async { Err(error) }))
-                }
-            }
-        })
-        .flatten();
+        let (progress, outcome) = Self::drive(prepare);
         Self::from_progress(progress, outcome)
     }
 
-    pub(crate) fn from_progress<S>(
-        progress: S,
-        outcome: oneshot::Receiver<Result<Artifact, Error>>,
-    ) -> Self
+    pub(crate) fn from_progress<S, F>(progress: S, outcome: F) -> Self
     where
         S: Stream<Item = Result<String, Error>> + 'a,
+        F: Future<Output = Result<Artifact, Error>> + 'a,
     {
         Self {
             progress: Box::pin(progress.fuse()),
-            outcome,
+            outcome: Box::pin(outcome),
         }
     }
 
@@ -65,48 +52,69 @@ impl<'a> Installation<'a> {
     /// Also returns an error previously observed through `next()`.
     pub async fn finish(mut self) -> Result<Artifact, Error> {
         while self.next().await.is_some() {}
-        self.outcome.await.unwrap_or(Err(Error::InstallIncomplete))
+        self.outcome.await
     }
 
-    fn drive<I: Installable + 'a>(
-        installable: I,
-        outcome: oneshot::Sender<Result<Artifact, Error>>,
-    ) -> impl Stream<Item = Result<String, Error>> + 'a {
-        let artifact = installable.artifact().clone();
-        let manifest = artifact.manifest().to_vec();
-        let state = Some((
-            installable,
-            artifact,
-            manifest,
-            std::collections::VecDeque::<DepotFile>::new(),
-            outcome,
-        ));
-        let progress = stream::unfold(state, |state| async move {
-            let (mut installable, artifact, mut manifest, mut pending, sender) = state?;
-            let result = loop {
-                if let Some(file) = pending.pop_front() {
-                    let path = file.path().to_string_lossy().into_owned();
-                    manifest.retain(|old| old.path() != file.path());
-                    manifest.push(file);
-                    return Some((
-                        Ok(path),
-                        Some((installable, artifact, manifest, pending, sender)),
-                    ));
-                }
-                match installable.next_batch().await {
-                    Ok((next, Some(files))) => {
-                        installable = next;
-                        pending.extend(files);
-                    }
-                    Ok((next, None)) => break next.finish(artifact.with_manifest(manifest)).await,
-                    Err(error) => break Err(error),
+    fn drive<I, F>(
+        prepare: F,
+    ) -> (
+        impl Stream<Item = Result<String, Error>> + 'a,
+        impl Future<Output = Result<Artifact, Error>> + 'a,
+    )
+    where
+        I: Installable + 'a,
+        F: Future<Output = Result<I, Error>> + 'a,
+    {
+        let (sender, outcome) = oneshot::channel();
+        let progress = stream::once(async move {
+            let installable = match prepare.await {
+                Ok(installable) => installable,
+                Err(error) => {
+                    let _ = sender.send(Err(error.clone()));
+                    return futures::future::Either::Left(stream::once(async { Err(error) }));
                 }
             };
-            let error = result.as_ref().err().cloned();
-            let _ = sender.send(result);
-            error.map(|error| (Err(error), None))
-        });
-        progress
+            let artifact = installable.artifact().clone();
+            let manifest = artifact.manifest().to_vec();
+            let state = Some((
+                installable,
+                artifact,
+                manifest,
+                std::collections::VecDeque::<DepotFile>::new(),
+                sender,
+            ));
+            let progress = stream::unfold(state, |state| async move {
+                let (mut installable, artifact, mut manifest, mut pending, sender) = state?;
+                let result = loop {
+                    if let Some(file) = pending.pop_front() {
+                        let path = file.path().to_string_lossy().into_owned();
+                        manifest.retain(|old| old.path() != file.path());
+                        manifest.push(file);
+                        return Some((
+                            Ok(path),
+                            Some((installable, artifact, manifest, pending, sender)),
+                        ));
+                    }
+                    match installable.next_batch().await {
+                        Ok(Some(files)) => {
+                            pending.extend(files);
+                        }
+                        Ok(None) => {
+                            break installable.finish(artifact.with_manifest(manifest)).await;
+                        }
+                        Err(error) => break Err(error),
+                    }
+                };
+                let error = result.as_ref().err().cloned();
+                let _ = sender.send(result);
+                error.map(|error| (Err(error), None))
+            });
+            futures::future::Either::Right(progress)
+        })
+        .flatten();
+        (progress, async move {
+            outcome.await.unwrap_or(Err(Error::InstallIncomplete))
+        })
     }
 }
 impl Stream for Installation<'_> {
@@ -135,9 +143,8 @@ mod tests {
         fn artifact(&self) -> &Artifact {
             &self.artifact
         }
-        async fn next_batch(mut self) -> Result<(Self, Option<Vec<DepotFile>>), Error> {
-            let batch = self.batches.pop_front().transpose()?;
-            Ok((self, batch))
+        async fn next_batch(&mut self) -> Result<Option<Vec<DepotFile>>, Error> {
+            self.batches.pop_front().transpose()
         }
         async fn finish(self, artifact: Artifact) -> Result<Artifact, Error> {
             if let Some(wait) = self.wait {

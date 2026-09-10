@@ -4,6 +4,7 @@ use crate::installable::DepotFile;
 use crate::installable::Installable;
 use crate::installable::artifacts::{Artifact, DescribeArtifact};
 use crate::{Error, VolumeStorage};
+use parking_lot::Mutex;
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
@@ -12,9 +13,14 @@ use std::sync::Arc;
 /// Writes pending NAND changes and records one firmware artifact at completion.
 /// Failed or cancelled installations are discarded by the NAND session finish().
 pub(super) struct PupInstall {
+    extraction: Arc<Mutex<PupExtraction>>,
+    artifact: Artifact,
+    storage: Arc<dyn VolumeStorage>,
+}
+
+struct PupExtraction {
     file: File,
     packages: Vec<(String, u64, u64)>,
-    artifact: Artifact,
     manifest: Vec<DepotFile>,
     paths: std::collections::BTreeSet<String>,
     index: usize,
@@ -54,18 +60,24 @@ impl PupInstall {
                 return Err(Error::malformed("PUP", "no flash packages"));
             }
             Ok(Self {
-                file: pup.file,
-                packages,
+                extraction: Arc::new(Mutex::new(PupExtraction {
+                    file: pup.file,
+                    packages,
+                    manifest: Vec::new(),
+                    paths: std::collections::BTreeSet::new(),
+                    index: 0,
+                    storage: storage.clone(),
+                })),
                 artifact: depot.describe(),
-                manifest: Vec::new(),
-                paths: std::collections::BTreeSet::new(),
-                index: 0,
                 storage,
             })
         })
         .await
         .map_err(|e| Error::Unsupported(format!("PUP worker failed: {e}")))?
     }
+}
+
+impl PupExtraction {
     fn extract(&mut self, bytes: &[u8]) -> Result<(), Error> {
         let mut archive = tar::Archive::new(bytes);
         for entry in archive
@@ -116,7 +128,7 @@ impl PupInstall {
     }
 }
 
-impl PupInstall {
+impl PupExtraction {
     fn next_file(&mut self) -> Result<String, Error> {
         let (name, offset, size) = &self.packages[self.index];
         let path = PathBuf::from(name);
@@ -139,14 +151,15 @@ impl Installable for PupInstall {
     fn artifact(&self) -> &Artifact {
         &self.artifact
     }
-    async fn next_batch(mut self) -> Result<(Self, Option<Vec<DepotFile>>), Error> {
-        if self.index == self.packages.len() {
-            return Ok((self, None));
-        }
+    async fn next_batch(&mut self) -> Result<Option<Vec<DepotFile>>, Error> {
+        let extraction = self.extraction.clone();
         tokio::task::spawn_blocking(move || {
-            self.next_file()?;
-            let files = std::mem::take(&mut self.manifest);
-            Ok((self, Some(files)))
+            let mut extraction = extraction.lock();
+            if extraction.index == extraction.packages.len() {
+                return Ok(None);
+            }
+            extraction.next_file()?;
+            Ok(Some(std::mem::take(&mut extraction.manifest)))
         })
         .await
         .map_err(|error| Error::Unsupported(format!("PUP worker failed: {error}")))?
