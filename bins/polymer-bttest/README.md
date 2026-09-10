@@ -12,6 +12,40 @@ run BR/EDR inquiry, resolve controller names, select Wii/SSP pairing policy,
 open HID control and interrupt channels, display raw reports, and send raw
 output reports. Link keys persist under `%LOCALAPPDATA%\Polymer`.
 
+### USB cable pairing
+
+In **Classic BR/EDR → USB cable pairing**:
+
+1. Connect a DualShock 3/SIXAXIS (`054c:0268`) with a USB data cable. On Windows,
+   its controller interface must use **WinUSB** for cable pairing. Windows'
+   standard `HidUsb` driver blocks the undeclared `F2`/`F5` feature reports with
+   error 87 ("The parameter is incorrect"). This is separate from the dedicated
+   Bluetooth adapter's WinUSB binding. After refreshing, click **Switch to WinUSB
+   (no elevation)** on the desired controller to attempt the switch using the
+   current process token. It does not launch UAC; Windows access errors appear
+   in the panel. A successful switch requires refreshing the controller list.
+2. Click **Refresh USB controllers**, then **Read addresses** on the desired
+   device. The panel shows its Bluetooth address, saved host, and the dedicated
+   adapter address that will replace that host.
+3. Click **Pair to dedicated adapter**. The tool verifies address readback and
+   persists a keyless DS3 reconnect record in the shared `input.db`. Pairing is
+   disabled if the persistent registry or dedicated adapter is unavailable.
+4. Unplug USB and press PS to initiate the wireless connection. The saved host
+   survives closing the tool and unplugging the cable; reconnecting USB does
+   not require pairing again unless the controller's host has changed.
+
+This implements the cable handshake only. DS3 Bluetooth input activation and
+decoding are not implemented yet. USB gameplay remains handled by SDL, but
+changing the controller's driver can affect wired input. Restore a compatible
+USB input driver after pairing if needed; this does not erase its saved host.
+If registration fails after the USB write, the panel reports that the hardware
+was paired but registration failed; read the addresses and retry. An already
+matching host is verified without another write. Switch Pro cable pairing can
+use the same session interface but is not implemented yet.
+
+`cargo run -p polymer-bluetooth --example cable_probe` performs read-only
+enumeration and address inspection, including backend and operation diagnostics.
+
 The Switch 2 BLE tab uses an OS-owned adapter (the motherboard MediaTek radio
 on the development machine). **Change controller order…** opens a combined
 four-player setup screen for both radios. Entering the screen sleeps connected
