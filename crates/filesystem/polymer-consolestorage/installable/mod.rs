@@ -13,10 +13,16 @@ pub use directory::DirectoryInstall;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum DepotType {
-    App = 0,
-    AppContent = 1,
-    AppUpdate = 2,
-    System = 3,
+    /// System file.
+    System = 0,
+    /// A game or application.
+    App = 1,
+    /// DLC for a game or application.
+    AppContent = 2,
+    /// An update for a game or application.
+    AppUpdate = 3,
+    /// Ticket for a game or application.
+    AppTicket = 4,
 }
 
 impl From<DepotType> for u8 {
@@ -31,10 +37,11 @@ impl TryFrom<u8> for DepotType {
 
     fn try_from(id: u8) -> Result<Self, u8> {
         match id {
-            0 => Ok(DepotType::App),
-            1 => Ok(DepotType::AppContent),
-            2 => Ok(DepotType::AppUpdate),
-            3 => Ok(DepotType::System),
+            0 => Ok(DepotType::System),
+            1 => Ok(DepotType::App),
+            2 => Ok(DepotType::AppContent),
+            3 => Ok(DepotType::AppUpdate),
+            4 => Ok(DepotType::AppTicket),
             other => Err(other),
         }
     }
