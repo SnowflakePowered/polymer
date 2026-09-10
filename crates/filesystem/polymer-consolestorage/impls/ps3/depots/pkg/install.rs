@@ -1,6 +1,4 @@
-use crate::installable::Installation;
-use futures::channel::oneshot;
-use futures::{TryStreamExt, stream};
+use crate::installable::Installable;
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
@@ -19,46 +17,13 @@ use crate::{Error, VolumeStorage};
 pub(super) struct Ps3PkgInstall {
     archive: PkgArchive<File>,
     root: String,
-    artifact: Option<Artifact>,
+    artifact: Artifact,
     manifest: Vec<DepotFile>,
     index: usize,
     storage: Arc<dyn VolumeStorage>,
 }
 
 impl Ps3PkgInstall {
-    pub fn run(
-        mut self,
-        outcome: oneshot::Sender<Result<Artifact, Error>>,
-    ) -> Installation<'static> {
-        let artifact = self
-            .artifact
-            .take()
-            .unwrap()
-            .with_manifest(std::mem::take(&mut self.manifest));
-        let storage = self.storage.clone();
-        let batches = stream::try_unfold(self, |mut install| async move {
-            if install.index == install.archive.items().len() {
-                return Ok::<_, Error>(None);
-            }
-            tokio::task::spawn_blocking(move || {
-                install.next_file()?;
-                let files = std::mem::take(&mut install.manifest);
-                Ok(Some((stream::iter(files.into_iter().map(Ok)), install)))
-            })
-            .await
-            .map_err(|error| Error::Unsupported(format!("PKG worker failed: {error}")))?
-        });
-        Installation::new(
-            batches.try_flatten(),
-            artifact,
-            move |artifact| async move {
-                storage.artifacts().record(&artifact).await?;
-                Ok(artifact)
-            },
-            outcome,
-        )
-    }
-
     pub async fn new(depot: &Ps3PkgDepot, storage: Arc<dyn VolumeStorage>) -> Result<Self, Error> {
         let depot = depot.clone();
         let mut install = tokio::task::spawn_blocking(move || {
@@ -72,7 +37,7 @@ impl Ps3PkgInstall {
             Ok::<_, Error>(Self {
                 archive,
                 root: depot.install_path.clone(),
-                artifact: Some(depot.describe()),
+                artifact: depot.describe(),
                 manifest: Vec::new(),
                 index: 0,
                 storage,
@@ -81,19 +46,9 @@ impl Ps3PkgInstall {
         .await
         .map_err(|error| Error::Unsupported(format!("PKG worker failed: {error}")))??;
         // Reinstalling a patch is additive. Retain ownership of earlier files.
-        let id = install.artifact.as_ref().unwrap().id();
+        let id = install.artifact.id();
         if let Some(old) = install.storage.artifacts().artifact(id).await? {
-            install.manifest = old
-                .manifest()
-                .iter()
-                .map(|file| {
-                    DepotFile::new(
-                        file.path().to_path_buf(),
-                        *file.blake3(),
-                        file.byte_length(),
-                    )
-                })
-                .collect();
+            install.artifact = install.artifact.with_manifest(old.manifest().to_vec());
         }
         Ok(install)
     }
@@ -132,5 +87,27 @@ impl Ps3PkgInstall {
         }
         self.index += 1;
         Ok(path)
+    }
+}
+
+impl Installable for Ps3PkgInstall {
+    fn artifact(&self) -> &Artifact {
+        &self.artifact
+    }
+    async fn next_batch(mut self) -> Result<(Self, Option<Vec<DepotFile>>), Error> {
+        if self.index == self.archive.items().len() {
+            return Ok((self, None));
+        }
+        tokio::task::spawn_blocking(move || {
+            self.next_file()?;
+            let files = std::mem::take(&mut self.manifest);
+            Ok((self, Some(files)))
+        })
+        .await
+        .map_err(|error| Error::Unsupported(format!("PKG worker failed: {error}")))?
+    }
+    async fn finish(self, artifact: Artifact) -> Result<Artifact, Error> {
+        self.storage.artifacts().record(&artifact).await?;
+        Ok(artifact)
     }
 }

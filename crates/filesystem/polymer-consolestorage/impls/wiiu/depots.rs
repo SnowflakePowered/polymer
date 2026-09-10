@@ -1,10 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use futures::Stream;
-use futures::channel::oneshot;
-use futures::future::TryFutureExt;
-
 use crate::Storage;
 use crate::error::Error;
 use crate::impls::wiiu::xml;
@@ -118,26 +114,10 @@ impl Depot for WiiUMetaXmlDepot {
         }
     }
 
-    fn install<'a, N: VirtualNand>(
-        &'a self,
-        nand: &'a N,
-    ) -> (
-        Box<dyn Future<Output = Result<Artifact, Error>>>,
-        Box<dyn Stream<Item = Result<String, Error>> + 'a>,
-    ) {
-        let (sender, receiver) = oneshot::channel();
-
+    fn install<'a, N: VirtualNand>(&'a self, nand: &'a N) -> crate::installable::Installation<'a> {
         let storage: Arc<dyn Storage> = nand.root();
-        let install = DirectoryInstall {
-            root: self.root.clone(),
-            base: self.install_path(),
-            storage,
-            artifact: self,
-        };
-
-        let artifact = receiver.unwrap_or_else(|_| Err(Error::InstallIncomplete));
-
-        (Box::new(artifact), Box::new(install.run(sender)))
+        let install = DirectoryInstall::new(self.root.clone(), self.install_path(), storage, self);
+        crate::installable::Installation::new(install)
     }
 }
 

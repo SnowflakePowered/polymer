@@ -3,7 +3,6 @@ use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 
 use futures::channel::oneshot;
-use futures::future::TryFutureExt;
 use futures::stream;
 
 use super::super::{GUEST_USER_ROOT, Ps3Nand, TitleId};
@@ -89,13 +88,7 @@ impl Depot for Ps3RapDepot {
         DepotType::AppTicket
     }
 
-    fn install<'a, N: VirtualNand>(
-        &'a self,
-        nand: &'a N,
-    ) -> (
-        Box<dyn Future<Output = Result<Artifact, Error>>>,
-        Box<dyn futures::Stream<Item = Result<String, Error>> + 'a>,
-    ) {
+    fn install<'a, N: VirtualNand>(&'a self, nand: &'a N) -> crate::installable::Installation<'a> {
         let (sender, receiver) = oneshot::channel();
         let operation = stream::once(async move {
             let result = async {
@@ -130,9 +123,6 @@ impl Depot for Ps3RapDepot {
                 }
             }
         });
-        (
-            Box::new(receiver.unwrap_or_else(|_| Err(Error::InstallIncomplete))),
-            Box::new(operation),
-        )
+        crate::installable::Installation::from_progress(operation, receiver)
     }
 }
