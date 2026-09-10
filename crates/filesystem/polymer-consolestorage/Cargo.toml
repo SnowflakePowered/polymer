@@ -11,6 +11,11 @@ path = "lib.rs"
 [dependencies]
 async-trait.workspace = true
 aes = "0.8.4"
+cbc = "0.1.2"
+ctr = "0.9.2"
+flate2 = "1"
+hmac = "0.12.1"
+tar = "0.4"
 atomic-write-file.workspace = true
 thiserror.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "tga"] }
@@ -33,6 +38,8 @@ zerocopy.workspace = true
 phf.workspace = true
 orbis-unpkg = "0.1.1"
 pkgrip = "2.0.0"
+csis = "0.1.0"
+sha2 = "0.10.9"
 
 gltf = "1.4.1"
 zenwebp = "0.4.4"
