@@ -38,7 +38,7 @@ impl Installable for DirectoryInstall {
     fn artifact(&self) -> &Artifact {
         &self.artifact
     }
-    async fn next_batch(mut self) -> Result<(Self, Option<Vec<DepotFile>>), Error> {
+    async fn next_batch(&mut self) -> Result<Option<Vec<DepotFile>>, Error> {
         for entry in self.entries.by_ref() {
             let entry = entry.map_err(|error| {
                 let path = error.path().unwrap_or(&self.root).to_owned();
@@ -73,9 +73,9 @@ impl Installable for DirectoryInstall {
                 copied.blake3,
                 copied.byte_length,
             );
-            return Ok((self, Some(vec![file])));
+            return Ok(Some(vec![file]));
         }
-        Ok((self, None))
+        Ok(None)
     }
     async fn finish(self, artifact: Artifact) -> Result<Artifact, Error> {
         Ok(artifact)

@@ -4,6 +4,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use parking_lot::Mutex;
 use pkgrip::PkgArchive;
 
 use super::super::writer::StorageWriter;
@@ -15,9 +16,14 @@ use crate::{Error, VolumeStorage};
 /// Streams an installation into the NAND working tree, then records one artifact
 /// commit. Failed or cancelled writes are discarded by the NAND session finish().
 pub(super) struct Ps3PkgInstall {
+    extraction: Arc<Mutex<PkgExtraction>>,
+    artifact: Artifact,
+    storage: Arc<dyn VolumeStorage>,
+}
+
+struct PkgExtraction {
     archive: PkgArchive<File>,
     root: String,
-    artifact: Artifact,
     manifest: Vec<DepotFile>,
     index: usize,
     storage: Arc<dyn VolumeStorage>,
@@ -35,11 +41,14 @@ impl Ps3PkgInstall {
             let archive = PkgArchive::from_reader(file, size)
                 .map_err(|error| Error::io(&depot.path, error))?;
             Ok::<_, Error>(Self {
-                archive,
-                root: depot.install_path.clone(),
+                extraction: Arc::new(Mutex::new(PkgExtraction {
+                    archive,
+                    root: depot.install_path.clone(),
+                    manifest: Vec::new(),
+                    index: 0,
+                    storage: storage.clone(),
+                })),
                 artifact: depot.describe(),
-                manifest: Vec::new(),
-                index: 0,
                 storage,
             })
         })
@@ -52,7 +61,9 @@ impl Ps3PkgInstall {
         }
         Ok(install)
     }
+}
 
+impl PkgExtraction {
     fn record_file(&mut self, path: String, mut writer: StorageWriter) -> Result<(), Error> {
         writer
             .flush()
@@ -68,7 +79,7 @@ impl Ps3PkgInstall {
     }
 }
 
-impl Ps3PkgInstall {
+impl PkgExtraction {
     fn next_file(&mut self) -> Result<String, Error> {
         let item = &self.archive.items()[self.index];
         let path = format!("{}/{}", self.root, item.name);
@@ -94,14 +105,15 @@ impl Installable for Ps3PkgInstall {
     fn artifact(&self) -> &Artifact {
         &self.artifact
     }
-    async fn next_batch(mut self) -> Result<(Self, Option<Vec<DepotFile>>), Error> {
-        if self.index == self.archive.items().len() {
-            return Ok((self, None));
-        }
+    async fn next_batch(&mut self) -> Result<Option<Vec<DepotFile>>, Error> {
+        let extraction = self.extraction.clone();
         tokio::task::spawn_blocking(move || {
-            self.next_file()?;
-            let files = std::mem::take(&mut self.manifest);
-            Ok((self, Some(files)))
+            let mut extraction = extraction.lock();
+            if extraction.index == extraction.archive.items().len() {
+                return Ok(None);
+            }
+            extraction.next_file()?;
+            Ok(Some(std::mem::take(&mut extraction.manifest)))
         })
         .await
         .map_err(|error| Error::Unsupported(format!("PKG worker failed: {error}")))?
