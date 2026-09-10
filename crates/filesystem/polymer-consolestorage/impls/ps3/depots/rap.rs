@@ -66,11 +66,11 @@ impl DescribeArtifact for Ps3RapDepot {
     fn describe(&self) -> Artifact {
         Artifact::new(
             format!("{}:rap", self.content_id),
-            DepotType::AppContent,
+            DepotType::AppTicket,
             Vec::new(),
             format!("{} license", self.content_id),
             None,
-            IconHint::Builtin(DepotType::AppContent),
+            IconHint::Builtin(DepotType::AppTicket),
         )
     }
 }
@@ -86,7 +86,7 @@ impl Depot for Ps3RapDepot {
     }
 
     fn depot_type(&self) -> DepotType {
-        DepotType::AppContent
+        DepotType::AppTicket
     }
 
     fn install<'a, N: VirtualNand>(

@@ -1,15 +1,12 @@
-use std::path::PathBuf;
-use std::sync::Arc;
-
-use futures::Stream;
+use crate::Error;
+use crate::installable::artifacts::{Artifact, DescribeArtifact};
+use crate::installable::{DepotFile, Installation};
+use crate::storage::Storage;
 use futures::channel::oneshot;
 use futures::stream;
+use std::path::PathBuf;
+use std::sync::Arc;
 use walkdir::WalkDir;
-
-use crate::error::Error;
-use crate::installable::DepotFile;
-use crate::installable::artifacts::{Artifact, DescribeArtifact};
-use crate::storage::Storage;
 
 /// Installs a depot that is a plain host directory into a [`Storage`].
 pub struct DirectoryInstall<'a> {
@@ -22,109 +19,49 @@ pub struct DirectoryInstall<'a> {
 }
 
 impl<'a> DirectoryInstall<'a> {
-    /// Drive the install as a stream of installed paths, handing the finished
-    /// [`Artifact`] to `outcome` once the walk is exhausted.
-    pub fn run(
-        self,
-        outcome: oneshot::Sender<Result<Artifact, Error>>,
-    ) -> impl Stream<Item = Result<String, Error>> + 'a {
-        let state = State {
-            entries: Box::new(WalkDir::new(&self.root).into_iter()),
-            install: self,
-            manifest: Vec::new(),
-            outcome: Some(outcome),
-            done: false,
-        };
-
-        stream::unfold(state, |mut state| async move {
-            if state.done {
-                return None;
-            }
-
-            loop {
-                let Some(entry) = state.entries.next() else {
-                    let artifact = state.artifact();
-                    state.report(Ok(artifact));
-                    return None;
-                };
-
-                let entry = match entry {
-                    Ok(entry) => entry,
-                    Err(error) => {
-                        let path = error.path().unwrap_or(&state.install.root).to_path_buf();
-                        let source = error
-                            .into_io_error()
-                            .unwrap_or_else(|| std::io::Error::other("directory walk failed"));
-
-                        return Some(state.fail(Error::io(&path, source)));
-                    }
-                };
-
-                let Some(relative) = entry
+    /// Drive copying and manifest collection through `next().await`.
+    pub fn run(self, outcome: oneshot::Sender<Result<Artifact, Error>>) -> Installation<'a> {
+        let artifact = self.artifact.describe();
+        let entries = WalkDir::new(&self.root).into_iter();
+        let files = stream::try_unfold((self, entries), |(install, mut entries)| async move {
+            for entry in entries.by_ref() {
+                let entry = entry.map_err(|error| {
+                    let path = error.path().unwrap_or(&install.root).to_owned();
+                    let source = error
+                        .into_io_error()
+                        .unwrap_or_else(|| std::io::Error::other("directory walk failed"));
+                    Error::io(&path, source)
+                })?;
+                let relative = entry
                     .path()
-                    .strip_prefix(&state.install.root)
-                    .ok()
-                    .map(|path| path.to_string_lossy().replace('\\', "/"))
-                    .filter(|relative| !relative.is_empty())
-                else {
-                    continue;
-                };
-
-                let destination = format!("{}/{relative}", state.install.base);
-
-                if entry.file_type().is_dir() {
-                    if let Err(error) = state.install.storage.create_dir_all(&destination) {
-                        return Some(state.fail(error));
-                    }
+                    .strip_prefix(&install.root)
+                    .map_err(|_| Error::InvalidPath(entry.path().display().to_string()))?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if relative.is_empty() {
                     continue;
                 }
-
-                let source = match tokio::fs::File::open(entry.path()).await {
-                    Ok(source) => Box::new(source),
-                    Err(error) => return Some(state.fail(Error::io(entry.path(), error))),
-                };
-
-                let storage = state.install.storage.clone();
-                return match storage.install_file(source, &destination).await {
-                    Ok(copied) => {
-                        state.manifest.push(DepotFile::new(
-                            PathBuf::from(destination),
-                            copied.blake3,
-                            copied.byte_length,
-                        ));
-                        Some((Ok(relative), state))
-                    }
-                    Err(error) => Some(state.fail(error)),
-                };
+                let destination = format!("{}/{relative}", install.base);
+                if entry.file_type().is_dir() {
+                    install.storage.create_dir_all(&destination)?;
+                    continue;
+                }
+                let source = tokio::fs::File::open(entry.path())
+                    .await
+                    .map_err(|error| Error::io(entry.path(), error))?;
+                let copied = install
+                    .storage
+                    .install_file(Box::new(source), &destination)
+                    .await?;
+                let file = DepotFile::new(
+                    PathBuf::from(destination),
+                    copied.blake3,
+                    copied.byte_length,
+                );
+                return Ok(Some((file, (install, entries))));
             }
-        })
-    }
-}
-
-struct State<'a> {
-    entries: Box<dyn Iterator<Item = walkdir::Result<walkdir::DirEntry>>>,
-    install: DirectoryInstall<'a>,
-    manifest: Vec<DepotFile>,
-    outcome: Option<oneshot::Sender<Result<Artifact, Error>>>,
-    done: bool,
-}
-
-impl State<'_> {
-    fn artifact(&mut self) -> Artifact {
-        let manifest = std::mem::take(&mut self.manifest);
-        self.install.artifact.describe().with_manifest(manifest)
-    }
-
-    /// Terminate the stream and return the artifact.
-    fn fail(mut self, error: Error) -> (Result<String, Error>, Self) {
-        self.report(Err(error.clone()));
-        (Err(error), self)
-    }
-
-    fn report(&mut self, outcome: Result<Artifact, Error>) {
-        self.done = true;
-        if let Some(sender) = self.outcome.take() {
-            let _ = sender.send(outcome);
-        }
+            Ok(None)
+        });
+        Installation::new(files, artifact, |artifact| async { Ok(artifact) }, outcome)
     }
 }
