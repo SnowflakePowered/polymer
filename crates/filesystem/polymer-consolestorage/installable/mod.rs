@@ -6,8 +6,12 @@ use std::path::{Path, PathBuf};
 
 pub mod artifacts;
 mod directory;
+mod installation;
+mod writer;
+pub(crate) use writer::StorageWriter;
 
 pub use directory::DirectoryInstall;
+pub use installation::Installation;
 
 /// Discriminants are persisted in the artifact database, so they are fixed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

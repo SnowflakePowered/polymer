@@ -1,20 +1,22 @@
+use crate::installable::Installation;
+use futures::channel::oneshot;
+use futures::{TryStreamExt, stream};
 use std::fs::File;
-use std::io::{self, Write};
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use futures::channel::oneshot;
-use futures::{Stream, stream};
 use pkgrip::PkgArchive;
 
+use super::super::writer::StorageWriter;
 use super::Ps3PkgDepot;
 use crate::installable::DepotFile;
 use crate::installable::artifacts::{Artifact, DescribeArtifact};
-use crate::{Error, StorageFile, VolumeStorage};
+use crate::{Error, VolumeStorage};
 
 /// Streams an installation into the NAND working tree, then records one artifact
 /// commit. Failed or cancelled writes are discarded by the NAND session finish().
-pub(super) struct Install {
+pub(super) struct Ps3PkgInstall {
     archive: PkgArchive<File>,
     root: String,
     artifact: Option<Artifact>,
@@ -23,7 +25,40 @@ pub(super) struct Install {
     storage: Arc<dyn VolumeStorage>,
 }
 
-impl Install {
+impl Ps3PkgInstall {
+    pub fn run(
+        mut self,
+        outcome: oneshot::Sender<Result<Artifact, Error>>,
+    ) -> Installation<'static> {
+        let artifact = self
+            .artifact
+            .take()
+            .unwrap()
+            .with_manifest(std::mem::take(&mut self.manifest));
+        let storage = self.storage.clone();
+        let batches = stream::try_unfold(self, |mut install| async move {
+            if install.index == install.archive.items().len() {
+                return Ok::<_, Error>(None);
+            }
+            tokio::task::spawn_blocking(move || {
+                install.next_file()?;
+                let files = std::mem::take(&mut install.manifest);
+                Ok(Some((stream::iter(files.into_iter().map(Ok)), install)))
+            })
+            .await
+            .map_err(|error| Error::Unsupported(format!("PKG worker failed: {error}")))?
+        });
+        Installation::new(
+            batches.try_flatten(),
+            artifact,
+            move |artifact| async move {
+                storage.artifacts().record(&artifact).await?;
+                Ok(artifact)
+            },
+            outcome,
+        )
+    }
+
     pub async fn new(depot: &Ps3PkgDepot, storage: Arc<dyn VolumeStorage>) -> Result<Self, Error> {
         let depot = depot.clone();
         let mut install = tokio::task::spawn_blocking(move || {
@@ -63,60 +98,22 @@ impl Install {
         Ok(install)
     }
 
-    pub fn run(
-        self,
-        sender: oneshot::Sender<Result<Artifact, Error>>,
-    ) -> impl Stream<Item = Result<String, Error>> {
-        stream::unfold(
-            (Some(self), Some(sender)),
-            |(install, mut sender)| async move {
-                sender.as_ref()?;
-                let mut install = install?;
-                if install.index == install.archive.items().len() {
-                    match install.finish().await {
-                        Ok(artifact) => {
-                            drop(install);
-                            let _ = sender.take().unwrap().send(Ok(artifact));
-                            return None;
-                        }
-                        Err(error) => {
-                            let _ = sender.take().unwrap().send(Err(error.clone()));
-                            return Some((Err(error), (Some(install), sender)));
-                        }
-                    }
-                }
-                // pkgrip is synchronous; keep decryption and disk I/O off the async executor.
-                let step = tokio::task::spawn_blocking(move || {
-                    let result = install.next_file();
-                    (install, result)
-                })
-                .await;
-                match step {
-                    Ok((install, Ok(path))) => Some((Ok(path), (Some(install), sender))),
-                    Ok((install, Err(error))) => {
-                        let _ = sender.take().unwrap().send(Err(error.clone()));
-                        Some((Err(error), (Some(install), sender)))
-                    }
-                    Err(error) => {
-                        let error = Error::Unsupported(format!("PKG worker failed: {error}"));
-                        let _ = sender.take().unwrap().send(Err(error.clone()));
-                        Some((Err(error), (None, sender)))
-                    }
-                }
-            },
-        )
+    fn record_file(&mut self, path: String, mut writer: StorageWriter) -> Result<(), Error> {
+        writer
+            .flush()
+            .map_err(|error| Error::io(&PathBuf::from(&path), error))?;
+        self.manifest
+            .retain(|file| file.path() != std::path::Path::new(&path));
+        self.manifest.push(DepotFile::new(
+            PathBuf::from(path),
+            *writer.hash.finalize().as_bytes(),
+            writer.position,
+        ));
+        Ok(())
     }
+}
 
-    async fn finish(&mut self) -> Result<Artifact, Error> {
-        let artifact = self
-            .artifact
-            .take()
-            .unwrap()
-            .with_manifest(std::mem::take(&mut self.manifest));
-        self.storage.artifacts().record(&artifact).await?;
-        Ok(artifact)
-    }
-
+impl Ps3PkgInstall {
     fn next_file(&mut self) -> Result<String, Error> {
         let item = &self.archive.items()[self.index];
         let path = format!("{}/{}", self.root, item.name);
@@ -135,40 +132,5 @@ impl Install {
         }
         self.index += 1;
         Ok(path)
-    }
-
-    fn record_file(&mut self, path: String, mut writer: StorageWriter) -> Result<(), Error> {
-        writer
-            .flush()
-            .map_err(|error| Error::io(&PathBuf::from(&path), error))?;
-        self.manifest
-            .retain(|file| file.path() != std::path::Path::new(&path));
-        self.manifest.push(DepotFile::new(
-            PathBuf::from(path),
-            *writer.hash.finalize().as_bytes(),
-            writer.position,
-        ));
-        Ok(())
-    }
-}
-
-struct StorageWriter {
-    file: Arc<dyn StorageFile>,
-    position: u64,
-    hash: blake3::Hasher,
-}
-
-impl Write for StorageWriter {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.file
-            .write_all_at(self.position, bytes)
-            .map_err(io::Error::other)?;
-        self.position += bytes.len() as u64;
-        self.hash.update(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.file.flush().map_err(io::Error::other)
     }
 }

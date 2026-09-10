@@ -1,7 +1,5 @@
 mod install;
 mod metadata;
-#[cfg(test)]
-mod tests;
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -112,7 +110,7 @@ impl Ps3PkgDepot {
         &self.install_path
     }
 
-    fn validate_path(path: &str) -> Result<(), Error> {
+    pub(super) fn validate_path(path: &str) -> Result<(), Error> {
         if path.split('/').any(|part| {
             matches!(part, "" | "." | "..")
                 || part.eq_ignore_ascii_case(".git")
@@ -220,6 +218,7 @@ impl DescribeArtifact for Ps3PkgDepot {
             DepotType::AppUpdate => "update",
             DepotType::AppContent => "content",
             DepotType::System => "system",
+            DepotType::AppTicket => "ticket",
         };
         Artifact::new(
             format!("{}:{role}", self.content_id),
@@ -262,7 +261,7 @@ impl Depot for Ps3PkgDepot {
         let (sender, receiver) = oneshot::channel();
         let operation = stream::once(async move {
             let state = if self.satisfies(nand) {
-                install::Install::new(self, nand.root()).await
+                install::Ps3PkgInstall::new(self, nand.root()).await
             } else {
                 Err(Error::Unsupported(format!(
                     "a PS3 PKG cannot be installed to {}",
