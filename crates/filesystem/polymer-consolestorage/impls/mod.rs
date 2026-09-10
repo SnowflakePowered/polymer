@@ -1,4 +1,5 @@
 pub mod battery;
+pub mod ctr;
 pub mod dreamcast;
 pub mod gamecube;
 pub mod memorycard;

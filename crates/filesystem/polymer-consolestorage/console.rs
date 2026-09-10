@@ -4,6 +4,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::impls::battery::BatterySaveRepo;
+use crate::impls::ctr::{CtrNand, CtrSaveRepo};
 use crate::impls::dreamcast::DreamcastMemoryCard;
 use crate::impls::gamecube::GameCubeMemoryCard;
 use crate::impls::ps1::PlaystationMemoryCard;
@@ -68,6 +69,8 @@ impl ConsoleStorage {
                 matches!(
                     platform,
                     WiiNand::PLATFORM
+                        | CtrNand::PLATFORM
+                        | CtrNand::NEW_PLATFORM
                         | WiiUNand::PLATFORM
                         | Ps3Nand::PLATFORM
                         | PspMemoryStick::PLATFORM
@@ -92,6 +95,12 @@ impl ConsoleStorage {
         label: Option<String>,
     ) -> Result<Self, Error> {
         match (kind, platform) {
+            (StorageKind::Nand, platform) if CtrNand::supports(platform) => Ok(Self::Nand(
+                Arc::new(CtrNand::create(storage, id, platform, label).await?),
+            )),
+            (StorageKind::SaveRepo, platform) if CtrNand::supports(platform) => Ok(Self::SaveRepo(
+                CtrSaveRepo::create(VersionedStorage::new(storage)?, id, platform, label).await?,
+            )),
             (StorageKind::Nand, WiiUNand::PLATFORM) => Ok(Self::Nand(Arc::new(
                 WiiUNand::new_empty(storage, id, label).await?,
             ))),
@@ -156,6 +165,12 @@ impl ConsoleStorage {
     pub async fn open(kind: StorageKind, storage: GitVolumeStorage) -> Result<Self, Error> {
         let metadata = storage.volumeinfo().await?.ok_or(Error::UnclaimedNand)?;
         match (kind, metadata.platform.as_str()) {
+            (StorageKind::Nand, platform) if CtrNand::supports(platform) => {
+                Ok(Self::Nand(Arc::new(CtrNand::open(storage).await?)))
+            }
+            (StorageKind::SaveRepo, platform) if CtrNand::supports(platform) => Ok(Self::SaveRepo(
+                CtrNand::open_save_repo(VersionedStorage::new(storage)?).await?,
+            )),
             (StorageKind::Nand, WiiUNand::PLATFORM) => {
                 Ok(Self::Nand(Arc::new(WiiUNand::open(storage).await?)))
             }
