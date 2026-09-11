@@ -1,10 +1,12 @@
+pub type ControllerSession = polymer_command::WorkerOwner<ControllerClient>;
+
 polymer_command::command_client! {
-    pub client ControllerSession {
+    pub client ControllerClient {
         closed: "controller plugin session is closed".to_owned();
 
         #[args(AttachAutomation)]
         pub fn attach_automation(
-            session: polymer_automation::AutomationSession,
+            session: polymer_automation::AutomationClient,
         ) -> Result<(), String>;
 
         #[args(AttachActions)]
@@ -41,7 +43,7 @@ polymer_command::command_client! {
 
         #[oneshot]
         #[args(Stop)]
-        fn stop();
+        pub(crate) fn stop();
     }
 }
 
@@ -60,12 +62,12 @@ impl PauseState {
     }
 }
 
-impl ControllerSession {
+impl ControllerClient {
     pub fn pause_resume(
         &self,
         state: PauseState,
         timeout: Option<std::time::Duration>,
-    ) -> Result<tokio::sync::oneshot::Receiver<Result<(), String>>, String> {
+    ) -> Result<polymer_command::PendingReply<(), String>, String> {
         const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
         self.pause_resume_with_timeout(state, timeout.unwrap_or(DEFAULT_TIMEOUT))
     }
@@ -74,7 +76,7 @@ impl ControllerSession {
         &self,
         slot: u32,
         timeout: Option<std::time::Duration>,
-    ) -> Result<tokio::sync::oneshot::Receiver<Result<(), String>>, String> {
+    ) -> Result<polymer_command::PendingReply<(), String>, String> {
         self.state_action(slot, true, timeout)
     }
 
@@ -82,7 +84,7 @@ impl ControllerSession {
         &self,
         slot: u32,
         timeout: Option<std::time::Duration>,
-    ) -> Result<tokio::sync::oneshot::Receiver<Result<(), String>>, String> {
+    ) -> Result<polymer_command::PendingReply<(), String>, String> {
         self.state_action(slot, false, timeout)
     }
 
@@ -91,7 +93,7 @@ impl ControllerSession {
         slot: u32,
         save: bool,
         timeout: Option<std::time::Duration>,
-    ) -> Result<tokio::sync::oneshot::Receiver<Result<(), String>>, String> {
+    ) -> Result<polymer_command::PendingReply<(), String>, String> {
         const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
         self.dispatch_state_action(slot, save, timeout.unwrap_or(DEFAULT_TIMEOUT))
     }
@@ -100,7 +102,7 @@ impl ControllerSession {
     pub fn quit(
         &self,
         timeout: Option<std::time::Duration>,
-    ) -> Result<tokio::sync::oneshot::Receiver<Result<Option<Vec<u8>>, String>>, String> {
+    ) -> Result<polymer_command::PendingReply<Option<Vec<u8>>, String>, String> {
         const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
         self.quit_with_timeout(timeout.unwrap_or(DEFAULT_TIMEOUT))
     }
@@ -110,14 +112,6 @@ impl ControllerSession {
         sink: impl Fn(&crate::actions::ParsedHotkey) -> Result<(), String> + Send + Sync + 'static,
     ) -> Result<(), String> {
         self.attach_action_sink(std::sync::Arc::new(sink))
-    }
-}
-
-impl Drop for ControllerSession {
-    fn drop(&mut self) {
-        if self.sender.is_unique() {
-            self.stop();
-        }
     }
 }
 

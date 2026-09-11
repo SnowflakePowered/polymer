@@ -5,7 +5,7 @@ use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 use super::PolymerHost;
 
-polymer_command::command_client! {
+polymer_command::native_client! {
     pub client Library {
         closed: "library service is unavailable".to_owned();
 
@@ -65,13 +65,6 @@ polymer_command::command_client! {
         pub async fn scraping_scrapers() -> Result<Value, String>;
         #[args(ScrapingRefresh)]
         pub async fn scraping_refresh(plugin: String) -> Result<(), String>;
-    }
-}
-
-impl Library {
-    pub fn channel() -> (Self, tokio::sync::mpsc::UnboundedReceiver<LibraryCommand>) {
-        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
-        (Self::new(sender), receiver)
     }
 }
 

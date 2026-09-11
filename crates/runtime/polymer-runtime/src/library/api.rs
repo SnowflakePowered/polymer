@@ -1,6 +1,3 @@
-use std::{future::Future, pin::Pin};
-
-use polymer_command::command_handler;
 use polymer_deno::polymer::LibraryCommandHandler;
 use polymer_library::{Game, Launchable, MediaData, Metadata, MetadataData, MetadataInput};
 use serde_json::{Value, json};
@@ -8,13 +5,7 @@ use uuid::Uuid;
 
 use super::LibraryBackend;
 
-#[command_handler]
 impl LibraryCommandHandler for LibraryBackend {
-    type Output<'handler>
-        = Pin<Box<dyn Future<Output = ()> + Send + 'handler>>
-    where
-        Self: 'handler;
-
     async fn games_list(&mut self, platform: Option<String>) -> Result<Value, String> {
         self.catalog
             .games(platform.as_deref())

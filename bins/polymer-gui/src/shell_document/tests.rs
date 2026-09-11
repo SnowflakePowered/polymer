@@ -765,9 +765,9 @@ async fn native_pointer_sequence_dispatches_a_delegated_click() {
         crate::shell_runtime::ShellRuntimeOptions {
             html: html.to_owned(),
             source_name: "polymer:///native-click-test.html".to_owned(),
-            emulator_commands: deno::EmulatorCommandSink::default(),
-            input_commands: deno::InputCommandSink::default(),
-            webrtc_commands: deno::WebRtcCommandSink::default(),
+            emulator_commands: deno::EmulatorDelivery::default(),
+            input_commands: deno::InputDelivery::default(),
+            webrtc_commands: deno::WebRtcDelivery::default(),
             plugin_runtime: Arc::new(polymer_pluginhost::runtime::PluginRuntime::new(
                 polymer_pluginhost::loading::PluginRegistry::new(),
                 plugin_directories,

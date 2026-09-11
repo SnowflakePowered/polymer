@@ -15,7 +15,6 @@ pub use dom::Mutation;
 pub use input::EventResult;
 pub use polymer_deno::polymer::InstanceToken;
 pub use polymer_runtime::{
-    EmulatorCommand, EmulatorCommandSink, InputCommand, InputCommandSink, WebRtcCommand,
-    WebRtcCommandSink,
+    EmulatorCommand, EmulatorDelivery, InputCommand, InputDelivery, WebRtcCommand, WebRtcDelivery,
 };
 pub(crate) use runtime::Runtime;

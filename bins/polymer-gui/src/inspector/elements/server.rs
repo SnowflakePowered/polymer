@@ -3,7 +3,7 @@
 use super::protocol::{InspectorProtocol, ProtocolError, Reply};
 use crate::{app::UserEvent, window_manager::EventLoopProxy};
 use futures_util::{SinkExt, StreamExt};
-use polymer_command::{CommandSink, CommandUnavailable};
+use polymer_command::LocalDelivery;
 use serde_json::{Value, json};
 use std::{
     error::Error,
@@ -107,10 +107,10 @@ impl Server {
                 accepted = listener.accept() => match accepted {
                     Ok((stream, _)) => {
                         let proxy = self.proxy.clone();
-                        let protocol = InspectorProtocol::new(CommandSink::try_new(move |command| {
+                        let protocol = InspectorProtocol::new(LocalDelivery::new(move |command| {
                             proxy
                                 .send_event(UserEvent::Inspector(command))
-                                .map_err(|_| CommandUnavailable)
+                                .map_err(|error| match error.0 { UserEvent::Inspector(command) => command, _ => unreachable!("matching inspector envelope"), })
                         }));
                         let session = Session {
                             upstream: self.upstream.clone(),

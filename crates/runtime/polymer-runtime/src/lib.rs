@@ -29,9 +29,9 @@ pub use controllers::{
     ControllerTopologyTransaction, DeviceMapping,
 };
 pub use frontend::{
-    ControllerApiState, Emulator, EmulatorCommand, EmulatorCommandHandler, EmulatorCommandSink,
-    FrontendServices, Input, InputCommand, InputCommandHandler, InputCommandSink, WebRtc,
-    WebRtcCommand, WebRtcCommandHandler, WebRtcCommandSink,
+    ControllerApiState, Emulator, EmulatorCommand, EmulatorCommandHandler, EmulatorDelivery,
+    FrontendServices, Input, InputCommand, InputCommandHandler, InputDelivery, WebRtc,
+    WebRtcCommand, WebRtcCommandHandler, WebRtcDelivery,
 };
 pub use instance::{
     AudioState, EmulatorActionEndpoint, EmulatorInstance, EmulatorLaunchConfig, HotkeyChord,
@@ -41,7 +41,6 @@ pub use instance::{
     TrackedSurfaceHandle, TrackedSurfaceId,
 };
 pub use library::LibraryService;
-pub use polymer_command::CommandSink;
 pub use polymer_pluginhost::emulator::{GraphicsHook, Hooks, InputHook};
 pub use savestates::{RgbaScreenshot, SaveStateManager, SaveStateMetadata};
 pub use session::{SessionController, mount_prepared_filesystem};

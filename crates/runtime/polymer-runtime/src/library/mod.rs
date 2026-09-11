@@ -48,17 +48,12 @@ impl LibraryService {
         if let Err(error) = scraping.resume().await {
             tracing::warn!(%error, "could not resume scrape jobs");
         }
-        let (client, mut commands) = Library::channel();
-        let mut backend = LibraryBackend {
+        let backend = LibraryBackend {
             catalog: catalog.clone(),
             scraping: scraping.clone(),
             media,
         };
-        tokio::spawn(async move {
-            while let Some(command) = commands.recv().await {
-                command.dispatch(&mut backend).await;
-            }
-        });
+        let client = Library::spawn(backend);
         Ok(Self {
             configuration_locks: Default::default(),
             client,

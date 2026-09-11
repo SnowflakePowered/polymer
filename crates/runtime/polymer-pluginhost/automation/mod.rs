@@ -1,10 +1,10 @@
 use std::{cell::RefCell, rc::Rc};
 
-use ::polymer_automation::{AutomationRequest, AutomationSession};
+use ::polymer_automation::{AutomationClient, AutomationRequest};
 use deno_core::{JsRuntime, OpState, op2};
 
 #[derive(Default)]
-pub(crate) struct AutomationState(Option<AutomationSession>);
+pub(crate) struct AutomationState(Option<AutomationClient>);
 
 #[op2]
 #[serde]
@@ -28,7 +28,7 @@ pub(crate) async fn op_ui_automation_request(
     }
 }
 
-pub(crate) fn attach(runtime: &mut JsRuntime, session: AutomationSession) {
+pub(crate) fn attach(runtime: &mut JsRuntime, session: AutomationClient) {
     runtime
         .op_state()
         .borrow_mut()
@@ -37,15 +37,12 @@ pub(crate) fn attach(runtime: &mut JsRuntime, session: AutomationSession) {
 }
 
 pub(crate) fn close(runtime: &mut JsRuntime) {
-    if let Some(session) = runtime
+    runtime
         .op_state()
         .borrow_mut()
         .borrow_mut::<AutomationState>()
         .0
-        .take()
-    {
-        session.close();
-    }
+        .take();
 }
 
 deno_core::extension!(
