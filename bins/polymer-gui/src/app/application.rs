@@ -1,4 +1,5 @@
 use super::*;
+use futures_util::FutureExt;
 
 pub(crate) struct ShellApplication {
     proxy: EventLoopProxy<UserEvent>,
@@ -95,12 +96,12 @@ impl ShellApplication {
         let completed_change = self
             .pending_input_change
             .as_mut()
-            .and_then(|pending| match pending.response.try_recv() {
-                Ok(result) => Some(result),
-                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => Some(Err(
+            .and_then(|pending| match pending.response.as_mut().now_or_never() {
+                Some(Ok(result)) => Some(result),
+                Some(Err(_)) => Some(Err(
                     "controller plugin session closed during topology change".to_owned(),
                 )),
-                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => None,
+                None => None,
             });
         if let Some(result) = completed_change
             && let Some(pending) = self.pending_input_change.take()
@@ -112,12 +113,12 @@ impl ShellApplication {
             let completed = self
                 .pending_pause_resume
                 .front_mut()
-                .and_then(|pending| match pending.response.try_recv() {
-                    Ok(result) => Some(result),
-                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => Some(Err(
-                        "emulator plugin session closed during pause/resume".to_owned(),
+                .and_then(|pending| match pending.response.as_mut().now_or_never() {
+                    Some(Ok(result)) => Some(result),
+                    Some(Err(_)) => Some(Err(
+                        "emulator plugin session closed during pause/resume".to_owned()
                     )),
-                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => None,
+                    None => None,
                 });
             let Some(completed) = completed else {
                 break;
@@ -133,12 +134,12 @@ impl ShellApplication {
         let completed_state = self
             .pending_state_action
             .as_mut()
-            .and_then(|pending| match pending.response.try_recv() {
-                Ok(result) => Some(result),
-                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => Some(Err(
+            .and_then(|pending| match pending.response.as_mut().now_or_never() {
+                Some(Ok(result)) => Some(result),
+                Some(Err(_)) => Some(Err(
                     "emulator plugin session closed during save-state action".to_owned(),
                 )),
-                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => None,
+                None => None,
             });
         if let Some(result) = completed_state
             && let Some(pending) = self.pending_state_action.take()
@@ -146,16 +147,15 @@ impl ShellApplication {
         {
             state.finish_state_action(pending, result);
         }
-        let completed_quit =
-            self.pending_quit
-                .as_mut()
-                .and_then(|pending| match pending.response.try_recv() {
-                    Ok(result) => Some(result),
-                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => Some(Err(
-                        "emulator plugin session closed during onQuit".to_owned(),
-                    )),
-                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => None,
-                });
+        let completed_quit = self.pending_quit.as_mut().and_then(|pending| {
+            match pending.response.as_mut().now_or_never() {
+                Some(Ok(result)) => Some(result),
+                Some(Err(_)) => Some(Err(
+                    "emulator plugin session closed during onQuit".to_owned()
+                )),
+                None => None,
+            }
+        });
         if let Some(result) = completed_quit
             && let Some(pending) = self.pending_quit.take()
             && let Some(state) = self.state.as_mut()

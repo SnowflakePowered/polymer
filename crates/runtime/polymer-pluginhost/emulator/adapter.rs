@@ -4,7 +4,6 @@ use crate::{
     configuration::{
         ConfigurationAccessError, ConfigurationCheckpoint, ConfigurationId, ConfigurationInstances,
     },
-    controller::PauseState,
     emulator::{EmulatorHostError, EmulatorLaunchArguments, EmulatorLaunchInvocation},
     runtime::js::ExtensionFunction,
 };
@@ -231,79 +230,6 @@ pub(crate) async fn execute_retained_emulator(
     EmulatorWorker::new(runtime)
         .execute_retained(invocation)
         .await
-}
-
-pub(crate) async fn execute_controller_change(
-    runtime: &mut JsRuntime,
-    topology: &polymer_controllers::ControllerTopology,
-    previous_topology: &polymer_controllers::ControllerTopology,
-) -> Result<polymer_controllers::ControllerTopology, EmulatorHostError> {
-    let callback = ExtensionFunction::get(runtime, "__polymerEmulator", "controllerChanged")
-        .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
-    let values = [
-        ExtensionFunction::argument(runtime, topology)
-            .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?,
-        ExtensionFunction::argument(runtime, previous_topology)
-            .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?,
-    ];
-    let value = callback
-        .call(runtime, &values)
-        .await
-        .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
-    deno_core::scope!(scope, runtime);
-    let value = v8::Local::new(scope, value);
-    serde_v8::from_v8(scope, value).map_err(|error| EmulatorHostError::Runtime(error.to_string()))
-}
-
-pub(crate) async fn execute_pause_resume(
-    runtime: &mut JsRuntime,
-    pause_state: PauseState,
-) -> Result<(), EmulatorHostError> {
-    let callback = ExtensionFunction::get(runtime, "__polymerEmulator", "pauseResume")
-        .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
-    let values = [ExtensionFunction::argument(runtime, pause_state.as_str())
-        .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?];
-    callback
-        .call(runtime, &values)
-        .await
-        .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
-    Ok(())
-}
-
-pub(crate) async fn execute_state_action(
-    runtime: &mut JsRuntime,
-    slot: u32,
-    save: bool,
-) -> Result<(), EmulatorHostError> {
-    let callback = ExtensionFunction::get(runtime, "__polymerEmulator", "stateAction")
-        .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
-    let values = [
-        ExtensionFunction::argument(runtime, slot)
-            .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?,
-        ExtensionFunction::argument(runtime, save)
-            .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?,
-    ];
-    callback
-        .call(runtime, &values)
-        .await
-        .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
-    Ok(())
-}
-
-pub(crate) async fn execute_quit(
-    runtime: &mut JsRuntime,
-) -> Result<Option<Vec<u8>>, EmulatorHostError> {
-    let callback = ExtensionFunction::get(runtime, "__polymerEmulator", "quit")
-        .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
-    let value = callback
-        .call(runtime, &[])
-        .await
-        .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
-    deno_core::scope!(scope, runtime);
-    let value = v8::Local::new(scope, value);
-    serde_v8::from_v8::<Option<ByteBuf>>(scope, value)
-        .map(|value| value.map(ByteBuf::into_vec))
-        .map_err(|error| EmulatorHostError::Runtime(error.to_string()))
 }
 
 pub(crate) struct RetainedEmulator {

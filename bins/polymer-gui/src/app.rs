@@ -19,6 +19,9 @@ use crate::window_manager::{
 };
 use polymer_command::{Completion, command_handler};
 use polymer_config::input::InputTransaction;
+use polymer_pluginhost::controller::{
+    ControllerChanged, PauseResume, PendingReply, Quit, StateAction,
+};
 use polymer_protocol::input::PointerPhase;
 use polymer_renderer::{CompositingPlan, Extent};
 use polymer_runtime::{EmulatorCommandHandler, InputCommandHandler, WebRtcCommandHandler};
@@ -94,7 +97,7 @@ enum PendingInputChangeCompletion {
 struct PendingInputChange {
     transaction: polymer_runtime::ControllerTopologyTransaction,
     completion: PendingInputChangeCompletion,
-    response: polymer_command::PendingReply<polymer_controllers::ControllerTopology, String>,
+    response: PendingReply<ControllerChanged>,
 }
 
 struct PendingPauseResume {
@@ -102,21 +105,21 @@ struct PendingPauseResume {
     state: polymer_pluginhost::controller::PauseState,
     started: Instant,
     result: Completion<Result<(), String>>,
-    response: polymer_command::PendingReply<(), String>,
+    response: PendingReply<PauseResume>,
 }
 
 struct PendingStateAction {
     slot: u32,
     save: bool,
     result: Completion<Result<serde_json::Value, String>>,
-    response: polymer_command::PendingReply<(), String>,
+    response: PendingReply<StateAction>,
 }
 
 struct PendingQuit {
     token: InstanceToken,
     cache: crate::launch::QuickResumeCache,
     screenshot: Option<Vec<u8>>,
-    response: polymer_command::PendingReply<Option<Vec<u8>>, String>,
+    response: PendingReply<Quit>,
 }
 
 enum PendingEmulatorCallback {

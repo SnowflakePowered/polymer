@@ -1,11 +1,11 @@
 mod events;
 pub use events::PluginEvent;
-mod controller_session;
+pub(crate) mod controller_session;
 mod invocation;
 pub(crate) mod js;
 mod worker;
 
-use invocation::InvocationControl;
+pub(crate) use invocation::InvocationControl;
 pub use invocation::{
     PluginCancellationToken, PluginInvocationError, PluginInvocationResult, PluginRuntimeOptions,
 };
@@ -20,7 +20,7 @@ use crate::{
     plugin::PluginInstance,
     scraper::{ScrapeInput, ScrapeResult, ScrapeScalar, ScraperPluginInstance},
 };
-use controller_session::start_controller_session_worker;
+use controller_session::ControllerActor;
 use parking_lot::Mutex;
 use serde_json::Value;
 use std::{
@@ -644,7 +644,7 @@ impl PluginRuntimeHandle {
         .map_err(PluginInvocationError::worker)?;
         let lifecycle = self.lifecycle(invocation.plugin.id());
         self.run_with_control(cancellation.control, move |control| {
-            start_controller_session_worker(invocation, worker, lifecycle, control)
+            ControllerActor::spawn(invocation, worker, lifecycle, control)
         })
         .await
     }
