@@ -268,6 +268,7 @@ impl BluetoothBackend {
         let supported = controller.is_some();
         let mut controller = controller.unwrap_or_else(decoder::unsupported);
         controller.set_ds3_motion(connected.ds3_motion.clone());
+        controller.set_sensor_calibration(connected.sensor_calibration);
         let device = Self::device_id(connected.controller_id);
         let profile = connected.profile_id.as_str();
         if !supported {
@@ -302,13 +303,20 @@ impl BluetoothBackend {
             Some(PointerSource::IrCamera) => PointerKind::IrCamera,
             Some(PointerSource::AirMouse) => PointerKind::AirMouse,
             Some(PointerSource::Optical) => PointerKind::Optical,
+            Some(PointerSource::Touchpad) => PointerKind::Touchpad,
             None => PointerKind::None,
         };
-        let flags = match source {
+        let mut flags = match source {
             Some(PointerSource::Optical) => PointerFlags::NATIVE,
             Some(_) => PointerFlags::DEVICE | PointerFlags::NATIVE,
             None => PointerFlags::default(),
         };
+        let contact = input
+            .touch_contacts
+            .is_some_and(|contacts| contacts.iter().any(|c| c.active));
+        if source == Some(PointerSource::Touchpad) && contact {
+            flags = flags | PointerFlags::CONTACT;
+        }
         let delta = if source == Some(PointerSource::Optical) {
             input.pointer
         } else {
@@ -318,6 +326,10 @@ impl BluetoothBackend {
             })
         };
         let pointer = match source {
+            Some(PointerSource::Touchpad) => PointerSample::Surface {
+                position: Self::normalized(input.pointer),
+                contact,
+            },
             Some(PointerSource::Optical) => PointerSample::Relative {
                 delta: [f32::from(delta[0]), f32::from(delta[1])],
                 counts_per_unit: 4096.0,

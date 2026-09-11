@@ -6,6 +6,7 @@ use polymer_input::{
 };
 use std::{sync::Arc, time::Instant};
 
+pub mod dualsense;
 pub mod dualshock3;
 pub mod switch;
 pub mod switch2;
@@ -13,6 +14,8 @@ pub mod wiimote;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct GamepadState {
+    pub touch_contacts: Option<[TouchContact; 2]>,
+    pub sensor_timestamp_ns: Option<u64>,
     pub buttons: u32,
     pub pressure: polymer_input::ButtonPressure,
     pub left_stick: [i16; 2],
@@ -24,11 +27,20 @@ pub struct GamepadState {
     pub gyroscope: [f32; 3],
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TouchContact {
+    pub id: u8,
+    pub active: bool,
+    /// Raw device coordinates; released contacts have no valid position.
+    pub position: [u16; 2],
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PointerSource {
     IrCamera,
     Optical,
     AirMouse,
+    Touchpad,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -67,6 +79,11 @@ pub struct DecodedInput {
 }
 
 pub trait BluetoothControllerDevice: Send + Sync {
+    fn set_sensor_calibration(
+        &mut self,
+        _calibration: Option<polymer_bluetooth::devices::SensorCalibration>,
+    ) {
+    }
     fn set_ds3_motion(
         &mut self,
         _motion: Option<polymer_bluetooth::devices::sony::dualshock3::motion::MotionState>,
@@ -181,6 +198,7 @@ pub trait BluetoothControllerDevice: Send + Sync {
 pub fn for_profile(profile: &ProfileId) -> Option<Box<dyn BluetoothControllerDevice>> {
     match profile.as_str() {
         "sony.dualshock3" => Some(Box::new(dualshock3::DualShock3Decoder::default())),
+        "sony.dualsense" => Some(Box::new(dualsense::DualSenseDecoder::default())),
         "nintendo.wiimote.original" | "nintendo.wiimote.plus" | "nintendo.wiimote.unknown" => {
             Some(Box::new(wiimote::WiimoteDecoder::default()))
         }

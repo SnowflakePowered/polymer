@@ -8,6 +8,8 @@ const SONY_VENDOR_ID: u16 = 0x054c;
 
 pub mod dualshock3;
 pub use dualshock3::DualShock3;
+pub mod dualsense;
+pub use dualsense::DualSense;
 
 macro_rules! sony_controller {
     ($controller:ident, $id:literal, $name:literal, [$($product:literal),+ $(,)?]) => {
@@ -39,7 +41,6 @@ sony_controller!(
     "DualShock 4",
     [0x05c4, 0x09cc, 0x0ba0]
 );
-sony_controller!(DualSense, "sony.dualsense", "DualSense", [0x0ce6, 0x0df2]);
 
 #[derive(Default)]
 pub struct UnknownSonyController;

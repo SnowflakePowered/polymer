@@ -130,6 +130,8 @@ pub struct ConnectionPolicy {
     pub reconnect: ReconnectPolicy,
     pub controller_opens_hid: bool,
     pub wait_for_encryption_before_inbound_hid: bool,
+    /// Authenticate and open HID on a controller-initiated ACL, serving SDP probes.
+    pub host_opens_hid_on_reconnect: bool,
     pub become_master: bool,
     pub automatic_flush_slots: Option<u16>,
     pub host_identity: HostIdentity,
@@ -159,6 +161,7 @@ impl Default for ConnectionPolicy {
             reconnect: ReconnectPolicy::Manual,
             controller_opens_hid: false,
             wait_for_encryption_before_inbound_hid: false,
+            host_opens_hid_on_reconnect: false,
             become_master: true,
             automatic_flush_slots: None,
             host_identity: HostIdentity::POLYMER,
@@ -183,6 +186,9 @@ impl Default for ConnectOptions {
 
 #[async_trait]
 pub trait ControllerSession: Send {
+    fn sensor_calibration(&self) -> Option<super::SensorCalibration> {
+        None
+    }
     fn ds3_motion(&self) -> Option<super::sony::dualshock3::motion::MotionState> {
         None
     }

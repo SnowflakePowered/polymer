@@ -136,7 +136,10 @@ impl BluetoothActor {
         let profile_id = controller.id();
         let vendor_product = controller.vendor_product(&identity);
         let mut controller_session = controller.connect(&options);
-        controller_session.synchronize(transport.as_mut()).await?;
+        if let Err(error) = controller_session.synchronize(transport.as_mut()).await {
+            let _ = transport.disconnect().await;
+            return Err(error);
+        }
         let serial = controller_session
             .serial()
             .or_else(|| controller.serial(&identity));
@@ -159,6 +162,7 @@ impl BluetoothActor {
             events.clone(),
             internal,
         );
+        let sensor_calibration = controller_session.sensor_calibration();
         let ds3_motion = controller_session.ds3_motion();
         let session = Session {
             transport,
@@ -166,6 +170,7 @@ impl BluetoothActor {
             report_task,
             externally_owned: false,
             info: ConnectedController {
+                sensor_calibration,
                 ds3_motion,
                 controller_id,
                 session_id,
@@ -251,7 +256,9 @@ impl BluetoothActor {
         if let Some(slots) = policy.automatic_flush_slots {
             hid.set_automatic_flush_slots(slots);
         }
-        let attach_result = if policy.wait_for_encryption_before_inbound_hid {
+        let attach_result = if policy.host_opens_hid_on_reconnect {
+            hid.attach_inbound_host_hid_with_frames(handle, frames).await
+        } else if policy.wait_for_encryption_before_inbound_hid {
             hid.attach_inbound_encrypted_with_frames(handle, frames, connection_events)
                 .await
         } else {
@@ -280,6 +287,7 @@ impl BluetoothActor {
             events.clone(),
             internal,
         );
+        let sensor_calibration = controller_session.sensor_calibration();
         let ds3_motion = controller_session.ds3_motion();
         Ok(Session {
             transport,
@@ -287,6 +295,7 @@ impl BluetoothActor {
             report_task,
             externally_owned: false,
             info: ConnectedController {
+                sensor_calibration,
                 ds3_motion,
                 controller_id,
                 session_id,
