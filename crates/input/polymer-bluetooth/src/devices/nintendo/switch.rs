@@ -36,6 +36,7 @@ trait SwitchModel: Send + Sync + 'static {
             reconnect: ReconnectPolicy::ControllerInitiated,
             controller_opens_hid: true,
             wait_for_encryption_before_inbound_hid: true,
+            host_opens_hid_on_reconnect: false,
             become_master: false,
             automatic_flush_slots: None,
             host_identity: HostIdentity::NINTENDO,

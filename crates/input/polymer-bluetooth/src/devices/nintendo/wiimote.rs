@@ -78,6 +78,7 @@ trait WiimoteModel: Send + Sync + 'static {
             // through Manager::accept_inbound rather than this outbound policy.
             controller_opens_hid: false,
             wait_for_encryption_before_inbound_hid: false,
+            host_opens_hid_on_reconnect: false,
             become_master: true,
             automatic_flush_slots: Some(0),
             host_identity: HostIdentity::POLYMER,

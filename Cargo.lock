@@ -9317,6 +9317,7 @@ dependencies = [
  "atomic-write-file",
  "btleplug",
  "bytes",
+ "crc32fast",
  "futures",
  "hidapi",
  "nusb",

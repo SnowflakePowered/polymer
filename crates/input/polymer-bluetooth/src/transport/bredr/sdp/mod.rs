@@ -1,5 +1,7 @@
 //! Minimal Service Discovery Protocol support used for controller identity.
 
+pub(super) mod server;
+
 use std::collections::BTreeMap;
 
 use bytes::{BufMut, Bytes, BytesMut};

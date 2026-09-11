@@ -41,6 +41,7 @@ pub struct BrEdrHid {
     control_sender: Option<ChannelSender>,
     interrupt_sender: Option<ChannelSender>,
     report_task: Option<JoinHandle<()>>,
+    sdp_task: Option<JoinHandle<()>>,
     automatic_flush_slots: u16,
 }
 
@@ -59,6 +60,7 @@ impl BrEdrHid {
             control_sender: None,
             interrupt_sender: None,
             report_task: None,
+            sdp_task: None,
             // 96 baseband slots = 60ms. Exposed for empirical tuning.
             automatic_flush_slots: 96,
         }
@@ -190,6 +192,33 @@ impl BrEdrHid {
                 Err(error)
             }
         }
+    }
+
+    /// The peer pages us, but expects host security and HID establishment.
+    /// Keep one L2CAP actor alive from the first SDP probe through HID setup.
+    pub async fn attach_inbound_host_hid_with_frames(
+        &mut self,
+        handle: u16,
+        frames: broadcast::Receiver<L2capFrame>,
+    ) -> Result<()> {
+        self.close_channels();
+        self.state.store(CONNECTING, Ordering::Release);
+        let link = Link::new_with_frame_receiver(self.host.clone(), handle, frames);
+        self.sdp_task = Some(super::sdp::server::Server::spawn(link.clone()));
+        let result = async {
+            self.host.authenticate(handle, true).await?;
+            // open_channel also accepts queued/crossed requests from the peer.
+            let control = open_channel_with_retry(&link, HID_CONTROL_PSM).await?;
+            let interrupt = open_channel_with_retry(&link, HID_INTERRUPT_PSM).await?;
+            self.finish_connection(handle, link, control, interrupt)
+                .await
+        }
+        .await;
+        if result.is_err() {
+            self.close_channels();
+            let _ = self.host.disconnect(handle).await;
+        }
+        result
     }
 
     async fn open_outbound_channels(&mut self, handle: u16) -> Result<()> {
@@ -376,6 +405,9 @@ impl BrEdrHid {
     }
 
     fn close_channels(&mut self) {
+        if let Some(task) = self.sdp_task.take() {
+            task.abort();
+        }
         if let Some(task) = self.report_task.take() {
             task.abort();
         }

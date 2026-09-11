@@ -9,6 +9,7 @@ aes = "0.8.4"
 async-trait.workspace = true
 btleplug = "0.12.0"
 bytes = "1.10"
+crc32fast = "1.5"
 futures = "0.3.32"
 hidapi = { version = "2.6.7", features = ["windows-native"] }
 nusb = { version = "0.2.7", features = ["tokio"] }

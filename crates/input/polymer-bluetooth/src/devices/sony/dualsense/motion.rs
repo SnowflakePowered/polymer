@@ -1,0 +1,75 @@
+use super::protocol::Report;
+use crate::devices::SensorCalibration;
+use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned, byteorder::little_endian::I16};
+
+/// Sony feature report 0x05, including report ID and Bluetooth CRC.
+#[derive(FromBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+pub struct FactoryCalibration {
+    id: u8,
+    gyro_bias: [I16; 3],
+    gyro_endpoints: [[I16; 2]; 3],
+    gyro_speed: [I16; 2],
+    accel_endpoints: [[I16; 2]; 3],
+    reserved: [u8; 2],
+    crc: [u8; 4],
+}
+
+impl FactoryCalibration {
+    pub fn nominal() -> SensorCalibration {
+        SensorCalibration {
+            accelerometer_bias: [0.0; 3],
+            accelerometer_scale: [9.80665 / 8192.0; 3],
+            gyroscope_bias: [0.0; 3],
+            gyroscope_scale: [std::f32::consts::PI / (180.0 * 16.0); 3],
+        }
+    }
+
+    pub fn parse(bytes: &[u8]) -> Option<SensorCalibration> {
+        if !Report::valid(bytes, 5, 41, 0xa3) {
+            return None;
+        }
+        let data = Self::ref_from_bytes(bytes).ok()?;
+        let speed = f32::from(data.gyro_speed[0].get()) + f32::from(data.gyro_speed[1].get());
+        if speed <= 0.0 {
+            return None;
+        }
+        let mut calibration = Self::nominal();
+        for i in 0..3 {
+            let gyro_span = f32::from(data.gyro_endpoints[i][0].get())
+                - f32::from(data.gyro_endpoints[i][1].get());
+            let accel_plus = f32::from(data.accel_endpoints[i][0].get());
+            let accel_span = accel_plus - f32::from(data.accel_endpoints[i][1].get());
+            if gyro_span <= 0.0 || accel_span <= 0.0 {
+                return None;
+            }
+            calibration.gyroscope_bias[i] = f32::from(data.gyro_bias[i].get());
+            calibration.gyroscope_scale[i] = speed.to_radians() / gyro_span;
+            calibration.accelerometer_bias[i] = accel_plus - accel_span / 2.0;
+            calibration.accelerometer_scale[i] = 2.0 * 9.80665 / accel_span;
+        }
+        Some(calibration)
+    }
+}
+
+const _: () = assert!(std::mem::size_of::<FactoryCalibration>() == 41);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn factory_trim_rejects_bad_crc_and_zero_span() {
+        let valid = include_bytes!("fixtures/calibration.bin");
+        let calibration = FactoryCalibration::parse(valid).unwrap();
+        assert_eq!(calibration.acceleration([100, -200, 50]), [0.0; 3]);
+        assert_eq!(calibration.rotation([100, -50, 25]), [0.0; 3]);
+        assert!(
+            FactoryCalibration::parse(include_bytes!("fixtures/invalid_calibration.bin")).is_none()
+        );
+        let mut corrupt = *valid;
+        corrupt[3] ^= 1;
+        assert!(FactoryCalibration::parse(&corrupt).is_none());
+        assert!(FactoryCalibration::parse(&valid[..40]).is_none());
+    }
+}

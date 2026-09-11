@@ -96,6 +96,7 @@ trait Switch2Model: Send + Sync + 'static {
             },
             controller_opens_hid: false,
             wait_for_encryption_before_inbound_hid: false,
+            host_opens_hid_on_reconnect: false,
             become_master: true,
             automatic_flush_slots: None,
             host_identity: HostIdentity::POLYMER,

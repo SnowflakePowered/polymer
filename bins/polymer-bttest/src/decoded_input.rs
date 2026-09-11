@@ -43,6 +43,44 @@ impl BluetoothTestApp {
             input.state.accelerometer,
             input.state.gyroscope,
         ));
+        if let Some(timestamp) = input.state.sensor_timestamp_ns {
+            ui.monospace(format!(
+                "Sensor time: {:.3} ms · accel m/s² · gyro rad/s",
+                timestamp as f64 / 1_000_000.0
+            ));
+        }
+        if let Some(contacts) = input.state.touch_contacts {
+            ui.label("Touchpad · two contacts (1920 × 1080)");
+            for (index, contact) in contacts.iter().enumerate() {
+                ui.monospace(format!(
+                    "Contact {} · ID {} · {} · X {} Y {}",
+                    index + 1,
+                    contact.id,
+                    if contact.active { "down" } else { "up" },
+                    contact.position[0],
+                    contact.position[1]
+                ));
+            }
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(288.0, 162.0), egui::Sense::hover());
+            ui.painter()
+                .rect_filled(rect, 6.0, ui.visuals().extreme_bg_color);
+            for (index, contact) in contacts
+                .iter()
+                .enumerate()
+                .filter(|(_, contact)| contact.active)
+            {
+                let position = rect.min
+                    + egui::vec2(
+                        (f32::from(contact.position[0]) / 1920.0).clamp(0.0, 1.0) * rect.width(),
+                        (f32::from(contact.position[1]) / 1080.0).clamp(0.0, 1.0) * rect.height(),
+                    );
+                ui.painter().circle_filled(
+                    position,
+                    6.0,
+                    [egui::Color32::LIGHT_BLUE, egui::Color32::LIGHT_GREEN][index],
+                );
+            }
+        }
         if input.state.pressure.mask != 0 {
             use polymer_input::GamepadButton::*;
             ui.label("Pressure · 0–255");

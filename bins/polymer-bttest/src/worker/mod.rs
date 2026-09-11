@@ -36,6 +36,8 @@ use tokio::{
     task::JoinHandle,
 };
 
+mod identity;
+
 fn connect_options(slot: usize) -> ConnectOptions {
     ConnectOptions {
         player_index: u8::try_from(slot).unwrap_or(u8::MAX),
@@ -929,6 +931,7 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                             completion.addr,
                             completion.identity.clone(),
                             session.as_ref().and_then(|session| session.ds3_motion()),
+                            session.as_ref().and_then(|session| session.sensor_calibration()),
                         );
                         active.insert(
                             completion.addr,
@@ -1002,6 +1005,7 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                             completion.addr,
                             completion.identity.clone(),
                             session.as_ref().and_then(|session| session.ds3_motion()),
+                            session.as_ref().and_then(|session| session.sensor_calibration()),
                         );
                         active.insert(
                             completion.addr,
@@ -1142,37 +1146,9 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                             let _ = host.disconnect(pending.handle).await;
                         }
                         stop_active(&mut active, device.addr).await;
-                        if profile_id.is_none() {
-                            match host.remote_name(&device).await {
-                                Ok(name) => {
-                                    profile_id = controller_for_bredr(&device, &name)
-                                        .map(|controller| controller.id());
-                                    diagnostic(&format!(
-                                        "Resolved {} as {name} before connecting",
-                                        device.addr
-                                    ));
-                                    let _ = events.send(Event::Device(device_view(
-                                        device.clone(),
-                                        name.clone(),
-                                    )));
-                                    let _ = events.send(Event::Log(format!(
-                                        "Resolved {} as {name}",
-                                        device.addr
-                                    )));
-                                }
-                                Err(error) => {
-                                    diagnostic(&format!(
-                                        "Final remote-name request for {} failed: {error}",
-                                        device.addr
-                                    ));
-                                    let _ = events.send(Event::Log(format!(
-                                        "Could not identify {} before connecting: {error}",
-                                        device.addr
-                                    )));
-                                }
-                            }
-                        }
-                        let identity = BrIdentity::new(profile_id);
+                        profile_id = identities.get(&device.addr)
+                            .and_then(|identity| identity.profile_id.clone()).or(profile_id);
+                        let mut identity = BrIdentity::new(profile_id);
                         if identity.is_switch() || identity.is_wii_remote() {
                             if let Err(error) = pairing.forget(device.addr) {
                                 let _ = events.send(Event::Error(format!(
@@ -1227,12 +1203,13 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                         let addr = device.addr;
                         let completion_tx = outbound_tx.clone();
                         let task_events = events.clone();
+                        let task_host = host.clone();
                         let task = tokio::spawn(async move {
                             let result = async {
                                 // During fresh SSP pairing the host opens both HID
                                 // PSMs. Bonded button-wake reconnects use the opposite,
                                 // controller-initiated direction handled below.
-                                transport.connect_discovered(&device).await?;
+                                identity.establish(&task_host, &device, &mut transport).await?;
 
                                 let session = match identity.connect(&mut transport, slot).await {
                                     Ok(session) => session,
@@ -1620,7 +1597,10 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                                 let task_host = host.clone();
                                 let task = tokio::spawn(async move {
                                     let result = async {
-                                        if identity.is_switch() {
+                                        let policy = identity.policy(addr, slot);
+                                        if policy.host_opens_hid_on_reconnect {
+                                            transport.attach_inbound_host_hid_with_frames(handle, early_frames).await?;
+                                        } else if policy.wait_for_encryption_before_inbound_hid {
                                             transport
                                                 .attach_inbound_encrypted_with_frames(
                                                     handle,
@@ -1774,12 +1754,14 @@ fn spawn_bredr_report_task(
     addr: DeviceAddr,
     identity: BrIdentity,
     motion: Option<polymer_bluetooth::devices::sony::dualshock3::motion::MotionState>,
+    sensor_calibration: Option<polymer_bluetooth::devices::SensorCalibration>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut wiimote_decoder = wiimote::WiimoteTelemetryDecoder;
         let mut report_decoder = identity.profile_id.as_ref().and_then(decoder::for_profile);
         if let Some(decoder) = &mut report_decoder {
             decoder.set_ds3_motion(motion.clone());
+            decoder.set_sensor_calibration(sensor_calibration);
         }
         let diagnostic_deadline = Instant::now() + Duration::from_secs(60);
         let mut next_diagnostic = Instant::now();
@@ -2005,7 +1987,7 @@ fn spawn_ble_bond_recovery(
 fn spawn_br_scan(host: Arc<HciHost>, events: mpsc::Sender<Event>) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut names: HashMap<DeviceAddr, String> = HashMap::new();
-        let mut use_wii_liac = true;
+        let mut use_wii_liac = false;
         loop {
             let mode = if use_wii_liac {
                 "Wii LIAC"
@@ -2025,6 +2007,19 @@ fn spawn_br_scan(host: Arc<HciHost>, events: mpsc::Sender<Event>) -> JoinHandle<
                         "BR/EDR inquiry cycle found {} device(s)",
                         found.len()
                     ));
+                    // Publish the entire inquiry batch before any remote-name
+                    // request. A slow device or cancelled scan must not hide it.
+                    for inquiry in &found {
+                        if !names.contains_key(&inquiry.addr) {
+                            let mut view = device_view(inquiry.clone(), "Resolving device name…".into());
+                            // Wait for identification before automatic pairing:
+                            // a generic class match cannot choose Nintendo's PIN.
+                            view.profile_id = None;
+                            view.profile_name = None;
+                            diagnostic(&format!("Discovered BR/EDR address {} (name pending)", inquiry.addr));
+                            let _ = events.send(Event::Device(view));
+                        }
+                    }
                     for inquiry in found {
                         let name = if let Some(name) = names.get(&inquiry.addr) {
                             name.clone()
