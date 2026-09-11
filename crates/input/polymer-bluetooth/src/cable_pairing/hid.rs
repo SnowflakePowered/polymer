@@ -15,10 +15,15 @@ impl CableHid {
     pub async fn enumerate() -> Result<Vec<CableDeviceIdentity>> {
         tokio::task::spawn_blocking(|| {
             let api = HidApi::new().map_err(Self::error)?;
-            Ok(api
-                .device_list()
-                .filter(|device| Self::supported(device))
-                .map(|device| CableDeviceIdentity {
+            let mut devices = Vec::new();
+            for device in api.device_list().filter(|device| Self::supported(device)) {
+                #[cfg(windows)]
+                if polymer_dshidmini::Device::manages_hid(device.path()).map_err(|error| {
+                    Error::Platform(format!("resolve DsHidMini HID parent: {error}"))
+                })? {
+                    continue;
+                }
+                devices.push(CableDeviceIdentity {
                     profile_id: ProfileId::new("sony.dualshock3"),
                     vendor_id: device.vendor_id(),
                     product_id: device.product_id(),
@@ -29,8 +34,11 @@ impl CableHid {
                     serial: device.serial_number().map(str::to_owned),
                     path: device.path().to_owned(),
                     usb: None,
-                })
-                .collect())
+                    #[cfg(windows)]
+                    dshidmini: None,
+                });
+            }
+            Ok(devices)
         })
         .await
         .map_err(|error| Error::Platform(format!("USB enumeration task failed: {error}")))?
@@ -81,7 +89,7 @@ impl UsbFeatureReports for CableHid {
             Error::Platform(format!(
                 "USB pairing GET_FEATURE 0x{id:02X} ({size} bytes) failed: {error}. {}",
                 if cfg!(windows) {
-                    "The standard Windows HidUsb driver blocks the DS3's undeclared F2/F5 pairing reports. Cable pairing requires the controller to use WinUSB; refresh after changing its driver. Restore a compatible USB input driver afterward if needed."
+                    "The standard Windows HidUsb driver blocks the DS3's undeclared F2/F5 pairing reports. Use DsHidMini with IPC enabled, or WinUSB, then refresh USB controllers."
                 } else { "Check that the controller supports DS3 pairing feature reports." },
             ))
         })

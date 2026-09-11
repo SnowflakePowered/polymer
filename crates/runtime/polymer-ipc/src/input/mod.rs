@@ -28,6 +28,8 @@ pub struct WireDeviceState {
     pub index: u8,
     pub sequence: u32,
     pub buttons: u32,
+    pub pressure_mask: u32,
+    pub pressure_values: [u8; 21],
     pub left_stick: [i16; 2],
     pub right_stick: [i16; 2],
     pub left_trigger: u16,
@@ -111,6 +113,8 @@ struct WireInputMessage {
     horizontal: I32,
     vertical: I32,
     capabilities: U32,
+    pressure_mask: U32,
+    pressure_values: [u8; 21],
 }
 
 impl WireInputMessage {
@@ -130,6 +134,8 @@ impl WireInputMessage {
             horizontal: I32::ZERO,
             vertical: I32::ZERO,
             capabilities: U32::ZERO,
+            pressure_mask: U32::ZERO,
+            pressure_values: [0; 21],
         }
     }
 
@@ -202,6 +208,8 @@ impl WireInputMessage {
         let mut wire = Self::empty(DEVICE_STATE, value.index);
         wire.sequence = U32::new(value.sequence);
         wire.buttons = U32::new(value.buttons);
+        wire.pressure_mask = U32::new(value.pressure_mask);
+        wire.pressure_values = value.pressure_values;
         wire.values_i16 = [
             value.left_stick[0],
             value.left_stick[1],
@@ -312,6 +320,8 @@ impl WireInputMessage {
             index: self.index,
             sequence: self.sequence.get(),
             buttons: self.buttons.get(),
+            pressure_mask: self.pressure_mask.get(),
+            pressure_values: self.pressure_values,
             left_stick: [self.values_i16[0].get(), self.values_i16[1].get()],
             right_stick: [self.values_i16[2].get(), self.values_i16[3].get()],
             left_trigger: self.values_u16[0].get(),
@@ -460,7 +470,32 @@ impl InputSubscriber {
     }
 }
 
-const _: () = assert!(mem::size_of::<WireInputMessage>() <= 128);
+const _: () = assert!(mem::size_of::<WireInputMessage>() <= 160);
 
 #[cfg(feature = "input-host")]
 pub mod host;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pressure_and_motion_survive_wire_serialization() {
+        let mut state = WireInputMessage::empty(DEVICE_STATE, 3).device_state();
+        state.sequence = 42;
+        state.buttons = 0x7fff;
+        state.pressure_mask = 0x7e0f;
+        state.pressure_values = std::array::from_fn(|index| (index * 11) as u8);
+        state.left_trigger = 32896;
+        state.right_trigger = 65535;
+        state.accelerometer = [1.0, -2.0, 9.80665];
+        state.gyroscope = [0.0, -1.5, 0.0];
+        state.sampled_at_ns = 123456;
+        state.battery_level = Some(75);
+        let message = InputMessage::DeviceState(state);
+        let encoded = WireInputMessage::encode(message);
+        let read = WireInputMessage::read_from_bytes(encoded.as_bytes()).unwrap();
+        assert_eq!(read.decode().unwrap(), message);
+        assert!(WireInputMessage::read_from_bytes(&encoded.as_bytes()[..112]).is_err());
+    }
+}

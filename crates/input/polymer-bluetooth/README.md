@@ -67,15 +67,35 @@ no standard Bluetooth link key. Other cable-pairing protocols can implement
 the session trait and return optional bond material without implementing USB
 input. Switch Pro cable pairing is not implemented yet.
 
-USB access uses HIDAPI where supported and raw endpoint-zero control transfers
+DsHidMini-bound USB controllers use the safe `polymer-dshidmini` interface to
+enumerate the physical driver device, read its address properties, and issue
+`PAIR_TO` over the driver's shared-memory IPC. This works independently of SXS
+or XInput mode. Both reply statuses and the refreshed host address must match
+before the common coordinator persists a reconnect record. Its HID children
+are excluded from raw feature-report enumeration. IPC must already be enabled;
+the backend does not install drivers, request elevation, or change HID mode.
+Version 3.3.1187.0 requires a single connected DsHidMini device because it lacks
+the newer `IpcSlotIndex` property. DsHidMini automatic pairing can replace the
+stored host on reconnect; configure its custom host or disable automatic pairing
+if the dedicated adapter should remain the host.
+
+Other USB access uses HIDAPI where supported and raw endpoint-zero control transfers
 through `nusb` for WinUSB-bound DS3 controllers on Windows. Windows `HidUsb`
 rejects the DS3's undeclared `F2`/`F5` pairing reports with error 87, regardless
 of buffer size. Bind the controller to WinUSB for this pairing path; `polymer-bttest`
 provides a per-controller switch button that attempts this without requesting
 elevation and reports Windows access errors. Restore a compatible USB input driver afterward if
 needed for SDL; the stored wireless host is unaffected. No USB input stream is opened, and closing a
-pairing session sends no reset/unpair command. DS3 Bluetooth report activation
-and decoding are separate work.
+pairing session sends no reset/unpair command.
+
+The DS3 profile uses cable-provisioned, controller-initiated reconnection without
+requiring an encrypted link. L2CAP recognizes the interrupt channel's legacy
+QoS option. Once both channels are configured, the session sends HIDP
+`53 F4 42 03 00 00` on the control channel, then a `52 01 ...` output report for
+the player LED and rumble state. Each SET_REPORT requires a successful handshake;
+initialization also waits for a 49-byte input report. Reports retain the raw DS3
+report ID (`01`) after the transport removes the HIDP `A1` prefix. Decoding into
+the input HAL's gamepad state is separate work.
 
 The reference for DS3 report sizes and address ordering is
 [BlueZ's sixaxis plugin](https://github.com/bluez/bluez/blob/master/plugins/sixaxis.c).

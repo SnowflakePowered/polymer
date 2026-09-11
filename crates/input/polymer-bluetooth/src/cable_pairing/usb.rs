@@ -37,6 +37,7 @@ impl DualShock3Usb {
                 path: std::ffi::CString::new(info.instance_id().to_string_lossy().as_bytes())
                     .unwrap(),
                 usb: Some(info),
+                dshidmini: None,
             })
             .collect())
     }

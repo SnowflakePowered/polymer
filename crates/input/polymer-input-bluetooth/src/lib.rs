@@ -347,6 +347,7 @@ impl BluetoothBackend {
             DeviceState {
                 gamepad: polymer_input::GamepadReport {
                     buttons: input.buttons,
+                    pressure: input.pressure,
                     left_stick: input.left_stick,
                     right_stick: input.right_stick,
                     left_trigger: input.left_trigger,

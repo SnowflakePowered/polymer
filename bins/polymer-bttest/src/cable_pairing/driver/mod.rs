@@ -7,6 +7,11 @@ pub struct DriverSwitch;
 
 impl DriverSwitch {
     pub async fn switch(device: CableDeviceIdentity) -> Result<String> {
+        if device.uses_dshidmini() {
+            return Err(Error::Unsupported(
+                "DsHidMini controllers use IPC pairing without a driver switch",
+            ));
+        }
         let path = device.path().to_string_lossy().into_owned();
         tokio::task::spawn_blocking(move || Self::switch_path(&path))
             .await

@@ -110,6 +110,7 @@ impl Capabilities {
     pub const POINTER_ANGULAR: Self = Self(1 << 12);
     pub const POINTER_SURFACE: Self = Self(1 << 13);
     pub const POINTER_CONTACT: Self = Self(1 << 14);
+    pub const BUTTON_PRESSURE: Self = Self(1 << 15);
     pub const CALIBRATE_STICK_CENTER: Self = Self(1 << 16);
     pub const CALIBRATE_STICK_RANGE: Self = Self(1 << 17);
     pub const CALIBRATE_DEAD_ZONE: Self = Self(1 << 18);

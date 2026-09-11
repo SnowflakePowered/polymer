@@ -12,6 +12,8 @@ use crate::{
     transport::bredr::LinkKey,
 };
 
+#[cfg(windows)]
+mod dshidmini;
 mod dualshock3;
 mod hid;
 mod usb;
@@ -26,6 +28,8 @@ pub struct CableDeviceIdentity {
     pub serial: Option<String>,
     path: CString,
     usb: Option<nusb::DeviceInfo>,
+    #[cfg(windows)]
+    dshidmini: Option<polymer_dshidmini::Device>,
 }
 
 impl CableDeviceIdentity {
@@ -34,6 +38,13 @@ impl CableDeviceIdentity {
     }
 
     pub async fn open(&self) -> Result<Box<dyn CablePairingSession>> {
+        #[cfg(windows)]
+        if let Some(device) = &self.dshidmini {
+            return Ok(Box::new(dshidmini::Session::new(
+                self.clone(),
+                device.clone(),
+            )));
+        }
         let identity = self.clone();
         match identity.profile_id.as_str() {
             "sony.dualshock3" => {
@@ -54,6 +65,9 @@ impl CableDeviceIdentity {
     }
 
     pub fn access_label(&self) -> &'static str {
+        if self.uses_dshidmini() {
+            return "DsHidMini IPC";
+        }
         if self.usb.is_some() {
             "WinUSB control transfers"
         } else {
@@ -63,6 +77,17 @@ impl CableDeviceIdentity {
 
     pub fn uses_winusb(&self) -> bool {
         self.usb.is_some()
+    }
+
+    pub fn uses_dshidmini(&self) -> bool {
+        #[cfg(windows)]
+        {
+            self.dshidmini.is_some()
+        }
+        #[cfg(not(windows))]
+        {
+            false
+        }
     }
 }
 
@@ -118,6 +143,8 @@ impl CablePairing {
     pub async fn enumerate() -> Result<Vec<CableDeviceIdentity>> {
         let mut devices = hid::CableHid::enumerate().await?;
         devices.extend(usb::DualShock3Usb::enumerate().await?);
+        #[cfg(windows)]
+        devices.extend(dshidmini::Session::enumerate().await?);
         Ok(devices)
     }
 

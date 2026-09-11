@@ -95,13 +95,9 @@ impl AxisSource {
     fn read(self, gamepad: &GamepadReport, host: &HostSample) -> i16 {
         let value = match self.source {
             AxisInput::Axis(index) => Self::gamepad_axis(gamepad, index),
-            AxisInput::Button(index) => {
-                if gamepad.buttons & (1 << index) != 0 {
-                    i16::MAX
-                } else {
-                    0
-                }
-            }
+            AxisInput::Button(index) => GamepadButton::from_wire(index).map_or(0, |button| {
+                (i32::from(gamepad.button_pressure(button)) * i32::from(i16::MAX) / 255) as i16
+            }),
             AxisInput::KeyPair(negative, positive) => {
                 match (host.keys.contains(negative), host.keys.contains(positive)) {
                     (true, false) => i16::MIN,
@@ -208,6 +204,12 @@ impl Mapping {
     pub fn apply(&self, source: &GamepadReport, host: &HostSample) -> GamepadReport {
         let mut output = GamepadReport::default();
         for (target, binding) in self.buttons.iter().enumerate() {
+            if let Some(Source::Button(index)) = binding
+                && source.pressure.mask & (1 << index) != 0
+            {
+                output.pressure.mask |= 1 << target;
+                output.pressure.values[target] = source.pressure.values[usize::from(*index)];
+            }
             if binding.is_some_and(|binding| Self::pressed(binding, source, host)) {
                 output.buttons |= 1 << target;
             }
@@ -371,7 +373,10 @@ impl Mapping {
 
     fn apply_key(output: &mut GamepadReport, target: Target) {
         match target {
-            Target::Button(index) => output.buttons |= 1 << index,
+            Target::Button(index) => {
+                output.buttons |= 1 << index;
+                output.pressure.values[usize::from(index)] = u8::MAX;
+            }
             Target::Axis { index, direction } if index < 4 => {
                 let value = if direction < 0 { i16::MIN } else { i16::MAX };
                 let current = match index {
@@ -388,5 +393,60 @@ impl Mapping {
             }
             Target::Axis { index, .. } => Self::set_axis(output, usize::from(index), i16::MAX),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remapping_preserves_pressure_including_zero_and_button_to_trigger() {
+        let mut mapping = Mapping {
+            buttons: [None; 21],
+            axes: [None; 8],
+            keys: Vec::new(),
+        };
+        mapping.buttons[GamepadButton::X as usize] = Some(Source::Button(GamepadButton::A as u8));
+        mapping.buttons[GamepadButton::A as usize] = Some(Source::Button(GamepadButton::B as u8));
+        mapping.axes[4] = Some(AxisSource::button(GamepadButton::A as u8));
+        let mut source = GamepadReport {
+            buttons: GamepadButton::A.mask() | GamepadButton::B.mask(),
+            ..Default::default()
+        };
+        source.pressure.mask = GamepadButton::A.mask() | GamepadButton::B.mask();
+        source.pressure.values[GamepadButton::A as usize] = 64;
+        let mapped = mapping.apply(&source, &HostSample::default());
+        assert_eq!(
+            mapped.buttons,
+            GamepadButton::X.mask() | GamepadButton::A.mask()
+        );
+        assert_eq!(mapped.button_pressure(GamepadButton::X), 64);
+        assert_eq!(mapped.button_pressure(GamepadButton::A), 0);
+        assert!((i32::from(mapped.left_trigger) - 64 * 257).abs() <= 2);
+        assert_eq!(
+            mapped.pressure.mask,
+            GamepadButton::X.mask() | GamepadButton::A.mask()
+        );
+        // Keyboard presses overlaid on an analog mapping must still reach full pressure.
+        let key = KeyCode::new("KeyX");
+        mapping
+            .keys
+            .push((key, Target::Button(GamepadButton::X as u8)));
+        let mut host = HostSample::default();
+        host.keys.set("KeyX", true);
+        assert_eq!(
+            mapping
+                .apply(&source, &host)
+                .button_pressure(GamepadButton::X),
+            255
+        );
+        source.pressure = Default::default();
+        assert_eq!(
+            mapping
+                .apply(&source, &HostSample::default())
+                .button_pressure(GamepadButton::X),
+            255
+        );
     }
 }

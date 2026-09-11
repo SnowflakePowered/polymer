@@ -6,6 +6,9 @@ use super::{ControllerDevice, DeviceIdentity, MatchConfidence, ProfileId};
 
 const SONY_VENDOR_ID: u16 = 0x054c;
 
+mod dualshock3;
+pub use dualshock3::DualShock3;
+
 macro_rules! sony_controller {
     ($controller:ident, $id:literal, $name:literal, [$($product:literal),+ $(,)?]) => {
         #[derive(Default)]
@@ -30,12 +33,6 @@ macro_rules! sony_controller {
     };
 }
 
-sony_controller!(
-    DualShock3,
-    "sony.dualshock3",
-    "DualShock 3",
-    [0x0268, 0x042f]
-);
 sony_controller!(
     DualShock4,
     "sony.dualshock4",
