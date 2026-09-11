@@ -695,7 +695,7 @@ async fn controller_callback_regenerates_a_live_mounted_configuration() {
     filesystem.filesystem().materialize().unwrap();
     let automation_calls = Arc::new(StdMutex::new(Vec::new()));
     let automation =
-        polymer_automation::AutomationClient::spawn(RecordingAutomation(automation_calls.clone()))
+        polymer_automation::AutomationSession::spawn(RecordingAutomation(automation_calls.clone()))
             .unwrap();
     session.attach_automation(automation.client()).unwrap();
     session

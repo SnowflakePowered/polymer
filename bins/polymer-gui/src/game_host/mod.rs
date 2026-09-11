@@ -771,7 +771,7 @@ impl GameHost {
                 process_id,
                 automation_desktop,
             )
-            .and_then(polymer_automation::AutomationClient::spawn)
+            .and_then(polymer_automation::AutomationSession::spawn)
             .map_err(|error| format!("could not start emulator UI automation: {error}"))
             .and_then(|automation| {
                 controller_session.attach_automation(automation.client())?;
