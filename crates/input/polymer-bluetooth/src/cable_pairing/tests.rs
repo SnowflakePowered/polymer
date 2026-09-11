@@ -64,6 +64,7 @@ async fn verified_pairing_survives_registry_reopen_and_replaces_stale_bond_keys(
         .unwrap();
     let host = CablePairingHost {
         address: DeviceAddr::public([6, 7, 8, 9, 10, 11]),
+        adapter_index: None,
     };
     let pairing = CablePairing::new(store.clone());
     pairing
@@ -89,6 +90,7 @@ async fn coordinator_supports_keyed_protocols_and_does_not_register_failed_hands
     let pairing = CablePairing::new(store.clone());
     let host = CablePairingHost {
         address: DeviceAddr::public([6, 7, 8, 9, 10, 11]),
+        adapter_index: None,
     };
     let mut session = Session::verified(None);
     session.result = Some(Err(Error::InvalidPacket("readback mismatch")));
@@ -117,7 +119,13 @@ async fn invalid_host_is_rejected_before_invoking_the_handshake() {
         let mut session = Session::verified(None);
         assert!(
             pairing
-                .pair(&mut session, &CablePairingHost { address })
+                .pair(
+                    &mut session,
+                    &CablePairingHost {
+                        address,
+                        adapter_index: None
+                    }
+                )
                 .await
                 .is_err()
         );
@@ -144,6 +152,7 @@ async fn registration_failure_reports_that_hardware_has_already_been_paired() {
     let pairing = CablePairing::new(Arc::new(FailedStore));
     let host = CablePairingHost {
         address: DeviceAddr::public([6, 7, 8, 9, 10, 11]),
+        adapter_index: None,
     };
     let error = pairing
         .pair(&mut Session::verified(None), &host)

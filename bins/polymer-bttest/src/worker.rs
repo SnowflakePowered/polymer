@@ -515,6 +515,7 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
         let _ = events.send(Event::CablePairing(crate::cable_pairing::Event::Host(
             polymer_bluetooth::cable_pairing::CablePairingHost {
                 address: info.address,
+                adapter_index: None,
             },
         )));
         diagnostic(&format!(
@@ -616,11 +617,24 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
     let mut ble_scan_task: Option<(usize, JoinHandle<()>)> = None;
     let mut controller_order_adapter = None;
     let mut identities = load_controller_identities(controller_store.as_ref());
+    let cable_ble_host = default_adapter_address().await.ok().map(|address| {
+        polymer_bluetooth::cable_pairing::CablePairingHost {
+            address,
+            adapter_index: Some(0),
+        }
+    });
+    if let Some(host) = cable_ble_host {
+        let _ = events.send(Event::CablePairing(crate::cable_pairing::Event::BleHost(
+            host,
+        )));
+    }
     let mut cable_pairing = crate::cable_pairing::worker::CablePairingWorker::new(
         host.as_ref()
             .map(|host| polymer_bluetooth::cable_pairing::CablePairingHost {
                 address: host.info().address,
+                adapter_index: None,
             }),
+        cable_ble_host,
         controller_store.clone(),
         cable_registry_error,
     );
@@ -632,7 +646,34 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
         tokio::select! {
             Some(result) = cable_pairing.receive() => {
                 if let Ok(crate::cable_pairing::Outcome::Paired { device, state }) = &result {
-                    identities.insert(state.controller_address, BrIdentity::new(Some(device.profile_id.clone())));
+                    if device.wireless_transport() == TransportKind::BrEdr {
+                        identities.insert(state.controller_address, BrIdentity::new(Some(device.profile_id.clone())));
+                    } else {
+                        let addr = state.controller_address;
+                        let slot = known_ble.get(&addr).map_or_else(
+                            || next_slot(&active, &pending_inbound, &pending_outbound, &pending_ble),
+                            |known| known.slot,
+                        );
+                        let known = KnownBle {
+                            adapter_index: cable_ble_host.and_then(|host| host.adapter_index).unwrap_or(0),
+                            profile_id: device.profile_id.clone(),
+                            device: BleDevice {
+                                addr, name: Some(device.name.clone()), rssi: None,
+                                services: Vec::new(), manufacturer_data: HashMap::new(),
+                            },
+                            slot,
+                        };
+                        known_ble.insert(addr, known.clone());
+                        if let Err(error) = save_known_ble_controllers(controller_store.as_ref(), &known_ble) {
+                            let _ = events.send(Event::Log(format!("Could not save cable-paired player slot: {error}")));
+                        }
+                        if !pending_ble.contains_key(&addr) && !active.contains_key(&addr) {
+                            pending_ble.insert(addr, spawn_ble_connection(
+                                known.adapter_index, known.device, known.slot, true,
+                                events.clone(), ble_tx.clone(), ble_scan_gate.clone(),
+                            ));
+                        }
+                    }
                 }
                 let _ = events.send(Event::CablePairing(crate::cable_pairing::Event::Finished(
                     result.map_err(|error| error.to_string()),

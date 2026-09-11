@@ -52,7 +52,19 @@ enumeration and address inspection, including backend and operation diagnostics.
 
 `cargo run -p polymer-bttest --example cable_pair -- <controller Bluetooth address>`
 uses the same pairing coordinator and persistent database as the panel, and selects
-the dedicated adapter automatically. Close other applications using that adapter first.
+the dedicated adapter for DS3 or the default OS BLE adapter for Switch 2. Close
+other applications using the selected adapter first.
+
+For Switch 2 controllers, the **USB cable pairing** panel is available in both
+radio tabs. Connect a Joy-Con 2, Switch 2 Pro, or NSO GameCube controller over USB,
+refresh, read its addresses, then select **Pair to OS BLE adapter**. This requires
+no dedicated BR/EDR radio. It uses command interface 1 and leaves HID interface 0
+alone. After verified pairing, unplug USB and press HOME (or another normal wake
+button); the BLE wake listener is armed immediately and the bond survives restart.
+
+`cargo run -p polymer-bttest --example cable_pair -- --list` inspects the connected
+USB controllers without changing their saved hosts. Supply one of the printed
+controller addresses instead of `--list` to pair it and save the reconnect record.
 
 For DsHidMini 3.3.1187.0, connect only one DsHidMini controller during pairing:
 that version does not expose a stable device-to-IPC-slot property. The backend

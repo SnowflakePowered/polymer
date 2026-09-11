@@ -2,14 +2,8 @@
 
 use std::{marker::PhantomData, sync::Arc, time::Duration};
 
-use aes::{
-    Aes128,
-    cipher::{BlockEncrypt, KeyInit, generic_array::GenericArray},
-};
 use async_trait::async_trait;
 use btleplug::api::WriteType;
-use bytes::Bytes;
-use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::devices::{
@@ -18,6 +12,10 @@ use crate::devices::{
 };
 use crate::transport::ble::{BleDevice, GattProfile};
 use crate::{DeviceAddr, Error, Result, Transport, TransportKind};
+
+pub(crate) mod packet;
+pub(crate) mod protocol;
+use protocol::Switch2Commands;
 
 pub const SERVICE_UUID: Uuid = Uuid::from_u128(0xab7de9be_89fe_49ad_828f_118f09df7fd0);
 pub const COMMON_INPUT_UUID: Uuid = Uuid::from_u128(0xab7de9be_89fe_49ad_828f_118f09df7fd2);
@@ -117,103 +115,6 @@ trait Switch2Model: Send + Sync + 'static {
         Some(DeviceAddr::public(bytes))
     }
 
-    async fn command(
-        transport: &mut dyn Transport,
-        command: u8,
-        subcommand: u8,
-        data: &[u8],
-    ) -> Result<Bytes> {
-        let data_len = u8::try_from(data.len())
-            .map_err(|_| Error::InvalidPacket("Switch 2 command payload is too large"))?;
-        let mut responses = transport.responses().ok_or(Error::Unsupported(
-            "Switch 2 command response notifications are unavailable",
-        ))?;
-        let mut packet = Vec::with_capacity(8 + data.len());
-        packet.extend_from_slice(&[command, 0x91, 0x01, subcommand, 0x00, data_len, 0x00, 0x00]);
-        packet.extend_from_slice(data);
-        transport.send(&packet).await?;
-        tokio::time::timeout(Duration::from_secs(3), async {
-            loop {
-                match responses.recv().await {
-                    Ok(response)
-                        if response.len() >= 8
-                            && response[0] == command
-                            && response[1] == 0x01
-                            && response[2] == 0x01
-                            && response[3] == subcommand =>
-                    {
-                        return Ok(Bytes::copy_from_slice(&response[8..]));
-                    }
-                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(broadcast::error::RecvError::Closed) => return Err(Error::ChannelClosed),
-                }
-            }
-        })
-        .await
-        .map_err(|_| Error::Timeout("Switch 2 command response"))?
-    }
-
-    async fn pair(transport: &mut dyn Transport, host_address: DeviceAddr) -> Result<()> {
-        let mut reversed_host_address = host_address.bytes();
-        reversed_host_address.reverse();
-        let mut address_payload = [0; 14];
-        address_payload[1] = 2;
-        address_payload[2..8].copy_from_slice(&reversed_host_address);
-        address_payload[8..14].copy_from_slice(&reversed_host_address);
-        let address_response = Self::command(transport, 0x15, 0x01, &address_payload).await?;
-        if address_response.len() < 9 || address_response[0] != 1 || address_response[2] != 1 {
-            return Err(Error::InvalidPacket(
-                "Switch 2 pairing address response is malformed",
-            ));
-        }
-
-        let host_key_wire = rand::random::<[u8; 16]>();
-        let mut key_request = [0; 17];
-        key_request[1..].copy_from_slice(&host_key_wire);
-        let key_response = Self::command(transport, 0x15, 0x04, &key_request).await?;
-        if key_response.len() < 17 || key_response[0] != 1 {
-            return Err(Error::InvalidPacket(
-                "Switch 2 pairing key response is malformed",
-            ));
-        }
-        let mut ltk_wire = [0; 16];
-        for (index, slot) in ltk_wire.iter_mut().enumerate() {
-            *slot = host_key_wire[index] ^ key_response[index + 1];
-        }
-
-        let challenge_wire = rand::random::<[u8; 16]>();
-        let mut challenge_request = [0; 17];
-        challenge_request[1..].copy_from_slice(&challenge_wire);
-        let challenge_response = Self::command(transport, 0x15, 0x02, &challenge_request).await?;
-        if challenge_response.len() < 17
-            || challenge_response[0] != 1
-            || challenge_response[1..17] != Self::pairing_confirmation(ltk_wire, challenge_wire)
-        {
-            return Err(Error::InvalidPacket(
-                "Switch 2 pairing AES confirmation failed",
-            ));
-        }
-        if Self::command(transport, 0x15, 0x03, &[0]).await?.first() != Some(&1) {
-            return Err(Error::InvalidPacket(
-                "Switch 2 pairing finalization was rejected",
-            ));
-        }
-        Ok(())
-    }
-
-    fn pairing_confirmation(ltk_wire: [u8; 16], challenge_wire: [u8; 16]) -> [u8; 16] {
-        let mut key = ltk_wire;
-        key.reverse();
-        let mut challenge = challenge_wire;
-        challenge.reverse();
-        let cipher = Aes128::new(GenericArray::from_slice(&key));
-        let mut block = GenericArray::clone_from_slice(&challenge);
-        cipher.encrypt_block(&mut block);
-        let mut response = [0; 16];
-        response.copy_from_slice(&block);
-        response
-    }
-
     async fn synchronize(
         transport: &mut dyn Transport,
         player_index: u8,
@@ -230,9 +131,13 @@ trait Switch2Model: Send + Sync + 'static {
                 None
             }
         };
-        Self::command(transport, 0x0c, 0x02, &[Self::FEATURE_MASK, 0, 0, 0]).await?;
+        protocol::BleCommands(transport)
+            .command(0x0c, 0x02, &[Self::FEATURE_MASK, 0, 0, 0])
+            .await?;
         tokio::time::sleep(Duration::from_millis(500)).await;
-        Self::command(transport, 0x0c, 0x04, &[Self::FEATURE_MASK, 0, 0, 0]).await?;
+        protocol::BleCommands(transport)
+            .command(0x0c, 0x04, &[Self::FEATURE_MASK, 0, 0, 0])
+            .await?;
         Self::set_led(transport, player_index).await?;
         Ok(serial)
     }
@@ -242,7 +147,9 @@ trait Switch2Model: Send + Sync + 'static {
         request[0] = SERIAL_LENGTH as u8;
         request[1] = 0x7e;
         request[4..].copy_from_slice(&SERIAL_ADDRESS.to_le_bytes());
-        let response = Self::command(transport, 0x02, 0x04, &request).await?;
+        let response = protocol::BleCommands(transport)
+            .command(0x02, 0x04, &request)
+            .await?;
         if response.len() < 8 + SERIAL_LENGTH
             || usize::from(response[0]) != SERIAL_LENGTH
             || response[4..8] != request[4..8]
@@ -267,7 +174,9 @@ trait Switch2Model: Send + Sync + 'static {
     async fn set_led(transport: &mut dyn Transport, slot: u8) -> Result<()> {
         let mut data = [0; 8];
         data[0] = slot.saturating_add(1).min(0x0f);
-        Self::command(transport, 0x09, 0x07, &data).await?;
+        protocol::BleCommands(transport)
+            .command(0x09, 0x07, &data)
+            .await?;
         Ok(())
     }
 }
@@ -298,7 +207,9 @@ impl<M: Switch2Model> ControllerSession for Switch2Session<M> {
         transport: &mut dyn Transport,
         enabled: bool,
     ) -> Result<()> {
-        M::command(transport, 0x09, 0x08, &[u8::from(enabled), 0, 0, 0]).await?;
+        protocol::BleCommands(transport)
+            .command(0x09, 0x08, &[u8::from(enabled), 0, 0, 0])
+            .await?;
         Ok(())
     }
 
@@ -397,7 +308,7 @@ where
                     "Switch 2 advertisement lacks Nintendo manufacturer data",
                 ))?;
         if M::is_pairing_data(data) {
-            M::pair(transport, local_address).await?;
+            protocol::BleCommands(transport).pair(local_address).await?;
         }
         Ok(())
     }

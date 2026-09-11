@@ -104,6 +104,24 @@ Raw USB host writes use `wValue=0x03f5` and an `01 00 <address>` payload, as in
 [sixpair](https://www.pabr.org/sixlinux/sixpair.c); the HIDAPI report prefix is
 not copied into that raw payload. `cable_probe` is a read-only diagnostic example.
 
+Switch 2 cable pairing supports Joy-Con 2 L/R, Switch 2 Pro, and NSO GameCube
+controllers. It claims only vendor interface 1 (bulk OUT `02`, IN `82`) via
+`nusb`, leaving the HID input interface available to SDL. On Windows this uses
+WinUSB on interface 1; controllers advertising the Microsoft compatible ID can
+bind the built-in driver automatically. The library never installs or replaces
+a driver.
+
+The USB and BLE paths share Nintendo's `15/01`, `15/04`, `15/02`, `15/03`
+address/key/AES-confirmation/finalization handshake. USB inspection retrieves the
+controller address and reads the saved hosts from flash. Pairing verifies the
+controller identity and saved host before registering a BLE reconnect record.
+Pass the OS BLE radio address and `Some(adapter_index)` in `CablePairingHost`;
+DS3 uses the dedicated radio address and `None`. A transport mismatch is rejected
+before any pairing write. Nintendo's pseudo-OOB key is not stored as a BR/EDR
+link key or imported into Windows SMP; reconnect uses the existing OS GATT path.
+The wire format and flash layout follow
+[the Switch 2 protocol research](https://github.com/ndeadly/switch2_controller_research).
+
 ## Realtek firmware
 
 The binary embeds the linux-firmware payloads and configuration aliases needed

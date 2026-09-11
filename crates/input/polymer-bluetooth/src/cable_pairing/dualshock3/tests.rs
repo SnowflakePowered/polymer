@@ -5,6 +5,7 @@ use super::*;
 const PAD: DeviceAddr = DeviceAddr::public([0x00, 0x1b, 0xfb, 0x31, 0x42, 0x53]);
 const HOST: CablePairingHost = CablePairingHost {
     address: DeviceAddr::public([0x10, 0x21, 0x32, 0x43, 0x54, 0x65]),
+    adapter_index: None,
 };
 
 enum Step {
