@@ -27,13 +27,14 @@ enum ControllerCommand {
 }
 
 impl ControllerManager {
-    pub async fn command(
+    pub fn command(
         &mut self,
         command: serde_json::Value,
-    ) -> Result<ControllerCommandOutcome, String> {
+    ) -> Result<polymer_deno::polymer::ApiFuture<Result<ControllerCommandOutcome, String>>, String>
+    {
         let command = serde_json::from_value(command)
             .map_err(|error| format!("invalid controller command: {error}"))?;
-        match command {
+        let outcome = match command {
             ControllerCommand::StartSession => {
                 if self.session.is_some() {
                     return Err("a controller connection session is already active".to_owned());
@@ -126,21 +127,32 @@ impl ControllerManager {
                 layout_id,
                 mapping,
             } => {
-                self.set_mapping(&id, &layout_id, mapping).await?;
-                Ok(self.outcome(Vec::new(), true))
+                let write = self.set_mapping(&id, &layout_id, mapping)?;
+                let outcome = self.outcome(Vec::new(), true);
+                return Ok(Box::pin(async move {
+                    write.await?;
+                    Ok(outcome)
+                }));
             }
             ControllerCommand::ResetMapping { id, layout_id } => {
                 let (identity, layout) = self.mapping_key(&id, &layout_id)?;
-                self.mapping_store
-                    .as_mut()
-                    .ok_or_else(|| "the input mapping store is unavailable".to_owned())?
-                    .remove_mapping(&identity, &layout)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                self.mappings.remove(&identity, &layout);
-                Ok(self.outcome(Vec::new(), true))
+                let mut store = self
+                    .mapping_store
+                    .clone()
+                    .ok_or_else(|| "the input mapping store is unavailable".to_owned())?;
+                let mappings = self.mappings.clone();
+                let outcome = self.outcome(Vec::new(), true);
+                return Ok(Box::pin(async move {
+                    store
+                        .remove_mapping(&identity, &layout)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    mappings.remove(&identity, &layout);
+                    Ok(outcome)
+                }));
             }
-        }
+        };
+        Ok(Box::pin(async move { outcome }))
     }
 
     fn outcome(

@@ -75,15 +75,17 @@ fn run(
         proxy.clone(),
     );
     tracing::debug!("polymer: shell renderers are ready");
-    let mut application = Box::new(window_manager::EventLoopApplication::new(
-        app::ShellApplication::new(
-            proxy,
-            options,
-            statistics_recorder,
-            shell_factory,
-            shell_rasterizer,
-        ),
-    ));
+    let mut application = system.block_on(async {
+        Box::new(window_manager::EventLoopApplication::new(
+            app::ShellApplication::new(
+                proxy,
+                options,
+                statistics_recorder,
+                shell_factory,
+                shell_rasterizer,
+            ),
+        ))
+    });
     loop {
         application.wait_for_events()?;
         let status = system.block_on(async {

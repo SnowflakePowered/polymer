@@ -352,9 +352,7 @@ impl ShellSessionFactory {
         width: u32,
         height: u32,
         scale_factor: f32,
-        emulator_commands: crate::shell_runtime::EmulatorDelivery,
-        input_commands: crate::shell_runtime::InputDelivery,
-        webrtc_commands: crate::shell_runtime::WebRtcDelivery,
+        commands: polymer_runtime::FrontendCommands,
     ) -> Result<
         (
             ShellDocument,
@@ -376,9 +374,7 @@ impl ShellSessionFactory {
             ShellRuntimeOptions {
                 html: html.to_owned(),
                 source_name: base_url,
-                emulator_commands,
-                input_commands,
-                webrtc_commands,
+                commands,
                 plugin_runtime: self.plugin_runtime,
                 local_storage: self.local_storage,
                 library: self.library,

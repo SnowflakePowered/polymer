@@ -1,6 +1,6 @@
 use crate::cli::ShellOptions;
 use crate::commands::ShellDocumentSource;
-use crate::game_host::{GameHost, GameHostCaptureEvent, GameHostCommand};
+use crate::game_host::{GameHost, GameHostCaptureEvent};
 use crate::input::{InputPriority, InputRouter, KeyboardTarget};
 use crate::inspector::InspectorWindow;
 use crate::instance_events;
@@ -9,22 +9,16 @@ use crate::metrics::{TurnPhase, TurnProfile};
 use crate::shell_compositor::{ShellCompositor, ShellRasterizer};
 use crate::shell_document::{DomKeyboardEvent, DomMouseEvent, DomWheelEvent};
 use crate::shell_dom::{ShellSession, ShellSessionFactory};
-use crate::shell_runtime::{
-    EmulatorCommand, EmulatorDelivery, InputCommand, InputDelivery, InstanceToken,
-    PolymerNotification, PolymerNotificationSender, WebRtcDelivery,
-};
+use crate::shell_runtime::{InstanceToken, PolymerNotification, PolymerNotificationSender};
 use crate::window_manager::{
     EventLoopProxy, LoopDirective, ShellDeviceEvent, ShellImeEvent, ShellWindowEvent,
     WindowCommand, WindowManager,
 };
-use polymer_command::{Completion, command_handler};
 use polymer_config::input::InputTransaction;
-use polymer_pluginhost::controller::{
-    ControllerChanged, PauseResume, PendingReply, Quit, StateAction,
-};
+use polymer_pluginhost::controller::{ControllerChanged, PendingReply, Quit};
 use polymer_protocol::input::PointerPhase;
 use polymer_renderer::{CompositingPlan, Extent};
-use polymer_runtime::{EmulatorCommandHandler, InputCommandHandler, WebRtcCommandHandler};
+use polymer_runtime::FrontendCommands;
 use polymer_statistics::RecorderHandle;
 use std::{
     error::Error,
@@ -32,6 +26,7 @@ use std::{
 };
 use winit::window::Window;
 
+mod actor;
 mod application;
 mod coordinator_commands;
 mod coordinator_game;
@@ -76,56 +71,28 @@ struct ShellCoordinator {
     inspector: Option<InspectorWindow>,
     notifications: Option<PolymerNotificationSender>,
     _theme: crate::theme::SelectedTheme,
-    command_lifetime: polymer_command::ExecutorLifetime,
+    quitting: bool,
 }
 
-enum PendingInputChangeCompletion {
-    Configuration {
-        request_id: u64,
-        _admission: polymer_command::Completion<Result<(), std::convert::Infallible>>,
+enum InputChangeCompletion {
+    Configuration { request_id: u64 },
+    ConnectionSession { session_id: String },
+    ControllerApi { value: serde_json::Value },
+}
+
+enum ControllerChange {
+    Ready(serde_json::Value),
+    Pending {
+        transaction: Box<polymer_runtime::ControllerTopologyTransaction>,
+        completion: InputChangeCompletion,
+        response: PendingReply<ControllerChanged>,
     },
-    ConnectionSession {
-        session_id: String,
-        result: Completion<Result<serde_json::Value, String>>,
-    },
-    ControllerApi {
-        value: serde_json::Value,
-        result: Completion<Result<serde_json::Value, String>>,
-    },
-}
-
-struct PendingInputChange {
-    transaction: polymer_runtime::ControllerTopologyTransaction,
-    completion: PendingInputChangeCompletion,
-    response: PendingReply<ControllerChanged>,
-}
-
-struct PendingPauseResume {
-    token: InstanceToken,
-    state: polymer_pluginhost::controller::PauseState,
-    started: Instant,
-    result: Completion<Result<(), String>>,
-    response: PendingReply<PauseResume>,
-}
-
-struct PendingStateAction {
-    slot: u32,
-    save: bool,
-    result: Completion<Result<serde_json::Value, String>>,
-    response: PendingReply<StateAction>,
 }
 
 struct PendingQuit {
     token: InstanceToken,
     cache: crate::launch::QuickResumeCache,
     screenshot: Option<Vec<u8>>,
-    response: PendingReply<Quit>,
-}
-
-enum PendingEmulatorCallback {
-    PauseResume(PendingPauseResume),
-    State(PendingStateAction),
-    Quit(PendingQuit),
 }
 
 impl ShellCoordinator {
@@ -182,7 +149,7 @@ impl ShellCoordinator {
             inspector: None,
             notifications: None,
             _theme: theme,
-            command_lifetime: polymer_command::ExecutorLifetime::default(),
+            quitting: false,
         };
         Ok(state)
     }
@@ -197,6 +164,7 @@ impl ShellCoordinator {
         &mut self,
         source: Option<ShellDocumentSource>,
         source_error: Option<String>,
+        commands: FrontendCommands,
     ) -> Result<(), Box<dyn Error>> {
         if let Some(error) = source_error {
             tracing::error!("polymer: loading the shell document failed: {error}");
@@ -204,42 +172,11 @@ impl ShellCoordinator {
         if let Some(shell_source) = source {
             let size = self.window.size();
             let scale_factor = self.window.scale_factor();
-            let command_proxy = self.proxy.clone();
-            let input_proxy = self.proxy.clone();
-            let webrtc_proxy = self.proxy.clone();
-            let command_lifetime = self.command_lifetime.clone();
             let html = shell_source.html.clone();
             let base_url = shell_source.base_url.clone();
             let notifications = match self
                 .shell_dom
                 .activate(|factory| async move {
-                    let emulator_commands = EmulatorDelivery::new(move |command| {
-                        command_proxy
-                            .send_event(UserEvent::GameHost(GameHostCommand::Emulator(command)))
-                            .map_err(|error| match error.0 {
-                                UserEvent::GameHost(GameHostCommand::Emulator(command)) => command,
-                                _ => unreachable!("matching GUI envelope"),
-                            })
-                    })
-                    .with_lifetime(command_lifetime.clone());
-                    let input_commands = InputDelivery::new(move |command| {
-                        input_proxy
-                            .send_event(UserEvent::GameHost(GameHostCommand::Input(command)))
-                            .map_err(|error| match error.0 {
-                                UserEvent::GameHost(GameHostCommand::Input(command)) => command,
-                                _ => unreachable!("matching GUI envelope"),
-                            })
-                    })
-                    .with_lifetime(command_lifetime.clone());
-                    let webrtc_commands = WebRtcDelivery::new(move |command| {
-                        webrtc_proxy
-                            .send_event(UserEvent::GameHost(GameHostCommand::WebRtc(command)))
-                            .map_err(|error| match error.0 {
-                                UserEvent::GameHost(GameHostCommand::WebRtc(command)) => command,
-                                _ => unreachable!("matching GUI envelope"),
-                            })
-                    })
-                    .with_lifetime(command_lifetime);
                     factory
                         .create(
                             &html,
@@ -247,9 +184,7 @@ impl ShellCoordinator {
                             size.width,
                             size.height,
                             scale_factor,
-                            emulator_commands,
-                            input_commands,
-                            webrtc_commands,
+                            commands,
                         )
                         .await
                 })
@@ -286,10 +221,4 @@ fn unique_session() -> String {
         .unwrap_or_default()
         .as_nanos();
     format!("polymer-{}-{nonce:x}", std::process::id())
-}
-
-impl Drop for ShellCoordinator {
-    fn drop(&mut self) {
-        self.command_lifetime.finish(false);
-    }
 }

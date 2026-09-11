@@ -48,7 +48,6 @@ polymer-platform-windows.workspace = true
 polymer-pluginhost = { path = "../../crates/runtime/polymer-pluginhost" }
 polymer-protocol.workspace = true
 polymer-runtime.workspace = true
-polymer-command.workspace = true
 polymer-vfs.workspace = true
 polymer-vfs-winfsp.workspace = true
 polymer-renderer = { path = "../../crates/consumer/polymer-renderer" }

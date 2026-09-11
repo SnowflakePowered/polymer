@@ -6,7 +6,7 @@ mod capture;
 mod configuration;
 mod consolestorage;
 pub mod controllers;
-mod frontend;
+pub mod frontend;
 mod instance;
 mod launch;
 mod launchable_configuration;
@@ -28,11 +28,7 @@ pub use controllers::{
     ControllerManagerEffect, ControllerProfiles, ControllerSessionCommit,
     ControllerTopologyTransaction, DeviceMapping,
 };
-pub use frontend::{
-    ControllerApiState, Emulator, EmulatorCommand, EmulatorCommandHandler, EmulatorDelivery,
-    FrontendServices, Input, InputCommand, InputCommandHandler, InputDelivery, WebRtc,
-    WebRtcCommand, WebRtcCommandHandler, WebRtcDelivery,
-};
+pub use frontend::{ControllerApiState, FrontendCommands, FrontendServices};
 pub use instance::{
     AudioState, EmulatorActionEndpoint, EmulatorInstance, EmulatorLaunchConfig, HotkeyChord,
     HotkeyKey, InstanceExit, InstanceState, LaunchError, NormalizedVolume, PresentedFrameToken,

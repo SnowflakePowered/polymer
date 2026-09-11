@@ -1,5 +1,9 @@
+use super::actor::GuiActors;
 use super::*;
-use futures_util::FutureExt;
+use std::{
+    cell::{RefCell, RefMut},
+    rc::Rc,
+};
 
 pub(crate) struct ShellApplication {
     proxy: EventLoopProxy<UserEvent>,
@@ -8,13 +12,9 @@ pub(crate) struct ShellApplication {
     shell_factory: Option<ShellSessionFactory>,
     shell_rasterizer: Option<ShellRasterizer>,
     pending_window: Option<Window>,
-    state: Option<ShellCoordinator>,
-    pending_input_commands: std::collections::VecDeque<InputCommand>,
-    pending_input_change: Option<PendingInputChange>,
-    pending_pause_resume: std::collections::VecDeque<PendingPauseResume>,
-    pending_state_commands: std::collections::VecDeque<EmulatorCommand>,
-    pending_state_action: Option<PendingStateAction>,
-    pending_quit: Option<PendingQuit>,
+    state: Rc<RefCell<Option<ShellCoordinator>>>,
+    command_actors: GuiActors,
+    commands: FrontendCommands,
     exit_requested: bool,
     error: Option<Box<dyn Error>>,
     next_runtime_poll: Instant,
@@ -28,6 +28,9 @@ impl ShellApplication {
         shell_factory: ShellSessionFactory,
         shell_rasterizer: ShellRasterizer,
     ) -> Self {
+        let state = Rc::new(RefCell::new(None));
+        let command_actors = GuiActors::start_for(&state);
+        let commands = command_actors.commands(proxy.clone());
         Self {
             proxy,
             options: Some(options),
@@ -35,13 +38,9 @@ impl ShellApplication {
             shell_factory: Some(shell_factory),
             shell_rasterizer: Some(shell_rasterizer),
             pending_window: None,
-            state: None,
-            pending_input_commands: std::collections::VecDeque::new(),
-            pending_input_change: None,
-            pending_pause_resume: std::collections::VecDeque::new(),
-            pending_state_commands: std::collections::VecDeque::new(),
-            pending_state_action: None,
-            pending_quit: None,
+            state,
+            command_actors,
+            commands,
             exit_requested: false,
             error: None,
             next_runtime_poll: Instant::now(),
@@ -52,7 +51,8 @@ impl ShellApplication {
         let timing = std::env::var_os("POLYMER_GAME_LAYER_TIMING")
             .is_some()
             .then(std::time::Instant::now);
-        if self.state.is_none()
+        let needs_state = self.state.borrow().is_none();
+        if needs_state
             && self.error.is_none()
             && let Some(window) = self.pending_window.take()
         {
@@ -84,8 +84,11 @@ impl ShellApplication {
             .await
             {
                 Ok(mut state) => match shell_document {
-                    Ok(document) => match state.activate_shell(Some(document), None).await {
-                        Ok(()) => self.state = Some(state),
+                    Ok(document) => match state
+                        .activate_shell(Some(document), None, self.commands.clone())
+                        .await
+                    {
+                        Ok(()) => *self.state.borrow_mut() = Some(state),
                         Err(error) => self.error = Some(error),
                     },
                     Err(error) => self.error = Some(error),
@@ -93,136 +96,43 @@ impl ShellApplication {
                 Err(error) => self.error = Some(error),
             }
         }
-        let completed_change = self
-            .pending_input_change
-            .as_mut()
-            .and_then(|pending| match pending.response.as_mut().now_or_never() {
-                Some(Ok(result)) => Some(result),
-                Some(Err(_)) => Some(Err(
-                    "controller plugin session closed during topology change".to_owned(),
-                )),
-                None => None,
-            });
-        if let Some(result) = completed_change
-            && let Some(pending) = self.pending_input_change.take()
-            && let Some(state) = self.state.as_mut()
-        {
-            state.finish_input_change(pending, result);
-        }
-        loop {
-            let completed = self
-                .pending_pause_resume
-                .front_mut()
-                .and_then(|pending| match pending.response.as_mut().now_or_never() {
-                    Some(Ok(result)) => Some(result),
-                    Some(Err(_)) => Some(Err(
-                        "emulator plugin session closed during pause/resume".to_owned()
-                    )),
-                    None => None,
-                });
-            let Some(completed) = completed else {
-                break;
-            };
-            let pending = self
-                .pending_pause_resume
-                .pop_front()
-                .expect("a completed pause/resume callback remains queued");
-            if let Some(state) = self.state.as_mut() {
-                state.finish_pause_resume(pending, completed);
-            }
-        }
-        let completed_state = self
-            .pending_state_action
-            .as_mut()
-            .and_then(|pending| match pending.response.as_mut().now_or_never() {
-                Some(Ok(result)) => Some(result),
-                Some(Err(_)) => Some(Err(
-                    "emulator plugin session closed during save-state action".to_owned(),
-                )),
-                None => None,
-            });
-        if let Some(result) = completed_state
-            && let Some(pending) = self.pending_state_action.take()
-            && let Some(state) = self.state.as_mut()
-        {
-            state.finish_state_action(pending, result);
-        }
-        let completed_quit = self.pending_quit.as_mut().and_then(|pending| {
-            match pending.response.as_mut().now_or_never() {
-                Some(Ok(result)) => Some(result),
-                Some(Err(_)) => Some(Err(
-                    "emulator plugin session closed during onQuit".to_owned()
-                )),
-                None => None,
-            }
-        });
-        if let Some(result) = completed_quit
-            && let Some(pending) = self.pending_quit.take()
-            && let Some(state) = self.state.as_mut()
-        {
-            state.finish_quit(pending, result);
-        }
-        if self.pending_state_action.is_none()
-            && let Some(command) = self.pending_state_commands.pop_front()
-            && let Some(state) = self.state.as_mut()
-            && let Some(pending) = command.dispatch(state)
-        {
-            match pending {
-                PendingEmulatorCallback::PauseResume(pending) => {
-                    self.pending_pause_resume.push_back(pending)
-                }
-                PendingEmulatorCallback::State(pending) => {
-                    self.pending_state_action = Some(pending)
-                }
-                PendingEmulatorCallback::Quit(pending) => self.pending_quit = Some(pending),
-            }
-        }
-        while self.pending_input_change.is_none()
-            && let Some(command) = self.pending_input_commands.pop_front()
-        {
-            let Some(state) = self.state.as_mut() else {
-                break;
-            };
-            self.pending_input_change = command.dispatch(state).await;
-        }
         let now = Instant::now();
         let poll_runtime = now >= self.next_runtime_poll;
         if poll_runtime {
             self.next_runtime_poll = now + SHELL_RUNTIME_POLL_INTERVAL;
-        }
-        if poll_runtime
-            && let Some(state) = self.state.as_mut()
-            && state.shell_dom.poll_runtime().await
-        {
-            if let Some(started) = timing {
-                let elapsed = started.elapsed();
-                if elapsed >= Duration::from_millis(2) {
-                    tracing::error!(
-                        "polymer: async runtime poll took {:.2}ms",
-                        elapsed.as_secs_f64() * 1000.0,
-                    );
+            // Actors only run during the native/Actix phase. Move the coordinator
+            // out for Deno's separate runtime turn so no RefCell borrow crosses
+            // an await, then return it before the next actor turn.
+            let state = self.state.borrow_mut().take();
+            if let Some(mut state) = state {
+                if state.shell_dom.poll_runtime().await && state.shell_dom.needs_paint() {
+                    state.refresh_shell();
                 }
+                *self.state.borrow_mut() = Some(state);
             }
-            // Timers, promises, fetches, and WebSockets can mutate the
-            // shell DOM without a Winit event. Polling applies those mutations
-            // and marks the scene dirty; repaint it here so async
-            // UI changes (including the launch fade) reach the compositor.
-            if state.shell_dom.needs_paint() {
-                state.refresh_shell();
+        }
+        if let Some(started) = timing {
+            let elapsed = started.elapsed();
+            if elapsed >= Duration::from_millis(2) {
+                tracing::debug!(
+                    elapsed_ms = elapsed.as_secs_f64() * 1000.0,
+                    "polymer: async runtime poll"
+                );
             }
         }
     }
 
-    pub(crate) async fn into_result(self) -> Result<(), Box<dyn Error>> {
-        if let Some(state) = &self.state {
-            state.command_lifetime.begin_close();
+    pub(crate) async fn into_result(mut self) -> Result<(), Box<dyn Error>> {
+        self.command_actors.shutdown();
+        let state = self.state.borrow_mut().take();
+        if let Some(state) = state {
             state.input.shutdown().await;
         }
-        self.error.map_or(Ok(()), Err)
+        self.error.take().map_or(Ok(()), Err)
     }
 
     pub(crate) fn wants_native_window(&self) -> bool {
-        self.pending_window.is_none() && self.state.is_none() && self.error.is_none()
+        self.pending_window.is_none() && self.state.borrow().is_none() && self.error.is_none()
     }
 
     pub(crate) fn accept_native_window(&mut self, window: Window) {
@@ -233,8 +143,11 @@ impl ShellApplication {
         self.error = Some(error.into());
     }
 
-    pub(crate) fn window_manager_mut(&mut self) -> Option<&mut WindowManager> {
-        self.state.as_mut().map(|state| &mut state.window)
+    pub(crate) fn window_manager_mut(&mut self) -> Option<RefMut<'_, WindowManager>> {
+        RefMut::filter_map(self.state.borrow_mut(), |state| {
+            state.as_mut().map(|state| &mut state.window)
+        })
+        .ok()
     }
 
     pub(crate) fn accept_inspector_window(
@@ -242,13 +155,14 @@ impl ShellApplication {
         window: Window,
         address: std::net::SocketAddr,
     ) {
-        if let Some(state) = self.state.as_mut() {
+        if let Some(state) = self.state.borrow_mut().as_mut() {
             state.accept_inspector_window(window, address);
         }
     }
 
     pub(crate) fn inspector_window_id(&self) -> Option<winit::window::WindowId> {
         self.state
+            .borrow()
             .as_ref()
             .and_then(|state| state.inspector.as_ref())
             .map(InspectorWindow::id)
@@ -257,6 +171,7 @@ impl ShellApplication {
     pub(crate) fn handle_inspector_window_event(&self, event: &winit::event::WindowEvent) {
         if let Some(inspector) = self
             .state
+            .borrow()
             .as_ref()
             .and_then(|state| state.inspector.as_ref())
         {
@@ -267,16 +182,8 @@ impl ShellApplication {
 
 impl ShellApplication {
     pub(crate) fn handle_user_event(&mut self, event: UserEvent) {
-        let event = match event {
-            UserEvent::GameHost(GameHostCommand::Input(command)) => {
-                if self.state.is_some() {
-                    self.pending_input_commands.push_back(command);
-                }
-                return;
-            }
-            event => event,
-        };
-        let Some(state) = self.state.as_mut() else {
+        let mut state_slot = self.state.borrow_mut();
+        let Some(state) = state_slot.as_mut() else {
             return;
         };
         match event {
@@ -301,37 +208,14 @@ impl ShellApplication {
                 width,
                 height,
             }) => state.window.set_ime_cursor_area(x, y, width, height),
-            UserEvent::GameHost(GameHostCommand::Emulator(command)) => {
-                if self.pending_state_action.is_some()
-                    && matches!(
-                        command,
-                        EmulatorCommand::SaveState { .. } | EmulatorCommand::ResumeState { .. }
-                    )
-                {
-                    self.pending_state_commands.push_back(command);
-                    return;
-                }
-                if let Some(pending) = command.dispatch(state) {
-                    match pending {
-                        PendingEmulatorCallback::PauseResume(pending) => {
-                            self.pending_pause_resume.push_back(pending)
-                        }
-                        PendingEmulatorCallback::State(pending) => {
-                            self.pending_state_action = Some(pending)
-                        }
-                        PendingEmulatorCallback::Quit(pending) => self.pending_quit = Some(pending),
-                    }
-                }
-            }
-            UserEvent::GameHost(GameHostCommand::WebRtc(command)) => command.dispatch(state),
-            UserEvent::GameHost(GameHostCommand::Input(_)) => unreachable!(),
             UserEvent::InspectorWindowRequested { .. } => {}
             UserEvent::WakeActors => {}
         }
     }
 
     pub(crate) fn handle_device_event(&mut self, event: ShellDeviceEvent) {
-        let Some(state) = self.state.as_mut() else {
+        let mut state_slot = self.state.borrow_mut();
+        let Some(state) = state_slot.as_mut() else {
             return;
         };
         if let ShellDeviceEvent::MouseMotion { delta_x, delta_y } = event {
@@ -346,25 +230,18 @@ impl ShellApplication {
     ) -> bool {
         if matches!(event, ShellWindowEvent::CloseRequested) {
             self.exit_requested = true;
-            let Some(state) = self.state.as_mut() else {
+            let mut state_slot = self.state.borrow_mut();
+            let Some(state) = state_slot.as_mut() else {
                 return true;
             };
             let Some(token) = state.game_host.active_token() else {
                 return true;
             };
-            if self.pending_quit.is_none()
-                && let Some(pending) = (EmulatorCommand::Close {
-                    token,
-                    completion: polymer_command::Completion::control(),
-                })
-                .dispatch(state)
-                && let PendingEmulatorCallback::Quit(pending) = pending
-            {
-                self.pending_quit = Some(pending);
-            }
+            self.command_actors.close(token);
             return false;
         }
-        let Some(state) = self.state.as_mut() else {
+        let mut state_slot = self.state.borrow_mut();
+        let Some(state) = state_slot.as_mut() else {
             return false;
         };
         // At game priority the virtual pad owns keyboard events. egui reports
@@ -481,9 +358,9 @@ impl ShellApplication {
             return LoopDirective::Exit;
         }
         if self.exit_requested
-            && self.pending_quit.is_none()
             && self
                 .state
+                .borrow()
                 .as_ref()
                 .is_none_or(|state| !state.game_host.has_active_game())
         {
@@ -491,7 +368,7 @@ impl ShellApplication {
         }
         let now = Instant::now();
         let mut deadline = now + Duration::from_millis(100);
-        if let Some(state) = self.state.as_mut() {
+        if let Some(state) = self.state.borrow_mut().as_mut() {
             if state.game_host.has_capture_work() {
                 state.process_capture();
             }
@@ -549,5 +426,13 @@ impl ShellApplication {
             state.window.set_overlay_note(state.profile.report());
         }
         LoopDirective::WaitUntil(deadline)
+    }
+}
+
+impl Drop for ShellApplication {
+    fn drop(&mut self) {
+        self.command_actors.shutdown();
+        // Close recipients' access before any remaining actor futures can run.
+        self.state.borrow_mut().take();
     }
 }

@@ -595,11 +595,18 @@ impl InputRouter {
         }
     }
 
-    pub async fn controller_command(
+    pub fn begin_controller_command(
         &mut self,
         command: serde_json::Value,
+    ) -> Result<polymer_deno::polymer::ApiFuture<Result<ControllerCommandOutcome, String>>, String>
+    {
+        self.controllers.command(command)
+    }
+
+    pub fn finish_controller_command(
+        &mut self,
+        mut outcome: ControllerCommandOutcome,
     ) -> Result<ControllerCommandOutcome, String> {
-        let mut outcome = self.controllers.command(command).await?;
         let state_response = outcome.response.get("devices").is_some();
         for effect in std::mem::take(&mut outcome.effects) {
             self.apply_controller_manager_effect(effect)?;

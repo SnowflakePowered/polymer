@@ -120,7 +120,6 @@ gix = { version = "0.86", features = ["tree-editor"] }
 phf = "0.14"
 phf_codegen = "0.14"
 polymer-runtime = { path = "crates/runtime/polymer-runtime" }
-polymer-command = { path = "crates/runtime/polymer-command" }
 polymer-controllers = { path = "crates/runtime/polymer-controllers" }
 polymer-library = { path = "crates/runtime/polymer-library" }
 polymer-scraping = { path = "crates/runtime/polymer-scraping" }

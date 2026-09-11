@@ -9333,26 +9333,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "polymer-command"
-version = "0.1.0"
-dependencies = [
- "futures",
- "paste",
- "polymer-command-macros",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "polymer-command-macros"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "polymer-config"
 version = "0.1.0"
 dependencies = [
@@ -9500,7 +9480,6 @@ dependencies = [
  "deno_web",
  "deno_webidl",
  "deno_websocket",
- "polymer-command",
  "polymer-library",
  "serde",
  "serde_json",
@@ -9551,7 +9530,6 @@ dependencies = [
  "pollster",
  "polymer-automation",
  "polymer-bluetooth",
- "polymer-command",
  "polymer-config",
  "polymer-controllers",
  "polymer-deno",
@@ -10073,7 +10051,6 @@ dependencies = [
  "image 0.25.6",
  "object_store",
  "parking_lot",
- "polymer-command",
  "polymer-config",
  "polymer-consolestorage",
  "polymer-controllers",
