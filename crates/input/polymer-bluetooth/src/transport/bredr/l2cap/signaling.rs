@@ -1,5 +1,8 @@
 use bytes::{BufMut, Bytes, BytesMut};
-use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned, byteorder::little_endian::U16};
+use zerocopy::{
+    FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned,
+    byteorder::little_endian::{U16, U32},
+};
 
 use crate::{Error, Result};
 
@@ -46,7 +49,45 @@ struct OptionHeader {
 pub enum ConfigurationOption {
     Mtu(u16),
     FlushTimeout(u16),
+    QualityOfService(QualityOfService),
     Unknown { kind: u8, hint: bool, value: Bytes },
+}
+
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned,
+)]
+#[repr(C)]
+pub struct QualityOfService {
+    pub flags: u8,
+    pub service_type: u8,
+    pub token_rate: U32,
+    pub token_bucket_size: U32,
+    pub peak_bandwidth: U32,
+    pub latency: U32,
+    pub delay_variation: U32,
+}
+
+impl ConfigurationOption {
+    pub(super) fn negotiate(options: Vec<Self>) -> (u16, Vec<Self>) {
+        let mtu = options
+            .iter()
+            .find_map(|option| match option {
+                Self::Mtu(value) => Some(*value),
+                _ => None,
+            })
+            .unwrap_or(super::DEFAULT_MTU);
+        // Like Linux l2cap_parse_conf_req, recognize legacy QoS without
+        // reserving bandwidth. DS3 requires acceptance of option 0x03 on its
+        // interrupt channel even though basic-mode traffic is best effort.
+        let unknown: Vec<_> = options
+            .into_iter()
+            .filter(|option| matches!(option, Self::Unknown { hint: false, .. }))
+            .collect();
+        if !unknown.is_empty() {
+            return (3, unknown);
+        }
+        (0, vec![Self::Mtu(mtu)])
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -352,6 +393,9 @@ fn parse_options(mut data: &[u8]) -> Result<Vec<ConfigurationOption>> {
         options.push(match (header.kind & 0x7f, length) {
             (0x01, 2) => ConfigurationOption::Mtu(wire::<U16>(value)?.0.get()),
             (0x02, 2) => ConfigurationOption::FlushTimeout(wire::<U16>(value)?.0.get()),
+            (0x03, 22) => {
+                ConfigurationOption::QualityOfService(*wire::<QualityOfService>(value)?.0)
+            }
             (kind, _) => ConfigurationOption::Unknown {
                 kind,
                 hint: header.kind & 0x80 != 0,
@@ -375,6 +419,10 @@ fn encode_options(out: &mut BytesMut, options: &[ConfigurationOption]) {
                 out.put_u8(2);
                 out.put_u8(2);
                 out.put_u16_le(*value);
+            }
+            ConfigurationOption::QualityOfService(value) => {
+                out.extend_from_slice(&[3, 22]);
+                out.extend_from_slice(value.as_bytes());
             }
             ConfigurationOption::Unknown { kind, hint, value } => {
                 out.put_u8(*kind | (u8::from(*hint) << 7));
@@ -401,6 +449,41 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ds3_interrupt_qos_capture_is_accepted_but_unknown_mandatory_options_are_not() {
+        // Configuration request from the reported reconnect loop, CID 0x90.
+        let mut packet = vec![4, 5, 28, 0, 0x90, 0, 0, 0, 3, 22];
+        packet.extend_from_slice(&[
+            0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xf2, 0x2b, 0, 0, 0xff, 0xff, 0xff, 0xff,
+        ]);
+        let parsed = Signal::parse_all(&packet).unwrap();
+        let Signal::ConfigurationRequest { options, .. } = &parsed[0] else {
+            panic!("not a config request")
+        };
+        let ConfigurationOption::QualityOfService(qos) = options[0] else {
+            panic!("QoS was not recognized")
+        };
+        assert_eq!(qos.service_type, 2);
+        assert_eq!(qos.latency.get(), 11250);
+        assert_eq!(parsed[0].encode().as_ref(), packet);
+        assert_eq!(ConfigurationOption::negotiate(options.clone()).0, 0);
+        let unknown = ConfigurationOption::Unknown {
+            kind: 0x7e,
+            hint: false,
+            value: Bytes::new(),
+        };
+        assert_eq!(ConfigurationOption::negotiate(vec![unknown]).0, 3);
+        let hint = ConfigurationOption::Unknown {
+            kind: 0x7e,
+            hint: true,
+            value: Bytes::new(),
+        };
+        assert_eq!(ConfigurationOption::negotiate(vec![hint]).0, 0);
+        // A truncated QoS value is never accepted as the 22-byte option.
+        packet.pop();
+        assert!(Signal::parse_all(&packet).is_err());
+    }
 
     #[test]
     fn connection_request_round_trip() {

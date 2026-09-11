@@ -1608,6 +1608,11 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                                                 identity.label(),
                                                 slot + 1
                                             )));
+                                        } else if identity.token() == Some("sony.dualshock3") {
+                                            let _ = task_events.send(Event::Log(format!(
+                                                "Reconnected DualShock 3 in player slot {}; Bluetooth input activated",
+                                                slot + 1
+                                            )));
                                         }
                                         Ok(BrConnection {
                                             transport,
@@ -1729,10 +1734,22 @@ fn spawn_bredr_report_task(
     tokio::spawn(async move {
         let mut wiimote_decoder = wiimote::WiimoteTelemetryDecoder;
         let mut report_decoder = identity.profile_id.as_ref().and_then(decoder::for_profile);
+        let diagnostic_deadline = Instant::now() + Duration::from_secs(60);
+        let mut next_diagnostic = Instant::now();
         loop {
             match reports.recv().await {
                 Ok(report) => {
                     let received_at = Instant::now();
+                    if identity.token() == Some("sony.dualshock3")
+                        && received_at >= next_diagnostic
+                        && received_at < diagnostic_deadline
+                    {
+                        diagnostic(&format!(
+                            "DS3 native input {addr}: {:02X?}",
+                            report.as_ref()
+                        ));
+                        next_diagnostic = received_at + Duration::from_millis(250);
+                    }
                     if identity.is_wii_remote()
                         && let Some(telemetry) = wiimote_decoder.process(&report)
                     {

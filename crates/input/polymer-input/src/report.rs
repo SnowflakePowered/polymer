@@ -64,10 +64,32 @@ impl GamepadButton {
 #[repr(C)]
 pub struct GamepadReport {
     pub buttons: u32,
+    /// Native 0..=255 pressures indexed by GamepadButton. The mask distinguishes
+    /// an analog zero from a digital-only button; L2/R2 use the trigger fields.
+    pub pressure: ButtonPressure,
     pub left_stick: [i16; 2],
     pub right_stick: [i16; 2],
     pub left_trigger: u16,
     pub right_trigger: u16,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(C)]
+pub struct ButtonPressure {
+    pub mask: u32,
+    pub values: [u8; GamepadButton::ALL.len()],
+}
+
+impl GamepadReport {
+    pub fn button_pressure(&self, button: GamepadButton) -> u8 {
+        if self.pressure.mask & button.mask() != 0 {
+            self.pressure.values[button as usize]
+        } else if self.buttons & button.mask() != 0 {
+            u8::MAX
+        } else {
+            0
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -204,4 +226,4 @@ impl From<DeviceState> for RawControls {
 }
 
 const _: () = assert!(std::mem::size_of::<GamepadButton>() == 1);
-const _: () = assert!(std::mem::size_of::<DeviceState>() <= 96);
+const _: () = assert!(std::mem::size_of::<DeviceState>() <= 128);

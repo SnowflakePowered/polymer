@@ -17,6 +17,8 @@ impl Session {
                 serial: None,
                 path: CString::new("fixture").unwrap(),
                 usb: None,
+                #[cfg(windows)]
+                dshidmini: None,
             },
             result: Some(Ok(VerifiedCablePairing {
                 state: CablePairingState {

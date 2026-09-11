@@ -16,13 +16,12 @@ use crate::{
 };
 
 use super::{
-    ConfigurationOption, HID_CONTROL_PSM, HID_INTERRUPT_PSM, Packet, SIGNALING_CID, Signal,
-    packet::FIRST_DYNAMIC_CID,
+    ConfigurationOption, DEFAULT_MTU, HID_CONTROL_PSM, HID_INTERRUPT_PSM, Packet, SIGNALING_CID,
+    Signal, packet::FIRST_DYNAMIC_CID,
 };
 
 const OPEN_CHANNEL_TIMEOUT: Duration = Duration::from_secs(8);
 const ACCEPT_CHANNEL_TIMEOUT: Duration = Duration::from_secs(30);
-const DEFAULT_MTU: u16 = 672;
 
 enum LinkCommand {
     Open {
@@ -384,23 +383,13 @@ async fn link_actor(
                             if let Err(error) = send_signal(&host, handle, signal).await { fail_pending(local_cid, error, &mut pending); }
                         }
                         Signal::ConfigurationRequest { identifier, destination_cid, flags, options } => {
-                            let mtu = options.iter().find_map(|option| match option {
-                                ConfigurationOption::Mtu(value) => Some(*value),
-                                _ => None,
-                            }).unwrap_or(DEFAULT_MTU);
-                            let unknown: Vec<_> = options.into_iter().filter(|option| matches!(option, ConfigurationOption::Unknown { hint: false, .. })).collect();
-                            let result = if unknown.is_empty() { 0 } else { 3 };
+                            let (result, response_options) = ConfigurationOption::negotiate(options);
                             // Configuration Response carries the requester's Source CID,
                             // i.e. the peer's endpoint. Echoing our Destination CID makes
                             // the peer wait forever even though our local state looks ready.
                             let source_cid = pending
                                 .get(&destination_cid)
                                 .map_or(destination_cid, |channel| channel.remote_cid);
-                            let response_options = if result == 0 {
-                                vec![ConfigurationOption::Mtu(mtu)]
-                            } else {
-                                unknown
-                            };
                             let response = Signal::ConfigurationResponse { identifier, source_cid, flags, result, options: response_options };
                             let _ = send_signal(&host, handle, response).await;
                             if result == 0 {
@@ -420,6 +409,7 @@ async fn link_actor(
                         }
                         Signal::DisconnectionRequest { identifier, destination_cid, source_cid } => {
                             channels.remove(&destination_cid);
+                            fail_pending(destination_cid, Error::L2cap("peer disconnected during channel setup".into()), &mut pending);
                             let _ = send_signal(&host, handle, Signal::DisconnectionResponse { identifier, destination_cid, source_cid }).await;
                         }
                         Signal::EchoRequest { identifier, data } => { let _ = send_signal(&host, handle, Signal::EchoResponse { identifier, data }).await; }

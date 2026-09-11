@@ -483,6 +483,7 @@ impl Worker {
                 ],
                 left_trigger: trigger(pad.gamepad.axis(Axis::TriggerLeft)),
                 right_trigger: trigger(pad.gamepad.axis(Axis::TriggerRight)),
+                pressure: Default::default(),
             },
             sensor: Self::sensors(&pad.gamepad),
             pointer: pad

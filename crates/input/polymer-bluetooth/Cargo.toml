@@ -24,6 +24,7 @@ uuid = "1.22"
 zerocopy.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+polymer-dshidmini = { path = "../polymer-dshidmini" }
 windows = { workspace = true, features = ["Devices_Bluetooth"] }
 
 [dev-dependencies]

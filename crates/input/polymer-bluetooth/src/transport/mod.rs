@@ -11,6 +11,13 @@ pub mod bredr;
 pub type ReportReceiver = broadcast::Receiver<Bytes>;
 pub type DisconnectReceiver = broadcast::Receiver<()>;
 
+/// HID report type for acknowledged SET_REPORT transactions on a control channel.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HidReportType {
+    Output = 2,
+    Feature = 3,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ConnectionState {
     #[default]
@@ -40,6 +47,11 @@ pub trait Transport: Send {
         None
     }
     async fn send(&mut self, data: &[u8]) -> Result<()>;
+    async fn set_report(&mut self, _kind: HidReportType, _data: &[u8]) -> Result<()> {
+        Err(crate::Error::Unsupported(
+            "transport does not support HID control SET_REPORT",
+        ))
+    }
     async fn set_automatic_flush_slots(&mut self, _slots: u16) -> Result<()> {
         Err(crate::Error::Unsupported(
             "transport does not expose automatic flush control",

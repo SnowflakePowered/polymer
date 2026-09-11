@@ -9320,6 +9320,7 @@ dependencies = [
  "futures",
  "hidapi",
  "nusb",
+ "polymer-dshidmini",
  "rand 0.10.2",
  "rusqlite",
  "serde",
@@ -9339,6 +9340,7 @@ dependencies = [
  "eframe",
  "gltf",
  "polymer-bluetooth",
+ "polymer-input",
  "polymer-input-bluetooth",
  "polymer-library",
  "serde_json",
@@ -9503,6 +9505,14 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "turso",
+]
+
+[[package]]
+name = "polymer-dshidmini"
+version = "0.1.0"
+dependencies = [
+ "windows 0.61.3",
+ "zerocopy",
 ]
 
 [[package]]

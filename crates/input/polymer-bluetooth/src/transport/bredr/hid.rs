@@ -498,6 +498,34 @@ impl Transport for BrEdrHid {
         sender.send(transaction.freeze(), true).await
     }
 
+    async fn set_report(
+        &mut self,
+        kind: crate::transport::HidReportType,
+        data: &[u8],
+    ) -> Result<()> {
+        if data.is_empty() {
+            return Err(Error::InvalidPacket("empty HID SET_REPORT"));
+        }
+        let control = self
+            .control
+            .as_mut()
+            .ok_or(Error::L2cap("HID control channel is not connected".into()))?;
+        let mut request = BytesMut::with_capacity(data.len() + 1);
+        request.extend_from_slice(&[0x50 | kind as u8]);
+        request.extend_from_slice(data);
+        tracing::debug!(?kind, report_id = data[0], "sending HID control SET_REPORT");
+        control.sender().send(request.freeze(), false).await?;
+        let response = tokio::time::timeout(Duration::from_secs(2), control.receive())
+            .await
+            .map_err(|_| Error::Timeout("HID SET_REPORT handshake"))??;
+        if response.as_ref() != [0x00] {
+            return Err(Error::L2cap(format!(
+                "HID SET_REPORT rejected: {response:02x?}"
+            )));
+        }
+        Ok(())
+    }
+
     async fn set_automatic_flush_slots(&mut self, slots: u16) -> Result<()> {
         self.automatic_flush_slots = slots;
         let Some(handle) = self.handle else {

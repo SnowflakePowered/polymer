@@ -41,6 +41,10 @@ impl InputState {
         *self.slots[index].write() = Some(DeviceState {
             gamepad: GamepadReport {
                 buttons: value.buttons,
+                pressure: polymer_input::ButtonPressure {
+                    mask: value.pressure_mask,
+                    values: value.pressure_values,
+                },
                 left_stick: value.left_stick,
                 right_stick: value.right_stick,
                 left_trigger: value.left_trigger,

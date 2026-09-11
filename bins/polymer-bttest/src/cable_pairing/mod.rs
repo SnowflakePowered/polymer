@@ -152,6 +152,7 @@ impl CablePairingPanel {
                 }
                 if cfg!(windows)
                     && !device.uses_winusb()
+                    && !device.uses_dshidmini()
                     && ui.button("Switch to WinUSB (no elevation)").clicked()
                 {
                     *action = Some(Action::SwitchDriver(device.clone()));

@@ -17,13 +17,11 @@ output reports. Link keys persist under `%LOCALAPPDATA%\Polymer`.
 In **Classic BR/EDR → USB cable pairing**:
 
 1. Connect a DualShock 3/SIXAXIS (`054c:0268`) with a USB data cable. On Windows,
-   its controller interface must use **WinUSB** for cable pairing. Windows'
-   standard `HidUsb` driver blocks the undeclared `F2`/`F5` feature reports with
-   error 87 ("The parameter is incorrect"). This is separate from the dedicated
-   Bluetooth adapter's WinUSB binding. After refreshing, click **Switch to WinUSB
-   (no elevation)** on the desired controller to attempt the switch using the
-   current process token. It does not launch UAC; Windows access errors appear
-   in the panel. A successful switch requires refreshing the controller list.
+   **DsHidMini with IPC enabled** supports pairing in SXS and XInput modes.
+   The panel enumerates the physical device as **DsHidMini IPC**, independently
+   of its emulated HID identity. WinUSB controllers remain supported as well.
+   Windows' standard `HidUsb` driver blocks the raw `F2`/`F5` pairing reports.
+   The dedicated Bluetooth adapter still needs its own WinUSB binding.
 2. Click **Refresh USB controllers**, then **Read addresses** on the desired
    device. The panel shows its Bluetooth address, saved host, and the dedicated
    adapter address that will replace that host.
@@ -32,19 +30,40 @@ In **Classic BR/EDR → USB cable pairing**:
    disabled if the persistent registry or dedicated adapter is unavailable.
 4. Unplug USB and press PS to initiate the wireless connection. The saved host
    survives closing the tool and unplugging the cable; reconnecting USB does
-   not require pairing again unless the controller's host has changed.
+   not require pairing again unless the controller's host has changed. DsHidMini's
+   automatic pairing settings can overwrite the host when USB is reconnected;
+   disable automatic pairing or configure the dedicated adapter as its custom host.
 
-This implements the cable handshake only. DS3 Bluetooth input activation and
-decoding are not implemented yet. USB gameplay remains handled by SDL, but
+After cable provisioning, DS3 button-wake connections accept both HID channels,
+enable Bluetooth input with feature `F4`, set the player LED, and wait for the
+first 49-byte input report. Raw packets appear in the Classic tab. The Bluetooth
+input HAL decodes buttons, sticks, all twelve pressures, acceleration, yaw rate,
+and battery status. USB gameplay remains handled by SDL, but
 changing the controller's driver can affect wired input. Restore a compatible
 USB input driver after pairing if needed; this does not erase its saved host.
 If registration fails after the USB write, the panel reports that the hardware
 was paired but registration failed; read the addresses and retry. An already
-matching host is verified without another write. Switch Pro cable pairing can
+matching host is verified without another write on the raw HID/WinUSB paths;
+DsHidMini IPC requests a fresh write and readback. Switch Pro cable pairing can
 use the same session interface but is not implemented yet.
 
 `cargo run -p polymer-bluetooth --example cable_probe` performs read-only
 enumeration and address inspection, including backend and operation diagnostics.
+
+`cargo run -p polymer-bttest --example cable_pair -- <controller Bluetooth address>`
+uses the same pairing coordinator and persistent database as the panel, and selects
+the dedicated adapter automatically. Close other applications using that adapter first.
+
+For DsHidMini 3.3.1187.0, connect only one DsHidMini controller during pairing:
+that version does not expose a stable device-to-IPC-slot property. The backend
+checks the sole occupied shared-memory slot instead of assuming enumeration order.
+Newer drivers exposing `IpcSlotIndex` can identify individual slots directly.
+
+`cargo run -p polymer-bttest --example ds3_bluetooth -- <controller Bluetooth address>`
+performs a bounded inbound-connection and activation check for a persisted DS3,
+then collects 100 raw input reports and disconnects. Close the GUI test tool to
+release the adapter before running it, unplug USB, and press PS when it prints
+`READY`.
 
 The Switch 2 BLE tab uses an OS-owned adapter (the motherboard MediaTek radio
 on the development machine). **Change controller order…** opens a combined

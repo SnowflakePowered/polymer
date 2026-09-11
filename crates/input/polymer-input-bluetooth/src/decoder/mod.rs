@@ -6,6 +6,7 @@ use polymer_input::{
 };
 use std::{sync::Arc, time::Instant};
 
+pub mod dualshock3;
 pub mod switch;
 pub mod switch2;
 pub mod wiimote;
@@ -13,6 +14,7 @@ pub mod wiimote;
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct GamepadState {
     pub buttons: u32,
+    pub pressure: polymer_input::ButtonPressure,
     pub left_stick: [i16; 2],
     pub right_stick: [i16; 2],
     pub left_trigger: u16,
@@ -173,6 +175,7 @@ pub trait BluetoothControllerDevice: Send + Sync {
 
 pub fn for_profile(profile: &ProfileId) -> Option<Box<dyn BluetoothControllerDevice>> {
     match profile.as_str() {
+        "sony.dualshock3" => Some(Box::new(dualshock3::DualShock3Decoder::default())),
         "nintendo.wiimote.original" | "nintendo.wiimote.plus" | "nintendo.wiimote.unknown" => {
             Some(Box::new(wiimote::WiimoteDecoder::default()))
         }
