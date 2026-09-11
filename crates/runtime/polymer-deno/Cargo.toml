@@ -24,7 +24,6 @@ deno_webidl = "0.256.0"
 deno_websocket = "0.261.0"
 serde.workspace = true
 serde_json.workspace = true
-polymer-command.workspace = true
 polymer-library.workspace = true
 sys_traits = { version = "0.1.28", features = ["real", "winapi"] }
 thiserror.workspace = true

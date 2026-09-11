@@ -1,11 +1,10 @@
 //! Typed commands crossing the Deno shell and native event-loop boundary.
 
-use crate::{game_host::GameHostCommand, window_manager::WindowCommand};
+use crate::window_manager::WindowCommand;
 
 #[derive(Debug)]
 pub(crate) enum UserEvent {
     Window(WindowCommand),
-    GameHost(GameHostCommand),
     InspectorWindowRequested {
         address: std::net::SocketAddr,
     },

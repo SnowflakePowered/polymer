@@ -21,7 +21,6 @@ rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 polymer-config.workspace = true
-polymer-command.workspace = true
 polymer-consolestorage = { path = "../../filesystem/polymer-consolestorage" }
 polymer-deno = { path = "../polymer-deno" }
 polymer-hook.workspace = true

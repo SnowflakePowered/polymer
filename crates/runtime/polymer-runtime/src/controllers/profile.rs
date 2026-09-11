@@ -180,12 +180,12 @@ impl ControllerManager {
         }))
     }
 
-    pub(super) async fn set_mapping(
+    pub(super) fn set_mapping(
         &mut self,
         id: &str,
         layout_id: &str,
         update: DeviceMapping,
-    ) -> Result<(), String> {
+    ) -> Result<impl std::future::Future<Output = Result<(), String>> + Send + use<>, String> {
         let (identity, layout_id) = self.mapping_key(id, layout_id)?;
         let DeviceMapping { mode, mapping } = update;
         let layout = InputLayout::get(&layout_id).expect("layout was validated");
@@ -219,30 +219,35 @@ impl ControllerManager {
             ProjectionMode::Position => InputMappingMode::Position,
             ProjectionMode::Custom => InputMappingMode::Custom,
         };
-        self.mapping_store
-            .as_mut()
-            .ok_or_else(|| "the input mapping store is unavailable".to_owned())?
-            .put_mapping(&StoredMappingProfile {
-                identity: identity.clone(),
-                identity_scope: scope,
-                layout_id: layout_id.clone(),
-                mode: stored_mode,
-                revision: 0,
-                bindings: mapping.clone(),
-            })
-            .await
-            .map_err(|error| error.to_string())?;
-        let profile = if mode == ProjectionMode::Custom {
-            MappingProfile {
-                mode,
-                mapping,
-                scope,
-            }
-        } else {
-            MappingProfile::generated(mode, &layout_id, scope)
-        };
-        self.mappings.put(identity, layout_id, profile);
-        Ok(())
+        let mut store = self
+            .mapping_store
+            .clone()
+            .ok_or_else(|| "the input mapping store is unavailable".to_owned())?;
+        let mappings = self.mappings.clone();
+        Ok(async move {
+            store
+                .put_mapping(&StoredMappingProfile {
+                    identity: identity.clone(),
+                    identity_scope: scope,
+                    layout_id: layout_id.clone(),
+                    mode: stored_mode,
+                    revision: 0,
+                    bindings: mapping.clone(),
+                })
+                .await
+                .map_err(|error| error.to_string())?;
+            let profile = if mode == ProjectionMode::Custom {
+                MappingProfile {
+                    mode,
+                    mapping,
+                    scope,
+                }
+            } else {
+                MappingProfile::generated(mode, &layout_id, scope)
+            };
+            mappings.put(identity, layout_id, profile);
+            Ok(())
+        })
     }
 
     pub(super) fn descriptor_identity(device: &DeviceDescriptor) -> String {

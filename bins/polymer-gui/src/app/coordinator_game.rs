@@ -94,6 +94,7 @@ impl ShellCoordinator {
     }
 
     pub(super) fn finish_active_game(&mut self) {
+        self.quitting = false;
         self.input.clear_input_hooks();
         self.input.clear_guest_input_state();
         let Some(finished) = self.game_host.finish_active_game() else {

@@ -115,6 +115,7 @@ pub enum InputStoreError {
     InvalidClock,
 }
 
+#[derive(Clone)]
 pub struct InputStore {
     connection: turso::Connection,
 }

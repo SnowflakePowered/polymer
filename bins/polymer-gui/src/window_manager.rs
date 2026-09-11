@@ -282,13 +282,14 @@ impl ApplicationHandler<crate::app::UserEvent> for EventLoopApplication {
             self.inner.handle_inspector_window_event(&event);
             return;
         }
-        let Some(manager) = self.inner.window_manager_mut() else {
+        let Some(mut manager) = self.inner.window_manager_mut() else {
             return;
         };
         if window_id != manager.id() {
             return;
         }
         let overlay_consumed = manager.handle_window_event(&event);
+        drop(manager);
         let event = translate_window_event(event);
         if self.inner.handle_window_event(event, overlay_consumed) {
             event_loop.exit();
