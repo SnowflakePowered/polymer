@@ -9250,7 +9250,7 @@ dependencies = [
 name = "polymer-automation"
 version = "0.1.0"
 dependencies = [
- "polymer-command",
+ "kameo",
  "regex",
  "serde",
  "serde_json",

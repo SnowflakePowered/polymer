@@ -12,4 +12,4 @@ pub use protocol::{
     InputCommand, LocatorAction, NodeSnapshot, TreeOptions, UiEvent, WaitCondition, WindowId,
     WindowMatcher, WindowQuery, WindowSnapshot,
 };
-pub use session::{AutomationClient, AutomationSession};
+pub use session::{AutomationActor, AutomationClient, AutomationSession};
