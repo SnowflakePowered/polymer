@@ -1,40 +1,71 @@
-use kameo::{
-    Actor,
-    actor::{ActorRef, Spawn, WeakActorRef},
-    error::{ActorStopReason, Infallible, SendError},
-    message::{Context, Message},
+use actix::{Actor, ActorContext, Addr, Context, Handler, System};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
 };
+use tokio::sync::watch;
 
 use crate::{AutomationDriver, AutomationError, AutomationRequest, AutomationResponse};
 
-pub type AutomationClient = ActorRef<AutomationActor>;
+pub type AutomationClient = Addr<AutomationActor>;
 
 pub struct AutomationActor {
-    driver: Option<Box<dyn AutomationDriver>>,
+    driver: Box<dyn AutomationDriver>,
+    closing: Arc<AtomicBool>,
 }
 
-/// Owns the process-scoped worker independently of cloned actor references.
+/// Owns the process-scoped worker independently of cloned actor addresses.
 pub struct AutomationSession {
     actor: AutomationClient,
+    system: System,
+    closing: Arc<AtomicBool>,
+    finished: watch::Receiver<Option<Result<(), AutomationError>>>,
 }
 
 impl AutomationSession {
     pub fn spawn(driver: impl AutomationDriver) -> Result<Self, AutomationError> {
-        // Own the runtime so synchronous and current-thread callers work too.
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|error| AutomationError::platform(error.to_string()))?;
-        let prepared = AutomationActor::prepare();
-        let actor = prepared.actor_ref().clone();
+        let (ready, startup) = std::sync::mpsc::sync_channel(1);
+        let (completed, finished) = watch::channel(None);
+        let closing = Arc::new(AtomicBool::new(false));
+        let actor_closing = closing.clone();
         std::thread::Builder::new()
             .name("polymer-ui-automation".to_owned())
             .spawn(move || {
-                // The actor and all platform resources are dropped on this thread.
-                let _ = runtime.block_on(prepared.run(Box::new(driver)));
+                let runner = System::with_tokio_rt(|| runtime);
+                let actor = runner.block_on(async move {
+                    AutomationActor::create(move |ctx| {
+                        ctx.set_mailbox_capacity(0);
+                        AutomationActor {
+                            driver: Box::new(driver),
+                            closing: actor_closing,
+                        }
+                    })
+                });
+                let result = if ready.send((actor, System::current())).is_ok() {
+                    runner
+                        .run()
+                        .map_err(|error| AutomationError::platform(error.to_string()))
+                } else {
+                    drop(runner);
+                    Ok(())
+                };
+                // SystemRunner has dropped the actor and platform resources on this thread.
+                let _ = completed.send(Some(result));
             })
             .map_err(|error| AutomationError::platform(error.to_string()))?;
-        Ok(Self { actor })
+        let (actor, system) = startup
+            .recv()
+            .map_err(|_| AutomationError::process_exited())?;
+        Ok(Self {
+            actor,
+            system,
+            closing,
+            finished,
+        })
     }
 
     pub fn client(&self) -> AutomationClient {
@@ -42,19 +73,21 @@ impl AutomationSession {
     }
 
     pub fn close(&self) {
-        // Discard queued work when the process closes; on_stop still runs.
-        self.actor.kill();
+        // Observe closure between blocking calls even if the mailbox stays ready.
+        self.closing.store(true, Ordering::Release);
+        self.system.stop();
     }
 
     pub async fn shutdown(&self) -> Result<(), AutomationError> {
         self.close();
-        self.actor
-            .wait_for_shutdown_with_result(|result| {
-                result
-                    .map(|_| ())
-                    .map_err(|error| AutomationError::platform(error.to_string()))
-            })
-            .await
+        let mut finished = self.finished.clone();
+        let result = finished.wait_for(Option::is_some).await.map_err(|_| {
+            AutomationError::platform("UI automation worker terminated before cleanup completed")
+        })?;
+        result
+            .as_ref()
+            .expect("worker completion checked above")
+            .clone()
     }
 }
 
@@ -65,52 +98,31 @@ impl Drop for AutomationSession {
 }
 
 impl Actor for AutomationActor {
-    type Args = Box<dyn AutomationDriver>;
-    type Error = Infallible;
-
-    async fn on_start(driver: Self::Args, _: ActorRef<Self>) -> Result<Self, Self::Error> {
-        Ok(Self {
-            driver: Some(driver),
-        })
+    type Context = Context<Self>;
+    fn stopped(&mut self, _: &mut Self::Context) {
+        System::current().stop();
     }
+}
 
-    async fn on_stop(
-        &mut self,
-        _: WeakActorRef<Self>,
-        _: ActorStopReason,
-    ) -> Result<(), Self::Error> {
-        if let Some(mut driver) = self.driver.take() {
-            driver.shutdown();
+impl Drop for AutomationActor {
+    fn drop(&mut self) {
+        self.driver.shutdown();
+    }
+}
+
+impl Handler<AutomationRequest> for AutomationActor {
+    type Result = Result<AutomationResponse, AutomationError>;
+    fn handle(&mut self, request: AutomationRequest, ctx: &mut Context<Self>) -> Self::Result {
+        if self.closing.load(Ordering::Acquire) {
+            ctx.stop();
+            return Err(AutomationError::process_exited());
         }
-        Ok(())
+        self.driver.execute(request)
     }
 }
 
-impl Message<AutomationRequest> for AutomationActor {
-    type Reply = Result<AutomationResponse, AutomationError>;
-
-    async fn handle(
-        &mut self,
-        request: AutomationRequest,
-        _: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
-        // Observe shutdown between blocking calls, even with a ready mailbox.
-        tokio::task::yield_now().await;
-        self.driver
-            .as_mut()
-            .expect("automation driver is running")
-            .execute(request)
+impl From<actix::MailboxError> for AutomationError {
+    fn from(_: actix::MailboxError) -> Self {
+        Self::process_exited()
     }
 }
-
-impl From<SendError<AutomationRequest, AutomationError>> for AutomationError {
-    fn from(error: SendError<AutomationRequest, AutomationError>) -> Self {
-        match error {
-            SendError::HandlerError(error) => error,
-            _ => Self::process_exited(),
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests;

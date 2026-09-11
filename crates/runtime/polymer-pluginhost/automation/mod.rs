@@ -23,10 +23,10 @@ pub(crate) async fn op_ui_automation_request(
         });
     };
     match session
-        .ask(request)
-        .try_send()
+        .send(request)
         .await
         .map_err(::polymer_automation::AutomationError::from)
+        .and_then(|result| result)
     {
         Ok(value) => serde_json::json!({ "ok": true, "value": value }),
         Err(error) => serde_json::json!({ "ok": false, "error": error }),

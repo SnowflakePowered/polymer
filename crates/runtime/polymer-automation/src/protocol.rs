@@ -222,6 +222,8 @@ pub struct UiEvent {
     rename_all = "camelCase",
     rename_all_fields = "camelCase"
 )]
+#[derive(actix::Message)]
+#[rtype(result = "Result<AutomationResponse, AutomationError>")]
 pub enum AutomationRequest {
     Windows {
         #[serde(default)]
