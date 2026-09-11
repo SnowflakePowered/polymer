@@ -18,10 +18,10 @@ use std::{
     time::Duration,
 };
 
-#[path = "library.rs"]
-mod library;
+#[path = "library/mod.rs"]
+pub mod library;
 
-pub use library::{Library, LibraryCommandHandler};
+pub use library::Library;
 use library::{
     op_library_games_delete, op_library_games_get, op_library_games_list,
     op_library_launchables_add, op_library_launchables_delete, op_library_metadata_add,

@@ -19,6 +19,7 @@ repository = "https://github.com/polymer/polymer"
 rust-version = "1.94"
 
 [workspace.dependencies]
+kameo = { version = "=0.22.2", default-features = false, features = ["tracing"] }
 polymer-presentation = { path = "crates/producers/polymer-presentation" }
 async-trait = "0.1.89"
 atomic-write-file = "0.3.1"

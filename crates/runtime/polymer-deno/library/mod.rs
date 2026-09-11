@@ -5,68 +5,8 @@ use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 use super::PolymerHost;
 
-polymer_command::native_client! {
-    pub client Library {
-        closed: "library service is unavailable".to_owned();
-
-        #[args(GamesList)]
-        pub async fn games_list(platform: Option<String>) -> Result<Value, String>;
-
-        #[args(GamesGet)]
-        pub async fn games_get(id: String) -> Result<Value, String>;
-
-        #[args(GamesDelete)]
-        pub async fn games_delete(id: String) -> Result<(), String>;
-
-        #[args(LaunchablesAdd)]
-        pub async fn launchables_add(
-            path: String,
-            platform: Option<String>,
-            parent_binary_id: Option<String>,
-        ) -> Result<Value, String>;
-
-        #[args(LaunchablesDelete)]
-        pub async fn launchables_delete(id: String) -> Result<(), String>;
-
-        #[args(MetadataAdd)]
-        pub async fn metadata_add(
-            parent_binary_id: String,
-            input: Value,
-        ) -> Result<Value, String>;
-
-        #[args(MetadataUpdate)]
-        pub async fn metadata_update(id: String, input: Value) -> Result<Value, String>;
-
-        #[args(MetadataDelete)]
-        pub async fn metadata_delete(id: String) -> Result<(), String>;
-
-        #[args(MetadataReplace)]
-        pub async fn metadata_replace(
-            parent_binary_id: String,
-            source: String,
-            inputs: Vec<Value>,
-        ) -> Result<Value, String>;
-
-        #[args(MetadataText)]
-        pub async fn metadata_text(id: String) -> Result<String, String>;
-
-        #[args(MetadataUrl)]
-        pub async fn metadata_url(id: String) -> Result<String, String>;
-
-        #[args(ScrapingJobs)]
-        pub async fn scraping_jobs() -> Result<Value, String>;
-        #[args(ScrapingStart)]
-        pub async fn scraping_start(root_binary_id: String, trigger_binary_id: String) -> Result<Value, String>;
-        #[args(ScrapingJob)]
-        pub async fn scraping_job(id: String) -> Result<Value, String>;
-        #[args(ScrapingRetry)]
-        pub async fn scraping_retry(id: String) -> Result<Value, String>;
-        #[args(ScrapingScrapers)]
-        pub async fn scraping_scrapers() -> Result<Value, String>;
-        #[args(ScrapingRefresh)]
-        pub async fn scraping_refresh(plugin: String) -> Result<(), String>;
-    }
-}
+mod messages;
+pub use messages::*;
 
 fn library(state: &Rc<RefCell<OpState>>) -> Result<Library, JsErrorBox> {
     let host = state.borrow().borrow::<Arc<dyn PolymerHost>>().clone();
@@ -74,7 +14,11 @@ fn library(state: &Rc<RefCell<OpState>>) -> Result<Library, JsErrorBox> {
         .ok_or_else(|| JsErrorBox::generic("library service is unavailable"))
 }
 
-fn error(error: String) -> JsErrorBox {
+fn error<M>(error: kameo::error::SendError<M, String>) -> JsErrorBox {
+    let error = match error {
+        kameo::error::SendError::HandlerError(error) => error,
+        _ => return JsErrorBox::generic("library service is unavailable"),
+    };
     if let Some(message) = error.strip_prefix("TypeError: ") {
         JsErrorBox::type_error(message.to_owned())
     } else {
@@ -88,7 +32,12 @@ pub(super) async fn op_library_games_list(
     state: Rc<RefCell<OpState>>,
     #[string] platform: Option<String>,
 ) -> Result<serde_json::Value, JsErrorBox> {
-    library(&state)?.games_list(platform).await.map_err(error)
+    library(&state)?
+        .games_list
+        .ask(GamesList { platform })
+        .send()
+        .await
+        .map_err(error)
 }
 
 #[op2]
@@ -97,7 +46,12 @@ pub(super) async fn op_library_games_get(
     state: Rc<RefCell<OpState>>,
     #[string] id: String,
 ) -> Result<serde_json::Value, JsErrorBox> {
-    library(&state)?.games_get(id).await.map_err(error)
+    library(&state)?
+        .games_get
+        .ask(GamesGet { id })
+        .send()
+        .await
+        .map_err(error)
 }
 
 #[op2]
@@ -105,7 +59,12 @@ pub(super) async fn op_library_games_delete(
     state: Rc<RefCell<OpState>>,
     #[string] id: String,
 ) -> Result<(), JsErrorBox> {
-    library(&state)?.games_delete(id).await.map_err(error)
+    library(&state)?
+        .games_delete
+        .ask(GamesDelete { id })
+        .send()
+        .await
+        .map_err(error)
 }
 
 #[op2]
@@ -117,7 +76,13 @@ pub(super) async fn op_library_launchables_add(
     #[string] parent_binary_id: Option<String>,
 ) -> Result<serde_json::Value, JsErrorBox> {
     library(&state)?
-        .launchables_add(path, platform, parent_binary_id)
+        .launchables_add
+        .ask(LaunchablesAdd {
+            path,
+            platform,
+            parent_binary_id,
+        })
+        .send()
         .await
         .map_err(error)
 }
@@ -127,7 +92,12 @@ pub(super) async fn op_library_launchables_delete(
     state: Rc<RefCell<OpState>>,
     #[string] id: String,
 ) -> Result<(), JsErrorBox> {
-    library(&state)?.launchables_delete(id).await.map_err(error)
+    library(&state)?
+        .launchables_delete
+        .ask(LaunchablesDelete { id })
+        .send()
+        .await
+        .map_err(error)
 }
 
 #[op2]
@@ -138,7 +108,12 @@ pub(super) async fn op_library_metadata_add(
     #[serde] input: serde_json::Value,
 ) -> Result<serde_json::Value, JsErrorBox> {
     library(&state)?
-        .metadata_add(parent_binary_id, input)
+        .metadata_add
+        .ask(MetadataAdd {
+            parent_binary_id,
+            input,
+        })
+        .send()
         .await
         .map_err(error)
 }
@@ -151,7 +126,9 @@ pub(super) async fn op_library_metadata_update(
     #[serde] input: serde_json::Value,
 ) -> Result<serde_json::Value, JsErrorBox> {
     library(&state)?
-        .metadata_update(id, input)
+        .metadata_update
+        .ask(MetadataUpdate { id, input })
+        .send()
         .await
         .map_err(error)
 }
@@ -161,7 +138,12 @@ pub(super) async fn op_library_metadata_delete(
     state: Rc<RefCell<OpState>>,
     #[string] id: String,
 ) -> Result<(), JsErrorBox> {
-    library(&state)?.metadata_delete(id).await.map_err(error)
+    library(&state)?
+        .metadata_delete
+        .ask(MetadataDelete { id })
+        .send()
+        .await
+        .map_err(error)
 }
 
 #[op2]
@@ -173,7 +155,13 @@ pub(super) async fn op_library_metadata_replace(
     #[serde] inputs: Vec<Value>,
 ) -> Result<serde_json::Value, JsErrorBox> {
     library(&state)?
-        .metadata_replace(parent_binary_id, source, inputs)
+        .metadata_replace
+        .ask(MetadataReplace {
+            parent_binary_id,
+            source,
+            inputs,
+        })
+        .send()
         .await
         .map_err(error)
 }
@@ -184,7 +172,12 @@ pub(super) async fn op_library_metadata_text(
     state: Rc<RefCell<OpState>>,
     #[string] id: String,
 ) -> Result<String, JsErrorBox> {
-    library(&state)?.metadata_text(id).await.map_err(error)
+    library(&state)?
+        .metadata_text
+        .ask(MetadataText { id })
+        .send()
+        .await
+        .map_err(error)
 }
 
 #[op2]
@@ -193,7 +186,12 @@ pub(super) async fn op_library_metadata_url(
     state: Rc<RefCell<OpState>>,
     #[string] id: String,
 ) -> Result<String, JsErrorBox> {
-    library(&state)?.metadata_url(id).await.map_err(error)
+    library(&state)?
+        .metadata_url
+        .ask(MetadataUrl { id })
+        .send()
+        .await
+        .map_err(error)
 }
 
 #[op2]
@@ -201,7 +199,12 @@ pub(super) async fn op_library_metadata_url(
 pub(super) async fn op_scraping_jobs(
     state: Rc<RefCell<OpState>>,
 ) -> Result<serde_json::Value, JsErrorBox> {
-    library(&state)?.scraping_jobs().await.map_err(error)
+    library(&state)?
+        .scraping_jobs
+        .ask(ScrapingJobs)
+        .send()
+        .await
+        .map_err(error)
 }
 
 #[op2]
@@ -212,7 +215,12 @@ pub(super) async fn op_scraping_start(
     #[string] trigger: String,
 ) -> Result<serde_json::Value, JsErrorBox> {
     library(&state)?
-        .scraping_start(root, trigger)
+        .scraping_start
+        .ask(ScrapingStart {
+            root_binary_id: root,
+            trigger_binary_id: trigger,
+        })
+        .send()
         .await
         .map_err(error)
 }
@@ -223,7 +231,12 @@ pub(super) async fn op_scraping_job(
     state: Rc<RefCell<OpState>>,
     #[string] id: String,
 ) -> Result<serde_json::Value, JsErrorBox> {
-    library(&state)?.scraping_job(id).await.map_err(error)
+    library(&state)?
+        .scraping_job
+        .ask(ScrapingJob { id })
+        .send()
+        .await
+        .map_err(error)
 }
 
 #[op2]
@@ -232,7 +245,12 @@ pub(super) async fn op_scraping_retry(
     state: Rc<RefCell<OpState>>,
     #[string] id: String,
 ) -> Result<serde_json::Value, JsErrorBox> {
-    library(&state)?.scraping_retry(id).await.map_err(error)
+    library(&state)?
+        .scraping_retry
+        .ask(ScrapingRetry { id })
+        .send()
+        .await
+        .map_err(error)
 }
 
 #[op2]
@@ -240,7 +258,12 @@ pub(super) async fn op_scraping_retry(
 pub(super) async fn op_scraping_scrapers(
     state: Rc<RefCell<OpState>>,
 ) -> Result<serde_json::Value, JsErrorBox> {
-    library(&state)?.scraping_scrapers().await.map_err(error)
+    library(&state)?
+        .scraping_scrapers
+        .ask(ScrapingScrapers)
+        .send()
+        .await
+        .map_err(error)
 }
 
 #[op2]
@@ -249,7 +272,9 @@ pub(super) async fn op_scraping_refresh(
     #[string] plugin: String,
 ) -> Result<(), JsErrorBox> {
     library(&state)?
-        .scraping_refresh(plugin)
+        .scraping_refresh
+        .ask(ScrapingRefresh { plugin })
+        .send()
         .await
         .map_err(error)
 }
