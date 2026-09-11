@@ -21,6 +21,7 @@ kurbo = "0.13.1"
 cursor-icon = "1.2.0"
 keyboard-types = "0.7.0"
 futures-util = "0.3.32"
+futures = "0.3.32"
 parking_lot.workspace = true
 pollster = "0.4"
 peniko = "0.6.1"

@@ -40,6 +40,17 @@ impl ExtensionFunction {
         Ok(v8::Global::new(scope, value))
     }
 
+    /// Start a call without borrowing the runtime across promise resolution.
+    pub(crate) fn start_call(
+        &self,
+        runtime: &mut JsRuntime,
+        arguments: &[v8::Global<v8::Value>],
+    ) -> impl std::future::Future<
+        Output = Result<v8::Global<v8::Value>, Box<deno_core::error::JsError>>,
+    > + use<> {
+        runtime.call_with_args(&self.0, arguments)
+    }
+
     pub(crate) async fn call(
         &self,
         runtime: &mut JsRuntime,

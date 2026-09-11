@@ -8,6 +8,10 @@ use crate::{
     window_manager::SurfaceWindow,
 };
 use polymer_platform_windows::performance_counter;
+use polymer_pluginhost::controller::{
+    AttachActions, AttachAutomation, ControllerChanged, PauseResume, PendingReply, Quit,
+    StateAction,
+};
 use polymer_protocol::{AdapterLuid, PresentationMappingKind, PresentationTransform};
 use polymer_renderer::layout::Rect;
 use polymer_renderer::{
@@ -389,10 +393,7 @@ impl GameHost {
     pub fn controller_change(
         &self,
         change: polymer_controllers::ControllerTopologyChange,
-    ) -> Result<
-        Option<polymer_command::PendingReply<polymer_controllers::ControllerTopology, String>>,
-        String,
-    > {
+    ) -> Result<Option<PendingReply<ControllerChanged>>, String> {
         let Some(active) = &self.active else {
             return Ok(None);
         };
@@ -405,27 +406,27 @@ impl GameHost {
             requested = %change.requested.assignment_diagnostics(),
             "polymer: host queued controller topology for plugin"
         );
-        session.change(change).map(Some)
+        Ok(Some(Box::pin(session.send(ControllerChanged(change)))))
     }
 
     pub fn pause_resume(
         &self,
         state: polymer_pluginhost::controller::PauseState,
         timeout: std::time::Duration,
-    ) -> Result<Option<polymer_command::PendingReply<(), String>>, String> {
+    ) -> Result<Option<PendingReply<PauseResume>>, String> {
         let Some(active) = &self.active else {
             return Ok(None);
         };
         let Some(session) = &active.controller_session else {
             return Ok(None);
         };
-        session.pause_resume(state, Some(timeout)).map(Some)
+        Ok(Some(Box::pin(session.send(PauseResume { state, timeout }))))
     }
 
     pub fn save_state(
         &self,
         timeout: std::time::Duration,
-    ) -> Result<(u32, polymer_command::PendingReply<(), String>), String> {
+    ) -> Result<(u32, PendingReply<StateAction>), String> {
         let active = self
             .active
             .as_ref()
@@ -442,14 +443,21 @@ impl GameHost {
             .as_ref()
             .ok_or_else(|| "emulator plugin session is unavailable".to_owned())?;
         let slot = states.next_slot();
-        Ok((slot, session.save_state(slot, Some(timeout))?))
+        Ok((
+            slot,
+            Box::pin(session.send(StateAction {
+                slot,
+                save: true,
+                timeout,
+            })),
+        ))
     }
 
     pub fn resume_state(
         &self,
         slot: u32,
         timeout: std::time::Duration,
-    ) -> Result<polymer_command::PendingReply<(), String>, String> {
+    ) -> Result<PendingReply<StateAction>, String> {
         let active = self
             .active
             .as_ref()
@@ -464,11 +472,15 @@ impl GameHost {
         if !states.contains(slot) {
             return Err(format!("save-state slot {slot} does not exist"));
         }
-        active
+        let session = active
             .controller_session
             .as_ref()
-            .ok_or_else(|| "emulator plugin session is unavailable".to_owned())?
-            .resume_state(slot, Some(timeout))
+            .ok_or_else(|| "emulator plugin session is unavailable".to_owned())?;
+        Ok(Box::pin(session.send(StateAction {
+            slot,
+            save: false,
+            timeout,
+        })))
     }
 
     pub fn commit_save_state(
@@ -543,7 +555,7 @@ impl GameHost {
         Option<(
             crate::launch::QuickResumeCache,
             Option<Vec<u8>>,
-            polymer_command::PendingReply<Option<Vec<u8>>, String>,
+            PendingReply<Quit>,
         )>,
         String,
     > {
@@ -576,7 +588,11 @@ impl GameHost {
         else {
             return Err("Quick Resume plugin session is unavailable".to_owned());
         };
-        Ok(Some((cache, screenshot, session.quit(Some(timeout))?)))
+        Ok(Some((
+            cache,
+            screenshot,
+            Box::pin(session.send(Quit { timeout })),
+        )))
     }
 
     pub fn surface_targets(&self) -> Vec<GameSurfaceTarget> {
@@ -746,14 +762,18 @@ impl GameHost {
                 .instance()
                 .expect("a successful session launch owns an emulator instance")
                 .action_endpoint();
-            let attached = controller_session.attach_actions(move |hotkey| match hotkey {
-                polymer_pluginhost::actions::ParsedHotkey::Keyboard { code, modifiers } => {
-                    endpoint.activate_keyboard(code, modifiers)
-                }
-                polymer_pluginhost::actions::ParsedHotkey::Binding { player, keys } => {
-                    endpoint.activate_bindings(*player, keys)
-                }
-            });
+            let attached = futures::executor::block_on(controller_session.send(AttachActions(
+                std::sync::Arc::new(move |hotkey| match hotkey {
+                    polymer_pluginhost::actions::ParsedHotkey::Keyboard { code, modifiers } => {
+                        endpoint.activate_keyboard(code, modifiers)
+                    }
+                    polymer_pluginhost::actions::ParsedHotkey::Binding { player, keys } => {
+                        endpoint.activate_bindings(*player, keys)
+                    }
+                }),
+            )))
+            .map_err(|error| error.to_string())
+            .and_then(|result| result);
             if let Err(error) = attached {
                 let _ = self
                     .session
@@ -774,7 +794,10 @@ impl GameHost {
             .and_then(polymer_automation::AutomationSession::spawn)
             .map_err(|error| format!("could not start emulator UI automation: {error}"))
             .and_then(|automation| {
-                controller_session.attach_automation(automation.client())?;
+                futures::executor::block_on(
+                    controller_session.send(AttachAutomation(automation.client())),
+                )
+                .map_err(|error| error.to_string())??;
                 Ok(automation)
             });
             match attached {

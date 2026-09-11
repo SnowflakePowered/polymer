@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     actions::ParsedHotkey,
-    controller::PauseState,
+    controller::{AttachActions, AttachAutomation, ControllerChanged, PauseResume, PauseState},
     scraper::{ScrapeCandidate, ScrapeScalar},
 };
 use std::{
@@ -697,13 +697,18 @@ async fn controller_callback_regenerates_a_live_mounted_configuration() {
     let automation =
         polymer_automation::AutomationSession::spawn(RecordingAutomation(automation_calls.clone()))
             .unwrap();
-    session.attach_automation(automation.client()).unwrap();
     session
-        .change(polymer_controllers::ControllerTopologyChange {
-            previous: polymer_controllers::ControllerTopology::default(),
-            requested: polymer_controllers::ControllerTopology::default(),
-        })
+        .send(AttachAutomation(automation.client()))
+        .await
         .unwrap()
+        .unwrap();
+    session
+        .send(ControllerChanged(
+            polymer_controllers::ControllerTopologyChange {
+                previous: polymer_controllers::ControllerTopology::default(),
+                requested: polymer_controllers::ControllerTopology::default(),
+            },
+        ))
         .await
         .unwrap()
         .unwrap();
@@ -756,20 +761,26 @@ async fn pause_callback_activates_its_parsed_hotkey_action() {
     let activated = Arc::new(StdMutex::new(Vec::new()));
     let recorded = activated.clone();
     session
-        .attach_actions(move |hotkey| {
+        .send(AttachActions(Arc::new(move |hotkey| {
             recorded.lock().unwrap().push(hotkey.clone());
             Ok(())
-        })
-        .unwrap();
-    session
-        .pause_resume(PauseState::Pause, None)
-        .unwrap()
+        })))
         .await
         .unwrap()
         .unwrap();
     session
-        .pause_resume(PauseState::Resume, None)
+        .send(PauseResume {
+            state: PauseState::Pause,
+            timeout: Duration::from_secs(30),
+        })
+        .await
         .unwrap()
+        .unwrap();
+    session
+        .send(PauseResume {
+            state: PauseState::Resume,
+            timeout: Duration::from_secs(30),
+        })
         .await
         .unwrap()
         .unwrap();
@@ -815,11 +826,12 @@ async fn configuration_mount_retains_a_controller_session_without_a_callback() {
     let session = result.controller_session.unwrap();
     filesystem.filesystem().materialize().unwrap();
     session
-        .change(polymer_controllers::ControllerTopologyChange {
-            previous: polymer_controllers::ControllerTopology::default(),
-            requested: polymer_controllers::ControllerTopology::default(),
-        })
-        .unwrap()
+        .send(ControllerChanged(
+            polymer_controllers::ControllerTopologyChange {
+                previous: polymer_controllers::ControllerTopology::default(),
+                requested: polymer_controllers::ControllerTopology::default(),
+            },
+        ))
         .await
         .unwrap()
         .unwrap();
@@ -954,5 +966,117 @@ async fn update_contents_receives_progress_and_publishes_terminal_events() {
             terminal.detail["state"],
             if fails { "failed" } else { "ready" }
         );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn deno_callbacks_progress_recover_and_drop_on_the_isolate_thread() {
+    struct ActionProbe {
+        calls: tokio::sync::mpsc::UnboundedSender<std::thread::ThreadId>,
+        dropped: tokio::sync::mpsc::UnboundedSender<std::thread::ThreadId>,
+    }
+    impl ActionProbe {
+        fn record(&self) {
+            self.calls.send(std::thread::current().id()).unwrap();
+        }
+    }
+    impl Drop for ActionProbe {
+        fn drop(&mut self) {
+            let _ = self.dropped.send(std::thread::current().id());
+        }
+    }
+
+    // Exercise both synchronous V8 execution and an asynchronous op that stays pending.
+    for blocked in [
+        "while (true) {}",
+        "await new Promise(() => { setInterval(() => {}, 1000); })",
+    ] {
+        let (root, registry) = package();
+        let script = root.path().join("plugin.js");
+        let source = std::fs::read_to_string(&script)
+            .unwrap()
+            .replace(
+                "export function onPauseResume(context)",
+                "export async function onPauseResume(context)",
+            )
+            .replace(
+                "              actions.pause.activate();",
+                &format!(
+                    r#"
+              await new Promise(resolve => setTimeout(resolve, 5));
+              actions.pause.activate();
+              if (context.pauseState === "pause") {{ {blocked} }}
+              setTimeout(() => actions.pause.activate(), 10);
+            "#
+                ),
+            );
+        std::fs::write(script, source).unwrap();
+        let runtime = test_runtime(registry, PluginRuntimeOptions::default());
+        let result = runtime.handle().invoke_with_storage_owned(
+            "worker-test", &["onLaunch".to_owned()],
+            vec![serde_json::json!({ "launchPath": root.path().join("game.iso"), "console": "TEST", "controllerTopology": { "mappings": [] } })],
+            BTreeMap::new(),
+        ).await.unwrap();
+        let session = result.controller_session.unwrap();
+        let client = session.client();
+        let (calls, mut called) = tokio::sync::mpsc::unbounded_channel();
+        let (dropped, mut destroyed) = tokio::sync::mpsc::unbounded_channel();
+        let probe = ActionProbe { calls, dropped };
+        client
+            .send(AttachActions(Arc::new(move |_| {
+                probe.record();
+                Ok(())
+            })))
+            .await
+            .unwrap()
+            .unwrap();
+        let expired = client.send(PauseResume {
+            state: PauseState::Pause,
+            timeout: Duration::from_millis(100),
+        });
+        let owner_thread = tokio::time::timeout(Duration::from_secs(2), called.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(owner_thread, std::thread::current().id());
+        let error = tokio::time::timeout(Duration::from_secs(2), expired)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert!(error.contains("deadline"), "{error}");
+        client
+            .send(PauseResume {
+                state: PauseState::Resume,
+                timeout: Duration::from_secs(1),
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        // One activation happened in the callback, the second in an idle JS timer.
+        for _ in 0..2 {
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(2), called.recv())
+                    .await
+                    .unwrap(),
+                Some(owner_thread)
+            );
+        }
+        let running = client.send(PauseResume {
+            state: PauseState::Pause,
+            timeout: Duration::from_secs(30),
+        });
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), called.recv())
+                .await
+                .unwrap(),
+            Some(owner_thread)
+        );
+        tokio::time::timeout(Duration::from_secs(2), session.shutdown())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!matches!(running.await, Ok(Ok(()))));
+        assert_eq!(destroyed.recv().await, Some(owner_thread));
     }
 }

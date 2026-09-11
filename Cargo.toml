@@ -20,6 +20,7 @@ rust-version = "1.94"
 
 [workspace.dependencies]
 kameo = { version = "=0.22.2", default-features = false, features = ["tracing"] }
+actix = "=0.13.5"
 polymer-presentation = { path = "crates/producers/polymer-presentation" }
 async-trait = "0.1.89"
 atomic-write-file = "0.3.1"

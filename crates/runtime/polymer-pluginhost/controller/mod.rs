@@ -1,49 +1,60 @@
-pub type ControllerSession = polymer_command::WorkerOwner<ControllerClient>;
+mod messages;
 
-polymer_command::command_client! {
-    pub client ControllerClient {
-        closed: "controller plugin session is closed".to_owned();
+pub use crate::runtime::controller_session::ControllerActor;
+pub use messages::*;
+use std::sync::Arc;
 
-        #[args(AttachAutomation)]
-        pub fn attach_automation(
-            session: polymer_automation::AutomationClient,
-        ) -> Result<(), String>;
+pub type ControllerClient = actix::Addr<ControllerActor>;
+pub type PendingReply<M> = std::pin::Pin<Box<actix::prelude::Request<ControllerActor, M>>>;
 
-        #[args(AttachActions)]
-        fn attach_action_sink(
-            sink: crate::actions::ActionSink,
-        ) -> Result<(), String>;
+/// Owns the isolate lifetime; cloned addresses only submit requests.
+pub struct ControllerSession {
+    pub(crate) client: ControllerClient,
+    pub(crate) control: Arc<crate::runtime::InvocationControl>,
+    pub(crate) thread: Option<std::thread::JoinHandle<Result<(), String>>>,
+}
 
-        #[deferred]
-        #[args(Changed)]
-        pub fn change(
-            change: polymer_controllers::ControllerTopologyChange,
-        ) -> Result<polymer_controllers::ControllerTopology, String>;
+impl ControllerSession {
+    pub fn client(&self) -> ControllerClient {
+        self.client.clone()
+    }
 
-        #[deferred]
-        #[args(PauseResume)]
-        fn pause_resume_with_timeout(
-            state: PauseState,
-            timeout: std::time::Duration,
-        ) -> Result<(), String>;
+    pub fn close(&self) {
+        // V8 termination is out of band so even synchronous JavaScript can be stopped.
+        self.control.cancel();
+    }
 
-        #[deferred]
-        #[args(StateAction)]
-        fn dispatch_state_action(
-            slot: u32,
-            save: bool,
-            timeout: std::time::Duration,
-        ) -> Result<(), String>;
+    /// Wait for the actor, isolate, and owning thread to finish cleanup.
+    pub async fn shutdown(mut self) -> Result<(), String> {
+        self.close();
+        if let Some(thread) = self.thread.take() {
+            tokio::task::spawn_blocking(move || thread.join())
+                .await
+                .map_err(|error| error.to_string())?
+                .map_err(|_| "controller actor thread panicked".to_owned())??;
+        }
+        Ok(())
+    }
+}
 
-        #[deferred]
-        #[args(Quit)]
-        fn quit_with_timeout(
-            timeout: std::time::Duration,
-        ) -> Result<Option<Vec<u8>>, String>;
+impl std::fmt::Debug for ControllerSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ControllerSession")
+            .field("actor", &self.client)
+            .finish_non_exhaustive()
+    }
+}
 
-        #[oneshot]
-        #[args(Stop)]
-        pub(crate) fn stop();
+impl Drop for ControllerSession {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
+impl std::ops::Deref for ControllerSession {
+    type Target = ControllerClient;
+    fn deref(&self) -> &ControllerClient {
+        &self.client
     }
 }
 
@@ -59,59 +70,6 @@ impl PauseState {
             Self::Pause => "pause",
             Self::Resume => "resume",
         }
-    }
-}
-
-impl ControllerClient {
-    pub fn pause_resume(
-        &self,
-        state: PauseState,
-        timeout: Option<std::time::Duration>,
-    ) -> Result<polymer_command::PendingReply<(), String>, String> {
-        const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-        self.pause_resume_with_timeout(state, timeout.unwrap_or(DEFAULT_TIMEOUT))
-    }
-
-    pub fn save_state(
-        &self,
-        slot: u32,
-        timeout: Option<std::time::Duration>,
-    ) -> Result<polymer_command::PendingReply<(), String>, String> {
-        self.state_action(slot, true, timeout)
-    }
-
-    pub fn resume_state(
-        &self,
-        slot: u32,
-        timeout: Option<std::time::Duration>,
-    ) -> Result<polymer_command::PendingReply<(), String>, String> {
-        self.state_action(slot, false, timeout)
-    }
-
-    fn state_action(
-        &self,
-        slot: u32,
-        save: bool,
-        timeout: Option<std::time::Duration>,
-    ) -> Result<polymer_command::PendingReply<(), String>, String> {
-        const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-        self.dispatch_state_action(slot, save, timeout.unwrap_or(DEFAULT_TIMEOUT))
-    }
-
-    #[allow(clippy::type_complexity)]
-    pub fn quit(
-        &self,
-        timeout: Option<std::time::Duration>,
-    ) -> Result<polymer_command::PendingReply<Option<Vec<u8>>, String>, String> {
-        const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-        self.quit_with_timeout(timeout.unwrap_or(DEFAULT_TIMEOUT))
-    }
-
-    pub fn attach_actions(
-        &self,
-        sink: impl Fn(&crate::actions::ParsedHotkey) -> Result<(), String> + Send + Sync + 'static,
-    ) -> Result<(), String> {
-        self.attach_action_sink(std::sync::Arc::new(sink))
     }
 }
 
