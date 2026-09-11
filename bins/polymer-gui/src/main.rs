@@ -85,17 +85,17 @@ fn run(
         ),
     ));
     loop {
+        application.wait_for_events()?;
         let status = system.block_on(async {
-            let status =
-                event_loop.pump_app_events(Some(Duration::from_millis(100)), application.as_mut());
+            let status = event_loop.pump_app_events(Some(Duration::ZERO), application.as_mut());
             // Give local actors a turn after native callbacks release the DOM.
-            tokio::time::sleep(Duration::from_millis(1)).await;
+            tokio::task::yield_now().await;
             status
         });
         if matches!(status, PumpStatus::Exit(_)) {
             break;
         }
- 
+
         runtime.block_on(application.run_async_tasks());
     }
     runtime.block_on(application.into_result())
