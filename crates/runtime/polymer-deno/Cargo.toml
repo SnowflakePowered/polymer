@@ -8,7 +8,7 @@ license.workspace = true
 path = "lib.rs"
 
 [dependencies]
-kameo.workspace = true
+actix.workspace = true
 deno_ast = { version = "0.53.3", features = ["transpiling"] }
 deno_core = "0.409.0"
 deno_error = "0.7.1"

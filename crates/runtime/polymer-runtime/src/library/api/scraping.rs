@@ -1,86 +1,98 @@
 use super::LibraryBackend;
-use kameo::message::{Context, Message};
+use actix::{AtomicResponse, Context, Handler, WrapFuture};
 use polymer_deno::polymer::library::*;
 use serde_json::{Value, json};
 
-impl Message<ScrapingJobs> for LibraryBackend {
-    type Reply = Result<Value, String>;
+impl Handler<ScrapingJobs> for LibraryBackend {
+    type Result = AtomicResponse<Self, Result<Value, String>>;
 
-    async fn handle(
-        &mut self,
-        _message: ScrapingJobs,
-        _: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
-        self.catalog
-            .scrape_jobs()
-            .await
-            .map(|jobs| json!(jobs))
-            .map_err(|error| error.to_string())
+    fn handle(&mut self, _message: ScrapingJobs, _: &mut Context<Self>) -> Self::Result {
+        let catalog = self.catalog.clone();
+        AtomicResponse::new(Box::pin(
+            async move {
+                catalog
+                    .scrape_jobs()
+                    .await
+                    .map(|jobs| json!(jobs))
+                    .map_err(|error| error.to_string())
+            }
+            .into_actor(self),
+        ))
     }
 }
 
-impl Message<ScrapingStart> for LibraryBackend {
-    type Reply = Result<Value, String>;
+impl Handler<ScrapingStart> for LibraryBackend {
+    type Result = AtomicResponse<Self, Result<Value, String>>;
 
-    async fn handle(
+    fn handle(
         &mut self,
         ScrapingStart {
             root_binary_id,
             trigger_binary_id,
         }: ScrapingStart,
-        _: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
-        self.scraping
-            .enqueue(
-                Self::uuid(&root_binary_id)?,
-                Self::uuid(&trigger_binary_id)?,
-            )
-            .await
-            .map(|job| json!(job))
-            .map_err(|error| error.to_string())
+        _: &mut Context<Self>,
+    ) -> Self::Result {
+        let scraping = self.scraping.clone();
+        AtomicResponse::new(Box::pin(
+            async move {
+                scraping
+                    .enqueue(
+                        Self::uuid(&root_binary_id)?,
+                        Self::uuid(&trigger_binary_id)?,
+                    )
+                    .await
+                    .map(|job| json!(job))
+                    .map_err(|error| error.to_string())
+            }
+            .into_actor(self),
+        ))
     }
 }
 
-impl Message<ScrapingJob> for LibraryBackend {
-    type Reply = Result<Value, String>;
+impl Handler<ScrapingJob> for LibraryBackend {
+    type Result = AtomicResponse<Self, Result<Value, String>>;
 
-    async fn handle(
-        &mut self,
-        ScrapingJob { id }: ScrapingJob,
-        _: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
-        self.catalog
-            .scrape_job(Self::uuid(&id)?)
-            .await
-            .map(|job| json!(job))
-            .map_err(|error| error.to_string())
+    fn handle(&mut self, ScrapingJob { id }: ScrapingJob, _: &mut Context<Self>) -> Self::Result {
+        let catalog = self.catalog.clone();
+        AtomicResponse::new(Box::pin(
+            async move {
+                catalog
+                    .scrape_job(Self::uuid(&id)?)
+                    .await
+                    .map(|job| json!(job))
+                    .map_err(|error| error.to_string())
+            }
+            .into_actor(self),
+        ))
     }
 }
 
-impl Message<ScrapingRetry> for LibraryBackend {
-    type Reply = Result<Value, String>;
+impl Handler<ScrapingRetry> for LibraryBackend {
+    type Result = AtomicResponse<Self, Result<Value, String>>;
 
-    async fn handle(
+    fn handle(
         &mut self,
         ScrapingRetry { id }: ScrapingRetry,
-        _: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
-        self.scraping
-            .retry(Self::uuid(&id)?)
-            .await
-            .map(|job| json!(job))
-            .map_err(|error| error.to_string())
+        _: &mut Context<Self>,
+    ) -> Self::Result {
+        let scraping = self.scraping.clone();
+        AtomicResponse::new(Box::pin(
+            async move {
+                scraping
+                    .retry(Self::uuid(&id)?)
+                    .await
+                    .map(|job| json!(job))
+                    .map_err(|error| error.to_string())
+            }
+            .into_actor(self),
+        ))
     }
 }
 
-impl Message<ScrapingScrapers> for LibraryBackend {
-    type Reply = Result<Value, String>;
+impl Handler<ScrapingScrapers> for LibraryBackend {
+    type Result = Result<Value, String>;
 
-    async fn handle(
-        &mut self,
-        _message: ScrapingScrapers,
-        _: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
+    fn handle(&mut self, _: ScrapingScrapers, _: &mut Context<Self>) -> Self::Result {
         Ok(Value::Array(self.scraping.scrapers().iter().map(|plugin| json!({
             "id": plugin.id(),
             "version": plugin.version(),
@@ -90,17 +102,23 @@ impl Message<ScrapingScrapers> for LibraryBackend {
     }
 }
 
-impl Message<ScrapingRefresh> for LibraryBackend {
-    type Reply = Result<(), String>;
+impl Handler<ScrapingRefresh> for LibraryBackend {
+    type Result = AtomicResponse<Self, Result<(), String>>;
 
-    async fn handle(
+    fn handle(
         &mut self,
         ScrapingRefresh { plugin }: ScrapingRefresh,
-        _: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
-        self.scraping
-            .refresh(&plugin)
-            .await
-            .map_err(|error| error.to_string())
+        _: &mut Context<Self>,
+    ) -> Self::Result {
+        let scraping = self.scraping.clone();
+        AtomicResponse::new(Box::pin(
+            async move {
+                scraping
+                    .refresh(&plugin)
+                    .await
+                    .map_err(|error| error.to_string())
+            }
+            .into_actor(self),
+        ))
     }
 }
