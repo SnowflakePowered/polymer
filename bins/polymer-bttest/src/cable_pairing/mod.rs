@@ -1,4 +1,5 @@
 use eframe::egui;
+use polymer_bluetooth::TransportKind;
 use polymer_bluetooth::cable_pairing::{CableDeviceIdentity, CablePairingHost, CablePairingState};
 
 pub mod driver;
@@ -29,6 +30,7 @@ pub enum Outcome {
 
 pub enum Event {
     Host(CablePairingHost),
+    BleHost(CablePairingHost),
     RegistryUnavailable(String),
     Finished(Result<Outcome, String>),
 }
@@ -36,6 +38,7 @@ pub enum Event {
 #[derive(Default)]
 pub struct CablePairingPanel {
     host: Option<CablePairingHost>,
+    ble_host: Option<CablePairingHost>,
     devices: Vec<CableDeviceIdentity>,
     inspected: Option<(CableDeviceIdentity, CablePairingState)>,
     busy: bool,
@@ -49,6 +52,10 @@ impl CablePairingPanel {
         match event {
             Event::Host(host) => {
                 self.host = Some(host);
+                return None;
+            }
+            Event::BleHost(host) => {
+                self.ble_host = Some(host);
                 return None;
             }
             Event::RegistryUnavailable(error) => {
@@ -67,7 +74,7 @@ impl CablePairingPanel {
                     Ok(Outcome::Devices(devices)) => {
                         self.inspected = None;
                         self.status = if devices.is_empty() {
-                            "No supported USB controllers found. Connect a DS3 with a data cable and refresh. Windows cable pairing requires WinUSB on the controller.".into()
+                            "No supported USB controllers found. Connect a DS3 or Switch 2 controller with a data cable and refresh.".into()
                         } else {
                             format!(
                                 "Found {} USB controller(s). Read addresses before pairing.",
@@ -82,7 +89,7 @@ impl CablePairingPanel {
                     }
                     Ok(Outcome::Paired { device, state }) => {
                         self.status = format!(
-                            "Verified and saved wireless pairing for {}. Unplug USB and press PS to connect to this adapter. DS3 Bluetooth input activation is not implemented yet.",
+                            "Verified and saved wireless pairing for {}. Unplug USB and press the controller's HOME/PS button to connect.",
                             state.controller_address,
                         );
                         self.inspected = Some((device, state));
@@ -104,13 +111,19 @@ impl CablePairingPanel {
         egui::CollapsingHeader::new("USB cable pairing")
             .default_open(true)
             .show(ui, |ui| {
-                ui.label("Provision a persistent wireless pairing over USB. Supported: DualShock 3 / SIXAXIS.");
+                ui.label("Provision a persistent wireless pairing over USB. Supported: DualShock 3 / SIXAXIS, Joy-Con 2, Switch 2 Pro, and NSO GameCube.");
                 ui.label("On Windows, DS3 pairing requires WinUSB on the controller. Switching its driver can affect wired input. The switch button attempts it without requesting elevation.");
                 if let Some(host) = self.host {
                     ui.monospace(format!("Dedicated BR/EDR host: {}", host.address));
                 } else {
                     ui.weak("Dedicated BR/EDR adapter unavailable. USB addresses can still be inspected.");
                 }
+                if let Some(host) = self.ble_host {
+                    ui.monospace(format!("OS BLE host: {}", host.address));
+                } else {
+                    ui.weak("OS BLE adapter unavailable. Switch 2 pairing is disabled.");
+                }
+                ui.label("Switch 2 uses USB command interface 1 and pairs to the OS BLE adapter.");
                 if let Some(error) = &self.registry_error {
                     ui.colored_label(egui::Color32::LIGHT_RED, format!("Pairing disabled: persistent registry unavailable: {error}"));
                 }
@@ -174,10 +187,16 @@ impl CablePairingPanel {
                 .host_address
                 .map_or_else(|| "none".into(), |address| address.to_string())
         ));
+        let ble = device.wireless_transport() == TransportKind::Ble;
+        let host = if ble { self.ble_host } else { self.host };
         if ui
             .add_enabled(
-                self.host.is_some() && self.registry_error.is_none(),
-                egui::Button::new("Pair to dedicated adapter"),
+                host.is_some() && self.registry_error.is_none(),
+                egui::Button::new(if ble {
+                    "Pair to OS BLE adapter"
+                } else {
+                    "Pair to dedicated adapter"
+                }),
             )
             .clicked()
         {

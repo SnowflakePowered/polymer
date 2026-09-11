@@ -16,6 +16,7 @@ use crate::{
 mod dshidmini;
 mod dualshock3;
 mod hid;
+mod switch2;
 mod usb;
 
 /// A particular USB interface, rather than the first device with a matching PID.
@@ -60,11 +61,31 @@ impl CableDeviceIdentity {
                     )))
                 }
             }
+            id if id.starts_with("nintendo.switch2.") => {
+                let info = identity
+                    .usb
+                    .as_ref()
+                    .ok_or(Error::Unsupported("Switch 2 USB command interface"))?;
+                let commands = switch2::UsbCommands::open(info).await?;
+                Ok(Box::new(switch2::Session::new(identity, commands)))
+            }
             _ => Err(Error::Unsupported("USB cable pairing for this controller")),
         }
     }
 
+    /// Wireless transport provisioned by this controller's USB protocol.
+    pub fn wireless_transport(&self) -> TransportKind {
+        if self.profile_id.as_str().starts_with("nintendo.switch2.") {
+            TransportKind::Ble
+        } else {
+            TransportKind::BrEdr
+        }
+    }
+
     pub fn access_label(&self) -> &'static str {
+        if self.wireless_transport() == TransportKind::Ble {
+            return "USB vendor commands (interface 1)";
+        }
         if self.uses_dshidmini() {
             return "DsHidMini IPC";
         }
@@ -99,8 +120,11 @@ pub struct CablePairingState {
 
 #[derive(Clone, Copy, Debug)]
 pub struct CablePairingHost {
-    /// The dedicated BR/EDR adapter, not the OS-owned BLE adapter.
+    /// Address of the radio used for wireless reconnect: the dedicated adapter
+    /// for BR/EDR controllers, or the OS-owned BLE adapter for Switch 2.
     pub address: DeviceAddr,
+    /// OS BLE adapter index. `None` selects the dedicated BR/EDR radio.
+    pub adapter_index: Option<usize>,
 }
 
 impl CablePairingHost {
@@ -143,6 +167,7 @@ impl CablePairing {
     pub async fn enumerate() -> Result<Vec<CableDeviceIdentity>> {
         let mut devices = hid::CableHid::enumerate().await?;
         devices.extend(usb::DualShock3Usb::enumerate().await?);
+        devices.extend(switch2::UsbCommands::enumerate().await?);
         #[cfg(windows)]
         devices.extend(dshidmini::Session::enumerate().await?);
         Ok(devices)
@@ -156,6 +181,12 @@ impl CablePairing {
         host: &CablePairingHost,
     ) -> Result<VerifiedCablePairing> {
         host.validate()?;
+        let transport = session.identity().wireless_transport();
+        if (transport == TransportKind::Ble) != host.adapter_index.is_some() {
+            return Err(Error::Unsupported(
+                "cable pairing host uses the wrong wireless transport",
+            ));
+        }
         // Surface an unreadable registry before changing controller hardware.
         let previous = self.store.records()?;
         let verified = session.pair(host).await?;
@@ -167,16 +198,16 @@ impl CablePairing {
         let address = verified.state.controller_address;
         let player_index = previous
             .iter()
-            .find(|record| record.address == address && record.transport == TransportKind::BrEdr)
+            .find(|record| record.address == address && record.transport == transport)
             .map_or(0, |record| record.player_index);
         let record = ControllerRecord {
             address,
-            transport: TransportKind::BrEdr,
+            transport,
             profile_id: session.identity().profile_id.clone(),
             // Do not carry stale keys from a previous pairing into a cable bond.
             link_key: verified.link_key.as_ref().map(|key| key.value),
             link_key_type: verified.link_key.as_ref().map(|key| key.key_type),
-            adapter_index: None,
+            adapter_index: host.adapter_index,
             auto_reconnect: true,
             player_index,
         };

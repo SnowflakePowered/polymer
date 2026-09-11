@@ -1,4 +1,4 @@
-//! Read-only DS3 cable-pairing diagnostics. Never writes the controller's host address.
+//! Read-only cable-pairing diagnostics. Never writes the controller's host address.
 
 use polymer_bluetooth::cable_pairing::CablePairing;
 

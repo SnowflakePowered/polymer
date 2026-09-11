@@ -680,9 +680,7 @@ impl eframe::App for BluetoothTestApp {
                     self.discovery_ui(&mut columns[0]);
                     self.connection_ui(&mut columns[1]);
                 });
-                if self.radio == RadioKind::BrEdr
-                    && let Some(action) = self.cable_pairing.show(ui)
-                {
+                if let Some(action) = self.cable_pairing.show(ui) {
                     self.send(Command::CablePairing(action));
                 }
                 self.motion_capture_ui(ui);
