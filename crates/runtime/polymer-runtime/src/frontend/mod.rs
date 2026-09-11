@@ -7,7 +7,9 @@ mod commands;
 pub mod emulator;
 pub mod input;
 pub mod webrtc;
-pub use commands::FrontendCommands;
+pub use commands::{
+    EmulatorRecipients, FrontendCommands, FrontendRecipients, InputRecipients, WebRtcRecipients,
+};
 
 use crate::ControllerProfiles;
 use crate::{ConfigurationDefaults, LibraryService};
@@ -116,7 +118,7 @@ impl FrontendCommands {
                     CONTROLLER_API_RESPONSE_ATTEMPTS
                 };
             let mut response = client.request(
-                &client.input_controller_api,
+                |recipients| &recipients.input.controller_api,
                 input::ControllerApi { command },
                 "controller host is unavailable",
             );
@@ -800,7 +802,7 @@ impl PolymerHost for FrontendServices {
             None => None,
         };
         self.commands.request(
-            &self.commands.emulator_launch,
+            |recipients| &recipients.emulator.launch,
             emulator::Launch {
                 token,
                 options,
@@ -812,34 +814,36 @@ impl PolymerHost for FrontendServices {
     }
 
     fn emulator_close(&self, token: InstanceToken) {
-        self.commands
-            .notify(&self.commands.emulator_close, emulator::Close { token });
+        self.commands.notify(
+            |recipients| &recipients.emulator.close,
+            emulator::Close { token },
+        );
     }
 
     fn emulator_set_volume(&self, token: InstanceToken, volume: f64) {
         self.commands.notify(
-            &self.commands.emulator_set_volume,
+            |recipients| &recipients.emulator.set_volume,
             emulator::SetVolume { token, volume },
         );
     }
 
     fn emulator_set_muted(&self, token: InstanceToken, muted: bool) {
         self.commands.notify(
-            &self.commands.emulator_set_muted,
+            |recipients| &recipients.emulator.set_muted,
             emulator::SetMuted { token, muted },
         );
     }
 
     fn emulator_message(&self, token: InstanceToken, name: String, args: Value) {
         self.commands.notify(
-            &self.commands.emulator_message,
+            |recipients| &recipients.emulator.message,
             emulator::Message { token, name, args },
         );
     }
 
     fn emulator_input(&self, token: InstanceToken, active: bool) {
         self.commands.notify(
-            &self.commands.emulator_input,
+            |recipients| &recipients.emulator.input,
             emulator::Input { token, active },
         );
     }
@@ -851,7 +855,7 @@ impl PolymerHost for FrontendServices {
         timeout: Duration,
     ) -> ApiFuture<Result<(), String>> {
         self.commands.request(
-            &self.commands.emulator_pause_state,
+            |recipients| &recipients.emulator.pause_state,
             emulator::PauseState {
                 token,
                 pause,
@@ -867,7 +871,7 @@ impl PolymerHost for FrontendServices {
         timeout: Duration,
     ) -> ApiFuture<Result<Value, String>> {
         self.commands.request(
-            &self.commands.emulator_save_state,
+            |recipients| &recipients.emulator.save_state,
             emulator::SaveState { token, timeout },
             "emulator host is unavailable",
         )
@@ -880,7 +884,7 @@ impl PolymerHost for FrontendServices {
         timeout: Duration,
     ) -> ApiFuture<Result<Value, String>> {
         self.commands.request(
-            &self.commands.emulator_resume_state,
+            |recipients| &recipients.emulator.resume_state,
             emulator::ResumeState {
                 token,
                 slot,
@@ -896,7 +900,7 @@ impl PolymerHost for FrontendServices {
         record_id: String,
     ) -> ApiFuture<Result<Option<Vec<u8>>, String>> {
         self.commands.request(
-            &self.commands.emulator_state_screenshot,
+            |recipients| &recipients.emulator.state_screenshot,
             emulator::StateScreenshot { token, record_id },
             "emulator host is unavailable",
         )
@@ -904,7 +908,7 @@ impl PolymerHost for FrontendServices {
 
     fn input_configure(&self, request_id: u32, transaction: Value) {
         self.commands.notify(
-            &self.commands.input_configure,
+            |recipients| &recipients.input.configure,
             input::Configure {
                 request_id,
                 transaction,
@@ -919,7 +923,7 @@ impl PolymerHost for FrontendServices {
         targets: Vec<u32>,
     ) -> ApiFuture<Result<(), String>> {
         self.commands.request(
-            &self.commands.webrtc_start,
+            |recipients| &recipients.webrtc.start,
             webrtc::Start {
                 token,
                 bind,
@@ -931,7 +935,7 @@ impl PolymerHost for FrontendServices {
 
     fn webrtc_stop(&self, token: InstanceToken) -> ApiFuture<Result<(), String>> {
         self.commands.request(
-            &self.commands.webrtc_stop,
+            |recipients| &recipients.webrtc.stop,
             webrtc::Stop { token },
             "WebRTC host is unavailable",
         )

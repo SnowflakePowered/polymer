@@ -1,7 +1,7 @@
 mod api;
 mod server;
 
-use std::sync::Arc;
+use std::{rc::Rc, sync::Arc};
 
 use actix::{Actor, Addr, Context, System};
 use polymer_deno::polymer::library::Library;
@@ -12,20 +12,38 @@ pub struct LibraryService {
     configuration_locks: crate::launchable_configuration::ConfigurationLocks,
     catalog: Arc<GameCatalog>,
     actor: Addr<LibraryBackend>,
+    reader: Addr<LibraryReader>,
     scraping: polymer_scraping::ScrapingEngine,
+}
+
+// Both mailboxes share one system, which lives until both actors have stopped.
+struct LibraryActorLifetime;
+
+impl Drop for LibraryActorLifetime {
+    fn drop(&mut self) {
+        System::current().stop();
+    }
+}
+
+struct LibraryReader {
+    catalog: Arc<GameCatalog>,
+    scraping: polymer_scraping::ScrapingEngine,
+    media: Arc<server::MediaServer>,
+    _lifetime: Rc<LibraryActorLifetime>,
+}
+
+impl Actor for LibraryReader {
+    type Context = Context<Self>;
 }
 
 struct LibraryBackend {
     catalog: Arc<GameCatalog>,
     scraping: polymer_scraping::ScrapingEngine,
-    media: Arc<server::MediaServer>,
+    _lifetime: Rc<LibraryActorLifetime>,
 }
 
 impl Actor for LibraryBackend {
     type Context = Context<Self>;
-    fn stopped(&mut self, _: &mut Self::Context) {
-        System::current().stop();
-    }
 }
 
 impl LibraryService {
@@ -55,21 +73,31 @@ impl LibraryService {
         if let Err(error) = scraping.resume().await {
             tracing::warn!(%error, "could not resume scrape jobs");
         }
-        let backend = LibraryBackend {
-            catalog: catalog.clone(),
-            scraping: scraping.clone(),
-            media: Arc::new(media),
-        };
+        let actor_catalog = catalog.clone();
+        let actor_scraping = scraping.clone();
         let (ready, startup) = tokio::sync::oneshot::channel();
         std::thread::Builder::new()
             .name("polymer-library".to_owned())
             .spawn(move || {
                 let system = System::new();
                 let actor = system.block_on(async move {
-                    LibraryBackend::create(move |ctx| {
+                    let lifetime = Rc::new(LibraryActorLifetime);
+                    let reader = LibraryReader {
+                        catalog: actor_catalog.clone(),
+                        scraping: actor_scraping.clone(),
+                        media: Arc::new(media),
+                        _lifetime: lifetime.clone(),
+                    }
+                    .start();
+                    let writer = LibraryBackend::create(move |ctx| {
                         ctx.set_mailbox_capacity(0);
-                        backend
-                    })
+                        LibraryBackend {
+                            catalog: actor_catalog,
+                            scraping: actor_scraping,
+                            _lifetime: lifetime,
+                        }
+                    });
+                    (writer, reader)
                 });
                 if ready.send(actor).is_ok()
                     && let Err(error) = system.run()
@@ -77,11 +105,12 @@ impl LibraryService {
                     tracing::error!(%error, "library actor system failed");
                 }
             })?;
-        let actor = startup.await.map_err(std::io::Error::other)?;
+        let (actor, reader) = startup.await.map_err(std::io::Error::other)?;
 
         Ok(Self {
             configuration_locks: Default::default(),
             actor,
+            reader,
             scraping,
             catalog,
         })
@@ -89,8 +118,8 @@ impl LibraryService {
 
     pub fn client(&self) -> Library {
         Library {
-            games_list: self.actor.clone().recipient(),
-            games_get: self.actor.clone().recipient(),
+            games_list: self.reader.clone().recipient(),
+            games_get: self.reader.clone().recipient(),
             games_delete: self.actor.clone().recipient(),
             launchables_add: self.actor.clone().recipient(),
             launchables_delete: self.actor.clone().recipient(),
@@ -98,13 +127,13 @@ impl LibraryService {
             metadata_update: self.actor.clone().recipient(),
             metadata_delete: self.actor.clone().recipient(),
             metadata_replace: self.actor.clone().recipient(),
-            metadata_text: self.actor.clone().recipient(),
-            metadata_url: self.actor.clone().recipient(),
-            scraping_jobs: self.actor.clone().recipient(),
+            metadata_text: self.reader.clone().recipient(),
+            metadata_url: self.reader.clone().recipient(),
+            scraping_jobs: self.reader.clone().recipient(),
             scraping_start: self.actor.clone().recipient(),
-            scraping_job: self.actor.clone().recipient(),
+            scraping_job: self.reader.clone().recipient(),
             scraping_retry: self.actor.clone().recipient(),
-            scraping_scrapers: self.actor.clone().recipient(),
+            scraping_scrapers: self.reader.clone().recipient(),
             scraping_refresh: self.actor.clone().recipient(),
         }
     }
@@ -126,6 +155,7 @@ impl LibraryService {
 
 #[cfg(test)]
 mod tests {
+    use super::api::LibraryApi;
     use std::sync::Arc;
 
     use object_store::memory::InMemory;
@@ -201,7 +231,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             service
-                .actor
+                .reader
                 .send(MetadataUrl {
                     id: inline.id.simple().to_string()
                 })
@@ -229,7 +259,7 @@ mod tests {
             .await
             .unwrap();
         let old_url = service
-            .actor
+            .reader
             .send(MetadataUrl {
                 id: object.id.simple().to_string(),
             })

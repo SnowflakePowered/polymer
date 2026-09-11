@@ -11,7 +11,6 @@ use polymer_runtime::{FrontendCommands, frontend};
 use std::{
     cell::RefCell,
     rc::{Rc, Weak},
-    sync::Arc,
 };
 
 #[derive(Clone)]
@@ -32,6 +31,19 @@ impl GuiState {
                 .as_mut()
                 .ok_or_else(|| "GUI host is unavailable".to_owned())?,
         )
+    }
+
+    fn with_active<R>(
+        &self,
+        token: crate::shell_runtime::InstanceToken,
+        operation: impl FnOnce(&mut ShellCoordinator) -> Result<R, String>,
+    ) -> Result<R, String> {
+        self.with(|state| {
+            if !state.game_host.is_active(token) {
+                return Err("emulator is no longer active".to_owned());
+            }
+            operation(state)
+        })
     }
 
     async fn finish_controller_change(
@@ -109,25 +121,33 @@ impl GuiActors {
         &self,
         proxy: crate::window_manager::EventLoopProxy<UserEvent>,
     ) -> FrontendCommands {
-        FrontendCommands {
-            emulator_launch: Some(self.control.clone().recipient()),
-            emulator_close: Some(self.state.clone().recipient()),
-            emulator_set_volume: Some(self.control.clone().recipient()),
-            emulator_set_muted: Some(self.control.clone().recipient()),
-            emulator_message: Some(self.control.clone().recipient()),
-            emulator_input: Some(self.control.clone().recipient()),
-            emulator_pause_state: Some(self.control.clone().recipient()),
-            emulator_save_state: Some(self.state.clone().recipient()),
-            emulator_resume_state: Some(self.state.clone().recipient()),
-            emulator_state_screenshot: Some(self.control.clone().recipient()),
-            input_configure: Some(self.input.clone().recipient()),
-            input_controller_api: Some(self.input.clone().recipient()),
-            webrtc_start: Some(self.control.clone().recipient()),
-            webrtc_stop: Some(self.control.clone().recipient()),
-            wake: Some(Arc::new(move || {
+        FrontendCommands::new(
+            frontend::FrontendRecipients {
+                emulator: frontend::EmulatorRecipients {
+                    launch: self.control.clone().recipient(),
+                    close: self.state.clone().recipient(),
+                    set_volume: self.control.clone().recipient(),
+                    set_muted: self.control.clone().recipient(),
+                    message: self.control.clone().recipient(),
+                    input: self.control.clone().recipient(),
+                    pause_state: self.control.clone().recipient(),
+                    save_state: self.state.clone().recipient(),
+                    resume_state: self.state.clone().recipient(),
+                    state_screenshot: self.control.clone().recipient(),
+                },
+                input: frontend::InputRecipients {
+                    configure: self.input.clone().recipient(),
+                    controller_api: self.input.clone().recipient(),
+                },
+                webrtc: frontend::WebRtcRecipients {
+                    start: self.control.clone().recipient(),
+                    stop: self.control.clone().recipient(),
+                },
+            },
+            move || {
                 let _ = proxy.send_event(UserEvent::WakeActors);
-            })),
-        }
+            },
+        )
     }
 }
 

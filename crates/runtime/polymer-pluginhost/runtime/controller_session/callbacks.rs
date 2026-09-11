@@ -40,10 +40,7 @@ impl Handler<PauseResume> for ControllerActor {
                         "onPauseResume",
                     )
                 });
-        match call {
-            Ok(call) => AtomicResponse::new(Box::pin(call.map(|result, _, _| result.map(|_| ())))),
-            Err(error) => AtomicResponse::new(Box::pin(fut::ready(Err(error)))),
-        }
+        DenoCall::completion(call)
     }
 }
 
@@ -72,10 +69,7 @@ impl Handler<StateAction> for ControllerActor {
                 },
             )
         });
-        match call {
-            Ok(call) => AtomicResponse::new(Box::pin(call.map(|result, _, _| result.map(|_| ())))),
-            Err(error) => AtomicResponse::new(Box::pin(fut::ready(Err(error)))),
-        }
+        DenoCall::completion(call)
     }
 }
 
