@@ -1,46 +1,6 @@
 use super::super::*;
 
 impl BluetoothActor {
-    pub(in super::super) fn spawn_connect(
-        context: ConnectContext,
-        address: DeviceAddr,
-        session_id: SessionId,
-        options: ConnectOptions,
-        device: Discovered,
-        response: Option<ReplySender<Result<()>>>,
-        reconnect: Option<ControllerRecord>,
-    ) -> PendingOperation {
-        let task = tokio::spawn(async move {
-            let transport = device.identity.transport;
-            let completion = context.internal.clone();
-            let result = time::timeout(
-                CONNECTION_ATTEMPT_TIMEOUT,
-                Self::connect(context, address, session_id, options, device),
-            )
-            .await
-            .unwrap_or(Err(Error::Timeout("controller connection")));
-            if let Some(actor) = completion.upgrade() {
-                let _ = actor
-                    .tell(Command::ConnectFinished {
-                        session_id,
-                        address,
-                        transport,
-                        result,
-                        response,
-                        reconnect,
-                    })
-                    .send()
-                    .await;
-            }
-        });
-        PendingOperation {
-            id: session_id,
-            task,
-        }
-    }
-}
-
-impl BluetoothActor {
     pub(in super::super) async fn connect(
         context: ConnectContext,
         address: DeviceAddr,

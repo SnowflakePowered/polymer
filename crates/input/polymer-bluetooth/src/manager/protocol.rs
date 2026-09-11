@@ -105,45 +105,52 @@ pub enum ManagerEvent {
     },
 }
 
-/// Actor access and event subscription; requests use Kameo directly.
+/// Actor access and event subscription; requests use Actix directly.
 #[derive(Clone, Debug)]
 pub struct BluetoothManager {
-    pub actor: ActorRef<BluetoothActor>,
+    pub actor: Addr<BluetoothActor>,
     events: broadcast::Sender<ManagerEvent>,
 }
 
-pub(super) enum Command {
-    HciEvent(std::result::Result<HciEvent, broadcast::error::RecvError>),
-    ScanFinished {
-        operation_id: SessionId,
-        transport: TransportKind,
-        discovered: HashMap<DeviceAddr, Discovered>,
-        result: Result<()>,
-        response: ReplySender<Result<()>>,
-    },
-    ConnectFinished {
-        session_id: SessionId,
-        address: DeviceAddr,
-        transport: TransportKind,
-        result: Result<Session>,
-        response: Option<ReplySender<Result<()>>>,
-        reconnect: Option<ControllerRecord>,
-    },
-    WakeDiscovered(ControllerRecord, BleDevice, tokio::task::Id),
-    SessionEnded {
-        controller_id: ControllerId,
-        session_id: SessionId,
-        reason: String,
-    },
+#[derive(actix::Message)]
+#[rtype(result = "()")]
+pub(super) struct HciLifecycle(pub std::result::Result<HciEvent, broadcast::error::RecvError>);
+
+#[derive(actix::Message)]
+#[rtype(result = "()")]
+pub(super) struct WakeDiscovered(pub ControllerRecord, pub BleDevice, pub tokio::task::Id);
+
+#[derive(actix::Message)]
+#[rtype(result = "()")]
+pub(super) struct SessionEnded {
+    pub controller_id: ControllerId,
+    pub session_id: SessionId,
+    pub reason: String,
 }
 
 impl BluetoothManager {
     pub async fn start(config: ManagerConfig) -> Result<Self> {
         let (events, _) = broadcast::channel(1024);
-        let prepared = BluetoothActor::prepare_with_mailbox(kameo::mailbox::bounded(64))
-            .reply_timeout(COMMAND_RESPONSE_TIMEOUT);
-        let actor = prepared.actor_ref().clone();
-        prepared.spawn((config, events.clone()));
+        let (ready, startup) = tokio::sync::oneshot::channel();
+        let actor_events = events.clone();
+        std::thread::Builder::new()
+            .name("polymer-bluetooth".to_owned())
+            .spawn(move || {
+                let system = System::new();
+                let actor = system.block_on(async move {
+                    BluetoothActor::create(move |ctx| {
+                        ctx.set_mailbox_capacity(0);
+                        BluetoothActor::new(config, actor_events, ctx.address().downgrade())
+                    })
+                });
+                if ready.send(actor).is_ok()
+                    && let Err(error) = system.run()
+                {
+                    tracing::error!(%error, "Bluetooth actor system failed");
+                }
+            })
+            .map_err(Error::Io)?;
+        let actor = startup.await.map_err(|_| Error::ChannelClosed)?;
         Ok(Self { actor, events })
     }
 

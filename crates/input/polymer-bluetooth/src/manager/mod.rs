@@ -6,20 +6,18 @@ use std::{
     time::Duration,
 };
 
-use bytes::Bytes;
-use kameo::{
-    Actor,
-    actor::{ActorRef, Spawn, WeakActorRef},
-    message::{Context, Message},
-    reply::{DelegatedReply, ReplySender},
+use actix::prelude::ContextFutureSpawner;
+use actix::{
+    Actor, ActorContext, ActorFutureExt, Addr, AsyncContext, AtomicResponse, Context, Handler,
+    ResponseActFuture, Running, System, WeakAddr, WrapFuture, fut,
 };
+use bytes::Bytes;
+use futures::future::{AbortHandle, Abortable};
 use tokio::{sync::broadcast, task::JoinHandle, time};
 
 const ADAPTER_INITIALIZATION_ATTEMPTS: usize = 3;
 const ADAPTER_INITIALIZATION_TIMEOUT: Duration = Duration::from_secs(8);
 const ADAPTER_INITIALIZATION_RETRY_DELAY: Duration = Duration::from_millis(500);
-/// Maximum mailbox admission wait; a single fair wait replaces three retries.
-pub const COMMAND_QUEUE_TIMEOUT: Duration = Duration::from_millis(750);
 pub const COMMAND_RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
 const CONNECTION_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(55);
 
@@ -45,6 +43,7 @@ use crate::{
 mod actor;
 mod connection;
 mod discovery;
+mod initialization;
 mod messages;
 mod protocol;
 mod sessions;
@@ -79,19 +78,12 @@ struct ConnectContext {
 
 struct PendingOperation {
     id: SessionId,
-    task: JoinHandle<()>,
-}
-
-impl PendingOperation {
-    async fn cancel(mut self) {
-        self.task.abort();
-        let _ = (&mut self.task).await;
-    }
+    abort: AbortHandle,
 }
 
 impl Drop for PendingOperation {
     fn drop(&mut self) {
-        self.task.abort();
+        self.abort.abort();
     }
 }
 
@@ -121,6 +113,7 @@ pub struct BluetoothActor {
     wake_tasks: HashMap<DeviceAddr, JoinHandle<()>>,
     pairing_task: Option<JoinHandle<Result<()>>>,
     event_task: Option<JoinHandle<()>>,
+    shutdown_complete: bool,
 }
 
 impl Drop for BluetoothActor {
@@ -137,4 +130,4 @@ impl Drop for BluetoothActor {
     }
 }
 
-type Internal = WeakActorRef<BluetoothActor>;
+type Internal = WeakAddr<BluetoothActor>;

@@ -15,7 +15,7 @@ rand.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-kameo.workspace = true
+actix.workspace = true
 atomic-write-file.workspace = true
 tokio = { version = "1.47", features = ["macros", "rt", "sync", "time"] }
 tracing.workspace = true

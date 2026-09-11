@@ -9318,13 +9318,13 @@ dependencies = [
 name = "polymer-bluetooth"
 version = "0.1.0"
 dependencies = [
+ "actix",
  "aes 0.8.4",
  "async-trait",
  "atomic-write-file",
  "btleplug",
  "bytes",
  "futures",
- "kameo",
  "nusb",
  "rand 0.10.2",
  "rusqlite",

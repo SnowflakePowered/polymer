@@ -2,7 +2,9 @@ use super::{
     BluetoothControllerDevice, DecodedInput, GamepadState, PointerSource, pointer_axis, set_button,
 };
 use crate::airmouse::{AirMouse, PointerPosition};
-use polymer_bluetooth::manager::{COMMAND_QUEUE_TIMEOUT, SetIrCamera, SetPlayerIndex, SetRumble};
+use polymer_bluetooth::manager::{
+    COMMAND_RESPONSE_TIMEOUT, SetIrCamera, SetPlayerIndex, SetRumble,
+};
 use polymer_bluetooth::{
     BluetoothManager, SessionId,
     devices::{IrCameraSetup, IrMode, IrSensitivity},
@@ -356,13 +358,12 @@ impl BluetoothControllerDevice for WiimoteDecoder {
                 tokio::spawn(async move {
                     let _ = manager
                         .actor
-                        .ask(SetRumble {
+                        .send(SetRumble {
                             session_id: session,
                             low_frequency: low,
                             high_frequency: high,
                         })
-                        .mailbox_timeout(COMMAND_QUEUE_TIMEOUT)
-                        .send()
+                        .timeout(COMMAND_RESPONSE_TIMEOUT)
                         .await;
                 });
             }
@@ -372,12 +373,11 @@ impl BluetoothControllerDevice for WiimoteDecoder {
                 tokio::spawn(async move {
                     let _ = manager
                         .actor
-                        .ask(SetPlayerIndex {
+                        .send(SetPlayerIndex {
                             session_id: session,
                             index,
                         })
-                        .mailbox_timeout(COMMAND_QUEUE_TIMEOUT)
-                        .send()
+                        .timeout(COMMAND_RESPONSE_TIMEOUT)
                         .await;
                 });
             }
@@ -403,12 +403,11 @@ impl BluetoothControllerDevice for WiimoteDecoder {
                     tokio::spawn(async move {
                         let _ = manager
                             .actor
-                            .ask(SetIrCamera {
+                            .send(SetIrCamera {
                                 session_id: session,
                                 setup,
                             })
-                            .mailbox_timeout(COMMAND_QUEUE_TIMEOUT)
-                            .send()
+                            .timeout(COMMAND_RESPONSE_TIMEOUT)
                             .await;
                     });
                 }
