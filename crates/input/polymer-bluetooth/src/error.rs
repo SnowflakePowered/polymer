@@ -96,6 +96,20 @@ impl From<nusb::ActiveConfigurationError> for Error {
     }
 }
 
+impl<M> From<kameo::error::SendError<M, Error>> for Error {
+    fn from(error: kameo::error::SendError<M, Error>) -> Self {
+        use kameo::error::SendError;
+        match error {
+            SendError::HandlerError(error) => error,
+            SendError::MailboxFull(_) | SendError::Timeout(Some(_)) => {
+                Self::Timeout("Bluetooth command queue")
+            }
+            SendError::Timeout(None) => Self::Timeout("Bluetooth command response"),
+            _ => Self::ChannelClosed,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

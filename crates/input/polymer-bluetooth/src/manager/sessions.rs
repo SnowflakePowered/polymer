@@ -1,8 +1,13 @@
 use super::*;
 
-#[native_handler(BluetoothManager)]
-impl BluetoothActor {
-    async fn send_raw(&mut self, session_id: SessionId, bytes: Vec<u8>) -> Result<()> {
+impl Message<SendRaw> for BluetoothActor {
+    type Reply = Result<()>;
+
+    async fn handle(
+        &mut self,
+        SendRaw { session_id, bytes }: SendRaw,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         match BluetoothActor::session_mut(&mut self.sessions, session_id) {
             Some(session) => {
                 session
@@ -15,9 +20,17 @@ impl BluetoothActor {
     }
 }
 
-#[native_handler(BluetoothManager)]
-impl BluetoothActor {
-    async fn set_external_ownership(&mut self, session_id: SessionId, enabled: bool) -> Result<()> {
+impl Message<SetExternalOwnership> for BluetoothActor {
+    type Reply = Result<()>;
+
+    async fn handle(
+        &mut self,
+        SetExternalOwnership {
+            session_id,
+            enabled,
+        }: SetExternalOwnership,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         match BluetoothActor::session_mut(&mut self.sessions, session_id) {
             Some(session) => {
                 let result = session
@@ -34,9 +47,14 @@ impl BluetoothActor {
     }
 }
 
-#[native_handler(BluetoothManager)]
-impl BluetoothActor {
-    async fn set_player_index(&mut self, session_id: SessionId, index: u8) -> Result<()> {
+impl Message<SetPlayerIndex> for BluetoothActor {
+    type Reply = Result<()>;
+
+    async fn handle(
+        &mut self,
+        SetPlayerIndex { session_id, index }: SetPlayerIndex,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         match BluetoothActor::session_mut(&mut self.sessions, session_id) {
             Some(session) if !session.externally_owned => {
                 let result = session
@@ -60,14 +78,18 @@ impl BluetoothActor {
     }
 }
 
-#[native_handler(BluetoothManager)]
-impl BluetoothActor {
-    async fn set_rumble(
+impl Message<SetRumble> for BluetoothActor {
+    type Reply = Result<()>;
+
+    async fn handle(
         &mut self,
-        session_id: SessionId,
-        low_frequency: u16,
-        high_frequency: u16,
-    ) -> Result<()> {
+        SetRumble {
+            session_id,
+            low_frequency,
+            high_frequency,
+        }: SetRumble,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         match BluetoothActor::session_mut(&mut self.sessions, session_id) {
             Some(session) if !session.externally_owned => {
                 session
@@ -81,13 +103,14 @@ impl BluetoothActor {
     }
 }
 
-#[native_handler(BluetoothManager)]
-impl BluetoothActor {
-    async fn set_ir_camera(
+impl Message<SetIrCamera> for BluetoothActor {
+    type Reply = Result<()>;
+
+    async fn handle(
         &mut self,
-        session_id: SessionId,
-        setup: crate::devices::IrCameraSetup,
-    ) -> Result<()> {
+        SetIrCamera { session_id, setup }: SetIrCamera,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         match BluetoothActor::session_mut(&mut self.sessions, session_id) {
             Some(session) if !session.externally_owned => {
                 session
@@ -101,16 +124,26 @@ impl BluetoothActor {
     }
 }
 
-#[native_handler(BluetoothManager)]
-impl BluetoothActor {
-    async fn sleep(&mut self, session_id: SessionId) -> Result<()> {
+impl Message<Sleep> for BluetoothActor {
+    type Reply = Result<()>;
+
+    async fn handle(
+        &mut self,
+        Sleep { session_id }: Sleep,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         self.disconnect_session(session_id, true).await
     }
 }
 
-#[native_handler(BluetoothManager)]
-impl BluetoothActor {
-    async fn disconnect(&mut self, session_id: SessionId) -> Result<()> {
+impl Message<Disconnect> for BluetoothActor {
+    type Reply = Result<()>;
+
+    async fn handle(
+        &mut self,
+        Disconnect { session_id }: Disconnect,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         self.disconnect_session(session_id, false).await
     }
 }
@@ -241,13 +274,16 @@ impl BluetoothActor {
                     }
                 }
             };
-            let _ = internal
-                .send(Command::SessionEnded {
-                    controller_id,
-                    session_id,
-                    reason,
-                })
-                .await;
+            if let Some(actor) = internal.upgrade() {
+                let _ = actor
+                    .tell(Command::SessionEnded {
+                        controller_id,
+                        session_id,
+                        reason,
+                    })
+                    .send()
+                    .await;
+            }
         })
     }
 }

@@ -13,15 +13,14 @@ use kameo::{
     message::{Context, Message},
     reply::{DelegatedReply, ReplySender},
 };
-use polymer_command::{__kameo as kameo, Admission, native_handler};
 use tokio::{sync::broadcast, task::JoinHandle, time};
 
 const ADAPTER_INITIALIZATION_ATTEMPTS: usize = 3;
 const ADAPTER_INITIALIZATION_TIMEOUT: Duration = Duration::from_secs(8);
 const ADAPTER_INITIALIZATION_RETRY_DELAY: Duration = Duration::from_millis(500);
-const COMMAND_QUEUE_ATTEMPTS: usize = 3;
-const COMMAND_QUEUE_TIMEOUT: Duration = Duration::from_millis(250);
-const COMMAND_RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
+/// Maximum mailbox admission wait; a single fair wait replaces three retries.
+pub const COMMAND_QUEUE_TIMEOUT: Duration = Duration::from_millis(750);
+pub const COMMAND_RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
 const CONNECTION_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(55);
 
 use crate::{
@@ -46,9 +45,11 @@ use crate::{
 mod actor;
 mod connection;
 mod discovery;
+mod messages;
 mod protocol;
 mod sessions;
 
+pub use messages::*;
 pub use protocol::*;
 
 #[derive(Clone)]
@@ -100,7 +101,7 @@ impl Drop for Session {
     }
 }
 
-struct BluetoothActor {
+pub struct BluetoothActor {
     config: ManagerConfig,
     bredr: Option<Arc<HciHost>>,
     pairing: Option<Arc<PairingAgent>>,
@@ -120,12 +121,10 @@ struct BluetoothActor {
     wake_tasks: HashMap<DeviceAddr, JoinHandle<()>>,
     pairing_task: Option<JoinHandle<Result<()>>>,
     event_task: Option<JoinHandle<()>>,
-    policy: Admission,
 }
 
 impl Drop for BluetoothActor {
     fn drop(&mut self) {
-        self.policy.close();
         for task in self.wake_tasks.values() {
             task.abort();
         }
@@ -138,20 +137,4 @@ impl Drop for BluetoothActor {
     }
 }
 
-#[derive(Clone)]
-struct Internal(WeakActorRef<BluetoothActor>);
-
-impl Internal {
-    fn try_send(&self, command: Command) -> Result<()> {
-        self.0
-            .upgrade()
-            .ok_or(Error::ChannelClosed)?
-            .tell(command)
-            .try_send()
-            .map_err(|_| Error::ChannelClosed)
-    }
-
-    async fn send(&self, command: Command) -> Result<()> {
-        self.try_send(command)
-    }
-}
+type Internal = WeakActorRef<BluetoothActor>;

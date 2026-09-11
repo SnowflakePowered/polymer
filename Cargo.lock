@@ -9268,8 +9268,8 @@ dependencies = [
  "btleplug",
  "bytes",
  "futures",
+ "kameo",
  "nusb",
- "polymer-command",
  "rand 0.10.2",
  "rusqlite",
  "serde",
@@ -9301,7 +9301,6 @@ name = "polymer-command"
 version = "0.1.0"
 dependencies = [
  "futures",
- "kameo",
  "paste",
  "polymer-command-macros",
  "tokio",

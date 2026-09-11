@@ -1,12 +1,13 @@
 use super::*;
 
-#[native_handler(BluetoothManager)]
-impl BluetoothActor {
-    async fn scan(
+impl Message<Scan> for BluetoothActor {
+    type Reply = DelegatedReply<Result<()>>;
+
+    async fn handle(
         &mut self,
-        request: ScanRequest,
-        context: &mut Context<Self, DelegatedReply<Result<()>>>,
-    ) -> DelegatedReply<Result<()>> {
+        Scan { request }: Scan,
+        context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let (delegated, response) = context.reply_sender();
         let Some(response) = response else {
             return delegated;
@@ -53,15 +54,18 @@ impl BluetoothActor {
                 &scan_gate,
             )
             .await;
-            let _ = commands
-                .send(Command::ScanFinished {
-                    operation_id,
-                    transport,
-                    discovered: found,
-                    result,
-                    response,
-                })
-                .await;
+            if let Some(actor) = commands.upgrade() {
+                let _ = actor
+                    .tell(Command::ScanFinished {
+                        operation_id,
+                        transport,
+                        discovered: found,
+                        result,
+                        response,
+                    })
+                    .send()
+                    .await;
+            }
         });
         self.scan_tasks.insert(
             transport,
@@ -74,9 +78,14 @@ impl BluetoothActor {
     }
 }
 
-#[native_handler(BluetoothManager)]
-impl BluetoothActor {
-    async fn stop_scan(&mut self, transport: TransportKind) -> Result<()> {
+impl Message<StopScan> for BluetoothActor {
+    type Reply = Result<()>;
+
+    async fn handle(
+        &mut self,
+        StopScan { transport }: StopScan,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         if self.suspended_scans.remove(&transport) {
             let _ = self.events.send(ManagerEvent::ScanState {
                 transport,
@@ -115,7 +124,6 @@ impl BluetoothActor {
     ) -> Result<()> {
         let Self {
             config,
-            internal,
             events,
             discovered,
             active_scans,
@@ -158,18 +166,7 @@ impl BluetoothActor {
             active: false,
         });
         for address in recognized {
-            if internal
-                .try_send(Command::AutoConnect {
-                    address,
-                    options: ConnectOptions::default(),
-                })
-                .is_err()
-            {
-                let _ = events.send(ManagerEvent::Error {
-                    address: Some(address),
-                    message: "automatic connection could not be queued".into(),
-                });
-            }
+            self.auto_connect(address, ConnectOptions::default()).await;
         }
 
         result
@@ -315,9 +312,12 @@ impl BluetoothActor {
                         })
                 };
                 if let Some(device) = found {
-                    let _ = commands
-                        .send(Command::WakeDiscovered(record, device, tokio::task::id()))
-                        .await;
+                    if let Some(actor) = commands.upgrade() {
+                        let _ = actor
+                            .tell(Command::WakeDiscovered(record, device, tokio::task::id()))
+                            .send()
+                            .await;
+                    }
                     break;
                 }
                 tokio::time::sleep(backoff).await;
@@ -467,22 +467,39 @@ mod tests {
     async fn cancelled_scan_completion_cannot_replace_a_new_scan_or_block_cleanup() {
         let config = ManagerConfig::default();
         let (events, mut observed) = broadcast::channel(8);
-        let prepared = BluetoothActor::prepare();
-        let cancelled = PendingOperation {
-            id: SessionId(1),
-            task: tokio::spawn(std::future::pending()),
-        };
-        cancelled.cancel().await;
-        let replacement = PendingOperation {
-            id: SessionId(2),
-            task: tokio::spawn(std::future::pending()),
-        };
+        let prepared = BluetoothActor::prepare_with_mailbox(kameo::mailbox::bounded(1));
+        prepared
+            .actor_ref()
+            .tell(Command::HciEvent(Err(broadcast::error::RecvError::Lagged(
+                1,
+            ))))
+            .try_send()
+            .unwrap();
+        let mut operations = Vec::new();
+        for id in [SessionId(1), SessionId(2)] {
+            let target = prepared.actor_ref().clone();
+            let (started, waiting) = tokio::sync::oneshot::channel();
+            let task = tokio::spawn(async move {
+                let send = target
+                    .tell(Command::HciEvent(Err(broadcast::error::RecvError::Lagged(
+                        1,
+                    ))))
+                    .send();
+                tokio::pin!(send);
+                assert!(futures::poll!(send.as_mut()).is_pending());
+                let _ = started.send(());
+                let _ = send.await;
+            });
+            waiting.await.unwrap();
+            operations.push(PendingOperation { id, task });
+        }
+        let replacement = operations.pop().unwrap();
+        operations.pop().unwrap().cancel().await;
         let mut actor = BluetoothActor {
             keys: Arc::new(ControllerLinkKeyStore::new(config.store.clone())),
             config,
             events,
-            internal: Internal(prepared.actor_ref().downgrade()),
-            policy: Admission::new(64),
+            internal: prepared.actor_ref().downgrade(),
             bredr: None,
             pairing: None,
             discovered: HashMap::new(),
@@ -517,7 +534,9 @@ mod tests {
         assert!(actor.discovered.is_empty());
         assert_eq!(actor.scan_tasks[&TransportKind::BrEdr].id, SessionId(2));
         assert!(observed.try_recv().is_err());
-        actor.cleanup().await;
+        time::timeout(Duration::from_secs(1), actor.cleanup())
+            .await
+            .unwrap();
         assert!(actor.scan_tasks.is_empty());
         assert!(actor.active_scans.is_empty());
     }

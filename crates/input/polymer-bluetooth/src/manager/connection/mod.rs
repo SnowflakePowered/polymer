@@ -2,14 +2,14 @@ mod transport;
 
 use super::*;
 
-#[native_handler(BluetoothManager)]
-impl BluetoothActor {
-    async fn connect(
+impl Message<Connect> for BluetoothActor {
+    type Reply = DelegatedReply<Result<()>>;
+
+    async fn handle(
         &mut self,
-        address: DeviceAddr,
-        options: ConnectOptions,
-        context: &mut Context<Self, DelegatedReply<Result<()>>>,
-    ) -> DelegatedReply<Result<()>> {
+        Connect { address, options }: Connect,
+        context: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         let (delegated, response) = context.reply_sender();
         let Some(response) = response else {
             return delegated;
@@ -77,9 +77,14 @@ impl BluetoothActor {
     }
 }
 
-#[native_handler(BluetoothManager)]
-impl BluetoothActor {
-    async fn forget(&mut self, controller_id: ControllerId) -> Result<()> {
+impl Message<Forget> for BluetoothActor {
+    type Reply = Result<()>;
+
+    async fn handle(
+        &mut self,
+        Forget { controller_id }: Forget,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
         if let Some(operation) = self.connect_tasks.remove(&controller_id.address) {
             operation.cancel().await;
             self.connecting_transports.remove(&controller_id.transport);
@@ -150,16 +155,19 @@ impl BluetoothActor {
                     if result.is_err() {
                         let _ = host.reject_connection(addr).await;
                     }
-                    let _ = internal
-                        .send(Command::ConnectFinished {
-                            session_id,
-                            address: addr,
-                            transport: TransportKind::BrEdr,
-                            result,
-                            response: None,
-                            reconnect: None,
-                        })
-                        .await;
+                    if let Some(actor) = internal.upgrade() {
+                        let _ = actor
+                            .tell(Command::ConnectFinished {
+                                session_id,
+                                address: addr,
+                                transport: TransportKind::BrEdr,
+                                result,
+                                response: None,
+                                reconnect: None,
+                            })
+                            .send()
+                            .await;
+                    }
                 });
                 self.connect_tasks.insert(
                     addr,

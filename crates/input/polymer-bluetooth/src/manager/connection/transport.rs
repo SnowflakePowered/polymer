@@ -19,16 +19,19 @@ impl BluetoothActor {
             )
             .await
             .unwrap_or(Err(Error::Timeout("controller connection")));
-            let _ = completion
-                .send(Command::ConnectFinished {
-                    session_id,
-                    address,
-                    transport,
-                    result,
-                    response,
-                    reconnect,
-                })
-                .await;
+            if let Some(actor) = completion.upgrade() {
+                let _ = actor
+                    .tell(Command::ConnectFinished {
+                        session_id,
+                        address,
+                        transport,
+                        result,
+                        response,
+                        reconnect,
+                    })
+                    .send()
+                    .await;
+            }
         });
         PendingOperation {
             id: session_id,
