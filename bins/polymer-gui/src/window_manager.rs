@@ -38,6 +38,7 @@ use windows::{
                 RoInitialize, RoUninitialize,
             },
         },
+        UI::WindowsAndMessaging::{MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, QS_ALLINPUT},
     },
     core::{IUnknown, Interface},
 };
@@ -169,6 +170,7 @@ pub(crate) enum LoopDirective {
 pub(crate) struct EventLoopApplication {
     inner: crate::app::ShellApplication,
     creating_window: bool,
+    next_wake: Instant,
 }
 
 impl EventLoopApplication {
@@ -176,11 +178,33 @@ impl EventLoopApplication {
         Self {
             inner,
             creating_window: false,
+            next_wake: Instant::now(),
         }
     }
 
     pub async fn run_async_tasks(&mut self) {
         self.inner.run_async_tasks().await;
+    }
+
+    pub fn wait_for_events(&self) -> windows::core::Result<()> {
+        let remaining = self.next_wake.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(());
+        }
+        // Round up so a sub-millisecond remainder does not become a busy poll.
+        let timeout = remaining
+            .as_nanos()
+            .div_ceil(1_000_000)
+            .min(u128::from(u32::MAX - 1)) as u32;
+        // SAFETY: waits on this thread's message queue without removing or
+        // dispatching messages. INPUTAVAILABLE also observes messages queued
+        // before this call, including Actix wakes sent during the async turn.
+        let result =
+            unsafe { MsgWaitForMultipleObjectsEx(None, timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE) };
+        if result == WAIT_FAILED {
+            return Err(windows::core::Error::from_win32());
+        }
+        Ok(())
     }
 
     pub async fn into_result(self) -> Result<(), Box<dyn Error>> {
@@ -275,6 +299,7 @@ impl ApplicationHandler<crate::app::UserEvent> for EventLoopApplication {
         match self.inner.about_to_wait() {
             LoopDirective::Exit => event_loop.exit(),
             LoopDirective::WaitUntil(deadline) => {
+                self.next_wake = deadline;
                 event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
             }
         }
