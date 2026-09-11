@@ -4,14 +4,18 @@ mod server;
 use std::sync::Arc;
 
 use base64::{Engine, engine::general_purpose::STANDARD};
-use polymer_deno::polymer::Library;
+use kameo::{
+    Actor,
+    actor::{ActorRef, Spawn},
+};
+use polymer_deno::polymer::library::Library;
 use polymer_library::{Directories, GameCatalog, MediaData};
 
 #[derive(Clone)]
 pub struct LibraryService {
     configuration_locks: crate::launchable_configuration::ConfigurationLocks,
     catalog: Arc<GameCatalog>,
-    client: Library,
+    actor: ActorRef<LibraryBackend>,
     scraping: polymer_scraping::ScrapingEngine,
 }
 
@@ -19,6 +23,15 @@ struct LibraryBackend {
     catalog: Arc<GameCatalog>,
     scraping: polymer_scraping::ScrapingEngine,
     media: server::MediaServer,
+}
+
+impl Actor for LibraryBackend {
+    type Args = Self;
+    type Error = std::convert::Infallible;
+
+    async fn on_start(state: Self, _: ActorRef<Self>) -> Result<Self, Self::Error> {
+        Ok(state)
+    }
 }
 
 impl LibraryService {
@@ -53,17 +66,36 @@ impl LibraryService {
             scraping: scraping.clone(),
             media,
         };
-        let client = Library::spawn(backend);
+        let actor = LibraryBackend::spawn(backend);
+
         Ok(Self {
             configuration_locks: Default::default(),
-            client,
+            actor,
             scraping,
             catalog,
         })
     }
 
     pub fn client(&self) -> Library {
-        self.client.clone()
+        Library {
+            games_list: self.actor.clone().reply_recipient(),
+            games_get: self.actor.clone().reply_recipient(),
+            games_delete: self.actor.clone().reply_recipient(),
+            launchables_add: self.actor.clone().reply_recipient(),
+            launchables_delete: self.actor.clone().reply_recipient(),
+            metadata_add: self.actor.clone().reply_recipient(),
+            metadata_update: self.actor.clone().reply_recipient(),
+            metadata_delete: self.actor.clone().reply_recipient(),
+            metadata_replace: self.actor.clone().reply_recipient(),
+            metadata_text: self.actor.clone().reply_recipient(),
+            metadata_url: self.actor.clone().reply_recipient(),
+            scraping_jobs: self.actor.clone().reply_recipient(),
+            scraping_start: self.actor.clone().reply_recipient(),
+            scraping_job: self.actor.clone().reply_recipient(),
+            scraping_retry: self.actor.clone().reply_recipient(),
+            scraping_scrapers: self.actor.clone().reply_recipient(),
+            scraping_refresh: self.actor.clone().reply_recipient(),
+        }
     }
 
     pub(crate) fn catalog(&self) -> Arc<GameCatalog> {
@@ -113,6 +145,7 @@ mod tests {
     use polymer_library::{IdentifiedLaunchable, MetadataInput, MetadataInputData};
 
     use super::*;
+    use polymer_deno::polymer::library::MetadataUrl;
 
     #[test]
     fn metadata_wire_value_deserializes_into_the_catalog_input() {
@@ -181,8 +214,11 @@ mod tests {
             .unwrap();
         assert_eq!(
             service
-                .client()
-                .metadata_url(inline.id.simple().to_string())
+                .actor
+                .ask(MetadataUrl {
+                    id: inline.id.simple().to_string()
+                })
+                .send()
                 .await
                 .unwrap(),
             "data:image/gif;base64,R0lGODlh"
@@ -206,8 +242,11 @@ mod tests {
             .await
             .unwrap();
         let old_url = service
-            .client()
-            .metadata_url(object.id.simple().to_string())
+            .actor
+            .ask(MetadataUrl {
+                id: object.id.simple().to_string(),
+            })
+            .send()
             .await
             .unwrap();
         let response = reqwest::Client::new()

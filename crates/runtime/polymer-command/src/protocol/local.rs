@@ -28,13 +28,6 @@ macro_rules! __command_client_generate {
         $crate::__native_actor_client_generate! { $($configuration)* $($protocol)* }
     };
     (
-        [native [$closed:expr]]
-        $($protocol:tt)*
-    ) => {
-        $crate::__native_client_generate! { [$closed] $($protocol)* }
-    };
-
-    (
         [immediate [$closed:expr]]
         [$visibility:vis] [$client:ident]
         $(
