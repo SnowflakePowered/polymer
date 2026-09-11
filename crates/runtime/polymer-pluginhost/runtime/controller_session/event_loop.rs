@@ -1,6 +1,6 @@
 use super::{ControllerActor, deadline::IsolateDeadline};
 use crate::runtime::js::ExtensionFunction;
-use actix::{ActorContext, ActorFuture, Context};
+use actix::{ActorContext, ActorFuture, ActorFutureExt, AtomicResponse, Context, fut};
 use deno_core::{PollEventLoopOptions, v8};
 use futures_util::{FutureExt, future::LocalBoxFuture};
 use std::{
@@ -20,6 +20,16 @@ pub(super) struct DenoCall {
 }
 
 impl DenoCall {
+    /// Preserve callback errors and mailbox ordering when no JS return value is needed.
+    pub(super) fn completion(
+        call: Result<Self, String>,
+    ) -> AtomicResponse<ControllerActor, Result<(), String>> {
+        match call {
+            Ok(call) => AtomicResponse::new(Box::pin(call.map(|result, _, _| result.map(|_| ())))),
+            Err(error) => AtomicResponse::new(Box::pin(fut::ready(Err(error)))),
+        }
+    }
+
     pub(super) fn start(
         actor: &mut ControllerActor,
         method: &str,

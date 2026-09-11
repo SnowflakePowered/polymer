@@ -30,25 +30,17 @@ impl StateActor {
         let state = self.state.clone();
         AtomicResponse::new(Box::pin(
             async move {
-                let (slot, response) = state.with(|state| {
-                    if !state.game_host.is_active(token) {
-                        return Err("emulator is no longer active".to_owned());
-                    }
-                    match restore_slot {
-                        Some(slot) => state
-                            .game_host
-                            .resume_state(slot, timeout)
-                            .map(|response| (slot, response)),
-                        None => state.game_host.save_state(timeout),
-                    }
+                let (slot, response) = state.with_active(token, |state| match restore_slot {
+                    Some(slot) => state
+                        .game_host
+                        .resume_state(slot, timeout)
+                        .map(|response| (slot, response)),
+                    None => state.game_host.save_state(timeout),
                 })?;
                 response.await.map_err(|_| {
                     "emulator plugin session closed during save-state action".to_owned()
                 })??;
-                state.with(|state| {
-                    if !state.game_host.is_active(token) {
-                        return Err("emulator is no longer active".to_owned());
-                    }
+                state.with_active(token, |state| {
                     let metadata = if restore_slot.is_none() {
                         state.game_host.commit_save_state(slot)?
                     } else {
@@ -78,10 +70,8 @@ impl Handler<Close> for StateActor {
                         .await
                         .map_err(|_| "emulator plugin session closed during onQuit".to_owned())
                         .and_then(|result| result);
-                    let _ = state.with(|state| {
-                        if state.game_host.is_active(pending.token) {
-                            state.finish_quit(pending, callback);
-                        }
+                    let _ = state.with_active(pending.token, |state| {
+                        state.finish_quit(pending, callback);
                         Ok(())
                     });
                 }

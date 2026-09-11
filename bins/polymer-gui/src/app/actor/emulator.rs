@@ -45,14 +45,12 @@ impl Handler<SetMuted> for GuiActor {
 impl Handler<Message> for GuiActor {
     type Result = ();
     fn handle(&mut self, message: Message, _: &mut Context<Self>) {
-        let _ = self.state.with(|state| {
-            if state.game_host.is_active(message.token) {
-                state.emit_instance_event(
-                    message.token,
-                    "message",
-                    &instance_events::message(&message.name, message.args),
-                );
-            }
+        let _ = self.state.with_active(message.token, |state| {
+            state.emit_instance_event(
+                message.token,
+                "message",
+                &instance_events::message(&message.name, message.args),
+            );
             Ok(())
         });
     }
@@ -61,14 +59,12 @@ impl Handler<Message> for GuiActor {
 impl Handler<Input> for GuiActor {
     type Result = ();
     fn handle(&mut self, message: Input, _: &mut Context<Self>) {
-        let _ = self.state.with(|state| {
-            if state.game_host.is_active(message.token) {
-                state.set_input_priority(if message.active {
-                    InputPriority::Game
-                } else {
-                    InputPriority::Ui
-                });
-            }
+        let _ = self.state.with_active(message.token, |state| {
+            state.set_input_priority(if message.active {
+                InputPriority::Game
+            } else {
+                InputPriority::Ui
+            });
             Ok(())
         });
     }
@@ -83,10 +79,7 @@ impl Handler<PauseState> for GuiActor {
             polymer_pluginhost::controller::PauseState::Resume
         };
         let started = Instant::now();
-        let response = self.state.with(|state| {
-            if !state.game_host.is_active(message.token) {
-                return Err("emulator is no longer active".to_owned());
-            }
+        let response = self.state.with_active(message.token, |state| {
             state.game_host.pause_resume(pause, message.timeout)
         });
         let state = self.state.clone();
@@ -97,8 +90,7 @@ impl Handler<PauseState> for GuiActor {
                 Err(error) => Err(error),
             };
             tracing::info!(state = ?pause, elapsed_ms = started.elapsed().as_millis(), success = result.is_ok(), "polymer: pause/resume plugin callback completed");
-            state.with(|state| {
-                if !state.game_host.is_active(message.token) { return Err("emulator is no longer active".to_owned()); }
+            state.with_active(message.token, |state| {
                 if let Err(error) = &result {
                     state.emit_instance_event(message.token, "pauseresumeerror", &instance_events::error(error));
                 }
@@ -111,12 +103,8 @@ impl Handler<PauseState> for GuiActor {
 impl Handler<StateScreenshot> for GuiActor {
     type Result = Result<Option<Vec<u8>>, String>;
     fn handle(&mut self, message: StateScreenshot, _: &mut Context<Self>) -> Self::Result {
-        self.state.with(|state| {
-            if state.game_host.is_active(message.token) {
-                state.game_host.save_state_screenshot(&message.record_id)
-            } else {
-                Err("emulator is no longer active".to_owned())
-            }
+        self.state.with_active(message.token, |state| {
+            state.game_host.save_state_screenshot(&message.record_id)
         })
     }
 }

@@ -5,30 +5,68 @@ use actix::{Message, Recipient};
 use polymer_deno::polymer::ApiFuture;
 use std::sync::Arc;
 
-#[derive(Clone, Default)]
+/// A complete set of recipients supplied by the GUI.
+#[derive(Clone)]
+pub struct FrontendRecipients {
+    pub emulator: EmulatorRecipients,
+    pub input: InputRecipients,
+    pub webrtc: WebRtcRecipients,
+}
+
+#[derive(Clone)]
+pub struct EmulatorRecipients {
+    pub launch: Recipient<emulator::Launch>,
+    pub close: Recipient<emulator::Close>,
+    pub set_volume: Recipient<emulator::SetVolume>,
+    pub set_muted: Recipient<emulator::SetMuted>,
+    pub message: Recipient<emulator::Message>,
+    pub input: Recipient<emulator::Input>,
+    pub pause_state: Recipient<emulator::PauseState>,
+    pub save_state: Recipient<emulator::SaveState>,
+    pub resume_state: Recipient<emulator::ResumeState>,
+    pub state_screenshot: Recipient<emulator::StateScreenshot>,
+}
+
+#[derive(Clone)]
+pub struct InputRecipients {
+    pub configure: Recipient<input::Configure>,
+    pub controller_api: Recipient<input::ControllerApi>,
+}
+
+#[derive(Clone)]
+pub struct WebRtcRecipients {
+    pub start: Recipient<webrtc::Start>,
+    pub stop: Recipient<webrtc::Stop>,
+}
+
+#[derive(Clone)]
 pub struct FrontendCommands {
-    pub emulator_launch: Option<Recipient<emulator::Launch>>,
-    pub emulator_close: Option<Recipient<emulator::Close>>,
-    pub emulator_set_volume: Option<Recipient<emulator::SetVolume>>,
-    pub emulator_set_muted: Option<Recipient<emulator::SetMuted>>,
-    pub emulator_message: Option<Recipient<emulator::Message>>,
-    pub emulator_input: Option<Recipient<emulator::Input>>,
-    pub emulator_pause_state: Option<Recipient<emulator::PauseState>>,
-    pub emulator_save_state: Option<Recipient<emulator::SaveState>>,
-    pub emulator_resume_state: Option<Recipient<emulator::ResumeState>>,
-    pub emulator_state_screenshot: Option<Recipient<emulator::StateScreenshot>>,
-    pub input_configure: Option<Recipient<input::Configure>>,
-    pub input_controller_api: Option<Recipient<input::ControllerApi>>,
-    pub webrtc_start: Option<Recipient<webrtc::Start>>,
-    pub webrtc_stop: Option<Recipient<webrtc::Stop>>,
-    /// Interrupts the platform's native event wait after a mailbox send.
-    pub wake: Option<Arc<dyn Fn() + Send + Sync>>,
+    connection: Option<Arc<FrontendConnection>>,
+}
+
+struct FrontendConnection {
+    recipients: FrontendRecipients,
+    wake: Box<dyn Fn() + Send + Sync>,
 }
 
 impl FrontendCommands {
+    pub fn new(recipients: FrontendRecipients, wake: impl Fn() + Send + Sync + 'static) -> Self {
+        Self {
+            connection: Some(Arc::new(FrontendConnection {
+                recipients,
+                wake: Box::new(wake),
+            })),
+        }
+    }
+
+    /// Build services without a GUI host, for headless use and tests.
+    pub fn disconnected() -> Self {
+        Self { connection: None }
+    }
+
     pub(super) fn request<M, R>(
         &self,
-        recipient: &Option<Recipient<M>>,
+        recipient: impl FnOnce(&FrontendRecipients) -> &Recipient<M>,
         message: M,
         unavailable: &'static str,
     ) -> ApiFuture<Result<R, String>>
@@ -36,10 +74,11 @@ impl FrontendCommands {
         M: Message<Result = Result<R, String>> + Send + 'static,
         R: Send + 'static,
     {
-        let response = recipient.as_ref().map(|recipient| recipient.send(message));
-        if let Some(wake) = &self.wake {
-            wake();
-        }
+        let response = self.connection.as_ref().map(|connection| {
+            let response = recipient(&connection.recipients).send(message);
+            (connection.wake)();
+            response
+        });
         Box::pin(async move {
             response
                 .ok_or_else(|| unavailable.to_owned())?
@@ -48,15 +87,16 @@ impl FrontendCommands {
         })
     }
 
-    pub(super) fn notify<M>(&self, recipient: &Option<Recipient<M>>, message: M)
-    where
+    pub(super) fn notify<M>(
+        &self,
+        recipient: impl FnOnce(&FrontendRecipients) -> &Recipient<M>,
+        message: M,
+    ) where
         M: Message<Result = ()> + Send + 'static,
     {
-        if let Some(recipient) = recipient {
-            recipient.do_send(message);
-        }
-        if let Some(wake) = &self.wake {
-            wake();
+        if let Some(connection) = &self.connection {
+            recipient(&connection.recipients).do_send(message);
+            (connection.wake)();
         }
     }
 }

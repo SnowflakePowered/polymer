@@ -6,9 +6,11 @@ use polymer_library::{Game, Launchable, MediaData, Metadata, MetadataData, Metad
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use super::LibraryBackend;
+use super::{LibraryBackend, LibraryReader};
+use actix::{AtomicResponse, ResponseActFuture, WrapFuture};
+use std::future::Future;
 
-impl LibraryBackend {
+pub(super) trait LibraryApi {
     fn uuid(value: &str) -> Result<Uuid, String> {
         if value.len() != 32
             || value
@@ -20,7 +22,7 @@ impl LibraryBackend {
         Uuid::parse_str(value).map_err(|error| format!("invalid UUID: {error}"))
     }
 
-    pub(super) fn metadata_input(value: Value) -> Result<MetadataInput, String> {
+    fn metadata_input(value: Value) -> Result<MetadataInput, String> {
         serde_json::from_value(value).map_err(|error| format!("invalid metadata: {error}"))
     }
 
@@ -72,5 +74,26 @@ impl LibraryBackend {
             "ordinal": metadata.ordinal,
             "data": data,
         })
+    }
+}
+
+impl LibraryApi for LibraryBackend {}
+impl LibraryApi for LibraryReader {}
+
+impl LibraryReader {
+    fn read<T: 'static>(
+        &self,
+        future: impl Future<Output = Result<T, String>> + 'static,
+    ) -> ResponseActFuture<Self, Result<T, String>> {
+        Box::pin(future.into_actor(self))
+    }
+}
+
+impl LibraryBackend {
+    fn mutate<T: 'static>(
+        &self,
+        future: impl Future<Output = Result<T, String>> + 'static,
+    ) -> AtomicResponse<Self, Result<T, String>> {
+        AtomicResponse::new(Box::pin(future.into_actor(self)))
     }
 }

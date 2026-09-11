@@ -1,41 +1,36 @@
-use super::LibraryBackend;
-use actix::{AtomicResponse, Context, Handler, WrapFuture};
+use super::{LibraryApi, LibraryBackend};
+use crate::library::LibraryReader;
+use actix::{AtomicResponse, Context, Handler, ResponseActFuture};
 use polymer_deno::polymer::library::*;
 use serde_json::{Value, json};
 
-impl Handler<GamesList> for LibraryBackend {
-    type Result = AtomicResponse<Self, Result<Value, String>>;
+impl Handler<GamesList> for LibraryReader {
+    type Result = ResponseActFuture<Self, Result<Value, String>>;
 
     fn handle(&mut self, GamesList { platform }: GamesList, _: &mut Context<Self>) -> Self::Result {
         let catalog = self.catalog.clone();
-        AtomicResponse::new(Box::pin(
-            async move {
-                catalog
-                    .games(platform.as_deref())
-                    .await
-                    .map(|games| Value::Array(games.iter().map(Self::game_value).collect()))
-                    .map_err(|error| error.to_string())
-            }
-            .into_actor(self),
-        ))
+        self.read(async move {
+            catalog
+                .games(platform.as_deref())
+                .await
+                .map(|games| Value::Array(games.iter().map(Self::game_value).collect()))
+                .map_err(|error| error.to_string())
+        })
     }
 }
 
-impl Handler<GamesGet> for LibraryBackend {
-    type Result = AtomicResponse<Self, Result<Value, String>>;
+impl Handler<GamesGet> for LibraryReader {
+    type Result = ResponseActFuture<Self, Result<Value, String>>;
 
     fn handle(&mut self, GamesGet { id }: GamesGet, _: &mut Context<Self>) -> Self::Result {
         let catalog = self.catalog.clone();
-        AtomicResponse::new(Box::pin(
-            async move {
-                catalog
-                    .game(Self::uuid(&id)?)
-                    .await
-                    .map(|game| game.as_ref().map_or(Value::Null, Self::game_value))
-                    .map_err(|error| error.to_string())
-            }
-            .into_actor(self),
-        ))
+        self.read(async move {
+            catalog
+                .game(Self::uuid(&id)?)
+                .await
+                .map(|game| game.as_ref().map_or(Value::Null, Self::game_value))
+                .map_err(|error| error.to_string())
+        })
     }
 }
 
@@ -44,15 +39,12 @@ impl Handler<GamesDelete> for LibraryBackend {
 
     fn handle(&mut self, GamesDelete { id }: GamesDelete, _: &mut Context<Self>) -> Self::Result {
         let catalog = self.catalog.clone();
-        AtomicResponse::new(Box::pin(
-            async move {
-                catalog
-                    .delete_game(Self::uuid(&id)?)
-                    .await
-                    .map_err(|error| error.to_string())
-            }
-            .into_actor(self),
-        ))
+        self.mutate(async move {
+            catalog
+                .delete_game(Self::uuid(&id)?)
+                .await
+                .map_err(|error| error.to_string())
+        })
     }
 }
 
@@ -70,7 +62,7 @@ impl Handler<LaunchablesAdd> for LibraryBackend {
     ) -> Self::Result {
         let catalog = self.catalog.clone();
         let scraping = self.scraping.clone();
-        AtomicResponse::new(Box::pin(async move {
+        self.mutate(async move {
         let parent = parent_binary_id.as_deref().map(Self::uuid).transpose()?;
         tracing::info!(%path, "identifying dropped game for library import");
         let package = tokio::task::spawn_blocking(move || {
@@ -98,7 +90,7 @@ impl Handler<LaunchablesAdd> for LibraryBackend {
             None
         };
         Ok(json!({ "launchable": Self::launchable_value(&launchable), "scrapeJob": job }))
-        }.into_actor(self)))
+        })
     }
 }
 
@@ -111,14 +103,11 @@ impl Handler<LaunchablesDelete> for LibraryBackend {
         _: &mut Context<Self>,
     ) -> Self::Result {
         let catalog = self.catalog.clone();
-        AtomicResponse::new(Box::pin(
-            async move {
-                catalog
-                    .remove_launchable(Self::uuid(&id)?)
-                    .await
-                    .map_err(|error| error.to_string())
-            }
-            .into_actor(self),
-        ))
+        self.mutate(async move {
+            catalog
+                .remove_launchable(Self::uuid(&id)?)
+                .await
+                .map_err(|error| error.to_string())
+        })
     }
 }
