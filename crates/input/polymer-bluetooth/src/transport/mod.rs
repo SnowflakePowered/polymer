@@ -18,6 +18,14 @@ pub enum HidReportType {
     Feature = 3,
 }
 
+/// Serialized HID control transactions, shareable with a protocol maintenance task.
+#[async_trait]
+pub trait HidControl: Send + Sync {
+    async fn set_report(&self, kind: HidReportType, data: &[u8]) -> Result<()>;
+    /// Returns the device payload unchanged, without the HIDP DATA header.
+    async fn get_report(&self, kind: HidReportType, id: u8, size: u16) -> Result<Bytes>;
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ConnectionState {
     #[default]
@@ -28,6 +36,15 @@ pub enum ConnectionState {
 
 #[async_trait]
 pub trait Transport: Send {
+    fn hid_control(&self) -> Option<std::sync::Arc<dyn HidControl>> {
+        None
+    }
+    async fn get_report(&mut self, kind: HidReportType, id: u8, size: u16) -> Result<Bytes> {
+        let control = self
+            .hid_control()
+            .ok_or(crate::Error::Unsupported("HID GET_REPORT"))?;
+        control.get_report(kind, id, size).await
+    }
     async fn connect(&mut self, addr: DeviceAddr) -> Result<()>;
     fn reports(&self) -> ReportReceiver;
     /// The active BLE input characteristic, when the transport has one.

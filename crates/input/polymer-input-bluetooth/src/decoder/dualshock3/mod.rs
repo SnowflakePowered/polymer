@@ -6,6 +6,7 @@ use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned, byteorder::big_endi
 #[derive(Default)]
 pub struct DualShock3Decoder {
     calibration: Calibration,
+    motion: Option<polymer_bluetooth::devices::sony::dualshock3::motion::MotionState>,
 }
 
 /// Native HID report, including its ID but excluding the transport's HIDP header.
@@ -106,6 +107,12 @@ impl NativeReport {
 }
 
 impl BluetoothControllerDevice for DualShock3Decoder {
+    fn set_ds3_motion(
+        &mut self,
+        motion: Option<polymer_bluetooth::devices::sony::dualshock3::motion::MotionState>,
+    ) {
+        self.motion = motion;
+    }
     fn decode(&mut self, report: &[u8], _received_at: Instant) -> Option<DecodedInput> {
         let report = NativeReport::ref_from_bytes(report).ok()?;
         if report.id != 1 || report.status == 0xff {
@@ -118,8 +125,26 @@ impl BluetoothControllerDevice for DualShock3Decoder {
             0xef => Some(100),
             _ => None,
         };
+        let mut state = report.state();
+        if let Some(calibration) = self.motion.as_ref().and_then(|motion| motion.snapshot()) {
+            let acceleration: [f32; 3] = std::array::from_fn(|index| {
+                (f32::from(report.accelerometer[index].get())
+                    - f32::from(calibration.acceleration_zero[index]))
+                    * 9.80665
+                    / f32::from(calibration.acceleration_span[index])
+            });
+            state.accelerometer = [acceleration[0], -acceleration[2], -acceleration[1]];
+            // Keep the native SDL yaw convention. Sony's synthetic SXS report
+            // flips this sign; the raw report has not undergone that transform.
+            state.gyroscope[1] = if calibration.settling {
+                0.0
+            } else {
+                (f32::from(report.gyro.get()) - calibration.gyro_zero)
+                    * (std::f32::consts::FRAC_PI_2 / 123.0)
+            };
+        }
         Some(DecodedInput {
-            state: report.state(),
+            state,
             role: DeviceRole::Whole,
             battery_level,
             charging: report.battery == 0xee,

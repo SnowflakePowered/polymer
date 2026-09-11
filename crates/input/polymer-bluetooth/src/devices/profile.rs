@@ -183,6 +183,10 @@ impl Default for ConnectOptions {
 
 #[async_trait]
 pub trait ControllerSession: Send {
+    fn ds3_motion(&self) -> Option<super::sony::dualshock3::motion::MotionState> {
+        None
+    }
+
     async fn synchronize(&mut self, _transport: &mut dyn Transport) -> Result<()> {
         Ok(())
     }

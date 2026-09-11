@@ -1,0 +1,290 @@
+//! Per-controller sensor calibration. Protocol reference:
+//! https://github.com/nefarius/DsHidMini/blob/master/docs/MOTION.md
+use crate::{Error, Result, Transport, transport::HidReportType};
+use std::sync::{Arc, Mutex};
+use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned, byteorder::big_endian::U16};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MotionPath {
+    Hardware,
+    Plain,
+    Sixaxis,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct MotionCalibration {
+    pub path: MotionPath,
+    pub acceleration_zero: [u16; 3],
+    pub acceleration_span: [u16; 3],
+    pub gyro_zero: f32,
+    pub cal_byte: u8,
+    pub settling: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct MotionState(Arc<Mutex<Option<MotionCalibration>>>);
+
+impl MotionState {
+    pub fn new(calibration: MotionCalibration) -> Self {
+        Self(Arc::new(Mutex::new(Some(calibration))))
+    }
+
+    pub(super) fn clear(&self) {
+        *self.0.lock().unwrap_or_else(|error| error.into_inner()) = None;
+    }
+    pub fn snapshot(&self) -> Option<MotionCalibration> {
+        *self.0.lock().unwrap_or_else(|error| error.into_inner())
+    }
+    pub(super) fn publish(&self, calibration: MotionCalibration) {
+        *self.0.lock().unwrap_or_else(|error| error.into_inner()) = Some(calibration);
+    }
+}
+
+#[derive(FromBytes, Immutable, KnownLayout, Unaligned)]
+#[repr(C)]
+struct FactoryPage {
+    pairs: [[U16; 2]; 4],
+}
+
+impl MotionCalibration {
+    pub(super) async fn read(transport: &mut dyn Transport) -> Result<Self> {
+        let identification = transport.get_report(HidReportType::Feature, 1, 64).await?;
+        tracing::debug!(data = ?identification, "DS3 identification response");
+        let path = Self::identify(&identification)?;
+        let mut select = [0; 49];
+        select[0] = 0xef;
+        select[5..8].copy_from_slice(&[3, 1, 0xa0]);
+        transport
+            .set_report(HidReportType::Feature, &select)
+            .await?;
+        let page = transport
+            .get_report(HidReportType::Feature, 0xef, 64)
+            .await?;
+        tracing::debug!(data = ?page, "DS3 calibration page response");
+        Self::parse(path, &page)
+    }
+
+    fn identify(data: &[u8]) -> Result<MotionPath> {
+        if data.len() < 38 || !matches!(data[0], 0 | 1) || data[1] != 1 {
+            return Err(Error::InvalidPacket("DS3 identification header"));
+        }
+        let fields = data
+            .get(38..38 + usize::from(data[37]))
+            .filter(|fields| !fields.is_empty())
+            .ok_or(Error::InvalidPacket("DS3 calibration field list"))?;
+        Ok(if fields.contains(&7) {
+            MotionPath::Hardware
+        } else if fields.starts_with(&[1, 2])
+            || fields
+                .get(1..)
+                .is_some_and(|fields| fields.starts_with(&[1, 2]))
+        {
+            MotionPath::Plain
+        } else {
+            MotionPath::Sixaxis
+        })
+    }
+
+    fn parse(path: MotionPath, data: &[u8]) -> Result<Self> {
+        if data.len() < 33
+            || !matches!(data[0], 0 | 0xef)
+            || data[1] != 0xef
+            || data[5..8] != [3, 1, 0xa0]
+        {
+            return Err(Error::InvalidPacket("DS3 EEPROM page header"));
+        }
+        let page = FactoryPage::ref_from_bytes(&data[17..33])
+            .map_err(|_| Error::InvalidPacket("DS3 EEPROM page"))?;
+        let pairs = page.pairs.map(|pair| pair.map(|value| value.get()));
+        if pairs[..3]
+            .iter()
+            .any(|[zero, one_g]| *zero > 1023 || *one_g >= *zero)
+            || pairs[3][0] > 1023
+            || pairs[3][1] > 255
+        {
+            return Err(Error::InvalidPacket(
+                "invalid DS3 factory sensor calibration",
+            ));
+        }
+        Ok(Self {
+            path,
+            acceleration_zero: [pairs[0][0], pairs[1][0], pairs[2][0]],
+            acceleration_span: [
+                pairs[0][0] - pairs[0][1],
+                pairs[1][0] - pairs[1][1],
+                pairs[2][0] - pairs[2][1],
+            ],
+            gyro_zero: f32::from(pairs[3][0]),
+            cal_byte: pairs[3][1] as u8,
+            settling: path != MotionPath::Plain,
+        })
+    }
+
+    pub(super) fn apply_output(&self, report: &mut [u8; 49]) {
+        let offset = match self.path {
+            MotionPath::Hardware => 6,
+            MotionPath::Sixaxis => 4,
+            MotionPath::Plain => return,
+        };
+        report[offset] = 0xff;
+        report[offset + 1] = self.cal_byte;
+    }
+}
+
+/// Conservative rest-only auto-zero: never use the moving long-term average
+/// as a new zero. Four quiet blocks must agree before changing hardware trim.
+pub(super) struct Tracker {
+    pub calibration: MotionCalibration,
+    settle: u8,
+    samples: Vec<u16>,
+    quiet: Vec<f32>,
+}
+
+impl Tracker {
+    pub fn new(calibration: MotionCalibration) -> Self {
+        Self {
+            calibration,
+            settle: 32,
+            samples: Vec::with_capacity(16),
+            quiet: Vec::with_capacity(4),
+        }
+    }
+
+    pub fn observe(&mut self, raw: u16) -> Option<MotionCalibration> {
+        if self.settle > 0 {
+            self.settle -= 1;
+            return None;
+        }
+        if !(204..=819).contains(&raw) {
+            self.samples.clear();
+            self.quiet.clear();
+            return None;
+        }
+        self.samples.push(raw);
+        if self.samples.len() != 16 {
+            return None;
+        }
+        let average = self
+            .samples
+            .iter()
+            .map(|value| f32::from(*value))
+            .sum::<f32>()
+            / 16.0;
+        let minimum = f32::from(*self.samples.iter().min().unwrap());
+        let maximum = f32::from(*self.samples.iter().max().unwrap());
+        self.samples.clear();
+        if (maximum - average).powi(2) + (average - minimum).powi(2) >= 10.0 {
+            self.quiet.clear();
+            return None;
+        }
+        self.quiet.push(average);
+        if self.quiet.len() < 4 {
+            return None;
+        }
+        let low = self.quiet.iter().copied().fold(f32::INFINITY, f32::min);
+        let high = self.quiet.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let rest = self.quiet.iter().sum::<f32>() / 4.0;
+        self.quiet.remove(0);
+        if high - low >= 4.0 {
+            return None;
+        }
+        let mut next = self.calibration;
+        let steps = ((512.0 - rest) * 1024.0 / 0x6999 as f32).trunc() as i32;
+        next.cal_byte = (i32::from(next.cal_byte) + steps).clamp(0, 255) as u8;
+        // Do not predict the new ADC zero. Re-measure after the ACK and settling.
+        next.settling = next.cal_byte != self.calibration.cal_byte;
+        if !next.settling {
+            next.gyro_zero = rest;
+        }
+        Some(next)
+    }
+
+    pub fn commit(&mut self, next: MotionCalibration) {
+        if next.cal_byte != self.calibration.cal_byte {
+            self.settle = 2;
+            self.samples.clear();
+            self.quiet.clear();
+        }
+        self.calibration = next;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn live_bluetooth_eeprom_and_output_slots() {
+        let mut data = [0; 64];
+        data[..8].copy_from_slice(&[0xef, 0xef, 4, 0, 9, 3, 1, 0xa0]);
+        data[17..33].copy_from_slice(&[
+            2, 0, 1, 0x8f, 2, 2, 1, 0x92, 1, 0xfe, 1, 0x8e, 2, 0x0b, 0, 0x7b,
+        ]);
+        let mut calibration = MotionCalibration::parse(MotionPath::Hardware, &data).unwrap();
+        assert_eq!(calibration.acceleration_zero, [512, 514, 510]);
+        assert_eq!(calibration.acceleration_span, [113, 112, 112]);
+        assert_eq!(calibration.cal_byte, 0x7b);
+        let mut output = [0; 49];
+        output[5] = 0xab;
+        calibration.apply_output(&mut output);
+        assert_eq!(output[5..8], [0xab, 0xff, 0x7b]);
+        calibration.path = MotionPath::Sixaxis;
+        let mut output = [0; 49];
+        calibration.apply_output(&mut output);
+        assert_eq!(output[4..8], [0xff, 0x7b, 0, 0]);
+        data[7] = 0xb0;
+        assert!(MotionCalibration::parse(MotionPath::Hardware, &data).is_err());
+    }
+    #[test]
+    fn identification_precedence_and_malformed_pages() {
+        let mut id = [0; 49];
+        id[1] = 1;
+        id[37] = 4;
+        id[38..42].copy_from_slice(&[0, 1, 2, 7]);
+        assert_eq!(
+            MotionCalibration::identify(&id).unwrap(),
+            MotionPath::Hardware
+        );
+        // Live Bluetooth capture starts 01 01; USB starts 00 01.
+        id[0] = 1;
+        assert_eq!(
+            MotionCalibration::identify(&id).unwrap(),
+            MotionPath::Hardware
+        );
+        id[37] = 3;
+        assert_eq!(MotionCalibration::identify(&id).unwrap(), MotionPath::Plain);
+        id[37] = 1;
+        id[38] = 6;
+        assert_eq!(
+            MotionCalibration::identify(&id).unwrap(),
+            MotionPath::Sixaxis
+        );
+        id[37] = 255;
+        assert!(MotionCalibration::identify(&id).is_err());
+        assert!(MotionCalibration::parse(MotionPath::Hardware, &[0; 64]).is_err());
+    }
+    #[test]
+    fn trim_converges_after_ack_without_zeroing_motion() {
+        let initial = MotionCalibration {
+            path: MotionPath::Hardware,
+            acceleration_zero: [512; 3],
+            acceleration_span: [113; 3],
+            gyro_zero: 521.0,
+            cal_byte: 127,
+            settling: true,
+        };
+        let mut tracker = Tracker::new(initial);
+        let next = (0..96).filter_map(|_| tracker.observe(361)).last().unwrap();
+        assert_eq!(next.cal_byte, 132);
+        assert!(next.settling);
+        assert_eq!(tracker.calibration.cal_byte, 127); // unacknowledged remains unapplied
+        tracker.commit(next);
+        let next = (0..66).filter_map(|_| tracker.observe(494)).last().unwrap();
+        assert_eq!(next.cal_byte, 132);
+        assert!(!next.settling);
+        assert_eq!(next.gyro_zero, 494.0);
+        tracker.commit(next);
+        for raw in (300..500).cycle().take(1000) {
+            assert!(tracker.observe(raw).is_none());
+        }
+    }
+}

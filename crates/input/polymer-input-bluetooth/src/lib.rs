@@ -266,7 +266,8 @@ impl BluetoothBackend {
     ) {
         let controller = decoder::for_profile(&connected.profile_id);
         let supported = controller.is_some();
-        let controller = controller.unwrap_or_else(decoder::unsupported);
+        let mut controller = controller.unwrap_or_else(decoder::unsupported);
+        controller.set_ds3_motion(connected.ds3_motion.clone());
         let device = Self::device_id(connected.controller_id);
         let profile = connected.profile_id.as_str();
         if !supported {

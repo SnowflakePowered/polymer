@@ -50,6 +50,7 @@ impl SessionId {
 
 #[derive(Clone, Debug)]
 pub struct ConnectedController {
+    pub ds3_motion: Option<crate::devices::sony::dualshock3::motion::MotionState>,
     pub controller_id: ControllerId,
     pub session_id: SessionId,
     pub identity: DeviceIdentity,
