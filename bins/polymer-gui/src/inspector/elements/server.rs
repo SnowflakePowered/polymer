@@ -1,13 +1,16 @@
 //! WebSocket proxy and inspector bridge lifetime.
 
-use super::protocol::{InspectorProtocol, ProtocolError, Reply};
+use super::protocol::{Dispatch, InspectorProtocol, ProtocolError, Reply};
+use crate::shell_document::ShellDocument;
 use crate::{app::UserEvent, window_manager::EventLoopProxy};
+use actix::{Actor, Recipient};
 use futures_util::{SinkExt, StreamExt};
-use polymer_command::LocalDelivery;
 use serde_json::{Value, json};
 use std::{
+    cell::RefCell,
     error::Error,
     net::{SocketAddr, TcpListener},
+    rc::Weak,
     thread,
 };
 use tokio::sync::{broadcast, oneshot};
@@ -24,6 +27,7 @@ impl Bridge {
     pub(crate) fn start(
         upstream: String,
         target_url: String,
+        document: Weak<RefCell<ShellDocument>>,
         proxy: EventLoopProxy<UserEvent>,
     ) -> Result<Self, Box<dyn Error>> {
         let listener = TcpListener::bind(("127.0.0.1", 0))?;
@@ -32,6 +36,7 @@ impl Bridge {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let (events, _) = broadcast::channel(32);
         let thread_events = events.clone();
+        let protocol = InspectorProtocol { document }.start().recipient();
         let thread = thread::Builder::new()
             .name("polymer-elements-inspector".into())
             .spawn(move || {
@@ -43,6 +48,7 @@ impl Bridge {
                         listener,
                         upstream,
                         target_url,
+                        protocol,
                         proxy,
                         events: thread_events,
                         shutdown: shutdown_rx,
@@ -87,6 +93,7 @@ struct Server {
     listener: TcpListener,
     upstream: String,
     target_url: String,
+    protocol: Recipient<Dispatch>,
     proxy: EventLoopProxy<UserEvent>,
     events: broadcast::Sender<Value>,
     shutdown: oneshot::Receiver<()>,
@@ -106,16 +113,11 @@ impl Server {
                 _ = &mut self.shutdown => break,
                 accepted = listener.accept() => match accepted {
                     Ok((stream, _)) => {
-                        let proxy = self.proxy.clone();
-                        let protocol = InspectorProtocol::new(LocalDelivery::new(move |command| {
-                            proxy
-                                .send_event(UserEvent::Inspector(command))
-                                .map_err(|error| match error.0 { UserEvent::Inspector(command) => command, _ => unreachable!("matching inspector envelope"), })
-                        }));
                         let session = Session {
                             upstream: self.upstream.clone(),
                             target_url: self.target_url.clone(),
-                            protocol,
+                            protocol: self.protocol.clone(),
+                            proxy: self.proxy.clone(),
                         };
                         let receiver = self.events.subscribe();
                         tokio::spawn(async move {
@@ -134,7 +136,8 @@ impl Server {
 struct Session {
     upstream: String,
     target_url: String,
-    protocol: InspectorProtocol,
+    protocol: Recipient<Dispatch>,
+    proxy: EventLoopProxy<UserEvent>,
 }
 
 impl Session {
@@ -205,11 +208,16 @@ impl Session {
 
     async fn dispatch(&self, request: Value, include_whitespace: bool) -> Vec<Value> {
         let id = request.get("id").cloned().unwrap_or(Value::Null);
-        let response = self
-            .protocol
-            .dispatch(request, self.target_url.clone(), include_whitespace);
+        let response = self.protocol.send(Dispatch {
+            request,
+            target_url: self.target_url.clone(),
+            include_whitespace,
+        });
+        // Winit's native wait cannot observe Actix's waker. Interrupt it
+        // after enqueueing the request so the main-thread executor can run.
+        let _ = self.proxy.send_event(UserEvent::WakeActors);
         match tokio::time::timeout(std::time::Duration::from_secs(2), response).await {
-            Ok(Ok(Reply { result, events })) => {
+            Ok(Ok(Ok(Reply { result, events }))) => {
                 let mut messages = vec![match result {
                     Ok(result) => json!({"id": id, "result": result}),
                     Err(error) => Self::protocol_error(id, error),
@@ -217,7 +225,11 @@ impl Session {
                 messages.extend(events);
                 messages
             }
-            Ok(Err(error)) => vec![Self::protocol_error(id, error)],
+            Ok(Ok(Err(error))) => vec![Self::protocol_error(id, error)],
+            Ok(Err(_)) => vec![Self::protocol_error(
+                id,
+                ProtocolError::unavailable("Elements inspector was closed"),
+            )],
             Err(_) => vec![Self::protocol_error(
                 id,
                 ProtocolError::unavailable("Elements inspector timed out"),

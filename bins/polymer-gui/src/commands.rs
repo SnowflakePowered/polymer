@@ -6,8 +6,11 @@ use crate::{game_host::GameHostCommand, window_manager::WindowCommand};
 pub(crate) enum UserEvent {
     Window(WindowCommand),
     GameHost(GameHostCommand),
-    InspectorWindowRequested { address: std::net::SocketAddr },
-    Inspector(crate::inspector::elements::InspectorProtocolCommand),
+    InspectorWindowRequested {
+        address: std::net::SocketAddr,
+    },
+    /// Interrupts native waiting so the main-thread Actix executor can run.
+    WakeActors,
 }
 
 #[derive(Debug)]

@@ -9526,6 +9526,7 @@ dependencies = [
 name = "polymer-gui"
 version = "0.1.0"
 dependencies = [
+ "actix",
  "anyrender",
  "anyrender_vello",
  "arboard",

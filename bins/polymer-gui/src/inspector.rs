@@ -55,10 +55,12 @@ impl InspectorWindow {
     pub(crate) fn open(
         window: Window,
         inspector_address: SocketAddr,
+        document: std::rc::Weak<RefCell<crate::shell_document::ShellDocument>>,
         proxy: crate::window_manager::EventLoopProxy<crate::app::UserEvent>,
     ) -> Result<Self, Box<dyn Error>> {
         let target = inspector_target(inspector_address)?;
-        let elements = elements::Bridge::start(target.web_socket_debugger_url, target.url, proxy)?;
+        let elements =
+            elements::Bridge::start(target.web_socket_debugger_url, target.url, document, proxy)?;
         let frontend = format!(
             "{DEVTOOLS_FRONTEND_BASE}?ws={}&experiments=true",
             elements.websocket_target()

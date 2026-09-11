@@ -23,7 +23,12 @@ impl ShellCoordinator {
         window: Window,
         address: std::net::SocketAddr,
     ) {
-        let result = InspectorWindow::open(window, address, self.proxy.clone());
+        let result = InspectorWindow::open(
+            window,
+            address,
+            self.shell_dom.inspector_document(),
+            self.proxy.clone(),
+        );
         match result {
             Ok(inspector) => self.inspector = Some(inspector),
             Err(error) => tracing::error!(%error, "polymer: opening the Deno inspector failed"),
