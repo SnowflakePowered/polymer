@@ -14,11 +14,7 @@ fn library(state: &Rc<RefCell<OpState>>) -> Result<Library, JsErrorBox> {
         .ok_or_else(|| JsErrorBox::generic("library service is unavailable"))
 }
 
-fn error<M>(error: kameo::error::SendError<M, String>) -> JsErrorBox {
-    let error = match error {
-        kameo::error::SendError::HandlerError(error) => error,
-        _ => return JsErrorBox::generic("library service is unavailable"),
-    };
+fn error(error: String) -> JsErrorBox {
     if let Some(message) = error.strip_prefix("TypeError: ") {
         JsErrorBox::type_error(message.to_owned())
     } else {
@@ -34,9 +30,10 @@ pub(super) async fn op_library_games_list(
 ) -> Result<serde_json::Value, JsErrorBox> {
     library(&state)?
         .games_list
-        .ask(GamesList { platform })
-        .send()
+        .send(GamesList { platform })
         .await
+        .map_err(|_| "library service is unavailable".to_owned())
+        .and_then(|result| result)
         .map_err(error)
 }
 
@@ -48,9 +45,10 @@ pub(super) async fn op_library_games_get(
 ) -> Result<serde_json::Value, JsErrorBox> {
     library(&state)?
         .games_get
-        .ask(GamesGet { id })
-        .send()
+        .send(GamesGet { id })
         .await
+        .map_err(|_| "library service is unavailable".to_owned())
+        .and_then(|result| result)
         .map_err(error)
 }
 
@@ -61,9 +59,10 @@ pub(super) async fn op_library_games_delete(
 ) -> Result<(), JsErrorBox> {
     library(&state)?
         .games_delete
-        .ask(GamesDelete { id })
-        .send()
+        .send(GamesDelete { id })
         .await
+        .map_err(|_| "library service is unavailable".to_owned())
+        .and_then(|result| result)
         .map_err(error)
 }
 
@@ -77,13 +76,14 @@ pub(super) async fn op_library_launchables_add(
 ) -> Result<serde_json::Value, JsErrorBox> {
     library(&state)?
         .launchables_add
-        .ask(LaunchablesAdd {
+        .send(LaunchablesAdd {
             path,
             platform,
             parent_binary_id,
         })
-        .send()
         .await
+        .map_err(|_| "library service is unavailable".to_owned())
+        .and_then(|result| result)
         .map_err(error)
 }
 
@@ -94,9 +94,10 @@ pub(super) async fn op_library_launchables_delete(
 ) -> Result<(), JsErrorBox> {
     library(&state)?
         .launchables_delete
-        .ask(LaunchablesDelete { id })
-        .send()
+        .send(LaunchablesDelete { id })
         .await
+        .map_err(|_| "library service is unavailable".to_owned())
+        .and_then(|result| result)
         .map_err(error)
 }
 
@@ -109,12 +110,13 @@ pub(super) async fn op_library_metadata_add(
 ) -> Result<serde_json::Value, JsErrorBox> {
     library(&state)?
         .metadata_add
-        .ask(MetadataAdd {
+        .send(MetadataAdd {
             parent_binary_id,
             input,
         })
-        .send()
         .await
+        .map_err(|_| "library service is unavailable".to_owned())
+        .and_then(|result| result)
         .map_err(error)
 }
 
@@ -127,9 +129,10 @@ pub(super) async fn op_library_metadata_update(
 ) -> Result<serde_json::Value, JsErrorBox> {
     library(&state)?
         .metadata_update
-        .ask(MetadataUpdate { id, input })
-        .send()
+        .send(MetadataUpdate { id, input })
         .await
+        .map_err(|_| "library service is unavailable".to_owned())
+        .and_then(|result| result)
         .map_err(error)
 }
 
@@ -140,9 +143,10 @@ pub(super) async fn op_library_metadata_delete(
 ) -> Result<(), JsErrorBox> {
     library(&state)?
         .metadata_delete
-        .ask(MetadataDelete { id })
-        .send()
+        .send(MetadataDelete { id })
         .await
+        .map_err(|_| "library service is unavailable".to_owned())
+        .and_then(|result| result)
         .map_err(error)
 }
 
@@ -156,13 +160,14 @@ pub(super) async fn op_library_metadata_replace(
 ) -> Result<serde_json::Value, JsErrorBox> {
     library(&state)?
         .metadata_replace
-        .ask(MetadataReplace {
+        .send(MetadataReplace {
             parent_binary_id,
             source,
             inputs,
         })
-        .send()
         .await
+        .map_err(|_| "library service is unavailable".to_owned())
+        .and_then(|result| result)
         .map_err(error)
 }
 
@@ -174,9 +179,10 @@ pub(super) async fn op_library_metadata_text(
 ) -> Result<String, JsErrorBox> {
     library(&state)?
         .metadata_text
-        .ask(MetadataText { id })
-        .send()
+        .send(MetadataText { id })
         .await
+        .map_err(|_| "library service is unavailable".to_owned())
+        .and_then(|result| result)
         .map_err(error)
 }
 
@@ -188,9 +194,10 @@ pub(super) async fn op_library_metadata_url(
 ) -> Result<String, JsErrorBox> {
     library(&state)?
         .metadata_url
-        .ask(MetadataUrl { id })
-        .send()
+        .send(MetadataUrl { id })
         .await
+        .map_err(|_| "library service is unavailable".to_owned())
+        .and_then(|result| result)
         .map_err(error)
 }
 
@@ -201,9 +208,10 @@ pub(super) async fn op_scraping_jobs(
 ) -> Result<serde_json::Value, JsErrorBox> {
     library(&state)?
         .scraping_jobs
-        .ask(ScrapingJobs)
-        .send()
+        .send(ScrapingJobs)
         .await
+        .map_err(|_| "library service is unavailable".to_owned())
+        .and_then(|result| result)
         .map_err(error)
 }
 
@@ -216,12 +224,13 @@ pub(super) async fn op_scraping_start(
 ) -> Result<serde_json::Value, JsErrorBox> {
     library(&state)?
         .scraping_start
-        .ask(ScrapingStart {
+        .send(ScrapingStart {
             root_binary_id: root,
             trigger_binary_id: trigger,
         })
-        .send()
         .await
+        .map_err(|_| "library service is unavailable".to_owned())
+        .and_then(|result| result)
         .map_err(error)
 }
 
@@ -233,9 +242,10 @@ pub(super) async fn op_scraping_job(
 ) -> Result<serde_json::Value, JsErrorBox> {
     library(&state)?
         .scraping_job
-        .ask(ScrapingJob { id })
-        .send()
+        .send(ScrapingJob { id })
         .await
+        .map_err(|_| "library service is unavailable".to_owned())
+        .and_then(|result| result)
         .map_err(error)
 }
 
@@ -247,9 +257,10 @@ pub(super) async fn op_scraping_retry(
 ) -> Result<serde_json::Value, JsErrorBox> {
     library(&state)?
         .scraping_retry
-        .ask(ScrapingRetry { id })
-        .send()
+        .send(ScrapingRetry { id })
         .await
+        .map_err(|_| "library service is unavailable".to_owned())
+        .and_then(|result| result)
         .map_err(error)
 }
 
@@ -260,9 +271,10 @@ pub(super) async fn op_scraping_scrapers(
 ) -> Result<serde_json::Value, JsErrorBox> {
     library(&state)?
         .scraping_scrapers
-        .ask(ScrapingScrapers)
-        .send()
+        .send(ScrapingScrapers)
         .await
+        .map_err(|_| "library service is unavailable".to_owned())
+        .and_then(|result| result)
         .map_err(error)
 }
 
@@ -273,8 +285,9 @@ pub(super) async fn op_scraping_refresh(
 ) -> Result<(), JsErrorBox> {
     library(&state)?
         .scraping_refresh
-        .ask(ScrapingRefresh { plugin })
-        .send()
+        .send(ScrapingRefresh { plugin })
         .await
+        .map_err(|_| "library service is unavailable".to_owned())
+        .and_then(|result| result)
         .map_err(error)
 }

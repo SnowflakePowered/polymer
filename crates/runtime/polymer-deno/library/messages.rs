@@ -1,112 +1,129 @@
-use kameo::actor::ReplyRecipient;
+use actix::Recipient;
 use serde_json::Value;
 
-/// Kameo recipients exposed to Deno without depending on the runtime backend.
+/// Actix recipients exposed to Deno without depending on the runtime backend.
 #[derive(Clone, Debug)]
 pub struct Library {
-    pub games_list: ReplyRecipient<GamesList, Value, String>,
-    pub games_get: ReplyRecipient<GamesGet, Value, String>,
-    pub games_delete: ReplyRecipient<GamesDelete, (), String>,
-    pub launchables_add: ReplyRecipient<LaunchablesAdd, Value, String>,
-    pub launchables_delete: ReplyRecipient<LaunchablesDelete, (), String>,
-    pub metadata_add: ReplyRecipient<MetadataAdd, Value, String>,
-    pub metadata_update: ReplyRecipient<MetadataUpdate, Value, String>,
-    pub metadata_delete: ReplyRecipient<MetadataDelete, (), String>,
-    pub metadata_replace: ReplyRecipient<MetadataReplace, Value, String>,
-    pub metadata_text: ReplyRecipient<MetadataText, String, String>,
-    pub metadata_url: ReplyRecipient<MetadataUrl, String, String>,
-    pub scraping_jobs: ReplyRecipient<ScrapingJobs, Value, String>,
-    pub scraping_start: ReplyRecipient<ScrapingStart, Value, String>,
-    pub scraping_job: ReplyRecipient<ScrapingJob, Value, String>,
-    pub scraping_retry: ReplyRecipient<ScrapingRetry, Value, String>,
-    pub scraping_scrapers: ReplyRecipient<ScrapingScrapers, Value, String>,
-    pub scraping_refresh: ReplyRecipient<ScrapingRefresh, (), String>,
+    pub games_list: Recipient<GamesList>,
+    pub games_get: Recipient<GamesGet>,
+    pub games_delete: Recipient<GamesDelete>,
+    pub launchables_add: Recipient<LaunchablesAdd>,
+    pub launchables_delete: Recipient<LaunchablesDelete>,
+    pub metadata_add: Recipient<MetadataAdd>,
+    pub metadata_update: Recipient<MetadataUpdate>,
+    pub metadata_delete: Recipient<MetadataDelete>,
+    pub metadata_replace: Recipient<MetadataReplace>,
+    pub metadata_text: Recipient<MetadataText>,
+    pub metadata_url: Recipient<MetadataUrl>,
+    pub scraping_jobs: Recipient<ScrapingJobs>,
+    pub scraping_start: Recipient<ScrapingStart>,
+    pub scraping_job: Recipient<ScrapingJob>,
+    pub scraping_retry: Recipient<ScrapingRetry>,
+    pub scraping_scrapers: Recipient<ScrapingScrapers>,
+    pub scraping_refresh: Recipient<ScrapingRefresh>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, actix::Message)]
+#[rtype(result = "Result<Value, String>")]
 pub struct GamesList {
     pub platform: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, actix::Message)]
+#[rtype(result = "Result<Value, String>")]
 pub struct GamesGet {
     pub id: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, actix::Message)]
+#[rtype(result = "Result<(), String>")]
 pub struct GamesDelete {
     pub id: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, actix::Message)]
+#[rtype(result = "Result<Value, String>")]
 pub struct LaunchablesAdd {
     pub path: String,
     pub platform: Option<String>,
     pub parent_binary_id: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, actix::Message)]
+#[rtype(result = "Result<(), String>")]
 pub struct LaunchablesDelete {
     pub id: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, actix::Message)]
+#[rtype(result = "Result<Value, String>")]
 pub struct MetadataAdd {
     pub parent_binary_id: String,
     pub input: Value,
 }
 
-#[derive(Debug)]
+#[derive(Debug, actix::Message)]
+#[rtype(result = "Result<Value, String>")]
 pub struct MetadataUpdate {
     pub id: String,
     pub input: Value,
 }
 
-#[derive(Debug)]
+#[derive(Debug, actix::Message)]
+#[rtype(result = "Result<(), String>")]
 pub struct MetadataDelete {
     pub id: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, actix::Message)]
+#[rtype(result = "Result<Value, String>")]
 pub struct MetadataReplace {
     pub parent_binary_id: String,
     pub source: String,
     pub inputs: Vec<Value>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, actix::Message)]
+#[rtype(result = "Result<String, String>")]
 pub struct MetadataText {
     pub id: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, actix::Message)]
+#[rtype(result = "Result<String, String>")]
 pub struct MetadataUrl {
     pub id: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, actix::Message)]
+#[rtype(result = "Result<Value, String>")]
 pub struct ScrapingJobs;
 
-#[derive(Debug)]
+#[derive(Debug, actix::Message)]
+#[rtype(result = "Result<Value, String>")]
 pub struct ScrapingStart {
     pub root_binary_id: String,
     pub trigger_binary_id: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, actix::Message)]
+#[rtype(result = "Result<Value, String>")]
 pub struct ScrapingJob {
     pub id: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, actix::Message)]
+#[rtype(result = "Result<Value, String>")]
 pub struct ScrapingRetry {
     pub id: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, actix::Message)]
+#[rtype(result = "Result<Value, String>")]
 pub struct ScrapingScrapers;
 
-#[derive(Debug)]
+#[derive(Debug, actix::Message)]
+#[rtype(result = "Result<(), String>")]
 pub struct ScrapingRefresh {
     pub plugin: String,
 }

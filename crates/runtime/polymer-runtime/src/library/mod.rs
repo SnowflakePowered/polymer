@@ -3,34 +3,28 @@ mod server;
 
 use std::sync::Arc;
 
-use base64::{Engine, engine::general_purpose::STANDARD};
-use kameo::{
-    Actor,
-    actor::{ActorRef, Spawn},
-};
+use actix::{Actor, Addr, Context, System};
 use polymer_deno::polymer::library::Library;
-use polymer_library::{Directories, GameCatalog, MediaData};
+use polymer_library::{Directories, GameCatalog};
 
 #[derive(Clone)]
 pub struct LibraryService {
     configuration_locks: crate::launchable_configuration::ConfigurationLocks,
     catalog: Arc<GameCatalog>,
-    actor: ActorRef<LibraryBackend>,
+    actor: Addr<LibraryBackend>,
     scraping: polymer_scraping::ScrapingEngine,
 }
 
 struct LibraryBackend {
     catalog: Arc<GameCatalog>,
     scraping: polymer_scraping::ScrapingEngine,
-    media: server::MediaServer,
+    media: Arc<server::MediaServer>,
 }
 
 impl Actor for LibraryBackend {
-    type Args = Self;
-    type Error = std::convert::Infallible;
-
-    async fn on_start(state: Self, _: ActorRef<Self>) -> Result<Self, Self::Error> {
-        Ok(state)
+    type Context = Context<Self>;
+    fn stopped(&mut self, _: &mut Self::Context) {
+        System::current().stop();
     }
 }
 
@@ -64,9 +58,26 @@ impl LibraryService {
         let backend = LibraryBackend {
             catalog: catalog.clone(),
             scraping: scraping.clone(),
-            media,
+            media: Arc::new(media),
         };
-        let actor = LibraryBackend::spawn(backend);
+        let (ready, startup) = tokio::sync::oneshot::channel();
+        std::thread::Builder::new()
+            .name("polymer-library".to_owned())
+            .spawn(move || {
+                let system = System::new();
+                let actor = system.block_on(async move {
+                    LibraryBackend::create(move |ctx| {
+                        ctx.set_mailbox_capacity(0);
+                        backend
+                    })
+                });
+                if ready.send(actor).is_ok()
+                    && let Err(error) = system.run()
+                {
+                    tracing::error!(%error, "library actor system failed");
+                }
+            })?;
+        let actor = startup.await.map_err(std::io::Error::other)?;
 
         Ok(Self {
             configuration_locks: Default::default(),
@@ -78,23 +89,23 @@ impl LibraryService {
 
     pub fn client(&self) -> Library {
         Library {
-            games_list: self.actor.clone().reply_recipient(),
-            games_get: self.actor.clone().reply_recipient(),
-            games_delete: self.actor.clone().reply_recipient(),
-            launchables_add: self.actor.clone().reply_recipient(),
-            launchables_delete: self.actor.clone().reply_recipient(),
-            metadata_add: self.actor.clone().reply_recipient(),
-            metadata_update: self.actor.clone().reply_recipient(),
-            metadata_delete: self.actor.clone().reply_recipient(),
-            metadata_replace: self.actor.clone().reply_recipient(),
-            metadata_text: self.actor.clone().reply_recipient(),
-            metadata_url: self.actor.clone().reply_recipient(),
-            scraping_jobs: self.actor.clone().reply_recipient(),
-            scraping_start: self.actor.clone().reply_recipient(),
-            scraping_job: self.actor.clone().reply_recipient(),
-            scraping_retry: self.actor.clone().reply_recipient(),
-            scraping_scrapers: self.actor.clone().reply_recipient(),
-            scraping_refresh: self.actor.clone().reply_recipient(),
+            games_list: self.actor.clone().recipient(),
+            games_get: self.actor.clone().recipient(),
+            games_delete: self.actor.clone().recipient(),
+            launchables_add: self.actor.clone().recipient(),
+            launchables_delete: self.actor.clone().recipient(),
+            metadata_add: self.actor.clone().recipient(),
+            metadata_update: self.actor.clone().recipient(),
+            metadata_delete: self.actor.clone().recipient(),
+            metadata_replace: self.actor.clone().recipient(),
+            metadata_text: self.actor.clone().recipient(),
+            metadata_url: self.actor.clone().recipient(),
+            scraping_jobs: self.actor.clone().recipient(),
+            scraping_start: self.actor.clone().recipient(),
+            scraping_job: self.actor.clone().recipient(),
+            scraping_retry: self.actor.clone().recipient(),
+            scraping_scrapers: self.actor.clone().recipient(),
+            scraping_refresh: self.actor.clone().recipient(),
         }
     }
 
@@ -110,30 +121,6 @@ impl LibraryService {
 
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<polymer_scraping::ScrapingEvent> {
         self.scraping.subscribe()
-    }
-}
-
-impl LibraryBackend {
-    async fn media_url(&self, id: uuid::Uuid) -> Result<String, String> {
-        let media = self.catalog.media(id).await.map_err(|error| {
-            let error = error.to_string();
-            if error.contains("text metadata does not have a URL") {
-                format!("TypeError: {error}")
-            } else {
-                error
-            }
-        })?;
-        match media.data {
-            MediaData::Inline(bytes) => Ok(format!(
-                "data:{};base64,{}",
-                media.media_type,
-                STANDARD.encode(bytes)
-            )),
-            MediaData::Object(_) => {
-                let hash = blake3::Hash::from_bytes(media.content_blake3).to_hex();
-                Ok(self.media.url(media.metadata_id, hash.as_str()))
-            }
-        }
     }
 }
 
@@ -215,11 +202,11 @@ mod tests {
         assert_eq!(
             service
                 .actor
-                .ask(MetadataUrl {
+                .send(MetadataUrl {
                     id: inline.id.simple().to_string()
                 })
-                .send()
                 .await
+                .unwrap()
                 .unwrap(),
             "data:image/gif;base64,R0lGODlh"
         );
@@ -243,11 +230,11 @@ mod tests {
             .unwrap();
         let old_url = service
             .actor
-            .ask(MetadataUrl {
+            .send(MetadataUrl {
                 id: object.id.simple().to_string(),
             })
-            .send()
             .await
+            .unwrap()
             .unwrap();
         let response = reqwest::Client::new()
             .get(&old_url)
