@@ -54,13 +54,13 @@ impl InspectorProtocolCommandHandler for ShellSession {
 }
 
 #[derive(Debug)]
-pub(super) struct Reply {
+pub(crate) struct Reply {
     pub(super) result: Result<Value, ProtocolError>,
     pub(super) events: Vec<Value>,
 }
 
 #[derive(Debug)]
-pub(super) struct ProtocolError {
+pub(crate) struct ProtocolError {
     pub(super) code: i64,
     pub(super) message: String,
 }

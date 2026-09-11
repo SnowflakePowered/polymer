@@ -6,7 +6,7 @@
 use crate::ControllerProfiles;
 use crate::{ConfigurationDefaults, LibraryService};
 use parking_lot::{Mutex, RwLock};
-use polymer_command::CommandSink;
+use polymer_command::LocalDelivery;
 use polymer_deno::polymer::{
     ApiFuture, ConsoleStorageRequest, InstanceToken, Library, PolymerHost, PolymerNotification,
     PolymerNotificationSender,
@@ -187,9 +187,9 @@ polymer_command::command_client! {
     }
 }
 
-pub type EmulatorCommandSink = CommandSink<EmulatorCommand>;
-pub type InputCommandSink = CommandSink<InputCommand>;
-pub type WebRtcCommandSink = CommandSink<WebRtcCommand>;
+pub type EmulatorDelivery = LocalDelivery<EmulatorCommand>;
+pub type InputDelivery = LocalDelivery<InputCommand>;
+pub type WebRtcDelivery = LocalDelivery<WebRtcCommand>;
 
 impl Input {
     fn controller_api(&self, command: Value) -> ApiFuture<Result<Value, String>> {
@@ -589,9 +589,9 @@ impl FrontendServices {
         library: Option<LibraryService>,
         input_sources: InputHub,
         controller_api: ControllerApiState,
-        emulator: EmulatorCommandSink,
-        input: InputCommandSink,
-        web_rtc: WebRtcCommandSink,
+        emulator: EmulatorDelivery,
+        input: InputDelivery,
+        web_rtc: WebRtcDelivery,
         notifications: PolymerNotificationSender,
     ) -> Self {
         let deno_input = Arc::new(DenoInputListener::new(

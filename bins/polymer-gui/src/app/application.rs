@@ -215,6 +215,7 @@ impl ShellApplication {
 
     pub(crate) async fn into_result(self) -> Result<(), Box<dyn Error>> {
         if let Some(state) = &self.state {
+            state.command_lifetime.begin_close();
             state.input.shutdown().await;
         }
         self.error.map_or(Ok(()), Err)
@@ -354,7 +355,11 @@ impl ShellApplication {
                 return true;
             };
             if self.pending_quit.is_none()
-                && let Some(pending) = (EmulatorCommand::Close { token }).dispatch(state)
+                && let Some(pending) = (EmulatorCommand::Close {
+                    token,
+                    completion: polymer_command::Completion::control(),
+                })
+                .dispatch(state)
                 && let PendingEmulatorCallback::Quit(pending) = pending
             {
                 self.pending_quit = Some(pending);

@@ -321,9 +321,9 @@ impl ShellSessionFactory {
         width: u32,
         height: u32,
         scale_factor: f32,
-        emulator_commands: crate::shell_runtime::EmulatorCommandSink,
-        input_commands: crate::shell_runtime::InputCommandSink,
-        webrtc_commands: crate::shell_runtime::WebRtcCommandSink,
+        emulator_commands: crate::shell_runtime::EmulatorDelivery,
+        input_commands: crate::shell_runtime::InputDelivery,
+        webrtc_commands: crate::shell_runtime::WebRtcDelivery,
     ) -> Result<
         (
             ShellDocument,

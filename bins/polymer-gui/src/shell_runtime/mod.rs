@@ -12,7 +12,7 @@ use serde_json::Value;
 use std::{collections::HashMap, error::Error};
 
 pub(crate) use deno::{
-    EmulatorCommand, InputCommand, InstanceToken, WebRtcCommand, WebRtcCommandSink,
+    EmulatorCommand, InputCommand, InstanceToken, WebRtcCommand, WebRtcDelivery,
 };
 pub(crate) use polymer_deno::polymer::{PolymerNotification, PolymerNotificationSender};
 
@@ -23,9 +23,9 @@ pub(crate) struct ShellRuntime {
 pub(crate) struct ShellRuntimeOptions {
     pub html: String,
     pub source_name: String,
-    pub emulator_commands: EmulatorCommandSink,
-    pub input_commands: InputCommandSink,
-    pub webrtc_commands: WebRtcCommandSink,
+    pub emulator_commands: EmulatorDelivery,
+    pub input_commands: InputDelivery,
+    pub webrtc_commands: WebRtcDelivery,
     pub plugin_runtime: std::sync::Arc<polymer_pluginhost::runtime::PluginRuntime>,
     pub local_storage: Option<polymer_deno::webstorage::LocalStorage>,
     pub library: Option<polymer_runtime::LibraryService>,
@@ -149,4 +149,4 @@ impl ShellRuntime {
     }
 }
 
-pub(crate) use deno::{EmulatorCommandSink, InputCommandSink, Mutation};
+pub(crate) use deno::{EmulatorDelivery, InputDelivery, Mutation};

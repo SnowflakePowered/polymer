@@ -26,7 +26,7 @@ impl ShellCoordinator {
         });
         let value = metadata
             .and_then(|metadata| serde_json::to_value(metadata).map_err(|error| error.to_string()));
-        let _ = pending.result.send(value);
+        pending.result.send(value);
     }
 
     pub(super) fn finish_quit(
@@ -84,7 +84,7 @@ impl ShellCoordinator {
                 &instance_events::error(error),
             );
         }
-        let _ = pending.result.send(callback);
+        pending.result.send(callback);
     }
 
     pub(super) fn finish_input_change(
@@ -170,7 +170,7 @@ impl ShellCoordinator {
             );
         }
         match completion {
-            PendingInputChangeCompletion::Configuration { request_id } => {
+            PendingInputChangeCompletion::Configuration { request_id, .. } => {
                 let configuration = result.inspect(|_| {
                     self.publish_input_configuration();
                 });
@@ -189,7 +189,7 @@ impl ShellCoordinator {
                         }),
                     Err(error) => Err(self.settle_controller_session_failure(&session_id, error)),
                 };
-                let _ = response.send(settled);
+                response.send(settled);
             }
             PendingInputChangeCompletion::ControllerApi {
                 value,
@@ -199,7 +199,7 @@ impl ShellCoordinator {
                     self.publish_input_configuration();
                     value
                 });
-                let _ = response.send(settled);
+                response.send(settled);
             }
         }
     }
@@ -254,7 +254,11 @@ impl EmulatorCommandHandler for ShellCoordinator {
         })
     }
 
-    fn close<'handler>(&'handler mut self, token: InstanceToken) -> Self::Output<'handler> {
+    fn close<'handler>(
+        &'handler mut self,
+        token: InstanceToken,
+        _completion: polymer_command::Completion<Result<(), std::convert::Infallible>>,
+    ) -> Self::Output<'handler> {
         match self.game_host.begin_quit(token, Duration::from_secs(30)) {
             Ok(Some((cache, screenshot, response))) => {
                 Some(PendingEmulatorCallback::Quit(PendingQuit {
@@ -284,7 +288,9 @@ impl EmulatorCommandHandler for ShellCoordinator {
         &'handler mut self,
         token: InstanceToken,
         volume: f64,
+        completion: polymer_command::Completion<Result<(), std::convert::Infallible>>,
     ) -> Self::Output<'handler> {
+        let _completion = completion;
         if self.game_host.set_volume(token, volume) {
             self.publish_audio_state(false);
         }
@@ -295,7 +301,9 @@ impl EmulatorCommandHandler for ShellCoordinator {
         &'handler mut self,
         token: InstanceToken,
         muted: bool,
+        completion: polymer_command::Completion<Result<(), std::convert::Infallible>>,
     ) -> Self::Output<'handler> {
+        let _completion = completion;
         if self.game_host.set_muted(token, muted) {
             self.publish_audio_state(false);
         }
@@ -307,7 +315,9 @@ impl EmulatorCommandHandler for ShellCoordinator {
         token: InstanceToken,
         name: String,
         args: serde_json::Value,
+        completion: polymer_command::Completion<Result<(), std::convert::Infallible>>,
     ) -> Self::Output<'handler> {
+        let _completion = completion;
         if self.game_host.is_active(token) {
             self.emit_instance_event(token, "message", &instance_events::message(&name, args));
         }
@@ -318,7 +328,9 @@ impl EmulatorCommandHandler for ShellCoordinator {
         &'handler mut self,
         token: InstanceToken,
         active: bool,
+        completion: polymer_command::Completion<Result<(), std::convert::Infallible>>,
     ) -> Self::Output<'handler> {
+        let _completion = completion;
         if self.game_host.is_active(token) {
             self.set_input_priority(if active {
                 InputPriority::Game
@@ -334,10 +346,10 @@ impl EmulatorCommandHandler for ShellCoordinator {
         token: InstanceToken,
         pause: bool,
         timeout: Duration,
-        response: CommandResponse<Result<(), String>>,
+        response: Completion<Result<(), String>>,
     ) -> Self::Output<'handler> {
         if !self.game_host.is_active(token) {
-            let _ = response.send(Err("emulator is no longer active".to_owned()));
+            response.send(Err("emulator is no longer active".to_owned()));
             return None;
         }
         let state = if pause {
@@ -362,7 +374,7 @@ impl EmulatorCommandHandler for ShellCoordinator {
                 }))
             }
             Ok(None) => {
-                let _ = response.send(Ok(()));
+                response.send(Ok(()));
                 None
             }
             Err(error) => {
@@ -371,7 +383,7 @@ impl EmulatorCommandHandler for ShellCoordinator {
                     "pauseresumeerror",
                     &instance_events::error(&error),
                 );
-                let _ = response.send(Err(error));
+                response.send(Err(error));
                 None
             }
         }
@@ -381,10 +393,10 @@ impl EmulatorCommandHandler for ShellCoordinator {
         &'handler mut self,
         token: InstanceToken,
         timeout: Duration,
-        response: CommandResponse<Result<serde_json::Value, String>>,
+        response: Completion<Result<serde_json::Value, String>>,
     ) -> Self::Output<'handler> {
         if !self.game_host.is_active(token) {
-            let _ = response.send(Err("emulator is no longer active".to_owned()));
+            response.send(Err("emulator is no longer active".to_owned()));
             return None;
         }
         match self.game_host.save_state(timeout) {
@@ -395,7 +407,7 @@ impl EmulatorCommandHandler for ShellCoordinator {
                 response: callback,
             })),
             Err(error) => {
-                let _ = response.send(Err(error));
+                response.send(Err(error));
                 None
             }
         }
@@ -406,10 +418,10 @@ impl EmulatorCommandHandler for ShellCoordinator {
         token: InstanceToken,
         slot: u32,
         timeout: Duration,
-        response: CommandResponse<Result<serde_json::Value, String>>,
+        response: Completion<Result<serde_json::Value, String>>,
     ) -> Self::Output<'handler> {
         if !self.game_host.is_active(token) {
-            let _ = response.send(Err("emulator is no longer active".to_owned()));
+            response.send(Err("emulator is no longer active".to_owned()));
             return None;
         }
         match self.game_host.resume_state(slot, timeout) {
@@ -420,7 +432,7 @@ impl EmulatorCommandHandler for ShellCoordinator {
                 response: callback,
             })),
             Err(error) => {
-                let _ = response.send(Err(error));
+                response.send(Err(error));
                 None
             }
         }
@@ -451,6 +463,7 @@ impl InputCommandHandler for ShellCoordinator {
         &'handler mut self,
         request_id: u32,
         transaction: serde_json::Value,
+        completion: polymer_command::Completion<Result<(), std::convert::Infallible>>,
     ) -> Self::Output<'handler> {
         Box::pin(async move {
             match serde_json::from_value::<InputTransaction>(transaction) {
@@ -466,6 +479,7 @@ impl InputCommandHandler for ShellCoordinator {
                         transaction,
                         PendingInputChangeCompletion::Configuration {
                             request_id: u64::from(request_id),
+                            _admission: completion,
                         },
                     )
                 }
@@ -483,14 +497,14 @@ impl InputCommandHandler for ShellCoordinator {
     fn controller_api_response<'handler>(
         &'handler mut self,
         command: serde_json::Value,
-        response: CommandResponse<Result<serde_json::Value, String>>,
+        response: Completion<Result<serde_json::Value, String>>,
     ) -> Self::Output<'handler> {
         Box::pin(async move {
             let command_result = self.input.controller_command(command).await;
             let command_result = match command_result {
                 Ok(command_result) => command_result,
                 Err(error) => {
-                    let _ = response.send(Err(error));
+                    response.send(Err(error));
                     return None;
                 }
             };
@@ -509,19 +523,19 @@ impl InputCommandHandler for ShellCoordinator {
                             },
                         ),
                         Err(error) => {
-                            let _ = response.send(Err(error));
+                            response.send(Err(error));
                             None
                         }
                     };
                 }
-                let _ = response.send(Ok(command_result.response));
+                response.send(Ok(command_result.response));
                 return None;
             };
             let transaction = match self.input.prepare_controller_session_transaction(&commit) {
                 Ok(transaction) => transaction,
                 Err(error) => {
                     let error = self.settle_controller_session_failure(&commit.session_id, error);
-                    let _ = response.send(Err(error));
+                    response.send(Err(error));
                     return None;
                 }
             };

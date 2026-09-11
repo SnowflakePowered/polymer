@@ -1,109 +1,94 @@
-use std::{future::Future, pin::Pin, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
-use polymer_command::command_handler;
+use kameo::{
+    Actor,
+    actor::{ActorRef, Spawn},
+};
+use polymer_command::{__kameo as kameo, Admission, native_handler};
+use tokio::sync::Notify;
 
 polymer_command::actor_client! {
-    client AsyncCalculator {
+    client AsyncCalculator() {
         closed: "calculator closed".to_owned();
-        queue_timeout:
-            2,
-            Duration::from_millis(10)
-            => "calculator queue timed out".to_owned();
-        response_timeout:
-            Duration::from_millis(50)
-            => "calculator response timed out".to_owned();
+        queue_timeout: 2, Duration::from_millis(10) => "queue timed out".to_owned();
+        response_timeout: Duration::from_millis(50) => "reply timed out".to_owned();
+        #[args(Work)]
+        async fn work(id: u32, gate: Option<Arc<Notify>>) -> Result<usize, String>;
+    }
+}
 
-        #[args(Divide)]
-        async fn divide(dividend: u32, divisor: u32) -> Result<u32, String>;
+struct Calculator {
+    executions: Arc<AtomicUsize>,
+    started: Arc<Notify>,
+}
 
-        #[args(Echo)]
-        async fn echo(value: impl Into<String>) -> Result<String, String>;
+impl Actor for Calculator {
+    type Args = Self;
+    type Error = std::convert::Infallible;
+    async fn on_start(state: Self, _: ActorRef<Self>) -> Result<Self, Self::Error> {
+        Ok(state)
+    }
+}
 
-        #[oneshot]
-        #[args(Stop)]
-        async fn stop();
+#[native_handler(AsyncCalculator)]
+impl Calculator {
+    async fn work(&mut self, id: u32, gate: Option<Arc<Notify>>) -> Result<usize, String> {
+        let execution = self.executions.fetch_add(1, Ordering::SeqCst) + 1;
+        self.started.notify_one();
+        if let Some(gate) = gate {
+            gate.notified().await;
+        }
+        if id == 0 {
+            return Err("domain rejection".to_owned());
+        }
+        Ok(execution)
     }
 }
 
 #[test]
-fn bounded_actor_distinguishes_queue_and_response_timeouts() {
+fn admission_and_reply_deadlines_do_not_replay_accepted_work() {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
+        .start_paused(true)
         .build()
         .unwrap()
         .block_on(async {
-            let (queue, _receiver) = tokio::sync::mpsc::channel(1);
-            queue.send(AsyncCalculatorCommand::Stop {}).await.unwrap();
-            let client = AsyncCalculator::new(queue);
-            assert_eq!(
-                client.divide(42, 6).await,
-                Err("calculator queue timed out".to_owned())
+            let executions = Arc::new(AtomicUsize::new(0));
+            let started = Arc::new(Notify::new());
+            let gate = Arc::new(Notify::new());
+            let actor = Calculator::spawn_with_mailbox(
+                Calculator {
+                    executions: executions.clone(),
+                    started: started.clone(),
+                },
+                kameo::mailbox::unbounded(),
             );
-
-            let (queue, mut receiver) = tokio::sync::mpsc::channel(1);
-            let client = AsyncCalculator::new(queue);
-            let request = tokio::spawn(async move { client.divide(42, 6).await });
-            let held_command = receiver.recv().await.unwrap();
+            let client = AsyncCalculator::from_actor(actor.clone(), Admission::new(1));
+            let mut first = client.work(1, Some(gate.clone()));
+            assert!(futures::poll!(first.as_mut()).is_pending());
+            started.notified().await;
+            let mut queued = client.work(2, None);
+            assert!(futures::poll!(queued.as_mut()).is_pending());
             assert_eq!(
-                request.await.unwrap(),
-                Err("calculator response timed out".to_owned())
+                client.work(3, None).await,
+                Err("queue timed out".to_owned())
             );
-            drop(held_command);
-        });
-}
-
-struct CalculatorHandler;
-
-#[command_handler]
-impl AsyncCalculatorCommandHandler for CalculatorHandler {
-    type Output<'handler>
-        = Pin<Box<dyn Future<Output = bool> + Send + 'handler>>
-    where
-        Self: 'handler;
-
-    async fn divide(&mut self, dividend: u32, divisor: u32) -> Result<u32, String> {
-        tokio::task::yield_now().await;
-        let divisor = (divisor != 0)
-            .then_some(divisor)
-            .ok_or_else(|| "division by zero".to_owned())?;
-        Ok(dividend / divisor)
-    }
-
-    async fn echo(&mut self, value: String) -> Result<String, String> {
-        Ok(value)
-    }
-
-    fn stop<'handler>(&'handler mut self) -> Self::Output<'handler> {
-        Box::pin(async { true })
-    }
-}
-
-#[test]
-fn bounded_actor_dispatches_async_handlers_and_notifications() {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(async {
-            let (commands, mut receiver) = tokio::sync::mpsc::channel(1);
-            let client = AsyncCalculator::new(commands);
-            let worker = tokio::spawn(async move {
-                let mut handler = CalculatorHandler;
-                while let Some(command) = receiver.recv().await {
-                    if command.dispatch(&mut handler).await {
-                        break;
-                    }
-                }
-            });
-
-            assert_eq!(client.divide(42, 6).await, Ok(7));
+            assert_eq!(executions.load(Ordering::SeqCst), 1);
+            tokio::time::advance(Duration::from_millis(40)).await;
+            assert_eq!(first.await, Err("reply timed out".to_owned()));
+            assert_eq!(queued.await, Err("reply timed out".to_owned()));
+            gate.notify_one();
+            assert_eq!(client.work(4, None).await, Ok(3));
             assert_eq!(
-                client.divide(42, 0).await,
-                Err("division by zero".to_owned())
+                client.work(0, None).await,
+                Err("domain rejection".to_owned())
             );
-            let borrowed = "borrowed input".to_owned();
-            assert_eq!(client.echo(borrowed.as_str()).await, Ok(borrowed));
-            client.stop().await;
-            worker.await.unwrap();
+            actor.stop_gracefully().await.unwrap();
         });
 }

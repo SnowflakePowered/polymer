@@ -15,7 +15,7 @@ use super::input::{EventResult, op_event_result};
 use super::modules::{BrowserModuleLoader, document_scripts, execute_document_script};
 use super::state::{BridgeState, op_post_message};
 use polymer_deno::polymer::PolymerNotificationSender;
-use polymer_runtime::{EmulatorCommandSink, InputCommandSink, WebRtcCommandSink};
+use polymer_runtime::{EmulatorDelivery, InputDelivery, WebRtcDelivery};
 
 const BOOTSTRAP: &str = include_str!("runtime.js");
 const EVENT_DISPATCH: &str = include_str!("event_dispatch.js");
@@ -161,9 +161,9 @@ impl Runtime {
         initial_snapshot: String,
         html: String,
         source_name: String,
-        emulator_commands: EmulatorCommandSink,
-        input_commands: InputCommandSink,
-        webrtc_commands: WebRtcCommandSink,
+        emulator_commands: EmulatorDelivery,
+        input_commands: InputDelivery,
+        webrtc_commands: WebRtcDelivery,
         plugin_runtime: std::sync::Arc<polymer_pluginhost::runtime::PluginRuntime>,
         local_storage: Option<polymer_deno::webstorage::LocalStorage>,
         library: Option<polymer_runtime::LibraryService>,

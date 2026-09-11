@@ -1,7 +1,7 @@
 use super::worker::{WorkerOptions, create_worker_runtime};
 use super::{InvocationControl, PluginInvocationError, PluginLifecycle};
 use crate::{
-    controller::{ControllerSession, PauseState},
+    controller::{ControllerClient, ControllerSession, PauseState},
     emulator::{EmulatorLaunchArguments, EmulatorLaunchInvocation, EmulatorPluginInstance},
 };
 use polymer_command::command_handler;
@@ -61,31 +61,45 @@ pub(super) fn start_controller_session_worker(
 ) -> Result<(EmulatorLaunchArguments, Option<ControllerSession>), PluginInvocationError> {
     let (commands, command_receiver) = std::sync::mpsc::channel();
     let (started, startup) = std::sync::mpsc::sync_channel(1);
+    let cancellation = control.clone();
+    let executor_lifetime = polymer_command::ExecutorLifetime::new(
+        polymer_command::Admission::default(),
+        Some(Box::new(move || cancellation.cancel())),
+    );
+    let worker_lifetime = executor_lifetime.clone();
     thread::Builder::new()
         .name(format!("polymer-plugin-session-{}", invocation.plugin.id()))
         .spawn(move || {
-            let result = ControllerSessionWorker::start(
-                invocation,
-                worker,
-                lifecycle,
-                control,
-                command_receiver,
-                started,
-            )
-            .map(|worker| {
-                if let Some(worker) = worker {
-                    worker.run();
+            worker_lifetime.clone().run(move || {
+                let result = ControllerSessionWorker::start(
+                    invocation,
+                    worker,
+                    lifecycle,
+                    control,
+                    command_receiver,
+                    started,
+                )
+                .map(|worker| {
+                    if let Some(worker) = worker {
+                        worker.run(worker_lifetime);
+                    }
+                });
+                if let Err(error) = result {
+                    tracing::error!("polymer: controller plugin session failed: {error}");
                 }
-            });
-            if let Err(error) = result {
-                tracing::error!("polymer: controller plugin session failed: {error}");
-            }
+            })
         })
         .map_err(PluginInvocationError::worker)?;
     let (launch, retained) = startup.recv().map_err(|_| {
         PluginInvocationError::worker("controller plugin session failed to start")
     })??;
-    let session = retained.then(|| ControllerSession::new(commands));
+    let session = retained.then(|| {
+        let client = ControllerClient::new(
+            polymer_command::LocalDelivery::from(commands).with_lifetime(executor_lifetime.clone()),
+        );
+        let stop = client.clone();
+        ControllerSession::new(client, executor_lifetime, move || stop.stop())
+    });
     Ok((launch, session))
 }
 
@@ -95,7 +109,7 @@ struct ControllerSessionWorker {
     plugin: Arc<dyn EmulatorPluginInstance>,
     console: String,
     configuration_id: crate::configuration::ConfigurationId,
-    commands: std::sync::mpsc::Receiver<crate::controller::ControllerSessionCommand>,
+    commands: std::sync::mpsc::Receiver<crate::controller::ControllerClientCommand>,
 }
 
 impl ControllerSessionWorker {
@@ -104,7 +118,7 @@ impl ControllerSessionWorker {
         worker: WorkerOptions,
         lifecycle: Arc<PluginLifecycle>,
         control: Arc<InvocationControl>,
-        commands: std::sync::mpsc::Receiver<crate::controller::ControllerSessionCommand>,
+        commands: std::sync::mpsc::Receiver<crate::controller::ControllerClientCommand>,
         started: std::sync::mpsc::SyncSender<
             Result<(EmulatorLaunchArguments, bool), PluginInvocationError>,
         >,
@@ -171,8 +185,11 @@ impl ControllerSessionWorker {
         }))
     }
 
-    fn run(mut self) {
+    fn run(mut self, lifetime: polymer_command::ExecutorLifetime) {
         while let Ok(command) = self.commands.recv() {
+            if !lifetime.is_running() {
+                break;
+            }
             if command.dispatch(&mut self) {
                 break;
             }
@@ -278,7 +295,7 @@ impl ControllerSessionWorker {
 }
 
 #[command_handler]
-impl crate::controller::ControllerSessionCommandHandler for ControllerSessionWorker {
+impl crate::controller::ControllerClientCommandHandler for ControllerSessionWorker {
     type Output<'handler>
         = bool
     where
@@ -286,7 +303,7 @@ impl crate::controller::ControllerSessionCommandHandler for ControllerSessionWor
 
     fn attach_automation(
         &mut self,
-        session: polymer_automation::AutomationSession,
+        session: polymer_automation::AutomationClient,
     ) -> Result<(), String> {
         crate::automation::attach(self.runtime.js_runtime_mut(), session);
         Ok(())
@@ -452,7 +469,10 @@ impl crate::controller::ControllerSessionCommandHandler for ControllerSessionWor
         result
     }
 
-    fn stop<'handler>(&'handler mut self) -> Self::Output<'handler> {
+    fn stop<'handler>(
+        &'handler mut self,
+        _completion: polymer_command::Completion<Result<(), std::convert::Infallible>>,
+    ) -> Self::Output<'handler> {
         true
     }
 }

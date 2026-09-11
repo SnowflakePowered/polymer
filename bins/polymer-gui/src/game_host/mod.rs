@@ -390,9 +390,7 @@ impl GameHost {
         &self,
         change: polymer_controllers::ControllerTopologyChange,
     ) -> Result<
-        Option<
-            tokio::sync::oneshot::Receiver<Result<polymer_controllers::ControllerTopology, String>>,
-        >,
+        Option<polymer_command::PendingReply<polymer_controllers::ControllerTopology, String>>,
         String,
     > {
         let Some(active) = &self.active else {
@@ -414,7 +412,7 @@ impl GameHost {
         &self,
         state: polymer_pluginhost::controller::PauseState,
         timeout: std::time::Duration,
-    ) -> Result<Option<tokio::sync::oneshot::Receiver<Result<(), String>>>, String> {
+    ) -> Result<Option<polymer_command::PendingReply<(), String>>, String> {
         let Some(active) = &self.active else {
             return Ok(None);
         };
@@ -427,7 +425,7 @@ impl GameHost {
     pub fn save_state(
         &self,
         timeout: std::time::Duration,
-    ) -> Result<(u32, tokio::sync::oneshot::Receiver<Result<(), String>>), String> {
+    ) -> Result<(u32, polymer_command::PendingReply<(), String>), String> {
         let active = self
             .active
             .as_ref()
@@ -451,7 +449,7 @@ impl GameHost {
         &self,
         slot: u32,
         timeout: std::time::Duration,
-    ) -> Result<tokio::sync::oneshot::Receiver<Result<(), String>>, String> {
+    ) -> Result<polymer_command::PendingReply<(), String>, String> {
         let active = self
             .active
             .as_ref()
@@ -545,7 +543,7 @@ impl GameHost {
         Option<(
             crate::launch::QuickResumeCache,
             Option<Vec<u8>>,
-            tokio::sync::oneshot::Receiver<Result<Option<Vec<u8>>, String>>,
+            polymer_command::PendingReply<Option<Vec<u8>>, String>,
         )>,
         String,
     > {
@@ -773,10 +771,10 @@ impl GameHost {
                 process_id,
                 automation_desktop,
             )
-            .and_then(polymer_automation::AutomationSession::spawn)
+            .and_then(polymer_automation::AutomationClient::spawn)
             .map_err(|error| format!("could not start emulator UI automation: {error}"))
             .and_then(|automation| {
-                controller_session.attach_automation(automation.clone())?;
+                controller_session.attach_automation(automation.client())?;
                 Ok(automation)
             });
             match attached {

@@ -21,7 +21,7 @@ use std::{
 #[path = "library.rs"]
 mod library;
 
-pub use library::{Library, LibraryCommand, LibraryCommandHandler};
+pub use library::{Library, LibraryCommandHandler};
 use library::{
     op_library_games_delete, op_library_games_get, op_library_games_list,
     op_library_launchables_add, op_library_launchables_delete, op_library_metadata_add,
