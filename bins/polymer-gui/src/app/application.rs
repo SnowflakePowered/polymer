@@ -326,9 +326,7 @@ impl ShellApplication {
             UserEvent::GameHost(GameHostCommand::WebRtc(command)) => command.dispatch(state),
             UserEvent::GameHost(GameHostCommand::Input(_)) => unreachable!(),
             UserEvent::InspectorWindowRequested { .. } => {}
-            UserEvent::Inspector(command) => {
-                command.dispatch(&mut state.shell_dom);
-            }
+            UserEvent::WakeActors => {}
         }
     }
 

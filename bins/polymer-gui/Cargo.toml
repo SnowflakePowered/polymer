@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+actix.workspace = true
 anyrender = "0.13.0"
 anyrender_vello = "0.14.0"
 blitz-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "a50cb8971a03fb4cac697b763f8f5d01ee83cefb", features = ["custom-widget"] }

@@ -24,10 +24,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .on_thread_start(window_manager::WorkerWinRtApartment::initialize_current_thread)
         .on_thread_stop(window_manager::WorkerWinRtApartment::uninitialize_current_thread)
         .build()?;
-    runtime.block_on(run())
+    let runtime = std::sync::Arc::new(runtime);
+    let system = actix::System::with_tokio_rt(|| runtime.clone());
+    run(&runtime, &system)
 }
 
-async fn run() -> Result<(), Box<dyn std::error::Error>> {
+fn run(
+    runtime: &tokio::runtime::Runtime,
+    system: &actix::SystemRunner,
+) -> Result<(), Box<dyn std::error::Error>> {
     use std::time::Duration;
     use window_manager::{
         EventLoop, EventLoopExtPumpEvents, PumpStatus, TimerResolution, WinRtApartment,
@@ -56,9 +61,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
     let statistics_recorder = polymer_statistics::install()?;
-    let options = cli::parse().await?;
+    let options = runtime.block_on(cli::parse())?;
     // Prepare native renderers before the shell document starts.
-    let shell_rasterizer = shell_compositor::ShellRasterizer::new().await?;
+    let shell_rasterizer = runtime.block_on(shell_compositor::ShellRasterizer::new())?;
     let _timer_resolution = TimerResolution::raise();
     let mut event_loop = EventLoop::<app::UserEvent>::with_user_event().build()?;
     let proxy = event_loop.create_proxy();
@@ -80,20 +85,18 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         ),
     ));
     loop {
-        let status =
-            event_loop.pump_app_events(Some(Duration::from_millis(100)), application.as_mut());
+        let status = system.block_on(async {
+            let status =
+                event_loop.pump_app_events(Some(Duration::from_millis(100)), application.as_mut());
+            // Give local actors a turn after native callbacks release the DOM.
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            status
+        });
         if matches!(status, PumpStatus::Exit(_)) {
             break;
         }
-        application.run_async_tasks().await;
-        // Winit's pumped-event extension can return immediately after
-        // `AboutToWait` even when that callback selects a future
-        // `WaitUntil` deadline. A plain Tokio yield therefore spins
-        // this outer loop tens of thousands of times per second while
-        // idle. The process raises Windows timer resolution above, so
-        // a one-millisecond quantum preserves low-latency input and
-        // capture delivery without burning a core between messages.
-        tokio::time::sleep(Duration::from_millis(1)).await;
+ 
+        runtime.block_on(application.run_async_tasks());
     }
-    application.into_result().await
+    runtime.block_on(application.into_result())
 }

@@ -1,58 +1,55 @@
 //! Blitz-backed DOM, Page, and Schema protocol handling.
 
 use super::{css::Stylesheets, geometry::NodeGeometry};
-use crate::shell_dom::ShellSession;
+use crate::shell_document::ShellDocument;
+use actix::{Actor, Context, Handler, Message};
 use blitz_dom::{BaseDocument, Node, NodeData, NodeId};
-use polymer_command::command_handler;
 use serde_json::{Value, json};
+use std::{cell::RefCell, rc::Weak};
 
 const DOCUMENT_NODE: u64 = 9;
 const ELEMENT_NODE: u64 = 1;
 const TEXT_NODE: u64 = 3;
 const COMMENT_NODE: u64 = 8;
 
-polymer_command::command_client! {
-    pub(crate) client InspectorProtocol {
-        closed: ProtocolError::unavailable("Elements inspector was closed");
-
-        #[args(Dispatch)]
-        pub(crate) async fn dispatch(
-            request: Value,
-            target_url: String,
-            include_whitespace: bool,
-        ) -> Result<Reply, ProtocolError>;
-    }
+#[derive(Message)]
+#[rtype(result = "Result<Reply, ProtocolError>")]
+pub(super) struct Dispatch {
+    pub(super) request: Value,
+    pub(super) target_url: String,
+    pub(super) include_whitespace: bool,
 }
 
-#[command_handler]
-impl InspectorProtocolCommandHandler for ShellSession {
-    type Output<'handler>
-        = ()
-    where
-        Self: 'handler;
-
-    fn dispatch(
-        &mut self,
-        request: Value,
-        target_url: String,
-        include_whitespace: bool,
-    ) -> Result<Reply, ProtocolError> {
-        let document = self.inspector_document();
-        let result = document
-            .ok_or_else(|| ProtocolError::unavailable("The Blitz document is not active"))
-            .and_then(|document| {
-                DocumentProtocol::new(document, &target_url, include_whitespace).handle(&request)
-            });
-        let events = document
-            .map(|document| {
-                DocumentProtocol::new(document, &target_url, include_whitespace)
-                    .events_for(&request)
-            })
-            .unwrap_or_default();
-        Ok(Reply { result, events })
-    }
+/// Runs on the GUI's Actix executor. The weak reference leaves document
+/// ownership and destruction with the shell; no DOM borrow survives a handler.
+pub(super) struct InspectorProtocol {
+    pub(super) document: Weak<RefCell<ShellDocument>>,
 }
 
+impl Actor for InspectorProtocol {
+    type Context = Context<Self>;
+}
+
+impl Handler<Dispatch> for InspectorProtocol {
+    type Result = Result<Reply, ProtocolError>;
+
+    fn handle(&mut self, message: Dispatch, _ctx: &mut Self::Context) -> Self::Result {
+        let document = self
+            .document
+            .upgrade()
+            .ok_or_else(|| ProtocolError::unavailable("The Blitz document is not active"))?;
+        let document = document.borrow();
+        let protocol = DocumentProtocol::new(
+            document.runtime_context().0,
+            &message.target_url,
+            message.include_whitespace,
+        );
+        Ok(Reply {
+            result: protocol.handle(&message.request),
+            events: protocol.events_for(&message.request),
+        })
+    }
+}
 #[derive(Debug)]
 pub(crate) struct Reply {
     pub(super) result: Result<Value, ProtocolError>,

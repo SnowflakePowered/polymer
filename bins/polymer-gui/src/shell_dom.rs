@@ -10,7 +10,11 @@ use crate::shell_document::{
 };
 use crate::shell_runtime::{ShellRuntime, ShellRuntimeOptions};
 use kurbo::Rect;
-use std::future::Future;
+use std::{
+    cell::{Ref, RefCell, RefMut},
+    future::Future,
+    rc::{Rc, Weak},
+};
 
 /// Paint output published by Blitz without exposing its document or renderer.
 #[derive(Clone)]
@@ -89,7 +93,7 @@ enum ShellDocumentSlot {
 }
 
 struct ActiveShellDocument {
-    document: ShellDocument,
+    document: Rc<RefCell<ShellDocument>>,
     runtime: ShellRuntime,
 }
 
@@ -100,16 +104,16 @@ impl ShellSession {
         }
     }
 
-    fn active(&self) -> Option<&ShellDocument> {
+    fn active(&self) -> Option<Ref<'_, ShellDocument>> {
         match &self.slot {
-            ShellDocumentSlot::Active(active) => Some(&active.document),
+            ShellDocumentSlot::Active(active) => Some(active.document.borrow()),
             ShellDocumentSlot::Awaiting(_) | ShellDocumentSlot::Disabled => None,
         }
     }
 
-    fn active_mut(&mut self) -> Option<&mut ShellDocument> {
+    fn active_mut(&mut self) -> Option<RefMut<'_, ShellDocument>> {
         match &mut self.slot {
-            ShellDocumentSlot::Active(active) => Some(&mut active.document),
+            ShellDocumentSlot::Active(active) => Some(active.document.borrow_mut()),
             ShellDocumentSlot::Awaiting(_) | ShellDocumentSlot::Disabled => None,
         }
     }
@@ -118,8 +122,11 @@ impl ShellSession {
         matches!(self.slot, ShellDocumentSlot::Active(_))
     }
 
-    pub(crate) fn inspector_document(&self) -> Option<&blitz_dom::BaseDocument> {
-        self.active().map(|document| document.runtime_context().0)
+    pub(crate) fn inspector_document(&self) -> Weak<RefCell<ShellDocument>> {
+        match &self.slot {
+            ShellDocumentSlot::Active(active) => Rc::downgrade(&active.document),
+            ShellDocumentSlot::Awaiting(_) | ShellDocumentSlot::Disabled => Weak::new(),
+        }
     }
 
     pub(crate) fn inspector_address(&self) -> Option<std::net::SocketAddr> {
@@ -130,15 +137,16 @@ impl ShellSession {
     }
 
     pub(crate) fn inspector_structure_revision(&self) -> Option<u64> {
-        self.active().map(ShellDocument::dom_structure_revision)
+        self.active()
+            .map(|document| document.dom_structure_revision())
     }
 
     pub fn needs_paint(&self) -> bool {
-        self.active().is_some_and(ShellDocument::needs_paint)
+        self.active().is_some_and(|document| document.needs_paint())
     }
 
     pub fn invalidate(&mut self) {
-        if let Some(document) = self.active_mut() {
+        if let Some(mut document) = self.active_mut() {
             document.invalidate();
         }
     }
@@ -155,7 +163,10 @@ impl ShellSession {
     /// runtime command consumes DOM node references from that same turn.
     pub fn flush_script_mutations(&mut self) {
         if let ShellDocumentSlot::Active(active) = &mut self.slot {
-            active.document.apply_script_mutations(&mut active.runtime);
+            active
+                .document
+                .borrow_mut()
+                .apply_script_mutations(&mut active.runtime);
         }
     }
 
@@ -180,8 +191,10 @@ impl ShellSession {
         match slot {
             ShellDocumentSlot::Awaiting(factory) => {
                 let (document, runtime, notifications) = create(factory).await?;
-                self.slot =
-                    ShellDocumentSlot::Active(Box::new(ActiveShellDocument { document, runtime }));
+                self.slot = ShellDocumentSlot::Active(Box::new(ActiveShellDocument {
+                    document: Rc::new(RefCell::new(document)),
+                    runtime,
+                }));
                 Ok(Some(notifications))
             }
             slot => {
@@ -205,7 +218,10 @@ impl ShellSession {
         let ShellDocumentSlot::Active(active) = &mut self.slot else {
             return None;
         };
-        active.document.produce_frame(&mut active.runtime)
+        active
+            .document
+            .borrow_mut()
+            .produce_frame(&mut active.runtime)
     }
 
     pub async fn poll_runtime(&mut self) -> bool {
@@ -213,7 +229,10 @@ impl ShellSession {
             return false;
         };
         active.runtime.poll_event_loop().await;
-        active.document.apply_script_mutations(&mut active.runtime);
+        active
+            .document
+            .borrow_mut()
+            .apply_script_mutations(&mut active.runtime);
         true
     }
 
@@ -221,14 +240,13 @@ impl ShellSession {
         let ShellDocumentSlot::Active(active) = &mut self.slot else {
             return false;
         };
-        active.document.resize(width, height, scale_factor);
-        let (logical_width, logical_height) = active.document.logical_size();
-        active.runtime.resize(
-            logical_width,
-            logical_height,
-            active.document.scale_factor(),
-        );
-        active.document.apply_script_mutations(&mut active.runtime);
+        let mut document = active.document.borrow_mut();
+        document.resize(width, height, scale_factor);
+        let (logical_width, logical_height) = document.logical_size();
+        active
+            .runtime
+            .resize(logical_width, logical_height, document.scale_factor());
+        document.apply_script_mutations(&mut active.runtime);
         true
     }
 
@@ -241,34 +259,47 @@ impl ShellSession {
         let ShellDocumentSlot::Active(active) = &mut self.slot else {
             return false;
         };
-        active.document.mouse_event(&mut active.runtime, hit, event)
+        active
+            .document
+            .borrow_mut()
+            .mouse_event(&mut active.runtime, hit, event)
     }
 
     pub fn clear_pointer_hover(&mut self) -> bool {
         let ShellDocumentSlot::Active(active) = &mut self.slot else {
             return false;
         };
-        active.document.clear_pointer_hover();
-        active.document.needs_paint()
+        let mut document = active.document.borrow_mut();
+        document.clear_pointer_hover();
+        document.needs_paint()
     }
 
     pub fn keyboard_event(&mut self, event: DomKeyboardEvent<'_>) -> bool {
         let ShellDocumentSlot::Active(active) = &mut self.slot else {
             return false;
         };
-        active.document.keyboard_event(&mut active.runtime, event)
+        active
+            .document
+            .borrow_mut()
+            .keyboard_event(&mut active.runtime, event)
     }
 
     pub fn wheel_event(&mut self, hit: ShellHitSnapshot, event: DomWheelEvent) -> bool {
         let ShellDocumentSlot::Active(active) = &mut self.slot else {
             return false;
         };
-        active.document.wheel_event(&mut active.runtime, hit, event)
+        active
+            .document
+            .borrow_mut()
+            .wheel_event(&mut active.runtime, hit, event)
     }
 
     pub fn ime_event(&mut self, event: blitz_traits::events::BlitzImeEvent) {
         if let ShellDocumentSlot::Active(active) = &mut self.slot {
-            active.document.ime_event(&mut active.runtime, event);
+            active
+                .document
+                .borrow_mut()
+                .ime_event(&mut active.runtime, event);
         }
     }
 }
