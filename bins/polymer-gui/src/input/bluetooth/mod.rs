@@ -1,4 +1,6 @@
-use polymer_bluetooth::manager::{COMMAND_QUEUE_TIMEOUT, Connect, Forget, Scan, Sleep, StopScan};
+use polymer_bluetooth::manager::{
+    COMMAND_RESPONSE_TIMEOUT, Connect, Forget, Scan, Sleep, StopScan,
+};
 use polymer_bluetooth::{
     ControllerId, ManagerEvent, ScanRequest, SessionId, TransportKind, devices::ConnectOptions,
 };
@@ -55,9 +57,8 @@ impl BluetoothUi {
                 tokio::spawn(async move {
                     let _ = manager
                         .actor
-                        .ask(StopScan { transport })
-                        .mailbox_timeout(COMMAND_QUEUE_TIMEOUT)
-                        .send()
+                        .send(StopScan { transport })
+                        .timeout(COMMAND_RESPONSE_TIMEOUT)
                         .await;
                 });
             }
@@ -78,14 +79,14 @@ impl BluetoothUi {
         tokio::spawn(async move {
             if let Err(error) = manager
                 .actor
-                .ask(Connect {
+                .send(Connect {
                     address: controller.address,
                     options: ConnectOptions::default(),
                 })
-                .mailbox_timeout(COMMAND_QUEUE_TIMEOUT)
-                .send()
+                .timeout(COMMAND_RESPONSE_TIMEOUT)
                 .await
                 .map_err(polymer_bluetooth::Error::from)
+                .and_then(|result| result)
             {
                 tracing::error!(address = %controller.address, %error, "Bluetooth connection failed");
             }
@@ -106,11 +107,10 @@ impl BluetoothUi {
         tokio::spawn(async move {
             let _ = manager
                 .actor
-                .ask(Forget {
+                .send(Forget {
                     controller_id: controller,
                 })
-                .mailbox_timeout(COMMAND_QUEUE_TIMEOUT)
-                .send()
+                .timeout(COMMAND_RESPONSE_TIMEOUT)
                 .await;
         });
         Ok(())
@@ -124,11 +124,10 @@ impl BluetoothUi {
         tokio::spawn(async move {
             let _ = manager
                 .actor
-                .ask(Sleep {
+                .send(Sleep {
                     session_id: session,
                 })
-                .mailbox_timeout(COMMAND_QUEUE_TIMEOUT)
-                .send()
+                .timeout(COMMAND_RESPONSE_TIMEOUT)
                 .await;
         });
     }
@@ -309,9 +308,8 @@ impl BluetoothUi {
             };
             let _ = manager
                 .actor
-                .ask(Scan { request })
-                .mailbox_timeout(COMMAND_QUEUE_TIMEOUT)
-                .send()
+                .send(Scan { request })
+                .timeout(COMMAND_RESPONSE_TIMEOUT)
                 .await;
         });
     }

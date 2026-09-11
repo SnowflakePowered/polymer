@@ -1,196 +1,294 @@
 use super::*;
 
-impl Message<SendRaw> for BluetoothActor {
-    type Reply = Result<()>;
-
-    async fn handle(
+impl Handler<SendRaw> for BluetoothActor {
+    type Result = AtomicResponse<Self, Result<()>>;
+    fn handle(
         &mut self,
         SendRaw { session_id, bytes }: SendRaw,
-        _: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
-        match BluetoothActor::session_mut(&mut self.sessions, session_id) {
-            Some(session) => {
-                session
+        _: &mut Context<Self>,
+    ) -> Self::Result {
+        let Some(mut session) = self.take_session(session_id) else {
+            return AtomicResponse::new(Box::pin(fut::ready(Err(Error::Unsupported(
+                "controller session is not connected",
+            )))));
+        };
+        AtomicResponse::new(Box::pin(
+            async move {
+                let result = session
                     .controller
                     .send_raw_hid(session.transport.as_mut(), &bytes)
-                    .await
+                    .await;
+                (session, result)
             }
-            None => Err(Error::Unsupported("controller is not connected")),
-        }
+            .into_actor(self)
+            .map(move |(session, result), actor, _| {
+                actor
+                    .sessions
+                    .insert(session.info.controller_id.address, session);
+                result
+            }),
+        ))
     }
 }
 
-impl Message<SetExternalOwnership> for BluetoothActor {
-    type Reply = Result<()>;
-
-    async fn handle(
+impl Handler<SetExternalOwnership> for BluetoothActor {
+    type Result = AtomicResponse<Self, Result<()>>;
+    fn handle(
         &mut self,
         SetExternalOwnership {
             session_id,
             enabled,
         }: SetExternalOwnership,
-        _: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
-        match BluetoothActor::session_mut(&mut self.sessions, session_id) {
-            Some(session) => {
+        _: &mut Context<Self>,
+    ) -> Self::Result {
+        let Some(mut session) = self.take_session(session_id) else {
+            return AtomicResponse::new(Box::pin(fut::ready(Err(Error::Unsupported(
+                "controller session is not connected",
+            )))));
+        };
+        AtomicResponse::new(Box::pin(
+            async move {
                 let result = session
                     .controller
                     .set_external_ownership(session.transport.as_mut(), enabled)
                     .await;
+                (session, result)
+            }
+            .into_actor(self)
+            .map(move |(mut session, result), actor, _| {
                 if result.is_ok() {
                     session.externally_owned = enabled;
                 }
+                actor
+                    .sessions
+                    .insert(session.info.controller_id.address, session);
                 result
-            }
-            None => Err(Error::Unsupported("controller session is not connected")),
-        }
+            }),
+        ))
     }
 }
 
-impl Message<SetPlayerIndex> for BluetoothActor {
-    type Reply = Result<()>;
-
-    async fn handle(
+impl Handler<SetPlayerIndex> for BluetoothActor {
+    type Result = AtomicResponse<Self, Result<()>>;
+    fn handle(
         &mut self,
         SetPlayerIndex { session_id, index }: SetPlayerIndex,
-        _: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
-        match BluetoothActor::session_mut(&mut self.sessions, session_id) {
-            Some(session) if !session.externally_owned => {
-                let result = session
-                    .controller
-                    .set_player_led(session.transport.as_mut(), index)
-                    .await;
-                if result.is_ok() {
+        _: &mut Context<Self>,
+    ) -> Self::Result {
+        let Some(mut session) = self.take_session(session_id) else {
+            return AtomicResponse::new(Box::pin(fut::ready(Err(Error::Unsupported(
+                "controller session is not connected",
+            )))));
+        };
+        AtomicResponse::new(Box::pin(
+            async move {
+                let result = if session.externally_owned {
+                    Ok(())
+                } else {
+                    session
+                        .controller
+                        .set_player_led(session.transport.as_mut(), index)
+                        .await
+                };
+                (session, result)
+            }
+            .into_actor(self)
+            .map(move |(mut session, result), actor, _| {
+                if result.is_ok() && !session.externally_owned {
                     session.info.player_index = index;
-                    if let Err(error) = BluetoothActor::persist_session(&self.config, session) {
-                        let _ = self.events.send(ManagerEvent::Error {
+                    if let Err(error) = Self::persist_session(&actor.config, &session) {
+                        let _ = actor.events.send(ManagerEvent::Error {
                             address: Some(session.info.controller_id.address),
                             message: format!("failed to persist player index: {error}"),
                         });
                     }
                 }
+                actor
+                    .sessions
+                    .insert(session.info.controller_id.address, session);
                 result
-            }
-            Some(_) => Ok(()),
-            None => Err(Error::Unsupported("controller session is not connected")),
-        }
+            }),
+        ))
     }
 }
 
-impl Message<SetRumble> for BluetoothActor {
-    type Reply = Result<()>;
-
-    async fn handle(
+impl Handler<SetRumble> for BluetoothActor {
+    type Result = AtomicResponse<Self, Result<()>>;
+    fn handle(
         &mut self,
         SetRumble {
             session_id,
             low_frequency,
             high_frequency,
         }: SetRumble,
-        _: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
-        match BluetoothActor::session_mut(&mut self.sessions, session_id) {
-            Some(session) if !session.externally_owned => {
-                session
-                    .controller
-                    .set_rumble(session.transport.as_mut(), low_frequency, high_frequency)
-                    .await
+        _: &mut Context<Self>,
+    ) -> Self::Result {
+        let Some(mut session) = self.take_session(session_id) else {
+            return AtomicResponse::new(Box::pin(fut::ready(Err(Error::Unsupported(
+                "controller session is not connected",
+            )))));
+        };
+        AtomicResponse::new(Box::pin(
+            async move {
+                let result = if session.externally_owned {
+                    Ok(())
+                } else {
+                    session
+                        .controller
+                        .set_rumble(session.transport.as_mut(), low_frequency, high_frequency)
+                        .await
+                };
+                (session, result)
             }
-            Some(_) => Ok(()),
-            None => Err(Error::Unsupported("controller session is not connected")),
-        }
+            .into_actor(self)
+            .map(move |(session, result), actor, _| {
+                actor
+                    .sessions
+                    .insert(session.info.controller_id.address, session);
+                result
+            }),
+        ))
     }
 }
 
-impl Message<SetIrCamera> for BluetoothActor {
-    type Reply = Result<()>;
-
-    async fn handle(
+impl Handler<SetIrCamera> for BluetoothActor {
+    type Result = AtomicResponse<Self, Result<()>>;
+    fn handle(
         &mut self,
         SetIrCamera { session_id, setup }: SetIrCamera,
-        _: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
-        match BluetoothActor::session_mut(&mut self.sessions, session_id) {
-            Some(session) if !session.externally_owned => {
-                session
-                    .controller
-                    .set_ir_camera(session.transport.as_mut(), setup)
-                    .await
+        _: &mut Context<Self>,
+    ) -> Self::Result {
+        let Some(mut session) = self.take_session(session_id) else {
+            return AtomicResponse::new(Box::pin(fut::ready(Err(Error::Unsupported(
+                "controller session is not connected",
+            )))));
+        };
+        AtomicResponse::new(Box::pin(
+            async move {
+                let result = if session.externally_owned {
+                    Ok(())
+                } else {
+                    session
+                        .controller
+                        .set_ir_camera(session.transport.as_mut(), setup)
+                        .await
+                };
+                (session, result)
             }
-            Some(_) => Ok(()),
-            None => Err(Error::Unsupported("controller session is not connected")),
-        }
+            .into_actor(self)
+            .map(move |(session, result), actor, _| {
+                actor
+                    .sessions
+                    .insert(session.info.controller_id.address, session);
+                result
+            }),
+        ))
     }
 }
 
-impl Message<Sleep> for BluetoothActor {
-    type Reply = Result<()>;
-
-    async fn handle(
-        &mut self,
-        Sleep { session_id }: Sleep,
-        _: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
-        self.disconnect_session(session_id, true).await
+impl Handler<Sleep> for BluetoothActor {
+    type Result = AtomicResponse<Self, Result<()>>;
+    fn handle(&mut self, Sleep { session_id }: Sleep, _: &mut Context<Self>) -> Self::Result {
+        self.disconnect_session(session_id, true)
     }
 }
 
-impl Message<Disconnect> for BluetoothActor {
-    type Reply = Result<()>;
-
-    async fn handle(
+impl Handler<Disconnect> for BluetoothActor {
+    type Result = AtomicResponse<Self, Result<()>>;
+    fn handle(
         &mut self,
         Disconnect { session_id }: Disconnect,
-        _: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
-        self.disconnect_session(session_id, false).await
+        _: &mut Context<Self>,
+    ) -> Self::Result {
+        self.disconnect_session(session_id, false)
     }
 }
 
 impl BluetoothActor {
-    pub(super) async fn disconnect_session(
+    fn take_session(&mut self, session_id: SessionId) -> Option<Session> {
+        let address = self
+            .sessions
+            .iter()
+            .find(|(_, session)| session.info.session_id == session_id)
+            .map(|(address, _)| *address)?;
+        self.sessions.remove(&address)
+    }
+
+    fn disconnect_session(
         &mut self,
         session_id: SessionId,
         sleep: bool,
-    ) -> Result<()> {
-        let controller_id = BluetoothActor::session(&self.sessions, session_id)
-            .map(|session| session.info.controller_id);
-        let result =
-            BluetoothActor::disconnect(session_id, sleep, &self.events, &mut self.sessions).await;
-        if sleep
-            && result.is_ok()
-            && let Some(controller_id) = controller_id
-            && let Some(record) = self
-                .config
-                .store
-                .records()
-                .unwrap_or_default()
-                .into_iter()
-                .find(|record| {
-                    record.address == controller_id.address
-                        && record.transport == TransportKind::Ble
-                        && record.auto_reconnect
-                })
-        {
-            BluetoothActor::arm_ble_wake(
-                record,
-                self.config.controllers.clone(),
-                self.internal.clone(),
-                self.wake_gate.clone(),
-                &mut self.wake_tasks,
-            );
-        }
-        result
+    ) -> AtomicResponse<Self, Result<()>> {
+        let Some(mut session) = self.take_session(session_id) else {
+            return AtomicResponse::new(Box::pin(fut::ready(Ok(()))));
+        };
+        let controller_id = session.info.controller_id;
+        let events = self.events.clone();
+        AtomicResponse::new(Box::pin(
+            async move {
+                if sleep
+                    && let Err(error) = session.controller.sleep(session.transport.as_mut()).await
+                {
+                    return (Some(session), Err(error));
+                }
+                session.report_task.abort();
+                let result = session.transport.disconnect().await;
+                let _ = events.send(ManagerEvent::Disconnected {
+                    controller_id,
+                    session_id,
+                    reason: if sleep {
+                        "sleep requested"
+                    } else {
+                        "disconnected"
+                    }
+                    .into(),
+                    reconnecting: false,
+                });
+                (None, result)
+            }
+            .into_actor(self)
+            .map(move |(session, result), actor, _| {
+                if let Some(session) = session {
+                    actor.sessions.insert(controller_id.address, session);
+                }
+                if sleep
+                    && result.is_ok()
+                    && let Some(record) = actor
+                        .config
+                        .store
+                        .records()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .find(|record| {
+                            record.address == controller_id.address
+                                && record.transport == TransportKind::Ble
+                                && record.auto_reconnect
+                        })
+                {
+                    Self::arm_ble_wake(
+                        record,
+                        actor.config.controllers.clone(),
+                        actor.internal.clone(),
+                        actor.wake_gate.clone(),
+                        &mut actor.wake_tasks,
+                    );
+                }
+                result
+            }),
+        ))
     }
 }
 
-impl BluetoothActor {
-    pub(super) async fn session_ended(
+impl Handler<SessionEnded> for BluetoothActor {
+    type Result = ();
+    fn handle(
         &mut self,
-        controller_id: ControllerId,
-        session_id: SessionId,
-        reason: String,
+        SessionEnded {
+            controller_id,
+            session_id,
+            reason,
+        }: SessionEnded,
+        _: &mut Context<Self>,
     ) {
         let Self {
             config,
@@ -275,14 +373,11 @@ impl BluetoothActor {
                 }
             };
             if let Some(actor) = internal.upgrade() {
-                let _ = actor
-                    .tell(Command::SessionEnded {
-                        controller_id,
-                        session_id,
-                        reason,
-                    })
-                    .send()
-                    .await;
+                actor.do_send(SessionEnded {
+                    controller_id,
+                    session_id,
+                    reason,
+                });
             }
         })
     }
@@ -305,28 +400,6 @@ impl BluetoothActor {
 }
 
 impl BluetoothActor {
-    pub(super) fn session(
-        sessions: &HashMap<DeviceAddr, Session>,
-        session_id: SessionId,
-    ) -> Option<&Session> {
-        sessions
-            .values()
-            .find(|session| session.info.session_id == session_id)
-    }
-}
-
-impl BluetoothActor {
-    pub(super) fn session_mut(
-        sessions: &mut HashMap<DeviceAddr, Session>,
-        session_id: SessionId,
-    ) -> Option<&mut Session> {
-        sessions
-            .values_mut()
-            .find(|session| session.info.session_id == session_id)
-    }
-}
-
-impl BluetoothActor {
     pub(super) fn persist_session(config: &ManagerConfig, session: &Session) -> Result<()> {
         let Some(mut record) = config
             .store
@@ -340,46 +413,5 @@ impl BluetoothActor {
         };
         record.player_index = session.info.player_index;
         config.store.put(record)
-    }
-}
-
-impl BluetoothActor {
-    pub(super) async fn disconnect(
-        session_id: SessionId,
-        sleep: bool,
-        events: &broadcast::Sender<ManagerEvent>,
-        sessions: &mut HashMap<DeviceAddr, Session>,
-    ) -> Result<()> {
-        let Some(address) = sessions
-            .iter()
-            .find(|(_, session)| session.info.session_id == session_id)
-            .map(|(address, _)| *address)
-        else {
-            return Ok(());
-        };
-        let Some(mut session) = sessions.remove(&address) else {
-            return Ok(());
-        };
-        if sleep {
-            let sleep_result = session.controller.sleep(session.transport.as_mut()).await;
-            if let Err(error) = sleep_result {
-                sessions.insert(address, session);
-                return Err(error);
-            }
-        }
-        session.report_task.abort();
-        let disconnect_result = session.transport.disconnect().await;
-        let _ = events.send(ManagerEvent::Disconnected {
-            controller_id: session.info.controller_id,
-            session_id,
-            reason: if sleep {
-                "sleep requested"
-            } else {
-                "disconnected"
-            }
-            .into(),
-            reconnecting: false,
-        });
-        disconnect_result
     }
 }
