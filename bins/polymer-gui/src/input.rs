@@ -151,7 +151,26 @@ impl InputRouter {
     }
 
     pub async fn shutdown(&self) {
-        if let Err(error) = self.bluetooth.manager().shutdown().await {
+        let manager = self.bluetooth.manager();
+        // Keep the stop signal progressing if the GUI stops waiting while the mailbox is full.
+        let shutdown = tokio::spawn(async move {
+            let _ = manager.actor.stop_gracefully().await;
+            manager
+                .actor
+                .wait_for_shutdown_with_result(|result| {
+                    result.as_ref().map(|_| ()).map_err(ToString::to_string)
+                })
+                .await
+        });
+        let result = tokio::time::timeout(
+            polymer_bluetooth::manager::COMMAND_RESPONSE_TIMEOUT,
+            shutdown,
+        )
+        .await
+        .map_err(|error| error.to_string())
+        .and_then(|result| result.map_err(|error| error.to_string()))
+        .and_then(|result| result);
+        if let Err(error) = result {
             tracing::warn!(%error, "failed to shut down Bluetooth controllers cleanly");
         }
     }

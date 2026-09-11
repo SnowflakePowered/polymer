@@ -1,18 +1,7 @@
 use super::*;
 
-#[native_handler(BluetoothManager)]
-impl BluetoothActor {
-    async fn shutdown(&mut self, context: &mut Context<Self, Result<()>>) -> Result<()> {
-        self.cleanup().await;
-        context.stop();
-        Ok(())
-    }
-}
-
 impl BluetoothActor {
     pub(super) async fn cleanup(&mut self) {
-        self.policy.close();
-
         for (_, task) in self.scan_tasks.drain() {
             task.cancel().await;
         }
@@ -121,11 +110,11 @@ impl BluetoothActor {
 }
 
 impl Actor for BluetoothActor {
-    type Args = (ManagerConfig, broadcast::Sender<ManagerEvent>, Admission);
+    type Args = (ManagerConfig, broadcast::Sender<ManagerEvent>);
     type Error = Error;
 
-    async fn on_start((config, events, policy): Self::Args, actor: ActorRef<Self>) -> Result<Self> {
-        let internal = Internal(actor.downgrade());
+    async fn on_start((config, events): Self::Args, actor: ActorRef<Self>) -> Result<Self> {
+        let internal = actor.downgrade();
         let (bredr, ble_names) = tokio::join!(
             Self::initialize_adapter("BR/EDR adapter", || {
                 HciHost::open_with_firmware(&config.bredr_adapter, config.firmware.clone())
@@ -230,7 +219,10 @@ impl Actor for BluetoothActor {
                     if !matches!(event, Ok(HciEvent::ConnectionRequest { .. }) | Err(_)) {
                         continue;
                     }
-                    if internal.try_send(Command::HciEvent(event)).is_err() || closed {
+                    let Some(actor) = internal.upgrade() else {
+                        break;
+                    };
+                    if actor.tell(Command::HciEvent(event)).send().await.is_err() || closed {
                         break;
                     }
                 }
@@ -256,7 +248,6 @@ impl Actor for BluetoothActor {
             wake_tasks,
             pairing_task,
             event_task,
-            policy,
         })
     }
 
@@ -285,7 +276,6 @@ impl Message<Command> for BluetoothActor {
                 self.scan_finished(operation_id, transport, found, result)
                     .await,
             ),
-            Command::AutoConnect { address, options } => self.auto_connect(address, options).await,
             Command::ConnectFinished {
                 session_id,
                 address,

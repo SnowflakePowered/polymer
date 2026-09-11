@@ -24,9 +24,6 @@ macro_rules! command_client {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __command_client_generate {
-    ([native_actor $($configuration:tt)*] $($protocol:tt)*) => {
-        $crate::__native_actor_client_generate! { $($configuration)* $($protocol)* }
-    };
     (
         [immediate [$closed:expr]]
         [$visibility:vis] [$client:ident]

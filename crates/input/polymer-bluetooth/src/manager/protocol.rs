@@ -105,68 +105,11 @@ pub enum ManagerEvent {
     },
 }
 
-polymer_command::actor_client! {
-    pub client BluetoothManager(
-        events: broadcast::Sender<ManagerEvent>,
-    ) {
-        closed: Error::ChannelClosed;
-        queue_timeout:
-            COMMAND_QUEUE_ATTEMPTS,
-            COMMAND_QUEUE_TIMEOUT
-            => Error::Timeout("Bluetooth command queue");
-        response_timeout:
-            COMMAND_RESPONSE_TIMEOUT
-            => Error::Timeout("Bluetooth command response");
-
-        #[args(Scan)]
-        pub async fn scan(request: ScanRequest) -> Result<(), Error>;
-
-        #[args(StopScan)]
-        pub async fn stop_scan(transport: TransportKind) -> Result<(), Error>;
-
-        #[args(Connect)]
-        pub async fn connect(address: DeviceAddr, options: ConnectOptions) -> Result<(), Error>;
-
-        #[args(SendRaw)]
-        pub async fn send_raw(
-            session_id: SessionId,
-            bytes: impl Into<Vec<u8>>,
-        ) -> Result<(), Error>;
-
-        #[args(SetExternalOwnership)]
-        pub async fn set_external_ownership(
-            session_id: SessionId,
-            enabled: bool,
-        ) -> Result<(), Error>;
-
-        #[args(SetPlayerIndex)]
-        pub async fn set_player_index(session_id: SessionId, index: u8) -> Result<(), Error>;
-
-        #[args(SetRumble)]
-        pub async fn set_rumble(
-            session_id: SessionId,
-            low_frequency: u16,
-            high_frequency: u16,
-        ) -> Result<(), Error>;
-
-        #[args(SetIrCamera)]
-        pub async fn set_ir_camera(
-            session_id: SessionId,
-            setup: crate::devices::IrCameraSetup,
-        ) -> Result<(), Error>;
-
-        #[args(Sleep)]
-        pub async fn sleep(session_id: SessionId) -> Result<(), Error>;
-
-        #[args(Disconnect)]
-        pub async fn disconnect(session_id: SessionId) -> Result<(), Error>;
-
-        #[args(Forget)]
-        pub async fn forget(controller_id: ControllerId) -> Result<(), Error>;
-
-        #[args(Shutdown)]
-        pub async fn shutdown() -> Result<(), Error>;
-    }
+/// Actor access and event subscription; requests use Kameo directly.
+#[derive(Clone, Debug)]
+pub struct BluetoothManager {
+    pub actor: ActorRef<BluetoothActor>,
+    events: broadcast::Sender<ManagerEvent>,
 }
 
 pub(super) enum Command {
@@ -177,10 +120,6 @@ pub(super) enum Command {
         discovered: HashMap<DeviceAddr, Discovered>,
         result: Result<()>,
         response: ReplySender<Result<()>>,
-    },
-    AutoConnect {
-        address: DeviceAddr,
-        options: ConnectOptions,
     },
     ConnectFinished {
         session_id: SessionId,
@@ -201,12 +140,11 @@ pub(super) enum Command {
 impl BluetoothManager {
     pub async fn start(config: ManagerConfig) -> Result<Self> {
         let (events, _) = broadcast::channel(1024);
-        let policy = Admission::new(64);
-        let actor = BluetoothActor::spawn_with_mailbox(
-            (config, events.clone(), policy.clone()),
-            kameo::mailbox::unbounded(),
-        );
-        Ok(Self::from_actor(actor, policy, events))
+        let prepared = BluetoothActor::prepare_with_mailbox(kameo::mailbox::bounded(64))
+            .reply_timeout(COMMAND_RESPONSE_TIMEOUT);
+        let actor = prepared.actor_ref().clone();
+        prepared.spawn((config, events.clone()));
+        Ok(Self { actor, events })
     }
 
     pub fn events(&self) -> broadcast::Receiver<ManagerEvent> {

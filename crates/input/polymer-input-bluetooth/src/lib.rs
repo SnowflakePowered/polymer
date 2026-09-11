@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+use polymer_bluetooth::manager::{COMMAND_QUEUE_TIMEOUT, SendRaw, SetExternalOwnership};
+
 pub mod airmouse;
 pub mod decoder;
 
@@ -107,7 +109,8 @@ impl InputBackend for BluetoothBackend {
         }
         let manager = self.manager.clone();
         tokio::spawn(async move {
-            let _ = manager.shutdown().await;
+            let _ = manager.actor.stop_gracefully().await;
+            manager.actor.wait_for_shutdown().await;
         });
     }
 
@@ -130,7 +133,15 @@ impl InputBackend for BluetoothBackend {
         let manager = self.manager.clone();
         let report = report.to_vec();
         tokio::spawn(async move {
-            let _ = manager.send_raw(session, report.as_slice()).await;
+            let _ = manager
+                .actor
+                .ask(SendRaw {
+                    session_id: session,
+                    bytes: report,
+                })
+                .mailbox_timeout(COMMAND_QUEUE_TIMEOUT)
+                .send()
+                .await;
         });
         Ok(())
     }
@@ -141,7 +152,15 @@ impl InputBackend for BluetoothBackend {
             .ok_or_else(|| BackendError::Unavailable(device.to_string()))?;
         let manager = self.manager.clone();
         tokio::spawn(async move {
-            let _ = manager.set_external_ownership(session, enabled).await;
+            let _ = manager
+                .actor
+                .ask(SetExternalOwnership {
+                    session_id: session,
+                    enabled,
+                })
+                .mailbox_timeout(COMMAND_QUEUE_TIMEOUT)
+                .send()
+                .await;
         });
         Ok(())
     }

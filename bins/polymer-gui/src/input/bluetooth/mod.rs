@@ -1,3 +1,4 @@
+use polymer_bluetooth::manager::{COMMAND_QUEUE_TIMEOUT, Connect, Forget, Scan, Sleep, StopScan};
 use polymer_bluetooth::{
     ControllerId, ManagerEvent, ScanRequest, SessionId, TransportKind, devices::ConnectOptions,
 };
@@ -52,7 +53,12 @@ impl BluetoothUi {
             } else if !active && self.scans[index] {
                 let manager = self.manager.clone();
                 tokio::spawn(async move {
-                    let _ = manager.stop_scan(transport).await;
+                    let _ = manager
+                        .actor
+                        .ask(StopScan { transport })
+                        .mailbox_timeout(COMMAND_QUEUE_TIMEOUT)
+                        .send()
+                        .await;
                 });
             }
         }
@@ -71,8 +77,15 @@ impl BluetoothUi {
         let manager = self.manager.clone();
         tokio::spawn(async move {
             if let Err(error) = manager
-                .connect(controller.address, ConnectOptions::default())
+                .actor
+                .ask(Connect {
+                    address: controller.address,
+                    options: ConnectOptions::default(),
+                })
+                .mailbox_timeout(COMMAND_QUEUE_TIMEOUT)
+                .send()
                 .await
+                .map_err(polymer_bluetooth::Error::from)
             {
                 tracing::error!(address = %controller.address, %error, "Bluetooth connection failed");
             }
@@ -91,7 +104,14 @@ impl BluetoothUi {
         self.sessions.remove(id);
         let manager = self.manager.clone();
         tokio::spawn(async move {
-            let _ = manager.forget(controller).await;
+            let _ = manager
+                .actor
+                .ask(Forget {
+                    controller_id: controller,
+                })
+                .mailbox_timeout(COMMAND_QUEUE_TIMEOUT)
+                .send()
+                .await;
         });
         Ok(())
     }
@@ -102,7 +122,14 @@ impl BluetoothUi {
         };
         let manager = self.manager.clone();
         tokio::spawn(async move {
-            let _ = manager.sleep(session).await;
+            let _ = manager
+                .actor
+                .ask(Sleep {
+                    session_id: session,
+                })
+                .mailbox_timeout(COMMAND_QUEUE_TIMEOUT)
+                .send()
+                .await;
         });
     }
 
@@ -280,7 +307,12 @@ impl BluetoothUi {
                 },
                 TransportKind::BrEdr => ScanRequest::BrEdr { duration_units: 8 },
             };
-            let _ = manager.scan(request).await;
+            let _ = manager
+                .actor
+                .ask(Scan { request })
+                .mailbox_timeout(COMMAND_QUEUE_TIMEOUT)
+                .send()
+                .await;
         });
     }
 

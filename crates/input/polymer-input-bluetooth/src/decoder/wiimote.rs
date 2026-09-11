@@ -2,6 +2,7 @@ use super::{
     BluetoothControllerDevice, DecodedInput, GamepadState, PointerSource, pointer_axis, set_button,
 };
 use crate::airmouse::{AirMouse, PointerPosition};
+use polymer_bluetooth::manager::{COMMAND_QUEUE_TIMEOUT, SetIrCamera, SetPlayerIndex, SetRumble};
 use polymer_bluetooth::{
     BluetoothManager, SessionId,
     devices::{IrCameraSetup, IrMode, IrSensitivity},
@@ -353,14 +354,31 @@ impl BluetoothControllerDevice for WiimoteDecoder {
                 let low = *low_frequency;
                 let high = *high_frequency;
                 tokio::spawn(async move {
-                    let _ = manager.set_rumble(session, low, high).await;
+                    let _ = manager
+                        .actor
+                        .ask(SetRumble {
+                            session_id: session,
+                            low_frequency: low,
+                            high_frequency: high,
+                        })
+                        .mailbox_timeout(COMMAND_QUEUE_TIMEOUT)
+                        .send()
+                        .await;
                 });
             }
             Feedback::PlayerLed { index } => {
                 let manager = manager.clone();
                 let index = *index;
                 tokio::spawn(async move {
-                    let _ = manager.set_player_index(session, index).await;
+                    let _ = manager
+                        .actor
+                        .ask(SetPlayerIndex {
+                            session_id: session,
+                            index,
+                        })
+                        .mailbox_timeout(COMMAND_QUEUE_TIMEOUT)
+                        .send()
+                        .await;
                 });
             }
             Feedback::Recenter => self.air_mouse.center(),
@@ -383,7 +401,15 @@ impl BluetoothControllerDevice for WiimoteDecoder {
                     };
                     let manager = manager.clone();
                     tokio::spawn(async move {
-                        let _ = manager.set_ir_camera(session, setup).await;
+                        let _ = manager
+                            .actor
+                            .ask(SetIrCamera {
+                                session_id: session,
+                                setup,
+                            })
+                            .mailbox_timeout(COMMAND_QUEUE_TIMEOUT)
+                            .send()
+                            .await;
                     });
                 }
             }
