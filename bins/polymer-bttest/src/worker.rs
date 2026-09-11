@@ -887,6 +887,7 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                             events.clone(),
                             completion.addr,
                             completion.identity.clone(),
+                            session.as_ref().and_then(|session| session.ds3_motion()),
                         );
                         active.insert(
                             completion.addr,
@@ -959,6 +960,7 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                             events.clone(),
                             completion.addr,
                             completion.identity.clone(),
+                            session.as_ref().and_then(|session| session.ds3_motion()),
                         );
                         active.insert(
                             completion.addr,
@@ -1730,10 +1732,14 @@ fn spawn_bredr_report_task(
     events: mpsc::Sender<Event>,
     addr: DeviceAddr,
     identity: BrIdentity,
+    motion: Option<polymer_bluetooth::devices::sony::dualshock3::motion::MotionState>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut wiimote_decoder = wiimote::WiimoteTelemetryDecoder;
         let mut report_decoder = identity.profile_id.as_ref().and_then(decoder::for_profile);
+        if let Some(decoder) = &mut report_decoder {
+            decoder.set_ds3_motion(motion.clone());
+        }
         let diagnostic_deadline = Instant::now() + Duration::from_secs(60);
         let mut next_diagnostic = Instant::now();
         loop {
@@ -1747,6 +1753,10 @@ fn spawn_bredr_report_task(
                         diagnostic(&format!(
                             "DS3 native input {addr}: {:02X?}",
                             report.as_ref()
+                        ));
+                        diagnostic(&format!(
+                            "DS3 motion calibration: {:?}",
+                            motion.as_ref().and_then(|state| state.snapshot())
                         ));
                         next_diagnostic = received_at + Duration::from_millis(250);
                     }

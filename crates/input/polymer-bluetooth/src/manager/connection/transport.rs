@@ -159,12 +159,14 @@ impl BluetoothActor {
             events.clone(),
             internal,
         );
+        let ds3_motion = controller_session.ds3_motion();
         let session = Session {
             transport,
             controller: controller_session,
             report_task,
             externally_owned: false,
             info: ConnectedController {
+                ds3_motion,
                 controller_id,
                 session_id,
                 identity: identity.clone(),
@@ -278,12 +280,14 @@ impl BluetoothActor {
             events.clone(),
             internal,
         );
+        let ds3_motion = controller_session.ds3_motion();
         Ok(Session {
             transport,
             controller: controller_session,
             report_task,
             externally_owned: false,
             info: ConnectedController {
+                ds3_motion,
                 controller_id,
                 session_id,
                 identity: identity.clone(),

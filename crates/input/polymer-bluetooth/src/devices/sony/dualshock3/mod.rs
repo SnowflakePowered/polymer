@@ -9,6 +9,10 @@ use crate::{
 };
 use async_trait::async_trait;
 use std::{sync::Arc, time::Duration};
+use tokio::{sync::Mutex, task::JoinHandle};
+pub mod motion;
+mod runtime;
+use motion::{MotionCalibration, MotionPath, MotionState};
 
 #[derive(Default)]
 pub struct DualShock3;
@@ -55,98 +59,187 @@ impl ControllerDevice for DualShock3 {
     }
     fn connect(&self, options: &ConnectOptions) -> Box<dyn ControllerSession> {
         Box::new(Session {
-            player: options.player_index,
-            low: 0,
-            high: 0,
+            output: Arc::new(Mutex::new(Output {
+                player: options.player_index,
+                low: 0,
+                high: 0,
+                motion: None,
+            })),
+            motion: MotionState::default(),
+            tracker: None,
         })
     }
 }
 
 struct Session {
+    output: Arc<Mutex<Output>>,
+    motion: MotionState,
+    tracker: Option<(JoinHandle<()>, tokio::sync::oneshot::Sender<()>)>,
+}
+
+#[derive(Clone)]
+struct Output {
     player: u8,
     low: u16,
     high: u16,
+    motion: Option<MotionCalibration>,
 }
 
-impl Session {
-    fn output(&self) -> Result<[u8; 49]> {
+impl Output {
+    fn report(&self) -> Result<[u8; 49]> {
         let leds = [0x02, 0x04, 0x08, 0x10, 0x12, 0x14, 0x18];
         let led = *leds
             .get(usize::from(self.player))
             .ok_or(Error::InvalidPacket("DS3 player index must be 0..6"))?;
         let mut report = [0; 49];
         report[0] = 1;
-        report[2] = 0xff; // small motor duration
+        report[2] = 0xff;
         report[3] = u8::from(self.high != 0);
-        report[4] = 0xff; // large motor duration
+        report[4] = 0xff;
         report[5] = (self.low >> 8) as u8;
         report[10] = led;
         for block in report[11..31].chunks_exact_mut(5) {
             block.copy_from_slice(&[0xff, 0x27, 0x10, 0, 0x32]);
         }
+        if let Some(motion) = self.motion {
+            motion.apply_output(&mut report);
+        }
         Ok(report)
+    }
+}
+
+impl Session {
+    async fn stop_tracker(&mut self) {
+        if let Some((task, stop)) = self.tracker.take() {
+            let _ = stop.send(());
+            let _ = task.await;
+        }
+    }
+
+    fn start_tracker(&mut self, transport: &dyn Transport, calibration: MotionCalibration) {
+        if calibration.path == MotionPath::Plain {
+            return;
+        }
+        let Some(control) = transport.hid_control() else {
+            return;
+        };
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let runtime = runtime::Runtime::new(
+            self.output.clone(),
+            self.motion.clone(),
+            control,
+            calibration,
+        );
+        let reports = transport.reports();
+        let task = tokio::spawn(runtime.run(reports, stopped));
+        self.tracker = Some((task, stop));
     }
 }
 
 #[async_trait]
 impl ControllerSession for Session {
+    fn ds3_motion(&self) -> Option<MotionState> {
+        Some(self.motion.clone())
+    }
+
     async fn synchronize(&mut self, transport: &mut dyn Transport) -> Result<()> {
-        let output = self.output()?;
+        self.stop_tracker().await;
+        self.motion.clear();
         let mut input = transport.reports();
-        // HIDP 0x53 on PSM 0x11, not DATA/Output on PSM 0x13. Same command
-        // as DsHidMini DS3_BTH_SIXAXIS_ENABLE and Linux hid-sony's BT setup.
         transport
             .set_report(HidReportType::Feature, &[0xf4, 0x42, 0x03, 0, 0])
             .await?;
-        transport.set_report(HidReportType::Output, &output).await?;
+        // Unsupported feature reports leave the nominal decoder available. Never
+        // guess a trim byte: some DS3s use this slot differently.
+        let calibration = match MotionCalibration::read(transport).await {
+            Ok(calibration) => {
+                tracing::info!(?calibration, "DS3 factory motion calibration loaded");
+                Some(calibration)
+            }
+            Err(error) => {
+                tracing::warn!(%error, "DS3 factory motion calibration unavailable");
+                None
+            }
+        };
+        {
+            let mut output = self.output.lock().await;
+            output.motion = calibration;
+            transport
+                .set_report(HidReportType::Output, &output.report()?)
+                .await?;
+        }
+        if let Some(calibration) = calibration {
+            self.motion.publish(calibration);
+        }
         tokio::time::timeout(Duration::from_secs(3), async {
             loop {
                 match input.recv().await {
                     Ok(report) if report.len() == 49 && report[0] == 1 => return Ok(()),
                     Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                        return Err(Error::ChannelClosed);
-                    }
+                    Err(_) => return Err(Error::ChannelClosed),
                 }
             }
         })
         .await
         .map_err(|_| Error::Timeout("DS3 first Bluetooth input report"))??;
-        tracing::info!(player_index = self.player, "DS3 Bluetooth input activated");
+        if let Some(calibration) = calibration {
+            self.start_tracker(transport, calibration);
+        }
+        tracing::info!("DS3 Bluetooth input activated");
         Ok(())
     }
-    async fn set_player_led(&mut self, transport: &mut dyn Transport, slot: u8) -> Result<()> {
-        let previous = self.player;
-        self.player = slot;
-        let result = async {
-            transport
-                .set_report(HidReportType::Output, &self.output()?)
-                .await
+
+    async fn set_external_ownership(
+        &mut self,
+        transport: &mut dyn Transport,
+        enabled: bool,
+    ) -> Result<()> {
+        self.stop_tracker().await;
+        // Wait for any in-flight output transaction to release its state lock.
+        {
+            let _guard = self.output.lock().await;
         }
-        .await;
-        if result.is_err() {
-            self.player = previous;
+        if enabled {
+            Ok(())
+        } else {
+            self.synchronize(transport).await
         }
-        result
     }
+
+    async fn set_player_led(&mut self, transport: &mut dyn Transport, slot: u8) -> Result<()> {
+        let mut output = self.output.lock().await;
+        let mut next = output.clone();
+        next.player = slot;
+        transport
+            .set_report(HidReportType::Output, &next.report()?)
+            .await?;
+        *output = next;
+        Ok(())
+    }
+
     async fn set_rumble(
         &mut self,
         transport: &mut dyn Transport,
         low: u16,
         high: u16,
     ) -> Result<()> {
-        let previous = (self.low, self.high);
-        (self.low, self.high) = (low, high);
-        let result = async {
-            transport
-                .set_report(HidReportType::Output, &self.output()?)
-                .await
+        let mut output = self.output.lock().await;
+        let mut next = output.clone();
+        next.low = low;
+        next.high = high;
+        transport
+            .set_report(HidReportType::Output, &next.report()?)
+            .await?;
+        *output = next;
+        Ok(())
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        if let Some((task, _)) = self.tracker.take() {
+            task.abort();
         }
-        .await;
-        if result.is_err() {
-            (self.low, self.high) = previous;
-        }
-        result
     }
 }
 

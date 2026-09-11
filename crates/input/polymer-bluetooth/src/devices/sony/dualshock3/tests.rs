@@ -7,6 +7,7 @@ struct MockTransport {
     input: broadcast::Sender<Bytes>,
     writes: Vec<(HidReportType, Vec<u8>)>,
     reject_feature: bool,
+    factory: bool,
 }
 
 impl MockTransport {
@@ -15,12 +16,35 @@ impl MockTransport {
             input: broadcast::channel(8).0,
             writes: Vec::new(),
             reject_feature: false,
+            factory: false,
         }
     }
 }
 
 #[async_trait]
 impl Transport for MockTransport {
+    async fn get_report(&mut self, _: HidReportType, id: u8, _: u16) -> Result<Bytes> {
+        if !self.factory {
+            return Err(Error::Unsupported("no factory data"));
+        }
+        let mut data = vec![0; 64];
+        data[1] = id;
+        if id == 1 {
+            data[37] = 4;
+            data[38..42].copy_from_slice(&[0, 1, 2, 7]);
+        } else {
+            assert_eq!(id, 0xef);
+            assert_eq!(self.writes.last().unwrap().1[5..8], [3, 1, 0xa0]);
+            data[5..8].copy_from_slice(&[3, 1, 0xa0]);
+            for (index, value) in [508u16, 397, 503, 387, 511, 396, 521, 0x77]
+                .into_iter()
+                .enumerate()
+            {
+                data[17 + index * 2..19 + index * 2].copy_from_slice(&value.to_be_bytes());
+            }
+        }
+        Ok(Bytes::from(data))
+    }
     async fn connect(&mut self, _: DeviceAddr) -> Result<()> {
         Ok(())
     }
@@ -79,4 +103,26 @@ async fn rejected_activation_does_not_send_output_or_claim_readiness() {
     let mut session = DualShock3.connect(&ConnectOptions::default());
     assert!(session.synchronize(&mut transport).await.is_err());
     assert_eq!(transport.writes.len(), 1);
+}
+
+#[tokio::test]
+async fn factory_trim_survives_rumble_and_led_changes() {
+    let mut transport = MockTransport::new();
+    transport.factory = true;
+    let mut session = DualShock3.connect(&ConnectOptions::default());
+    session.synchronize(&mut transport).await.unwrap();
+    let calibration = session.ds3_motion().unwrap().snapshot().unwrap();
+    assert_eq!(calibration.acceleration_span, [111, 116, 115]);
+    session.set_rumble(&mut transport, 0xab00, 1).await.unwrap();
+    session.set_player_led(&mut transport, 3).await.unwrap();
+    for (_, report) in transport
+        .writes
+        .iter()
+        .filter(|(kind, _)| *kind == HidReportType::Output)
+    {
+        assert_eq!(report[6..8], [0xff, 0x77]);
+    }
+    let report = &transport.writes.last().unwrap().1;
+    assert_eq!(report[5], 0xab);
+    assert_eq!(report[10], 0x10);
 }

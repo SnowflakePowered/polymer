@@ -6,7 +6,7 @@ use super::{ControllerDevice, DeviceIdentity, MatchConfidence, ProfileId};
 
 const SONY_VENDOR_ID: u16 = 0x054c;
 
-mod dualshock3;
+pub mod dualshock3;
 pub use dualshock3::DualShock3;
 
 macro_rules! sony_controller {

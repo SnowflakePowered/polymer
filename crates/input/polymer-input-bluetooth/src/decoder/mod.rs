@@ -67,6 +67,11 @@ pub struct DecodedInput {
 }
 
 pub trait BluetoothControllerDevice: Send + Sync {
+    fn set_ds3_motion(
+        &mut self,
+        _motion: Option<polymer_bluetooth::devices::sony::dualshock3::motion::MotionState>,
+    ) {
+    }
     fn decode(&mut self, report: &[u8], received_at: Instant) -> Option<DecodedInput>;
     fn calibration(&self) -> &Calibration;
     fn calibration_mut(&mut self) -> &mut Calibration;

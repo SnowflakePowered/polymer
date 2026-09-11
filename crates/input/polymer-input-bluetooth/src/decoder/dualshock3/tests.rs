@@ -1,6 +1,41 @@
 use super::*;
 
 #[test]
+fn factory_scaling_and_tracked_zero_reach_decoder() {
+    use polymer_bluetooth::devices::sony::dualshock3::motion::{
+        MotionCalibration, MotionPath, MotionState,
+    };
+    let mut calibration = MotionCalibration {
+        path: MotionPath::Hardware,
+        acceleration_zero: [512, 514, 510],
+        acceleration_span: [113, 112, 112],
+        gyro_zero: 520.0,
+        cal_byte: 0x7b,
+        settling: false,
+    };
+    let mut decoder = DualShock3Decoder::default();
+    decoder.set_ds3_motion(Some(MotionState::new(calibration)));
+    let mut report = [0; 49];
+    report[0] = 1;
+    for (index, value) in [512u16, 514, 398, 643].into_iter().enumerate() {
+        report[41 + index * 2..43 + index * 2].copy_from_slice(&value.to_be_bytes());
+    }
+    let state = decoder.decode(&report, Instant::now()).unwrap().state;
+    assert_eq!(state.accelerometer, [0.0, 9.80665, 0.0]);
+    assert_eq!(state.gyroscope, [0.0, std::f32::consts::FRAC_PI_2, 0.0]);
+    calibration.settling = true;
+    decoder.set_ds3_motion(Some(MotionState::new(calibration)));
+    assert_eq!(
+        decoder
+            .decode(&report, Instant::now())
+            .unwrap()
+            .state
+            .gyroscope,
+        [0.0; 3]
+    );
+}
+
+#[test]
 fn digital_bits_map_by_position_without_treating_triggers_as_buttons() {
     use GamepadButton::*;
     let mut decoder = DualShock3Decoder::default();

@@ -37,7 +37,7 @@ pub struct BrEdrHid {
     state: Arc<AtomicU8>,
     handle: Option<u16>,
     link: Option<Link>,
-    control: Option<Channel>,
+    control: Option<Arc<super::control::Control>>,
     control_sender: Option<ChannelSender>,
     interrupt_sender: Option<ChannelSender>,
     report_task: Option<JoinHandle<()>>,
@@ -332,7 +332,7 @@ impl BrEdrHid {
         });
         self.handle = Some(handle);
         self.link = Some(link);
-        self.control = Some(control);
+        self.control = Some(Arc::new(super::control::Control::new(control)));
         self.control_sender = Some(control_sender);
         self.interrupt_sender = Some(interrupt_sender);
         self.report_task = Some(report_task);
@@ -503,27 +503,16 @@ impl Transport for BrEdrHid {
         kind: crate::transport::HidReportType,
         data: &[u8],
     ) -> Result<()> {
-        if data.is_empty() {
-            return Err(Error::InvalidPacket("empty HID SET_REPORT"));
-        }
-        let control = self
-            .control
-            .as_mut()
-            .ok_or(Error::L2cap("HID control channel is not connected".into()))?;
-        let mut request = BytesMut::with_capacity(data.len() + 1);
-        request.extend_from_slice(&[0x50 | kind as u8]);
-        request.extend_from_slice(data);
-        tracing::debug!(?kind, report_id = data[0], "sending HID control SET_REPORT");
-        control.sender().send(request.freeze(), false).await?;
-        let response = tokio::time::timeout(Duration::from_secs(2), control.receive())
+        self.hid_control()
+            .ok_or(Error::ChannelClosed)?
+            .set_report(kind, data)
             .await
-            .map_err(|_| Error::Timeout("HID SET_REPORT handshake"))??;
-        if response.as_ref() != [0x00] {
-            return Err(Error::L2cap(format!(
-                "HID SET_REPORT rejected: {response:02x?}"
-            )));
-        }
-        Ok(())
+    }
+
+    fn hid_control(&self) -> Option<Arc<dyn crate::transport::HidControl>> {
+        self.control
+            .as_ref()
+            .map(|control| control.clone() as Arc<dyn crate::transport::HidControl>)
     }
 
     async fn set_automatic_flush_slots(&mut self, slots: u16) -> Result<()> {

@@ -1,5 +1,6 @@
 //! Bluetooth Classic (BR/EDR) host stack.
 
+mod control;
 pub mod hci;
 mod hid;
 pub mod l2cap;
