@@ -5,12 +5,12 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-kameo.workspace = true
+actix.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { version = "1.53.0", features = ["rt", "time"] }
+tokio = { version = "1.53.0", features = ["rt", "sync", "time"] }
 
 [lints]
 workspace = true

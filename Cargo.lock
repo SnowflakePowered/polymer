@@ -9306,7 +9306,7 @@ dependencies = [
 name = "polymer-automation"
 version = "0.1.0"
 dependencies = [
- "kameo",
+ "actix",
  "regex",
  "serde",
  "serde_json",
