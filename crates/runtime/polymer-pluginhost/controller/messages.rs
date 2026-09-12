@@ -22,6 +22,13 @@ pub struct PauseResume {
 
 #[derive(Message)]
 #[rtype(result = "Result<(), String>")]
+pub struct DiscChange {
+    pub index: u32,
+    pub timeout: Duration,
+}
+
+#[derive(Message)]
+#[rtype(result = "Result<(), String>")]
 pub struct StateAction {
     pub slot: u32,
     pub save: bool,

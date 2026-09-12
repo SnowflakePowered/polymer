@@ -42,6 +42,7 @@ impl ShellCoordinator {
                     &pending.cache.revision,
                     &state,
                     pending.screenshot.as_deref(),
+                    pending.cache.disc_index,
                 )
                 .map_err(|error| error.to_string()),
             (Ok(store), Some(key), Ok(None)) => {

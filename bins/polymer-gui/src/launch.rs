@@ -25,6 +25,12 @@ pub struct AttachedLaunchPlan {
     #[serde(default)]
     pub controller_session: Option<String>,
     #[serde(default)]
+    pub launch_set: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub initial_disc_index: u32,
+    #[serde(default)]
+    pub can_change_disc: bool,
+    #[serde(default)]
     pub save_states: Option<polymer_pluginhost::emulator::SaveStateConfig>,
     #[serde(default)]
     pub quick_resume_cache: Option<QuickResumeCache>,
@@ -34,6 +40,8 @@ pub struct AttachedLaunchPlan {
 pub struct QuickResumeCache {
     pub key: String,
     pub revision: String,
+    #[serde(default)]
+    pub disc_index: u32,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]

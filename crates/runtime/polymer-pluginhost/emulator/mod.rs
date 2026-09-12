@@ -34,6 +34,10 @@ pub struct EmulatorLaunchArguments {
     pub save_states: Option<SaveStateConfig>,
     #[serde(default, skip_deserializing)]
     pub quick_resume_accepted: bool,
+    #[serde(default, skip_deserializing)]
+    pub can_change_disc: bool,
+    #[serde(default, skip_deserializing)]
+    pub initial_disc_index: u32,
     #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub quick_resume_screenshot: Option<Vec<u8>>,
 }

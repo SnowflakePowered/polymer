@@ -4,6 +4,7 @@ import {
   op_emulator_launch,
   op_emulator_message,
   op_emulator_pause_state,
+  op_emulator_change_disc,
   op_emulator_save_state,
   op_emulator_resume_state,
   op_emulator_state_screenshot,
@@ -75,6 +76,9 @@ export function createEmulator(webrtc) {
       machine: options.machine,
       preparedFilesystem: options.preparedFilesystem,
       controllerSession: options.controllerSession,
+      launchSet: options.launchSet ?? [],
+      initialDiscIndex: options.initialDiscIndex ?? 0,
+      canChangeDisc: options.canChangeDisc === true,
       saveStates: options.saveStates ?? null,
       quickResumeCache: options.quickResumeCache ?? null,
     };
@@ -89,10 +93,14 @@ export function createEmulator(webrtc) {
     #closeRequested = false;
     #readySettled = false;
     #closedSettled = false;
+    #launchSet;
+    #currentDiscIndex;
 
     constructor(id, options) {
       super();
       this.id = id;
+      this.#launchSet = Object.freeze((options.launchSet ?? []).map(disc => Object.freeze({ ...disc })));
+      this.#currentDiscIndex = options.initialDiscIndex ?? 0;
       this.request = Object.freeze(options);
       this.quickResume = options.quickResume ?? null;
       this.requested = Object.freeze([...options.surfaces]);
@@ -105,6 +113,24 @@ export function createEmulator(webrtc) {
 
     get state() { return this.#state; }
     get error() { return this.#error; }
+    get currentDiscIndex() { return this.#currentDiscIndex; }
+    get canChangeDisc() { return this.#launchSet.length > 1 && this.request.canChangeDisc === true; }
+    getLaunchSet() { return this.#launchSet; }
+
+    async changeDisc(index) {
+      if (!Number.isInteger(index) || index < 0 || index >= this.#launchSet.length) {
+        throw new RangeError("disc index is outside the launch set");
+      }
+      if (this.#state !== "ready") {
+        throw new DOMException("The launch is not ready", "InvalidStateError");
+      }
+      if (!this.canChangeDisc) {
+        throw new DOMException("The emulator does not support disc changes", "NotSupportedError");
+      }
+      await op_emulator_change_disc(this.id, index);
+      this.#currentDiscIndex = index;
+      if (this.#state === "ready") this.#publish("discchange", { index });
+    }
     #canControl() { return this.#state !== "closing" && this.#state !== "closed"; }
 
     #publish(type, detail = undefined) {

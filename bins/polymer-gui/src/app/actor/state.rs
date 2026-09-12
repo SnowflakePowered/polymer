@@ -2,9 +2,30 @@
 use super::StateActor;
 use crate::shell_runtime::InstanceToken;
 use actix::{AtomicResponse, Context, Handler, WrapFuture};
-use polymer_runtime::frontend::emulator::{Close, ResumeState, SaveState};
+use polymer_runtime::frontend::emulator::{ChangeDisc, Close, ResumeState, SaveState};
 use serde_json::Value;
 use std::time::Duration;
+
+impl Handler<ChangeDisc> for StateActor {
+    type Result = AtomicResponse<Self, Result<(), String>>;
+    fn handle(&mut self, message: ChangeDisc, _: &mut Context<Self>) -> Self::Result {
+        let state = self.state.clone();
+        AtomicResponse::new(Box::pin(
+            async move {
+                let response = state.with_active(message.token, |state| {
+                    state.game_host.change_disc(message.index)
+                })?;
+                response.await.map_err(|_| {
+                    "emulator plugin session closed during disc change".to_owned()
+                })??;
+                state.with_active(message.token, |state| {
+                    state.game_host.commit_disc_change(message.index)
+                })
+            }
+            .into_actor(self),
+        ))
+    }
+}
 
 impl Handler<SaveState> for StateActor {
     type Result = AtomicResponse<Self, Result<Value, String>>;

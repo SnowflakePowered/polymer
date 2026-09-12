@@ -36,6 +36,7 @@ impl QuickResumeKey {
 pub struct QuickResumeEntry {
     pub state: Vec<u8>,
     pub screenshot: Option<Vec<u8>>,
+    pub disc_index: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -47,6 +48,8 @@ pub struct QuickResumeStore {
 struct Metadata {
     revision: String,
     screenshot: bool,
+    #[serde(default)]
+    disc_index: u32,
 }
 
 impl QuickResumeStore {
@@ -84,7 +87,11 @@ impl QuickResumeStore {
             } else {
                 None
             };
-            Ok(Some(QuickResumeEntry { state, screenshot }))
+            Ok(Some(QuickResumeEntry {
+                state,
+                screenshot,
+                disc_index: metadata.disc_index,
+            }))
         })();
         if let Err(error) = fs::remove_dir_all(&directory)
             && error.kind() != io::ErrorKind::NotFound
@@ -100,6 +107,7 @@ impl QuickResumeStore {
         revision: &str,
         state: &[u8],
         screenshot: Option<&[u8]>,
+        disc_index: u32,
     ) -> io::Result<()> {
         fs::create_dir_all(&self.root)?;
         let target = self.root.join(key.as_str());
@@ -126,6 +134,7 @@ impl QuickResumeStore {
                 serde_json::to_vec(&Metadata {
                     revision: revision.to_owned(),
                     screenshot,
+                    disc_index,
                 })?,
             )?;
             if target.exists() {
@@ -157,12 +166,13 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let store = QuickResumeStore::new(temporary.path());
         let key = QuickResumeKey::new("dolphin", "wii", "title");
-        store.commit(&key, "1", b"state", Some(b"png")).unwrap();
+        store.commit(&key, "1", b"state", Some(b"png"), 2).unwrap();
         assert!(store.take(&key, "2").unwrap().is_none());
         assert!(store.take(&key, "1").unwrap().is_none());
-        store.commit(&key, "1", b"state", Some(b"png")).unwrap();
+        store.commit(&key, "1", b"state", Some(b"png"), 2).unwrap();
         let entry = store.take(&key, "1").unwrap().unwrap();
         assert_eq!(entry.state, b"state");
+        assert_eq!(entry.disc_index, 2);
         assert_eq!(entry.screenshot.as_deref(), Some(b"png".as_slice()));
         assert!(store.take(&key, "1").unwrap().is_none());
     }

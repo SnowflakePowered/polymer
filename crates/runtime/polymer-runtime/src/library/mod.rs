@@ -1,4 +1,4 @@
-mod api;
+pub(crate) mod api;
 mod server;
 
 use std::{rc::Rc, sync::Arc};

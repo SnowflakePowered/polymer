@@ -47,6 +47,9 @@ impl<'runtime> EmulatorWorker<'runtime> {
         let quit = self
             .supports(&pending, "quit")
             .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
+        let disc_changes = self
+            .supports(&pending, "discChanges")
+            .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
         if save_states.is_some() && (!state_save || !state_resume) {
             return Err(EmulatorHostError::Runtime(
                 "emulator.savestates requires onStateSave and onStateResume".to_owned(),
@@ -66,10 +69,16 @@ impl<'runtime> EmulatorWorker<'runtime> {
             .finish(pending)
             .map_err(|error| EmulatorHostError::Runtime(error.to_string()))?;
         launch.save_states = save_states;
+        launch.can_change_disc = disc_changes;
         Ok(RetainedEmulator {
             launch,
             configuration_id,
-            retained: controller_changes || pause_resume || state_save || state_resume || quit,
+            retained: controller_changes
+                || pause_resume
+                || state_save
+                || state_resume
+                || quit
+                || disc_changes,
         })
     }
 
@@ -218,6 +227,12 @@ impl<'runtime> EmulatorWorker<'runtime> {
         }
         launch.filesystem = filesystem;
         launch.quick_resume_accepted = quick_resume_accepted;
+        {
+            deno_core::scope!(scope, self.runtime);
+            let wrapper = local_object(scope, &pending.value, "pluginhost launch result")?;
+            let index = property(scope, wrapper, "initialDiscIndex")?;
+            launch.initial_disc_index = serde_v8::from_v8(scope, index)?;
+        }
         launch.quick_resume_screenshot = quick_resume_screenshot;
         Ok(launch)
     }

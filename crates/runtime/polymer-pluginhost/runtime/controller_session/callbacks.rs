@@ -44,6 +44,40 @@ impl Handler<PauseResume> for ControllerActor {
     }
 }
 
+impl Handler<DiscChange> for ControllerActor {
+    type Result = AtomicResponse<Self, Result<(), String>>;
+    fn handle(&mut self, message: DiscChange, _: &mut Context<Self>) -> Self::Result {
+        let call = ExtensionFunction::argument(self.runtime.js_runtime_mut(), message.index)
+            .map_err(|error| error.to_string())
+            .and_then(|argument| {
+                DenoCall::start(
+                    self,
+                    "discChange",
+                    &[argument],
+                    message.timeout,
+                    "onDiscChange",
+                )
+            });
+        match call {
+            Ok(call) => AtomicResponse::new(Box::pin(call.map(move |result, actor, _| {
+                result?;
+                // Commit only after the host accepts completion. A timed-out JS promise
+                // may finish later, but must not change the disc used by onQuit.
+                actor
+                    .runtime
+                    .js_runtime_mut()
+                    .execute_script(
+                        "polymer:disc-commit",
+                        format!("__polymerActiveEmulator.disc.index = {};", message.index),
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            }))),
+            Err(error) => AtomicResponse::new(Box::pin(fut::ready(Err(error)))),
+        }
+    }
+}
+
 impl Handler<StateAction> for ControllerActor {
     type Result = AtomicResponse<Self, Result<(), String>>;
     fn handle(&mut self, message: StateAction, _: &mut Context<Self>) -> Self::Result {

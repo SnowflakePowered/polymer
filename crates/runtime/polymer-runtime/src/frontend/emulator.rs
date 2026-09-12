@@ -55,6 +55,13 @@ pub struct PauseState {
 }
 
 #[derive(actix::Message)]
+#[rtype(result = "Result<(), String>")]
+pub struct ChangeDisc {
+    pub token: InstanceToken,
+    pub index: u32,
+}
+
+#[derive(actix::Message)]
 #[rtype(result = "Result<Value, String>")]
 pub struct SaveState {
     pub token: InstanceToken,
