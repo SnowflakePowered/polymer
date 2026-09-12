@@ -27,7 +27,8 @@ impl CableHid {
                 }
                 let (profile, name) = match device.product_id() {
                     0x0268 => ("sony.dualshock3", "DualShock 3 / SIXAXIS"),
-                    _ => ("sony.dualshock4", "DualShock 4"),
+                    0x05c4 | 0x09cc => ("sony.dualshock4", "DualShock 4"),
+                    _ => ("sony.dualsense", "DualSense"),
                 };
                 devices.push(CableDeviceIdentity {
                     profile_id: ProfileId::new(profile),
@@ -51,7 +52,7 @@ impl CableHid {
         // 054c:042f is the Navigation controller, not a DS3.
         matches!(device.bus_type(), BusType::Usb)
             && device.vendor_id() == 0x054c
-            && matches!(device.product_id(), 0x0268 | 0x05c4 | 0x09cc)
+            && matches!(device.product_id(), 0x0268 | 0x05c4 | 0x09cc | 0x0ce6 | 0x0df2)
             // DS4 v2 also exposes audio; select the gamepad HID collection.
             && (device.product_id() == 0x0268 || (device.usage_page() == 1 && device.usage() == 5))
     }
