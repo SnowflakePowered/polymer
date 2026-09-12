@@ -10,7 +10,7 @@ use crate::{
 use deno_core::{serde_v8, v8};
 use serde::Deserialize;
 use serde_json::Value;
-use std::{future::Future, rc::Rc, sync::Arc};
+use std::{collections::BTreeSet, future::Future, rc::Rc, sync::Arc};
 
 const MAX_SCRAPE_RESULTS: usize = 4096;
 
@@ -114,6 +114,7 @@ pub(super) async fn invoke_scrape_generator(
     runtime: &mut deno_core::JsRuntime,
     entrypoint: &str,
     input: &ScrapeInput,
+    provided: &BTreeSet<String>,
 ) -> Result<Vec<ScrapeResult>, PluginInvocationError> {
     let initialize = ExtensionFunction::get(runtime, "__polymerScraper", "initialize")
         .map_err(PluginInvocationError::worker)?;
@@ -157,13 +158,15 @@ pub(super) async fn invoke_scrape_generator(
                 format!("onScrape yielded more than {MAX_SCRAPE_RESULTS} results"),
             ));
         }
-        results.push(step.value.ok_or_else(|| {
+        let result = step.value.ok_or_else(|| {
             PluginInvocationError::new(
                 "TypeError",
                 "INVALID_SCRAPE_RESULT",
                 "onScrape yielded no result value",
             )
-        })?);
+        })?;
+        result.validate(provided)?;
+        results.push(result);
     }
     Ok(results)
 }
@@ -190,7 +193,10 @@ pub(super) async fn invoke_export(
         ExtensionFunction::argument(runtime, export_path).map_err(PluginInvocationError::worker)?,
         ExtensionFunction::argument(runtime, arguments).map_err(PluginInvocationError::worker)?,
     ];
-    let resolved = invoke.call(runtime, &values).await.map_err(PluginInvocationError::worker);
+    let resolved = invoke
+        .call(runtime, &values)
+        .await
+        .map_err(PluginInvocationError::worker);
     if let Some(progress) = progress {
         progress.finish(match &resolved {
             Ok(_) => serde_json::json!({"state": "ready", "message": "Plugin contents updated"}),

@@ -42,10 +42,10 @@ impl CacheOptions {
     }
 }
 
-struct CacheState(CacheOptions);
+pub(crate) struct CacheState(CacheOptions);
 
 impl CacheState {
-    fn path(&self, key: &str, relative: &str) -> Result<PathBuf, JsErrorBox> {
+    pub(crate) fn path(&self, key: &str, relative: &str) -> Result<PathBuf, JsErrorBox> {
         let root = self.0.roots.get(key).ok_or_else(|| {
             JsErrorBox::type_error(format!("cache '{key}' is not declared by this plugin"))
         })?;

@@ -1,7 +1,7 @@
-use deno_core::{OpState, op2};
+use deno_core::{OpState, Resource, op2};
 use deno_error::JsErrorBox;
 use serde_json::Map;
-use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::Mutex};
+use std::{borrow::Cow, cell::RefCell, path::PathBuf, rc::Rc};
 use turso::Value as SqlValue;
 
 pub(crate) struct DatabaseOptions {
@@ -16,26 +16,32 @@ impl DatabaseOptions {
     }
 }
 
-struct DatabaseState {
-    path: PathBuf,
-    connection: Mutex<Option<turso::Connection>>,
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CacheDatabase {
+    key: String,
+    path: String,
 }
 
-fn database_error(error: impl std::fmt::Display) -> JsErrorBox {
-    JsErrorBox::generic(error.to_string())
+struct DatabaseConnection(turso::Connection);
+
+impl Resource for DatabaseConnection {
+    fn name(&self) -> Cow<'_, str> {
+        "pluginDatabase".into()
+    }
 }
 
-impl DatabaseState {
-    fn from_state(state: &Rc<RefCell<OpState>>) -> Rc<Self> {
-        state.borrow().borrow::<Rc<Self>>().clone()
+impl DatabaseConnection {
+    fn error(error: impl std::fmt::Display) -> JsErrorBox {
+        JsErrorBox::generic(error.to_string())
     }
 
-    fn connection(&self) -> Result<turso::Connection, JsErrorBox> {
-        self.connection
-            .lock()
-            .unwrap()
-            .clone()
-            .ok_or_else(|| JsErrorBox::generic("plugin database is closed"))
+    fn from_state(state: &Rc<RefCell<OpState>>, id: u32) -> Result<Rc<Self>, JsErrorBox> {
+        state
+            .borrow()
+            .resource_table
+            .get::<Self>(id)
+            .map_err(Self::error)
     }
 
     fn values(value: serde_json::Value) -> Result<Vec<SqlValue>, JsErrorBox> {
@@ -85,64 +91,78 @@ impl DatabaseState {
 }
 
 #[op2]
-async fn op_database_connect(state: Rc<RefCell<OpState>>) -> Result<(), JsErrorBox> {
-    let state = DatabaseState::from_state(&state);
-    if state.connection.lock().unwrap().is_some() {
-        return Ok(());
-    }
-    if let Some(parent) = state.path.parent() {
+async fn op_database_connect(
+    state: Rc<RefCell<OpState>>,
+    #[serde] cache: Option<CacheDatabase>,
+    read_only: bool,
+) -> Result<u32, JsErrorBox> {
+    let path = {
+        let state = state.borrow();
+        match cache {
+            Some(cache) => state
+                .borrow::<crate::cache::CacheState>()
+                .path(&cache.key, &cache.path)?,
+            None => state.borrow::<DatabaseOptions>().path.clone(),
+        }
+    };
+    if !read_only && let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
-            .map_err(database_error)?;
+            .map_err(DatabaseConnection::error)?;
     }
     let database = turso::Builder::new_local(
-        state
-            .path
-            .to_str()
+        path.to_str()
             .ok_or_else(|| JsErrorBox::type_error("plugin database path is not UTF-8"))?,
     )
+    .read_only(read_only)
+    .experimental_without_rowid(true)
     .build()
     .await
-    .map_err(database_error)?;
-    *state.connection.lock().unwrap() = Some(database.connect().map_err(database_error)?);
-    Ok(())
+    .map_err(DatabaseConnection::error)?;
+    let connection = database.connect().map_err(DatabaseConnection::error)?;
+    Ok(state
+        .borrow_mut()
+        .resource_table
+        .add(DatabaseConnection(connection)))
 }
 
 #[op2(fast)]
-fn op_database_close(state: &mut OpState) {
+fn op_database_close(state: &mut OpState, id: u32) -> Result<(), JsErrorBox> {
     state
-        .borrow::<Rc<DatabaseState>>()
-        .connection
-        .lock()
-        .unwrap()
-        .take();
+        .resource_table
+        .take::<DatabaseConnection>(id)
+        .map_err(DatabaseConnection::error)?;
+    Ok(())
 }
 
 #[op2]
 async fn op_database_exec(
     state: Rc<RefCell<OpState>>,
+    id: u32,
     #[string] sql: String,
 ) -> Result<(), JsErrorBox> {
-    DatabaseState::from_state(&state)
-        .connection()?
+    DatabaseConnection::from_state(&state, id)?
+        .0
         .execute_batch(sql)
         .await
-        .map_err(database_error)
+        .map_err(DatabaseConnection::error)
 }
 
 #[op2]
 #[serde]
 async fn op_database_run(
     state: Rc<RefCell<OpState>>,
+    id: u32,
     #[string] sql: String,
     #[serde] params: serde_json::Value,
 ) -> Result<serde_json::Value, JsErrorBox> {
-    let values = DatabaseState::values(params)?;
-    let connection = DatabaseState::from_state(&state).connection()?;
+    let values = DatabaseConnection::values(params)?;
+    let database = DatabaseConnection::from_state(&state, id)?;
+    let connection = &database.0;
     let changed = connection
         .execute(sql, values)
         .await
-        .map_err(database_error)?;
+        .map_err(DatabaseConnection::error)?;
     Ok(serde_json::json!({
         "changes": changed,
         "lastInsertRowid": connection.last_insert_rowid()
@@ -153,23 +173,25 @@ async fn op_database_run(
 #[serde]
 async fn op_database_all(
     state: Rc<RefCell<OpState>>,
+    id: u32,
     #[string] sql: String,
     #[serde] params: serde_json::Value,
 ) -> Result<Vec<serde_json::Value>, JsErrorBox> {
-    let values = DatabaseState::values(params)?;
-    let connection = DatabaseState::from_state(&state).connection()?;
+    let values = DatabaseConnection::values(params)?;
+    let database = DatabaseConnection::from_state(&state, id)?;
+    let connection = &database.0;
     let mut rows = connection
         .query(sql, values)
         .await
-        .map_err(database_error)?;
+        .map_err(DatabaseConnection::error)?;
     let columns = rows.column_names();
     let mut result = Vec::new();
-    while let Some(row) = rows.next().await.map_err(database_error)? {
+    while let Some(row) = rows.next().await.map_err(DatabaseConnection::error)? {
         let mut value = Map::new();
         for (index, column) in columns.iter().enumerate() {
             value.insert(
                 column.clone(),
-                DatabaseState::json(row.get_value(index).map_err(database_error)?),
+                DatabaseConnection::json(row.get_value(index).map_err(DatabaseConnection::error)?),
             );
         }
         result.push(serde_json::Value::Object(value));
@@ -183,10 +205,7 @@ deno_core::extension!(polymer_database,
     esm = [dir "database/js", "00_database.js"],
     options = { options: DatabaseOptions },
     state = |state, options| {
-        state.put(Rc::new(DatabaseState {
-            path: options.options.path,
-            connection: Mutex::new(None),
-        }));
+        state.put(options.options);
     },
 );
 

@@ -18,7 +18,7 @@ use crate::{
     filesystem::StorageFactories,
     loading::PluginRegistry,
     plugin::PluginInstance,
-    scraper::{ScrapeInput, ScrapeResult, ScrapeScalar, ScraperPluginInstance},
+    scraper::{ScrapeInput, ScrapeResult, ScraperPluginInstance},
 };
 use controller_session::ControllerActor;
 use parking_lot::Mutex;
@@ -49,6 +49,7 @@ struct PluginLifecycle {
     events: Arc<events::EventEmitter>,
     storage: Arc<crate::plugin_storage::PluginStorage>,
     loaded: OnceCell<()>,
+    updates: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl PluginLifecycle {
@@ -57,6 +58,7 @@ impl PluginLifecycle {
             events: Arc::new(events::EventEmitter::new(plugin)),
             storage: Arc::new(crate::plugin_storage::PluginStorage::default()),
             loaded: OnceCell::new(),
+            updates: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -468,57 +470,13 @@ impl PluginRuntimeHandle {
                             runtime.js_runtime_mut(),
                             &invocation_entrypoint,
                             &input,
+                            &provided,
                         )
                         .await
                     },
                 )
             })
             .await?;
-        for result in &results {
-            if !provided.contains(&result.key) {
-                return Err(PluginInvocationError::new(
-                    "TypeError",
-                    "UNDECLARED_SCRAPE_KEY",
-                    format!(
-                        "scraper '{plugin_id}' yielded undeclared key '{}'",
-                        result.key
-                    ),
-                ));
-            }
-            if result.source.trim().is_empty() {
-                return Err(PluginInvocationError::new(
-                    "TypeError",
-                    "INVALID_SCRAPE_SOURCE",
-                    "scrape result source must not be empty",
-                ));
-            }
-            result.value.validate().map_err(|message| {
-                PluginInvocationError::new("TypeError", "INVALID_SCRAPE_VALUE", message)
-            })?;
-            if result.key.starts_with("media.") {
-                let ScrapeScalar::String(value) = &result.value else {
-                    return Err(PluginInvocationError::new(
-                        "TypeError",
-                        "INVALID_MEDIA_URL",
-                        "media scrape values must be URL strings",
-                    ));
-                };
-                let url = url::Url::parse(value).map_err(|_| {
-                    PluginInvocationError::new(
-                        "TypeError",
-                        "INVALID_MEDIA_URL",
-                        "media scrape values must be absolute HTTP(S) URLs",
-                    )
-                })?;
-                if !matches!(url.scheme(), "http" | "https") {
-                    return Err(PluginInvocationError::new(
-                        "TypeError",
-                        "INVALID_MEDIA_URL",
-                        "media scrape values must be absolute HTTP(S) URLs",
-                    ));
-                }
-            }
-        }
         Ok(results)
     }
 
@@ -603,6 +561,9 @@ impl PluginRuntimeHandle {
                 .map_err(PluginInvocationError::worker)?;
         let lifecycle = self.lifecycle(plugin.id());
         let path = export_path.to_vec();
+        let updates = lifecycle.updates.clone();
+        let updating = matches!(export_path, [name] if name == "updateContents")
+            || matches!(export_path, [root, name] if root == "default" && name == "updateContents");
         let value = self
             .run_with_control(cancellation.control, move |control| {
                 run_worker(
@@ -611,6 +572,11 @@ impl PluginRuntimeHandle {
                     lifecycle,
                     control,
                     move |runtime| async move {
+                        let _update = if updating {
+                            Some(updates.lock().await)
+                        } else {
+                            None
+                        };
                         let mut runtime = runtime;
                         invoke_export(
                             runtime.js_runtime_mut(),
