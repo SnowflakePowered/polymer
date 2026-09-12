@@ -19,9 +19,9 @@ function quitContext(active) {
   return Object.freeze({
     filesystem: __polymerFilesystem.filesystem,
     directory: active.saveStateDirectory,
-    launchPath: active.launch.launchPath,
+    launchPath: active.launchSet[active.disc.index].launchPath,
     console: active.launch.console,
-    package: active.launch.package,
+    package: active.launchSet[active.disc.index].package,
     userConfiguration: active.launch.userConfiguration,
   });
 }

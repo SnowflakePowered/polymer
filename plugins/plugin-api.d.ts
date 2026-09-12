@@ -225,6 +225,25 @@ declare module "polymer:api" {
         pauseState: "pause" | "resume",
     }>;
 
+    export type EmulatorLaunchable = Readonly<{
+        launchPath: string,
+        package: Package,
+    }>;
+
+    /** Ordered discs supplied to onLaunch; mount their files before starting the emulator. */
+    export type EmulatorLaunchSet = Readonly<{
+        launchSet: readonly EmulatorLaunchable[],
+        initialDiscIndex: number,
+    }>;
+
+    export type DiscChangeContext = Readonly<{
+        launchSet: readonly EmulatorLaunchable[],
+        index: number,
+        filesystem: Filesystem,
+    }>;
+
+    export type OnDiscChange = (context: DiscChangeContext) => void | Promise<void>;
+
     export type StateContext = Readonly<{
         slot: number,
         filesystem: Filesystem,

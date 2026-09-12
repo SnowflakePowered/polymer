@@ -98,7 +98,11 @@ export function createConfiguration(pluginApi) {
       return op_configuration_prepare(String(launchableId), selection);
     },
     async onLaunch(launchableId, selection) {
-      const prepared = await Configuration.prepare(launchableId, selection);
+      const launchSet = Array.isArray(launchableId) ? [...launchableId] : [launchableId];
+      if (launchSet.length === 0 || launchSet.some(id => typeof id !== "string" || !id)) {
+        throw new TypeError("launch requires a nonempty list of launchable IDs");
+      }
+      const prepared = await Configuration.prepare(launchSet[0], { ...selection, launchSet });
       const plugin = await pluginApi.open(prepared.plugin).onLaunch(prepared.arguments);
       const targets = new Set(prepared.webrtcTargets || []);
       const launch = Object.freeze({
@@ -121,6 +125,9 @@ export function createConfiguration(pluginApi) {
         webrtcBind: prepared.webrtcBind,
         preparedFilesystem: plugin.preparedFilesystem,
         controllerSession: plugin.controllerSession,
+        launchSet: Object.freeze(prepared.launchSet.map(disc => Object.freeze({ ...disc }))),
+        initialDiscIndex: plugin.initialDiscIndex,
+        canChangeDisc: plugin.canChangeDisc,
         saveStates: plugin.saveStates ?? null,
         quickResume: plugin.quickResumeAccepted
           ? Object.freeze({

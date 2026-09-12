@@ -131,6 +131,7 @@ impl GuiActors {
                     message: self.control.clone().recipient(),
                     input: self.control.clone().recipient(),
                     pause_state: self.control.clone().recipient(),
+                    change_disc: self.state.clone().recipient(),
                     save_state: self.state.clone().recipient(),
                     resume_state: self.state.clone().recipient(),
                     state_screenshot: self.control.clone().recipient(),

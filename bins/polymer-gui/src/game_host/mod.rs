@@ -9,8 +9,8 @@ use crate::{
 };
 use polymer_platform_windows::performance_counter;
 use polymer_pluginhost::controller::{
-    AttachActions, AttachAutomation, ControllerChanged, PauseResume, PendingReply, Quit,
-    StateAction,
+    AttachActions, AttachAutomation, ControllerChanged, DiscChange, PauseResume, PendingReply,
+    Quit, StateAction,
 };
 use polymer_protocol::{AdapterLuid, PresentationMappingKind, PresentationTransform};
 use polymer_renderer::layout::Rect;
@@ -234,6 +234,7 @@ struct ActivePresentation {
     controller_session: Option<polymer_pluginhost::controller::ControllerSession>,
     automation: Option<polymer_automation::AutomationSession>,
     save_states: Option<polymer_runtime::SaveStateManager>,
+    current_disc_index: u32,
     closing: bool,
 }
 
@@ -416,6 +417,33 @@ impl GameHost {
         Ok(Some(Box::pin(session.send(PauseResume { state, timeout }))))
     }
 
+    pub fn change_disc(&self, index: u32) -> Result<PendingReply<DiscChange>, String> {
+        let active = self.active.as_ref().ok_or("emulator is no longer active")?;
+        if active.closing {
+            return Err("emulator is closing".to_owned());
+        }
+        if !active.options.can_change_disc || active.options.launch_set.len() < 2 {
+            return Err("emulator does not support disc changes".to_owned());
+        }
+        if index as usize >= active.options.launch_set.len() {
+            return Err("disc index is outside the launch set".to_owned());
+        }
+        let session = active
+            .controller_session
+            .as_ref()
+            .ok_or("emulator plugin session is unavailable")?;
+        Ok(Box::pin(session.send(DiscChange {
+            index,
+            timeout: Duration::from_secs(30),
+        })))
+    }
+
+    pub fn commit_disc_change(&mut self, index: u32) -> Result<(), String> {
+        let active = self.active.as_mut().ok_or("emulator is no longer active")?;
+        active.current_disc_index = index;
+        Ok(())
+    }
+
     pub fn save_state(
         &self,
         timeout: std::time::Duration,
@@ -560,7 +588,10 @@ impl GameHost {
                 return Err("emulator is already closing".to_owned());
             }
             active.closing = true;
-            active.options.quick_resume_cache.clone()
+            active.options.quick_resume_cache.clone().map(|mut cache| {
+                cache.disc_index = active.current_disc_index;
+                cache
+            })
         };
         let Some(cache) = cache else {
             return Ok(None);
@@ -816,6 +847,7 @@ impl GameHost {
             .map(|states| polymer_runtime::SaveStateManager::new(states.max));
         self.active = Some(ActivePresentation {
             token,
+            current_disc_index: options.initial_disc_index,
             options,
             webrtc: None,
             controller_session,

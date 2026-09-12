@@ -22,6 +22,7 @@ pub struct EmulatorRecipients {
     pub message: Recipient<emulator::Message>,
     pub input: Recipient<emulator::Input>,
     pub pause_state: Recipient<emulator::PauseState>,
+    pub change_disc: Recipient<emulator::ChangeDisc>,
     pub save_state: Recipient<emulator::SaveState>,
     pub resume_state: Recipient<emulator::ResumeState>,
     pub state_screenshot: Recipient<emulator::StateScreenshot>,

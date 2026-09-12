@@ -6,6 +6,7 @@
 mod commands;
 pub mod emulator;
 pub mod input;
+mod quickresume;
 pub mod webrtc;
 pub use commands::{
     EmulatorRecipients, FrontendCommands, FrontendRecipients, InputRecipients, WebRtcRecipients,
@@ -24,7 +25,6 @@ use polymer_input::{
     SensorBarPosition, StickCalibration, TriggerCalibration,
 };
 use polymer_library::StorageManager;
-use polymer_pluginhost::emulator::EmulatorPluginInstance;
 use serde_json::Value;
 use std::{
     collections::HashMap,
@@ -656,8 +656,22 @@ impl PolymerHost for FrontendServices {
                 .get("values")
                 .cloned()
                 .unwrap_or_else(|| serde_json::json!({}));
-            let package = service.package(&launchable_id).await?;
-            crate::configuration::prepare_api_with_sources(
+            let ids = match request.get("launchSet") {
+                Some(value) => serde_json::from_value::<Vec<String>>(value.clone())
+                    .map_err(|error| error.to_string())?,
+                None => vec![launchable_id.clone()],
+            };
+            if ids.first() != Some(&launchable_id) {
+                return Err("configuration launchable must be the first launchSet entry".into());
+            }
+            let discs = service.launch_set(&ids).await?;
+            let initial_index = request
+                .get("initialDiscIndex")
+                .map_or(Some(0), Value::as_u64)
+                .filter(|index| *index < discs.len() as u64)
+                .ok_or("initialDiscIndex is outside the launch set")?;
+            let package = discs[0].1.clone();
+            let mut prepared = crate::configuration::prepare_api_with_sources(
                 plugins,
                 defaults.ok_or("configuration service is unavailable")?,
                 package,
@@ -665,7 +679,24 @@ impl PolymerHost for FrontendServices {
                 &sources,
                 &profiles,
                 &assignments,
-            )
+            )?;
+            prepared["launchSet"] =
+                Value::Array(discs.iter().map(|(record, _)| record.clone()).collect());
+            prepared["arguments"]["launchSet"] = Value::Array(
+                discs
+                    .iter()
+                    .map(|(_, package)| {
+                        serde_json::json!({
+                            "launchPath": package.path.to_string_lossy(), "package": package,
+                        })
+                    })
+                    .collect(),
+            );
+            prepared["arguments"]["initialDiscIndex"] = initial_index.into();
+            let selected = prepared["arguments"]["launchSet"][initial_index as usize].clone();
+            prepared["arguments"]["launchPath"] = selected["launchPath"].clone();
+            prepared["arguments"]["package"] = selected["package"].clone();
+            Ok(prepared)
         })
     }
 
@@ -698,7 +729,7 @@ impl PolymerHost for FrontendServices {
         &self,
         plugin: String,
         path: Vec<String>,
-        arguments: Vec<Value>,
+        mut arguments: Vec<Value>,
     ) -> ApiFuture<Value> {
         let handle = self.plugins.handle();
         let storage = self.storage.clone();
@@ -707,7 +738,7 @@ impl PolymerHost for FrontendServices {
         let notifications = self.notifications.clone();
         Box::pin(async move {
             let (quick_resume, quick_resume_cache) =
-                prepare_quick_resume(&handle, &plugin, &path, &arguments).await;
+                quickresume::QuickResume::prepare(&handle, &plugin, &path, &mut arguments).await;
             let storage =
                 match crate::launch_storage(storage, &path, &arguments, notifications).await {
                     Ok(storage) => storage,
@@ -848,6 +879,18 @@ impl PolymerHost for FrontendServices {
         );
     }
 
+    fn emulator_change_disc(
+        &self,
+        token: InstanceToken,
+        index: u32,
+    ) -> ApiFuture<Result<(), String>> {
+        self.commands.request(
+            |recipients| &recipients.emulator.change_disc,
+            emulator::ChangeDisc { token, index },
+            "emulator host is unavailable",
+        )
+    }
+
     fn emulator_pause_state(
         &self,
         token: InstanceToken,
@@ -940,96 +983,6 @@ impl PolymerHost for FrontendServices {
             "WebRTC host is unavailable",
         )
     }
-}
-
-async fn prepare_quick_resume(
-    plugins: &polymer_pluginhost::runtime::PluginRuntimeHandle,
-    plugin_id: &str,
-    path: &[String],
-    arguments: &[Value],
-) -> (
-    Option<polymer_pluginhost::emulator::QuickResumeData>,
-    Option<Value>,
-) {
-    if !matches!(path, [name] if name == "onLaunch")
-        && !matches!(path, [root, name] if root == "default" && name == "onLaunch")
-    {
-        return (None, None);
-    }
-    let Some(plugin) = plugins
-        .registry()
-        .plugin::<dyn EmulatorPluginInstance>(plugin_id)
-    else {
-        return (None, None);
-    };
-    let Some(revision) = plugin
-        .save_states()
-        .and_then(|states| states.revision.as_deref())
-        .map(str::to_owned)
-    else {
-        return (None, None);
-    };
-    let Some(argument) = arguments.first() else {
-        return (None, None);
-    };
-    let Ok(package) =
-        serde_json::from_value::<polymer_scraping::Package>(argument["package"].clone())
-    else {
-        return (None, None);
-    };
-    let platform = package.platform.as_str();
-    let identity = package
-        .title_id
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| {
-            package
-                .serial
-                .as_deref()
-                .filter(|value| !value.trim().is_empty())
-        })
-        .map(|value| value.trim().to_ascii_lowercase())
-        .or_else(|| {
-            argument["launchPath"].as_str().map(|path| {
-                std::fs::canonicalize(path)
-                    .unwrap_or_else(|_| std::path::PathBuf::from(path))
-                    .to_string_lossy()
-                    .to_ascii_lowercase()
-            })
-        })
-        .unwrap_or_default();
-    let key = polymer_library::QuickResumeKey::new(plugin_id, platform, &identity);
-    let cache = serde_json::json!({ "key": key.as_str(), "revision": revision });
-    let loaded = tokio::task::spawn_blocking({
-        let key = key.clone();
-        let revision = revision.clone();
-        move || polymer_library::QuickResumeStore::discover()?.take(&key, &revision)
-    })
-    .await;
-    let entry = match loaded {
-        Ok(Ok(entry)) => entry,
-        Ok(Err(error)) => {
-            tracing::warn!(
-                plugin = plugin_id,
-                "polymer: loading Quick Resume failed: {error}"
-            );
-            None
-        }
-        Err(error) => {
-            tracing::warn!(
-                plugin = plugin_id,
-                "polymer: Quick Resume task failed: {error}"
-            );
-            None
-        }
-    };
-    (
-        entry.map(|entry| polymer_pluginhost::emulator::QuickResumeData {
-            state: entry.state,
-            screenshot: entry.screenshot,
-        }),
-        Some(cache),
-    )
 }
 
 #[cfg(test)]

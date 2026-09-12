@@ -81,6 +81,11 @@ pub trait PolymerHost: Send + Sync {
         pause: bool,
         timeout: Duration,
     ) -> ApiFuture<Result<(), String>>;
+    fn emulator_change_disc(
+        &self,
+        token: InstanceToken,
+        index: u32,
+    ) -> ApiFuture<Result<(), String>>;
     fn emulator_save_state(
         &self,
         token: InstanceToken,
@@ -410,6 +415,18 @@ fn op_emulator_input(state: &mut OpState, token: u32, active: bool) {
 }
 
 #[op2]
+async fn op_emulator_change_disc(
+    state: Rc<RefCell<OpState>>,
+    token: u32,
+    index: u32,
+) -> Result<(), JsErrorBox> {
+    let host = state.borrow().borrow::<Arc<dyn PolymerHost>>().clone();
+    host.emulator_change_disc(InstanceToken(token), index)
+        .await
+        .map_err(JsErrorBox::generic)
+}
+
+#[op2]
 async fn op_emulator_pause_state(
     state: Rc<RefCell<OpState>>,
     token: u32,
@@ -591,6 +608,7 @@ deno_core::extension!(
         op_emulator_message,
         op_emulator_input,
         op_emulator_pause_state,
+        op_emulator_change_disc,
         op_emulator_save_state, op_emulator_resume_state, op_emulator_state_screenshot,
         op_input_configure,
         op_controller_api_snapshot,

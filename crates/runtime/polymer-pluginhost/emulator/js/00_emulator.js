@@ -8,6 +8,29 @@ async function launch(entrypoint, args, configurationId, explicitDefault) {
     throw new TypeError("plugin export 'onLaunch' is not a function");
   }
 
+  const launchSet = args.launchSet ?? [{ launchPath: args.launchPath, package: args.package }];
+  if (!Array.isArray(launchSet) || launchSet.length === 0) {
+    throw new TypeError("onLaunch requires a nonempty launchSet");
+  }
+  if (args.launchSet !== undefined && launchSet.some(disc =>
+    disc == null || typeof disc.launchPath !== "string" || !disc.launchPath
+    || disc.package == null || typeof disc.package !== "object")) {
+    throw new TypeError("each launchSet entry requires a launchPath and package");
+  }
+  const initialDiscIndex = args.initialDiscIndex ?? 0;
+  if (!Number.isInteger(initialDiscIndex) || initialDiscIndex < 0 || initialDiscIndex >= launchSet.length) {
+    throw new RangeError("initialDiscIndex is outside the launch set");
+  }
+  const discs = Object.freeze(launchSet.map(disc => Object.freeze({
+    ...disc,
+    package: disc.package == null ? disc.package : Object.freeze({ ...disc.package }),
+  })));
+  args.launchSet = discs;
+  args.initialDiscIndex = initialDiscIndex;
+  // Keep existing plugins working while they migrate to launchSet.
+  args.launchPath = args.launchSet[initialDiscIndex].launchPath;
+  args.package = args.launchSet[initialDiscIndex].package;
+
   const configuration = __polymerPluginHost.configuration(configurationId);
   args.configuration = configuration;
   args.filesystem = __polymerFilesystem.filesystem;
@@ -29,6 +52,9 @@ async function launch(entrypoint, args, configurationId, explicitDefault) {
   const onStateResume = stateResumeReceiver?.onStateResume;
   const quitReceiver = typeof module.onQuit === "function" ? module : receiver;
   const onQuit = quitReceiver?.onQuit;
+  const discReceiver = typeof module.onDiscChange === "function" ? module : receiver;
+  const onDiscChange = discReceiver?.onDiscChange;
+  const discChanges = launchSet.length > 1 && typeof onDiscChange === "function";
 
   const result = await Reflect.apply(onLaunch, receiver, [args]);
   const quickResumeAccepted = args.saveStates.quickResume !== null
@@ -44,7 +70,7 @@ async function launch(entrypoint, args, configurationId, explicitDefault) {
   const stateResume = typeof onStateResume === "function";
   const quit = typeof onQuit === "function";
 
-  if (controllerChanges || pauseResume || stateSave || stateResume || quit) {
+  if (controllerChanges || pauseResume || stateSave || stateResume || quit || discChanges) {
     Object.defineProperty(globalThis, "__polymerActiveEmulator", {
       value: Object.freeze({
         controllerReceiver,
@@ -57,6 +83,10 @@ async function launch(entrypoint, args, configurationId, explicitDefault) {
         onStateResume,
         quitReceiver,
         onQuit,
+        discReceiver,
+        onDiscChange,
+        launchSet: discs,
+        disc: { index: initialDiscIndex },
         saveStateDirectory: args.saveStates.directory,
         launch: Object.freeze({
           launchPath: args.launchPath,
@@ -80,6 +110,8 @@ async function launch(entrypoint, args, configurationId, explicitDefault) {
     stateSave,
     stateResume,
     quit,
+    discChanges,
+    initialDiscIndex,
     quickResumeAccepted,
     quickResumeScreenshot,
   };
@@ -126,6 +158,22 @@ async function stateAction(slot, save) {
   await Reflect.apply(callback, receiver, [context]);
 }
 
+async function discChange(index) {
+  const active = globalThis.__polymerActiveEmulator;
+  if (active == null || active.launchSet.length < 2 || typeof active.onDiscChange !== "function") {
+    throw new DOMException("emulator does not support disc changes", "NotSupportedError");
+  }
+  if (!Number.isInteger(index) || index < 0 || index >= active.launchSet.length) {
+    throw new RangeError("disc index is outside the launch set");
+  }
+  if (index === active.disc.index) return;
+  await Reflect.apply(active.onDiscChange, active.discReceiver, [Object.freeze({
+    launchSet: active.launchSet,
+    index,
+    filesystem: __polymerFilesystem.filesystem,
+  })]);
+}
+
 async function quit() {
   const active = globalThis.__polymerActiveEmulator;
   if (active == null || typeof active.onQuit !== "function") return null;
@@ -148,6 +196,7 @@ Object.defineProperty(globalThis, "__polymerEmulator", {
     controllerChanged,
     pauseResume,
     stateAction,
+    discChange,
     quit,
     refreshConfigurations,
   }),

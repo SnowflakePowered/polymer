@@ -10,7 +10,7 @@ use super::{LibraryBackend, LibraryReader};
 use actix::{AtomicResponse, ResponseActFuture, WrapFuture};
 use std::future::Future;
 
-pub(super) trait LibraryApi {
+pub(crate) trait LibraryApi {
     fn uuid(value: &str) -> Result<Uuid, String> {
         if value.len() != 32
             || value

@@ -184,6 +184,9 @@ type LaunchFields = {
   webrtcBind?: string;
   preparedFilesystem?: string;
   controllerSession?: string;
+  launchSet?: readonly LibraryLaunchable[];
+  initialDiscIndex?: number;
+  canChangeDisc?: boolean;
   saveStates?: Readonly<{ max: number; revision?: string }> | null;
   quickResume?: Readonly<{ screenshot: Blob | null }> | null;
   quickResumeCache?: Readonly<{ key: string; revision: string }> | null;
@@ -204,6 +207,13 @@ export interface LaunchInstance extends EventTarget {
   readonly audio: Readonly<{ available: boolean; volume: number; muted: boolean }>;
   readonly saveStates: readonly SaveState[];
   readonly quickResume: Readonly<{ screenshot: Blob | null }> | null;
+  readonly canChangeDisc: boolean;
+  /** Last successfully selected disc; initialized before the emulator starts. */
+  readonly currentDiscIndex: number;
+  /** Immutable snapshot, in the same order supplied to configuration.onLaunch. */
+  getLaunchSet(): readonly LibraryLaunchable[];
+  /** Resolves after onDiscChange completes; rejects if unavailable, not ready, or invalid. */
+  changeDisc(index: number): Promise<void>;
   send(messageName: string, args?: unknown): void;
   setVolume(volume: number): void;
   setMuted(muted: boolean): void;
@@ -333,6 +343,7 @@ export type PackageConfiguration = {
 };
 
 export type ConfigurationSelection = {
+  initialDiscIndex?: number;
   emulator: string;
   groups: Array<{
     name: string;
@@ -353,7 +364,7 @@ export interface ConfigurationApi {
     userConfiguration?: UserConfiguration,
   ): Promise<ConfigurationState | null>;
   prepare(launchableId: string, selection: ConfigurationSelection): Promise<unknown>;
-  onLaunch(launchableId: string, selection: ConfigurationSelection): Promise<LaunchRequest>;
+  onLaunch(launchableId: string | readonly string[], selection: ConfigurationSelection): Promise<LaunchRequest>;
 }
 
 export type ConsoleStorageKind = "nand" | "saveRepo" | "memoryCard" | "battery";

@@ -1,3 +1,4 @@
+use crate::library::api::LibraryApi;
 use dashmap::DashMap;
 use polymer_library::GameCatalog;
 use polymer_pluginhost::runtime::PluginRuntimeHandle;
@@ -15,7 +16,37 @@ pub(crate) struct LaunchableConfigurations {
     locks: ConfigurationLocks,
 }
 
+impl LibraryApi for LaunchableConfigurations {}
+
 impl LaunchableConfigurations {
+    pub(crate) async fn launch_set(&self, ids: &[String]) -> Result<Vec<(Value, Package)>, String> {
+        if ids.is_empty() {
+            return Err("launchSet must not be empty".into());
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut discs: Vec<(Value, Package)> = Vec::with_capacity(ids.len());
+        for id in ids {
+            let uuid = Uuid::parse_str(id).map_err(|error| error.to_string())?;
+            if !seen.insert(uuid) {
+                return Err("launchSet contains duplicate launchables".into());
+            }
+            let package = self.package(id).await?;
+            if discs
+                .first()
+                .is_some_and(|(_, first)| first.platform != package.platform)
+            {
+                return Err("all launchables must use the same console".into());
+            }
+            let launchable = self
+                .catalog
+                .launchable(uuid)
+                .await
+                .map_err(|error| error.to_string())?;
+            discs.push((Self::launchable_value(&launchable), package));
+        }
+        Ok(discs)
+    }
+
     pub(crate) fn new(
         catalog: Arc<GameCatalog>,
         plugins: PluginRuntimeHandle,
