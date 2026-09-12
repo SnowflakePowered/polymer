@@ -1578,7 +1578,7 @@ async fn run(mut commands: tokio_mpsc::UnboundedReceiver<Command>, events: mpsc:
                         // otherwise subscribe to the frame broadcast.
                         let early_frames = host.l2cap_frames();
                         let early_hci_events = host.events();
-                        let become_master = !identity.is_switch();
+                        let become_master = identity.policy(addr, 0).become_master;
                         match host.accept_connection_with_role(addr, become_master).await {
                             Ok(handle) => {
                                 let mut transport = BrEdrHid::new(host.clone());

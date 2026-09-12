@@ -1,5 +1,5 @@
 //! USB provisioning of persistent Bluetooth pairings. USB input remains owned
-//! by SDL; these sessions only perform the controller's pairing handshake.
+//! by SDL outside provisioning; these sessions only perform the controller's pairing handshake.
 
 use std::{ffi::CString, sync::Arc};
 
@@ -18,6 +18,7 @@ mod dualshock3;
 mod feature;
 mod hid;
 mod sony;
+mod switch;
 mod switch2;
 mod usb;
 
@@ -77,6 +78,13 @@ impl CableDeviceIdentity {
                     sony::SonyPairing { device, model },
                 )))
             }
+            "nintendo.switch.pro" => {
+                let device = hid::CableHid::open(identity.clone()).await?;
+                Ok(Box::new(feature::FeatureSession::new(
+                    identity,
+                    switch::Pairing::new(device),
+                )))
+            }
             id if id.starts_with("nintendo.switch2.") => {
                 let info = identity
                     .usb
@@ -99,6 +107,9 @@ impl CableDeviceIdentity {
     }
 
     pub fn access_label(&self) -> &'static str {
+        if self.profile_id.as_str() == "nintendo.switch.pro" {
+            return "USB HID commands";
+        }
         if self.wireless_transport() == TransportKind::Ble {
             return "USB vendor commands (interface 1)";
         }

@@ -18,6 +18,8 @@ const SUBCOMMAND_SET_REPORT_MODE: u8 = 0x03;
 const SUBCOMMAND_SET_HCI_STATE: u8 = 0x06;
 const SUBCOMMAND_SPI_FLASH_READ: u8 = 0x10;
 const SUBCOMMAND_SET_PLAYER_LIGHTS: u8 = 0x30;
+const SUBCOMMAND_ENABLE_IMU: u8 = 0x40;
+const SUBCOMMAND_SET_IMU_SENSITIVITY: u8 = 0x41;
 const SUBCOMMAND_ENABLE_VIBRATION: u8 = 0x48;
 const FULL_REPORT_MODE: u8 = 0x30;
 const NEUTRAL_RUMBLE: [u8; 4] = [0x00, 0x01, 0x40, 0x40];
@@ -29,6 +31,7 @@ trait SwitchModel: Send + Sync + 'static {
     const PROFILE_ID: &'static str;
     const DISPLAY_NAME: &'static str;
     const NAMES: &'static [&'static str];
+    const HAS_IMU: bool = false;
 
     fn policy() -> ConnectionPolicy {
         ConnectionPolicy {
@@ -119,6 +122,18 @@ trait SwitchModel: Send + Sync + 'static {
         packet_counter: &mut u8,
     ) -> Result<Option<Arc<str>>> {
         *packet_counter = 0;
+        if Self::HAS_IMU {
+            Self::send_subcommand(transport, packet_counter, SUBCOMMAND_ENABLE_IMU, &[1]).await?;
+            // Match the decoder's ±2000 dps / ±8 g scales. Configure after
+            // enabling, since powering up the IMU resets its sensitivity.
+            Self::send_subcommand(
+                transport,
+                packet_counter,
+                SUBCOMMAND_SET_IMU_SENSITIVITY,
+                &[3, 0, 1, 1],
+            )
+            .await?;
+        }
         Self::send_subcommand(
             transport,
             packet_counter,
@@ -282,6 +297,7 @@ where
 controller_model! {
     SwitchProController = SwitchDevice<SwitchProModel> impl SwitchModel {
         const PROFILE_ID: &'static str = "nintendo.switch.pro";
+        const HAS_IMU: bool = true;
         const DISPLAY_NAME: &'static str = "Nintendo Switch Pro Controller";
         const NAMES: &'static [&'static str] = &["Pro Controller"];
     }
@@ -290,6 +306,7 @@ controller_model! {
 controller_model! {
     JoyConLeft = SwitchDevice<JoyConLeftModel> impl SwitchModel {
         const PROFILE_ID: &'static str = "nintendo.switch.joycon-left";
+        const HAS_IMU: bool = true;
         const DISPLAY_NAME: &'static str = "Joy-Con (L)";
         const NAMES: &'static [&'static str] = &["Joy-Con (L)"];
     }
@@ -298,6 +315,7 @@ controller_model! {
 controller_model! {
     JoyConRight = SwitchDevice<JoyConRightModel> impl SwitchModel {
         const PROFILE_ID: &'static str = "nintendo.switch.joycon-right";
+        const HAS_IMU: bool = true;
         const DISPLAY_NAME: &'static str = "Joy-Con (R)";
         const NAMES: &'static [&'static str] = &["Joy-Con (R)"];
     }

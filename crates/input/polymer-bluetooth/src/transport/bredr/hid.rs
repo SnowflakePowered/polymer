@@ -462,6 +462,13 @@ async fn wait_for_encryption(
                         status,
                     });
                 }
+                Ok(HciEvent::DisconnectionComplete {
+                    handle: event_handle,
+                    reason,
+                    ..
+                }) if event_handle == handle => {
+                    return Err(disconnected_before_hid_ready(reason));
+                }
                 Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
                 Err(broadcast::error::RecvError::Closed) => return Err(Error::ChannelClosed),
             }
@@ -582,5 +589,45 @@ impl Transport for BrEdrHid {
 impl Drop for BrEdrHid {
     fn drop(&mut self) {
         self.close_channels();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn encryption_wait_releases_failed_reconnect_before_timeout() {
+        let (events, mut receiver) = broadcast::channel(8);
+        events
+            .send(HciEvent::DisconnectionComplete {
+                status: 0,
+                handle: 7,
+                reason: 0x08,
+            })
+            .unwrap();
+        events
+            .send(HciEvent::DisconnectionComplete {
+                status: 0,
+                handle: 42,
+                reason: 0x13,
+            })
+            .unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            wait_for_encryption(&mut receiver, 42),
+        )
+        .await
+        .expect("disconnection must release the reconnect attempt immediately");
+        assert!(matches!(result, Err(Error::L2cap(message)) if message.contains("0x13")));
+
+        events
+            .send(HciEvent::EncryptionChange {
+                status: 0,
+                handle: 42,
+                enabled: true,
+            })
+            .unwrap();
+        assert!(wait_for_encryption(&mut receiver, 42).await.is_ok());
     }
 }

@@ -28,7 +28,8 @@ impl CableHid {
                 let (profile, name) = match device.product_id() {
                     0x0268 => ("sony.dualshock3", "DualShock 3 / SIXAXIS"),
                     0x05c4 | 0x09cc => ("sony.dualshock4", "DualShock 4"),
-                    _ => ("sony.dualsense", "DualSense"),
+                    0x0ce6 | 0x0df2 => ("sony.dualsense", "DualSense"),
+                    _ => ("nintendo.switch.pro", "Nintendo Switch Pro Controller"),
                 };
                 devices.push(CableDeviceIdentity {
                     profile_id: ProfileId::new(profile),
@@ -49,12 +50,18 @@ impl CableHid {
     }
 
     fn supported(device: &hidapi::DeviceInfo) -> bool {
-        // 054c:042f is the Navigation controller, not a DS3.
+        let supported = match device.vendor_id() {
+            0x054c => matches!(
+                device.product_id(),
+                0x0268 | 0x05c4 | 0x09cc | 0x0ce6 | 0x0df2
+            ),
+            0x057e => device.product_id() == 0x2009,
+            _ => false,
+        };
         matches!(device.bus_type(), BusType::Usb)
-            && device.vendor_id() == 0x054c
-            && matches!(device.product_id(), 0x0268 | 0x05c4 | 0x09cc | 0x0ce6 | 0x0df2)
-            // DS4 v2 also exposes audio; select the gamepad HID collection.
-            && (device.product_id() == 0x0268 || (device.usage_page() == 1 && device.usage() == 5))
+            && supported
+            && (device.product_id() == 0x0268
+                || (device.usage_page() == 1 && matches!(device.usage(), 4 | 5)))
     }
 
     pub async fn open(identity: CableDeviceIdentity) -> Result<Self> {
@@ -109,5 +116,25 @@ impl UsbFeatureReports for CableHid {
                 report.len(),
             ))
         })
+    }
+}
+
+impl super::switch::usb::InterruptReports for CableHid {
+    fn write(&mut self, report: &[u8]) -> Result<()> {
+        // Windows HID transfers use the full output report size, including
+        // Nintendo's two-byte USB handshake commands.
+        let mut packet = [0; 64];
+        packet
+            .get_mut(..report.len())
+            .ok_or(Error::InvalidPacket("oversized Switch USB write"))?
+            .copy_from_slice(report);
+        let written = self.0.write(&packet).map_err(Self::error)?;
+        if written != packet.len() {
+            return Err(Error::InvalidPacket("short Switch USB write"));
+        }
+        Ok(())
+    }
+    fn read(&mut self, report: &mut [u8], timeout_ms: i32) -> Result<usize> {
+        self.0.read_timeout(report, timeout_ms).map_err(Self::error)
     }
 }
