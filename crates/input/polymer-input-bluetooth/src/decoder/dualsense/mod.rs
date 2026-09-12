@@ -1,6 +1,6 @@
 use super::{BluetoothControllerDevice, DecodedInput, GamepadState, PointerSource};
 use polymer_bluetooth::devices::sony::dualsense::protocol::InputReport;
-use polymer_input::{Calibration, Capabilities, DeviceRole, GamepadButton};
+use polymer_input::{Calibration, Capabilities, DeviceRole};
 use std::time::Instant;
 
 #[derive(Default)]
@@ -9,59 +9,10 @@ pub struct DualSenseDecoder {
     sensors: Option<polymer_bluetooth::devices::SensorCalibration>,
     last_timestamp: Option<u32>,
     elapsed_ticks: u64,
-    primary_touch: Option<u8>,
-    last_pointer: [i16; 2],
+    touch: super::sony::SonyTouchState,
 }
 
 mod sensors;
-
-impl DualSenseDecoder {
-    fn state(report: &InputReport) -> GamepadState {
-        use GamepadButton::*;
-        let sticks = report
-            .sticks
-            .map(|v| ((i32::from(v) - 128) * 32767 / 127).clamp(-32768, 32767) as i16);
-        let mut state = GamepadState {
-            left_stick: [sticks[0], sticks[1]],
-            right_stick: [sticks[2], sticks[3]],
-            left_trigger: u16::from(report.triggers[0]) * 257,
-            right_trigger: u16::from(report.triggers[1]) * 257,
-            ..Default::default()
-        };
-        let bits = u32::from_le_bytes(report.buttons);
-        for (bit, button) in [
-            (4, X),
-            (5, A),
-            (6, B),
-            (7, Y),
-            (8, L),
-            (9, R),
-            (12, Select),
-            (13, Start),
-            (14, LeftStick),
-            (15, RightStick),
-            (16, Guide),
-            (17, Touchpad),
-            (18, Misc1),
-        ] {
-            if bits & (1 << bit) != 0 {
-                state.buttons |= button.mask();
-            }
-        }
-        let hats = [
-            DpadUp.mask(),
-            DpadUp.mask() | DpadRight.mask(),
-            DpadRight.mask(),
-            DpadRight.mask() | DpadDown.mask(),
-            DpadDown.mask(),
-            DpadDown.mask() | DpadLeft.mask(),
-            DpadLeft.mask(),
-            DpadLeft.mask() | DpadUp.mask(),
-        ];
-        state.buttons |= hats.get((bits & 15) as usize).copied().unwrap_or(0);
-        state
-    }
-}
 
 impl BluetoothControllerDevice for DualSenseDecoder {
     fn set_sensor_calibration(
@@ -81,7 +32,11 @@ impl BluetoothControllerDevice for DualSenseDecoder {
     }
     fn decode(&mut self, data: &[u8], _: Instant) -> Option<DecodedInput> {
         let report = InputReport::parse(data)?;
-        let mut state = Self::state(report);
+        let mut state = super::sony::SonyControls::state(
+            report.sticks,
+            report.triggers,
+            u32::from_le_bytes(report.buttons),
+        );
         self.read_sensors(report, &mut state);
         let charge = report.status[0] >> 4;
         let battery_level = match charge {
@@ -109,6 +64,7 @@ impl BluetoothControllerDevice for DualSenseDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use polymer_input::GamepadButton;
 
     // Synthetic protocol vector; checksum independently generated with Python zlib.
     const INPUT: &str = "31000080ff80ff80002131070000000000000000000000000000000000000000000000000000000000000000000000000000000000001700000000000000000000000000000000000000413c75dd";

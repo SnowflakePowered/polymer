@@ -1,5 +1,4 @@
 use super::*;
-use crate::decoder::TouchContact;
 use polymer_bluetooth::devices::sony::dualsense::motion::FactoryCalibration;
 
 impl DualSenseDecoder {
@@ -13,32 +12,8 @@ impl DualSenseDecoder {
         }
         self.last_timestamp = Some(timestamp);
         state.sensor_timestamp_ns = Some(self.elapsed_ticks * 1000 / 3);
-        let contacts = std::array::from_fn(|i| {
-            let contact = &report.touch[i];
-            TouchContact {
-                id: contact.id(),
-                active: contact.active(),
-                position: if contact.active() {
-                    contact.position()
-                } else {
-                    [0; 2]
-                },
-            }
-        });
-        // Retain the same finger while both are down, regardless of slot order.
-        let primary = contacts
-            .iter()
-            .find(|c| c.active && Some(c.id) == self.primary_touch)
-            .or_else(|| contacts.iter().find(|c| c.active));
-        self.primary_touch = primary.map(|c| c.id);
-        if let Some(contact) = primary {
-            self.last_pointer = std::array::from_fn(|axis| {
-                let extent = [1920.0, 1080.0][axis];
-                super::super::pointer_axis(f32::from(contact.position[axis]) / extent)
-            });
-        }
-        state.pointer = self.last_pointer;
-        state.touch_contacts = Some(contacts);
+        self.touch
+            .apply(Some(&report.touch), [1920.0, 1080.0], state);
     }
 }
 

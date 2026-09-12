@@ -1,63 +1,12 @@
-use std::sync::{Arc, Mutex};
-
-use async_trait::async_trait;
-use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
-
 use super::{
-    CableDeviceIdentity, CablePairingHost, CablePairingSession, CablePairingState,
-    VerifiedCablePairing, hid::UsbFeatureReports,
+    CablePairingHost, CablePairingState, VerifiedCablePairing, feature::FeaturePairing,
+    hid::UsbFeatureReports,
 };
 use crate::{DeviceAddr, Error, Result};
+use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
-pub(super) struct DualShock3Session<D> {
-    identity: CableDeviceIdentity,
-    protocol: Arc<Mutex<DualShock3Pairing<D>>>,
-}
-
-impl<D> DualShock3Session<D> {
-    pub fn new(identity: CableDeviceIdentity, device: D) -> Self {
-        Self {
-            identity,
-            protocol: Arc::new(Mutex::new(DualShock3Pairing { device })),
-        }
-    }
-}
-
-#[async_trait]
-impl<D: UsbFeatureReports + Send + 'static> CablePairingSession for DualShock3Session<D> {
-    fn identity(&self) -> &CableDeviceIdentity {
-        &self.identity
-    }
-
-    async fn read_pairing(&mut self) -> Result<CablePairingState> {
-        let protocol = self.protocol.clone();
-        tokio::task::spawn_blocking(move || {
-            protocol
-                .lock()
-                .map_err(|_| Error::ChannelClosed)?
-                .read_pairing()
-        })
-        .await
-        .map_err(|error| Error::Platform(format!("USB pairing read task failed: {error}")))?
-    }
-
-    async fn pair(&mut self, host: &CablePairingHost) -> Result<VerifiedCablePairing> {
-        host.validate()?;
-        let host = *host;
-        let protocol = self.protocol.clone();
-        tokio::task::spawn_blocking(move || {
-            protocol
-                .lock()
-                .map_err(|_| Error::ChannelClosed)?
-                .pair(&host)
-        })
-        .await
-        .map_err(|error| Error::Platform(format!("USB pairing task failed: {error}")))?
-    }
-}
-
-struct DualShock3Pairing<D> {
-    device: D,
+pub(super) struct DualShock3Pairing<D> {
+    pub(super) device: D,
 }
 
 #[derive(FromBytes, Immutable, KnownLayout, Unaligned)]
@@ -74,7 +23,7 @@ struct HostAddressReport {
     address: [u8; 6],
 }
 
-impl<D: UsbFeatureReports> DualShock3Pairing<D> {
+impl<D: UsbFeatureReports> FeaturePairing for DualShock3Pairing<D> {
     fn read_pairing(&mut self) -> Result<CablePairingState> {
         // Report sizes and offsets follow BlueZ plugins/sixaxis.c. Addresses
         // here are display/network order, unlike the little-endian HCI wire.

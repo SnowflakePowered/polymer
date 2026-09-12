@@ -74,7 +74,7 @@ impl CablePairingPanel {
                     Ok(Outcome::Devices(devices)) => {
                         self.inspected = None;
                         self.status = if devices.is_empty() {
-                            "No supported USB controllers found. Connect a DS3 or Switch 2 controller with a data cable and refresh.".into()
+                            "No supported USB controllers found. Connect a DS3, DS4, or Switch 2 controller with a data cable and refresh.".into()
                         } else {
                             format!(
                                 "Found {} USB controller(s). Read addresses before pairing.",
@@ -111,7 +111,7 @@ impl CablePairingPanel {
         egui::CollapsingHeader::new("USB cable pairing")
             .default_open(true)
             .show(ui, |ui| {
-                ui.label("Provision a persistent wireless pairing over USB. Supported: DualShock 3 / SIXAXIS, Joy-Con 2, Switch 2 Pro, and NSO GameCube.");
+                ui.label("Provision a persistent wireless pairing over USB. Supported: DualShock 3 / SIXAXIS, DualShock 4, Joy-Con 2, Switch 2 Pro, and NSO GameCube.");
                 ui.label("On Windows, DS3 pairing requires WinUSB on the controller. Switching its driver can affect wired input. The switch button attempts it without requesting elevation.");
                 if let Some(host) = self.host {
                     ui.monospace(format!("Dedicated BR/EDR host: {}", host.address));
@@ -123,6 +123,7 @@ impl CablePairingPanel {
                 } else {
                     ui.weak("OS BLE adapter unavailable. Switch 2 pairing is disabled.");
                 }
+                ui.label("DualShock 4 pairs through the standard USB HID driver.");
                 ui.label("Switch 2 uses USB command interface 1 and pairs to the OS BLE adapter.");
                 if let Some(error) = &self.registry_error {
                     ui.colored_label(egui::Color32::LIGHT_RED, format!("Pairing disabled: persistent registry unavailable: {error}"));
@@ -164,6 +165,7 @@ impl CablePairingPanel {
                     *action = Some(Action::Inspect(device.clone()));
                 }
                 if cfg!(windows)
+                    && device.profile_id.as_str() == "sony.dualshock3"
                     && !device.uses_winusb()
                     && !device.uses_dshidmini()
                     && ui.button("Switch to WinUSB (no elevation)").clicked()

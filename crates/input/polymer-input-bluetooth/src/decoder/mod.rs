@@ -8,6 +8,8 @@ use std::{sync::Arc, time::Instant};
 
 pub mod dualsense;
 pub mod dualshock3;
+pub mod dualshock4;
+mod sony;
 pub mod switch;
 pub mod switch2;
 pub mod wiimote;
@@ -197,6 +199,7 @@ pub trait BluetoothControllerDevice: Send + Sync {
 
 pub fn for_profile(profile: &ProfileId) -> Option<Box<dyn BluetoothControllerDevice>> {
     match profile.as_str() {
+        "sony.dualshock4" => Some(Box::new(dualshock4::DualShock4Decoder::default())),
         "sony.dualshock3" => Some(Box::new(dualshock3::DualShock3Decoder::default())),
         "sony.dualsense" => Some(Box::new(dualsense::DualSenseDecoder::default())),
         "nintendo.wiimote.original" | "nintendo.wiimote.plus" | "nintendo.wiimote.unknown" => {

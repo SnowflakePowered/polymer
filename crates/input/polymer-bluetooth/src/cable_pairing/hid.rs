@@ -18,19 +18,22 @@ impl CableHid {
             let mut devices = Vec::new();
             for device in api.device_list().filter(|device| Self::supported(device)) {
                 #[cfg(windows)]
-                if polymer_dshidmini::Device::manages_hid(device.path()).map_err(|error| {
-                    Error::Platform(format!("resolve DsHidMini HID parent: {error}"))
-                })? {
+                if device.product_id() == 0x0268
+                    && polymer_dshidmini::Device::manages_hid(device.path()).map_err(|error| {
+                        Error::Platform(format!("resolve DsHidMini HID parent: {error}"))
+                    })?
+                {
                     continue;
                 }
+                let (profile, name) = match device.product_id() {
+                    0x0268 => ("sony.dualshock3", "DualShock 3 / SIXAXIS"),
+                    _ => ("sony.dualshock4", "DualShock 4"),
+                };
                 devices.push(CableDeviceIdentity {
-                    profile_id: ProfileId::new("sony.dualshock3"),
+                    profile_id: ProfileId::new(profile),
                     vendor_id: device.vendor_id(),
                     product_id: device.product_id(),
-                    name: device
-                        .product_string()
-                        .unwrap_or("DualShock 3 / SIXAXIS")
-                        .into(),
+                    name: device.product_string().unwrap_or(name).into(),
                     serial: device.serial_number().map(str::to_owned),
                     path: device.path().to_owned(),
                     usb: None,
@@ -48,7 +51,9 @@ impl CableHid {
         // 054c:042f is the Navigation controller, not a DS3.
         matches!(device.bus_type(), BusType::Usb)
             && device.vendor_id() == 0x054c
-            && device.product_id() == 0x0268
+            && matches!(device.product_id(), 0x0268 | 0x05c4 | 0x09cc)
+            // DS4 v2 also exposes audio; select the gamepad HID collection.
+            && (device.product_id() == 0x0268 || (device.usage_page() == 1 && device.usage() == 5))
     }
 
     pub async fn open(identity: CableDeviceIdentity) -> Result<Self> {
@@ -88,9 +93,9 @@ impl UsbFeatureReports for CableHid {
         self.0.get_feature_report(report).map_err(|error| {
             Error::Platform(format!(
                 "USB pairing GET_FEATURE 0x{id:02X} ({size} bytes) failed: {error}. {}",
-                if cfg!(windows) {
+                if cfg!(windows) && matches!(id, 0xf2 | 0xf5) {
                     "The standard Windows HidUsb driver blocks the DS3's undeclared F2/F5 pairing reports. Use DsHidMini with IPC enabled, or WinUSB, then refresh USB controllers."
-                } else { "Check that the controller supports DS3 pairing feature reports." },
+                } else { "Check that the controller supports this USB pairing feature report." },
             ))
         })
     }
