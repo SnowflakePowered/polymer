@@ -13,6 +13,7 @@ const GAMECUBE = "NINTENDO_GCN";
 const DREAMCAST = "SEGA_DC";
 const PSX = "SONY_PSX";
 const PS2 = "SONY_PS2";
+const VITA = "SONY_PSV";
 const WII_REMOTE = "WII_REMOTE_CONTROLLER";
 const volumeCache = new Map<string, Promise<ConsoleStorageVolume>>();
 
@@ -84,12 +85,13 @@ export async function createSelection(game: PackageConfiguration): Promise<Confi
     })),
   };
 
-  if (game.platform === WII || game.platform === WII_U) {
+  if (game.platform === WII || game.platform === WII_U || game.platform === VITA) {
     const [save, nand] = await Promise.all([
       defaultVolume("saveRepo", game.platform),
       defaultVolume("nand", game.platform),
     ]);
-    selection.storage = { [game.platform === WII_U ? "mlc" : "nand"]: [save.id, nand.id] };
+    const device = game.platform === VITA ? "emmc" : game.platform === WII_U ? "mlc" : "nand";
+    selection.storage = { [device]: [save.id, nand.id] };
   } else {
     const slots: Record<string, string> = {
       [GAMECUBE]: "slotA",

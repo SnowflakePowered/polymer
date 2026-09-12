@@ -1,4 +1,5 @@
 pub(crate) mod import;
+pub(crate) mod metadata;
 pub(crate) mod save_repo;
 
 use crate::savegame::SaveDepotId;
