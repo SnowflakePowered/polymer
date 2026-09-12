@@ -11,6 +11,7 @@ use crate::impls::ps1::PlaystationMemoryCard;
 use crate::impls::ps2::Playstation2MemoryCard;
 use crate::impls::ps3::Ps3Nand;
 use crate::impls::psp::PspMemoryStick;
+use crate::impls::vita::VitaNand;
 use crate::impls::wii::nand::WiiNand;
 use crate::impls::wiiu::nand::WiiUNand;
 use crate::nand::VirtualNand;
@@ -74,6 +75,7 @@ impl ConsoleStorage {
                         | WiiUNand::PLATFORM
                         | Ps3Nand::PLATFORM
                         | PspMemoryStick::PLATFORM
+                        | VitaNand::PLATFORM
                 )
             }
             StorageKind::MemoryCard => matches!(
@@ -95,6 +97,12 @@ impl ConsoleStorage {
         label: Option<String>,
     ) -> Result<Self, Error> {
         match (kind, platform) {
+            (StorageKind::Nand, VitaNand::PLATFORM) => Ok(Self::Nand(Arc::new(
+                VitaNand::new_empty(storage, id, label).await?,
+            ))),
+            (StorageKind::SaveRepo, VitaNand::PLATFORM) => Ok(Self::SaveRepo(
+                VitaNand::new_save_repo(VersionedStorage::new(storage)?, id, label).await?,
+            )),
             (StorageKind::Nand, platform) if CtrNand::supports(platform) => Ok(Self::Nand(
                 Arc::new(CtrNand::create(storage, id, platform, label).await?),
             )),
@@ -165,6 +173,12 @@ impl ConsoleStorage {
     pub async fn open(kind: StorageKind, storage: GitVolumeStorage) -> Result<Self, Error> {
         let metadata = storage.volumeinfo().await?.ok_or(Error::UnclaimedNand)?;
         match (kind, metadata.platform.as_str()) {
+            (StorageKind::Nand, VitaNand::PLATFORM) => {
+                Ok(Self::Nand(Arc::new(VitaNand::open(storage).await?)))
+            }
+            (StorageKind::SaveRepo, VitaNand::PLATFORM) => Ok(Self::SaveRepo(
+                VitaNand::open_save_repo(VersionedStorage::new(storage)?).await?,
+            )),
             (StorageKind::Nand, platform) if CtrNand::supports(platform) => {
                 Ok(Self::Nand(Arc::new(CtrNand::open(storage).await?)))
             }

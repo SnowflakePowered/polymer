@@ -10,6 +10,7 @@ use orbis_unpkg::Psf;
 use uuid::Uuid;
 
 use super::TitleId;
+use super::metadata::SonyMetadata;
 
 use crate::savegame::icons::SaveIcon;
 use crate::savegame::{
@@ -33,8 +34,6 @@ pub trait SaveLayout: std::fmt::Debug + Send + Sync + 'static {
     fn claims(profile_root: &str, save_root: &str, path: &str) -> bool;
     fn package_id(package: &Package) -> Option<&str>;
 }
-
-const MAX_SFO_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug)]
 pub struct SonySaveRepo<L: SaveLayout> {
@@ -126,29 +125,10 @@ impl<L: SaveLayout> SonySaveRepo<L> {
     }
 
     fn read_sfo(&self, directory: &str) -> Option<Psf> {
-        let path = format!("{directory}/PARAM.SFO");
-        let metadata = self.root.metadata(&path).ok()?;
-        if metadata.len > MAX_SFO_BYTES {
-            return None;
-        }
-        let mut bytes = Vec::with_capacity(metadata.len as usize);
-        self.root
-            .open_read(&path)
-            .ok()?
-            .take(MAX_SFO_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .ok()?;
-        if bytes.len() as u64 > MAX_SFO_BYTES {
-            return None;
-        }
-        if bytes.len() < 20 {
-            return None;
-        }
-        let count = u32::from_le_bytes(bytes[16..20].try_into().ok()?) as usize;
-        if count > (bytes.len() - 20) / 16 {
-            return None;
-        }
-        Psf::parse(&bytes).ok()
+        SonyMetadata::SFO_PATHS.iter().find_map(|suffix| {
+            let path = format!("{directory}/{suffix}");
+            SonyMetadata::read(self.root.open_read(&path).ok()?, &path).ok()
+        })
     }
 
     fn describe_save(&self, id: SaveDepotId) -> Result<SaveDescriptor, Error> {
@@ -217,8 +197,13 @@ impl<L: SaveLayout> SaveRepo for SonySaveRepo<L> {
     }
 
     fn read_save_icon(&self, id: SaveDepotId) -> Result<Option<SaveIcon>, Error> {
-        for directory in self.canonical_directories(id) {
-            let path = format!("{directory}/ICON0.PNG");
+        let paths = self
+            .canonical_directories(id)
+            .into_iter()
+            .flat_map(|directory| {
+                SonyMetadata::ICON_PATHS.map(|suffix| format!("{directory}/{suffix}"))
+            });
+        for path in paths {
             let mut bytes = Vec::new();
             if self
                 .root
