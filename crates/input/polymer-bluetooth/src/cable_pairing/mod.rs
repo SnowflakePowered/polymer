@@ -15,6 +15,8 @@ use crate::{
 #[cfg(windows)]
 mod dshidmini;
 mod dualshock3;
+mod dualshock4;
+mod feature;
 mod hid;
 mod switch2;
 mod usb;
@@ -51,15 +53,24 @@ impl CableDeviceIdentity {
             "sony.dualshock3" => {
                 if let Some(info) = &identity.usb {
                     let device = usb::DualShock3Usb::open(info).await?;
-                    Ok(Box::new(dualshock3::DualShock3Session::new(
-                        identity, device,
+                    Ok(Box::new(feature::FeatureSession::new(
+                        identity,
+                        dualshock3::DualShock3Pairing { device },
                     )))
                 } else {
                     let device = hid::CableHid::open(identity.clone()).await?;
-                    Ok(Box::new(dualshock3::DualShock3Session::new(
-                        identity, device,
+                    Ok(Box::new(feature::FeatureSession::new(
+                        identity,
+                        dualshock3::DualShock3Pairing { device },
                     )))
                 }
+            }
+            "sony.dualshock4" => {
+                let device = hid::CableHid::open(identity.clone()).await?;
+                Ok(Box::new(feature::FeatureSession::new(
+                    identity,
+                    dualshock4::DualShock4Pairing { device },
+                )))
             }
             id if id.starts_with("nintendo.switch2.") => {
                 let info = identity

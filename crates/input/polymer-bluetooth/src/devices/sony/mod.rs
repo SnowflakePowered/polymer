@@ -11,36 +11,9 @@ pub use dualshock3::DualShock3;
 pub mod dualsense;
 pub use dualsense::DualSense;
 
-macro_rules! sony_controller {
-    ($controller:ident, $id:literal, $name:literal, [$($product:literal),+ $(,)?]) => {
-        #[derive(Default)]
-        pub struct $controller;
-
-        #[async_trait]
-        impl ControllerDevice for $controller {
-            fn id(&self) -> ProfileId {
-                ProfileId::new($id)
-            }
-
-            fn display_name(&self) -> &'static str {
-                $name
-            }
-
-            fn matches(&self, identity: &DeviceIdentity) -> Option<MatchConfidence> {
-                identity
-                    .has_pnp(SONY_VENDOR_ID, &[$($product),+])
-                    .then_some(MatchConfidence::Pnp)
-            }
-        }
-    };
-}
-
-sony_controller!(
-    DualShock4,
-    "sony.dualshock4",
-    "DualShock 4",
-    [0x05c4, 0x09cc, 0x0ba0]
-);
+pub mod dualshock4;
+pub use dualshock4::DualShock4;
+pub mod protocol;
 
 #[derive(Default)]
 pub struct UnknownSonyController;
