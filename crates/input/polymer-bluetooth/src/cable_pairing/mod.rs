@@ -15,9 +15,9 @@ use crate::{
 #[cfg(windows)]
 mod dshidmini;
 mod dualshock3;
-mod dualshock4;
 mod feature;
 mod hid;
+mod sony;
 mod switch2;
 mod usb;
 
@@ -65,11 +65,16 @@ impl CableDeviceIdentity {
                     )))
                 }
             }
-            "sony.dualshock4" => {
+            "sony.dualshock4" | "sony.dualsense" => {
+                let model = if identity.profile_id.as_str() == "sony.dualsense" {
+                    sony::Model::DualSense
+                } else {
+                    sony::Model::DualShock4
+                };
                 let device = hid::CableHid::open(identity.clone()).await?;
                 Ok(Box::new(feature::FeatureSession::new(
                     identity,
-                    dualshock4::DualShock4Pairing { device },
+                    sony::SonyPairing { device, model },
                 )))
             }
             id if id.starts_with("nintendo.switch2.") => {

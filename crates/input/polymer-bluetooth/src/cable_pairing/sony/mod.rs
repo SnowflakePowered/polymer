@@ -1,4 +1,4 @@
-//! DS4 USB provisioning: feature 0x12 reads addresses; 0x13 writes host + key.
+//! Sony USB host/key provisioning. DS4 uses 0x12/0x13; DualSense uses 0x09/0x0a.
 //! References: ds4-tools/ds4-tool.py and dsremap's USB protocol captures.
 use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
@@ -8,8 +8,25 @@ use super::{
 };
 use crate::{DeviceAddr, Error, Result, transport::bredr::LinkKey};
 
-pub(super) struct DualShock4Pairing<D> {
+pub(super) struct SonyPairing<D> {
     pub(super) device: D,
+    pub(super) model: Model,
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum Model {
+    DualShock4,
+    DualSense,
+}
+
+impl Model {
+    fn reports(self) -> (u8, usize, u8, usize) {
+        match self {
+            Self::DualShock4 => (0x12, 16, 0x13, 23),
+            // DualSense has four trailing USB padding bytes on both reports.
+            Self::DualSense => (0x09, 20, 0x0a, 27),
+        }
+    }
 }
 
 #[derive(FromBytes, Immutable, KnownLayout, Unaligned)]
@@ -23,22 +40,24 @@ struct PairingReport {
 
 const _: () = assert!(std::mem::size_of::<PairingReport>() == 16);
 
-impl<D: UsbFeatureReports> FeaturePairing for DualShock4Pairing<D> {
+impl<D: UsbFeatureReports> FeaturePairing for SonyPairing<D> {
     fn read_pairing(&mut self) -> Result<CablePairingState> {
-        let mut bytes = [0; 16];
-        bytes[0] = 0x12;
-        let length = self.device.get_feature(&mut bytes)?;
-        let report = PairingReport::ref_from_bytes(
-            bytes
-                .get(..length)
-                .ok_or(Error::InvalidPacket("oversized DS4 pairing report"))?,
-        )
-        .map_err(|_| Error::InvalidPacket("short DS4 pairing report"))?;
-        if report.id != 0x12
+        let (id, size, _, _) = self.model.reports();
+        let mut bytes = [0; 20];
+        bytes[0] = id;
+        let length = self.device.get_feature(&mut bytes[..size])?;
+        if length != size {
+            return Err(Error::InvalidPacket(
+                "incorrect Sony USB pairing report length",
+            ));
+        }
+        let report = PairingReport::ref_from_bytes(&bytes[..16])
+            .map_err(|_| Error::InvalidPacket("invalid Sony USB pairing report"))?;
+        if report.id != id
             || (report.controller == [0; 6] || report.controller == [255; 6])
             || report.host == [255; 6]
         {
-            return Err(Error::InvalidPacket("invalid DS4 pairing report"));
+            return Err(Error::InvalidPacket("invalid Sony pairing report"));
         }
         Ok(CablePairingState {
             controller_address: DeviceAddr::from_hci_bytes(report.controller),
@@ -50,24 +69,25 @@ impl<D: UsbFeatureReports> FeaturePairing for DualShock4Pairing<D> {
         host.validate()?;
         if host.adapter_index.is_some() {
             return Err(Error::Unsupported(
-                "DS4 cable pairing requires the dedicated BR/EDR adapter",
+                "Sony cable pairing requires the dedicated BR/EDR adapter",
             ));
         }
         let before = self.read_pairing()?;
         // Address readback does not expose the key. Even if the host matches,
         // provision a fresh key so recovery from a lost registry is possible.
         let key = rand::random::<[u8; 16]>();
-        let mut report = [0; 23];
-        report[0] = 0x13;
+        let (_, _, id, size) = self.model.reports();
+        let mut report = [0; 27];
+        report[0] = id;
         report[1..7].copy_from_slice(&host.address.hci_bytes());
-        report[7..].copy_from_slice(&key);
-        self.device.set_feature(&report)?;
+        report[7..23].copy_from_slice(&key);
+        self.device.set_feature(&report[..size])?;
         let after = self.read_pairing()?;
         if after.controller_address != before.controller_address
             || after.host_address != Some(host.address)
         {
             return Err(Error::InvalidPacket(
-                "DS4 cable pairing readback did not match; retry cable pairing",
+                "Sony cable pairing readback did not match; retry cable pairing",
             ));
         }
         // USB confirms the address, not the secret. Authentication on the next
