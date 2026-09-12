@@ -96,7 +96,8 @@ trait SwitchReportModel {
             if Self::HAS_RIGHT_STICK {
                 state.right_stick = Self::decode_stick(&report.right_stick);
             }
-            if let Some(full_report) = full_report {
+            // 0x21 contains subcommand reply data in place of IMU samples.
+            if let Some(full_report) = full_report.filter(|_| report.report_id == 0x30) {
                 let data = &full_report.latest_imu;
                 let raw = |offset| i16::from_le_bytes([data[offset], data[offset + 1]]);
                 const GRAVITY: f32 = 9.80665;
@@ -126,7 +127,7 @@ trait SwitchReportModel {
     fn decode_stick(data: &[u8; 3]) -> [i16; 2] {
         let x = u16::from(data[0]) | (u16::from(data[1] & 0x0f) << 8);
         let y = u16::from(data[1] >> 4) | (u16::from(data[2]) << 4);
-        [normalize_stick(x), -normalize_stick(y)]
+        [normalize_stick(x), normalize_stick(y).saturating_neg()]
     }
 }
 
@@ -174,6 +175,21 @@ switch_decoder!(NsoGenesisDecoder, false, false, DeviceRole::Whole);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn motion_uses_latest_sample_and_ignores_subcommand_payload() {
+        let mut report = [0u8; 49];
+        report[0] = 0x30;
+        report[37..39].copy_from_slice(&4096i16.to_le_bytes());
+        report[43..45].copy_from_slice(&1640i16.to_le_bytes());
+        let input = SwitchProDecoder::decode_report(&report).unwrap();
+        assert!((input.state.accelerometer[0] - 9.80665).abs() < 0.001);
+        assert!((input.state.gyroscope[0] - 100f32.to_radians()).abs() < 0.001);
+        report[0] = 0x21;
+        let reply = SwitchProDecoder::decode_report(&report).unwrap();
+        assert_eq!(reply.state.accelerometer, [0.0; 3]);
+        assert_eq!(reply.state.gyroscope, [0.0; 3]);
+    }
 
     #[test]
     fn n64_decoder_reads_its_stick() {
