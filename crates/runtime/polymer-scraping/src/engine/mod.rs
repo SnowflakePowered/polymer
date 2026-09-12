@@ -1,28 +1,17 @@
-use futures_util::{StreamExt, TryStreamExt};
+mod media;
+
 use polymer_library::{
-    GameCatalog, GameCatalogError, MetadataData, MetadataInput, MetadataInputData, MetadataValue,
-    ScrapeAttemptState, ScrapeJob, ScrapeJobState,
+    GameCatalog, GameCatalogError, MetadataData, MetadataValue, ScrapeAttemptState, ScrapeJob,
+    ScrapeJobState,
 };
 use polymer_pluginhost::{
     loading::PluginRegistry,
     runtime::{PluginInvocationError, PluginRuntime, PluginRuntimeHandle, PluginRuntimeOptions},
     scraper::{ScrapeCandidate, ScrapeInput, ScraperPluginInstance},
 };
-use std::{
-    collections::BTreeMap,
-    path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::Duration,
-};
-use tokio::io::AsyncWriteExt;
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
 use uuid::Uuid;
 
-const MAX_MEDIA_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_ATTEMPT_BYTES: u64 = 512 * 1024 * 1024;
-const MAX_CONCURRENT_MEDIA_DOWNLOADS: usize = 4;
 // The first scrape can include plugin initialization and a metadata-index build.
 // Keep it bounded without making large first-run imports spuriously fail.
 const SCRAPER_TIMEOUT: Duration = Duration::from_secs(30 * 60);
@@ -383,134 +372,12 @@ impl ScrapingEngine {
             }
         };
         let temporary = tempfile::tempdir()?;
-        let mut inputs = std::iter::repeat_with(|| None)
-            .take(results.len())
-            .collect::<Vec<_>>();
-        let mut media = Vec::new();
-        for (index, result) in results.into_iter().enumerate() {
-            if result.key.starts_with("media.") {
-                let MetadataValue::String(url) = result.value else {
-                    return Err(ScrapingError::InvalidMedia(
-                        "media value is not a URL string".to_owned(),
-                    ));
-                };
-                media.push((index, result.key, result.source, url));
-            } else {
-                inputs[index] = Some(MetadataInput {
-                    key: result.key,
-                    source: result.source,
-                    data: MetadataInputData::Scalar {
-                        value: result.value,
-                    },
-                });
-            }
-        }
-        let temporary_path = temporary.path().to_owned();
-        let attempt_bytes = Arc::new(AtomicU64::new(0));
-        let downloaded = futures_util::stream::iter(media)
-            .map(|(index, key, source, url)| {
-                let directory = temporary_path.clone();
-                let attempt_bytes = attempt_bytes.clone();
-                async move {
-                    let (path, media_type) = self
-                        .download(&url, &directory, index, &attempt_bytes)
-                        .await?;
-                    Ok::<_, ScrapingError>((index, key, source, url, path, media_type))
-                }
-            })
-            .buffer_unordered(MAX_CONCURRENT_MEDIA_DOWNLOADS)
-            .try_collect::<Vec<_>>()
-            .await?;
-        for (index, key, source, url, path, media_type) in downloaded {
-            inputs[index] = Some(MetadataInput {
-                key,
-                source,
-                data: MetadataInputData::Object {
-                    media_type,
-                    path,
-                    source_url: Some(url),
-                },
-            });
-        }
-        let inputs = inputs
-            .into_iter()
-            .map(|value| value.expect("every scrape result was staged"))
-            .collect();
+        let inputs = self.stage_media(results, temporary.path()).await?;
         self.inner
             .catalog
             .replace_metadata(root, &format!("scraper:{plugin}"), inputs)
             .await?;
         self.publish_library_content(root);
         Ok(())
-    }
-
-    async fn download(
-        &self,
-        url: &str,
-        directory: &std::path::Path,
-        index: usize,
-        attempt_bytes: &AtomicU64,
-    ) -> Result<(PathBuf, String), ScrapingError> {
-        let response = self
-            .inner
-            .client
-            .get(url)
-            .send()
-            .await?
-            .error_for_status()?;
-        if response
-            .content_length()
-            .is_some_and(|length| length > MAX_MEDIA_BYTES)
-        {
-            return Err(ScrapingError::InvalidMedia(
-                "media object exceeds 64 MiB".to_owned(),
-            ));
-        }
-        let media_type = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.split(';').next())
-            .filter(|value| {
-                value.starts_with("image/")
-                    || value.starts_with("audio/")
-                    || value.starts_with("video/")
-                    || value.starts_with("model/")
-            })
-            .ok_or_else(|| {
-                ScrapingError::InvalidMedia(
-                    "media response has no supported Content-Type".to_owned(),
-                )
-            })?
-            .to_owned();
-        let path = directory.join(format!("media-{index}"));
-        let mut output = tokio::fs::File::create(&path).await?;
-        let mut stream = response.bytes_stream();
-        let mut length = 0_u64;
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
-            let chunk_length = u64::try_from(chunk.len())
-                .map_err(|_| ScrapingError::InvalidMedia("media chunk size overflow".to_owned()))?;
-            length = length.checked_add(chunk_length).ok_or_else(|| {
-                ScrapingError::InvalidMedia("media object size overflow".to_owned())
-            })?;
-            if length > MAX_MEDIA_BYTES {
-                return Err(ScrapingError::InvalidMedia(
-                    "media object exceeds 64 MiB".to_owned(),
-                ));
-            }
-            attempt_bytes
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |total| {
-                    total
-                        .checked_add(chunk_length)
-                        .filter(|total| *total <= MAX_ATTEMPT_BYTES)
-                })
-                .map_err(|_| {
-                    ScrapingError::InvalidMedia("scraper media attempt exceeds 512 MiB".to_owned())
-                })?;
-            output.write_all(&chunk).await?;
-        }
-        output.flush().await?;
-        Ok((path, media_type))
     }
 }

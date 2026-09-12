@@ -67,7 +67,11 @@ declare module "polymer:api" {
     export type ScrapeScalar = string | number | boolean;
     export type ScrapeCandidate = Readonly<{ source: string, value: ScrapeScalar }>;
     export type ScrapeInput = Readonly<Record<string, readonly ScrapeCandidate[]>>;
-    export type ScrapeResult = Readonly<{ key: string, value: ScrapeScalar, source: string }>;
+    /** Raw media bytes; use application/x-cue for media.cue. */
+    export type ScrapeInlineMedia = Readonly<{
+        kind: "inline", mediaType: string, bytes: readonly number[],
+    }>;
+    export type ScrapeResult = Readonly<{ key: string, value: ScrapeScalar | ScrapeInlineMedia, source: string }>;
     export type OnScrape = (input: ScrapeInput) => AsyncGenerator<ScrapeResult, void, void>;
 
     export type Filesystem = {

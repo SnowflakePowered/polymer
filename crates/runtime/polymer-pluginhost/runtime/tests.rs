@@ -11,6 +11,9 @@ use std::{
 };
 use tempfile::TempDir;
 
+mod cache_database;
+mod inline_media;
+
 struct TestRuntime {
     runtime: PluginRuntime,
     _storage: TempDir,
@@ -262,7 +265,7 @@ fn scraper_package(source: &str) -> (TempDir, PluginRegistry) {
 
             [scraper]
             requires = ["package.platform", "any(meta.title, filename.nointro.title)"]
-            provides = ["meta.genre", "media.boxart"]
+            provides = ["meta.genre", "media.boxart", "media.cue"]
         "#,
     )
     .unwrap();
@@ -371,8 +374,8 @@ async fn scraper_yields_scalar_objects_incrementally_and_preserves_order() {
     assert_eq!(
         values.iter().map(|value| &value.value).collect::<Vec<_>>(),
         [
-            &ScrapeScalar::String("Action".to_owned()),
-            &ScrapeScalar::String("Adventure".to_owned())
+            &crate::scraper::ScrapeValue::Scalar(ScrapeScalar::String("Action".to_owned())),
+            &crate::scraper::ScrapeValue::Scalar(ScrapeScalar::String("Adventure".to_owned()))
         ]
     );
 }

@@ -1,4 +1,7 @@
 pub(crate) mod js;
+mod result;
+
+pub use result::{InlineMedia, ScrapeMediaKind, ScrapeResult, ScrapeValue};
 
 pub use crate::loading::package::ScrapeRequirement;
 use crate::plugin::PluginInstance;
@@ -15,15 +18,6 @@ pub struct ScrapeCandidate {
 }
 
 pub type ScrapeInput = BTreeMap<String, Vec<ScrapeCandidate>>;
-
-/// A single object yielded by `onScrape`.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ScrapeResult {
-    pub key: String,
-    pub value: ScrapeScalar,
-    pub source: String,
-}
 
 /// Scraper capability projected from a registered scripted plugin.
 pub trait ScraperPluginInstance: PluginInstance {

@@ -8,6 +8,13 @@ import {
 } from "ext:core/ops";
 
 const CHUNK_SIZE = 256 * 1024;
+const files = new WeakMap();
+
+export function cacheFileLocation(file) {
+  const location = files.get(file);
+  if (!location) throw new TypeError("database file must be opened from a plugin cache");
+  return location;
+}
 
 function plainPath(path) {
   path = String(path);
@@ -39,7 +46,7 @@ function file(key, path, options) {
       first = false;
     },
   });
-  return Object.freeze({
+  const result = Object.freeze({
     readable,
     writable,
     get size() { return op_cache_size(key, path); },
@@ -54,6 +61,8 @@ function file(key, path, options) {
     async bytes() { return op_cache_read(key, path); },
     async text() { return new TextDecoder().decode(op_cache_read(key, path)); },
   });
+  files.set(result, Object.freeze({ key, path }));
+  return result;
 }
 
 const caches = Object.create(null);

@@ -1,3 +1,5 @@
+mod hashes;
+
 use gumshoe::{
     GeneralIdentifier, IdentifyPackage, PlatformIdentifier,
     banner::{BannerKind, DecodedBanner, Sample},
@@ -44,6 +46,7 @@ struct PackageImport {
     launchable: IdentifiedLaunchable,
     gumshoe: Vec<MetadataInput>,
     filename: Vec<MetadataInput>,
+    raw_file: Vec<MetadataInput>,
 }
 
 impl Package {
@@ -122,6 +125,7 @@ impl Package {
         };
         let gumshoe = Self::gumshoe_metadata(package.as_ref(), platform, binary_blake3);
         let filename = Self::filename_metadata(&path);
+        let raw_file = hashes::FileDigests::metadata(&path)?;
         let name = path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
@@ -138,6 +142,7 @@ impl Package {
                 launchable,
                 gumshoe,
                 filename,
+                raw_file,
             }),
         })
     }
@@ -158,6 +163,7 @@ impl Package {
                 vec![
                     ("host:gumshoe".to_owned(), seed.gumshoe),
                     ("host:shiratsu".to_owned(), seed.filename),
+                    ("host:raw-file".to_owned(), seed.raw_file),
                 ],
             )
             .await
@@ -477,32 +483,32 @@ impl Package {
             AtariJaguar => "ATARI_JAGUAR",
             BandaiWonderSwan => "BANDAI_WS",
             BandaiWonderSwanColor => "BANDAI_WSC",
-            BandaiSuFamiTurbo => "BANDAI_SUFAMI_TURBO",
+            BandaiSuFamiTurbo => "NINTENDO_SFT",
             ColecoVision => "COLECO_CV",
-            Intellivision => "MATTEL_INTELLIVISION",
-            MagnavoxOdyssey2 => "MAGNAVOX_ODYSSEY2",
+            Intellivision => "MATTEL_INT",
+            MagnavoxOdyssey2 => "MAGNAVOX_O2",
             GceVectrex => "GCE_VECTREX",
             MicrosoftXbox => "MICROSOFT_XBOX",
-            MicrosoftXbox360 => "MICROSOFT_XBOX360",
+            MicrosoftXbox360 => "MICROSOFT_X360",
             NecPcEngine => "NEC_TG16",
             NintendoGameBoy => "NINTENDO_GB",
             NintendoGameBoyColor => "NINTENDO_GBC",
             NintendoGameBoyAdvance => "NINTENDO_GBA",
-            NintendoDS => "NINTENDO_DS",
+            NintendoDS => "NINTENDO_NDS",
             NintendoDSi => "NINTENDO_DSI",
             Nintendo3DS => "NINTENDO_3DS",
-            NintendoNew3DS => "NINTENDO_NEW_3DS",
+            NintendoNew3DS => "NINTENDO_N3DS",
             NintendoNES => "NINTENDO_NES",
             NintendoFamicomDiskSystem => "NINTENDO_FDS",
             NintendoSuperNES => "NINTENDO_SNES",
-            NintendoSatellaview => "NINTENDO_SATELLAVIEW",
+            NintendoSatellaview => "NINTENDO_BS",
             Nintendo64 => "NINTENDO_N64",
             Nintendo64DD => "NINTENDO_N64DD",
             NintendoVirtualBoy => "NINTENDO_VB",
             NintendoGameCube => "NINTENDO_GCN",
             NintendoWii => "NINTENDO_WII",
             NintendoWiiU => "NINTENDO_WIIU",
-            NintendoSwitch => "NINTENDO_SWITCH",
+            NintendoSwitch => "NINTENDO_NSW",
             SegaGameGear => "SEGA_GG",
             SegaMasterSystem => "SEGA_SMS",
             SegaSG1000 => "SEGA_SG1000",
@@ -516,43 +522,17 @@ impl Package {
             SonyPlayStation2 => "SONY_PS2",
             SonyPlayStation3 => "SONY_PS3",
             SonyPlayStationPortable => "SONY_PSP",
-            SonyPlayStationVita => "SONY_PSVITA",
+            SonyPlayStationVita => "SONY_PSV",
             PhilipsCDi => "PHILIPS_CDI",
             SnkNeoGeoPocket => "SNK_NGP",
             SnkNeoGeoPocketColor => "SNK_NGPC",
             SnkNeoGeoCD => "SNK_NGCD",
             ThreeDO => "PANASONIC_3DO",
-            WataraSupervision => "WATARA_SUPERVISION",
+            WataraSupervision => "WATARA_SV",
             _ => return None,
         })
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn package_uses_the_normalized_gumshoe_binary_digest() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("headered.nes");
-        let payload = [0x42; 32];
-        let mut image = vec![0; 16];
-        image[..4].copy_from_slice(b"NES\x1a");
-        image.extend_from_slice(&payload);
-        std::fs::write(&path, image).unwrap();
-
-        let package = Package::from_path(&path).unwrap();
-        let expected = blake3::hash(&payload).to_hex().to_string();
-
-        assert_eq!(package.platform, "NINTENDO_NES");
-        assert_eq!(package.binary_digest, expected);
-        assert!(matches!(
-            Package::identify(&path, Some("NINTENDO_SNES"), None),
-            Err(crate::ScrapingError::PlatformMismatch { .. })
-        ));
-        let json = serde_json::to_value(package).unwrap();
-        assert_eq!(json["binaryDigest"], expected);
-        assert!(json.get("import").is_none());
-    }
-}
+mod tests;
