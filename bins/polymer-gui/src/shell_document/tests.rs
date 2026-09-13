@@ -763,6 +763,7 @@ async fn native_pointer_sequence_dispatches_a_delegated_click() {
         1.0,
         &layer.dom_to_script,
         crate::shell_runtime::ShellRuntimeOptions {
+            debug: false,
             html: html.to_owned(),
             source_name: "polymer:///native-click-test.html".to_owned(),
             commands: polymer_runtime::FrontendCommands::disconnected(),

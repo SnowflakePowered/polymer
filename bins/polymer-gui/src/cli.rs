@@ -15,6 +15,7 @@ struct ShellArguments {
 }
 
 pub struct ShellOptions {
+    pub debug: bool,
     pub theme: crate::theme::SelectedTheme,
     pub plugins: PluginRegistry,
     pub directories: polymer_library::Directories,
@@ -58,6 +59,7 @@ pub async fn parse() -> Result<ShellOptions, Box<dyn Error>> {
     let theme = select_theme(&plugins, arguments.theme.as_deref(), saved_theme.as_deref())?;
     let theme = crate::theme::SelectedTheme::new(theme, arguments.debug);
     Ok(ShellOptions {
+        debug: arguments.debug,
         theme,
         plugins,
         directories,

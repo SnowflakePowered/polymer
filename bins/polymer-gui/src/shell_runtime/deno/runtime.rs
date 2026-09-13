@@ -157,6 +157,7 @@ impl Runtime {
     }
 
     pub(in crate::shell_runtime) async fn from_snapshot(
+        debug: bool,
         initial_snapshot: String,
         html: String,
         source_name: String,
@@ -199,6 +200,10 @@ impl Runtime {
                     local_storage,
                     inspect: true,
                 });
+                worker.js_runtime_mut().execute_script(
+                    "polymer:shell/meta.js",
+                    format!("Polymer.meta.debug = {debug}; Object.freeze(Polymer.meta);"),
+                )?;
                 worker
                     .js_runtime_mut()
                     .execute_script("polymer:shell/event-dispatch.js", EVENT_DISPATCH)?;

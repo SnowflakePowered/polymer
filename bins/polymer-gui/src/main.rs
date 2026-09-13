@@ -68,6 +68,7 @@ fn run(
     let mut event_loop = EventLoop::<app::UserEvent>::with_user_event().build()?;
     let proxy = event_loop.create_proxy();
     let shell_factory = shell_dom::ShellSessionFactory::new(
+        options.debug,
         options.plugins.clone(),
         options.directories.clone(),
         options.local_storage.clone(),
