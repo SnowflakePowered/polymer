@@ -1,16 +1,18 @@
-import { For, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { RecentGame } from "../../app/models";
 import { useShell } from "../../app/shell-context";
 import { useInputActions } from "../../app/InputProvider";
 import { hasActiveInputScope } from "../../components/InputNavigation";
 import { CoverLayout } from "./cover-layout";
 import { GameTile } from "./GameTile";
+import { GameContextMenu } from "./GameContextMenu";
 import { gameId, nearestInDirection, type Direction } from "./spatial-navigation";
 import "./GameWall.css";
 
 export function GameWall(props: { games: RecentGame[] }) {
   const shell = useShell();
   const input = useInputActions();
+  const [context, setContext] = createSignal<{ game: RecentGame }>();
   const [zoom, setZoom] = createSignal(1);
   const [viewport, setViewport] = createSignal({ width: 1, height: 800 });
   const [ratios, setRatios] = createSignal<Record<string, number>>({});
@@ -88,8 +90,9 @@ export function GameWall(props: { games: RecentGame[] }) {
     <div class="horizon-game-wall-canvas" style={{ height: `${layout().height}px` }}>
     <For each={props.games}>{(game, index) => {
       const id = () => gameId(game);
-      return <GameTile game={game} selected={selected() === id()} players={playersFor(id())} placement={layout().placements[index()]} onRatio={ratio => setRatios(values => ({ ...values, [game.artwork || id()]: ratio }))} register={(key, element) => element ? elements.set(key, element) : elements.delete(key)} onActivate={() => selected() === id() ? launch() : choose(id())} />;
+      return <GameTile game={game} selected={selected() === id()} players={playersFor(id())} placement={layout().placements[index()]} onRatio={ratio => setRatios(values => ({ ...values, [game.artwork || id()]: ratio }))} register={(key, element) => element ? elements.set(key, element) : elements.delete(key)} onActivate={() => selected() === id() ? launch() : choose(id())} onContextMenu={() => { shell.setModel("selectedGame", id()); setContext({ game }); }} />;
     }}</For>
     </div>
+    <Show when={context()}>{value => <GameContextMenu {...value()} onClose={() => setContext(undefined)} />}</Show>
   </section>;
 }

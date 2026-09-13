@@ -28,8 +28,27 @@ export class ShiragameContent {
         } finally { await db.close(); }
       } catch (error) { console.warn("Shiragame: rebuilding unavailable cache", error); }
     }
-    await this.refresh(context);
+    const staged = await this.staged();
+    if (staged) await this.publish(staged, context);
+    else await this.refresh(context);
     return true;
+  }
+
+  private async staged(): Promise<string | undefined> {
+    const state = await connect();
+    try {
+      const latest = await state.prepare("SELECT MAX(id) AS id FROM shiragame_generations").get<{ id: number | null }>();
+      if (!latest?.id) return;
+      const path = `generation-${latest.id}.db`;
+      // A previous boot may have stopped during indexing. Reuse its extracted
+      // database; CREATE INDEX IF NOT EXISTS preserves already completed work.
+      const db = await connect(caches.download.open(path, { read: false }));
+      try { await ShiragameCatalog.inspect(db); }
+      finally { await db.close(); }
+      return path;
+    } catch (error) {
+      console.warn("Shiragame: no reusable staged database", error);
+    } finally { await state.close(); }
   }
 
   async current(): Promise<Generation | undefined> {
@@ -41,18 +60,28 @@ export class ShiragameContent {
 
   async refresh(context: PluginProgressContext): Promise<void> {
     const state = await connect();
+    let generation: number;
     try {
       const { lastInsertRowid } = await state.prepare("INSERT INTO shiragame_generations DEFAULT VALUES").run();
-      const archivePath = `generation-${lastInsertRowid}.zip`;
-      const archive = new ShiragameArchive();
-      const path = `generation-${lastInsertRowid}.db`;
-      await archive.download(archivePath, context);
-      await archive.extract(archivePath, path, context);
-      const release = await ShiragameCatalog.build(caches.download.open(path, { read: false }), context);
+      generation = Number(lastInsertRowid);
+    } finally { await state.close(); }
+    const archivePath = `generation-${generation}.zip`;
+    const path = `generation-${generation}.db`;
+    const archive = new ShiragameArchive();
+    await archive.download(archivePath, context);
+    await archive.extract(archivePath, path, context);
+    await this.publish(path, context);
+  }
+
+  private async publish(path: string, context: PluginProgressContext): Promise<void> {
+    const release = await ShiragameCatalog.build(caches.download.open(path, { read: false }), context);
+    const state = await connect();
+    try {
       // Publish only after validation, indexing, checkpointing, and closing the
       // staged database. Existing readers keep their immutable generation.
       await state.prepare("INSERT OR REPLACE INTO shiragame_active (id, path, release, index_version) VALUES (1, ?, ?, ?)")
         .run([path, release.release, ShiragameCatalog.INDEX_VERSION]);
+      await state.exec("PRAGMA wal_checkpoint(TRUNCATE)");
       context.progress({ message: "Shiragame cue sheets ready" });
     } finally { await state.close(); }
   }

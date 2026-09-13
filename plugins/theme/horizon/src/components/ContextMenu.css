@@ -1,0 +1,56 @@
+.horizon-context-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 24px 24px calc(6.25rem + 24px);
+  background: rgba(0, 0, 0, .36);
+}
+.horizon-context-menu {
+  width: 576px;
+  max-width: 100%;
+  max-height: 100%;
+  overflow: auto;
+  padding: 24px 24px 35px;
+  background: #f3f3f3;
+  color: #303030;
+  font-family: Roboto, sans-serif;
+}
+.horizon-context-title {
+  margin: 0 8px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid #cacaca;
+  font-size: 31px;
+  font-weight: 400;
+  line-height: 36px;
+  overflow-wrap: anywhere;
+}
+.horizon-context-description {
+  margin: 12px 8px 0;
+  color: #707070;
+  font-size: 21px;
+  line-height: 36px;
+}
+.horizon-context-actions { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+.horizon-context-actions button {
+  display: block;
+  width: 100%;
+  min-height: 54px;
+  padding: 9px 16px;
+  border: 0;
+  border-radius: 0;
+  text-align: left;
+  background: transparent;
+  color: #2477c3;
+  font: inherit;
+  font-size: 24px;
+  line-height: 36px;
+}
+.horizon-context-actions button.danger { color: #a04444; }
+.horizon-context-actions button:hover,
+.horizon-context-actions button:focus { background: #fff; outline: 3px solid #35e3d4; }
+@media (max-width: 720px) {
+  .horizon-context-backdrop { padding-left: calc(5rem + 24px); }
+}

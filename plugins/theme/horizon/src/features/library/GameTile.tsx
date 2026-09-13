@@ -14,6 +14,7 @@ export function GameTile(props: {
   onRatio(ratio: number): void;
   register(id: string, element: HTMLButtonElement | null): void;
   onActivate(): void;
+  onContextMenu(event: MouseEvent): void;
 }) {
   const [ready, setReady] = createSignal(false);
   createEffect(() => { props.game.artwork; setReady(false); });
@@ -29,7 +30,9 @@ export function GameTile(props: {
     style={{ left: `${props.placement.x}px`, top: `${props.placement.y}px`, width: `${props.placement.width}px`, height: `${props.placement.height}px`, "--tile-color": tileColor(id()), transform: `scale(${props.selected || props.players.length ? 1.06 : 1})` }}
     aria-label={`${props.game.name}, ${friendly(props.game.platform)}`}
     aria-current={props.selected ? "true" : undefined}
+    aria-haspopup="menu"
     onClick={props.onActivate}
+    onContextMenu={event => { event.preventDefault(); event.currentTarget.focus(); props.onContextMenu(event); }}
   >
     <CoverArt src={props.game.artwork} onRatio={props.onRatio} onReady={setReady} />
     <span class="horizon-game-title">{props.game.name}</span>

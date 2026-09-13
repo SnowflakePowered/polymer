@@ -99,9 +99,9 @@ impl ShellDocument {
             .filter(|target| self.document.as_ref().get_node(*target).is_some())
             .map(|target| self.document.as_ref().node_chain(target))
             .unwrap_or_default();
-        if next_path == self.pointer_hover_path {
-            return;
-        }
+        // EventDriver may have changed native hover state even when our
+        // paint-order target is unchanged. Reconcile the actual node flags.
+        let mut changed = false;
         let previous_path = std::mem::take(&mut self.pointer_hover_path);
         for node in previous_path
             .iter()
@@ -112,21 +112,29 @@ impl ShellDocument {
                 self.document
                     .as_mut()
                     .snapshot_node_and(node, ElementState::HOVER, |node| node.unhover());
+                changed = true;
             }
         }
-        for node in next_path
-            .iter()
-            .copied()
-            .filter(|node| !previous_path.contains(node))
-        {
+        for node in next_path.iter().copied() {
+            if self
+                .document
+                .as_ref()
+                .get_node(node)
+                .is_some_and(|node| node.is_hovered())
+            {
+                continue;
+            }
             self.document
                 .as_mut()
                 .snapshot_node_and(node, ElementState::HOVER, |node| node.hover());
+            changed = true;
         }
         self.pointer_hover_path = next_path;
-        self.dirty = true;
-        self.needs_resolve = true;
-        self.needs_geometry_sync = true;
+        if changed {
+            self.dirty = true;
+            self.needs_resolve = true;
+            self.needs_geometry_sync = true;
+        }
     }
 
     pub fn clear_pointer_hover(&mut self) {
@@ -218,16 +226,19 @@ impl ShellDocument {
             };
             EventDriver::new(&mut self.document, handler).handle_ui_event(event);
             if target_override.is_some() {
+                // This clears an incorrect native hit, not a pointer leaving
+                // the window. Preserve its cursor (including CSS cursor:none)
+                // while replacing the hover ancestry below.
+                let cursor = self.document.as_ref().get_cursor();
                 let native_changed = self.document.as_mut().clear_hover();
-                self.set_pointer_hover(Some(hit.node_id));
+                self.document.as_ref().shell_provider.set_cursor(cursor);
                 if native_changed {
                     self.dirty = true;
                     self.needs_resolve = true;
                     self.needs_geometry_sync = true;
                 }
-            } else {
-                self.set_pointer_hover(None);
             }
+            self.set_pointer_hover(Some(hit.node_id));
         }
         self.apply_script_mutations(runtime);
         claimed.get()

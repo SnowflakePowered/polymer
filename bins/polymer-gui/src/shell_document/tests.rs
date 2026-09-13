@@ -692,6 +692,14 @@ fn pointer_hit_finds_a_centered_dialog_action_over_a_surface() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_pointer_sequence_dispatches_a_delegated_click() {
+    #[derive(Default)]
+    struct CursorRecorder(std::sync::Mutex<Option<cursor_icon::CursorIcon>>);
+    impl blitz_traits::shell::ShellProvider for CursorRecorder {
+        fn set_cursor(&self, icon: Option<cursor_icon::CursorIcon>) {
+            *self.0.lock().unwrap() = icon;
+        }
+    }
+    let cursor = Arc::new(CursorRecorder::default());
     let html = r#"
                     <style>
                       :root, body { width: 100%; height: 100%; margin: 0; }
@@ -780,6 +788,7 @@ async fn native_pointer_sequence_dispatches_a_delegated_click() {
     )
     .await
     .unwrap();
+    layer.document.as_mut().set_shell_provider(cursor.clone());
     layer.apply_script_mutations(&mut runtime);
     let hit = layer.hit_test(330.0, 130.0).unwrap();
     let native_script_target = layer
@@ -812,6 +821,38 @@ async fn native_pointer_sequence_dispatches_a_delegated_click() {
     };
     layer.mouse_event(&mut runtime, hit, event("mousedown", 1));
     layer.mouse_event(&mut runtime, hit, event("mouseup", 0));
+
+    // Native hover reconciliation can clear a shared ancestor while the
+    // paint-order target stays unchanged. The next move must restore it.
+    layer.document.as_mut().snapshot_node_and(
+        hit.node_id,
+        style_dom::ElementState::HOVER,
+        |node| node.unhover(),
+    );
+    for _ in 0..3 {
+        layer.mouse_event(&mut runtime, hit, event("mousemove", 0));
+        assert!(
+            cursor.0.lock().unwrap().is_some(),
+            "retargeting must keep the cursor visible"
+        );
+        assert!(
+            layer
+                .document
+                .as_ref()
+                .get_node(hit.node_id)
+                .unwrap()
+                .is_hovered()
+        );
+    }
+    layer.clear_pointer_hover();
+    assert!(
+        !layer
+            .document
+            .as_ref()
+            .get_node(hit.node_id)
+            .unwrap()
+            .is_hovered()
+    );
 
     let sequence = layer.document.as_ref().tree().iter().find_map(|(_, node)| {
         node.element_data().and_then(|element| {
