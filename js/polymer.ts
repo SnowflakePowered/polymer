@@ -472,6 +472,8 @@ export interface WebRtcApi extends EventTarget {
 declare global {
   interface Window {
     readonly Polymer: Readonly<{
+      /** UI-only host metadata; unavailable in plugin isolates. */
+      readonly meta: Readonly<{ debug: boolean }>;
       readonly scraping: ScrapingApi;
       readonly configuration: ConfigurationApi;
       readonly consolestorage: ConsoleStorageApi;

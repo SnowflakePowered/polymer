@@ -777,7 +777,7 @@ impl EguiOverlay {
 pub(crate) struct WindowManager {
     window: Window,
     composition: CompositionTree,
-    overlay: EguiOverlay,
+    overlay: Option<EguiOverlay>,
     clock: CompositorClock,
 }
 
@@ -786,11 +786,17 @@ impl WindowManager {
         window: Window,
         recorder: RecorderHandle,
         proxy: EventLoopProxy<crate::app::UserEvent>,
+        debug: bool,
     ) -> Result<Self, Box<dyn Error>> {
         let composition = CompositionTree::new(&window)?;
-        let mut overlay = EguiOverlay::new(&window, recorder)?;
-        composition.set_egui_overlay_content(&overlay.content()?)?;
-        overlay.draw(&window)?;
+        let overlay = if debug {
+            let mut overlay = EguiOverlay::new(&window, recorder)?;
+            composition.set_egui_overlay_content(&overlay.content()?)?;
+            overlay.draw(&window)?;
+            Some(overlay)
+        } else {
+            None
+        };
         composition.commit()?;
         Ok(Self {
             window,
@@ -861,7 +867,10 @@ impl WindowManager {
     }
 
     pub fn handle_window_event(&mut self, event: &WindowEvent) -> bool {
-        let response = self.overlay.on_window_event(&self.window, event);
+        let Some(overlay) = self.overlay.as_mut() else {
+            return false;
+        };
+        let response = overlay.on_window_event(&self.window, event);
         if response.repaint {
             self.window.request_redraw();
         }
@@ -869,43 +878,61 @@ impl WindowManager {
     }
 
     pub fn note_overlay_interaction(&mut self, now: Instant) {
-        self.overlay.note_interaction(now);
+        if let Some(overlay) = self.overlay.as_mut() {
+            overlay.note_interaction(now);
+        }
     }
 
     pub fn resize_overlay(&mut self) -> Result<(), Box<dyn Error>> {
-        self.overlay.resize(&self.window)
+        self.overlay
+            .as_mut()
+            .map_or(Ok(()), |overlay| overlay.resize(&self.window))
     }
 
     pub fn draw_overlay(&mut self) -> Result<bool, Box<dyn Error>> {
-        self.overlay.draw(&self.window)
+        self.overlay
+            .as_mut()
+            .map_or(Ok(false), |overlay| overlay.draw(&self.window))
     }
 
     pub fn overlay_repaint_due(&self, now: Instant) -> bool {
-        self.overlay.repaint_due(now)
+        self.overlay
+            .as_ref()
+            .is_some_and(|overlay| overlay.repaint_due(now))
     }
 
-    pub fn next_overlay_repaint(&self) -> Instant {
-        self.overlay.next_repaint()
+    pub fn next_overlay_repaint(&self) -> Option<Instant> {
+        self.overlay.as_ref().map(EguiOverlay::next_repaint)
     }
 
     pub fn request_overlay_repaint(&mut self) {
-        self.overlay.request_immediate_repaint();
+        if let Some(overlay) = self.overlay.as_mut() {
+            overlay.request_immediate_repaint();
+        }
     }
 
     pub fn set_overlay_note(&mut self, note: &str) {
-        self.overlay.set_note(note);
+        if let Some(overlay) = self.overlay.as_mut() {
+            overlay.set_note(note);
+        }
     }
 
     pub fn set_input_diagnostics(&mut self, diagnostics: InputDiagnostics) {
-        self.overlay.set_input_diagnostics(diagnostics);
+        if let Some(overlay) = self.overlay.as_mut() {
+            overlay.set_input_diagnostics(diagnostics);
+        }
     }
 
     pub fn set_backend(&mut self, backend: String) {
-        self.overlay.set_backend(backend);
+        if let Some(overlay) = self.overlay.as_mut() {
+            overlay.set_backend(backend);
+        }
     }
 
     pub fn add_surface(&mut self, connection: u64, surface: u64, target: u32) {
-        self.overlay.add_surface(connection, surface, target);
+        if let Some(overlay) = self.overlay.as_mut() {
+            overlay.add_surface(connection, surface, target);
+        }
     }
 
     pub fn observe_frame_at(
@@ -914,20 +941,27 @@ impl WindowManager {
         frame: polymer_protocol::FrameReady,
         observed_qpc: Option<u64>,
     ) {
-        self.overlay
-            .observe_frame_at(connection, frame, observed_qpc);
+        if let Some(overlay) = self.overlay.as_mut() {
+            overlay.observe_frame_at(connection, frame, observed_qpc);
+        }
     }
 
     pub fn remove_target(&mut self, connection: u64) {
-        self.overlay.remove_target(connection);
+        if let Some(overlay) = self.overlay.as_mut() {
+            overlay.remove_target(connection);
+        }
     }
 
     pub fn record_present(&mut self, carried_new_frame: bool) {
-        self.overlay.record_present(carried_new_frame);
+        if let Some(overlay) = self.overlay.as_mut() {
+            overlay.record_present(carried_new_frame);
+        }
     }
 
     pub fn record_clock(&mut self) {
-        self.overlay.record_clock();
+        if let Some(overlay) = self.overlay.as_mut() {
+            overlay.record_clock();
+        }
     }
 
     pub fn set_clock_active(&self, active: bool) {

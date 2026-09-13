@@ -13,3 +13,6 @@ button, input, select { font: inherit; }
 button:not(:disabled) { cursor: pointer; }
 button:focus-visible, input:focus-visible { outline: 2px solid white; outline-offset: 2px; }
 tracked-surface { display: block; overflow: hidden; background: transparent; object-fit: contain; object-position: center; }
+
+/* Keep all UI, including fixed overlays, below the debug toolbar. */
+body[data-debug="true"] { height: calc(100% - 32px); transform: translateY(32px); }

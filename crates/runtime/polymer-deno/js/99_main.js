@@ -22,6 +22,7 @@ const consolestorage = createConsoleStorage();
 const library = createLibrary();
 
 const Polymer = Object.freeze({
+  meta: { debug: false },
   input: input.polymerInput,
   controllers: controllers.controllers,
   plugin: plugin.Plugin,

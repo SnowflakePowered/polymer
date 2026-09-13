@@ -305,6 +305,7 @@ impl ShellSession {
 }
 
 pub(crate) struct ShellSessionFactory {
+    debug: bool,
     document: ShellDocumentFactory,
     plugin_runtime: std::sync::Arc<polymer_pluginhost::runtime::PluginRuntime>,
     local_storage: Option<polymer_deno::webstorage::LocalStorage>,
@@ -315,6 +316,7 @@ pub(crate) struct ShellSessionFactory {
 
 impl ShellSessionFactory {
     pub(crate) fn new(
+        debug: bool,
         plugin_registry: polymer_pluginhost::loading::PluginRegistry,
         directories: polymer_library::Directories,
         local_storage: Option<polymer_deno::webstorage::LocalStorage>,
@@ -327,6 +329,7 @@ impl ShellSessionFactory {
             polymer_pluginhost::runtime::PluginRuntimeOptions::default(),
         );
         Self {
+            debug,
             document: ShellDocumentFactory::new(event_proxy),
             plugin_runtime: std::sync::Arc::new(plugin_runtime),
             local_storage,
@@ -372,6 +375,7 @@ impl ShellSessionFactory {
             scale_factor,
             document.runtime_node_ids(),
             ShellRuntimeOptions {
+                debug: self.debug,
                 html: html.to_owned(),
                 source_name: base_url,
                 commands,

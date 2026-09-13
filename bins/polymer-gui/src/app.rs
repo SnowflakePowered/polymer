@@ -105,6 +105,7 @@ impl ShellCoordinator {
         shell_rasterizer: ShellRasterizer,
     ) -> Result<Self, Box<dyn Error>> {
         let ShellOptions {
+            debug,
             theme,
             plugins: _,
             directories: _,
@@ -112,7 +113,7 @@ impl ShellCoordinator {
             library: _,
         } = options;
 
-        let window = WindowManager::new(window, statistics_recorder, proxy.clone())?;
+        let window = WindowManager::new(window, statistics_recorder, proxy.clone(), debug)?;
         let compositor = window.compositor();
         let (game_host, shell_compositor) = {
             // Prepare the retained Vello renderer before the first shell frame.

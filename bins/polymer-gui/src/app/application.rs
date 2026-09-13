@@ -411,8 +411,8 @@ impl ShellApplication {
                 // or the outer pump spins thousands of empty turns while the
                 // redraw request is pending.
                 deadline = deadline.min(now + Duration::from_millis(16));
-            } else {
-                deadline = deadline.min(state.window.next_overlay_repaint());
+            } else if let Some(repaint) = state.window.next_overlay_repaint() {
+                deadline = deadline.min(repaint);
             }
             // The clock is useful only while a new captured frame is waiting
             // for a present permit. Keeping it active for an idle connected

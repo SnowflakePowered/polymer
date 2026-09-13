@@ -20,6 +20,7 @@ pub(crate) struct ShellRuntime {
 }
 
 pub(crate) struct ShellRuntimeOptions {
+    pub debug: bool,
     pub html: String,
     pub source_name: String,
     pub commands: polymer_runtime::FrontendCommands,
@@ -40,6 +41,7 @@ impl ShellRuntime {
         options: ShellRuntimeOptions,
     ) -> Result<(Self, PolymerNotificationSender), Box<dyn Error>> {
         let ShellRuntimeOptions {
+            debug,
             html,
             source_name,
             commands,
@@ -58,6 +60,7 @@ impl ShellRuntime {
         ) {
             Ok(initial_snapshot) => {
                 deno::Runtime::from_snapshot(
+                    debug,
                     initial_snapshot,
                     html,
                     source_name,

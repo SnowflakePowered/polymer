@@ -51,47 +51,51 @@ pub struct InputDiagnostics {
 }
 
 pub fn draw_debug_overlay(context: &egui::Context, model: &DebugOverlayModel) {
-    egui::TopBottomPanel::top("polymer-debug-statistics").show(context, |ui| {
-        ui.horizontal_wrapped(|ui| {
-            ui.strong(format!("Polymer {} via {}", model.backend, model.consumer));
-            ui.label(format!("Frame {}", model.frame_number));
-            ui.label(format!("Slot {}", model.slot));
-            ui.label(format!(
-                "Render target {}x{}",
-                model.render_width, model.render_height
-            ));
-            ui.label(format!(
-                "Scissor ({}, {}) {}x{}",
-                model.capture_x, model.capture_y, model.capture_width, model.capture_height
-            ));
-            for target in &model.statistics.targets {
-                ui.label(format!(
-                    "Target {}: {:.1} FPS · latency {:.2} ms · frame Δ {:.2} ms",
-                    target.target,
-                    target.fps,
-                    target.capture_latency.average,
-                    target.frame_interval.average,
-                ));
-            }
-            ui.label(format!("Dropped {}", model.statistics.dropped_frames));
-            ui.label(format!(
-                "Presented {:.1}/s · clock {:.1}/s",
-                model.statistics.pacing.presented, model.statistics.pacing.clock
-            ));
-            if let Some(latency) = model.statistics.display_latency.values().next() {
-                ui.colored_label(
-                    egui::Color32::LIGHT_BLUE,
-                    format!(
-                        "To display {:.1} ms · worst {:.1} ms",
-                        latency.average, latency.maximum
-                    ),
-                );
-            }
-            for note in &model.notes {
-                ui.label(note);
-            }
+    egui::TopBottomPanel::top("polymer-debug-statistics")
+        .exact_height(32.0)
+        .show(context, |ui| {
+            egui::ScrollArea::horizontal().show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.strong(format!("Polymer {} via {}", model.backend, model.consumer));
+                    ui.label(format!("Frame {}", model.frame_number));
+                    ui.label(format!("Slot {}", model.slot));
+                    ui.label(format!(
+                        "Render target {}x{}",
+                        model.render_width, model.render_height
+                    ));
+                    ui.label(format!(
+                        "Scissor ({}, {}) {}x{}",
+                        model.capture_x, model.capture_y, model.capture_width, model.capture_height
+                    ));
+                    for target in &model.statistics.targets {
+                        ui.label(format!(
+                            "Target {}: {:.1} FPS · latency {:.2} ms · frame Δ {:.2} ms",
+                            target.target,
+                            target.fps,
+                            target.capture_latency.average,
+                            target.frame_interval.average,
+                        ));
+                    }
+                    ui.label(format!("Dropped {}", model.statistics.dropped_frames));
+                    ui.label(format!(
+                        "Presented {:.1}/s · clock {:.1}/s",
+                        model.statistics.pacing.presented, model.statistics.pacing.clock
+                    ));
+                    if let Some(latency) = model.statistics.display_latency.values().next() {
+                        ui.colored_label(
+                            egui::Color32::LIGHT_BLUE,
+                            format!(
+                                "To display {:.1} ms · worst {:.1} ms",
+                                latency.average, latency.maximum
+                            ),
+                        );
+                    }
+                    for note in &model.notes {
+                        ui.label(note);
+                    }
+                });
+            });
         });
-    });
     let frame = egui::Frame::window(&context.style())
         .fill(egui::Color32::TRANSPARENT)
         .stroke(egui::Stroke::new(1.0, egui::Color32::from_white_alpha(48)))

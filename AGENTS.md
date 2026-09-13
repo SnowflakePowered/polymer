@@ -15,5 +15,6 @@
 * For concurrent hashmaps, use `dashmap` rather than a RwLock or Mutex around a std HashMap.
 * To launch a game winthin `polymer-gui`, you can use Chrome's inspector protocol. Don't forget to pass in the `--debug` flag to start the debug server.
 * Do not write tests for .ts plugins. They will never work. 
+* "Snowglass" is the old name for this project. If the user types in 'Snowglass' instead of 'Polymer', they meant 'Polymer'.
 
 Read ARCHITECTURE.md for a high level overview of the architecture.
