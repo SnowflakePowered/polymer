@@ -5,8 +5,8 @@ import { createEffect, onCleanup, onMount, type ParentProps } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import type { LaunchRequest, PackageConfiguration } from "../../../../../js/polymer";
 import type { ControllerDevice } from "../../../../../js/polymer";
-import { ControllerConnectionToast } from "../components/ControllerConnectionToast";
-import { PluginLoadProgress } from "../components/PluginLoadProgress";
+import { NotificationProvider } from "../components/notifications/NotificationProvider";
+import { ToastRegion } from "../components/notifications/ToastRegion";
 import { InputNavigation } from "../components/InputNavigation";
 import { onLaunch, resolveGame } from "./launch";
 import type { RecentGame, ShellModel } from "./models";
@@ -57,7 +57,7 @@ export function ShellProvider(props: ParentProps) {
     error: "",
     recent: [],
     libraryGames: [],
-    scrapeStatus: "",
+    libraryActivities: [],
     selectedGame: null,
     gamepadOpen: false,
     pauseOpen: false,
@@ -110,34 +110,42 @@ export function ShellProvider(props: ParentProps) {
       return;
     }
     detection?.abort();
-    detection = new AbortController();
+    const preparation = new AbortController();
+    detection = preparation;
     setModel("error", "");
     setModel("launcher", { kind: "detecting", name: path.split(/[\\/]/).pop() || path });
+    if (destination === "launch") {
+      setModel("request", null);
+      setModel("surfaces", []);
+      go("/game/launching");
+    }
     try {
-      const resolved = await resolveGame(path, emulator, detection.signal);
-      if (detection.signal.aborted) return;
+      const resolved = await resolveGame(path, emulator, preparation.signal);
+      if (preparation.signal.aborted) return;
       setModel("launchableId", resolved.launchableId);
       setModel("draft", resolved.draft);
       if (destination === "details") {
         setModel("launcher", { kind: "details" });
         go("/details");
       } else {
-        await beginLaunch(resolved.launchableId, resolved.draft);
+        await beginLaunch(resolved.launchableId, resolved.draft, preparation.signal);
       }
     } catch (error) {
-      if (!detection.signal.aborted) fail(error);
+      if (!preparation.signal.aborted) fail(error);
     }
   };
 
-  const beginLaunch = async (launchableId: NonNullable<ShellModel["launchableId"]>, draft: PackageConfiguration) => {
+  const beginLaunch = async (launchableId: NonNullable<ShellModel["launchableId"]>, draft: PackageConfiguration, signal?: AbortSignal) => {
+    setModel("request", null);
     setModel("launcher", { kind: "launching", name: draft.name });
+    go("/game/launching", true);
     try {
       const request = await onLaunch(launchableId, draft);
-      setModel("request", request);
+      if (signal?.aborted) return;
       setModel("surfaces", structuredClone(request.surfaces));
-      go("/game/launching", true);
+      setModel("request", request);
     } catch (error) {
-      fail(error);
+      if (!signal?.aborted) fail(error);
     }
   };
 
@@ -174,7 +182,7 @@ export function ShellProvider(props: ParentProps) {
 
   const libraryState = new LibraryState(window.Polymer.library, window.Polymer.scraping, snapshot => {
     setModel("libraryGames", reconcile(snapshot.games, { key: "path" }));
-    setModel("scrapeStatus", snapshot.status);
+    setModel("libraryActivities", reconcile(snapshot.activities, { key: "id" }));
   }, fail);
   libraryState.start();
   onCleanup(() => libraryState.dispose());
@@ -223,12 +231,11 @@ export function ShellProvider(props: ParentProps) {
       closeGame,
       rememberGame,
     }}>
-      <div class="horizon-shell-root">
+      <NotificationProvider><div class="horizon-shell-root">
         <div class="horizon-shell-content">{props.children}</div>
         <InputNavigation />
-        <ControllerConnectionToast />
-        <PluginLoadProgress />
-      </div>
+        <ToastRegion />
+      </div></NotificationProvider>
     </ShellContext.Provider>
   );
 }

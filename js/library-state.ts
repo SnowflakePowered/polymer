@@ -9,13 +9,16 @@ export type LibraryEntry = {
   artwork?: string;
 };
 
-export type LibrarySnapshot = { games: LibraryEntry[]; status: string };
+export type LibraryActivity = { id: string; title: string; message: string; state: "running" | "complete" | "error"; completed?: number; total?: number };
+export type LibrarySnapshot = { games: LibraryEntry[]; status: string; activities: LibraryActivity[] };
 
 /** Catalog and scrape subscriptions, independent of theme rendering. */
 export class LibraryState {
   private games: LibraryGame[] = [];
   private entries: LibraryEntry[] = [];
   private jobs = new Map<string, ScrapeJob>();
+  private sessionJobs = new Set<string>();
+  private jobsLoaded = false;
   private imports = new Map<symbol, string>();
   private revision = 0;
   private disposed = false;
@@ -52,9 +55,11 @@ export class LibraryState {
         // A notification received during the request is newer than this snapshot.
         if (this.jobs.get(job.id) !== previous.get(job.id)) continue;
         if (JSON.stringify(this.jobs.get(job.id)) === JSON.stringify(job)) continue;
+        if (this.jobsLoaded || job.state === "queued" || job.state === "running") this.sessionJobs.add(job.id);
         this.jobs.set(job.id, job);
         changed = true;
       }
+      this.jobsLoaded = true;
       if (changed) {
         this.refresh();
         this.publish();
@@ -77,6 +82,7 @@ export class LibraryState {
         { triggerBinaryId: launchable.binaryId },
       );
       // Notifications may already have advanced beyond the enqueue response.
+      this.sessionJobs.add(job.id);
       if (!this.jobs.has(job.id)) this.jobs.set(job.id, job);
       this.refresh();
     } catch (error) {
@@ -107,6 +113,7 @@ export class LibraryState {
 
   private jobChanged = (event: Event) => {
     const job = (event as CustomEvent<ScrapeJob>).detail;
+    this.sessionJobs.add(job.id);
     this.jobs.set(job.id, job);
     this.publish();
     if (job.state !== "queued" && job.state !== "running") this.refresh();
@@ -152,6 +159,14 @@ export class LibraryState {
     const visible = active.length ? active : jobs.slice(0, 1);
     this.changed({
       games: this.entries,
+      activities: [
+        ...(this.imports.size ? [{ id: "imports", title: "Identifying games", message: [...this.imports.values()].join(", "), state: "running" as const }] : []),
+        ...jobs.filter(job => this.sessionJobs.has(job.id)).map(job => ({ id: job.id, title: "Scraping game library", message: this.progress(job),
+          state: (job.state === "queued" || job.state === "running" ? "running" : job.state === "completed" ? "complete" : "error") as LibraryActivity["state"],
+          completed: job.attempts.filter(attempt => attempt.state === "completed" || attempt.state === "failed").length,
+          total: job.attempts.length,
+        })),
+      ],
       status: [...this.imports.values()].map(name => `Identifying ${name}…`).concat(visible.map(job => this.progress(job))).join(" · "),
     });
   }

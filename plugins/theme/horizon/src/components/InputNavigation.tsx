@@ -91,7 +91,10 @@ export function InputNavigation() {
     const unsubscribe = input.subscribe((action) => {
       // Unclaimed keys must reach the host's keyboard-backed controller.
       if (shell.model.launch && !hasActiveInputScope()) return;
-      if (navigationScope() === document && document.querySelector(".horizon-game-wall")) return;
+      const focused = document.activeElement;
+      const outsideLibrary = action.origin === "keyboard" && focused instanceof HTMLElement
+        && (focused.closest(".horizon-sidebar") || focused.closest(".horizon-toast-region"));
+      if (navigationScope() === document && document.querySelector(".horizon-game-wall") && !outsideLibrary) return;
       if (action.type === "move") {
         action.event.preventDefault();
         move(vectors[action.direction]);

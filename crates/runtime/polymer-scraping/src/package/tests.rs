@@ -1,6 +1,34 @@
 use super::*;
 
 #[tokio::test(flavor = "current_thread")]
+async fn registered_package_does_not_reopen_game_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("registered.nes");
+    let mut image = vec![0; 16];
+    image[..4].copy_from_slice(b"NES\x1a");
+    image.extend_from_slice(&[0x42; 32]);
+    std::fs::write(&path, image).unwrap();
+    let catalog = GameCatalog::open(
+        directory.path().join("library.db"),
+        std::sync::Arc::new(object_store::memory::InMemory::new()),
+    )
+    .await
+    .unwrap();
+    let identified = Package::from_path(&path).unwrap();
+    let (registered, _) = identified.clone().import(&catalog).await.unwrap();
+    std::fs::remove_file(&path).unwrap();
+
+    let stored = catalog.launchable(registered.id).await.unwrap();
+    let package = Package::from_launchable(stored).unwrap();
+    assert_eq!(package.path, identified.path);
+    assert_eq!(
+        serde_json::to_value(&package).unwrap(),
+        serde_json::to_value(&identified).unwrap()
+    );
+    assert!(package.import(&catalog).await.is_err());
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn reimport_enriches_existing_games_with_raw_file_hashes() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("legacy.nes");

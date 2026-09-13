@@ -346,6 +346,8 @@ impl ShellDocument {
                 if !self.take_arrivals() {
                     break;
                 }
+                // Loaded images can change intrinsic dimensions even when CSS fixes their box.
+                self.needs_geometry_sync = true;
                 let animation_time = self.animation_time();
                 self.document.as_mut().resolve(animation_time);
             }

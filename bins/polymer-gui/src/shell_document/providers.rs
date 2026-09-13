@@ -17,10 +17,32 @@ impl ShellNetProvider {
     }
 }
 
+struct CompletedAssetHandler {
+    handler: Box<dyn NetHandler>,
+    waker: Arc<dyn NetWaker>,
+    doc_id: usize,
+}
+
+impl NetHandler for CompletedAssetHandler {
+    fn bytes(self: Box<Self>, resolved_url: String, bytes: Bytes) {
+        self.handler.bytes(resolved_url, bytes);
+        // blitz-net wakes before decoding; wake again once the image is available.
+        self.waker.wake(self.doc_id);
+    }
+}
+
 impl NetProvider for ShellNetProvider {
     fn fetch(&self, doc_id: usize, request: Request, handler: Box<dyn NetHandler>) {
         if request.url.scheme() != "file" {
-            self.remote.fetch(doc_id, request, handler);
+            self.remote.fetch(
+                doc_id,
+                request,
+                Box::new(CompletedAssetHandler {
+                    handler,
+                    waker: self.waker.clone(),
+                    doc_id,
+                }),
+            );
             return;
         }
         // URL paths retain percent escapes and a leading slash before Windows

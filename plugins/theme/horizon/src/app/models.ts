@@ -1,4 +1,4 @@
-import type { LibraryEntry } from "../../../../../js/library-state";
+import type { LibraryActivity, LibraryEntry } from "../../../../../js/library-state";
 import type { LaunchInstance, LaunchRequest, PackageConfiguration } from "../../../../../js/polymer";
 
 export type RecentGame = {
@@ -30,7 +30,7 @@ export type ShellModel = {
   error: string;
   recent: RecentGame[];
   libraryGames: LibraryEntry[];
-  scrapeStatus: string;
+  libraryActivities: LibraryActivity[];
   selectedGame: string | null;
   gamepadOpen: boolean;
   pauseOpen: boolean;

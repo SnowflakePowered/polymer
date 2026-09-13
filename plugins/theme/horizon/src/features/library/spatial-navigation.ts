@@ -36,17 +36,6 @@ function hash(value: string) {
   return result >>> 0;
 }
 
-const ratios = [0.72, 0.86, 1, 1.24, 1.48, 1.72];
-
-export function tileShape(id: string, zoom = 1) {
-  const ratio = ratios[hash(id) % ratios.length];
-  return {
-    ratio,
-    basis: Math.round(150 * ratio * zoom),
-    grow: ratio,
-  };
-}
-
 export function tileColor(id: string) {
   const colors = ["#25334a", "#593035", "#27483d", "#564327", "#34305b", "#324b56", "#532b51"];
   return colors[hash(id) % colors.length];

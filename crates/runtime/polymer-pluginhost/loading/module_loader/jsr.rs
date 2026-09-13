@@ -118,44 +118,54 @@ impl PluginModuleLoader {
                 .query_pairs()
                 .find(|(key, _)| key == "version")
                 .map(|(_, value)| value.into_owned());
-            let meta_url = format!("{JSR_ORIGIN}/{package}/meta.json");
-            let meta: serde_json::Value =
-                serde_json::from_slice(&self.cached_get(&meta_url).await?)
-                    .map_err(ModuleLoaderError::from_err)?;
-            let version = match requested_version {
-                None => meta
-                    .get("latest")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_owned),
-                Some(requested)
-                    if meta
-                        .get("versions")
-                        .and_then(|versions| versions.get(&requested))
-                        .is_some() =>
-                {
+            // Exact versions have immutable metadata of their own. Do not reject
+            // a published version because the cached package index predates it.
+            let version = if let Some(version) = requested_version
+                .as_deref()
+                .and_then(|value| semver::Version::parse(value).ok())
+            {
+                version.to_string()
+            } else {
+                let meta_url = format!("{JSR_ORIGIN}/{package}/meta.json");
+                let meta: serde_json::Value =
+                    serde_json::from_slice(&self.cached_get(&meta_url).await?)
+                        .map_err(ModuleLoaderError::from_err)?;
+                match requested_version {
+                    None => meta
+                        .get("latest")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned),
                     Some(requested)
+                        if meta
+                            .get("versions")
+                            .and_then(|versions| versions.get(&requested))
+                            .is_some() =>
+                    {
+                        Some(requested)
+                    }
+                    Some(requested) => {
+                        let requirement =
+                            semver::VersionReq::parse(&requested).map_err(|error| {
+                                ModuleLoaderError::type_error(format!(
+                                    "invalid JSR version requirement '{requested}': {error}"
+                                ))
+                            })?;
+                        meta.get("versions")
+                            .and_then(serde_json::Value::as_object)
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|(version, _)| semver::Version::parse(version).ok())
+                            .filter(|version| requirement.matches(version))
+                            .max()
+                            .map(|version| version.to_string())
+                    }
                 }
-                Some(requested) => {
-                    let requirement = semver::VersionReq::parse(&requested).map_err(|error| {
-                        ModuleLoaderError::type_error(format!(
-                            "invalid JSR version requirement '{requested}': {error}"
-                        ))
-                    })?;
-                    meta.get("versions")
-                        .and_then(serde_json::Value::as_object)
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|(version, _)| semver::Version::parse(version).ok())
-                        .filter(|version| requirement.matches(version))
-                        .max()
-                        .map(|version| version.to_string())
-                }
-            }
-            .ok_or_else(|| {
-                ModuleLoaderError::type_error(format!(
-                    "JSR package '{package}' has no matching version"
-                ))
-            })?;
+                .ok_or_else(|| {
+                    ModuleLoaderError::type_error(format!(
+                        "JSR package '{package}' has no matching version"
+                    ))
+                })?
+            };
             let version_url = format!("{JSR_ORIGIN}/{package}/{version}_meta.json");
             let version_meta: serde_json::Value =
                 serde_json::from_slice(&self.cached_get(&version_url).await?)

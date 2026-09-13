@@ -50,6 +50,29 @@ struct PackageImport {
 }
 
 impl Package {
+    /// Builds a runtime package from registered metadata without reading the game.
+    /// Import-time identification and media extraction are deliberately omitted.
+    pub fn from_launchable(launchable: Launchable) -> Result<Self, GameCatalogError> {
+        let digest = launchable.binary_blake3.as_ref().try_into().map_err(|_| {
+            GameCatalogError::InvalidData("invalid library binary digest".to_owned())
+        })?;
+        let filename = launchable
+            .path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| launchable.path.display().to_string());
+        Ok(Self {
+            path: launchable.path,
+            filename,
+            platform: launchable.platform,
+            serial: launchable.serial,
+            title_id: launchable.title_id,
+            binary_digest: blake3::Hash::from_bytes(digest).to_hex().to_string(),
+            import: None,
+        })
+    }
+
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, crate::ScrapingError> {
         Self::identify(path, None, None)
     }
@@ -153,7 +176,7 @@ impl Package {
     ) -> Result<(Launchable, bool), GameCatalogError> {
         let seed = self.import.ok_or_else(|| {
             GameCatalogError::InvalidData(
-                "a deserialized Package cannot be imported; identify it from its path first"
+                "a Package without import metadata cannot be imported; identify it from its path first"
                     .to_owned(),
             )
         })?;

@@ -801,6 +801,24 @@
   }
 
   class HTMLElement extends Element {}
+  class HTMLImageElement extends HTMLElement {
+    get naturalWidth() { return this.__imageSize?.[0] || 0; }
+    get naturalHeight() { return this.__imageSize?.[1] || 0; }
+    get complete() { return this.naturalWidth > 0 || !this.getAttribute("src"); }
+    __update(snapshot) {
+      super.__update(snapshot);
+      this.__syncImage(snapshot.imageSize);
+    }
+    __syncImage(size = [0, 0]) {
+      this.__imageSize = size;
+      const key = `${this.getAttribute("src")}:${size.join(":")}`;
+      if (key === this.__loadedImage) return;
+      this.__loadedImage = key;
+      if (size[0] > 0 && size[1] > 0) queueMicrotask(() => {
+        if (this.__loadedImage === key && this.isConnected) this.dispatchEvent(new Event("load"));
+      });
+    }
+  }
   class HTMLHeadElement extends HTMLElement {}
   class HTMLBodyElement extends HTMLElement {}
   class HTMLTemplateElement extends HTMLElement {
@@ -1029,6 +1047,7 @@
       registerPolymerSurface(surface, snapshot.id);
       return surface;
     }
+    if (snapshot.tag === "img") return new HTMLImageElement(snapshot);
     if (snapshot.tag === "head") return new HTMLHeadElement(snapshot);
     if (snapshot.tag === "body") return new HTMLBodyElement(snapshot);
     return new HTMLElement(snapshot);
@@ -1075,6 +1094,7 @@
       if (!current) continue;
       const old = current.__rect;
       current.__rect = item.rect;
+      if (current instanceof HTMLImageElement) current.__syncImage(item.imageSize);
       if (!old || old.width !== item.rect.width || old.height !== item.rect.height) resized.push(current);
     }
     activeElement = nodes.get(snapshot.activeElement) || (activeElement?.isConnected ? activeElement : documentNode?.body || null);
@@ -1113,6 +1133,7 @@
     Comment,
     Element,
     HTMLElement,
+    HTMLImageElement,
     HTMLHeadElement,
     HTMLBodyElement,
     HTMLDivElement: HTMLElement,

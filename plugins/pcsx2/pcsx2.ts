@@ -14,6 +14,8 @@ type Configuration = HostConfiguration<{
         ui: {
             settings_version: number,
             setup_wizard_incomplete: boolean,
+            render_to_separate_window: boolean,
+            hide_main_window_when_running: boolean,
         },
         folders: {
             bios: string,
@@ -85,6 +87,10 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     const options = args.configuration.options();
     options.ui.settings_version = 1;
     options.ui.setup_wizard_incomplete = false;
+    // Keep the game surface at PCSX2's default 4:3 window size while leaving
+    // the main window and its menus available for UI automation.
+    options.ui.render_to_separate_window = true;
+    options.ui.hide_main_window_when_running = false;
     options.folders.bios = args.filesystem.path("/User/bios");
     options.folders.snapshots = args.filesystem.path("/User/snaps");
     options.folders.savestates = args.filesystem.path("/User/sstates");

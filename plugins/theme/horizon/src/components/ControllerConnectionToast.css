@@ -1,6 +1,0 @@
-.horizon-controller-toast { grid-area: 1 / 1; z-index: 100; align-self: start; justify-self: end; display: grid; grid-template-columns: auto minmax(12rem, 1fr) auto; align-items: center; gap: 0.8rem; margin: 1.2rem; padding: 0.8rem 1rem; border: 1px solid rgb(255 255 255 / 45%); border-radius: 0.45rem; color: white; background: rgb(24 24 24 / 94%); box-shadow: 0 0.8rem 2rem rgb(0 0 0 / 45%); pointer-events: none; }
-.horizon-controller-toast > svg { width: 2rem; height: 2rem; }
-.horizon-controller-toast strong, .horizon-controller-toast span { display: block; }
-.horizon-controller-toast span { margin-top: 0.12rem; color: #bcbcbc; font-size: 0.8rem; }
-.horizon-toast-index { display: flex; gap: 0.2rem; }
-.horizon-toast-index i { width: 0.48rem; height: 0.48rem; border-radius: 0.08rem; background: #36a7ff; box-shadow: 0 0 0.5rem rgb(54 167 255 / 65%); }
