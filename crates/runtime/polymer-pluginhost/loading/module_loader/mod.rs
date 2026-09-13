@@ -380,6 +380,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn exact_jsr_version_ignores_stale_package_index() {
+        let root = tempfile::tempdir().unwrap();
+        let directories = polymer_library::Directories::rooted(root.path(), root.path());
+        let loader =
+            PluginModuleLoader::new("test", root.path().to_owned()).with_directories(&directories);
+        std::fs::create_dir_all(directories.jsr_cache()).unwrap();
+        for (url, bytes) in [
+            (
+                "https://jsr.io/@std/example/meta.json",
+                r#"{"latest":"1.0.0","versions":{"1.0.0":{}}}"#,
+            ),
+            (
+                "https://jsr.io/@std/example/2.0.0_meta.json",
+                r#"{"exports":{".":"./mod.ts"}}"#,
+            ),
+            (
+                "https://jsr.io/@std/example/2.0.0/mod.ts",
+                "export const value = 2;",
+            ),
+        ] {
+            std::fs::write(
+                directories
+                    .jsr_cache()
+                    .join(blake3::hash(url.as_bytes()).to_hex().to_string()),
+                bytes,
+            )
+            .unwrap();
+        }
+        let specifier = loader.resolve_jsr("jsr:@std/example@2.0.0").unwrap();
+        loader
+            .load_jsr(specifier, ModuleType::JavaScript)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn jsr_reads_the_cache_owned_by_library_directories() {
         let root = tempfile::tempdir().unwrap();
         let directories = polymer_library::Directories::rooted(root.path(), root.path());

@@ -30,19 +30,21 @@ impl LaunchableConfigurations {
             if !seen.insert(uuid) {
                 return Err("launchSet contains duplicate launchables".into());
             }
-            let package = self.package(id).await?;
+            let launchable = self
+                .catalog
+                .launchable(uuid)
+                .await
+                .map_err(|error| error.to_string())?;
+            let value = Self::launchable_value(&launchable);
+            let package =
+                Package::from_launchable(launchable).map_err(|error| error.to_string())?;
             if discs
                 .first()
                 .is_some_and(|(_, first)| first.platform != package.platform)
             {
                 return Err("all launchables must use the same console".into());
             }
-            let launchable = self
-                .catalog
-                .launchable(uuid)
-                .await
-                .map_err(|error| error.to_string())?;
-            discs.push((Self::launchable_value(&launchable), package));
+            discs.push((value, package));
         }
         Ok(discs)
     }
@@ -66,34 +68,7 @@ impl LaunchableConfigurations {
             .launchable(id)
             .await
             .map_err(|error| error.to_string())?;
-        let package = tokio::task::spawn_blocking(move || {
-            let mut package = Package::identify(
-                &launchable.path,
-                Some(&launchable.platform),
-                launchable.parent_binary_id,
-            )
-            .map_err(|error| error.to_string())?;
-            let digest = blake3::Hash::from_bytes(
-                launchable
-                    .binary_blake3
-                    .as_ref()
-                    .try_into()
-                    .map_err(|_| "invalid library binary digest")?,
-            )
-            .to_hex();
-            if package.binary_digest != digest.as_str() {
-                return Err(
-                    "launchable binary changed; update its library registration before configuring"
-                        .into(),
-                );
-            }
-            package.serial = launchable.serial;
-            package.title_id = launchable.title_id;
-            Ok::<_, String>(package)
-        })
-        .await
-        .map_err(|error| error.to_string())??;
-        Ok(package)
+        Package::from_launchable(launchable).map_err(|error| error.to_string())
     }
 
     pub(crate) async fn describe(

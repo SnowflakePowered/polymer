@@ -1,2 +1,2 @@
-.horizon-game-wall { display: flex; min-height: 0; flex: 1; flex-wrap: wrap; align-content: flex-start; gap: 0; overflow: auto; padding: 0; background: #050505; }
-.horizon-game-wall::after { content: ""; height: 0; flex: 999 1 15rem; }
+.horizon-game-wall { min-height: 0; flex: 1; overflow: auto; padding: 0; background: #050505; scrollbar-width: none; }
+.horizon-game-wall-canvas { position: relative; width: 100%; }

@@ -1,8 +1,9 @@
-import { For, createEffect, createSignal, onCleanup, onMount } from "solid-js";
+import { For, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { RecentGame } from "../../app/models";
 import { useShell } from "../../app/shell-context";
 import { useInputActions } from "../../app/InputProvider";
 import { hasActiveInputScope } from "../../components/InputNavigation";
+import { CoverLayout } from "./cover-layout";
 import { GameTile } from "./GameTile";
 import { gameId, nearestInDirection, type Direction } from "./spatial-navigation";
 import "./GameWall.css";
@@ -11,6 +12,13 @@ export function GameWall(props: { games: RecentGame[] }) {
   const shell = useShell();
   const input = useInputActions();
   const [zoom, setZoom] = createSignal(1);
+  const [viewport, setViewport] = createSignal({ width: 1, height: 800 });
+  const [ratios, setRatios] = createSignal<Record<string, number>>({});
+  let wall!: HTMLElement;
+  const layout = createMemo(() => CoverLayout.arrange(
+    props.games.map(game => ratios()[game.artwork || gameId(game)] ?? 0.72),
+    viewport().width, Math.min(240, Math.max(144, viewport().height * .3)) * zoom(),
+  ));
   const [controllerSelections, setControllerSelections] = createSignal<Record<string, string>>({});
   const elements = new Map<string, HTMLButtonElement>();
   const selected = () => shell.model.selectedGame || (props.games[0] ? gameId(props.games[0]) : null);
@@ -42,8 +50,14 @@ export function GameWall(props: { games: RecentGame[] }) {
   };
 
   onMount(() => {
+    const observer = new ResizeObserver(([entry]) => setViewport({ width: Math.max(1, entry.contentRect.width), height: entry.contentRect.height }));
+    observer.observe(wall);
+    onCleanup(() => observer.disconnect());
     const unsubscribe = input.subscribe((action) => {
       if (hasActiveInputScope()) return;
+      const focused = document.activeElement;
+      if (action.origin === "keyboard" && focused instanceof HTMLElement
+        && (focused.closest(".horizon-sidebar") || focused.closest(".horizon-toast-region"))) return;
       if (!props.games.length) return;
       const sourceId = action.sourceId;
       const current = sourceId ? controllerSelections()[sourceId] || gameId(props.games[0]) : selected() || gameId(props.games[0]);
@@ -66,14 +80,16 @@ export function GameWall(props: { games: RecentGame[] }) {
   });
 
   return <section
+    ref={wall}
     class="horizon-game-wall"
     aria-label="Game library"
-    style={`--tile-min-height:${9 * zoom()}rem;--tile-fluid-height:${18 * zoom()}vh;--tile-max-height:${12 * zoom()}rem;--tile-min-width:${7 * zoom()}rem`}
     onWheel={zoomWall}
   >
-    <For each={props.games}>{(game) => {
+    <div class="horizon-game-wall-canvas" style={{ height: `${layout().height}px` }}>
+    <For each={props.games}>{(game, index) => {
       const id = () => gameId(game);
-      return <GameTile game={game} selected={selected() === id()} players={playersFor(id())} zoom={zoom()} register={(key, element) => elements.set(key, element)} onActivate={() => selected() === id() ? launch() : choose(id())} />;
+      return <GameTile game={game} selected={selected() === id()} players={playersFor(id())} placement={layout().placements[index()]} onRatio={ratio => setRatios(values => ({ ...values, [game.artwork || id()]: ratio }))} register={(key, element) => element ? elements.set(key, element) : elements.delete(key)} onActivate={() => selected() === id() ? launch() : choose(id())} />;
     }}</For>
+    </div>
   </section>;
 }

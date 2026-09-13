@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, onCleanup, type ParentProps } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, onCleanup, type ParentProps } from "solid-js";
 import { unwrap } from "solid-js/store";
 import type { LaunchInstance, LaunchOptions } from "../../../../../../js/polymer";
 import { useShell } from "../../app/shell-context";
@@ -26,24 +26,26 @@ export function GameLayout(props: ParentProps) {
     unbind();
     boundId = instance.id;
     void instance.ready.catch(() => {});
-    const ready = () => { shell.setModel("error", ""); shell.rememberGame(); shell.navigate("/game/play", true); };
+    const ready = () => { shell.setModel("launcher", { kind: "idle" }); shell.setModel("error", ""); shell.rememberGame(); shell.navigate("/game/play", true); };
     const audio = (event: Event) => shell.setModel("audio", (event as CustomEvent<{ available: boolean; volume: number; muted: boolean }>).detail);
     const surfacesChanged = () => setRevision((value) => value + 1);
+    const finish = (message?: string) => {
+      batch(() => {
+        if (message) shell.setModel("error", message);
+        shell.setModel("request", null);
+        shell.setModel("launch", null);
+        shell.setModel("surfaces", []);
+        shell.setModel("pauseOpen", false);
+        shell.setModel("gamepadOpen", false);
+        shell.setModel("launcher", { kind: "idle" });
+      });
+      shell.navigate("/", true);
+    };
     const failed = (event: Event) => {
       const error = (event as CustomEvent<Error>).detail;
-      shell.setModel("error", error?.message || "Game launch failed");
-      shell.setModel("surfaces", []);
-      shell.navigate("/", true);
+      finish(error?.message || "Game launch failed");
     };
-    const closed = () => {
-      shell.setModel("launch", null);
-      shell.setModel("request", null);
-      shell.setModel("surfaces", []);
-      shell.setModel("pauseOpen", false);
-      shell.setModel("gamepadOpen", false);
-      shell.setModel("launcher", { kind: "idle" });
-      shell.navigate("/", true);
-    };
+    const closed = () => finish();
     instance.addEventListener("ready", ready);
     instance.addEventListener("audioChanged", audio);
     instance.addEventListener("surfacesChanged", surfacesChanged);
@@ -82,6 +84,8 @@ export function GameLayout(props: ParentProps) {
         bind(instance);
       } catch (error) {
         if (remaining > 0) { wait(remaining - 1); return; }
+        shell.setModel("request", null);
+        shell.setModel("launcher", { kind: "idle" });
         shell.setModel("error", error instanceof Error ? error.message : String(error));
         shell.navigate("/", true);
       }

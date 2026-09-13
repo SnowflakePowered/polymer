@@ -274,6 +274,7 @@ struct NodeSnapshot {
     text: Option<String>,
     attributes: BTreeMap<String, String>,
     rect: RectSnapshot,
+    image_size: [f32; 2],
 }
 
 #[derive(Clone, Copy, PartialEq, Serialize)]
@@ -282,6 +283,21 @@ struct RectSnapshot {
     y: f32,
     width: f32,
     height: f32,
+}
+
+impl NodeSnapshot {
+    fn image_size(node: &Node) -> [f32; 2] {
+        let NodeData::Element(element) = &node.data else {
+            return [0.0; 2];
+        };
+        if let Some(image) = element.raster_image_data() {
+            return [image.width as f32, image.height as f32];
+        }
+        if let Some(image) = element.svg_data() {
+            return [image.size().width(), image.size().height()];
+        }
+        [0.0; 2]
+    }
 }
 
 impl RectSnapshot {
@@ -346,9 +362,11 @@ impl LayoutSnapshot {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct LayoutNodeSnapshot {
     id: usize,
     rect: RectSnapshot,
+    image_size: [f32; 2],
 }
 
 pub(super) fn layout_snapshot(
@@ -357,10 +375,10 @@ pub(super) fn layout_snapshot(
     height: u32,
     device_pixel_ratio: f32,
     node_ids: &HashMap<NodeId, usize>,
-    previous: &mut HashMap<usize, [f32; 4]>,
+    previous: &mut HashMap<usize, [f32; 6]>,
     roots: Option<&[NodeId]>,
 ) -> LayoutSnapshot {
-    fn same_geometry(previous: [f32; 4], current: [f32; 4]) -> bool {
+    fn same_geometry(previous: [f32; 6], current: [f32; 6]) -> bool {
         previous
             .into_iter()
             .zip(current)
@@ -398,7 +416,15 @@ pub(super) fn layout_snapshot(
                 return None;
             }
             let rect = RectSnapshot::from_layout(document, node)?;
-            let values = [rect.x, rect.y, rect.width, rect.height];
+            let image_size = NodeSnapshot::image_size(node);
+            let values = [
+                rect.x,
+                rect.y,
+                rect.width,
+                rect.height,
+                image_size[0],
+                image_size[1],
+            ];
             let unchanged = previous
                 .insert(id, values)
                 .is_some_and(|old| same_geometry(old, values));
@@ -407,6 +433,7 @@ pub(super) fn layout_snapshot(
             }
             Some(LayoutNodeSnapshot {
                 id,
+                image_size,
                 rect: RectSnapshot {
                     x: values[0],
                     y: values[1],
@@ -493,6 +520,7 @@ pub(super) fn snapshot(
                 text,
                 attributes,
                 rect,
+                image_size: NodeSnapshot::image_size(node),
             })
         })
         .collect();
@@ -503,5 +531,44 @@ pub(super) fn snapshot(
         height,
         device_pixel_ratio,
         nodes,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use blitz_dom::node::{ImageData, RasterImageData, SpecialElementData};
+    use std::sync::Arc;
+
+    #[test]
+    fn loaded_cover_dimensions_sync_without_changing_its_css_box() {
+        let mut document = blitz_html::HtmlDocument::from_html(
+            "<img style='width:100px;height:100px' src='polymer:///cover.png'>",
+            blitz_dom::DocumentConfig::default(),
+        );
+        document.as_mut().resolve(0.0);
+        let image = document.as_ref().tree().iter().find_map(|(id, node)| {
+            matches!(&node.data, NodeData::Element(element) if element.name.local == local_name!("img")).then_some(id)
+        }).unwrap();
+        let ids = HashMap::from([(image, 1)]);
+        let mut cache = HashMap::new();
+        let initial = layout_snapshot(document.as_ref(), 800, 600, 1.0, &ids, &mut cache, None);
+        let original_rect = initial.nodes[0].rect;
+        let NodeData::Element(element) = &mut document.as_mut().get_node_mut(image).unwrap().data
+        else {
+            unreachable!()
+        };
+        element.special_data = SpecialElementData::Image(Box::new(ImageData::Raster(
+            RasterImageData::new(160, 224, Arc::new(vec![0; 160 * 224 * 4])),
+        )));
+        let loaded = layout_snapshot(document.as_ref(), 800, 600, 1.0, &ids, &mut cache, None);
+        assert_eq!(loaded.nodes.len(), 1);
+        assert!(loaded.nodes[0].rect == original_rect);
+        assert_eq!(loaded.nodes[0].image_size, [160.0, 224.0]);
+        assert!(
+            layout_snapshot(document.as_ref(), 800, 600, 1.0, &ids, &mut cache, None)
+                .nodes
+                .is_empty()
+        );
     }
 }

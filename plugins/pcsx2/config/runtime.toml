@@ -25,6 +25,20 @@ type = "bool"
 default = false
 emit = { key = "SetupWizardIncomplete", bool_style = "lower" }
 
+[[sections.ui.options]]
+key = "render_to_separate_window"
+title = "Render To Separate Window"
+type = "bool"
+default = true
+emit = { key = "RenderToSeparateWindow", bool_style = "lower" }
+
+[[sections.ui.options]]
+key = "hide_main_window_when_running"
+title = "Hide Main Window When Running"
+type = "bool"
+default = false
+emit = { key = "HideMainWindowWhenRunning", bool_style = "lower" }
+
 [sections.folders]
 title = "Folders"
 target = "ini.Folders"

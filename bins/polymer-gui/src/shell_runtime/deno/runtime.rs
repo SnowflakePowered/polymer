@@ -135,7 +135,7 @@ impl Drop for DenoRealm {
 pub struct Runtime {
     realm: DenoRealm,
     inspector_address: std::net::SocketAddr,
-    layout_cache: HashMap<usize, [f32; 4]>,
+    layout_cache: HashMap<usize, [f32; 6]>,
     layout_view_state: Option<(Option<usize>, u32, u32, u32)>,
 }
 
