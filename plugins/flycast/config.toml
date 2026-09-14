@@ -1,0 +1,90 @@
+[bool_style.yes_no]
+true = "yes"
+false = "no"
+
+[targets.emu]
+output = { format = "ini", path = "emu.cfg" }
+
+[targets.emu.config]
+[targets.emu.window]
+
+[sections.runtime]
+title = "Runtime"
+target = "emu.config"
+
+[[sections.runtime.options]]
+key = "renderer"
+title = "Renderer"
+type = "select"
+# Flycast RenderType values; pvr.rend is a literal key in [config].
+domain = [
+    { key = "OpenGL", label = "OpenGL", value = "0" },
+    { key = "OpenGL_OIT", label = "OpenGL (OIT)", value = "3" },
+    { key = "Vulkan", label = "Vulkan", value = "4" },
+    { key = "Vulkan_OIT", label = "Vulkan (OIT)", value = "5" },
+    { key = "DirectX9", label = "DirectX 9", value = "1" },
+    { key = "DirectX11", label = "DirectX 11", value = "2" },
+    { key = "DirectX11_OIT", label = "DirectX 11 (OIT)", value = "6" },
+]
+default = "Vulkan"
+emit = { key = "pvr.rend" }
+
+[[sections.runtime.options]]
+key = "per_game_vmu"
+title = "Per-game VMU"
+type = "bool"
+default = false
+emit = { key = "PerGameVmu", bool_style = "yes_no" }
+
+[[sections.runtime.options]]
+key = "auto_load_state"
+title = "Auto-load State"
+type = "bool"
+default = false
+emit = { key = "Dreamcast.AutoLoadState", bool_style = "yes_no" }
+
+[[sections.runtime.options]]
+key = "auto_save_state"
+title = "Auto-save State"
+type = "bool"
+default = false
+emit = { key = "Dreamcast.AutoSaveState", bool_style = "yes_no" }
+
+[[sections.runtime.options]]
+key = "fast_gdrom_load"
+title = "Fast GD-ROM Load"
+type = "bool"
+default = true
+emit = { key = "FastGDRomLoad", bool_style = "yes_no" }
+
+[sections.window]
+title = "Window"
+target = "emu.window"
+
+[[sections.window.options]]
+key = "fullscreen"
+title = "Fullscreen"
+type = "bool"
+default = false
+emit = { key = "fullscreen", bool_style = "yes_no" }
+
+[[sections.window.options]]
+key = "maximized"
+title = "Maximized"
+type = "bool"
+default = false
+emit = { key = "maximized", bool_style = "yes_no" }
+
+[[sections.window.options]]
+key = "width"
+title = "Width"
+type = "int"
+default = 960
+emit = { key = "width" }
+
+[[sections.window.options]]
+key = "height"
+title = "Height"
+type = "int"
+default = 720
+emit = { key = "height" }

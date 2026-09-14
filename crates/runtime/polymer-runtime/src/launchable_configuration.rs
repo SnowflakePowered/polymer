@@ -36,8 +36,11 @@ impl LaunchableConfigurations {
                 .await
                 .map_err(|error| error.to_string())?;
             let value = Self::launchable_value(&launchable);
-            let package =
+            let mut package =
                 Package::from_launchable(launchable).map_err(|error| error.to_string())?;
+            package
+                .prepare_launch()
+                .map_err(|error| error.to_string())?;
             if discs
                 .first()
                 .is_some_and(|(_, first)| first.platform != package.platform)

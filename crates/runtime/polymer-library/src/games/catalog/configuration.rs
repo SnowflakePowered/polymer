@@ -5,7 +5,7 @@ impl GameCatalog {
     pub async fn launchable(&self, id: Uuid) -> Result<Launchable, GameCatalogError> {
         let connection = self.connection().await?;
         let mut rows = connection.query(
-            "SELECT l.binary_id, l.path, b.blake3, b.serial, b.title_id, b.parent_binary_id, b.platform FROM launchables l JOIN binaries b ON b.id = l.binary_id WHERE l.id = ?1",
+            "SELECT l.binary_id, l.path, b.blake3, b.serial, b.title_id, b.parent_binary_id, b.platform, m.manifest_json FROM launchables l JOIN binaries b ON b.id = l.binary_id LEFT JOIN launchable_manifests m ON m.launchable_id = l.id WHERE l.id = ?1",
             [Self::id(id)],
         ).await?;
         let row = rows
@@ -13,6 +13,7 @@ impl GameCatalog {
             .await?
             .ok_or_else(|| GameCatalogError::NotFound(id.to_string()))?;
         Ok(Launchable {
+            manifest: Self::decode_manifest(row.get_value(7)?)?,
             id,
             binary_id: Self::uuid(row.get_value(0)?)?,
             path: PathBuf::from(row.get::<String>(1)?),

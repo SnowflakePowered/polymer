@@ -30,7 +30,6 @@ function quoted(value: string): string {
 
 export const onLaunch = (args: EmulatorLaunchArgs) => {
     const biosName = basename(config.plugin.config.bios);
-    const gameName = basename(args.launchPath);
 
     args.filesystem.mountTree("/RetroArch", runtime, { mode: "rx" });
     args.filesystem.mountScratch("/User", { mode: "rwx", backing: "temporary" });
@@ -40,7 +39,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     args.filesystem.mountScratch("/User/system/pcsx2/memcards", { mode: "rwx", backing: "temporary" });
     args.filesystem.mountScratch("/Generated", { mode: "rwx", backing: "temporary" });
     args.filesystem.mountHostTree("/User/system/pcsx2/bios", dirname(config.plugin.config.bios), { mode: "rx" });
-    args.filesystem.mountHostFile(`/Game/${gameName}`, args.launchPath, { mode: "r" });
+    const gamePath = args.filesystem.mountPackage("/Game");
     args.filesystem.setWorkingDirectory("/RetroArch");
     args.filesystem.setProfile({
         home: "/User",
@@ -98,7 +97,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
             "--verbose",
             "--log-file", args.filesystem.path("/User/logs/lrps2.log"),
             "-f",
-            args.filesystem.path(`/Game/${gameName}`),
+            gamePath,
         ],
         isolate: true,
         hooks: { graphics: ["d3d11"], input: ["sdl3"] },

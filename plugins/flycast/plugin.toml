@@ -12,4 +12,4 @@ flash = "D:\\bios\\dreamcast\\dc_flash.bin"
 platforms = ["SEGA_DC"]
 
 [emulator.configuration]
-definitions = ["config/input.toml"]
+definitions = ["config.toml", "config/input.toml"]

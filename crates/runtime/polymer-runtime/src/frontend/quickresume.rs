@@ -115,11 +115,20 @@ impl QuickResume {
             })
             .unwrap_or_default();
         // An index is only meaningful for this exact ordered set of binaries and paths.
-        if let Some(set) = argument["launchSet"].as_array().filter(|set| set.len() > 1) {
+        if let Some(set) = argument["launchSet"].as_array().filter(|set| {
+            set.len() > 1 || set.iter().any(|disc| disc["package"]["bundle"].is_object())
+        }) {
             let identities: Vec<_> = set
                 .iter()
                 .map(|disc| {
-                    serde_json::json!([disc["launchPath"], disc["package"]["binaryDigest"],])
+                    let mut parts = vec![
+                        disc["launchPath"].clone(),
+                        disc["package"]["binaryDigest"].clone(),
+                    ];
+                    if let Some(revision) = disc["package"]["bundle"].get("revision") {
+                        parts.push(revision.clone());
+                    }
+                    serde_json::json!(parts)
                 })
                 .collect();
             identity = serde_json::to_string(&identities).expect("launch identities are JSON");
@@ -151,5 +160,18 @@ mod tests {
         launch["launchSet"].as_array_mut().unwrap().swap(0, 1);
         launch["launchSet"][1]["package"]["binaryDigest"] = "changed".into();
         assert_ne!(QuickResume::key("test", &launch), Some(key));
+    }
+    #[test]
+    fn single_disc_resume_changes_when_its_manifest_changes() {
+        let mut launch = serde_json::json!({ "launchSet": [{
+            "launchPath": "disc.cue", "package": {
+                "filename": "disc.cue", "platform": "SONY_PSX", "serial": "SLUS-00000",
+                "titleId": null, "binaryDigest": "unchanged",
+                "bundle": { "revision": "first", "entrypoint": "disc.cue", "files": [] }
+            }
+        }] });
+        let before = QuickResume::key("test", &launch).unwrap();
+        launch["launchSet"][0]["package"]["bundle"]["revision"] = "new-audio".into();
+        assert_ne!(QuickResume::key("test", &launch), Some(before));
     }
 }

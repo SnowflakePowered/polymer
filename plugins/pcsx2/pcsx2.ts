@@ -60,7 +60,6 @@ function basename(path: string): string {
 
 export const onLaunch = (args: EmulatorLaunchArgs) => {
     const biosName = basename(config.plugin.config.bios);
-    const gameName = basename(args.launchPath);
 
     // Keep the immutable PCSX2 distribution separate from invocation-local
     // state. Portable mode only needs its fixed `inis/` child to be writable;
@@ -75,7 +74,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
         });
     }
     args.filesystem.mountHostFile(`/User/bios/${biosName}`, config.plugin.config.bios, { mode: "r" });
-    args.filesystem.mountHostFile(`/Game/${gameName}`, args.launchPath, { mode: "r" });
+    const gamePath = args.filesystem.mountPackage("/Game");
     args.filesystem.setWorkingDirectory("/PCSX2");
     args.filesystem.setProfile({
         home: "/User",
@@ -118,7 +117,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
 
     return {
         command: args.filesystem.path("/PCSX2/pcsx2-qt.exe"),
-        argv: ["-portable", "-batch", "--", args.filesystem.path(`/Game/${gameName}`)],
+        argv: ["-portable", "-batch", "--", gamePath],
         isolate: false,
         hooks: { graphics: ["d3d11"], input: ["sdl3"] },
         

@@ -75,6 +75,8 @@ declare module "polymer:api" {
     export type OnScrape = (input: ScrapeInput) => AsyncGenerator<ScrapeResult, void, void>;
 
     export type Filesystem = {
+        /** Mounts the host-bound launch entry read-only; onDiscChange binds the requested disc. */
+        mountPackage(target: string): string,
         mountHostTree(target: string, source: string, options: { mode: string }): void,
         mountHostFile(target: string, source: string, options: { mode: string }): void,
         mountTree(target: string, source: Resource | DirectoryResource | URL | string, options: { mode: string }): void,

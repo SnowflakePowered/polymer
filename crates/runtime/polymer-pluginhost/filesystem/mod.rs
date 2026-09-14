@@ -1,6 +1,7 @@
 //! Filesystem composition capabilities owned by plugin-worker isolates.
 
 mod ops;
+mod package;
 
 use deno_core::{JsRuntime, OpState, op2};
 use deno_error::JsErrorBox;

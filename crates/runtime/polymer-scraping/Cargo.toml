@@ -10,6 +10,7 @@ rust-version.workspace = true
 blake3 = { workspace = true, features = ["traits-preview"] }
 consolespec.workspace = true
 crc32fast = "1.5"
+cuna = "0.7"
 futures-util = "0.3.32"
 gumshoe.workspace = true
 image = { version = "0.25", default-features = false, features = ["gif", "png"] }

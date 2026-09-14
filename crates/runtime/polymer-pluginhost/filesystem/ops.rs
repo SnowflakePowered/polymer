@@ -153,6 +153,19 @@ fn op_vfs_cache_resource(
     Ok(JsResource::new(None, handle))
 }
 
+#[op2]
+#[string]
+fn op_vfs_mount_package_source(
+    state: &mut OpState,
+    #[string] target: String,
+    #[string] source: String,
+) -> Result<String, JsErrorBox> {
+    state
+        .borrow_mut::<FilesystemState>()
+        .mount_package_source(target, PathBuf::from(source))
+        .map_err(js_error)
+}
+
 #[op2(fast)]
 fn op_vfs_mount_host_tree(
     state: &mut OpState,
@@ -524,7 +537,7 @@ deno_core::extension!(polymer_filesystem,
         op_vfs_import_package, op_vfs_storage, op_vfs_quick_resume,
         op_vfs_resource_entries, op_vfs_resource_bytes,
         op_vfs_resource_remove, op_vfs_scratch_resource,
-        op_vfs_cache_resource, op_vfs_mount_host_tree, op_vfs_mount_host_file,
+        op_vfs_cache_resource, op_vfs_mount_host_tree, op_vfs_mount_host_file, op_vfs_mount_package_source,
         op_vfs_mount_tree_pkg, op_vfs_mount_tree_resource, op_vfs_mount_file_pkg,
         op_vfs_mount_file_text, op_vfs_mount_file_bytes, op_vfs_mount_file_resource,
         op_vfs_mount_scratch, op_vfs_mount_storage, op_vfs_path,

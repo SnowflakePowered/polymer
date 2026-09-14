@@ -33,7 +33,7 @@ async function launch(entrypoint, args, configurationId, explicitDefault) {
 
   const configuration = __polymerPluginHost.configuration(configurationId);
   args.configuration = configuration;
-  args.filesystem = __polymerFilesystem.filesystem;
+  args.filesystem = __polymerFilesystem.forLaunch(discs[initialDiscIndex]);
   args.storage = __polymerFilesystem.storage;
   const parserReceiver = typeof module.onParseHotkey === "function" ? module : receiver;
   __polymerActions.create(configurationId, parserReceiver?.onParseHotkey);
@@ -124,7 +124,7 @@ async function controllerChanged(inputTopology, previousTopology) {
     inputTopology,
     previousTopology,
     active.configuration,
-    __polymerFilesystem.filesystem,
+    __polymerFilesystem.forLaunch(active.launchSet[active.disc.index]),
   );
   const result = typeof active.onControllerChanged === "function"
     ? await Reflect.apply(active.onControllerChanged, active.controllerReceiver, [context])
@@ -152,7 +152,7 @@ async function stateAction(slot, save) {
   }
   const context = __polymerControllerChange.stateContext(
     slot,
-    __polymerFilesystem.filesystem,
+    __polymerFilesystem.forLaunch(active.launchSet[active.disc.index]),
     active.saveStateDirectory,
   );
   await Reflect.apply(callback, receiver, [context]);
@@ -170,7 +170,7 @@ async function discChange(index) {
   await Reflect.apply(active.onDiscChange, active.discReceiver, [Object.freeze({
     launchSet: active.launchSet,
     index,
-    filesystem: __polymerFilesystem.filesystem,
+    filesystem: __polymerFilesystem.forLaunch(active.launchSet[index]),
   })]);
 }
 

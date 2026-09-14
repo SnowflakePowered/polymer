@@ -463,9 +463,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
         }
         args.filesystem.mountStorage("/User/Wii", args.storage.nand, { mode: "rwx" });
     }
-    if (!launchesNandTitle) {
-        args.filesystem.mountHostFile(`/Game/${gameName}`, args.launchPath, { mode: "r" });
-    }
+    const gamePath = launchesNandTitle ? null : args.filesystem.mountPackage("/Game");
     args.filesystem.setWorkingDirectory("/Dolphin");
     args.filesystem.setProfile({
         home: "/User",
@@ -537,7 +535,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
         }
         argv.push("--nand_title", titleId);
     } else {
-        argv.push("-e", args.filesystem.path(`/Game/${gameName}`));
+        argv.push("-e", gamePath!);
     }
     if (quickResume) {
         args.filesystem.mountFile("/QuickResume/state.sav", quickResume.state, { mode: "r" });

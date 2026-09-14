@@ -45,6 +45,10 @@ pub(crate) trait LibraryApi {
             "titleId": launchable.title_id,
             "parentBinaryId": launchable.parent_binary_id.map(|id| id.simple().to_string()),
             "platform": launchable.platform,
+            "preparation": launchable.manifest.as_ref().map(|manifest| json!({
+                "state": if manifest.template.is_some() { "ready" } else if manifest.error.is_some() { "failed" } else { "pending" },
+                "error": manifest.error,
+            })),
         })
     }
 
