@@ -226,12 +226,15 @@ pub fn prepare_api(
 pub(crate) fn prepare_api_with_sources(
     plugins: PluginRegistry,
     viewer: ConfigurationDefaults,
-    package: Package,
+    mut package: Package,
     request: serde_json::Value,
     sources: &InputHub,
     controller_profiles: &ControllerProfiles,
     controller_assignments: &ControllerAssignmentSnapshot,
 ) -> Result<serde_json::Value, String> {
+    package
+        .prepare_launch()
+        .map_err(|error| error.to_string())?;
     let request: ConfigurationRequest =
         serde_json::from_value(request).map_err(|error| error.to_string())?;
     let user_configuration = request.user_configuration.clone();

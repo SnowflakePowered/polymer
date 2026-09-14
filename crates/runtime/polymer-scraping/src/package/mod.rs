@@ -30,6 +30,10 @@ use std::{
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Package {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle: Option<crate::LaunchBundle>,
+    #[serde(skip)]
+    manifest: Option<polymer_library::PackageManifest>,
     #[serde(skip)]
     pub path: PathBuf,
     pub filename: String,
@@ -63,6 +67,8 @@ impl Package {
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| launchable.path.display().to_string());
         Ok(Self {
+            bundle: None,
+            manifest: launchable.manifest,
             path: launchable.path,
             filename,
             platform: launchable.platform,
@@ -71,6 +77,18 @@ impl Package {
             binary_digest: blake3::Hash::from_bytes(digest).to_hex().to_string(),
             import: None,
         })
+    }
+
+    /// Prepare launch-only data without changing binary identity or reading ROM contents.
+    pub fn prepare_launch(&mut self) -> Result<(), crate::ScrapingError> {
+        if let Some(manifest) = &mut self.manifest {
+            // Direct path launches have no scrape job; registered packages must already be prepared.
+            if self.import.is_some() && manifest.template.is_none() {
+                crate::ingest::CuePreparation::finalize(manifest)?;
+            }
+            self.bundle = Some(crate::ingest::CuePreparation::bundle(manifest)?);
+        }
+        Ok(())
     }
 
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, crate::ScrapingError> {
@@ -89,12 +107,24 @@ impl Package {
                 path: requested.to_owned(),
                 source,
             })?;
+        let entries = crate::Ingestor::entrypoints(&path)?;
+        // A single package API retains Gumshoe's rejection of ambiguous directories.
+        let path = if entries.len() == 1 {
+            entries[0].clone()
+        } else {
+            path
+        };
         let package = GeneralIdentifier.identify_path(&path).map_err(|source| {
             crate::ScrapingError::Identify {
                 path: path.clone(),
                 reason: source.to_string(),
             }
         })?;
+        let manifest = crate::ingest::CuePreparation::capture(&path, package.as_ref())?;
+        let path = manifest
+            .as_ref()
+            .map(|value| value.descriptor.path.clone())
+            .unwrap_or(path);
         let inferred = Self::platform_identifier(package.platform());
         let hinted = platform_hint
             .map(|platform| {
@@ -148,13 +178,24 @@ impl Package {
         };
         let gumshoe = Self::gumshoe_metadata(package.as_ref(), platform, binary_blake3);
         let filename = Self::filename_metadata(&path);
-        let raw_file = hashes::FileDigests::metadata(&path)?;
+        let raw_file = if let Some(manifest) = &manifest {
+            let mut metadata = Vec::new();
+            for file in &manifest.files {
+                metadata.extend(hashes::FileDigests::metadata(&file.path)?);
+            }
+            crate::ingest::CuePreparation::validate_files(manifest)?;
+            metadata
+        } else {
+            hashes::FileDigests::metadata(&path)?
+        };
         let name = path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| path.display().to_string());
         Ok(Self {
+            bundle: None,
+            manifest,
             path,
             filename: name,
             platform: platform.to_owned(),
@@ -181,13 +222,14 @@ impl Package {
             )
         })?;
         catalog
-            .import_launchable_seeded(
+            .import_package(
                 seed.launchable,
                 vec![
                     ("host:gumshoe".to_owned(), seed.gumshoe),
                     ("host:shiratsu".to_owned(), seed.filename),
                     ("host:raw-file".to_owned(), seed.raw_file),
                 ],
+                self.manifest,
             )
             .await
     }

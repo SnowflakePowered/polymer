@@ -72,5 +72,10 @@ CREATE TABLE IF NOT EXISTS launchable_configurations (
     values_json TEXT NOT NULL,
     PRIMARY KEY (launchable_id, plugin_id, schema)
 ) STRICT;
-PRAGMA user_version = 3;
+CREATE TABLE IF NOT EXISTS launchable_manifests (
+    launchable_id BLOB PRIMARY KEY NOT NULL REFERENCES launchables(id) ON DELETE CASCADE,
+    revision TEXT NOT NULL,
+    manifest_json TEXT NOT NULL
+) STRICT;
+PRAGMA user_version = 4;
 "#;

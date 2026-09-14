@@ -44,17 +44,22 @@ async fn disc_changes_keep_quit_on_the_last_successful_disc() {
         std::fs::write(root.path().join("plugin.js"), r#"
             let current = 1;
             let busy = false;
+            let mounts = 0;
             const plugin = {
               onLaunch(args) {
                 if (args.initialDiscIndex !== 1 || args.launchPath !== "disc1") throw Error("wrong initial disc");
                 if (!Object.isFrozen(args.launchSet) || !Object.isFrozen(args.launchSet[0])) throw Error("mutable set");
-                return { command: "emulator.exe", hooks: { graphics: ["vulkan"], input: [] }, surfaces: [{ index: 0 }] };
+                const mount = args.filesystem.mountPackage;
+                if (!mount("/Initial").endsWith("disc1.iso")) throw Error("wrong initial mount");
+                args.filesystem.mountFile("/Emulator/emulator.exe", new Uint8Array([1]), { mode: "rx" });
+                return { command: args.filesystem.path("/Emulator/emulator.exe"), hooks: { graphics: ["vulkan"], input: [] }, surfaces: [{ index: 0 }] };
               },
               onParseHotkey(code) { return { kind: "keyboard", code }; },
               async onDiscChange(context) {
                 if (this !== plugin || busy) throw Error("callback receiver or serialization lost");
                 if (context.index === 2) throw Error("disc unavailable");
                 if (!context.filesystem || context.launchSet[context.index].launchPath !== `disc${context.index}`) throw Error("wrong context");
+                if (!context.filesystem.mountPackage(`/Change${mounts++}`).endsWith(`disc${context.index}.iso`)) throw Error("wrong target mount");
                 busy = true;
                 await new Promise(resolve => setTimeout(resolve, 5));
                 current = context.index;
@@ -62,6 +67,7 @@ async fn disc_changes_keep_quit_on_the_last_successful_disc() {
               },
               onQuit(context) {
                 if (context.launchPath !== `disc${current}` || context.package.serial !== `${current}`) throw Error("quit disc mismatch");
+                if (!context.filesystem.mountPackage(`/Quit${mounts++}`).endsWith(`disc${current}.iso`)) throw Error("wrong active mount after disc change");
                 return null;
               },
             };
@@ -80,9 +86,9 @@ async fn disc_changes_keep_quit_on_the_last_successful_disc() {
                 vec![serde_json::json!({
                     "console": "TEST", "controllerTopology": { "mappings": [] },
                     "launchSet": [
-                        { "launchPath": "disc0", "package": { "serial": "0" } },
-                        { "launchPath": "disc1", "package": { "serial": "1" } },
-                        { "launchPath": "disc2", "package": { "serial": "2" } },
+                        { "launchPath": "disc0", "package": { "serial": "0", "bundle": { "entrypoint": "disc0.iso", "files": [{ "name": "disc0.iso", "text": "disc", "path": null }] } } },
+                        { "launchPath": "disc1", "package": { "serial": "1", "bundle": { "entrypoint": "disc1.iso", "files": [{ "name": "disc1.iso", "text": "disc", "path": null }] } } },
+                        { "launchPath": "disc2", "package": { "serial": "2", "bundle": { "entrypoint": "disc2.iso", "files": [{ "name": "disc2.iso", "text": "disc", "path": null }] } } },
                     ],
                     "initialDiscIndex": 1,
                 })],

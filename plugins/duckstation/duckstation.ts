@@ -58,16 +58,9 @@ function basename(path: string): string {
     return name;
 }
 
-function dirname(path: string): string {
-    const normalized = path.replaceAll("\\", "/");
-    const separator = normalized.lastIndexOf("/");
-    if (separator <= 0) throw new TypeError(`path has no parent: ${path}`);
-    return normalized.slice(0, separator);
-}
 
 export const onLaunch = (args: EmulatorLaunchArgs) => {
     const biosName = basename(config.plugin.config.bios);
-    const gameName = basename(args.launchPath);
     const path = (virtualPath: string) => args.filesystem.path(virtualPath);
 
     args.filesystem.mountTree("/DuckStation", runtime, { mode: "rx" });
@@ -84,7 +77,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
         args.filesystem.mountScratch("/User/memcards", { mode: "rwx", backing: "temporary" });
     }
     args.filesystem.mountHostFile(`/User/bios/${biosName}`, config.plugin.config.bios, { mode: "r" });
-    args.filesystem.mountHostTree("/Game", dirname(args.launchPath), { mode: "rx" });
+    const gamePath = args.filesystem.mountPackage("/Game");
     args.filesystem.setWorkingDirectory("/DuckStation");
     args.filesystem.setProfile({
         home: "/User",
@@ -127,7 +120,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     args.filesystem.mountFile("/DuckStation/settings.ini", settings, { mode: "rw" });
     return {
         command: path("/DuckStation/duckstation-qt-x64-ReleaseLTCG.exe"),
-        argv: ["-batch", "-fastboot", "--", path(`/Game/${gameName}`)],
+        argv: ["-batch", "-fastboot", "--", gamePath],
         isolate: true,
         hooks: { graphics: ["d3d11"], input: ["sdl3"] },
         surfaces: [{ index: 0, pattern: "DuckStation|Crash Bandicoot" }],

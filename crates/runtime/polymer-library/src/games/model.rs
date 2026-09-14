@@ -13,6 +13,7 @@ pub struct Game {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Launchable {
+    pub manifest: Option<super::PackageManifest>,
     pub id: Uuid,
     pub binary_id: Uuid,
     pub path: PathBuf,

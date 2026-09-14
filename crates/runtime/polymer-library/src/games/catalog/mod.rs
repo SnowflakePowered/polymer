@@ -15,6 +15,7 @@ use super::{
 use crate::Directories;
 
 mod configuration;
+mod manifest;
 mod metadata;
 mod objects;
 #[cfg(test)]
@@ -121,8 +122,9 @@ impl GameCatalog {
                 r#"
                 SELECT COALESCE(binary.parent_binary_id, binary.id), root.platform,
                        launchable.id, binary.id, launchable.path, binary.blake3,
-                       binary.serial, binary.title_id, binary.parent_binary_id
+                       binary.serial, binary.title_id, binary.parent_binary_id, manifest.manifest_json
                 FROM launchables AS launchable
+                LEFT JOIN launchable_manifests AS manifest ON manifest.launchable_id = launchable.id
                 JOIN binaries AS binary ON binary.id = launchable.binary_id
                 JOIN binaries AS root ON root.id = COALESCE(binary.parent_binary_id, binary.id)
                 ORDER BY COALESCE(binary.parent_binary_id, binary.id),
@@ -148,6 +150,7 @@ impl GameCatalog {
             let binary_id = Self::uuid(row.get_value(3)?)?;
             binary_roots.insert(binary_id, root_id);
             game.launchables.push(Launchable {
+                manifest: Self::decode_manifest(row.get_value(9)?)?,
                 id: Self::uuid(row.get_value(2)?)?,
                 binary_id,
                 path: PathBuf::from(row.get::<String>(4)?),
@@ -211,6 +214,15 @@ impl GameCatalog {
         &self,
         input: IdentifiedLaunchable,
         seeds: Vec<(String, Vec<MetadataInput>)>,
+    ) -> Result<(Launchable, bool), GameCatalogError> {
+        self.import_package(input, seeds, None).await
+    }
+
+    pub async fn import_package(
+        &self,
+        input: IdentifiedLaunchable,
+        seeds: Vec<(String, Vec<MetadataInput>)>,
+        manifest: Option<super::PackageManifest>,
     ) -> Result<(Launchable, bool), GameCatalogError> {
         if input.platform.is_empty() {
             return Err(GameCatalogError::InvalidData(
@@ -290,6 +302,7 @@ impl GameCatalog {
                 )
                 .await?;
         }
+        Self::write_manifest(&transaction, id, manifest.as_ref()).await?;
         let mut replaced_objects = Vec::new();
         for (producer, values) in prepared_seeds {
             replaced_objects
@@ -311,6 +324,7 @@ impl GameCatalog {
         let created_root = !binary_existed && input.parent_binary_id.is_none();
         Ok((
             Launchable {
+                manifest,
                 id,
                 binary_id,
                 path: input.path,
@@ -417,8 +431,8 @@ impl GameCatalog {
                 ).await?;
                 connection.execute_batch(SCHEMA).await?;
             }
-            2 => connection.execute_batch(SCHEMA).await?,
-            3 => {}
+            2 | 3 => connection.execute_batch(SCHEMA).await?,
+            4 => {}
             version => {
                 return Err(GameCatalogError::InvalidData(format!(
                     "library database schema version {version} is not supported"

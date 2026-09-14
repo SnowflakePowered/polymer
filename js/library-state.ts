@@ -76,14 +76,16 @@ export class LibraryState {
     this.imports.set(token, path.split(/[\\/]/).pop() || path);
     this.publish();
     try {
-      const { launchable, scrapeJob } = await this.library.launchables.add({ path });
-      const job = scrapeJob ?? await this.scraping.jobs.start(
-        launchable.parentBinaryId ?? launchable.binaryId,
-        { triggerBinaryId: launchable.binaryId },
-      );
-      // Notifications may already have advanced beyond the enqueue response.
-      this.sessionJobs.add(job.id);
-      if (!this.jobs.has(job.id)) this.jobs.set(job.id, job);
+      const result = await this.library.launchables.add({ path });
+      for (const { launchable, scrapeJob } of result.imports ?? [result]) {
+        const job = scrapeJob ?? await this.scraping.jobs.start(
+          launchable.parentBinaryId ?? launchable.binaryId,
+          { triggerBinaryId: launchable.binaryId },
+        );
+        // Notifications may already have advanced beyond the enqueue response.
+        this.sessionJobs.add(job.id);
+        if (!this.jobs.has(job.id)) this.jobs.set(job.id, job);
+      }
       this.refresh();
     } catch (error) {
       if (!this.disposed) this.failed(error);

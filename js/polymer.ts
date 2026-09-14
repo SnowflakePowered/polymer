@@ -400,6 +400,7 @@ export type LibraryMetadataInput = Readonly<{
 }>;
 
 export type LibraryLaunchable = Readonly<{
+  preparation?: Readonly<{ state: "pending" | "ready" | "failed"; error: string | null }> | null;
   id: string;
   binaryId: string;
   path: string;
@@ -436,7 +437,7 @@ export interface LibraryApi extends EventTarget {
     delete(rootBinaryId: string): Promise<void>;
   }>;
   readonly launchables: Readonly<{
-    add(input: { path: string; platform?: string; parentBinaryId?: string }): Promise<Readonly<{ launchable: LibraryLaunchable; scrapeJob: ScrapeJob | null }>>;
+    add(input: { path: string; platform?: string; parentBinaryId?: string }): Promise<Readonly<{ launchable: LibraryLaunchable; scrapeJob: ScrapeJob | null; imports?: readonly Readonly<{ launchable: LibraryLaunchable; scrapeJob: ScrapeJob | null }>[] }>>;
     delete(id: string): Promise<void>;
   }>;
   readonly metadata: Readonly<{

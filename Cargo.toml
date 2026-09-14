@@ -115,7 +115,7 @@ polymer-hook-input-sdl = { path = "crates/hooks/polymer-hook-input-sdl" }
 polymer-hook-input-win32 = { path = "crates/hooks/polymer-hook-input-win32" }
 polymer-hook-input = { path = "crates/hooks/polymer-hook-input" }
 consolespec = { version = "0.0.1" }
-gumshoe = { version = "0.0.4-beta" }
+gumshoe = { version = "0.0.5-beta" }
 gix = { version = "0.86", features = ["tree-editor"] }
 phf = "0.14"
 phf_codegen = "0.14"

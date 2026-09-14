@@ -51,4 +51,55 @@
 ### `runtime`
 `runtime` keys are information that is derived possibly from third party sources but may be needed to run the game.
 
-* `runtime.cuesheet` - A cuesheet for the game, if it requires one.
+* `media.cue` - An optional scraped cuesheet candidate. This does not replace the descriptor of an identified package.
+
+## BIN/CUE package ingestion
+
+`polymer-scraping::Ingestor` accepts file paths or package directories. Individual
+files are passed to Gumshoe 0.0.5-beta without neighboring-file lookup. A directory
+with CUE sheets is enumerated by sheet; a directory without sheets retains normal
+Gumshoe directory identification. An incomplete BIN is rejected by Gumshoe.
+
+Gumshoe identifies a complete disc and exposes its descriptor and dependencies
+through `package_files()`. Polymer stores the explicit descriptor path, original
+sheet, member paths, sizes, and modification signatures on the launchable. The
+normalized executable digest remains the binary identity. Raw dump fingerprints
+are collected separately for constituent files, never from the CUE text.
+
+After metadata scraping settles, the host parses the saved sheet with `cuna` and
+stores a template whose FILE and CDTEXTFILE operands refer to manifest members.
+Original formatting, comments, track types, and indexes are retained. Preparation
+is independent of metadata scrape success; errors are exposed as
+`launchable.preparation`. Pending manifests recover on startup, including imports
+interrupted before a scrape was queued. Revision-checked writes prevent stale
+finalizers from replacing a re-imported manifest.
+
+At launch, the host checks member availability and modification signatures and
+renders a CUE using deterministic filenames. Emulator plugins call
+`filesystem.mountPackage("/Game")`
+to mount the descriptor and dependencies read-only and receive the emulator-visible
+entrypoint. The host captures the launch entry in the filesystem closure; a
+disc-change callback receives the requested disc, and later callbacks receive the
+active disc. Without a CUE bundle, the host mounts a standalone image at
+`/Game/<filename>` or an extracted package directory at `/Game`, returning that
+file or directory respectively. Dolphin disc images and Cemu packages use the
+same API; installed NAND titles continue to boot through console storage.
+One disc remains one launchable regardless of track count. Quick
+resume identity includes the manifest revision. Existing BIN-based library entries
+must be re-imported using their CUE or package directory to acquire a manifest.
+
+No file-set discovery callback, hash-based sibling search, or missing-CUE repair
+is part of this pipeline. Scraped `media.cue` is ordinary metadata and does not
+control package launch preparation.
+
+Validation:
+
+```text
+cargo test -p polymer-library -p polymer-scraping --lib --tests
+cargo test -p polymer-pluginhost --test package_mount --test disc_change
+```
+
+The ignored `cue_packages` integration test reads a complete local disc from
+`POLYMER_CUE_DIRECTORY`, imports it into a temporary library, and verifies CUE and
+directory identity, dependency capture, track rejection, and launch preparation.
+It does not modify the supplied game directory.

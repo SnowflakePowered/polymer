@@ -25,7 +25,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     args.filesystem.mountTree("/mGBA", runtime, { mode: "rx" });
     args.filesystem.mountScratch("/Game", { mode: "rwx", backing: "temporary" });
     args.filesystem.mountScratch("/User", { mode: "rwx", backing: "temporary" });
-    args.filesystem.mountHostFile(`/Game/${gameName}`, args.launchPath, { mode: "r" });
+    const gamePath = args.filesystem.mountPackage("/Game");
     if (args.storage.battery) {
         args.filesystem.mountStorage(`/Game/${saveName(gameName)}`, args.storage.battery, {
             mode: "rw",
@@ -41,7 +41,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
 
     return {
         command: path("/mGBA/mGBA.exe"),
-        argv: [path(`/Game/${gameName}`)],
+        argv: [gamePath],
         isolate: true,
         hooks: { graphics: ["opengl"], input: ["sdl3"] },
         surfaces: [{ index: 0, pattern: "mGBA", }],

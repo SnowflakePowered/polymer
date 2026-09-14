@@ -2,6 +2,7 @@
 import {
   op_vfs_cache_resource,
   op_vfs_mount_host_file,
+  op_vfs_mount_package_source,
   op_vfs_mount_host_tree,
   op_vfs_mount_file_bytes,
   op_vfs_mount_file_pkg,
@@ -114,6 +115,7 @@ function pkgSource(value) {
 }
 
 const filesystem = Object.freeze({
+
   mountHostTree(target, source, options) {
     op_vfs_mount_host_tree(String(target), String(source), mode(options));
   },
@@ -208,6 +210,40 @@ const filesystem = Object.freeze({
   setProfile(profile) { op_vfs_set_profile(profile ?? {}); },
 });
 
+// Each callback receives a filesystem whose package entry is captured by the host.
+function forLaunch(launchable) {
+  return Object.freeze({
+    ...filesystem,
+    // Mount a host-prepared package and return its emulator-visible entrypoint.
+    mountPackage(target) {
+      target = String(target).replace(/\/+$/, "");
+      const bundle = launchable.package?.bundle;
+      if (bundle == null) {
+        return op_vfs_mount_package_source(target, String(launchable.launchPath));
+      }
+      const validName = name => typeof name === "string" && name.length > 0
+        && name !== "." && name !== ".." && !/[\\/:]/.test(name);
+      if (!validName(bundle.entrypoint) || !Array.isArray(bundle.files)
+        || !bundle.files.some(file => file.name === bundle.entrypoint)) {
+        throw new TypeError("invalid package entrypoint");
+      }
+      const names = new Set();
+      for (const file of bundle.files) {
+        if (!validName(file.name) || names.has(file.name)
+          || (typeof file.path === "string") === (typeof file.text === "string")) {
+          throw new TypeError("invalid package file binding");
+        }
+        names.add(file.name);
+      }
+      for (const file of bundle.files) {
+        if (file.path != null) filesystem.mountHostFile(`${target}/${file.name}`, file.path, { mode: "r" });
+        else filesystem.mountFile(`${target}/${file.name}`, file.text, { mode: "r" });
+      }
+      return filesystem.path(`${target}/${bundle.entrypoint}`);
+    },
+  });
+}
+
 function refreshConfigurations() {
   for (const mount of configurationMounts) {
     const rendered = mount.configuration.render();
@@ -224,6 +260,7 @@ function refreshConfigurations() {
 Object.defineProperty(globalThis, "__polymerFilesystem", {
   value: Object.freeze({
     filesystem,
+    forLaunch,
     cacheResource(cacheKey, methods) {
       return resource(op_vfs_cache_resource(String(cacheKey)), methods);
     },

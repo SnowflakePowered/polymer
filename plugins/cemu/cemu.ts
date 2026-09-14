@@ -36,7 +36,7 @@ type Configuration = HostConfiguration<{
 type EmulatorLaunchArgs = {
     launchPath: string,
     console: string,
-    package: Readonly<{ titleId?: string }>,
+    package: import("polymer:api").Package,
     configuration: Configuration,
     userConfiguration?: UserConfiguration,
     filesystem: Filesystem,
@@ -129,7 +129,7 @@ export function onLaunch(args: EmulatorLaunchArgs) {
     if (args.storage.mlc) {
         args.filesystem.mountStorage("/Cemu/mlc01", args.storage.mlc, { mode: "rwx" });
     }
-    args.filesystem.mountHostTree("/Game", args.launchPath, { mode: "rx" });
+    const game = args.filesystem.mountPackage("/Game");
     args.filesystem.mountScratch("/User", { mode: "rwx", backing: "temporary" });
     args.filesystem.setWorkingDirectory("/Cemu");
     args.filesystem.setProfile({
@@ -140,7 +140,6 @@ export function onLaunch(args: EmulatorLaunchArgs) {
     });
 
     const executable = args.filesystem.path("/Cemu/Cemu.exe");
-    const game = args.filesystem.path("/Game");
     const mlc = args.filesystem.path("/Cemu/mlc01");
 
     return {

@@ -1,6 +1,8 @@
 mod catalog;
 mod jobs;
+mod manifest;
 mod model;
+pub use manifest::{CuePart, CueTemplate, PackageFile, PackageManifest};
 mod schema;
 
 pub use catalog::{GameCatalog, GameCatalogError};

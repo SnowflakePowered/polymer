@@ -17,7 +17,7 @@ function stateContext(slot, filesystem, directory) {
 
 function quitContext(active) {
   return Object.freeze({
-    filesystem: __polymerFilesystem.filesystem,
+    filesystem: __polymerFilesystem.forLaunch(active.launchSet[active.disc.index]),
     directory: active.saveStateDirectory,
     launchPath: active.launchSet[active.disc.index].launchPath,
     console: active.launch.console,

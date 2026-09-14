@@ -1,3 +1,4 @@
+mod finalize;
 mod media;
 
 use polymer_library::{
@@ -155,7 +156,21 @@ impl ScrapingEngine {
     }
 
     pub async fn resume(&self) -> Result<(), ScrapingError> {
-        for job in self.inner.catalog.recover_scrape_jobs().await? {
+        let jobs = self.inner.catalog.recover_scrape_jobs().await?;
+        let active: std::collections::BTreeSet<_> =
+            jobs.iter().map(|job| job.root_binary_id).collect();
+        let pending: std::collections::BTreeSet<_> = self
+            .inner
+            .catalog
+            .pending_manifests(None)
+            .await?
+            .into_iter()
+            .map(|(_, root, _)| root)
+            .collect();
+        for root in pending.difference(&active) {
+            self.finalize_packages(Some(*root)).await?;
+        }
+        for job in jobs {
             let engine = self.clone();
             tokio::spawn(async move {
                 if let Err(error) = engine.run(job.id).await {
@@ -213,6 +228,10 @@ impl ScrapingEngine {
             }
         };
         self.inner.catalog.set_scrape_job_state(id, state).await?;
+        let job = self.inner.catalog.scrape_job(id).await?;
+        if let Some(job) = job {
+            self.finalize_packages(Some(job.root_binary_id)).await?;
+        }
         self.publish_job(id).await;
         outcome.map(|_| ())
     }

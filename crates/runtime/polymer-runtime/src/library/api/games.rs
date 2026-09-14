@@ -60,36 +60,34 @@ impl Handler<LaunchablesAdd> for LibraryBackend {
         }: LaunchablesAdd,
         _: &mut Context<Self>,
     ) -> Self::Result {
-        let catalog = self.catalog.clone();
         let scraping = self.scraping.clone();
         self.mutate(async move {
-        let parent = parent_binary_id.as_deref().map(Self::uuid).transpose()?;
-        tracing::info!(%path, "identifying dropped game for library import");
-        let package = tokio::task::spawn_blocking(move || {
-            polymer_scraping::Package::identify(path, platform.as_deref(), parent)
-        })
-        .await
-        .map_err(|error| format!("package detection task failed: {error}"))?
-        .map_err(|error| error.to_string())?;
-        let (launchable, created_root) = package
-            .import(&catalog)
+            let parent = parent_binary_id.as_deref().map(Self::uuid).transpose()?;
+            let packages = tokio::task::spawn_blocking(move || {
+                polymer_scraping::Ingestor::identify(
+                    std::path::Path::new(&path),
+                    platform.as_deref(),
+                    parent,
+                )
+            })
             .await
+            .map_err(|error| format!("package detection task failed: {error}"))?
             .map_err(|error| error.to_string())?;
-        let is_root = launchable.parent_binary_id.is_none();
-        let root_binary_id = launchable.parent_binary_id.unwrap_or(launchable.binary_id);
-        tracing::info!(root = %root_binary_id, path = ?launchable.path, created_root, "game imported into library");
-        scraping.publish_library_content(root_binary_id);
-        let job = if is_root && created_root {
-            Some(
-                scraping
-                    .enqueue(launchable.binary_id, launchable.binary_id)
-                    .await
-                    .map_err(|error| error.to_string())?,
-            )
-        } else {
-            None
-        };
-        Ok(json!({ "launchable": Self::launchable_value(&launchable), "scrapeJob": job }))
+            let imported = polymer_scraping::Ingestor::import(&scraping, packages)
+                .await
+                .map_err(|error| error.to_string())?;
+            let imports: Vec<_> = imported
+                .iter()
+                .map(|(launchable, job)| {
+                    json!({
+                        "launchable": Self::launchable_value(launchable), "scrapeJob": job,
+                    })
+                })
+                .collect();
+            // Preserve the single-import response while exposing every collection entry.
+            let mut response = imports.first().cloned().ok_or("no packages found")?;
+            response["imports"] = json!(imports);
+            Ok(response)
         })
     }
 }
