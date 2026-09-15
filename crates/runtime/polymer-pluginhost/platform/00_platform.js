@@ -2,7 +2,6 @@ import { op_platform_resource, op_platform_install } from "ext:core/ops";
 import { cacheFileLocation } from "ext:polymer_cache/00_cache.js";
 
 async function bootstrap(receiver, descriptor, context = {}) {
-  if (typeof receiver.onPreflight !== "function") throw new TypeError("Platform must export onPreflight");
   let pending = Promise.resolve();
   const device = Object.freeze({
     ...descriptor,

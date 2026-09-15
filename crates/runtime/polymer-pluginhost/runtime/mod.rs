@@ -299,7 +299,7 @@ impl PluginRuntimeHandle {
                 .map_err(PluginInvocationError::worker)?;
         let lifecycle = self.lifecycle(plugin_id);
         let result = self
-            .run_with_control(cancellation.control, false, move |control| {
+            .run_with_control(cancellation.control, move |control| {
                 run_worker(
                     entrypoint,
                     worker,
@@ -459,7 +459,7 @@ impl PluginRuntimeHandle {
             .cloned()
             .collect::<std::collections::BTreeSet<_>>();
         let results = self
-            .run_with_control(cancellation.control, false, move |control| {
+            .run_with_control(cancellation.control, move |control| {
                 run_worker(
                     entrypoint,
                     worker,
@@ -514,7 +514,6 @@ impl PluginRuntimeHandle {
                             format!("plugin '{plugin_id}' is not an emulator"),
                         )
                     })?;
-                self.launch_preflight(emulator.as_ref(), &arguments).await?;
                 let invocation = EmulatorLaunchInvocation::prepare(
                     emulator,
                     arguments,
@@ -565,26 +564,12 @@ impl PluginRuntimeHandle {
         arguments: Vec<Value>,
         cancellation: PluginCancellationToken,
     ) -> Result<PluginInvocationResult, PluginInvocationError> {
-        self.invoke_generic_nested(plugin, export_path, arguments, cancellation, false)
-            .await
-    }
-
-    async fn invoke_generic_nested(
-        &self,
-        plugin: Arc<dyn PluginInstance>,
-        export_path: &[String],
-        arguments: Vec<Value>,
-        cancellation: PluginCancellationToken,
-        nested: bool,
-    ) -> Result<PluginInvocationResult, PluginInvocationError> {
         let entrypoint = plugin.entrypoint().to_string();
         let invocation_entrypoint = entrypoint.clone();
-        let mut worker =
+        let worker =
             WorkerOptions::for_plugin(plugin.as_ref(), self.directories(), BTreeMap::new(), None)
                 .map_err(PluginInvocationError::worker)?;
-        if export_path.last().is_some_and(|name| name == "onPreflight") {
-            worker.disable_network();
-        }
+
         let lifecycle = self.lifecycle(plugin.id());
         let path = export_path.to_vec();
         let updates = lifecycle.updates.clone();
@@ -613,9 +598,7 @@ impl PluginRuntimeHandle {
                 },
             )
         };
-        let value = self
-            .run_with_control(cancellation.control, nested, execute)
-            .await?;
+        let value = self.run_with_control(cancellation.control, execute).await?;
         Ok(PluginInvocationResult {
             value,
             prepared_filesystem: None,
@@ -636,7 +619,7 @@ impl PluginRuntimeHandle {
         )
         .map_err(PluginInvocationError::worker)?;
         let lifecycle = self.lifecycle(invocation.plugin.id());
-        self.run_with_control(cancellation.control, false, move |control| {
+        self.run_with_control(cancellation.control, move |control| {
             ControllerActor::spawn(invocation, worker, lifecycle, control)
         })
         .await
@@ -653,7 +636,6 @@ impl PluginRuntimeHandle {
     async fn run_with_control<T, F>(
         &self,
         control: Arc<InvocationControl>,
-        nested: bool,
         worker: F,
     ) -> Result<T, PluginInvocationError>
     where
@@ -670,10 +652,7 @@ impl PluginRuntimeHandle {
             call_id,
             complete: false,
         };
-        let permit = if nested {
-            // The parent bootstrap holds the worker permit while awaiting this check.
-            None
-        } else {
+        let permit = {
             let cancelled = control.cancelled_notification();
             tokio::pin!(cancelled);
             if control.is_cancelled() {
@@ -681,7 +660,7 @@ impl PluginRuntimeHandle {
             }
             tokio::select! {
                 permit = self.state.permits.clone().acquire_owned() => {
-                    Some(permit.map_err(|_| PluginInvocationError::cancelled())?)
+                    permit.map_err(|_| PluginInvocationError::cancelled())?
                 }
                 () = &mut cancelled => return Err(PluginInvocationError::cancelled()),
             }

@@ -11,10 +11,6 @@ pub struct Artifact {
     byte_length: u64,
 }
 
-pub trait DescribeArtifact {
-    fn describe(&self) -> Artifact;
-}
-
 impl Artifact {
     pub fn new(
         id: String,
@@ -34,13 +30,6 @@ impl Artifact {
             icon,
             byte_length,
         }
-    }
-
-    /// Replace the manifest, recomputing the installed size.
-    pub fn with_manifest(mut self, manifest: Vec<DepotFile>) -> Self {
-        self.byte_length = manifest.iter().map(DepotFile::byte_length).sum();
-        self.manifest = manifest;
-        self
     }
 
     pub fn id(&self) -> &str {

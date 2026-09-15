@@ -138,9 +138,6 @@ pub type EmulatorPort = polymer_controllers::ControllerPort;
 
 /// Emulator capability projected from a registered [`PluginInstance`].
 pub trait EmulatorPluginInstance: PluginInstance {
-    fn preflight(&self, _platform: &str) -> crate::platform::Requirements {
-        Default::default()
-    }
     fn configuration_definition(&self) -> &ConfigurationDefinition;
     fn platforms(&self) -> &[String];
     fn save_states(&self) -> Option<&SaveStateConfig>;

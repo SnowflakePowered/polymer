@@ -59,6 +59,8 @@ pub struct MetaXml {
     pub longname_en: Label,
     #[serde(default)]
     pub publisher_en: Label,
+    #[serde(flatten)]
+    pub localized: std::collections::BTreeMap<String, Label>,
 }
 
 pub fn read<T: DeserializeOwned>(path: &Path) -> Result<T, Error> {
@@ -82,4 +84,18 @@ pub fn read_from<T: DeserializeOwned>(mut reader: impl BufRead, file: &str) -> R
         file: file.to_string(),
         reason: e.to_string(),
     })
+}
+
+impl MetaXml {
+    pub fn name(&self) -> Option<String> {
+        std::iter::once(&self.longname_en)
+            .chain(
+                self.localized
+                    .iter()
+                    .filter(|(key, _)| key.starts_with("longname_"))
+                    .map(|(_, value)| value),
+            )
+            .find(|label| !label.0.trim().is_empty())
+            .map(|label| label.0.clone())
+    }
 }

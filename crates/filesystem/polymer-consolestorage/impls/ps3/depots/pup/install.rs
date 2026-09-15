@@ -2,7 +2,7 @@ use super::super::writer::StorageWriter;
 use super::{Ps3PupDepot, sce::Sce};
 use crate::installable::DepotFile;
 use crate::installable::Installable;
-use crate::installable::artifacts::{Artifact, DescribeArtifact};
+use crate::installable::artifacts::Artifact;
 use crate::{Error, VolumeStorage};
 use parking_lot::Mutex;
 use std::fs::File;
@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 pub(super) struct PupInstall {
     extraction: Arc<Mutex<PupExtraction>>,
-    artifact: Artifact,
+    version: String,
     storage: Arc<dyn VolumeStorage>,
 }
 
@@ -66,7 +66,7 @@ impl PupInstall {
                     index: 0,
                     storage: storage.clone(),
                 })),
-                artifact: depot.describe(),
+                version: depot.version,
                 storage,
             })
         })
@@ -146,9 +146,6 @@ impl PupExtraction {
 }
 
 impl Installable for PupInstall {
-    fn artifact(&self) -> &Artifact {
-        &self.artifact
-    }
     async fn next_batch(&mut self) -> Result<Option<Vec<DepotFile>>, Error> {
         let extraction = self.extraction.clone();
         tokio::task::spawn_blocking(move || {
@@ -162,10 +159,46 @@ impl Installable for PupInstall {
         .await
         .map_err(|error| Error::Unsupported(format!("PUP worker failed: {error}")))?
     }
-    async fn finish(self, artifact: Artifact) -> Result<Artifact, Error> {
-        if artifact.manifest().is_empty() {
+    async fn finish(self, manifest: Vec<DepotFile>) -> Result<Artifact, Error> {
+        if manifest.is_empty() {
             return Err(Error::malformed("PUP", "empty firmware image"));
         }
+        let version_path = "dev_flash/vsh/etc/version.txt";
+        let version = if manifest
+            .iter()
+            .any(|file| file.path() == std::path::Path::new(version_path))
+        {
+            let mut bytes = Vec::new();
+            self.storage
+                .open_read(version_path)?
+                .take(64 * 1024)
+                .read_to_end(&mut bytes)
+                .map_err(|e| Error::io(std::path::Path::new(version_path), e))?;
+            String::from_utf8_lossy(&bytes)
+                .lines()
+                .find_map(|line| {
+                    line.strip_prefix("release:").map(|value| {
+                        value
+                            .split(':')
+                            .next()
+                            .unwrap_or_default()
+                            .trim()
+                            .to_owned()
+                    })
+                })
+                .filter(|value| !value.is_empty())
+                .unwrap_or(self.version)
+        } else {
+            self.version
+        };
+        let artifact = Artifact::new(
+            "ps3:firmware".into(),
+            crate::installable::DepotType::System,
+            manifest,
+            "PlayStation 3 system software".into(),
+            Some(version),
+            crate::installable::IconHint::Builtin(crate::installable::DepotType::System),
+        );
         // A firmware image replaces the previous image. Remove only files owned
         // by its previous artifact, preserving unrelated NAND contents.
         if let Some(previous) = self.storage.artifacts().artifact(artifact.id()).await? {
@@ -184,5 +217,93 @@ impl Installable for PupInstall {
         }
         self.storage.artifacts().record(&artifact).await?;
         Ok(artifact)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::impls::ps3::Ps3Nand;
+    use crate::installable::{Depot, DepotType, IconHint};
+    use crate::nand::VirtualNand;
+    use crate::{PlatformRepository, StorageKind};
+
+    #[tokio::test]
+    async fn firmware_finalization_replaces_only_owned_files_and_uses_installed_version() {
+        let directory = tempfile::tempdir().unwrap();
+        let platform =
+            PlatformRepository::open(directory.path().join("nand.git"), Ps3Nand::PLATFORM).unwrap();
+        let id = uuid::Uuid::now_v7();
+        let nand = Ps3Nand::new_empty(platform.volume(StorageKind::Nand, id), id, None)
+            .await
+            .unwrap();
+        let depot = Ps3PupDepot {
+            path: directory.path().join("unused.pup"),
+            version: "archive version".into(),
+        };
+        assert!(depot.satisfies(&nand).is_ok());
+        let storage = nand.root();
+        storage
+            .create("dev_flash/unrelated")
+            .unwrap()
+            .write_all_at(0, b"keep")
+            .unwrap();
+        nand.set_label(Some("Fixture")).await.unwrap();
+        let copied = storage
+            .install_file(Box::new(std::io::Cursor::new(b"obsolete")), "dev_flash/old")
+            .await
+            .unwrap();
+        storage
+            .artifacts()
+            .record(&Artifact::new(
+                "ps3:firmware".into(),
+                DepotType::System,
+                vec![DepotFile::new(
+                    "dev_flash/old".into(),
+                    copied.blake3,
+                    copied.byte_length,
+                )],
+                "Firmware".into(),
+                Some("old".into()),
+                IconHint::Builtin(DepotType::System),
+            ))
+            .await
+            .unwrap();
+        let mut manifest = Vec::new();
+        for (path, bytes) in [
+            (
+                "dev_flash/vsh/etc/version.txt",
+                b"release:04.9200:\n".as_slice(),
+            ),
+            ("dev_flash/sys/external/liblv2.sprx", b"system".as_slice()),
+        ] {
+            let copied = storage
+                .install_file(Box::new(std::io::Cursor::new(bytes)), path)
+                .await
+                .unwrap();
+            manifest.push(DepotFile::new(
+                path.into(),
+                copied.blake3,
+                copied.byte_length,
+            ));
+        }
+        let install = PupInstall {
+            extraction: Arc::new(Mutex::new(PupExtraction {
+                file: tempfile::tempfile().unwrap(),
+                packages: Vec::new(),
+                manifest: Vec::new(),
+                paths: Default::default(),
+                index: 0,
+                storage: storage.clone(),
+            })),
+            version: depot.version,
+            storage: storage.clone(),
+        };
+        let artifact = install.finish(manifest).await.unwrap();
+        assert_eq!(artifact.version(), Some("04.9200"));
+        assert!(!storage.exists("dev_flash/old"));
+        assert!(storage.exists("dev_flash/unrelated"));
+        assert!(nand.is_complete(crate::nand::NandCompletion::Minimal));
+        assert!(!nand.is_dirty().unwrap());
     }
 }

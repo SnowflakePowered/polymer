@@ -1,7 +1,7 @@
 use polymer_library::{Directories, StorageKind, StorageManager};
 use polymer_pluginhost::{
     loading::PluginRegistry,
-    platform::{Device, Operation},
+    platform::Device,
     runtime::{PluginRuntime, PluginRuntimeOptions},
 };
 
@@ -57,8 +57,6 @@ impl Fixture {
             main = "main.js"
             [emulator]
             platforms = ["NINTENDO_WII"]
-            [emulator.preflight.NINTENDO_WII.nand]
-            completion = "minimal"
             [emulator.configuration]
             definitions = ["config.toml"]
         "#,
@@ -107,7 +105,10 @@ impl Fixture {
 #[tokio::test]
 async fn duplicate_provider_and_direct_bootstrap_are_rejected() {
     let fixture = Fixture::new();
-    fixture.registry.load(fixture.provider("first", "export function onBootstrap() {} export function onPreflight() { return {issues: []}; }")).unwrap();
+    fixture
+        .registry
+        .load(fixture.provider("first", "export function onBootstrap() {}"))
+        .unwrap();
     let duplicate = fixture.registry.load(fixture.provider("second", ""));
     assert!(
         duplicate
@@ -130,29 +131,7 @@ async fn duplicate_provider_and_direct_bootstrap_are_rejected() {
 }
 
 #[tokio::test]
-async fn missing_nand_blocks_all_launch_export_forms_before_on_launch() {
-    let fixture = Fixture::new();
-    fixture.emulator();
-    let runtime = fixture.runtime();
-    for path in [
-        vec!["onLaunch".into()],
-        vec!["default".into(), "onLaunch".into()],
-    ] {
-        let error = runtime
-            .handle()
-            .invoke("emulator", &path, vec![json!({"console":"NINTENDO_WII"})])
-            .await
-            .unwrap_err();
-        assert_eq!(error.code, "PREFLIGHT_BLOCKED");
-        assert_eq!(
-            error.details.unwrap()["issues"][0]["code"],
-            "DEVICE_REQUIRED"
-        );
-    }
-}
-
-#[tokio::test]
-async fn dirty_nand_blocks_on_launch_until_explicit_recovery() {
+async fn launch_does_not_gate_on_nand_readiness() {
     let fixture = Fixture::new();
     fixture.emulator();
     let runtime = fixture.runtime();
@@ -172,9 +151,6 @@ async fn dirty_nand_blocks_on_launch_until_explicit_recovery() {
         "controllerTopology": {"mappings": []},
         "storage": {"nand": ["00000000000000000000000000000000", device.id]},
     })];
-    let lease = polymer_vfs::ExclusiveResourceKey::Resource(device.id)
-        .acquire()
-        .unwrap();
     for selection in [
         json!(["00000000000000000000000000000000", device.id]),
         json!([device.id, "00000000000000000000000000000000"]),
@@ -187,10 +163,8 @@ async fn dirty_nand_blocks_on_launch_until_explicit_recovery() {
             .invoke("emulator", &["onLaunch".into()], selected)
             .await
             .unwrap_err();
-        assert_eq!(error.code, "PREFLIGHT_BLOCKED");
-        assert_eq!(error.details.unwrap()["issues"][0]["code"], "NAND_DIRTY");
+        assert!(error.message.contains("ON_LAUNCH_REACHED"), "{error}");
     }
-    drop(lease);
     let nand = device.open(&manager).await.unwrap();
     assert!(nand.root().exists("tmp/partial"));
     nand.recover().unwrap();
@@ -203,54 +177,7 @@ async fn dirty_nand_blocks_on_launch_until_explicit_recovery() {
 }
 
 #[tokio::test]
-async fn preflight_has_no_network_even_when_provider_declares_hosts() {
-    let fixture = Fixture::new();
-    let package = fixture.provider("platform", r#"
-        export async function onPreflight() {
-            try { await fetch('http://127.0.0.1:41080/'); }
-            catch (error) { return {issues:[{code:'NETWORK_BLOCKED', message: String(error), severity:'blocking'}]}; }
-            throw new Error('network was available');
-        }
-    "#);
-    use std::io::Write;
-    writeln!(
-        std::fs::OpenOptions::new()
-            .append(true)
-            .open(package.join("plugin.toml"))
-            .unwrap(),
-        "\n[plugin.permissions.net]\nallowed-hosts = [\"127.0.0.1\"]"
-    )
-    .unwrap();
-    fixture.registry.load(package).unwrap();
-    let runtime = fixture.runtime();
-    let device = fixture.device().await;
-    let report = runtime
-        .handle()
-        .preflight(
-            device
-                .request(
-                    &StorageManager::new(fixture.directories.consolestorage()),
-                    Operation::Bootstrap,
-                    Value::Null,
-                    None,
-                )
-                .await
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let message = report.issues[0].message.to_lowercase();
-    assert!(
-        message.contains("notcapable")
-            || message.contains("permission")
-            || message.contains("not allowed")
-            || message.contains("denied"),
-        "{message}"
-    );
-}
-
-#[tokio::test]
-async fn cancelling_bootstrap_preflight_terminates_the_worker() {
+async fn cancelling_bootstrap_terminates_the_worker() {
     let fixture = Fixture::new();
     fixture
         .registry
@@ -258,7 +185,7 @@ async fn cancelling_bootstrap_preflight_terminates_the_worker() {
             "platform",
             r#"
         import { pluginStorage } from 'polymer:pluginStorage';
-        export async function onPreflight() {
+        export async function onBootstrap() {
             pluginStorage.setItem('entered', true);
             await new Promise(resolve => setTimeout(resolve, 60000));
             return {issues: []};
@@ -297,29 +224,6 @@ async fn cancelling_bootstrap_preflight_terminates_the_worker() {
 }
 
 #[tokio::test]
-async fn platform_provider_is_optional_for_native_preflight() {
-    let fixture = Fixture::new();
-    let runtime = fixture.runtime();
-    let device = fixture.device().await;
-    let report = runtime
-        .handle()
-        .preflight(
-            device
-                .request(
-                    &StorageManager::new(fixture.directories.consolestorage()),
-                    Operation::Install,
-                    Value::Null,
-                    None,
-                )
-                .await
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert!(report.issues.is_empty());
-}
-
-#[tokio::test]
 async fn bootstrap_uses_existing_progress_events_for_callbacks_and_generators() {
     use polymer_pluginhost::runtime::PluginEvent;
     let fixture = Fixture::new();
@@ -328,7 +232,7 @@ async fn bootstrap_uses_existing_progress_events_for_callbacks_and_generators() 
         .load(fixture.provider(
             "progress-platform",
             r#"
-        export function onPreflight() { return {issues: []}; }
+
         export async function* onBootstrap(device, context) {
             context.progress({message: 'Callback progress', completed: 1, total: 2});
             yield {message: 'Generator progress', completed: 2, total: 2};
@@ -383,6 +287,12 @@ async fn platform_constructors_find_and_install_a_rap_without_a_format_hint() {
         id: volume.metadata().await.unwrap().id,
     };
     let nand = device.open(&manager).await.unwrap();
+    nand.root()
+        .create("dev_flash/sys/external/liblv2.sprx")
+        .unwrap()
+        .write_all_at(0, b"firmware")
+        .unwrap();
+    nand.set_label(Some("Initialized test NAND")).await.unwrap();
     assert!(nand.artifacts().await.unwrap().is_empty());
     let wii = fixture.device().await;
     assert!(
@@ -417,17 +327,17 @@ async fn platform_constructors_find_and_install_a_rap_without_a_format_hint() {
 }
 
 #[tokio::test]
-async fn bootstrap_runs_platform_preflight_separately_with_one_worker() {
+async fn bootstrap_uses_native_requirements_with_one_worker() {
     let fixture = Fixture::new();
     let content = "UP0001-NPUB12345_00-0123456789ABCDEF";
-    let package = fixture.provider("kind-check", &format!(r#"
-        export function onPreflight(request) {{
-            if (request.operation !== 'install') return {{issues: []}};
-            if ('depot' in request || request.depot_kind !== 'appticket') throw new Error('wrong preflight contract');
-            return {{issues:[{{code:'KIND_BLOCKED',message:'license installation blocked',severity:'blocking'}}]}};
-        }}
+    let package = fixture.provider(
+        "kind-check",
+        &format!(
+            r#"
         export async function onBootstrap(device) {{ await device.install('pkg:{content}.rap'); }}
-    "#));
+    "#
+        ),
+    );
     let manifest = package.join("plugin.toml");
     std::fs::write(
         &manifest,
@@ -467,7 +377,9 @@ async fn bootstrap_runs_platform_preflight_separately_with_one_worker() {
     .unwrap()
     .unwrap_err();
     assert!(
-        error.message.contains("license installation blocked"),
+        error
+            .message
+            .contains("Install PlayStation 3 system software"),
         "{error}"
     );
     assert!(
@@ -495,6 +407,12 @@ async fn try_install_retains_depot_without_starting_extraction() {
         id: volume.metadata().await.unwrap().id,
     };
     let nand = device.open(&manager).await.unwrap();
+    nand.root()
+        .create("dev_flash/sys/external/liblv2.sprx")
+        .unwrap()
+        .write_all_at(0, b"firmware")
+        .unwrap();
+    nand.set_label(Some("Initialized test NAND")).await.unwrap();
     let content = "UP0001-NPUB12345_00-0123456789ABCDEF";
     let path = fixture.root.path().join(format!("{content}.rap"));
     std::fs::write(&path, [0x42; 16]).unwrap();

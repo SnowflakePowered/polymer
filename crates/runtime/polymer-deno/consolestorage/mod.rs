@@ -61,29 +61,6 @@ pub(super) async fn op_consolestorage_inspect(
 
 #[op2]
 #[serde]
-pub(super) async fn op_consolestorage_preflight(
-    state: Rc<RefCell<OpState>>,
-    #[string] platform: String,
-    #[string] id: String,
-    #[string] operation: String,
-    #[serde] settings: serde_json::Value,
-) -> Result<serde_json::Value, JsErrorBox> {
-    ConsoleStorage::from_state(&state)?
-        .preflight
-        .send(Preflight {
-            platform,
-            id,
-            operation,
-            settings,
-        })
-        .await
-        .map_err(|error| format!("storage actor unavailable: {error}"))
-        .and_then(|result| result)
-        .map_err(JsErrorBox::generic)
-}
-
-#[op2]
-#[serde]
 pub(super) async fn op_consolestorage_install(
     state: Rc<RefCell<OpState>>,
     #[string] platform: String,

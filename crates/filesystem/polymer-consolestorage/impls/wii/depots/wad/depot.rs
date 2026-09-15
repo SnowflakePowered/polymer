@@ -1,20 +1,15 @@
-use std::collections::HashSet;
 use std::fs::File;
-use std::io::{Cursor, Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use futures::channel::oneshot;
-use futures::stream::{self, StreamExt};
 use zerocopy::byteorder::big_endian::{U16, U32};
 use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
 use super::ticket::Ticket;
 use super::tmd::{Content, Tmd, align};
 use crate::Error;
-use crate::impls::wii::index::{SharedContentMap, UidMap};
 use crate::impls::wii::nand::WiiNand;
-use crate::installable::artifacts::Artifact;
-use crate::installable::{Depot, DepotFile, DepotType, IconHint};
+use crate::installable::{Depot, DepotType};
 use crate::nand::VirtualNand;
 
 #[derive(FromBytes, Immutable, KnownLayout, Unaligned)]
@@ -145,10 +140,19 @@ impl Depot for WiiWadDepot {
         })
     }
 
-    fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> bool {
-        nand.platform() == WiiNand::PLATFORM && WiiNand::has_structure(&*nand.root())
+    fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> Result<(), Error> {
+        if nand.is_dirty()? {
+            return Err(Error::HistoryConflict(
+                "This NAND has uncommitted changes. Recover it in Console storage before installing.".into(),
+            ));
+        }
+        if !(nand.platform() == WiiNand::PLATFORM && WiiNand::has_structure(&*nand.root())) {
+            return Err(Error::Unsupported(
+                "Depot requires a compatible NAND with its storage layout initialized".into(),
+            ));
+        }
+        Ok(())
     }
-
     fn validate_contents(&self) -> Vec<String> {
         let Ok(key) = self.select_title_key() else {
             return vec!["ticket".to_owned()];
@@ -181,154 +185,9 @@ impl Depot for WiiWadDepot {
     {
         let source = self;
 
-        let (sender, receiver) = oneshot::channel();
-        let operation = stream::once(async move {
-            let result: Result<_, Error> = async {
-                let selected = source.select_title_key()?;
-
-                let storage = nand.root();
-                let artifact_id = format!("{:016x}", source.title_id());
-                let old = storage.artifacts().artifact(&artifact_id).await?;
-                let mut shared = SharedContentMap::load(&*storage)?;
-                let mut shared_changed = false;
-                let mut manifest = Vec::new();
-                let mut installed = Vec::new();
-                let content_root = format!(
-                    "{}/content",
-                    crate::impls::wii::title_path(source.title_id())
-                );
-
-                for content in &source.tmd.contents {
-                    let bytes = source.decrypt_content(content, &selected.key)?;
-                    let path = if content.is_shared() {
-                        let id = match shared.find(&content.sha1) {
-                            Some(entry) => entry.id.clone(),
-                            None => {
-                                let id = shared.next_id()?;
-                                let path = format!("shared1/{id}.app");
-                                let copied = storage
-                                    .install_file(Box::new(Cursor::new(bytes.clone())), &path)
-                                    .await?;
-                                manifest.push(DepotFile::new(
-                                    PathBuf::from(&path),
-                                    copied.blake3,
-                                    copied.byte_length,
-                                ));
-                                installed.push(path);
-                                shared.add(id.clone(), content.sha1);
-                                shared_changed = true;
-                                id
-                            }
-                        };
-                        format!("shared1/{id}.app")
-                    } else {
-                        format!("{content_root}/{:08x}.app", content.id)
-                    };
-
-                    if !manifest
-                        .iter()
-                        .any(|file| file.path().to_string_lossy() == path)
-                    {
-                        let copied = if content.is_shared()
-                            && storage.exists(&path)
-                            && SharedContentMap::file_matches(&*storage, &path, &content.sha1)
-                        {
-                            crate::InstallResult {
-                                blake3: *blake3::hash(&bytes).as_bytes(),
-                                byte_length: bytes.len() as u64,
-                            }
-                        } else {
-                            let copied = storage
-                                .install_file(Box::new(Cursor::new(bytes)), &path)
-                                .await?;
-                            installed.push(path.clone());
-                            copied
-                        };
-                        manifest.push(DepotFile::new(
-                            PathBuf::from(&path),
-                            copied.blake3,
-                            copied.byte_length,
-                        ));
-                    }
-                }
-
-                if shared_changed {
-                    shared.write(&*storage).await?;
-                    installed.push("shared1/content.map".to_owned());
-                }
-
-                let ticket_path = format!(
-                    "ticket/{:08x}/{:08x}.tik",
-                    source.title_id() >> 32,
-                    source.title_id() as u32
-                );
-                let ticket = source.ticket.bytes_with_key_index(selected.index);
-                let copied = storage
-                    .install_file(Box::new(Cursor::new(ticket)), &ticket_path)
-                    .await?;
-                manifest.push(DepotFile::new(
-                    PathBuf::from(&ticket_path),
-                    copied.blake3,
-                    copied.byte_length,
-                ));
-                installed.push(ticket_path);
-
-                UidMap::load(&*storage)?
-                    .insert(&*storage, source.title_id())
-                    .await?;
-
-                let tmd_path = format!("{content_root}/title.tmd");
-                let copied = storage
-                    .install_file(Box::new(Cursor::new(source.read_tmd()?)), &tmd_path)
-                    .await?;
-                manifest.push(DepotFile::new(
-                    PathBuf::from(&tmd_path),
-                    copied.blake3,
-                    copied.byte_length,
-                ));
-                installed.push(tmd_path);
-
-                if let Some(old) = old {
-                    let current = manifest
-                        .iter()
-                        .map(|file| file.path().to_string_lossy().into_owned())
-                        .collect::<HashSet<_>>();
-                    for file in old.manifest() {
-                        let path = file.path().to_string_lossy();
-                        if path.starts_with(&content_root) && !current.contains(path.as_ref()) {
-                            storage.remove(&path)?;
-                        }
-                    }
-                }
-
-                let artifact = Artifact::new(
-                    artifact_id,
-                    source.depot_type(),
-                    manifest,
-                    format!("{:016x}", source.title_id()),
-                    Some(source.title_version().to_string()),
-                    IconHint::Builtin(source.depot_type()),
-                );
-                nand.record(&artifact).await?;
-                Ok((artifact, installed))
-            }
-            .await;
-
-            match result {
-                Ok((artifact, paths)) => {
-                    let _ = sender.send(Ok(artifact));
-                    paths.into_iter().map(Ok).collect::<Vec<_>>()
-                }
-                Err(error) => {
-                    let _ = sender.send(Err(error.clone()));
-                    vec![Err(error)]
-                }
-            }
-        })
-        .map(stream::iter)
-        .flatten();
-        crate::installable::Installation::from_progress(operation, async move {
-            receiver.await.unwrap_or(Err(Error::InstallIncomplete))
+        crate::installable::Installation::prepare(async move {
+            source.satisfies(nand)?;
+            super::install::WadInstall::new(source, nand.root()).await
         })
     }
 }
@@ -374,7 +233,7 @@ mod tests {
             .await
             .unwrap();
         let incomplete = WiiNand::open(incomplete).await.unwrap();
-        assert!(!wad.satisfies(&incomplete));
+        assert!(wad.satisfies(&incomplete).is_err());
 
         let destination = tempfile::tempdir().unwrap();
         let platform = PlatformRepository::open(
@@ -385,7 +244,7 @@ mod tests {
         let id = Uuid::now_v7();
         let storage = platform.volume(StorageKind::Nand, id);
         let nand = WiiNand::new_empty(storage, id, None).await.unwrap();
-        assert!(wad.satisfies(&nand));
+        assert!(wad.satisfies(&nand).is_ok());
         let artifact = wad.install(&nand).finish().await.unwrap();
         assert_eq!(artifact.id(), format!("{title_id:016x}"));
 
@@ -420,8 +279,35 @@ mod tests {
                 .await
                 .unwrap()
         );
+        let mut channel = vec![0; 0x640];
+        channel[0x40..0x44].copy_from_slice(b"IMET");
+        for (index, unit) in "Installed channel".encode_utf16().enumerate() {
+            let offset = 0x40 + 0x1c + 42 * 2 + index * 2;
+            channel[offset..offset + 2].copy_from_slice(&unit.to_be_bytes());
+        }
+        let mut replacement = make_wad(title_id, &channel);
+        let tmd_offset = align_usize(0x40 + 0x2a4, 0x40);
+        replacement[tmd_offset + 0x1e4..tmd_offset + 0x1e8].copy_from_slice(&2_u32.to_be_bytes());
+        std::fs::write(&wad_path, replacement).unwrap();
+        let artifact = WiiWadDepot::open(&wad_path)
+            .unwrap()
+            .install(&nand)
+            .finish()
+            .await
+            .unwrap();
+        assert_eq!(artifact.label(), "Installed channel");
+        assert!(!nand.root().exists(path));
+        assert!(
+            nand.root()
+                .exists("title/00010001/57414445/content/00000002.app")
+        );
         nand.uninstall(&[artifact.id()]).await.unwrap();
         assert!(!nand.root().exists(path));
+        assert!(
+            !nand
+                .root()
+                .exists("title/00010001/57414445/content/00000002.app")
+        );
         assert!(
             !nand
                 .root()
@@ -512,18 +398,5 @@ mod tests {
 
     fn align_usize(value: usize, alignment: usize) -> usize {
         (value + alignment - 1) & !(alignment - 1)
-    }
-}
-
-impl crate::installable::artifacts::DescribeArtifact for WiiWadDepot {
-    fn describe(&self) -> Artifact {
-        Artifact::new(
-            format!("{:016x}", self.title_id()),
-            self.depot_type(),
-            Vec::new(),
-            format!("{:016x}", self.title_id()),
-            Some(self.title_version().to_string()),
-            IconHint::Builtin(self.depot_type()),
-        )
     }
 }

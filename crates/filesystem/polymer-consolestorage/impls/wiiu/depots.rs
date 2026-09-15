@@ -1,13 +1,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::Storage;
 use crate::error::Error;
 use crate::impls::wiiu::xml;
-use crate::installable::artifacts::{Artifact, DescribeArtifact};
-use crate::installable::{Depot, DepotType, DirectoryInstall, IconHint};
+use crate::installable::artifacts::Artifact;
+use crate::installable::{Depot, DepotFile, DepotType, DirectoryInstall, IconHint, Installable};
 use crate::nand::VirtualNand;
 use crate::requires_structure;
+use crate::{Storage, VolumeStorage};
 
 pub struct DumplingDepot {}
 
@@ -30,8 +30,6 @@ pub struct WiiUMetaXmlDepot {
     /// The title id `meta/meta.xml` presents as. For an update this is the title
     /// being updated, not the update itself.
     meta_title_id: u64,
-    label: String,
-    version: Option<String>,
 }
 
 impl WiiUMetaXmlDepot {
@@ -70,21 +68,23 @@ impl Depot for WiiUMetaXmlDepot {
         let app: xml::AppXml = xml::read(&path.join("code/app.xml"))?;
         let meta: xml::MetaXml = xml::read(&path.join("meta/meta.xml"))?;
 
-        let label = meta.longname_en.0.clone();
-        let version = Some(meta.title_version.text.trim().to_string()).filter(|v| !v.is_empty());
-
         Ok(Self {
             root: path.to_path_buf(),
             title_id: app.title_id.0,
             meta_title_id: meta.title_id.0,
-            label,
-            version,
         })
     }
 
-    fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> bool {
+    fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> Result<(), Error> {
+        if nand.is_dirty()? {
+            return Err(Error::HistoryConflict(
+                "This NAND has uncommitted changes. Recover it in Console storage before installing.".into(),
+            ));
+        }
         if nand.platform() != "NINTENDO_WIIU" {
-            return false;
+            return Err(Error::Unsupported(
+                "Depot belongs to a different platform".into(),
+            ));
         }
 
         let storage = nand.root();
@@ -96,10 +96,9 @@ impl Depot for WiiUMetaXmlDepot {
             "usr/title/0005000e/", // game updates
             "usr/title/00050000/", // games
             "usr/title/0005000c/", // DLC
-        )
-        .is_ok()
+        )?;
+        Ok(())
     }
-
     fn validate_contents(&self) -> Vec<String> {
         Vec::new()
     }
@@ -122,27 +121,116 @@ impl Depot for WiiUMetaXmlDepot {
     {
         let source = self;
 
-        let storage: Arc<dyn Storage> = nand.root();
-        let install =
-            DirectoryInstall::new(source.root.clone(), source.install_path(), storage, &source);
-        crate::installable::Installation::from_installable(install)
+        crate::installable::Installation::prepare(async move {
+            source.satisfies(nand)?;
+            let storage = nand.root();
+            Ok(WiiUInstall {
+                copy: DirectoryInstall::new(
+                    source.root.clone(),
+                    source.install_path(),
+                    storage.clone(),
+                ),
+                depot: source,
+                storage,
+            })
+        })
     }
 }
 
-impl DescribeArtifact for WiiUMetaXmlDepot {
-    fn describe(&self) -> Artifact {
-        let icon = match self.root.join("meta/iconTex.tga").is_file() {
-            true => IconHint::File(PathBuf::from("meta/iconTex.tga")),
-            false => IconHint::Builtin(self.depot_type()),
-        };
+struct WiiUInstall {
+    depot: WiiUMetaXmlDepot,
+    copy: DirectoryInstall,
+    storage: Arc<dyn VolumeStorage>,
+}
 
-        Artifact::new(
-            format!("{:016x}", self.title_id),
-            self.depot_type(),
-            Vec::new(),
-            self.label.clone(),
-            self.version.clone(),
+impl Installable for WiiUInstall {
+    async fn next_batch(&mut self) -> Result<Option<Vec<DepotFile>>, Error> {
+        self.copy.next_batch().await
+    }
+
+    async fn finish(self, manifest: Vec<DepotFile>) -> Result<Artifact, Error> {
+        let root = self.depot.install_path();
+        let path = format!("{root}/code/app.xml");
+        let app: xml::AppXml = xml::read_from(
+            std::io::BufReader::new(self.storage.open_read(&path)?),
+            &path,
+        )?;
+        if app.title_id.0 != self.depot.title_id {
+            return Err(Error::malformed(path, "installed Wii U identity changed"));
+        }
+        let path = format!("{root}/meta/meta.xml");
+        let meta: xml::MetaXml = xml::read_from(
+            std::io::BufReader::new(self.storage.open_read(&path)?),
+            &path,
+        )?;
+        let kind = self.depot.depot_type();
+        let icon = IconHint::read(&*self.storage, &format!("{root}/meta/iconTex.tga"), kind)?;
+        let label = meta
+            .name()
+            .unwrap_or_else(|| format!("{:016x}", app.title_id.0));
+        let version = Some(meta.title_version.text.trim().to_owned()).filter(|s| !s.is_empty());
+        let artifact = Artifact::new(
+            format!("{:016x}", app.title_id.0),
+            kind,
+            manifest,
+            label,
+            version,
             icon,
+        );
+        self.storage.artifacts().record(&artifact).await?;
+        Ok(artifact)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::impls::wiiu::nand::WiiUNand;
+    use crate::{PlatformRepository, StorageKind};
+
+    #[tokio::test]
+    async fn finalization_reads_copied_metadata_and_records_a_private_icon() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("source");
+        for path in ["code", "meta", "content"] {
+            std::fs::create_dir_all(root.join(path)).unwrap();
+        }
+        std::fs::write(
+            root.join("code/app.xml"),
+            "<app><title_id>0005000012345678</title_id></app>",
         )
+        .unwrap();
+        std::fs::write(root.join("code/cos.xml"), "<app/>").unwrap();
+        let meta = "<menu><title_id>0005000012345678</title_id><title_version>2</title_version><longname_en>Original</longname_en><longname_ja>Japanese</longname_ja><product_code>TEST</product_code></menu>";
+        std::fs::write(root.join("meta/meta.xml"), meta).unwrap();
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([10, 20, 30, 255]))
+            .save(root.join("meta/iconTex.tga"))
+            .unwrap();
+        let depot = WiiUMetaXmlDepot::open(&root).unwrap();
+        // Construction must not freeze the display metadata.
+        std::fs::write(
+            root.join("meta/meta.xml"),
+            meta.replace("Original", "Installed"),
+        )
+        .unwrap();
+        let platform =
+            PlatformRepository::open(directory.path().join("nand.git"), WiiUNand::PLATFORM)
+                .unwrap();
+        let id = uuid::Uuid::now_v7();
+        let nand = WiiUNand::new_empty(platform.volume(StorageKind::Nand, id), id, None)
+            .await
+            .unwrap();
+        let artifact = depot.install(&nand).finish().await.unwrap();
+        assert_eq!(artifact.label(), "Installed");
+        assert_eq!(artifact.version(), Some("2"));
+        assert!(matches!(artifact.icon(), IconHint::EmbeddedPng(_)));
+        assert!(
+            nand.root()
+                .artifacts()
+                .contains(artifact.id())
+                .await
+                .unwrap()
+        );
+        assert!(!nand.is_dirty().unwrap());
     }
 }

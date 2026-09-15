@@ -7,7 +7,6 @@ pub struct ConsoleStorage {
     pub platforms: Recipient<Platforms>,
     pub inspect: Recipient<Inspect>,
     pub recover: Recipient<Recover>,
-    pub preflight: Recipient<Preflight>,
     pub install: Recipient<Install>,
     pub bootstrap: Recipient<Bootstrap>,
     pub uninstall: Recipient<Uninstall>,
@@ -35,15 +34,6 @@ pub struct Inspect {
 pub struct Recover {
     pub platform: String,
     pub id: String,
-}
-
-#[derive(Debug, Message)]
-#[rtype(result = "Result<Value, String>")]
-pub struct Preflight {
-    pub platform: String,
-    pub id: String,
-    pub operation: String,
-    pub settings: Value,
 }
 
 #[derive(Debug, Message)]

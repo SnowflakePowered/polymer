@@ -2,7 +2,7 @@ use super::StorageActor;
 use actix::{Context, Handler, ResponseActFuture};
 use polymer_deno::polymer::consolestorage::*;
 use polymer_pluginhost::{
-    platform::{DepotSource, Device, Operation},
+    platform::{DepotSource, Device},
     runtime::EventEmitter,
 };
 use polymer_vfs::ExclusiveResourceKey;
@@ -62,34 +62,6 @@ impl Handler<Recover> for StorageActor {
     }
 }
 
-impl Handler<Preflight> for StorageActor {
-    type Result = ResponseActFuture<Self, Result<Value, String>>;
-
-    fn handle(
-        &mut self,
-        Preflight {
-            platform,
-            id,
-            operation,
-            settings,
-        }: Preflight,
-        _: &mut Context<Self>,
-    ) -> Self::Result {
-        self.execute(move |manager, plugins| async move {
-            let device = Self::device(platform, id)?;
-            let operation: Operation =
-                serde_json::from_value(json!(operation)).map_err(|error| error.to_string())?;
-            let request = device.request(&manager, operation, settings, None).await?;
-            Ok(json!(
-                plugins
-                    .preflight(request)
-                    .await
-                    .map_err(|error| error.to_string())?
-            ))
-        })
-    }
-}
-
 impl Handler<Install> for StorageActor {
     type Result = ResponseActFuture<Self, Result<Value, String>>;
 
@@ -102,7 +74,7 @@ impl Handler<Install> for StorageActor {
         }: Install,
         _: &mut Context<Self>,
     ) -> Self::Result {
-        self.execute(move |manager, plugins| async move {
+        self.execute(move |manager, _| async move {
             let device = Self::device(platform, id)?;
             let source: DepotSource =
                 serde_json::from_value(source).map_err(|error| error.to_string())?;
@@ -115,20 +87,6 @@ impl Handler<Install> for StorageActor {
             let path = PathBuf::from(&source.path);
             let nand = device.open(&manager).await?;
             let installation = nand.try_install(&path).map_err(|error| error.to_string())?;
-            let request = device
-                .request(
-                    &manager,
-                    Operation::Install,
-                    Value::Null,
-                    installation.depot_type(),
-                )
-                .await?;
-            plugins
-                .preflight(request)
-                .await
-                .map_err(|error| error.to_string())?
-                .ensure_ready()
-                .map_err(|error| error.to_string())?;
             let events = Arc::new(EventEmitter::new(&device.platform));
             let progress = events.scope(
                 "loadprogress",

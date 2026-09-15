@@ -1,5 +1,4 @@
-//! Decode the standalone SMDH in an Azahar extdata `icon` file.
-//! CIA metadata continues to belong to gumshoe.
+//! Shared SMDH names and icons for installed titles and Azahar extdata.
 use std::io::Read;
 
 use image::{Rgba, RgbaImage};
@@ -49,7 +48,11 @@ impl ExtdataIcon {
             .ok()?
             .read_exact(&mut bytes)
             .ok()?;
-        let icon = Self::read_from_bytes(&bytes).ok()?;
+        Self::parse(&bytes)
+    }
+
+    pub fn parse(bytes: &[u8]) -> Option<Self> {
+        let icon = Self::read_from_bytes(bytes).ok()?;
         (icon.magic == *b"SMDH" && icon.version.get() == 0).then_some(icon)
     }
 
@@ -57,12 +60,12 @@ impl ExtdataIcon {
         std::iter::once(&self.titles[1])
             .chain(self.titles.iter())
             .map(|title| (Title::text(&title.short), Title::text(&title.long)))
-            .find(|(short, _)| !short.is_empty())
+            .find(|(short, _)| !short.trim().is_empty())
             .unwrap_or_default()
     }
 
-    pub fn image(&self) -> SaveIcon {
-        let image = RgbaImage::from_fn(48, 48, |x, y| {
+    pub fn rgba(&self) -> RgbaImage {
+        RgbaImage::from_fn(48, 48, |x, y| {
             // 8x8 tiles, with Morton order within each tile.
             let local = (x & 1)
                 | ((y & 1) << 1)
@@ -81,7 +84,10 @@ impl ExtdataIcon {
                 (b << 3) | (b >> 2),
                 255,
             ])
-        });
-        SaveIcon::Image(image)
+        })
+    }
+
+    pub fn image(&self) -> SaveIcon {
+        SaveIcon::Image(self.rgba())
     }
 }

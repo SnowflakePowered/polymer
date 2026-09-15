@@ -813,7 +813,7 @@ impl GitVolumeStorage {
         }
         let repo = self.inner.platform.repository().to_thread_local();
         let tip = Self::tip_in(&repo, &self.ref_name())?;
-        // Existing NAND checkouts are inspected by preflight and repaired only
+        // Existing NAND checkouts are inspected by native installation checks and repaired only
         // through recover(). Opening one must never erase an interrupted write.
         if self.inner.kind == StorageKind::Nand && tip.is_some() {
             *ready = true;
@@ -1461,6 +1461,7 @@ struct ArtifactRecord {
     label: String,
     version: Option<String>,
     icon_path: Option<PathBuf>,
+    icon_png: Option<Arc<[u8]>>,
     byte_length: u64,
 }
 
@@ -1502,7 +1503,11 @@ impl From<&Artifact> for ArtifactRecord {
             version: artifact.version().map(str::to_owned),
             icon_path: match artifact.icon() {
                 IconHint::File(path) => Some(path.clone()),
-                IconHint::Builtin(_) => None,
+                IconHint::Builtin(_) | IconHint::EmbeddedPng(_) => None,
+            },
+            icon_png: match artifact.icon() {
+                IconHint::EmbeddedPng(bytes) => Some(bytes.clone()),
+                _ => None,
             },
             byte_length: artifact.byte_length(),
         }
@@ -1520,9 +1525,10 @@ impl ArtifactRecord {
                 .collect(),
             self.label.clone(),
             self.version.clone(),
-            self.icon_path
+            self.icon_png
                 .clone()
-                .map(IconHint::File)
+                .map(IconHint::EmbeddedPng)
+                .or_else(|| self.icon_path.clone().map(IconHint::File))
                 .unwrap_or(IconHint::Builtin(self.depot_type)),
         )
     }
@@ -1557,6 +1563,19 @@ impl ArtifactRecord {
                 &format!("{root}/icon-path"),
                 &path.to_string_lossy(),
             )?;
+        }
+        if let Some(png) = &self.icon_png {
+            let blob = repo
+                .write_blob(png.as_ref())
+                .map_err(|error| Error::git("write artifact icon", error))?
+                .detach();
+            editor
+                .upsert(
+                    format!("{root}/icon.png"),
+                    gix::objs::tree::EntryKind::Blob,
+                    blob,
+                )
+                .map_err(|error| Error::git("update artifact icon", error))?;
         }
         for file in &self.manifest {
             let path = file.path.to_string_lossy().replace('\\', "/");
@@ -2185,6 +2204,7 @@ fn read_artifact(repo: &gix::Repository, tree: gix::ObjectId) -> Result<Artifact
         label,
         version,
         icon_path,
+        icon_png: value("icon.png")?.map(Arc::from),
         byte_length,
     })
 }

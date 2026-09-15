@@ -10,12 +10,13 @@ use pkgrip::PkgArchive;
 use super::super::writer::StorageWriter;
 use super::Ps3PkgDepot;
 use crate::installable::DepotFile;
-use crate::installable::artifacts::{Artifact, DescribeArtifact};
+use crate::installable::artifacts::Artifact;
 use crate::{Error, VolumeStorage};
 
 pub(super) struct Ps3PkgInstall {
     extraction: Arc<Mutex<PkgExtraction>>,
-    artifact: Artifact,
+    depot: Ps3PkgDepot,
+    retained: Vec<DepotFile>,
     storage: Arc<dyn VolumeStorage>,
 }
 
@@ -46,16 +47,17 @@ impl Ps3PkgInstall {
                     index: 0,
                     storage: storage.clone(),
                 })),
-                artifact: depot.describe(),
+                depot,
+                retained: Vec::new(),
                 storage,
             })
         })
         .await
         .map_err(|error| Error::Unsupported(format!("PKG worker failed: {error}")))??;
         // Reinstalling a patch is additive. Retain ownership of earlier files.
-        let id = install.artifact.id();
-        if let Some(old) = install.storage.artifacts().artifact(id).await? {
-            install.artifact = install.artifact.with_manifest(old.manifest().to_vec());
+        let id = install.depot.artifact_id();
+        if let Some(old) = install.storage.artifacts().artifact(&id).await? {
+            install.retained = old.manifest().to_vec();
         }
         Ok(install)
     }
@@ -100,9 +102,6 @@ impl PkgExtraction {
 }
 
 impl Installable for Ps3PkgInstall {
-    fn artifact(&self) -> &Artifact {
-        &self.artifact
-    }
     async fn next_batch(&mut self) -> Result<Option<Vec<DepotFile>>, Error> {
         let extraction = self.extraction.clone();
         tokio::task::spawn_blocking(move || {
@@ -116,7 +115,38 @@ impl Installable for Ps3PkgInstall {
         .await
         .map_err(|error| Error::Unsupported(format!("PKG worker failed: {error}")))?
     }
-    async fn finish(self, artifact: Artifact) -> Result<Artifact, Error> {
+    async fn finish(self, manifest: Vec<DepotFile>) -> Result<Artifact, Error> {
+        let root = &self.depot.install_path;
+        let path = format!("{root}/PARAM.SFO");
+        let sfo = if self.storage.exists(&path) {
+            crate::impls::sony::metadata::SonyMetadata::read(self.storage.open_read(&path)?, &path)?
+        } else {
+            orbis_unpkg::Psf::default()
+        };
+        if sfo
+            .get_string("TITLE_ID")
+            .is_some_and(|id| id != self.depot.title_id)
+        {
+            return Err(Error::malformed(path, "installed PS3 identity changed"));
+        }
+        let icon = crate::installable::IconHint::read(
+            &*self.storage,
+            &format!("{root}/ICON0.PNG"),
+            self.depot.kind,
+        )?;
+        let artifact = Artifact::new(
+            self.depot.artifact_id(),
+            self.depot.kind,
+            DepotFile::merge(self.retained, manifest),
+            crate::impls::sony::metadata::SonyMetadata::title(&sfo)
+                .unwrap_or(&self.depot.title_id)
+                .to_owned(),
+            sfo.get_string("APP_VER")
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_owned)
+                .or(self.depot.version),
+            icon,
+        );
         self.storage.artifacts().record(&artifact).await?;
         Ok(artifact)
     }
