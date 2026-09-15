@@ -12,6 +12,8 @@ use toml_spanner::Arena;
 #[derive(Deserialize)]
 pub struct EmulatorBlock {
     platforms: Vec<String>,
+    #[serde(default)]
+    preflight: std::collections::BTreeMap<String, crate::platform::Requirements>,
     configuration: ConfigurationBlock,
     #[serde(default)]
     savestates: Option<SaveStateConfig>,
@@ -35,12 +37,35 @@ struct ConfigurationBlock {
 
 pub type EmulatorPlugin = PluginPackage<EmulatorBlock>;
 
+impl EmulatorBlock {
+    fn validate_preflight(&self) -> Result<(), PackageError> {
+        for (platform, requirements) in &self.preflight {
+            if !self.platforms.contains(platform) {
+                return Err(PackageError::UnknownPlatform(platform.clone()));
+            }
+            let machine = consolespec::MachineSpec::try_from(platform.as_str())
+                .map_err(|_| PackageError::UnknownPlatform(platform.clone()))?;
+            for (device, requirement) in requirements {
+                if !requirement.is_object()
+                    || !machine.storage_devices().any(|item| item.id() == device)
+                {
+                    return Err(PackageError::InvalidPreflight(format!(
+                        "{platform}.{device}"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 impl PluginClass for EmulatorBlock {
     const CLASS: &'static str = "emulator";
 
     fn prepare(package: &mut PluginPackage<Self>) -> Result<(), PackageError> {
         confined_path(package.root(), package.main())?;
         let emulator = package.block();
+        emulator.validate_preflight()?;
         if emulator
             .savestates
             .as_ref()
@@ -174,6 +199,13 @@ impl PluginPackage<EmulatorBlock> {
 }
 
 impl EmulatorPluginInstance for PluginPackage<EmulatorBlock> {
+    fn preflight(&self, platform: &str) -> crate::platform::Requirements {
+        self.block()
+            .preflight
+            .get(platform)
+            .cloned()
+            .unwrap_or_default()
+    }
     fn configuration_definition(&self) -> &ConfigurationDefinition {
         self.definition()
     }

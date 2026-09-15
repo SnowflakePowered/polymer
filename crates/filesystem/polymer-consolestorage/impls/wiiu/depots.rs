@@ -35,8 +35,28 @@ pub struct WiiUMetaXmlDepot {
 }
 
 impl WiiUMetaXmlDepot {
-    /// Try to load the folder as a depot
-    pub fn new(path: &Path) -> Result<WiiUMetaXmlDepot, Error> {
+    pub fn title_id(&self) -> u64 {
+        self.title_id
+    }
+
+    /// The title this depot presents itself as, which differs from
+    /// [`Self::title_id`] only for updates.
+    pub fn meta_title_id(&self) -> u64 {
+        self.meta_title_id
+    }
+
+    /// Where this title lives in a Wii U NAND.
+    pub fn install_path(&self) -> String {
+        format!(
+            "usr/title/{:08x}/{:08x}",
+            (self.title_id >> 32) as u32,
+            self.title_id as u32
+        )
+    }
+}
+
+impl Depot for WiiUMetaXmlDepot {
+    fn open(path: &Path) -> Result<WiiUMetaXmlDepot, Error> {
         requires_structure!(
             path,
             "meta/",
@@ -62,28 +82,7 @@ impl WiiUMetaXmlDepot {
         })
     }
 
-    pub fn title_id(&self) -> u64 {
-        self.title_id
-    }
-
-    /// The title this depot presents itself as, which differs from
-    /// [`Self::title_id`] only for updates.
-    pub fn meta_title_id(&self) -> u64 {
-        self.meta_title_id
-    }
-
-    /// Where this title lives in a Wii U NAND.
-    pub fn install_path(&self) -> String {
-        format!(
-            "usr/title/{:08x}/{:08x}",
-            (self.title_id >> 32) as u32,
-            self.title_id as u32
-        )
-    }
-}
-
-impl Depot for WiiUMetaXmlDepot {
-    fn satisfies<N: VirtualNand>(&self, nand: &N) -> bool {
+    fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> bool {
         if nand.platform() != "NINTENDO_WIIU" {
             return false;
         }
@@ -114,10 +113,19 @@ impl Depot for WiiUMetaXmlDepot {
         }
     }
 
-    fn install<'a, N: VirtualNand>(&'a self, nand: &'a N) -> crate::installable::Installation<'a> {
+    fn install<'a, N: VirtualNand + ?Sized>(
+        self,
+        nand: &'a N,
+    ) -> crate::installable::Installation<'a>
+    where
+        Self: 'a,
+    {
+        let source = self;
+
         let storage: Arc<dyn Storage> = nand.root();
-        let install = DirectoryInstall::new(self.root.clone(), self.install_path(), storage, self);
-        crate::installable::Installation::new(install)
+        let install =
+            DirectoryInstall::new(source.root.clone(), source.install_path(), storage, &source);
+        crate::installable::Installation::from_installable(install)
     }
 }
 

@@ -1,3 +1,4 @@
+import { resolveNand } from "../features/storage/selection";
 import { unwrap } from "solid-js/store";
 import type {
   ConfigurationSelection,
@@ -88,7 +89,7 @@ export async function createSelection(game: PackageConfiguration): Promise<Confi
   if (game.platform === WII || game.platform === WII_U || game.platform === VITA) {
     const [save, nand] = await Promise.all([
       defaultVolume("saveRepo", game.platform),
-      defaultVolume("nand", game.platform),
+      resolveNand(game.platform),
     ]);
     const device = game.platform === VITA ? "emmc" : game.platform === WII_U ? "mlc" : "nand";
     selection.storage = { [device]: [save.id, nand.id] };

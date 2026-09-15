@@ -19,7 +19,7 @@ directory, `ux0/data`, `uma0/data`, `vd0`, and `tm0` are writable. Data outside
 the selected user's directory remains system-volume state rather than
 per-title save history.
 
-`VitaDirectoryDepot::new` accepts an already-decrypted directory containing
+`VitaDirectoryDepot::open` accepts an already-decrypted directory containing
 `sce_sys/param.sfo`. Categories `gd`, `gp`, and `ac` install under `ux0/app`,
 `ux0/patch`, and `ux0/addcont`, respectively. Applications and patches require
 `eboot.bin`; add-ons require a content ID whose title matches `TITLE_ID`.

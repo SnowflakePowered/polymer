@@ -26,6 +26,12 @@ pub struct Ps3Nand {
 
 #[async_trait]
 impl VirtualNand for Ps3Nand {
+    crate::nand::nand_depots!(
+        super::depots::Ps3PupDepot,
+        super::depots::Ps3PkgDepot,
+        super::depots::Ps3RapDepot
+    );
+
     async fn new_empty<St: VolumeStorage + 'static>(
         storage: St,
         id: Uuid,

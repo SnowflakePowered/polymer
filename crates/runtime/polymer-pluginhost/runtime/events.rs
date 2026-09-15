@@ -42,7 +42,7 @@ impl PluginEvent {
     }
 }
 
-pub(super) struct EventEmitter {
+pub struct EventEmitter {
     id: u64,
     plugin: String,
 }
@@ -84,7 +84,7 @@ impl EventEmitter {
     }
 }
 
-pub(super) struct EventScope {
+pub struct EventScope {
     emitter: Arc<EventEmitter>,
     name: String,
     terminal: Value,

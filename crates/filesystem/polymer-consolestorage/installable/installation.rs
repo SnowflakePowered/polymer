@@ -1,5 +1,6 @@
-use super::{DepotFile, artifacts::Artifact};
+use super::{Depot, DepotFile, artifacts::Artifact};
 use crate::Error;
+use crate::nand::VirtualNand;
 use futures::channel::oneshot;
 use futures::{Stream, StreamExt, stream};
 use std::pin::Pin;
@@ -23,12 +24,16 @@ pub struct Installation<'a> {
     outcome: Pin<Box<dyn Future<Output = Result<Artifact, Error>> + 'a>>,
 }
 impl<'a> Installation<'a> {
-    pub fn new<I: Installable + 'a>(installable: I) -> Self {
+    pub fn new<D: Depot + 'a, N: VirtualNand + ?Sized>(depot: D, nand: &'a N) -> Self {
+        depot.install(nand)
+    }
+
+    pub(crate) fn from_installable<I: Installable + 'a>(installable: I) -> Self {
         Self::prepare(std::future::ready(Ok(installable)))
     }
 
     /// Lazily prepare an archive when progress or completion is polled.
-    pub fn prepare<I, F>(prepare: F) -> Self
+    pub(crate) fn prepare<I, F>(prepare: F) -> Self
     where
         I: Installable + 'a,
         F: Future<Output = Result<I, Error>> + 'a,
@@ -117,6 +122,7 @@ impl<'a> Installation<'a> {
         })
     }
 }
+
 impl Stream for Installation<'_> {
     type Item = Result<String, Error>;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -162,7 +168,7 @@ mod tests {
     async fn next_drives_batches_and_pending_completion() {
         let finished = Cell::new(false);
         let (release, wait) = oneshot::channel();
-        let mut install = Installation::new(Archive {
+        let mut install = Installation::from_installable(Archive {
             artifact: Artifact::new(
                 "test".into(),
                 DepotType::App,
@@ -204,7 +210,7 @@ mod tests {
             } else {
                 [Err(Error::Unsupported("extraction failed".into()))].into()
             };
-            let mut install = Installation::new(Archive {
+            let mut install = Installation::from_installable(Archive {
                 artifact: Artifact::new(
                     "test".into(),
                     DepotType::App,
@@ -230,7 +236,7 @@ mod tests {
     #[tokio::test]
     async fn dropping_progress_does_not_start_completion() {
         let finished = Cell::new(false);
-        let mut install = Installation::new(Archive {
+        let mut install = Installation::from_installable(Archive {
             artifact: Artifact::new(
                 "test".into(),
                 DepotType::App,
@@ -253,7 +259,7 @@ mod tests {
     async fn finish_drains_unpolled_or_partially_consumed_installation() {
         for consume_progress in [false, true] {
             let finished = Cell::new(false);
-            let mut install = Installation::new(Archive {
+            let mut install = Installation::from_installable(Archive {
                 artifact: Artifact::new(
                     "test".into(),
                     DepotType::App,

@@ -1,11 +1,14 @@
+use crate::installable::{
+    IconHint,
+    artifacts::{Artifact, DescribeArtifact},
+};
 mod install;
 mod reader;
 mod sce;
 
 use super::super::Ps3Nand;
 use crate::Error;
-use crate::installable::artifacts::{Artifact, DescribeArtifact};
-use crate::installable::{Depot, DepotType, IconHint};
+use crate::installable::{Depot, DepotType};
 use crate::nand::VirtualNand;
 use std::path::{Path, PathBuf};
 
@@ -16,15 +19,6 @@ pub struct Ps3PupDepot {
     version: String,
 }
 impl Ps3PupDepot {
-    pub fn open(path: &Path) -> Result<Self, Error> {
-        let mut pup = reader::Pup::open(path).map_err(|e| Error::io(path, e))?;
-        let version = pup.version().map_err(|e| Error::io(path, e))?;
-        pup.entry(0x300).map_err(|e| Error::io(path, e))?;
-        Ok(Self {
-            path: path.to_owned(),
-            version,
-        })
-    }
     pub fn version(&self) -> &str {
         &self.version
     }
@@ -41,20 +35,19 @@ impl Ps3PupDepot {
         Ok(pup)
     }
 }
-impl DescribeArtifact for Ps3PupDepot {
-    fn describe(&self) -> Artifact {
-        Artifact::new(
-            "ps3:firmware".to_owned(),
-            DepotType::System,
-            Vec::new(),
-            "PlayStation 3 system software".to_owned(),
-            Some(self.version.clone()),
-            IconHint::Builtin(DepotType::System),
-        )
-    }
-}
+
 impl Depot for Ps3PupDepot {
-    fn satisfies<N: VirtualNand>(&self, nand: &N) -> bool {
+    fn open(path: &Path) -> Result<Self, Error> {
+        let mut pup = reader::Pup::open(path).map_err(|e| Error::io(path, e))?;
+        let version = pup.version().map_err(|e| Error::io(path, e))?;
+        pup.entry(0x300).map_err(|e| Error::io(path, e))?;
+        Ok(Self {
+            path: path.to_owned(),
+            version,
+        })
+    }
+
+    fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> bool {
         nand.platform() == Ps3Nand::PLATFORM && Ps3Nand::has_structure(&*nand.root())
     }
     fn validate_contents(&self) -> Vec<String> {
@@ -66,16 +59,30 @@ impl Depot for Ps3PupDepot {
     fn depot_type(&self) -> DepotType {
         DepotType::System
     }
-    fn install<'a, N: VirtualNand>(&'a self, nand: &'a N) -> crate::installable::Installation<'a> {
+    fn install<'a, N: VirtualNand + ?Sized>(
+        self,
+        nand: &'a N,
+    ) -> crate::installable::Installation<'a>
+    where
+        Self: 'a,
+    {
+        let source = self;
+
         crate::installable::Installation::prepare(async move {
-            if self.satisfies(nand) {
-                install::PupInstall::new(self, nand.root()).await
-            } else {
-                Err(Error::Unsupported(format!(
-                    "a PS3 PUP cannot be installed to {}",
-                    nand.platform()
-                )))
-            }
+            install::PupInstall::new(&source, nand.root()).await
         })
+    }
+}
+
+impl DescribeArtifact for Ps3PupDepot {
+    fn describe(&self) -> Artifact {
+        Artifact::new(
+            "ps3:firmware".to_owned(),
+            DepotType::System,
+            Vec::new(),
+            "PlayStation 3 system software".to_owned(),
+            Some(self.version.clone()),
+            IconHint::Builtin(DepotType::System),
+        )
     }
 }

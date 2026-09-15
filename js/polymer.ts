@@ -370,7 +370,25 @@ export interface ConfigurationApi {
 export type ConsoleStorageKind = "nand" | "saveRepo" | "memoryCard" | "battery";
 export type CreatableConsoleStorageKind = Exclude<ConsoleStorageKind, "battery">;
 
+export interface StorageArtifact {
+  id: string; label: string; version: string | null; depotType: number; byteLength: number;
+}
+export interface StorageInspection { id: string; platform: string; minimal: boolean; dirty: boolean; artifacts: StorageArtifact[] }
+export interface StoragePreflight { issues: { code: string; message: string; severity: "blocking" | "warning"; device?: string }[] }
+export interface StorageDepotSource { path: string }
+export interface StorageRemovalPlan { requested: string[]; affected: string[]; revision: string }
 export interface ConsoleStorageVolume extends EventTarget {
+  inspect(): Promise<StorageInspection>;
+  /** Discard uncommitted NAND changes and restore the last successful commit. */
+  recover(): Promise<StorageInspection>;
+  preflight(operation?: "launch" | "install" | "bootstrap", settings?: Record<string, unknown>): Promise<StoragePreflight>;
+  install(source: StorageDepotSource): Promise<StorageArtifact>;
+  bootstrap(settings?: Record<string, unknown>): Promise<StorageInspection>;
+  readonly artifacts: {
+    list(): Promise<StorageArtifact[]>;
+    planRemoval(ids: string[]): Promise<StorageRemovalPlan>;
+    uninstall(plan: StorageRemovalPlan): Promise<StorageArtifact[]>;
+  };
   readonly kind: ConsoleStorageKind;
   readonly id: string;
   readonly platform: string;
@@ -382,6 +400,7 @@ export interface ConsoleStorageVolume extends EventTarget {
 }
 
 export interface ConsoleStorageApi {
+  platforms(): Promise<{ platform: string; plugin: string }[]>;
   readonly Storage: {
     readonly prototype: ConsoleStorageVolume;
     supports(kind: ConsoleStorageKind, platform: string): Promise<boolean>;

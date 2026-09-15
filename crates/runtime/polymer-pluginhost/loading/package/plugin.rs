@@ -255,6 +255,8 @@ pub enum PackageError {
     InvalidScrapeRequirement(String),
     #[error("emulator save-state revision must not be empty")]
     InvalidSaveStateRevision,
+    #[error("invalid preflight device requirement: {0}")]
+    InvalidPreflight(String),
     #[error("plugin main must be a confined package-relative path: {}", .0.display())]
     InvalidPluginMain(PathBuf),
     #[error("theme debug serve command must not be empty")]

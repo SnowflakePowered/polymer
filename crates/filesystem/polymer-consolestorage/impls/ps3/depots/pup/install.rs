@@ -10,8 +10,6 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// Writes pending NAND changes and records one firmware artifact at completion.
-/// Failed or cancelled installations are discarded by the NAND session finish().
 pub(super) struct PupInstall {
     extraction: Arc<Mutex<PupExtraction>>,
     artifact: Artifact,

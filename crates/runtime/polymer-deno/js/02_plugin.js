@@ -25,6 +25,7 @@ export function createPlugin() {
   const errorFrom = (wire) => {
     const error = new Error(String(wire?.message ?? "plugin invocation failed"));
     error.name = String(wire?.name ?? "Error");
+    if (wire?.details) Object.defineProperty(error, "details", { value: wire.details, enumerable: true });
     if (wire?.stack) error.stack = String(wire.stack);
     Object.defineProperty(error, "code", {
       value: String(wire?.code ?? "PLUGIN_WORKER_FAILED"),

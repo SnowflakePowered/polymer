@@ -62,6 +62,8 @@ impl VitaNand {
 
 #[async_trait]
 impl VirtualNand for VitaNand {
+    crate::nand::nand_depots!(super::depots::VitaDirectoryDepot);
+
     async fn new_empty<St: VolumeStorage + 'static>(
         storage: St,
         id: Uuid,

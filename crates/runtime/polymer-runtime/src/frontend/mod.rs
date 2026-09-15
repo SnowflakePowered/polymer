@@ -16,7 +16,7 @@ use crate::ControllerProfiles;
 use crate::{ConfigurationDefaults, LibraryService};
 use parking_lot::{Mutex, RwLock};
 use polymer_deno::polymer::{
-    ApiFuture, ConsoleStorageRequest, InstanceToken, Library, PolymerHost, PolymerNotification,
+    ApiFuture, ConsoleStorage, InstanceToken, Library, PolymerHost, PolymerNotification,
     PolymerNotificationSender,
 };
 use polymer_input::{
@@ -196,6 +196,7 @@ pub struct FrontendServices {
     launchable_configurations:
         Option<Arc<crate::launchable_configuration::LaunchableConfigurations>>,
     storage: Option<Arc<StorageManager>>,
+    storage_service: Result<crate::StorageService, String>,
     prepared_filesystems: PreparedFilesystemStore,
     controller_sessions: ControllerSessionStore,
     input_sources: InputHub,
@@ -568,12 +569,16 @@ impl FrontendServices {
                 ),
             )
         });
+        let storage = crate::console_storage_manager();
+        let storage_service = crate::StorageService::start(storage.clone(), plugins.handle())
+            .map_err(|error| format!("could not start storage actor: {error}"));
         Self {
             plugins,
             configuration,
             library,
             launchable_configurations,
-            storage: crate::console_storage_manager(),
+            storage,
+            storage_service,
             prepared_filesystems: PreparedFilesystemStore::default(),
             controller_sessions: ControllerSessionStore::default(),
             input_sources,
@@ -790,9 +795,11 @@ impl PolymerHost for FrontendServices {
         self.prepared_filesystems.release(&token)
     }
 
-    fn consolestorage(&self, request: ConsoleStorageRequest) -> ApiFuture<Result<Value, String>> {
-        let storage = self.storage.clone();
-        Box::pin(async move { crate::serve_console_storage(storage, request).await })
+    fn consolestorage(&self) -> Result<ConsoleStorage, String> {
+        self.storage_service
+            .as_ref()
+            .map(crate::StorageService::client)
+            .map_err(Clone::clone)
     }
 
     fn library(&self) -> Option<Library> {

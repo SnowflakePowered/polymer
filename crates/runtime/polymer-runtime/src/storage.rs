@@ -356,12 +356,15 @@ pub async fn launch_storage(
                 "storage device '{name}' is not declared by console '{console}'"
             ));
         }
-        if let Some(ids) = selection.as_array() {
-            if ids.len() != 2 {
-                return Err(format!("storage device '{name}' requires [save, nand]"));
-            }
-            let save_id = parse_id(name, &ids[0])?;
-            let nand_id = parse_id(name, &ids[1])?;
+        let resolved = polymer_library::StorageSelection::resolve(&manager, console, selection)
+            .await
+            .map_err(|error| error.to_string())?;
+        if !resolved.missing.is_empty() {
+            return Err(format!(
+                "storage device '{name}' references a missing volume"
+            ));
+        }
+        if let (Some(save_id), Some(nand_id)) = (resolved.saves, resolved.nand) {
             let save = manager
                 .open(StorageKind::SaveRepo, console, save_id)
                 .await
@@ -397,12 +400,15 @@ pub async fn launch_storage(
             continue;
         }
 
-        let id = parse_id(name, selection)?;
-        let kind = if console == "NINTENDO_WIIU" {
-            StorageKind::Nand
-        } else {
-            StorageKind::MemoryCard
-        };
+        let (kind, id) = [
+            (StorageKind::Nand, resolved.nand),
+            (StorageKind::SaveRepo, resolved.saves),
+            (StorageKind::MemoryCard, resolved.memory_card),
+            (StorageKind::Battery, resolved.battery),
+        ]
+        .into_iter()
+        .find_map(|(kind, id)| id.map(|id| (kind, id)))
+        .ok_or_else(|| format!("storage device '{name}' has no volume"))?;
         let volume = manager
             .open(kind, console, id)
             .await
@@ -640,7 +646,7 @@ mod tests {
 
         let arguments = serde_json::json!({
             "console": "NINTENDO_WIIU",
-            "storage": { "mlc": [save_id, nand_id] },
+            "storage": { "mlc": [nand_id, save_id] },
         });
         let (notifications, mut saved) = tokio::sync::mpsc::unbounded_channel();
         let factories = launch_storage(

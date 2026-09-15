@@ -35,6 +35,10 @@ async function invoke(entrypoint, path, args) {
     throw new TypeError(`plugin export '${path.join(".")}' is not a function`);
   }
   if (path.join(".") === "updateContents" || path.join(".") === "default.updateContents") args = [progressContext];
+  if (path.at(-1) === "onBootstrap") {
+    const result = await globalThis.__polymerPlatform.bootstrap(receiver, args[0], Object.freeze({ ...args[1], ...progressContext }));
+    return result === undefined ? null : result;
+  }
   const result = await Reflect.apply(value, receiver, args);
   return result === undefined ? null : result;
 }

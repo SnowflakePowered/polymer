@@ -22,7 +22,7 @@ pub use configuration::{
     GameDescriptor, LaunchGroupRequest, LaunchPortRequest, PortDescriptor, PortGroupDescriptor,
     PreparedGame, describe_api as describe_configuration, prepare_api as prepare_configuration,
 };
-pub use consolestorage::{manager as console_storage_manager, serve as serve_console_storage};
+pub use consolestorage::{StorageService, manager as console_storage_manager};
 pub use controllers::{
     ControllerAssignmentSnapshot, ControllerCommandOutcome, ControllerManager,
     ControllerManagerEffect, ControllerProfiles, ControllerSessionCommit,

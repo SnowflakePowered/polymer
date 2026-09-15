@@ -3,6 +3,7 @@ pub mod games;
 pub mod inputstore;
 pub mod quickresume;
 pub mod storage;
+mod storage_selection;
 
 pub use directories::Directories;
 pub use games::{
@@ -18,3 +19,4 @@ pub use polymer_consolestorage::nand::VirtualNand;
 pub use polymer_consolestorage::{ConsoleStorage, Nand, SaveRepo, StorageKind, VolumeInfo};
 pub use quickresume::{QuickResumeEntry, QuickResumeKey, QuickResumeStore};
 pub use storage::StorageManager;
+pub use storage_selection::StorageSelection;

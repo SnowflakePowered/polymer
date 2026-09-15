@@ -20,3 +20,6 @@ definitions = [
 [emulator.savestates]
 max = 10
 revision = "2606"
+
+[emulator.preflight.NINTENDO_WII.nand]
+completion = "minimal"

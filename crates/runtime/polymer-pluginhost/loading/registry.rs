@@ -1,9 +1,10 @@
 use super::{
-    EmulatorPlugin, PackageError, ScraperPlugin, ThemePlugin, descriptor::PluginDescriptor,
+    EmulatorPlugin, PackageError, PlatformPlugin, ScraperPlugin, ThemePlugin,
+    descriptor::PluginDescriptor,
 };
 use crate::{
-    emulator::EmulatorPluginInstance, plugin::PluginInstance, scraper::ScraperPluginInstance,
-    theme::ThemePluginInstance,
+    emulator::EmulatorPluginInstance, platform::PlatformPluginInstance, plugin::PluginInstance,
+    scraper::ScraperPluginInstance, theme::ThemePluginInstance,
 };
 use serde::Deserialize;
 use std::{
@@ -59,6 +60,12 @@ impl PluginRegistry {
         Self::default()
     }
 
+    pub fn platform(&self, platform: &str) -> Option<Arc<dyn PlatformPluginInstance>> {
+        self.plugins::<dyn PlatformPluginInstance>()
+            .into_iter()
+            .find(|plugin| plugin.platforms().iter().any(|id| id == platform))
+    }
+
     /// Loads the package containing `plugin.toml` and registers every interface
     /// implemented by that package. A plugin ID can be registered only once.
     pub fn load(
@@ -78,6 +85,15 @@ impl PluginRegistry {
         let header: ManifestHeader = toml::from_str(&fs::read_to_string(&manifest)?)?;
 
         match header.plugin.class.as_str() {
+            "platform" => {
+                let concrete = Arc::new(PlatformPlugin::load(root)?);
+                let instance: Arc<dyn PluginInstance> = concrete.clone();
+                let platform: Arc<dyn PlatformPluginInstance> = concrete;
+                let mut registered = RegisteredPlugin::new(instance.clone());
+                registered.insert(platform);
+                self.register(instance.id(), registered)?;
+                Ok(instance)
+            }
             "emulator" => {
                 let concrete = Arc::new(EmulatorPlugin::load(root)?);
                 let instance: Arc<dyn PluginInstance> = concrete.clone();
@@ -147,6 +163,22 @@ impl PluginRegistry {
         if plugins.contains_key(id) {
             return Err(PluginRegistryError::DuplicatePlugin(id.to_owned()));
         }
+        if let Some(provider) = registered.get::<dyn PlatformPluginInstance>() {
+            for existing in plugins
+                .values()
+                .filter_map(|item| item.get::<dyn PlatformPluginInstance>())
+            {
+                for platform in provider.platforms() {
+                    if existing.platforms().contains(platform) {
+                        return Err(PluginRegistryError::DuplicatePlatform {
+                            platform: platform.clone(),
+                            existing: existing.id().to_owned(),
+                            incoming: id.to_owned(),
+                        });
+                    }
+                }
+            }
+        }
         plugins.insert(id.to_owned(), registered);
         Ok(())
     }
@@ -176,4 +208,10 @@ pub enum PluginRegistryError {
     UnknownClass(String),
     #[error("plugin '{0}' is already registered")]
     DuplicatePlugin(String),
+    #[error("platform '{platform}' has duplicate providers '{existing}' and '{incoming}'")]
+    DuplicatePlatform {
+        platform: String,
+        existing: String,
+        incoming: String,
+    },
 }

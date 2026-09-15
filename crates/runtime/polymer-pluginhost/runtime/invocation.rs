@@ -36,6 +36,8 @@ pub struct PluginInvocationError {
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stack: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
 }
 
 /// Result of a plugin call before application-owned resources are converted
@@ -53,6 +55,7 @@ impl PluginInvocationError {
             code: code.to_owned(),
             message: message.into(),
             stack: None,
+            details: None,
         }
     }
 
@@ -74,6 +77,7 @@ impl PluginInvocationError {
             },
             code: "PLUGIN_WORKER_FAILED".to_owned(),
             stack: Some(message.clone()),
+            details: None,
             message,
         }
     }
