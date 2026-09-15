@@ -21,6 +21,7 @@ impl PluginRuntimeHandle {
             WorkerOptions::for_plugin(provider.as_ref(), self.directories(), BTreeMap::new(), None)
                 .map_err(PluginInvocationError::worker)?;
         worker.platform.device = Some(device.clone());
+        worker.firmware.platform = Some(device.platform.clone());
         let entrypoint = provider.entrypoint().to_string();
         let invocation_entrypoint = entrypoint.clone();
         let lifecycle = self.lifecycle(provider.id());

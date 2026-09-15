@@ -12,7 +12,6 @@ use std::{
 use tempfile::TempDir;
 
 mod cache_database;
-mod inline_media;
 
 struct TestRuntime {
     runtime: PluginRuntime,

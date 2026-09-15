@@ -264,6 +264,7 @@ function refreshConfigurations() {
 Object.defineProperty(globalThis, "__polymerFilesystem", {
   value: Object.freeze({
     filesystem,
+    fileResource: readableResource,
     forLaunch,
     cacheResource(cacheKey, methods) {
       return resource(op_vfs_cache_resource(String(cacheKey)), methods);

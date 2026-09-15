@@ -15,6 +15,7 @@ use std::{collections::BTreeSet, future::Future, rc::Rc, sync::Arc};
 const MAX_SCRAPE_RESULTS: usize = 4096;
 
 pub(super) struct WorkerOptions {
+    pub(super) firmware: crate::firmware::FirmwareBinding,
     loader: PluginModuleLoader,
     filesystem: crate::filesystem::FilesystemOptions,
     cache: crate::cache::CacheOptions,
@@ -37,6 +38,7 @@ impl WorkerOptions {
         let cache = crate::cache::CacheOptions::for_plugin(directories, plugin);
         filesystem.caches = cache.filesystem_caches();
         Ok(Self {
+            firmware: crate::firmware::FirmwareBinding::new(directories.firmware()),
             platform: crate::platform::PlatformBinding {
                 manager: Arc::new(polymer_library::StorageManager::new(
                     directories.consolestorage(),
@@ -89,6 +91,7 @@ pub(super) fn create_worker_runtime(
     storage: Arc<crate::plugin_storage::PluginStorage>,
 ) -> Result<polymer_deno::Runtime, PluginInvocationError> {
     let WorkerOptions {
+        firmware,
         loader,
         filesystem,
         cache,
@@ -102,6 +105,7 @@ pub(super) fn create_worker_runtime(
         main_module,
         module_loader: Rc::new(loader),
         extensions: vec![
+            crate::firmware::extension(firmware),
             crate::digest::extension(),
             crate::actions::extension(),
             crate::automation::extension(),

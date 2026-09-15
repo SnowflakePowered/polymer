@@ -8,6 +8,21 @@ use super::PolymerHost;
 mod messages;
 pub use messages::*;
 
+#[op2]
+#[serde]
+pub(super) async fn op_library_import(
+    state: Rc<RefCell<OpState>>,
+    #[string] path: String,
+) -> Result<serde_json::Value, JsErrorBox> {
+    library(&state)?
+        .import
+        .send(LibraryImport { path })
+        .await
+        .map_err(|_| "library service is unavailable".to_owned())
+        .and_then(|result| result)
+        .map_err(error)
+}
+
 fn library(state: &Rc<RefCell<OpState>>) -> Result<Library, JsErrorBox> {
     let host = state.borrow().borrow::<Arc<dyn PolymerHost>>().clone();
     host.library()

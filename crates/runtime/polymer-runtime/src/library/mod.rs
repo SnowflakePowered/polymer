@@ -1,4 +1,6 @@
 pub(crate) mod api;
+#[cfg(test)]
+mod firmware_tests;
 mod server;
 
 use std::{rc::Rc, sync::Arc};
@@ -37,6 +39,7 @@ impl Actor for LibraryReader {
 }
 
 struct LibraryBackend {
+    firmware_runtime: Arc<polymer_pluginhost::runtime::PluginRuntime>,
     catalog: Arc<GameCatalog>,
     scraping: polymer_scraping::ScrapingEngine,
     _lifetime: Rc<LibraryActorLifetime>,
@@ -69,6 +72,11 @@ impl LibraryService {
         directories: Directories,
     ) -> Result<Self, std::io::Error> {
         let media = server::MediaServer::start(catalog.clone()).await?;
+        let firmware_runtime = Arc::new(polymer_pluginhost::runtime::PluginRuntime::new(
+            plugins.clone(),
+            directories.clone(),
+            Default::default(),
+        ));
         let scraping = polymer_scraping::ScrapingEngine::new(catalog.clone(), plugins, directories);
         if let Err(error) = scraping.resume().await {
             tracing::warn!(%error, "could not resume scrape jobs");
@@ -92,6 +100,7 @@ impl LibraryService {
                     let writer = LibraryBackend::create(move |ctx| {
                         ctx.set_mailbox_capacity(0);
                         LibraryBackend {
+                            firmware_runtime,
                             catalog: actor_catalog,
                             scraping: actor_scraping,
                             _lifetime: lifetime,
@@ -118,6 +127,7 @@ impl LibraryService {
 
     pub fn client(&self) -> Library {
         Library {
+            import: self.actor.clone().recipient(),
             games_list: self.reader.clone().recipient(),
             games_get: self.reader.clone().recipient(),
             games_delete: self.actor.clone().recipient(),

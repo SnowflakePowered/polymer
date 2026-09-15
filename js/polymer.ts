@@ -449,7 +449,20 @@ export type LibraryGame = Readonly<{
   metadata: readonly LibraryMetadata[];
 }>;
 
+export type FirmwareDescription = Readonly<{
+  platform: string;
+  type: string;
+  label: string;
+  byteLength: number;
+}>;
+
+export type GameImport = Readonly<{ launchable: LibraryLaunchable; scrapeJob: ScrapeJob | null }>;
+export type LibraryImportResult =
+  | Readonly<{ kind: "games"; imports: readonly GameImport[] }>
+  | Readonly<{ kind: "firmware"; firmware: readonly FirmwareDescription[] }>;
+
 export interface LibraryApi extends EventTarget {
+  import(input: { path: string }): Promise<LibraryImportResult>;
   readonly games: Readonly<{
     list(options?: { platform?: string }): Promise<LibraryGame[]>;
     get(rootBinaryId: string): Promise<LibraryGame | null>;

@@ -1,6 +1,7 @@
 //! Filesystem composition capabilities owned by plugin-worker isolates.
 
 mod ops;
+pub(crate) use ops::JsResource;
 mod package;
 
 use deno_core::{JsRuntime, OpState, op2};

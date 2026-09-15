@@ -2,7 +2,7 @@ use super::*;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct JsResource {
+pub(crate) struct JsResource {
     name: Option<String>,
     kind: &'static str,
     handle: String,
@@ -16,6 +16,21 @@ struct JsQuickResume {
 }
 
 impl JsResource {
+    pub(crate) fn readonly_file(
+        state: &mut OpState,
+        name: String,
+        factory: Arc<dyn ResourceFactory<dyn FileNode>>,
+    ) -> Self {
+        let handle = state
+            .borrow_mut::<FilesystemState>()
+            .insert_file(Resource::new(
+                factory,
+                Permissions::READ,
+                ResourceOrigin::Other("firmware".into()),
+            ));
+        Self::new(Some(name), ResourceHandle::File(handle))
+    }
+
     fn new(name: Option<String>, handle: ResourceHandle) -> Self {
         match handle {
             ResourceHandle::Tree(handle) => Self {
@@ -440,6 +455,12 @@ fn op_vfs_mount_file_resource(
         return Err(js_error("mountFile requires a file resource"));
     };
     let resource = vfs.file(handle).map_err(js_error)?;
+    if !resource.authority().contains(permissions) {
+        return Err(js_error(VfsError::AuthorityExceeded {
+            authority: resource.authority(),
+            requested: permissions,
+        }));
+    }
     vfs.plan.mount_file(
         VfsPathBuf::new(target).map_err(js_error)?,
         resource,
