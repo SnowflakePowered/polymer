@@ -374,15 +374,3 @@ impl AclSender {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn selector_matches_vid_pid() {
-        let selector = AdapterSelector::from_vid_pid(0x2357, 0x0604);
-        assert_eq!(selector.vendor_id, Some(0x2357));
-        assert_eq!(selector.product_id, Some(0x0604));
-    }
-}

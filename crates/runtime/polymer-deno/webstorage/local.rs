@@ -138,23 +138,3 @@ impl LocalStorage {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn persists_values_across_connections() {
-        let root = tempfile::tempdir().unwrap();
-        let directories = Directories::rooted(root.path(), root.path());
-        let storage = LocalStorage::open(&directories).await.unwrap();
-        storage.set_item("Polymer.theme", "chipotle").await.unwrap();
-        drop(storage);
-
-        let storage = LocalStorage::open(&directories).await.unwrap();
-        assert_eq!(
-            storage.get_item("Polymer.theme").await.unwrap(),
-            Some("chipotle".to_owned())
-        );
-    }
-}

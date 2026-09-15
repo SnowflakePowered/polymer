@@ -68,21 +68,3 @@ impl fmt::Display for Permissions {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn accepts_only_canonical_subsets() {
-        for mode in [
-            "", "r", "w", "x", "a", "rw", "rx", "ra", "wx", "wa", "xa", "rwx", "rwa", "rxa", "wxa",
-            "rwxa",
-        ] {
-            assert_eq!(mode.parse::<Permissions>().unwrap().to_string(), mode);
-        }
-        for mode in ["wr", "rr", "rxx", "aa", "p", "rwxr", "rwxar"] {
-            assert!(mode.parse::<Permissions>().is_err(), "{mode}");
-        }
-    }
-}

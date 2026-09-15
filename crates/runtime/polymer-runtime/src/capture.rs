@@ -332,21 +332,3 @@ impl BufferReleaseSender {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn shutdown_joins_workers_and_releases_listener() {
-        let session = format!("polymer-runtime-capture-test-{}", std::process::id());
-        let callbacks = CaptureCallbacks {
-            offer: Arc::new(|_, _, accepted| accepted.send(false)),
-            disconnected: Arc::new(|_| {}),
-        };
-        let router = bind(&session, ConsumerPreference::D3d12, callbacks, None).unwrap();
-        router.shutdown();
-        let replacement = LocalSocketListener::bind(&session).unwrap();
-        replacement.close();
-    }
-}

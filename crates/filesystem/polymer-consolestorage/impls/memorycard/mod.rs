@@ -216,37 +216,3 @@ fn reconcile_loop(
         }
     }
 }
-
-#[cfg(test)]
-mod writeback_tests {
-    use super::*;
-    use std::sync::atomic::AtomicUsize;
-
-    #[test]
-    fn batches_dirty_writes_and_reports_sync_failures() {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let background_calls = calls.clone();
-        let worker = ReconcileWorker::spawn("writeback-batch-test", "test", move || {
-            background_calls.fetch_add(1, Ordering::Relaxed);
-            Ok(())
-        })
-        .unwrap();
-        worker.schedule();
-        worker.schedule();
-        worker.schedule();
-        std::thread::sleep(Duration::from_millis(500));
-        worker.reconcile().unwrap();
-        assert_eq!(calls.load(Ordering::Relaxed), 1);
-        worker.shutdown().unwrap();
-
-        let failing = ReconcileWorker::spawn("writeback-error-test", "test", || {
-            Err(Error::Unsupported("writeback failed".to_owned()))
-        })
-        .unwrap();
-        failing.schedule();
-        assert!(matches!(
-            failing.shutdown(),
-            Err(Error::Unsupported(message)) if message == "writeback failed"
-        ));
-    }
-}

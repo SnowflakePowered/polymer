@@ -152,6 +152,3 @@ impl ControllerSession for Session {
         self.write(transport, next, false).await
     }
 }
-
-#[cfg(test)]
-mod tests;

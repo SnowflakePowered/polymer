@@ -117,31 +117,3 @@ impl Stream for Installation<'_> {
         self.progress.as_mut().poll_next(cx)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct Archive;
-    impl Installable for Archive {
-        async fn next_batch(&mut self) -> Result<Option<Vec<DepotFile>>, Error> {
-            unreachable!("preparation failed")
-        }
-        async fn finish(self, _: Vec<DepotFile>) -> Result<Artifact, Error> {
-            unreachable!("preparation failed")
-        }
-    }
-
-    #[tokio::test]
-    async fn preparation_error_is_retained_after_progress_reports_it() {
-        let mut install = Installation::prepare(async {
-            Err::<Archive, _>(Error::Unsupported("cannot open archive".into()))
-        });
-        let error = install.next().await.unwrap().unwrap_err();
-        assert!(install.next().await.is_none());
-        assert_eq!(
-            install.finish().await.err().unwrap().to_string(),
-            error.to_string()
-        );
-    }
-}

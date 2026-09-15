@@ -694,20 +694,6 @@ fn convert_to_rgba(format: vk::Format, packed: &[u8]) -> Vec<u8> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn converts_a2b10g10r10_to_rgba8() {
-        let pixel = 1023u32 | (512 << 10) | (0 << 20) | (3 << 30);
-        assert_eq!(
-            convert_to_rgba(vk::Format::A2B10G10R10_UNORM_PACK32, &pixel.to_le_bytes()),
-            [255, 127, 0, 255]
-        );
-    }
-}
-
 unsafe fn import_resources(
     instance: &ash::Instance,
     device: &ash::Device,

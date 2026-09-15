@@ -80,6 +80,3 @@ impl<D: UsbFeatureReports> FeaturePairing for DualShock3Pairing<D> {
         })
     }
 }
-
-#[cfg(test)]
-mod tests;

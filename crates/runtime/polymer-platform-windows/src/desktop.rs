@@ -120,33 +120,3 @@ impl Drop for DesktopThreadAttachment {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn private_desktop_attaches_and_restores() -> std::io::Result<()> {
-        let original = unsafe { GetThreadDesktop(GetCurrentThreadId()) }
-            .map_err(|_| std::io::Error::last_os_error())?;
-        let name = format!(
-            "polymer-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        );
-        let (desktop, mut attachment) = PrivateDesktop::create_and_attach_current_thread(&name)?;
-        assert_eq!(
-            unsafe { GetThreadDesktop(GetCurrentThreadId()) }.unwrap(),
-            desktop.handle
-        );
-        attachment.restore()?;
-        assert_eq!(
-            unsafe { GetThreadDesktop(GetCurrentThreadId()) }.unwrap(),
-            original
-        );
-        Ok(())
-    }
-}

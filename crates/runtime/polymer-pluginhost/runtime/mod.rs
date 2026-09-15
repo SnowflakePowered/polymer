@@ -699,6 +699,3 @@ impl Drop for ActiveCallGuard {
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

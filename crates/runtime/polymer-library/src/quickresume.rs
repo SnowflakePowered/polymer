@@ -156,24 +156,3 @@ impl QuickResumeStore {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn entries_are_consumed_and_revision_mismatches_are_invalidated() {
-        let temporary = tempfile::tempdir().unwrap();
-        let store = QuickResumeStore::new(temporary.path());
-        let key = QuickResumeKey::new("dolphin", "wii", "title");
-        store.commit(&key, "1", b"state", Some(b"png"), 2).unwrap();
-        assert!(store.take(&key, "2").unwrap().is_none());
-        assert!(store.take(&key, "1").unwrap().is_none());
-        store.commit(&key, "1", b"state", Some(b"png"), 2).unwrap();
-        let entry = store.take(&key, "1").unwrap().unwrap();
-        assert_eq!(entry.state, b"state");
-        assert_eq!(entry.disc_index, 2);
-        assert_eq!(entry.screenshot.as_deref(), Some(b"png".as_slice()));
-        assert!(store.take(&key, "1").unwrap().is_none());
-    }
-}

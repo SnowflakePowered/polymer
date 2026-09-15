@@ -397,36 +397,3 @@ impl<'a> RawMemoryCardImage<'a> for MemoryCard<'a> {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rejects_corrupt_redundant_metadata() {
-        let mut card = MemoryCard::empty(u32::from(MC251_BLOCKS)).unwrap();
-        card.initialize_header(Uuid::nil(), Region::Usa).unwrap();
-        let mut image = card.into_owned();
-        image[BLOCK_SIZE + 12] ^= 1;
-        image[BLOCK_SIZE * 2 + 12] ^= 1;
-        assert!(matches!(
-            MemoryCard::new(&image, u32::from(MC251_BLOCKS)),
-            Err(ParseError::InvalidCopies("directory"))
-        ));
-    }
-
-    #[test]
-    fn supports_attested_and_other_representable_card_sizes() {
-        for blocks in [11, 59, 123, 251, 507, 1019, 2043, MAX_BLOCKS] {
-            let mut card = MemoryCard::empty(u32::from(blocks)).unwrap();
-            card.initialize_header(Uuid::nil(), Region::Usa).unwrap();
-            let image = card.into_owned();
-            assert_eq!(
-                MemoryCard::new(&image, u32::from(blocks))
-                    .unwrap()
-                    .capacity_blocks,
-                blocks
-            );
-        }
-    }
-}

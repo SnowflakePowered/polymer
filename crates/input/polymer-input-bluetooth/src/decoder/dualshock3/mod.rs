@@ -170,6 +170,3 @@ impl BluetoothControllerDevice for DualShock3Decoder {
 }
 
 const _: () = assert!(std::mem::size_of::<NativeReport>() == 49);
-
-#[cfg(test)]
-mod tests;

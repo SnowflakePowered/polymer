@@ -28,8 +28,5 @@ zerocopy.workspace = true
 polymer-dshidmini = { path = "../polymer-dshidmini" }
 windows = { workspace = true, features = ["Devices_Bluetooth"] }
 
-[dev-dependencies]
-tempfile.workspace = true
-
 [lints]
 workspace = true

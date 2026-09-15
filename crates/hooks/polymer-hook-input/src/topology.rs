@@ -179,38 +179,3 @@ impl TopologyGuard<'_> {
             .collect()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use polymer_controllers::topology::RawHidBinding;
-
-    #[test]
-    fn provider_only_updates_advance_the_topology_generation() {
-        let state = TopologyState::default();
-        assert!(!state.read().received());
-
-        state.set(InputTopology {
-            revision: 7,
-            ..Default::default()
-        });
-        let first_generation = state.read().generation();
-        assert!(state.read().received());
-
-        state.set(InputTopology {
-            revision: 7,
-            raw_hid: vec![RawHidBinding {
-                player: 0,
-                port: 0,
-                vendor_id: 0x057e,
-                product_id: 0x0306,
-                pipe: r"\\.\pipe\polymer-test-hid-0".to_owned(),
-            }],
-            ..Default::default()
-        });
-
-        let updated = state.read();
-        assert_ne!(updated.generation(), first_generation);
-        assert_eq!(updated.document().raw_hid.len(), 1);
-    }
-}

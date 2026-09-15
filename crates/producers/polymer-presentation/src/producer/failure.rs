@@ -26,26 +26,3 @@ impl fmt::Display for SessionFailure {
     }
 }
 impl std::error::Error for SessionFailure {}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::producer::ProducerSession;
-    #[test]
-    fn os_permission_failure_is_retryable_while_explicit_rejection_parks() {
-        let transport = io::Error::new(io::ErrorKind::PermissionDenied, "duplicate handle denied");
-        assert!(ProducerSession::setup_result::<()>(Err(transport)).is_err());
-        for failure in [
-            SessionFailure::Rejected,
-            SessionFailure::IncompatibleProtocol,
-        ] {
-            let error = io::Error::new(io::ErrorKind::PermissionDenied, failure);
-            assert_eq!(SessionFailure::classify(&error), failure);
-            assert!(
-                ProducerSession::setup_result::<()>(Err(error))
-                    .unwrap()
-                    .is_none()
-            );
-        }
-    }
-}

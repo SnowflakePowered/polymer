@@ -83,30 +83,3 @@ pub trait PathOwned: Clone + Eq + Borrow<Self::Borrowed> {
     fn push(&mut self, component: &<Self::Borrowed as Path>::Str);
     fn pop(&mut self) -> bool;
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use bstr::BStr;
-    use widestring::U16Str;
-
-    #[test]
-    fn completed_owned_paths_push_pop_and_handle_empty_paths() {
-        let mut bytes = U8PathBuf::new();
-        assert!(!bytes.has_root());
-        bytes.push(BStr::new(b"first"));
-        bytes.push(BStr::new(b"second"));
-        assert_eq!(bytes.components().count(), 2);
-        assert!(bytes.pop());
-        assert_eq!(bytes.as_bytes(), b"first");
-
-        let mut wide = U16Path::root().to_owned();
-        wide.push(U16Str::from_slice(
-            &"wide".encode_utf16().collect::<Vec<_>>(),
-        ));
-        assert_eq!(wide.to_string_lossy(), "/wide");
-        assert!(wide.pop());
-        assert_eq!(wide.as_slice(), [b'/' as u16]);
-        assert!(!wide.pop());
-    }
-}

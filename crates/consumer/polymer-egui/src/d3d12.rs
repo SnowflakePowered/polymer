@@ -792,17 +792,3 @@ fn as_bytes<T>(items: &[T]) -> &[u8] {
     // SAFETY: this byte view has the exact lifetime and size of the source.
     unsafe { std::slice::from_raw_parts(items.as_ptr().cast(), size_of_val(items)) }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{compile, shader};
-
-    #[test]
-    fn painter_shaders_compile() {
-        // SAFETY: compilation only reads the static shader and entry strings.
-        unsafe {
-            compile(shader(), b"vs_main\0", b"vs_5_0\0").expect("vertex shader compiles");
-            compile(shader(), b"ps_main\0", b"ps_5_0\0").expect("pixel shader compiles");
-        }
-    }
-}

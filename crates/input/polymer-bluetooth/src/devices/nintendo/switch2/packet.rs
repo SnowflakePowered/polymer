@@ -54,36 +54,3 @@ impl CommandPacket {
         Ok(Some(Bytes::copy_from_slice(data)))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn correlates_responses_and_rejects_naks_for_each_transport() {
-        for transport in [0, 1] {
-            let request = CommandPacket::new(0x15, 1, transport);
-            let mut response = [
-                0x15,
-                1,
-                transport,
-                1,
-                0x10,
-                if transport == 0 { 0xf8 } else { 0x78 },
-                0,
-                0,
-                1,
-            ];
-            assert_eq!(request.response(&response).unwrap().unwrap().as_ref(), &[1]);
-            response[3] = 4;
-            assert!(request.response(&response).unwrap().is_none());
-            response[3] = 1;
-            response[2] ^= 1;
-            assert!(request.response(&response).unwrap().is_none());
-            response[2] = transport;
-            response[5] = 0;
-            assert!(request.response(&response).is_err());
-            assert!(request.response(&response[..7]).unwrap().is_none());
-        }
-    }
-}

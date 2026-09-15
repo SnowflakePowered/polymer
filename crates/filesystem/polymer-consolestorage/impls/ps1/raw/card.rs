@@ -562,28 +562,3 @@ impl fmt::Display for ParseError {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn raw_image_trait_appends_to_mutable_backing() {
-        let mut image = MemoryCard::empty(DATA_BLOCKS as u32).unwrap().into_owned();
-        let mut native_id = [0; NATIVE_ID_SIZE];
-        native_id[..12].copy_from_slice(b"BASCUS-00001");
-        let save = Save::new(&native_id, b"payload").unwrap();
-
-        {
-            let mut card: MemoryCard<'_> =
-                RawMemoryCardImage::new_mut(&mut image, DATA_BLOCKS as u32).unwrap();
-            RawMemoryCardImage::append_save(&mut card, save).unwrap();
-        }
-
-        let card: MemoryCard<'_> = RawMemoryCardImage::new(&image, DATA_BLOCKS as u32).unwrap();
-        let saves = RawMemoryCardImage::saves(&card).unwrap();
-        assert_eq!(saves.len(), 1);
-        assert_eq!(saves[0].native_id(), &native_id);
-        assert_eq!(saves[0].byte_len(), BLOCK_SIZE);
-    }
-}

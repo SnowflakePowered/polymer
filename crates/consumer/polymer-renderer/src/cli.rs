@@ -353,37 +353,3 @@ fn parse_skip_count(value: &str) -> Result<u32, String> {
         format!("invalid surface skip count '{value}'; expected a non-negative integer")
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn defaults_are_shared_by_renderer_hosts() {
-        let options = parse_arguments(["--", "game.exe"].map(str::to_owned)).unwrap();
-        assert_eq!(options.api, ViewerApi::D3d12);
-        assert_eq!(options.hooks, AUTO_HOOKS);
-        assert_eq!(options.target, ["game.exe"]);
-        assert_eq!(options.webrtc, None);
-    }
-
-    #[test]
-    fn validates_deduplicated_render_and_video_targets() {
-        assert!(
-            parse_arguments([
-                "--track-render-targets=0,0".to_owned(),
-                "--".to_owned(),
-                "game.exe".to_owned(),
-            ])
-            .is_err()
-        );
-        assert!(
-            parse_arguments([
-                "--webrtc=0,0".to_owned(),
-                "--".to_owned(),
-                "game.exe".to_owned(),
-            ])
-            .is_err()
-        );
-    }
-}

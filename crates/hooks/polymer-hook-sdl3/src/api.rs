@@ -397,29 +397,3 @@ pub(crate) unsafe fn symbol<T: Copy>(module: HMODULE, name: &std::ffi::CStr) -> 
     debug_assert_eq!(mem::size_of::<T>(), mem::size_of_val(&address));
     Some(unsafe { mem::transmute_copy(&address) })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::dense_mask_index;
-
-    #[test]
-    fn sparse_gamepad_masks_use_dense_virtual_button_indices() {
-        let wii_u_drc_mask =
-            (0..=6).fold(0u32, |mask, button| mask | (1 << button)) | (0b11_1111 << 9);
-
-        assert_eq!(dense_mask_index(wii_u_drc_mask, 0), Some(0));
-        assert_eq!(dense_mask_index(wii_u_drc_mask, 6), Some(6));
-        assert_eq!(dense_mask_index(wii_u_drc_mask, 7), None);
-        assert_eq!(dense_mask_index(wii_u_drc_mask, 12), Some(10));
-        assert_eq!(dense_mask_index(wii_u_drc_mask, 14), Some(12));
-    }
-
-    #[test]
-    fn sparse_standard_axis_masks_are_dense_but_pointer_axes_are_not() {
-        let axis_mask = (1 << 0) | (1 << 2) | (1 << 5);
-
-        assert_eq!(dense_mask_index(axis_mask, 0), Some(0));
-        assert_eq!(dense_mask_index(axis_mask, 2), Some(1));
-        assert_eq!(dense_mask_index(axis_mask, 5), Some(2));
-    }
-}

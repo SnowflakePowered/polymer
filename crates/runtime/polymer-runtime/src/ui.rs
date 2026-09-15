@@ -154,17 +154,3 @@ fn handle_request(
     };
     polymer_ipc::ui::send(socket, &response)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn shutdown_joins_worker_and_releases_listener() {
-        let session = format!("polymer-runtime-ui-test-{}", std::process::id());
-        let (transport, _) = UiTransport::bind(&session, Arc::new(|| {})).unwrap();
-        transport.shutdown();
-        let replacement = LocalSocketListener::bind(&format!("{session}-ui")).unwrap();
-        replacement.close();
-    }
-}

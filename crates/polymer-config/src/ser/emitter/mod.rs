@@ -197,27 +197,3 @@ impl FormatArgument for IntegerArgument {
         usize::try_from(self.0).map_err(|_| ())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::ScalarValue;
-
-    #[test]
-    fn renders_the_integer_styles_used_by_definitions() {
-        for (style, expected) in [
-            ("0x{:04x}", "0x002a"),
-            ("0x{:08x}", "0x0000002a"),
-            ("0x{:016x}", "0x000000000000002a"),
-        ] {
-            assert_eq!(
-                ScalarValue::Integer {
-                    value: 42,
-                    style: Some(style),
-                }
-                .render()
-                .unwrap(),
-                expected
-            );
-        }
-    }
-}

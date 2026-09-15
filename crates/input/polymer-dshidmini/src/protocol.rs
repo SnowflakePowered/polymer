@@ -77,29 +77,3 @@ impl Header {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn pairing_reply_rejects_wrong_target_and_failed_readback() {
-        let mut reply = Header::pair_request(7, [1, 2, 3, 4, 5, 6]);
-        reply[0..4].copy_from_slice(&4u32.to_le_bytes());
-        reply[4..8].copy_from_slice(&3u32.to_le_bytes());
-        reply[20..28].fill(0);
-        assert!(Header::validate_reply(&reply, 7).is_ok());
-        assert!(Header::validate_reply(&reply, 1).is_err());
-        reply[24..28].copy_from_slice(&0xc0000001u32.to_le_bytes());
-        assert!(Header::validate_reply(&reply, 7).is_err());
-    }
-
-    #[test]
-    fn legacy_slot_uses_occupied_record_not_enumeration_order() {
-        let mut records = vec![0; 53 * 255];
-        records[53 * 4..53 * 4 + 4].copy_from_slice(&5u32.to_le_bytes());
-        assert_eq!(Header::legacy_slot(&records).unwrap(), 5);
-        records[..4].copy_from_slice(&1u32.to_le_bytes());
-        assert!(Header::legacy_slot(&records).is_err());
-    }
-}

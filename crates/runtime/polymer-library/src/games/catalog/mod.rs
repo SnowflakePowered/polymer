@@ -18,8 +18,6 @@ mod configuration;
 mod manifest;
 mod metadata;
 mod objects;
-#[cfg(test)]
-mod tests;
 
 const BINARY_NAMESPACE: Uuid = Uuid::from_u128(0x599c9d3b98265d0080a77ae753dec395);
 

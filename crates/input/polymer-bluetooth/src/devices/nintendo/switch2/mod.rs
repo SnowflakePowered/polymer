@@ -411,25 +411,3 @@ impl Switch2Device<UnknownSwitch2Model> {
         UnknownSwitch2Model::bonded_host(device.manufacturer_data.get(&NINTENDO_MANUFACTURER_ID)?)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::devices::ControllerRegistry;
-
-    #[test]
-    fn native_characteristic_refines_a_family_level_match() {
-        let profile = UnknownSwitch2Model::gatt_profile();
-        assert_eq!(profile.input, JOYCON_LEFT_INPUT_UUID);
-        assert!(profile.input_fallbacks.contains(&GAMECUBE_INPUT_UUID));
-        assert_eq!(
-            ControllerRegistry::standard()
-                .identify_input_characteristic(GAMECUBE_INPUT_UUID)
-                .unwrap()
-                .unwrap()
-                .id()
-                .as_str(),
-            "nintendo.switch2.nso-gamecube"
-        );
-    }
-}

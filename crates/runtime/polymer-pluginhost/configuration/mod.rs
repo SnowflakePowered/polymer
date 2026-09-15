@@ -142,17 +142,6 @@ impl ConfigurationInstances {
             .collect())
     }
 
-    #[cfg(test)]
-    pub(crate) fn take(
-        &mut self,
-        id: ConfigurationId,
-    ) -> Result<ConfigurationInstance, ConfigurationAccessError> {
-        self.instances
-            .remove(&id)
-            .map(|entry| entry.instance)
-            .ok_or(ConfigurationAccessError::UnknownConfiguration(id))
-    }
-
     pub(crate) fn discard(&mut self, id: ConfigurationId) {
         self.instances.remove(&id);
     }

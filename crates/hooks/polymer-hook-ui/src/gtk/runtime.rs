@@ -282,22 +282,3 @@ pub(super) unsafe fn dialog_run(
     response
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn chooses_cancel_as_escape_response() {
-        let buttons = vec![
-            DialogButton {
-                result: -5,
-                label: "OK".into(),
-            },
-            DialogButton {
-                result: -6,
-                label: "Cancel".into(),
-            },
-        ];
-        assert_eq!(GtkApi::escape(&buttons), Some(-6));
-    }
-}

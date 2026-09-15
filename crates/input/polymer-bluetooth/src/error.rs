@@ -104,15 +104,3 @@ impl From<actix::MailboxError> for Error {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn classifies_sleeping_ble_devices_without_hiding_real_failures() {
-        assert!(Error::Timeout("BLE advertisement").is_ble_device_absent());
-        assert!(Error::Bluetooth(btleplug::Error::DeviceNotFound).is_ble_device_absent());
-        assert!(!Error::Bluetooth(btleplug::Error::PermissionDenied).is_ble_device_absent());
-    }
-}

@@ -134,17 +134,3 @@ impl HostWrite {
         Ok(Self(wire))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn raw_host_write_uses_usb_payload_instead_of_hidapi_report_prefix() {
-        let report =
-            HostWrite::from_feature(&[0xf5, 1, 0x10, 0x21, 0x32, 0x43, 0x54, 0x65]).unwrap();
-        assert_eq!(report.0, [1, 0, 0x10, 0x21, 0x32, 0x43, 0x54, 0x65]);
-        assert!(HostWrite::from_feature(&[0xf4, 0x42, 3, 0, 0]).is_err());
-        assert!(HostWrite::from_feature(&[0xf5, 1, 2, 3]).is_err());
-    }
-}

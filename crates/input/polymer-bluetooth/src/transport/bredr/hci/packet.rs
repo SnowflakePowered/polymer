@@ -170,22 +170,3 @@ impl AclReassembler {
         self.partial.remove(&(handle & 0x0fff));
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fragments_and_reassembles_l2cap() {
-        let payload = [8, 0, 0x41, 0, 1, 2, 3, 4, 5, 6, 7, 8];
-        let fragments = AclPacket::fragment(0x123, &payload, 5, true).unwrap();
-        assert_eq!(fragments.len(), 3);
-        let mut rx = AclReassembler::default();
-        assert!(rx.push(fragments[0].clone()).unwrap().is_none());
-        assert!(rx.push(fragments[1].clone()).unwrap().is_none());
-        assert_eq!(
-            &rx.push(fragments[2].clone()).unwrap().unwrap()[..],
-            &payload
-        );
-    }
-}

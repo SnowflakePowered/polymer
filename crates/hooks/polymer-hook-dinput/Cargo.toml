@@ -17,9 +17,6 @@ polymer-protocol.workspace = true
 windows = { workspace = true, features = ["Win32_Devices_HumanInterfaceDevice"] }
 windows-sys = { workspace = true, features = ["Win32_System_SystemServices"] }
 
-[dev-dependencies]
-polymer-ipc.workspace = true
-
 [lints]
 workspace = true
 

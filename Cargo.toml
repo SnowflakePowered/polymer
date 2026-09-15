@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "tests",
     "crates/polymer-config",
     "crates/producers/*",
     "crates/hooks/*",

@@ -7,8 +7,6 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 pub mod d3d12;
 mod frame_ownership;
-#[cfg(test)]
-mod gpu_tests;
 pub mod vulkan;
 pub mod webrtc;
 
@@ -364,114 +362,5 @@ impl Renderer for VulkanCompositor {
 
     fn present(&mut self, plan: &CompositingPlan) -> Result<bool, Box<dyn Error>> {
         VulkanCompositor::present(self, plan)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use polymer_protocol::{PresentationTransform, StreamId};
-
-    fn surface(quarter_turns: u8) -> ReceivedSurface {
-        ReceivedSurface {
-            connection: 1,
-            surface_id: 2,
-            target_window: 3,
-            image_extent: if quarter_turns % 2 == 1 {
-                Extent::new(360, 640)
-            } else {
-                Extent::new(640, 360)
-            },
-            quarter_turns,
-            flip_y: false,
-            frame: FrameReady {
-                stream_id: StreamId(4),
-                slot: 0,
-                render_width: 640,
-                render_height: 360,
-                capture_x: 0,
-                capture_y: 0,
-                capture_width: 640,
-                capture_height: 360,
-                presentation_width: 640,
-                presentation_height: 360,
-                presentation_transform: PresentationTransform::axis_aligned(0, 0, 640, 360),
-                frame_number: 1,
-                sync_value: 1,
-                timestamp_qpc: 1,
-            },
-        }
-    }
-
-    #[test]
-    fn resize_windows_fits_the_active_presentation() {
-        let plan = CompositingPlan::new(
-            [0.0; 4],
-            vec![SurfacePlacement::new(1, 2, Rect::new(0, 0, 1280, 720), 0.0)],
-        );
-        let messages =
-            Presentation::new(Extent::new(1280, 720), vec![surface(0)]).resize_windows(&plan);
-        assert_eq!(
-            messages,
-            [ResizeWindow {
-                target_window: 3,
-                width: 1280,
-                height: 720,
-            }]
-        );
-    }
-
-    #[test]
-    fn graph_placement_controls_precomposition_image_aspect() {
-        let mut frame = surface(0).frame;
-        frame.render_width = 1536;
-        frame.render_height = 1344;
-        frame.capture_x = 166;
-        frame.capture_width = 1090;
-        frame.capture_height = 817;
-        frame.presentation_width = 1422;
-        frame.presentation_height = 817;
-        frame.presentation_transform = PresentationTransform::axis_aligned(166, 0, 1090, 817);
-        assert_eq!(
-            frame_image_extent(frame, 1536, 1344, 0),
-            Extent::new(1090, 817)
-        );
-    }
-
-    #[test]
-    fn resize_windows_unrotates_guest_dimensions() {
-        let plan = CompositingPlan::new(
-            [0.0; 4],
-            vec![SurfacePlacement::new(1, 2, Rect::new(0, 0, 360, 640), 0.0)],
-        );
-        let messages =
-            Presentation::new(Extent::new(360, 640), vec![surface(1)]).resize_windows(&plan);
-        assert_eq!((messages[0].width, messages[0].height), (640, 360));
-    }
-
-    #[test]
-    fn dedicated_swapchains_accept_only_their_stream() {
-        let mode = SwapchainMode::Dedicated(7);
-        assert!(mode.accepts(7));
-        assert!(!mode.accepts(8));
-        assert!(SwapchainMode::Shared.accepts(8));
-    }
-
-    #[test]
-    fn composition_plans_match_surfaces_by_identity() {
-        let plan = CompositingPlan::new(
-            [0.25, 0.5, 0.75, 1.0],
-            vec![SurfacePlacement::new(7, 9, Rect::new(10, 20, 30, 40), 0.0)],
-        );
-        assert_eq!(plan.rectangle(7, 9), Some(Rect::new(10, 20, 30, 40)));
-        assert_eq!(plan.rectangle(9, 7), None);
-        assert_eq!(plan.clear_color(), [0.25, 0.5, 0.75, 1.0]);
-    }
-
-    #[test]
-    fn a_plan_retains_surface_order() {
-        let placement = SurfacePlacement::new(7, 9, Rect::new(10, 20, 30, 40), 0.0);
-        let plan = CompositingPlan::new([0.0; 4], vec![placement]);
-        assert_eq!(plan.placements().copied().collect::<Vec<_>>(), [placement]);
     }
 }

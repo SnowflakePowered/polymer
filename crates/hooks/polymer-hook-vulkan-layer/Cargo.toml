@@ -20,6 +20,3 @@ polymer-producer-vulkan = { path = "../../producers/polymer-producer-vulkan" }
 tracing.workspace = true
 windows.workspace = true
 
-[dev-dependencies]
-polymer-consumer-vulkan = { path = "../../consumer/polymer-consumer-vulkan" }
-polymer-consumer-d3d12 = { path = "../../consumer/polymer-consumer-d3d12" }

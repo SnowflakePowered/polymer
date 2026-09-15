@@ -137,20 +137,3 @@ pub(crate) fn dxgi_format(format: vk::Format) -> Option<DXGI_FORMAT> {
         _ => return None,
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn srgb_vulkan_formats_create_unorm_d3d12_resources() {
-        assert_eq!(
-            dxgi_format(vk::Format::R8G8B8A8_SRGB),
-            Some(DXGI_FORMAT_R8G8B8A8_UNORM)
-        );
-        assert_eq!(
-            dxgi_format(vk::Format::B8G8R8A8_SRGB),
-            Some(DXGI_FORMAT_B8G8R8A8_UNORM)
-        );
-    }
-}

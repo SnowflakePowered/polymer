@@ -57,33 +57,3 @@ impl LaunchPackages {
         Ok(digest.clone())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn direct_launch_resolves_lazy_identity_and_preserves_registered_packages() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("game.nes");
-        let mut bytes = vec![0; 16];
-        bytes[..4].copy_from_slice(b"NES\x1a");
-        bytes.extend_from_slice(b"battery save identity");
-        std::fs::write(&path, bytes).unwrap();
-        let expected = blake3::hash(b"battery save identity").to_hex().to_string();
-        let lazy = serde_json::json!({ "__digestPath": path, "binaryDigest": "" });
-        let registered =
-            serde_json::json!({ "__digestPath": "missing.nes", "binaryDigest": "existing" });
-        let result = LaunchPackages::prepare(vec![serde_json::json!({
-            "package": lazy, "launchSet": [{"package": lazy}, {"package": registered}]
-        })])
-        .await
-        .unwrap();
-        assert_eq!(result[0]["package"]["binaryDigest"], expected);
-        assert_eq!(
-            result[0]["launchSet"][0]["package"]["binaryDigest"],
-            expected
-        );
-        assert_eq!(result[0]["launchSet"][1]["package"], registered);
-    }
-}

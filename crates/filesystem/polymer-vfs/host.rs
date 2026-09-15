@@ -194,25 +194,3 @@ impl FilesystemHost for UnsupportedFilesystemHost {
         ))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::VfsPathBuf;
-
-    #[test]
-    fn endpoint_projection_round_trips_virtual_paths() {
-        let endpoint = FilesystemEndpoint::random();
-        let root = VfsPathBuf::root();
-        let child = VfsPathBuf::new("/Dolphin/Config/settings.ini").unwrap();
-
-        assert_eq!(
-            endpoint.unproject(&endpoint.project(root.as_path())),
-            Some(root)
-        );
-        assert_eq!(
-            endpoint.unproject(&endpoint.project(child.as_path())),
-            Some(child)
-        );
-    }
-}

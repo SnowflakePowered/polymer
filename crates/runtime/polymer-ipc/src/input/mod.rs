@@ -474,28 +474,3 @@ const _: () = assert!(mem::size_of::<WireInputMessage>() <= 160);
 
 #[cfg(feature = "input-host")]
 pub mod host;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn pressure_and_motion_survive_wire_serialization() {
-        let mut state = WireInputMessage::empty(DEVICE_STATE, 3).device_state();
-        state.sequence = 42;
-        state.buttons = 0x7fff;
-        state.pressure_mask = 0x7e0f;
-        state.pressure_values = std::array::from_fn(|index| (index * 11) as u8);
-        state.left_trigger = 32896;
-        state.right_trigger = 65535;
-        state.accelerometer = [1.0, -2.0, 9.80665];
-        state.gyroscope = [0.0, -1.5, 0.0];
-        state.sampled_at_ns = 123456;
-        state.battery_level = Some(75);
-        let message = InputMessage::DeviceState(state);
-        let encoded = WireInputMessage::encode(message);
-        let read = WireInputMessage::read_from_bytes(encoded.as_bytes()).unwrap();
-        assert_eq!(read.decode().unwrap(), message);
-        assert!(WireInputMessage::read_from_bytes(&encoded.as_bytes()[..112]).is_err());
-    }
-}

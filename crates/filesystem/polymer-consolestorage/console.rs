@@ -269,33 +269,3 @@ impl ConsoleStorage {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn wii_exposes_system_and_save_volumes() {
-        assert!(ConsoleStorage::supports(StorageKind::Nand, "NINTENDO_WII"));
-        assert!(ConsoleStorage::supports(
-            StorageKind::SaveRepo,
-            "NINTENDO_WII"
-        ));
-        assert!(!ConsoleStorage::supports(
-            StorageKind::MemoryCard,
-            "NINTENDO_WII"
-        ));
-    }
-
-    #[test]
-    fn battery_support_is_platform_specific() {
-        assert!(ConsoleStorage::supports(
-            StorageKind::Battery,
-            "NINTENDO_GBA"
-        ));
-        assert!(!ConsoleStorage::supports(
-            StorageKind::Battery,
-            "NINTENDO_WII"
-        ));
-    }
-}

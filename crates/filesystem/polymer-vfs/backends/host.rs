@@ -128,26 +128,3 @@ impl ResourceLease for TemporaryLease {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod lease_tests {
-    use super::*;
-
-    #[test]
-    fn host_path_leases_reject_overlapping_trees_until_released() {
-        let root = tempfile::tempdir().unwrap();
-        let child = root.path().join("child");
-        std::fs::create_dir(&child).unwrap();
-        let lease = ExclusiveResourceKey::HostPath(root.path().to_owned())
-            .acquire()
-            .unwrap();
-
-        assert!(
-            ExclusiveResourceKey::HostPath(child.clone())
-                .acquire()
-                .is_err()
-        );
-        lease.finalize(FinalizationReason::Cancelled).unwrap();
-        assert!(ExclusiveResourceKey::HostPath(child).acquire().is_ok());
-    }
-}

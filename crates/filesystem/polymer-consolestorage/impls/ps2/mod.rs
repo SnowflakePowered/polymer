@@ -580,31 +580,3 @@ impl SaveGameSink for Playstation2MemoryCard {
         ))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn overlapping_save_groups_are_unioned() {
-        let primary = SaveDataHandle::depot_id_from_serial("SLUS-20249");
-        let grouped = PS2_SAVE_GROUPS.members(&[primary]);
-        for serial in ["SLUS-20014", "SLUS-20435", "SLUS-20644"] {
-            assert!(grouped.contains(&SaveDataHandle::depot_id_from_serial(serial).0));
-        }
-    }
-
-    #[test]
-    fn save_data_handle_round_trips_native_name_bytes() {
-        let ascii = SaveDataHandle::from_name(b"BASLUS-21782Save0").unwrap();
-        assert_eq!(ascii.path(), "card/BASLUS-21782Save0.psu");
-        assert_eq!(
-            SaveDataHandle::from_path("BASLUS-21782Save0.psu"),
-            Some(ascii)
-        );
-
-        let native = SaveDataHandle::from_name(&[0x82, 0xff, b'/', 0x5c]).unwrap();
-        assert_eq!(native.path(), "card/~82ff2f5c.psu");
-        assert_eq!(SaveDataHandle::from_path("~82ff2f5c.psu"), Some(native));
-    }
-}

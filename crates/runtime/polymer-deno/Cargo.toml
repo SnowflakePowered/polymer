@@ -30,9 +30,5 @@ thiserror.workspace = true
 tokio = { version = "1.53.0", features = ["fs", "sync", "time"] }
 turso.workspace = true
 
-[dev-dependencies]
-tempfile.workspace = true
-tokio = { version = "1.53.0", features = ["macros", "rt", "time"] }
-
 [lints]
 workspace = true

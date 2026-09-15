@@ -53,23 +53,3 @@ impl FactoryCalibration {
 }
 
 const _: () = assert!(std::mem::size_of::<FactoryCalibration>() == 41);
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn factory_trim_rejects_bad_crc_and_zero_span() {
-        let valid = include_bytes!("fixtures/calibration.bin");
-        let calibration = FactoryCalibration::parse(valid).unwrap();
-        assert_eq!(calibration.acceleration([100, -200, 50]), [0.0; 3]);
-        assert_eq!(calibration.rotation([100, -50, 25]), [0.0; 3]);
-        assert!(
-            FactoryCalibration::parse(include_bytes!("fixtures/invalid_calibration.bin")).is_none()
-        );
-        let mut corrupt = *valid;
-        corrupt[3] ^= 1;
-        assert!(FactoryCalibration::parse(&corrupt).is_none());
-        assert!(FactoryCalibration::parse(&valid[..40]).is_none());
-    }
-}

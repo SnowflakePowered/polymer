@@ -599,6 +599,3 @@ pub(crate) fn discard_staged(runtime: &mut JsRuntime) {
         .staged_files
         .clear();
 }
-
-#[cfg(test)]
-mod tests;

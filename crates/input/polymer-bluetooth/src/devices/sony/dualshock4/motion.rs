@@ -56,32 +56,3 @@ impl FactoryCalibration {
 }
 
 const _: () = assert!(std::mem::size_of::<FactoryCalibration>() == 41);
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bluetooth_axis_order_and_invalid_calibration() {
-        let valid = include_bytes!("fixtures/calibration.bin");
-        let calibration = FactoryCalibration::parse(valid).unwrap();
-        // Bluetooth groups positive endpoints before negative endpoints.
-        let rotation = calibration.rotation([1440, 2880, 960]);
-        assert!(
-            rotation
-                .iter()
-                .all(|v| (*v - std::f32::consts::FRAC_PI_2).abs() < 0.00001)
-        );
-        assert_eq!(calibration.acceleration([100, -200, 50]), [0.0; 3]);
-        assert!(FactoryCalibration::parse(&valid[..40]).is_none());
-        let mut corrupt = *valid;
-        corrupt[9] ^= 1;
-        assert!(FactoryCalibration::parse(&corrupt).is_none());
-        // A correctly checksummed but degenerate accelerometer span is invalid.
-        corrupt = *valid;
-        corrupt[25..27].copy_from_slice(&valid[23..25]);
-        let crc = Report::checksum(0xa3, &corrupt[..37]);
-        corrupt[37..].copy_from_slice(&crc.to_le_bytes());
-        assert!(FactoryCalibration::parse(&corrupt).is_none());
-    }
-}

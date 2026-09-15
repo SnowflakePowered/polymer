@@ -88,6 +88,3 @@ impl<C: Switch2Commands> CablePairingSession for Session<C> {
         })
     }
 }
-
-#[cfg(test)]
-mod tests;

@@ -306,20 +306,3 @@ impl QtApi {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn decodes_qt_standard_buttons() {
-        let buttons = QtApi::buttons(0x00004000 | 0x00010000 | 0x00400000).unwrap();
-        assert_eq!(
-            buttons
-                .iter()
-                .map(|button| button.result)
-                .collect::<Vec<_>>(),
-            [0x00004000, 0x00010000, 0x00400000]
-        );
-        assert_eq!(QtApi::escape(&buttons), Some(0x00400000));
-    }
-}

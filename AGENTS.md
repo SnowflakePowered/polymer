@@ -16,5 +16,11 @@
 * To launch a game winthin `polymer-gui`, you can use Chrome's inspector protocol. Don't forget to pass in the `--debug` flag to start the debug server.
 * Do not write tests for .ts plugins. They will never work. 
 * "Snowglass" is the old name for this project. If the user types in 'Snowglass' instead of 'Polymer', they meant 'Polymer'.
-
+* Do not write inline tests. Always put tests in the tests/ folder. 
+    * Do not write tests that only tests private APIs, unit tests or otherwise.
+    * Do not write tests that require mocks. 
+    * Do not write tests that test for the shape of an API.
+    * Do not write tests against a removal of a feature.
+    * Do not write change detector tests. Change detectors provide negative value.
+    * Do not write constructors or logic that purely serve tests.
 Read ARCHITECTURE.md for a high level overview of the architecture.

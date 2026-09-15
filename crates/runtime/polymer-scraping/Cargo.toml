@@ -31,5 +31,3 @@ winapi = { version = "0.3.9", features = ["errhandlingapi"] }
 [lints]
 workspace = true
 
-[dev-dependencies]
-object_store.workspace = true

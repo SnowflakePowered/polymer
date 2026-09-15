@@ -100,30 +100,3 @@ impl ScraperPluginInstance for PluginPackage<ScraperBlock> {
         &self.block().provides
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn requirements_parse_keys_and_any_groups() {
-        assert_eq!(
-            ScrapeRequirement::parse("package.platform").unwrap(),
-            ScrapeRequirement::Key("package.platform".to_owned())
-        );
-        assert_eq!(
-            ScrapeRequirement::parse("any(meta.title, filename.nointro.title)").unwrap(),
-            ScrapeRequirement::Any(vec![
-                "meta.title".to_owned(),
-                "filename.nointro.title".to_owned(),
-            ])
-        );
-    }
-
-    #[test]
-    fn requirements_reject_empty_or_malformed_groups() {
-        for value in ["", "meta..title", "any(meta.title)", "any(meta.title, )"] {
-            assert!(ScrapeRequirement::parse(value).is_err(), "accepted {value}");
-        }
-    }
-}

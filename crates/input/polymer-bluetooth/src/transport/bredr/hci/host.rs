@@ -910,38 +910,3 @@ fn checked_return_parameters(operation: &'static str, response: Bytes) -> Result
     ensure_status(operation, &response)?;
     Ok(response)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn command_complete_accepts_zero_status_and_preserves_payload() {
-        let response = Bytes::from_static(&[0x00, 0x34, 0x12]);
-        let checked = checked_return_parameters("Test command", response.clone()).unwrap();
-        assert_eq!(checked, response);
-    }
-
-    #[test]
-    fn command_complete_rejects_nonzero_status() {
-        let error =
-            checked_return_parameters("Refresh Encryption Key", Bytes::from_static(&[0x01]))
-                .unwrap_err();
-        assert!(matches!(
-            error,
-            Error::HciStatus {
-                operation: "Refresh Encryption Key",
-                status: 0x01
-            }
-        ));
-    }
-
-    #[test]
-    fn command_complete_requires_a_status_byte() {
-        let error = checked_return_parameters("Test command", Bytes::new()).unwrap_err();
-        assert!(matches!(
-            error,
-            Error::InvalidPacket("HCI command returned no status")
-        ));
-    }
-}

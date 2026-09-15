@@ -5,49 +5,6 @@ use crate::{
 };
 use std::sync::Arc;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::GamepadButton;
-
-    #[test]
-    fn composition_merges_analog_and_digital_pressure_in_either_order() {
-        let mut analog = DeviceEntry {
-            descriptor: DeviceDescriptor {
-                id: DeviceId::new(BackendId::BLUETOOTH, "pressure-test"),
-                name: Arc::from("DS3"),
-                profile: None,
-                vendor_id: None,
-                product_id: None,
-                serial: None,
-                role: DeviceRole::Whole,
-                capabilities: Capabilities::BUTTON_PRESSURE,
-            },
-            state: DeviceState::default(),
-            pointer: PointerSample::None,
-            pointer_revision: 0,
-            connected: true,
-        };
-        analog.state.gamepad.buttons = GamepadButton::A.mask();
-        analog.state.gamepad.pressure.mask = GamepadButton::A.mask();
-        analog.state.gamepad.pressure.values[GamepadButton::A as usize] = 64;
-        let mut digital = analog.clone();
-        digital.state.gamepad.pressure = Default::default();
-        for entries in [[analog.clone(), digital.clone()], [digital, analog.clone()]] {
-            let composed = HubInner::composite_state(&entries, CompositionMode::ByRole);
-            assert_eq!(composed.gamepad.button_pressure(GamepadButton::A), 255);
-        }
-        let mut released = analog.clone();
-        released.state = DeviceState::default();
-        assert_eq!(
-            HubInner::composite_state(&[analog, released], CompositionMode::ByRole)
-                .gamepad
-                .button_pressure(GamepadButton::A),
-            64
-        );
-    }
-}
-
 impl HubInner {
     pub(crate) fn assign(
         &self,

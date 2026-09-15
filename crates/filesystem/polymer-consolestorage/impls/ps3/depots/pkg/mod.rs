@@ -1,7 +1,5 @@
 mod install;
 mod metadata;
-#[cfg(test)]
-mod tests;
 
 use std::collections::BTreeMap;
 use std::fs::File;

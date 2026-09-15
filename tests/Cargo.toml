@@ -1,0 +1,21 @@
+[package]
+name = "polymer-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+blake3.workspace = true
+cuna = "0.7"
+object_store.workspace = true
+polymer-library.workspace = true
+polymer-pluginhost = { path = "../crates/runtime/polymer-pluginhost" }
+polymer-scraping.workspace = true
+polymer-vfs.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio = { version = "1.53.0", features = ["macros", "rt", "time"] }
+
+[lints]
+workspace = true
