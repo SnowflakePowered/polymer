@@ -20,6 +20,8 @@ export class LibraryState {
   private sessionJobs = new Set<string>();
   private jobsLoaded = false;
   private imports = new Map<symbol, string>();
+  private firmwareActivities = new Map<string, LibraryActivity>();
+  private firmwareRevision = 0;
   private revision = 0;
   private disposed = false;
   private pollTimer: ReturnType<typeof setTimeout> | undefined;
@@ -76,8 +78,19 @@ export class LibraryState {
     this.imports.set(token, path.split(/[\\/]/).pop() || path);
     this.publish();
     try {
-      const result = await this.library.launchables.add({ path });
-      for (const { launchable, scrapeJob } of result.imports ?? [result]) {
+      const result = await this.library.import({ path });
+      if (result.kind === "firmware") {
+        const revision = ++this.firmwareRevision;
+        for (const item of result.firmware) {
+          const key = JSON.stringify([item.platform, item.type, item.label]);
+          this.firmwareActivities.set(key, {
+            id: `firmware:${key}:${revision}`, title: "Firmware installed",
+            message: `${item.label} (${item.platform})`, state: "complete",
+          });
+        }
+        return;
+      }
+      for (const { launchable, scrapeJob } of result.imports) {
         const job = scrapeJob ?? await this.scraping.jobs.start(
           launchable.parentBinaryId ?? launchable.binaryId,
           { triggerBinaryId: launchable.binaryId },
@@ -162,7 +175,8 @@ export class LibraryState {
     this.changed({
       games: this.entries,
       activities: [
-        ...(this.imports.size ? [{ id: "imports", title: "Identifying games", message: [...this.imports.values()].join(", "), state: "running" as const }] : []),
+        ...this.firmwareActivities.values(),
+        ...(this.imports.size ? [{ id: "imports", title: "Identifying games and firmware", message: [...this.imports.values()].join(", "), state: "running" as const }] : []),
         ...jobs.filter(job => this.sessionJobs.has(job.id)).map(job => ({ id: job.id, title: "Scraping game library", message: this.progress(job),
           state: (job.state === "queued" || job.state === "running" ? "running" : job.state === "completed" ? "complete" : "error") as LibraryActivity["state"],
           completed: job.attempts.filter(attempt => attempt.state === "completed" || attempt.state === "failed").length,

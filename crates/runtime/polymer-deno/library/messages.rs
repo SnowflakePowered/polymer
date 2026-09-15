@@ -4,6 +4,7 @@ use serde_json::Value;
 /// Actix recipients exposed to Deno without depending on the runtime backend.
 #[derive(Clone, Debug)]
 pub struct Library {
+    pub import: Recipient<LibraryImport>,
     pub games_list: Recipient<GamesList>,
     pub games_get: Recipient<GamesGet>,
     pub games_delete: Recipient<GamesDelete>,
@@ -21,6 +22,12 @@ pub struct Library {
     pub scraping_retry: Recipient<ScrapingRetry>,
     pub scraping_scrapers: Recipient<ScrapingScrapers>,
     pub scraping_refresh: Recipient<ScrapingRefresh>,
+}
+
+#[derive(Debug, actix::Message)]
+#[rtype(result = "Result<Value, String>")]
+pub struct LibraryImport {
+    pub path: String,
 }
 
 #[derive(Debug, actix::Message)]

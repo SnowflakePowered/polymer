@@ -116,9 +116,9 @@ impl Package {
             path
         };
         let package = GeneralIdentifier.identify_path(&path).map_err(|source| {
-            crate::ScrapingError::Identify {
+            crate::ScrapingError::Detection {
                 path: path.clone(),
-                reason: source.to_string(),
+                source,
             }
         })?;
         let manifest = crate::ingest::CuePreparation::capture(&path, package.as_ref())?;

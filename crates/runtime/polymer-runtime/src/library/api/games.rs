@@ -73,17 +73,7 @@ impl Handler<LaunchablesAdd> for LibraryBackend {
             .await
             .map_err(|error| format!("package detection task failed: {error}"))?
             .map_err(|error| error.to_string())?;
-            let imported = polymer_scraping::Ingestor::import(&scraping, packages)
-                .await
-                .map_err(|error| error.to_string())?;
-            let imports: Vec<_> = imported
-                .iter()
-                .map(|(launchable, job)| {
-                    json!({
-                        "launchable": Self::launchable_value(launchable), "scrapeJob": job,
-                    })
-                })
-                .collect();
+            let imports = Self::import_games(&scraping, packages).await?;
             // Preserve the single-import response while exposing every collection entry.
             let mut response = imports.first().cloned().ok_or("no packages found")?;
             response["imports"] = json!(imports);
@@ -107,5 +97,24 @@ impl Handler<LaunchablesDelete> for LibraryBackend {
                 .await
                 .map_err(|error| error.to_string())
         })
+    }
+}
+
+impl LibraryBackend {
+    pub(super) async fn import_games(
+        scraping: &polymer_scraping::ScrapingEngine,
+        packages: Vec<polymer_scraping::Package>,
+    ) -> Result<Vec<Value>, String> {
+        let imported = polymer_scraping::Ingestor::import(scraping, packages)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(imported
+            .iter()
+            .map(|(launchable, job)| {
+                json!({
+                    "launchable": Self::launchable_value(launchable), "scrapeJob": job,
+                })
+            })
+            .collect())
     }
 }

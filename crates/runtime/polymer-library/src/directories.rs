@@ -67,4 +67,8 @@ impl Directories {
     pub fn object_storage(&self) -> PathBuf {
         self.storage.join("objects")
     }
+
+    pub fn firmware(&self) -> PathBuf {
+        self.storage.join("firmware")
+    }
 }

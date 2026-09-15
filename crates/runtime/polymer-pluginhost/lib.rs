@@ -15,6 +15,7 @@ mod database;
 pub mod digest;
 pub mod emulator;
 pub mod filesystem;
+mod firmware;
 mod handle;
 pub mod loading;
 pub mod platform;

@@ -37,6 +37,7 @@ async function launch(entrypoint, args, configurationId, explicitDefault) {
   args.configuration = configuration;
   args.filesystem = __polymerFilesystem.forLaunch(discs[initialDiscIndex]);
   args.storage = __polymerFilesystem.storage;
+  args.firmwareStore = __polymerFirmware.store;
   const parserReceiver = typeof module.onParseHotkey === "function" ? module : receiver;
   __polymerActions.create(configurationId, parserReceiver?.onParseHotkey);
   args.saveStates = Object.freeze({

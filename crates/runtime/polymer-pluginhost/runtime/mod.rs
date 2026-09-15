@@ -611,13 +611,14 @@ impl PluginRuntimeHandle {
         invocation: EmulatorLaunchInvocation,
         cancellation: PluginCancellationToken,
     ) -> Result<(EmulatorLaunchArguments, Option<ControllerSession>), PluginInvocationError> {
-        let worker = WorkerOptions::for_plugin(
+        let mut worker = WorkerOptions::for_plugin(
             invocation.plugin.as_ref(),
             self.directories(),
             invocation.storage.clone(),
             invocation.quick_resume.clone(),
         )
         .map_err(PluginInvocationError::worker)?;
+        worker.firmware.platform = invocation.arguments["console"].as_str().map(str::to_owned);
         let lifecycle = self.lifecycle(invocation.plugin.id());
         self.run_with_control(cancellation.control, move |control| {
             ControllerActor::spawn(invocation, worker, lifecycle, control)

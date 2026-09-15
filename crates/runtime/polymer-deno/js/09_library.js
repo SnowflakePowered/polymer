@@ -1,5 +1,6 @@
 import { Package } from "./00_package.js";
 import {
+  op_library_import,
   op_library_games_list, op_library_games_get, op_library_games_delete,
   op_library_launchables_add, op_library_launchables_delete,
   op_library_metadata_add, op_library_metadata_update, op_library_metadata_delete,
@@ -86,6 +87,14 @@ export function createLibrary() {
     url(id) { return op_library_metadata_url(uuid(id, "id")); },
   });
   Object.defineProperties(Library, {
+    import: { value: async input => {
+      if (input === null || typeof input !== "object") throw new TypeError("import input must be an object");
+      const path = optionalString(input.path, "path");
+      if (path === null) throw new TypeError("path is required");
+      const result = await op_library_import(path);
+      if (result.kind === "games") return { ...result, imports: result.imports.map(item => ({ ...item, launchable: new Package(item.launchable) })) };
+      return result;
+    } },
     games: { value: games, enumerable: true },
     launchables: { value: launchables, enumerable: true },
     metadata: { value: metadata, enumerable: true },

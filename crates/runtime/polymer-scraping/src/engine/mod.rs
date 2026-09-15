@@ -39,6 +39,12 @@ struct EngineInner {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ScrapingError {
+    #[error("could not identify {path}: {source}")]
+    Detection {
+        path: PathBuf,
+        #[source]
+        source: gumshoe::error::IdentificationError,
+    },
     #[error("cannot open package path {path}: {source}")]
     Open {
         path: PathBuf,
@@ -67,6 +73,19 @@ pub enum ScrapingError {
     InvalidMedia(String),
     #[error("scraper '{plugin}' exceeded its {}-second execution limit", SCRAPER_TIMEOUT.as_secs())]
     ScraperTimeout { plugin: String },
+}
+
+impl ScrapingError {
+    pub fn firmware_candidate(&self) -> bool {
+        matches!(
+            self,
+            Self::Detection {
+                source: gumshoe::error::IdentificationError::Unknown
+                    | gumshoe::error::IdentificationError::InvalidData { .. },
+                ..
+            }
+        )
+    }
 }
 
 impl ScrapingEngine {
