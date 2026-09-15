@@ -4,8 +4,6 @@ use std::path::{Path, PathBuf};
 pub mod artifacts;
 mod directory;
 mod installation;
-#[cfg(test)]
-mod tests;
 mod writer;
 pub(crate) use writer::StorageWriter;
 

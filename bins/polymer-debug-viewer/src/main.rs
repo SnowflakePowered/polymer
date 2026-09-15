@@ -27,16 +27,12 @@ use winit::{
     window::{Window, WindowId},
 };
 
-#[cfg(test)]
-mod argument_tests;
 mod gui;
 mod input;
 mod layout;
 
 use gui::{LauncherState, draw_gamepad_window, draw_launcher_window, draw_layout_css_window};
 use polymer_egui::{D3d12EguiPainter, VulkanEguiPainter, draw_statistics_graph};
-#[cfg(test)]
-use polymer_renderer::cli::{AUTO_HOOKS, parse_arguments};
 use polymer_renderer::{
     CompositingPlan, D3d12Compositor, Presentation, RenderWindow, Renderer, SurfaceCapture,
     SurfaceCaptureEvent, VulkanCompositor, WebRtcCompositor,

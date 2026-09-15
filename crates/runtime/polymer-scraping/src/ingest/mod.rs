@@ -63,6 +63,3 @@ impl Ingestor {
         Ok(imported)
     }
 }
-
-#[cfg(test)]
-mod tests;

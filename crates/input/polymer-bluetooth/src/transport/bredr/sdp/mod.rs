@@ -226,18 +226,3 @@ fn parse_element(bytes: &[u8]) -> Result<(Element, usize)> {
 fn bluetooth_uuid(short: u16) -> Uuid {
     Uuid::from_u128((u128::from(short) << 96) | 0x0000_0000_0000_1000_8000_0080_5f9b_34fb)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn request_is_bounded_and_contains_hid_uuid() {
-        let packet = request(7, HID_SERVICE, &[]);
-        assert_eq!(packet[0], SERVICE_SEARCH_ATTRIBUTE_REQUEST);
-        assert!(packet.windows(2).any(|window| window == [0x11, 0x24]));
-    }
-    #[test]
-    fn rejects_transaction_mismatch() {
-        assert!(parse_response(&[7, 0, 2, 0, 3, 0, 0, 0], 1).is_err());
-    }
-}

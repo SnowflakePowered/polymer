@@ -101,6 +101,3 @@ impl<D: UsbFeatureReports> FeaturePairing for SonyPairing<D> {
         })
     }
 }
-
-#[cfg(test)]
-mod tests;

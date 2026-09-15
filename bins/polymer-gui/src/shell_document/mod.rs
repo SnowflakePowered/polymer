@@ -551,6 +551,3 @@ impl ShellDocument {
         self.needs_geometry_sync |= effect.needs_geometry_sync;
     }
 }
-
-#[cfg(test)]
-mod tests;

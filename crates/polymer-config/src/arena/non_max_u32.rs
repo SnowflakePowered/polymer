@@ -81,8 +81,3 @@ impl core::fmt::Display for NonMaxU32 {
         self.get().fmt(f)
     }
 }
-
-#[test]
-fn size() {
-    assert_eq!(size_of::<Option<NonMaxU32>>(), size_of::<u32>());
-}

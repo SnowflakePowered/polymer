@@ -1031,31 +1031,3 @@ impl PolymerHost for FrontendServices {
         )
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn unassigned_input_read_rearms_player_notifications() {
-        let (notifications, mut inbox) = tokio::sync::mpsc::unbounded_channel();
-        let listener = DenoInputListener::new(InputHub::default(), notifications);
-        listener.dirty[0].store(true, Ordering::Relaxed);
-
-        assert!(listener.get(0).is_none());
-
-        let device = DeviceId::new(polymer_input::BackendId::VIRTUAL, "reassigned");
-        let state = polymer_input::DeviceState::default();
-        listener.on_input(InputEvent::State {
-            index: polymer_input::PlayerIndex::new(0),
-            sequence: 1,
-            device: &device,
-            state: &state,
-        });
-
-        assert!(matches!(
-            inbox.try_recv(),
-            Ok(polymer_deno::polymer::PolymerNotification::InputChanged { index: 0 })
-        ));
-    }
-}

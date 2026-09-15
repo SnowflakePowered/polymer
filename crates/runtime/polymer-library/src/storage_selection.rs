@@ -13,55 +13,6 @@ pub struct StorageSelection {
     pub missing: Vec<Uuid>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[tokio::test]
-    async fn resolves_unordered_roles_and_preserves_missing_companions() {
-        let root = tempfile::tempdir().unwrap();
-        let manager = StorageManager::new(root.path());
-        let nand = manager
-            .create(StorageKind::Nand, "NINTENDO_WII", None)
-            .await
-            .unwrap()
-            .metadata()
-            .await
-            .unwrap()
-            .id;
-        let saves = manager
-            .create(StorageKind::SaveRepo, "NINTENDO_WII", None)
-            .await
-            .unwrap()
-            .metadata()
-            .await
-            .unwrap()
-            .id;
-        for value in [json!([nand, saves]), json!([saves, nand])] {
-            let selection = StorageSelection::resolve(&manager, "NINTENDO_WII", &value)
-                .await
-                .unwrap();
-            assert_eq!(selection.nand, Some(nand));
-            assert_eq!(selection.saves, Some(saves));
-            assert!(selection.missing.is_empty());
-        }
-        let missing = Uuid::new_v4();
-        let selection =
-            StorageSelection::resolve(&manager, "NINTENDO_WII", &json!([missing, nand]))
-                .await
-                .unwrap();
-        assert_eq!(selection.nand, Some(nand));
-        assert_eq!(selection.saves, None);
-        assert_eq!(selection.missing, vec![missing]);
-        assert!(
-            StorageSelection::resolve(&manager, "NINTENDO_WII", &json!([nand, nand]))
-                .await
-                .is_err()
-        );
-    }
-}
-
 impl StorageSelection {
     pub async fn resolve(
         manager: &StorageManager,

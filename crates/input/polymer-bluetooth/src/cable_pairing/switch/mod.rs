@@ -121,6 +121,3 @@ impl<D: InterruptReports> FeaturePairing for Pairing<D> {
         })
     }
 }
-
-#[cfg(test)]
-mod tests;

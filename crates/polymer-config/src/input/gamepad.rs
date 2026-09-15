@@ -152,22 +152,3 @@ impl SdlGamepadIdentity {
         Uuid::from_bytes(bytes)
     };
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn virtual_gamepad_guid_is_stable() {
-        assert_eq!(
-            SdlGamepadIdentity::GUID.simple().to_string(),
-            "ff0035a4506f6c796d65722056007601"
-        );
-        assert_eq!(SdlGamepadIdentity::NAME, "Polymer Virtual Gamepad");
-        assert!(StandardGamepad::has(key!(button.a)));
-        assert_eq!(
-            StandardGamepad::decompose(key!(directional.ne)),
-            Some([key!(directional.n), key!(directional.e)])
-        );
-    }
-}

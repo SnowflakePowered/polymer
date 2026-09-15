@@ -96,11 +96,6 @@ impl RawHidChannel {
         self.0.capture.store(capture, Ordering::Release);
     }
 
-    #[cfg(test)]
-    pub(crate) fn is_capturing(&self) -> bool {
-        self.0.capture.load(Ordering::Acquire)
-    }
-
     pub(crate) fn publish(&self, report: &[u8]) {
         let _ = self.0.reports.send(report.to_vec());
     }

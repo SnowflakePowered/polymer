@@ -11,8 +11,5 @@ parking_lot.workspace = true
 polymer-protocol.workspace = true
 windows.workspace = true
 
-[dev-dependencies]
-windows = { workspace = true, features = ["Win32_System_LibraryLoader"] }
-
 [lints]
 workspace = true

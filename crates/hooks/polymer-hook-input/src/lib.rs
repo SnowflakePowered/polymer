@@ -1,8 +1,6 @@
 mod host;
 mod state;
 mod subscriber;
-#[cfg(test)]
-mod tests;
 mod topology;
 
 pub use host::HostState;

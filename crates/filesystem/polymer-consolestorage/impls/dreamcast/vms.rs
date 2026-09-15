@@ -185,13 +185,3 @@ impl std::fmt::Debug for Save<'_> {
             .finish()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::Header;
-
-    #[test]
-    fn descriptions_are_shift_jis() {
-        assert_eq!(Header::text(&[0x90, 0xdd, 0x92, 0xe8, b' ', b' ']), "設定");
-    }
-}

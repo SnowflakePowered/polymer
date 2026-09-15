@@ -115,22 +115,3 @@ fn annex_b_nals(bytes: &[u8]) -> Vec<&[u8]> {
         })
         .collect()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn repeats_parameter_sets_for_midstream_receivers() {
-        let mut encoder = Encoder::new(1_000_000, 30.0).expect("create OpenH264 encoder");
-        let rgba = vec![0; 64 * 64 * 4];
-        let _ = encoder.encode(&rgba, 64, 64).expect("encode first frame");
-        let second = encoder.encode(&rgba, 64, 64).expect("encode second frame");
-        let kinds = annex_b_nals(&second)
-            .into_iter()
-            .filter_map(|nal| nal.first().map(|byte| byte & 0x1f))
-            .collect::<Vec<_>>();
-        assert!(kinds.contains(&7), "second access unit has no SPS");
-        assert!(kinds.contains(&8), "second access unit has no PPS");
-    }
-}

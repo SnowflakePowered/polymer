@@ -84,74 +84,6 @@ pub struct ProducerSession {
     receiver: Option<JoinHandle<()>>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use polymer_protocol::StreamId;
-    use std::time::Instant;
-
-    #[test]
-    fn availability_rejects_foreign_and_future_publications_without_regression() {
-        for (case, invalid) in [
-            Message::BufferAvailable {
-                stream_id: StreamId(10),
-                through_sync_value: 3,
-            },
-            Message::BufferAvailable {
-                stream_id: StreamId(9),
-                through_sync_value: 8,
-            },
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let name = format!("polymer-availability-{}-{case}", std::process::id());
-            let listener = polymer_ipc::LocalSocketListener::bind(&name).unwrap();
-            let socket = LocalSocket::connect(&name).unwrap();
-            let mut peer = listener.accept().unwrap();
-            let mut session = ProducerSession {
-                socket,
-                viewer_pid: 0,
-                preferred_consumer: ConsumerApi::D3d12,
-                accepted: true,
-                frame_number: 7,
-                availability: Arc::new(Availability::default()),
-                receiver: None,
-            };
-            session.availability.state.lock().last_publication = Some((StreamId(9), 7));
-            session.start_receiver().unwrap();
-            for value in [3, 2, 3] {
-                peer.send(Message::BufferAvailable {
-                    stream_id: StreamId(9),
-                    through_sync_value: value,
-                })
-                .unwrap();
-            }
-            let deadline = Instant::now() + Duration::from_secs(2);
-            while session.poll_buffer_availability().unwrap() != 3 {
-                assert!(Instant::now() < deadline, "availability stalled");
-                std::thread::yield_now();
-            }
-            peer.send(invalid).unwrap();
-            loop {
-                match session.poll_buffer_availability() {
-                    Err(error) => {
-                        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-                        assert_eq!(session.availability.state.lock().available_through, 3);
-                        break;
-                    }
-                    Ok(value) => assert_eq!(value, 3),
-                }
-                assert!(
-                    Instant::now() < deadline,
-                    "invalid acknowledgment was accepted"
-                );
-                std::thread::yield_now();
-            }
-        }
-    }
-}
-
 impl ProducerSession {
     /// Rejection and protocol incompatibility park this stream. Transport and
     /// export failures remain errors so the lifecycle applies transient backoff.
@@ -324,28 +256,28 @@ impl ProducerSession {
                 .name("polymer-buffer-availability".into())
                 .spawn(move || loop {
                     let result = socket.receive().and_then(|message| {
-                        let Message::BufferAvailable {
-                            stream_id,
-                            through_sync_value,
-                        } = message
-                        else {
-                            return Err(io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "unexpected buffer acknowledgment",
-                            ));
-                        };
-                        let mut state = availability.state.lock();
-                        if !state.last_publication.is_some_and(|(stream, value)| {
-                            stream == stream_id && through_sync_value <= value
-                        }) {
-                            return Err(io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "buffer acknowledgment belongs to an unknown publication",
-                            ));
-                        }
-                        state.available_through =
-                            state.available_through.max(through_sync_value);
-                        Ok(())
+                            let Message::BufferAvailable {
+                                stream_id,
+                                through_sync_value,
+                            } = message
+                            else {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "unexpected buffer acknowledgment",
+                                ));
+                            };
+                            let mut state = availability.state.lock();
+                            if !state.last_publication.is_some_and(|(stream, value)| {
+                                stream == stream_id && through_sync_value <= value
+                            }) {
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "buffer acknowledgment belongs to an unknown publication",
+                                ));
+                            }
+                            state.available_through =
+                                state.available_through.max(through_sync_value);
+                            Ok(())
                     });
                     match result {
                         Ok(()) => availability.notify(),

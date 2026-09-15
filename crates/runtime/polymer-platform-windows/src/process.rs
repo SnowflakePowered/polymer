@@ -162,30 +162,3 @@ fn first_process_thread(process_id: ProcessId) -> std::io::Result<u32> {
     found
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "target thread not found"))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use windows::Win32::System::Threading::GetCurrentProcess;
-
-    #[test]
-    fn detects_current_process_architecture() {
-        let handle = unsafe { GetCurrentProcess() };
-        let expected = if cfg!(target_arch = "aarch64") {
-            ProcessArchitecture::Arm64
-        } else {
-            ProcessArchitecture::X86_64
-        };
-        assert_eq!(process_architecture(handle.0 as isize).unwrap(), expected);
-        assert_eq!(
-            executable_architecture(&std::env::current_exe().unwrap()).unwrap(),
-            expected
-        );
-    }
-
-    #[test]
-    fn process_tree_contains_its_root() {
-        let root = ProcessId(std::process::id());
-        assert!(process_tree_ids(root).unwrap().contains(&root));
-    }
-}

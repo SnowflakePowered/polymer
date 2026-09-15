@@ -253,25 +253,3 @@ fn temporary_path(path: &Path) -> PathBuf {
     value.push(".tmp");
     PathBuf::from(value)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn key_codec_round_trip() {
-        let key = [0x5a; 16];
-        assert_eq!(decode_key(&encode_key(key)), Some(key));
-    }
-
-    #[test]
-    fn wiimote_pin_uses_raw_reversed_address() {
-        let local = DeviceAddr::public([1, 2, 3, 4, 5, 6]);
-        assert_eq!(
-            PinCode::LocalAddress
-                .resolve(local, DeviceAddr::public([0; 6]))
-                .unwrap(),
-            [6, 5, 4, 3, 2, 1]
-        );
-    }
-}

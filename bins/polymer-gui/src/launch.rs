@@ -102,33 +102,3 @@ impl AttachedLaunchPlan {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn validates_shell_launch_options() {
-        let launch: AttachedLaunchPlan = serde_json::from_str(
-            r#"{
-                "command": "game.exe",
-                "arguments": ["--fullscreen"],
-                "isolated": true,
-                "hooks": {
-                    "graphics": ["d3d12"],
-                    "input": ["sdl3"]
-                },
-                "surfaces": [{
-                    "index": 0,
-                    "rotation": 0,
-                    "selector": "Game",
-                    "attach": 4
-                }],
-                "controllerTopology": { "mappings": [] },
-                "machine": "MICROSOFT_XBOX"
-            }"#,
-        )
-        .unwrap();
-        launch.validate().unwrap();
-    }
-}

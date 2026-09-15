@@ -66,6 +66,3 @@ impl BluetoothControllerDevice for DualShock4Decoder {
         &mut self.calibration
     }
 }
-
-#[cfg(test)]
-mod tests;

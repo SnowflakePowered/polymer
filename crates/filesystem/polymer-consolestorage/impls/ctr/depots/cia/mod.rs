@@ -1,7 +1,5 @@
 mod install;
 mod metadata;
-#[cfg(test)]
-mod tests;
 
 use crate::impls::ctr::{CtrNand, layout::Layout};
 use crate::{

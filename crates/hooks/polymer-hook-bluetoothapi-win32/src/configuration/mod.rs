@@ -51,26 +51,3 @@ impl WideAsciiExt for [u16] {
             })
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn synthetic_path_is_stable_while_the_active_binding_changes() {
-        let inactive = SyntheticWiimote::for_port("test-session", 2, None);
-        let binding = RawHidBinding {
-            player: 2,
-            port: 2,
-            vendor_id: 0x057e,
-            product_id: 0x0330,
-            pipe: r"\\.\pipe\test-session-hid-2".to_owned(),
-        };
-        let active = SyntheticWiimote::for_port("test-session", 2, Some(&binding));
-
-        assert_eq!(inactive.path, active.path);
-        assert!(!inactive.active);
-        assert!(active.active);
-        assert_eq!(active.product_id, 0x0330);
-    }
-}

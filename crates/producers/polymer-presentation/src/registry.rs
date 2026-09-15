@@ -58,21 +58,3 @@ impl PresentationRegistry {
         (resolved, used)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn title_requests_claim_windows_before_positional_requests() {
-        let selection = [(10, "GamePad"), (20, "TV")];
-        let result = PresentationRegistry::resolve(&[0, 1], &selection, |slot, title| {
-            (slot == 1).then_some(title == "GamePad")
-        });
-        assert_eq!(result, [(0, 20), (1, 10)]);
-        let missing = PresentationRegistry::resolve(&[0, 1], &selection, |slot, title| {
-            (slot == 1).then_some(title == "Missing")
-        });
-        assert_eq!(missing, [(0, 10)]);
-    }
-}

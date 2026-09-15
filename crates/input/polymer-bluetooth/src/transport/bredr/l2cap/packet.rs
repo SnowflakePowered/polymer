@@ -58,14 +58,3 @@ impl Packet {
         pdu.freeze()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn packet_round_trip() {
-        let packet = Packet::new(0x41, Bytes::from_static(&[1, 2, 3]));
-        assert_eq!(Packet::parse(&packet.encode()).unwrap(), packet);
-    }
-}

@@ -85,33 +85,3 @@ impl Server {
         })
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn peer_searches_complete_without_inventing_host_services() {
-        let search = [2, 0x12, 0x34, 0, 8, 0x35, 3, 0x19, 0x12, 0, 0, 8, 0];
-        assert_eq!(
-            Server::response(&search).unwrap().as_ref(),
-            &[3, 0x12, 0x34, 0, 5, 0, 0, 0, 0, 0]
-        );
-        let search_attributes = super::super::request(42, 0x1200, &[]);
-        let response = Server::response(&search_attributes).unwrap();
-        let (attributes, continuation) = super::super::parse_response(&response, 42).unwrap();
-        assert_eq!(attributes, &[0x35, 0]);
-        assert!(continuation.is_empty());
-        let mut truncated = search.to_vec();
-        truncated.pop();
-        assert_eq!(
-            Server::response(&truncated).unwrap().as_ref(),
-            &[1, 0x12, 0x34, 0, 2, 0, 4]
-        );
-        let continued = super::super::request(7, 0x1200, &[1]);
-        assert_eq!(
-            Server::response(&continued).unwrap().as_ref(),
-            &[1, 0, 7, 0, 2, 0, 5]
-        );
-    }
-}

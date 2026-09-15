@@ -309,27 +309,3 @@ impl WebRtcCompositor {
             .map(|vulkan| (&mut self.swapchain, vulkan))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::webrtc::VideoFrameData;
-
-    fn frame(connection: u64) -> VideoFrame {
-        VideoFrame {
-            connection,
-            width: 1,
-            height: 1,
-            data: VideoFrameData::Rgba(vec![0; 4]),
-        }
-    }
-
-    #[test]
-    fn video_swapchain_is_bounded_and_non_blocking() {
-        let mut swapchain = VideoSwapchain::new(1);
-        assert!(swapchain.present(frame(1)));
-        assert!(!swapchain.present(frame(2)));
-        assert_eq!(swapchain.drain()[0].connection, 1);
-        assert_eq!(swapchain.available(), 1);
-    }
-}

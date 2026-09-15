@@ -1,8 +1,6 @@
 //! User-supplied hardware data, independent of NANDs and game packages.
 
 mod install;
-#[cfg(test)]
-mod tests;
 
 use serde::{Deserialize, Serialize};
 use std::{

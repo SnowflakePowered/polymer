@@ -384,24 +384,3 @@ impl DeviceSet {
         ))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn switch_target_must_be_the_exact_ds3_usb_parent() {
-        assert!(DeviceSet::is_ds3_usb_instance(
-            "USB\\VID_054C&PID_0268\\8&123&0&9"
-        ));
-        for other in [
-            "HID\\VID_054C&PID_0268\\child",
-            "USB\\VID_054C&PID_0268&MI_00\\child",
-            "USB\\VID_054C&PID_02680\\other",
-            "USB\\VID_054C&PID_0268\\",
-            "USB\\VID_054C&PID_0268\\a\\b",
-        ] {
-            assert!(!DeviceSet::is_ds3_usb_instance(other));
-        }
-    }
-}

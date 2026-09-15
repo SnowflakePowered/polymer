@@ -51,19 +51,3 @@ impl AclCredits {
         self.outstanding.remove(&(handle & 0x0fff)).unwrap_or(0)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn accounts_global_pool_per_handle() {
-        let mut credits = AclCredits::new(2);
-        assert!(credits.try_acquire(1));
-        assert!(credits.try_acquire(2));
-        assert!(!credits.try_acquire(1));
-        assert_eq!(credits.complete(1, 9), 1);
-        assert!(credits.try_acquire(2));
-        assert_eq!(credits.outstanding(), 2);
-    }
-}

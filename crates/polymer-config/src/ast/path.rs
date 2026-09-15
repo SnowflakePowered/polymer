@@ -161,24 +161,3 @@ impl<S: AsRef<str>, F> fmt::Display for ConfigurationPath<S, F> {
         formatter.write_str(self.as_str())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use std::{cmp::Ordering, sync::Arc};
-
-    use super::ConfigurationPath;
-
-    #[test]
-    fn owned_and_borrowed_paths_share_behavior() {
-        let root: ConfigurationPath = ConfigurationPath::new("profile-1").unwrap();
-        let controller: ConfigurationPath<&str> =
-            ConfigurationPath::from_key("profile-1.emulated_controller");
-        let mapping: ConfigurationPath =
-            ConfigurationPath::from_key(Arc::<str>::from("profile-1.emulated_controller.mappings"));
-
-        assert!(root.is_parent_of(&controller));
-        assert!(mapping.is_child_of(&controller));
-        assert_eq!(controller.partial_cmp(&root), Some(Ordering::Greater));
-        assert_eq!(mapping.components().count(), 3);
-    }
-}

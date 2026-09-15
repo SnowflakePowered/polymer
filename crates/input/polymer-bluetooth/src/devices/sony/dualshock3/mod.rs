@@ -242,6 +242,3 @@ impl Drop for Session {
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

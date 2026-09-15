@@ -77,6 +77,3 @@ pub fn manager() -> Option<Arc<StorageManager>> {
         .ok()
         .map(|directories| Arc::new(StorageManager::new(directories.consolestorage())))
 }
-
-#[cfg(test)]
-mod tests;

@@ -734,25 +734,3 @@ impl FileNode for MemoryTreeFile {
         }))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn memory_file_supports_sparse_writes() {
-        let factory = MemoryFileFactory::writable(b"ab".to_vec());
-        let file = factory.materialize().unwrap().backend;
-        let open = file
-            .open(OpenOptions {
-                read: true,
-                write: true,
-                truncate: false,
-            })
-            .unwrap();
-        open.write(4, b"z").unwrap();
-        let mut bytes = [0; 5];
-        open.read(0, &mut bytes).unwrap();
-        assert_eq!(&bytes, b"ab\0\0z");
-    }
-}

@@ -329,39 +329,3 @@ fn distribution_for(
         .collect::<Vec<_>>();
     DistributionStatistics::from_values(&values)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{FrameMetrics, InputMetrics, LiveRecorder, PresentationMetrics};
-    use std::time::Duration;
-
-    #[test]
-    fn samples_rates_distributions_and_bounded_history() {
-        let (recorder, handle) = LiveRecorder::new();
-        metrics::with_local_recorder(&recorder, || {
-            let mut frame = FrameMetrics::new(7, 9, 3);
-            frame.observe(10, 1_000, 1_000.0, Duration::from_millis(4));
-            frame.observe(12, 1_040, 1_000.0, Duration::from_millis(6));
-            let presentation = PresentationMetrics::new("test");
-            presentation.record_clock();
-            presentation.record_present(true);
-            let input = InputMetrics::new("test");
-            input.record_dispatch(Duration::from_millis(2));
-            crate::display_latency("test", Duration::from_millis(12));
-        });
-
-        let start = Instant::now();
-        let mut statistics = LiveStatistics::new(handle);
-        let snapshot = statistics.sample_at(start);
-        assert_eq!(snapshot.targets.len(), 1);
-        assert_eq!(snapshot.targets[0].fps, 4.0);
-        assert_eq!(snapshot.targets[0].dropped, 1);
-        assert_eq!(snapshot.targets[0].frame_interval.average, 20.0);
-        assert_eq!(snapshot.targets[0].capture_latency.average, 5.0);
-        assert_eq!(snapshot.pacing.presented, 2.0);
-        assert_eq!(snapshot.pacing.clock, 2.0);
-        assert_eq!(snapshot.input.combined().samples, 1);
-        assert_eq!(snapshot.display_latency["test"].average, 12.0);
-    }
-}

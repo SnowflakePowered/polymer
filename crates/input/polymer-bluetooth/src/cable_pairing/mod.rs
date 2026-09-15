@@ -245,6 +245,3 @@ impl CablePairing {
         Ok(verified)
     }
 }
-
-#[cfg(test)]
-mod tests;

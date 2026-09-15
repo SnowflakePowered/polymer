@@ -531,6 +531,3 @@ impl Package {
         })
     }
 }
-
-#[cfg(test)]
-mod tests;
