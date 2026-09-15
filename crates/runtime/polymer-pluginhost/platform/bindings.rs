@@ -1,8 +1,8 @@
-use super::{DepotSource, Device, Operation};
+use super::{DepotSource, Device};
 use deno_core::{OpState, op2};
 use deno_error::JsErrorBox;
 use polymer_library::StorageManager;
-use serde_json::{Value, json};
+use serde_json::json;
 use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::Arc};
 
 #[derive(Clone)]
@@ -10,8 +10,6 @@ pub(crate) struct PlatformBinding {
     pub manager: Arc<StorageManager>,
     pub root: PathBuf,
     pub device: Option<Device>,
-    pub settings: Value,
-    pub runtime: Option<crate::runtime::PluginRuntimeHandle>,
 }
 
 impl PlatformBinding {
@@ -82,31 +80,12 @@ async fn op_platform_install(
         .borrow::<Arc<crate::runtime::EventEmitter>>()
         .clone();
     let device = binding.target()?;
-    let runtime = binding
-        .runtime
-        .as_ref()
-        .ok_or_else(|| JsErrorBox::type_error("No bootstrap invocation"))?;
     let nand = device
         .open(&binding.manager)
         .await
         .map_err(JsErrorBox::generic)?;
     let installation = nand
         .try_install(&path)
-        .map_err(|error| JsErrorBox::generic(error.to_string()))?;
-    let request = device
-        .request(
-            &binding.manager,
-            Operation::Install,
-            binding.settings.clone(),
-            installation.depot_type(),
-        )
-        .await
-        .map_err(JsErrorBox::generic)?;
-    runtime
-        .preflight_nested(request, runtime.cancellation_token(), true)
-        .await
-        .map_err(|error| JsErrorBox::generic(error.to_string()))?
-        .ensure_ready()
         .map_err(|error| JsErrorBox::generic(error.to_string()))?;
     DepotSource::finish_install(installation, |message| {
         events.publish(

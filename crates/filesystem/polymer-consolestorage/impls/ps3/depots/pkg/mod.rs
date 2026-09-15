@@ -1,9 +1,7 @@
-use crate::installable::{
-    IconHint,
-    artifacts::{Artifact, DescribeArtifact},
-};
 mod install;
 mod metadata;
+#[cfg(test)]
+mod tests;
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -28,9 +26,7 @@ pub struct Ps3PkgDepot {
     content_id: String,
     install_path: String,
     kind: DepotType,
-    label: String,
     version: Option<String>,
-    icon: bool,
     digest: [u8; 20],
 }
 
@@ -189,20 +185,7 @@ impl Depot for Ps3PkgDepot {
         }
         Ok(Self {
             install_path: format!("dev_hdd0/game/{directory}"),
-            label: sfo
-                .get_string("TITLE")
-                .filter(|title| !title.is_empty())
-                .unwrap_or(&title_id)
-                .to_owned(),
-            version: sfo
-                .get_string("APP_VER")
-                .filter(|version| !version.is_empty())
-                .map(str::to_owned)
-                .or(metadata.version),
-            icon: archive
-                .items()
-                .iter()
-                .any(|item| item.is_file && item.name == "ICON0.PNG"),
+            version: metadata.version,
             path: path.to_path_buf(),
             title_id,
             content_id,
@@ -211,10 +194,24 @@ impl Depot for Ps3PkgDepot {
         })
     }
 
-    fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> bool {
-        nand.platform() == Ps3Nand::PLATFORM && Ps3Nand::has_structure(&*nand.root())
+    fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> Result<(), Error> {
+        if nand.is_dirty()? {
+            return Err(Error::HistoryConflict(
+                "This NAND has uncommitted changes. Recover it in Console storage before installing.".into(),
+            ));
+        }
+        if !(nand.platform() == Ps3Nand::PLATFORM && Ps3Nand::has_structure(&*nand.root())) {
+            return Err(Error::Unsupported(
+                "Depot requires a compatible NAND with its storage layout initialized".into(),
+            ));
+        }
+        if !nand.is_complete(crate::nand::NandCompletion::Minimal) {
+            return Err(Error::Unsupported(
+                "Install PlayStation 3 system software before using this NAND".into(),
+            ));
+        }
+        Ok(())
     }
-
     fn validate_contents(&self) -> Vec<String> {
         match self.verified_file() {
             Ok(_) => Vec::new(),
@@ -236,14 +233,14 @@ impl Depot for Ps3PkgDepot {
         let source = self;
 
         crate::installable::Installation::prepare(async move {
+            source.satisfies(nand)?;
             install::Ps3PkgInstall::new(&source, nand.root()).await
         })
     }
 }
 
-impl DescribeArtifact for Ps3PkgDepot {
-    fn describe(&self) -> Artifact {
-        // Base games and patches may share a content ID and install directory.
+impl Ps3PkgDepot {
+    fn artifact_id(&self) -> String {
         let role = match self.kind {
             DepotType::App => "app",
             DepotType::AppUpdate => "update",
@@ -251,17 +248,6 @@ impl DescribeArtifact for Ps3PkgDepot {
             DepotType::System => "system",
             DepotType::AppTicket => "ticket",
         };
-        Artifact::new(
-            format!("{}:{role}", self.content_id),
-            self.kind,
-            Vec::new(),
-            self.label.clone(),
-            self.version.clone(),
-            if self.icon {
-                IconHint::File(PathBuf::from(format!("{}/ICON0.PNG", self.install_path)))
-            } else {
-                IconHint::Builtin(self.kind)
-            },
-        )
+        format!("{}:{role}", self.content_id)
     }
 }

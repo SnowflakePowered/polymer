@@ -2,13 +2,10 @@ use std::fs::File;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 
-use futures::channel::oneshot;
-use futures::stream;
-
 use super::super::{GUEST_USER_ROOT, Ps3Nand, TitleId};
 use crate::Error;
-use crate::installable::artifacts::{Artifact, DescribeArtifact};
-use crate::installable::{Depot, DepotFile, DepotType, IconHint};
+use crate::installable::artifacts::Artifact;
+use crate::installable::{Depot, DepotFile, DepotType, IconHint, Installable};
 use crate::nand::VirtualNand;
 
 /// A standalone 16-byte RAP license named `<CONTENT_ID>.rap`.
@@ -62,10 +59,24 @@ impl Depot for Ps3RapDepot {
         })
     }
 
-    fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> bool {
-        nand.platform() == Ps3Nand::PLATFORM && Ps3Nand::has_structure(&*nand.root())
+    fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> Result<(), Error> {
+        if nand.is_dirty()? {
+            return Err(Error::HistoryConflict(
+                "This NAND has uncommitted changes. Recover it in Console storage before installing.".into(),
+            ));
+        }
+        if !(nand.platform() == Ps3Nand::PLATFORM && Ps3Nand::has_structure(&*nand.root())) {
+            return Err(Error::Unsupported(
+                "Depot requires a compatible NAND with its storage layout initialized".into(),
+            ));
+        }
+        if !nand.is_complete(crate::nand::NandCompletion::Minimal) {
+            return Err(Error::Unsupported(
+                "Install PlayStation 3 system software before using this NAND".into(),
+            ));
+        }
+        Ok(())
     }
-
     fn validate_contents(&self) -> Vec<String> {
         // Length is checked on open. A RAP has no embedded integrity digest.
         Vec::new()
@@ -84,49 +95,51 @@ impl Depot for Ps3RapDepot {
     {
         let source = self;
 
-        let (sender, receiver) = oneshot::channel();
-        let operation = stream::once(async move {
-            let result: Result<_, Error> = async {
-                let path = source.install_path();
-                let copied = nand
-                    .root()
-                    .install_file(Box::new(Cursor::new(source.bytes)), &path)
-                    .await?;
-                let artifact = source.describe().with_manifest(vec![DepotFile::new(
-                    PathBuf::from(&path),
-                    copied.blake3,
-                    copied.byte_length,
-                )]);
-                nand.record(&artifact).await?;
-                Ok((artifact, path))
-            }
-            .await;
-            match result {
-                Ok((artifact, path)) => {
-                    let _ = sender.send(Ok(artifact));
-                    Ok(path)
-                }
-                Err(error) => {
-                    let _ = sender.send(Err(error.clone()));
-                    Err(error)
-                }
-            }
-        });
-        crate::installable::Installation::from_progress(operation, async move {
-            receiver.await.unwrap_or(Err(Error::InstallIncomplete))
+        crate::installable::Installation::prepare(async move {
+            source.satisfies(nand)?;
+            Ok(RapInstall {
+                source,
+                storage: nand.root(),
+                written: false,
+            })
         })
     }
 }
 
-impl DescribeArtifact for Ps3RapDepot {
-    fn describe(&self) -> Artifact {
-        Artifact::new(
-            format!("{}:rap", self.content_id),
+struct RapInstall {
+    source: Ps3RapDepot,
+    storage: std::sync::Arc<dyn crate::VolumeStorage>,
+    written: bool,
+}
+
+impl Installable for RapInstall {
+    async fn next_batch(&mut self) -> Result<Option<Vec<DepotFile>>, Error> {
+        if self.written {
+            return Ok(None);
+        }
+        let path = self.source.install_path();
+        let copied = self
+            .storage
+            .install_file(Box::new(Cursor::new(self.source.bytes)), &path)
+            .await?;
+        self.written = true;
+        Ok(Some(vec![DepotFile::new(
+            PathBuf::from(path),
+            copied.blake3,
+            copied.byte_length,
+        )]))
+    }
+
+    async fn finish(self, manifest: Vec<DepotFile>) -> Result<Artifact, Error> {
+        let artifact = Artifact::new(
+            format!("{}:rap", self.source.content_id),
             DepotType::AppTicket,
-            Vec::new(),
-            format!("{} license", self.content_id),
+            manifest,
+            format!("{} license", self.source.content_id),
             None,
             IconHint::Builtin(DepotType::AppTicket),
-        )
+        );
+        self.storage.artifacts().record(&artifact).await?;
+        Ok(artifact)
     }
 }

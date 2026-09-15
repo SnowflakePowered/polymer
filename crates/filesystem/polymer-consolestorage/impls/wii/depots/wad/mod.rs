@@ -1,5 +1,7 @@
 mod crypto;
 mod depot;
+mod install;
+mod metadata;
 mod ticket;
 mod tmd;
 

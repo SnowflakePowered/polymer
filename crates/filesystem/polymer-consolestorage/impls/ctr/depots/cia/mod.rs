@@ -1,8 +1,7 @@
-use crate::installable::{
-    IconHint,
-    artifacts::{Artifact, DescribeArtifact},
-};
 mod install;
+mod metadata;
+#[cfg(test)]
+mod tests;
 
 use crate::impls::ctr::{CtrNand, layout::Layout};
 use crate::{
@@ -24,14 +23,14 @@ pub struct CiaDepot {
     path: PathBuf,
     title_id: u64,
     ticket_id: u64,
-    version: u16,
     root: String,
+    title_root: String,
     content_root: String,
     kind: DepotType,
 }
 
 impl CiaDepot {
-    /// Select the ticket as a separate artifact. Installing contents never installs it.
+    /// Select only the ticket. Contents and tickets share one title artifact.
     pub fn ticket_depot(&self) -> Self {
         let mut depot = self.clone();
         depot.kind = DepotType::AppTicket;
@@ -47,6 +46,17 @@ impl CiaDepot {
     }
     pub fn install_path(&self) -> &str {
         &self.root
+    }
+
+    fn title_kind(id: u64) -> DepotType {
+        let category = (id >> 32) as u16;
+        let nand = category & (0x10 | 0x01 | 0x8000) != 0 || id & 0x02 != 0;
+        match category {
+            0x000e => DepotType::AppUpdate,
+            0x008c => DepotType::AppContent,
+            _ if nand && category & 0x8000 == 0 => DepotType::System,
+            _ => DepotType::App,
+        }
     }
 
     fn content_path(&self, content_id: u32) -> String {
@@ -105,25 +115,31 @@ impl Depot for CiaDepot {
         } else {
             root.clone()
         };
-        let kind = match category {
-            0x000e => DepotType::AppUpdate,
-            0x008c => DepotType::AppContent,
-            _ if nand && category & 0x8000 == 0 => DepotType::System,
-            _ => DepotType::App,
-        };
+        let kind = Self::title_kind(id);
         Ok(Self {
             path: path.to_owned(),
             title_id: id,
             ticket_id: archive.ticket().ticket_id(),
-            version: archive.tmd().title_version(),
+            title_root: root.clone(),
             root,
             content_root,
             kind,
         })
     }
 
-    fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> bool {
-        CtrNand::supports(nand.platform()) && nand.root().read_dir("nand/dbs", false).is_ok()
+    fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> Result<(), Error> {
+        if nand.is_dirty()? {
+            return Err(Error::HistoryConflict(
+                "This NAND has uncommitted changes. Recover it in Console storage before installing.".into(),
+            ));
+        }
+        if !(CtrNand::supports(nand.platform()) && nand.root().read_dir("nand/dbs", false).is_ok())
+        {
+            return Err(Error::Unsupported(
+                "Depot requires a compatible NAND with its storage layout initialized".into(),
+            ));
+        }
+        Ok(())
     }
     fn validate_contents(&self) -> Vec<String> {
         let mut archive = match CiaArchive::open(&self.path) {
@@ -154,27 +170,8 @@ impl Depot for CiaDepot {
         let source = self;
 
         crate::installable::Installation::prepare(async move {
+            source.satisfies(nand)?;
             install::CiaInstall::new(&source, nand.root()).await
         })
-    }
-}
-
-impl DescribeArtifact for CiaDepot {
-    fn describe(&self) -> Artifact {
-        let id = if self.kind == DepotType::AppTicket {
-            format!("{:016X}:{:016X}:ticket", self.title_id, self.ticket_id)
-        } else {
-            format!("{:016X}:contents", self.title_id)
-        };
-        Artifact::new(
-            id,
-            self.kind,
-            Vec::new(),
-            // TODO: this should be the game.
-            format!("{:016X}", self.title_id),
-            Some(self.version.to_string()),
-            // TODO: this hsould be the icon
-            IconHint::Builtin(self.kind),
-        )
     }
 }

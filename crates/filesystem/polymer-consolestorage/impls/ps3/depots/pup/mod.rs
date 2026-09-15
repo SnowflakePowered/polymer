@@ -1,7 +1,3 @@
-use crate::installable::{
-    IconHint,
-    artifacts::{Artifact, DescribeArtifact},
-};
 mod install;
 mod reader;
 mod sce;
@@ -47,8 +43,18 @@ impl Depot for Ps3PupDepot {
         })
     }
 
-    fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> bool {
-        nand.platform() == Ps3Nand::PLATFORM && Ps3Nand::has_structure(&*nand.root())
+    fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> Result<(), Error> {
+        if nand.is_dirty()? {
+            return Err(Error::HistoryConflict(
+                "This NAND has uncommitted changes. Recover it in Console storage before installing.".into(),
+            ));
+        }
+        if !(nand.platform() == Ps3Nand::PLATFORM && Ps3Nand::has_structure(&*nand.root())) {
+            return Err(Error::Unsupported(
+                "Depot requires a compatible NAND with its storage layout initialized".into(),
+            ));
+        }
+        Ok(())
     }
     fn validate_contents(&self) -> Vec<String> {
         match self.verified_pup() {
@@ -69,20 +75,8 @@ impl Depot for Ps3PupDepot {
         let source = self;
 
         crate::installable::Installation::prepare(async move {
+            source.satisfies(nand)?;
             install::PupInstall::new(&source, nand.root()).await
         })
-    }
-}
-
-impl DescribeArtifact for Ps3PupDepot {
-    fn describe(&self) -> Artifact {
-        Artifact::new(
-            "ps3:firmware".to_owned(),
-            DepotType::System,
-            Vec::new(),
-            "PlayStation 3 system software".to_owned(),
-            Some(self.version.clone()),
-            IconHint::Builtin(DepotType::System),
-        )
     }
 }

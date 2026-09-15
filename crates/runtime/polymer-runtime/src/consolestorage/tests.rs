@@ -94,7 +94,6 @@ async fn bootstrap_keeps_its_lease_and_actor_alive_without_blocking_other_reques
         package.join("main.js"),
         format!(
             r#"
-        export function onPreflight() {{ return {{issues: []}}; }}
         export async function onBootstrap() {{
             const response = await fetch('http://{address}/');
             await response.text();
@@ -216,6 +215,13 @@ async fn bootstrap_keeps_its_lease_and_actor_alive_without_blocking_other_reques
 async fn actor_install_and_removal_preserve_artifacts_and_reject_stale_plans() {
     let fixture = Fixture::new();
     let device = fixture.device("SONY_PS3").await;
+    let nand = device.open(&fixture.manager).await.unwrap();
+    nand.root()
+        .create("dev_flash/sys/external/liblv2.sprx")
+        .unwrap()
+        .write_all_at(0, b"firmware")
+        .unwrap();
+    nand.set_label(Some("Initialized test NAND")).await.unwrap();
     let service =
         StorageService::start(Some(fixture.manager.clone()), fixture.runtime.handle()).unwrap();
     let client = service.client();
@@ -298,7 +304,7 @@ async fn actor_install_and_removal_preserve_artifacts_and_reject_stale_plans() {
 }
 
 #[tokio::test]
-async fn dirty_nand_blocks_preflight_and_install_until_actor_recovery() {
+async fn dirty_nand_blocks_install_until_actor_recovery() {
     let fixture = Fixture::new();
     let device = fixture.device("SONY_PS3").await;
     let service =
@@ -310,6 +316,12 @@ async fn dirty_nand_blocks_preflight_and_install_until_actor_recovery() {
         .join("UP0001-NPUB12345_00-0123456789ABCDEF.rap");
     std::fs::write(&source, [0x42; 16]).unwrap();
     let nand = device.open(&fixture.manager).await.unwrap();
+    nand.root()
+        .create("dev_flash/sys/external/liblv2.sprx")
+        .unwrap()
+        .write_all_at(0, b"firmware")
+        .unwrap();
+    nand.set_label(Some("Initialized test NAND")).await.unwrap();
     nand.root()
         .create("partial-install")
         .unwrap()
@@ -326,20 +338,6 @@ async fn dirty_nand_blocks_preflight_and_install_until_actor_recovery() {
         .unwrap()
         .unwrap();
     assert_eq!(inspection["dirty"], true);
-    for operation in ["launch", "install", "bootstrap"] {
-        let report = client
-            .preflight
-            .send(Preflight {
-                platform: device.platform.clone(),
-                id: device.id.to_string(),
-                operation: operation.into(),
-                settings: Value::Null,
-            })
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(report["issues"][0]["code"], "NAND_DIRTY");
-    }
     let error = client
         .install
         .send(Install {
@@ -360,20 +358,6 @@ async fn dirty_nand_blocks_preflight_and_install_until_actor_recovery() {
             .exists("partial-install")
     );
     let lease = ExclusiveResourceKey::Resource(device.id).acquire().unwrap();
-    for operation in ["launch", "install"] {
-        let report = client
-            .preflight
-            .send(Preflight {
-                platform: device.platform.clone(),
-                id: device.id.to_string(),
-                operation: operation.into(),
-                settings: Value::Null,
-            })
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(report["issues"][0]["code"], "NAND_DIRTY");
-    }
     let error = client
         .install
         .send(Install {

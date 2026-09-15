@@ -21,8 +21,6 @@ impl PluginRuntimeHandle {
             WorkerOptions::for_plugin(provider.as_ref(), self.directories(), BTreeMap::new(), None)
                 .map_err(PluginInvocationError::worker)?;
         worker.platform.device = Some(device.clone());
-        worker.platform.runtime = Some(self.clone());
-        worker.platform.settings = settings.clone();
         let entrypoint = provider.entrypoint().to_string();
         let invocation_entrypoint = entrypoint.clone();
         let lifecycle = self.lifecycle(provider.id());
@@ -37,25 +35,13 @@ impl PluginRuntimeHandle {
             ))
             .await
             .map_err(PluginInvocationError::worker)?;
-        let request = device
-            .request(
-                &polymer_library::StorageManager::new(self.directories().consolestorage()),
-                crate::platform::Operation::Bootstrap,
-                settings.clone(),
-                None,
-            )
-            .await
-            .map_err(PluginInvocationError::worker)?;
-        self.preflight_with_cancellation(request, cancellation.clone())
-            .await?
-            .ensure_ready()?;
         let events = lifecycle.events.clone();
         let progress = events.scope(
             "loadprogress",
             json!({"state": "loading", "message": "Installing system files"}),
             json!({"state": "failed", "message": "System setup interrupted"}),
         );
-        self.run_with_control(cancellation.control, false, move |control| {
+        self.run_with_control(cancellation.control, move |control| {
             run_worker(
                 entrypoint,
                 worker,
@@ -78,13 +64,7 @@ impl PluginRuntimeHandle {
             .inspect(&manager)
             .await
             .map_err(PluginInvocationError::worker)?;
-        if !inspection.minimal {
-            return Err(PluginInvocationError::new(
-                "PreflightError",
-                "NAND_INCOMPLETE",
-                "System depots were installed, but the NAND still needs system contents.",
-            ));
-        }
+
         progress.finish(json!({"state": "ready", "message": "System setup complete"}));
         Ok(json!(inspection))
     }

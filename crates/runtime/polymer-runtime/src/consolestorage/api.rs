@@ -7,7 +7,6 @@ impl StorageService {
             platforms: self.actor.clone().recipient(),
             inspect: self.actor.clone().recipient(),
             recover: self.actor.clone().recipient(),
-            preflight: self.actor.clone().recipient(),
             install: self.actor.clone().recipient(),
             bootstrap: self.actor.clone().recipient(),
             uninstall: self.actor.clone().recipient(),

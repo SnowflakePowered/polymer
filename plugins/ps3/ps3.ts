@@ -1,23 +1,9 @@
 import { caches } from "polymer:cache";
-import type { BootstrapContext, BootstrapDevice, PreflightRequest, PreflightResult } from "polymer:api";
+import type { BootstrapContext, BootstrapDevice } from "polymer:api";
 
 const FIRMWARE_URL = "http://dus01.ps3.update.playstation.net/update/ps3/image/us/2026_0318_a2b60b6ac1d2e49e230144345616927c/PS3UPDAT.PUP";
 
-export function onPreflight(request: PreflightRequest): PreflightResult {
-  if (request.operation === "bootstrap" ||
-      (request.operation === "install" && request.depot_kind === "system")) {
-    return { issues: [] };
-  }
-  return {
-    issues: Object.entries(request.devices).flatMap(([name, device]) =>
-      device?.minimal ? [] : [{
-        code: "NAND_INCOMPLETE",
-        message: "Install PlayStation 3 system software before using this NAND.",
-        severity: "blocking" as const,
-        device: name,
-      }]),
-  };
-}
+
 
 export async function onBootstrap(device: BootstrapDevice, context: BootstrapContext): Promise<void> {
   const path = `${device.id}/PS3UPDAT.PUP`;
@@ -50,6 +36,6 @@ export async function onBootstrap(device: BootstrapDevice, context: BootstrapCon
     },
   })).pipeTo(file.writable);
   context.progress({ message: "Checking and installing PlayStation 3 system software" });
-  // The host detects System, runs onPreflight, then drives one native PUP installation.
+  // Native depot requirements are checked before firmware extraction.
   await device.install(file);
 }

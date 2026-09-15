@@ -12,7 +12,8 @@ struct TmdHeader {
     before_title_version: [u8; 0x48],
     title_version: U16,
     content_count: U16,
-    reserved: [u8; 4],
+    boot_index: U16,
+    reserved: [u8; 2],
 }
 
 const _: () = assert!(size_of::<TmdHeader>() == 0xa4);
@@ -49,6 +50,7 @@ impl Content {
 pub(super) struct Tmd {
     pub(super) title_id: u64,
     pub(super) title_version: u16,
+    pub(super) boot_index: u16,
     pub(super) contents: Vec<Content>,
 }
 
@@ -91,6 +93,7 @@ impl Tmd {
         Ok(Self {
             title_id: header.title_id.get(),
             title_version: header.title_version.get(),
+            boot_index: header.boot_index.get(),
             contents,
         })
     }

@@ -3,10 +3,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::impls::sony::{TitleId, metadata::SonyMetadata};
-use crate::installable::artifacts::{Artifact, DescribeArtifact};
-use crate::installable::{Depot, DepotType, DirectoryInstall, IconHint, Installation};
+use crate::installable::artifacts::Artifact;
+use crate::installable::{
+    Depot, DepotFile, DepotType, DirectoryInstall, IconHint, Installable, Installation,
+};
 use crate::nand::VirtualNand;
-use crate::{Error, Storage};
+use crate::{Error, VolumeStorage};
 
 /// An already-decrypted Vita application, patch, or add-on directory.
 /// PKG/PFS decryption and license installation are deliberately separate.
@@ -16,8 +18,6 @@ pub struct VitaDirectoryDepot {
     content_id: String,
     kind: DepotType,
     destination: String,
-    label: String,
-    version: Option<String>,
 }
 
 impl VitaDirectoryDepot {
@@ -85,15 +85,6 @@ impl Depot for VitaDirectoryDepot {
             content_id: content_id.to_owned(),
             kind,
             destination,
-            label: sfo
-                .get_string("TITLE")
-                .filter(|title| !title.is_empty())
-                .unwrap_or(title_id)
-                .to_owned(),
-            version: sfo
-                .get_string("APP_VER")
-                .filter(|version| !version.is_empty())
-                .map(str::to_owned),
         };
         let missing = depot.validate_contents();
         if !missing.is_empty() {
@@ -105,10 +96,19 @@ impl Depot for VitaDirectoryDepot {
         Ok(depot)
     }
 
-    fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> bool {
-        nand.platform() == super::VitaNand::PLATFORM
+    fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> Result<(), Error> {
+        if nand.is_dirty()? {
+            return Err(Error::HistoryConflict(
+                "This NAND has uncommitted changes. Recover it in Console storage before installing.".into(),
+            ));
+        }
+        if !(nand.platform() == super::VitaNand::PLATFORM) {
+            return Err(Error::Unsupported(
+                "Depot requires a compatible NAND with its storage layout initialized".into(),
+            ));
+        }
+        Ok(())
     }
-
     fn validate_contents(&self) -> Vec<String> {
         let mut invalid = Vec::new();
         if !self.root.join("sce_sys/param.sfo").is_file() {
@@ -144,33 +144,68 @@ impl Depot for VitaDirectoryDepot {
         let source = self;
 
         Installation::prepare(async move {
-            let storage: Arc<dyn Storage> = nand.root();
-            Ok(DirectoryInstall::new(
-                source.root.clone(),
-                source.destination.clone(),
+            source.satisfies(nand)?;
+            let storage = nand.root();
+            Ok(VitaInstall {
+                copy: DirectoryInstall::new(
+                    source.root.clone(),
+                    source.destination.clone(),
+                    storage.clone(),
+                ),
+                depot: source,
                 storage,
-                &source,
-            ))
+            })
         })
     }
 }
 
-impl DescribeArtifact for VitaDirectoryDepot {
-    fn describe(&self) -> Artifact {
-        // Application and patch commonly have the same content ID, so the
-        // destination distinguishes artifacts that can be uninstalled separately.
-        let icon = if self.root.join("sce_sys/icon0.png").is_file() {
-            IconHint::File(PathBuf::from("sce_sys/icon0.png"))
-        } else {
-            IconHint::Builtin(self.kind)
+struct VitaInstall {
+    depot: VitaDirectoryDepot,
+    copy: DirectoryInstall,
+    storage: Arc<dyn VolumeStorage>,
+}
+
+impl Installable for VitaInstall {
+    async fn next_batch(&mut self) -> Result<Option<Vec<DepotFile>>, Error> {
+        self.copy.next_batch().await
+    }
+
+    async fn finish(self, manifest: Vec<DepotFile>) -> Result<Artifact, Error> {
+        let root = &self.depot.destination;
+        let path = format!("{root}/sce_sys/param.sfo");
+        let sfo = SonyMetadata::read(self.storage.open_read(&path)?, &path)?;
+        if sfo.get_string("TITLE_ID") != Some(self.depot.title_id.as_str())
+            || sfo.get_string("CONTENT_ID").unwrap_or_default() != self.depot.content_id
+        {
+            return Err(Error::malformed(path, "installed Vita identity changed"));
+        }
+        let category = match self.depot.kind {
+            DepotType::App => "gd",
+            DepotType::AppUpdate => "gp",
+            DepotType::AppContent => "ac",
+            _ => unreachable!("Vita directory depot category"),
         };
-        Artifact::new(
-            format!("{}:{}", self.destination, self.content_id),
-            self.kind,
-            Vec::new(),
-            self.label.clone(),
-            self.version.clone(),
+        if sfo.get_string("CATEGORY") != Some(category) {
+            return Err(Error::malformed(path, "installed Vita category changed"));
+        }
+        let icon = IconHint::read(
+            &*self.storage,
+            &format!("{root}/sce_sys/icon0.png"),
+            self.depot.kind,
+        )?;
+        let artifact = Artifact::new(
+            format!("{}:{}", root, self.depot.content_id),
+            self.depot.kind,
+            manifest,
+            crate::impls::sony::metadata::SonyMetadata::title(&sfo)
+                .unwrap_or(&self.depot.title_id)
+                .to_owned(),
+            sfo.get_string("APP_VER")
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_owned),
             icon,
-        )
+        );
+        self.storage.artifacts().record(&artifact).await?;
+        Ok(artifact)
     }
 }

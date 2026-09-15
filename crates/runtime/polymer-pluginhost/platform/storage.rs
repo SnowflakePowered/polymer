@@ -1,13 +1,12 @@
-use super::{DeviceInspection, Operation, PreflightRequest};
 use polymer_consolestorage::{
     ConsoleStorage, StorageKind,
-    installable::{DepotType, artifacts::Artifact},
+    installable::artifacts::Artifact,
     nand::{NandCompletion, VirtualNand},
 };
 use polymer_library::StorageManager;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -50,22 +49,14 @@ impl Device {
     pub fn artifact(artifact: &Artifact) -> Value {
         json!({"id": artifact.id(), "label": artifact.label(), "version": artifact.version(), "depotType": artifact.depot_type(), "byteLength": artifact.byte_length()})
     }
+}
 
-    pub async fn request(
-        &self,
-        manager: &StorageManager,
-        operation: Operation,
-        settings: Value,
-        depot_kind: Option<DepotType>,
-    ) -> Result<PreflightRequest, String> {
-        Ok(PreflightRequest {
-            platform: self.platform.clone(),
-            operation,
-            requirements: BTreeMap::new(),
-            devices: BTreeMap::from([("nand".into(), Some(self.inspect(manager).await?))]),
-            settings,
-            depot_kind,
-            package: None,
-        })
-    }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceInspection {
+    pub id: String,
+    pub platform: String,
+    pub minimal: bool,
+    pub dirty: bool,
+    pub artifacts: Value,
 }

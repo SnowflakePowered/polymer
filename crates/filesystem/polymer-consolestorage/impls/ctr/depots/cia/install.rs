@@ -1,10 +1,7 @@
 use super::CiaDepot;
 use crate::{
     Error, VolumeStorage,
-    installable::{
-        DepotFile, DepotType, Installable, StorageWriter,
-        artifacts::{Artifact, DescribeArtifact},
-    },
+    installable::{DepotFile, DepotType, Installable, StorageWriter, artifacts::Artifact},
 };
 use csis::{CiaArchive, CiaSection};
 use parking_lot::Mutex;
@@ -28,7 +25,8 @@ pub(in crate::impls::ctr) struct Entry {
 pub(in crate::impls::ctr) struct CiaInstall {
     archive: Arc<Mutex<CiaArchive<File>>>,
     entries: std::vec::IntoIter<Entry>,
-    artifact: Artifact,
+    depot: CiaDepot,
+    retained: Vec<DepotFile>,
     old_paths: Vec<String>,
     root: String,
     storage: Arc<dyn VolumeStorage>,
@@ -37,8 +35,10 @@ pub(in crate::impls::ctr) struct CiaInstall {
 impl CiaInstall {
     pub async fn new(depot: &CiaDepot, storage: Arc<dyn VolumeStorage>) -> Result<Self, Error> {
         let depot = depot.clone();
-        let artifact = depot.describe();
-        let old = storage.artifacts().artifact(artifact.id()).await?;
+        let old = storage
+            .artifacts()
+            .artifact(&format!("{:016X}", depot.title_id))
+            .await?;
         tokio::task::spawn_blocking(move || {
             let archive = CiaArchive::open(&depot.path)
                 .map_err(|e| Error::malformed("CIA", e.to_string()))?;
@@ -56,7 +56,8 @@ impl CiaInstall {
             Ok(Self {
                 archive: Arc::new(Mutex::new(archive)),
                 entries: entries.into_iter(),
-                artifact: artifact.with_manifest(retained),
+                retained,
+                depot: depot.clone(),
                 old_paths,
                 root: depot.root.clone(),
                 storage,
@@ -75,9 +76,22 @@ impl CiaInstall {
         old: Option<&Artifact>,
     ) -> Result<Vec<DepotFile>, Error> {
         let mut retained = Vec::new();
-        let Some(old) = old.filter(|_| depot.kind != DepotType::AppTicket) else {
+        let Some(old) = old else {
             return Ok(retained);
         };
+        if depot.kind == DepotType::AppTicket {
+            return Ok(old.manifest().to_vec());
+        }
+        retained.extend(
+            old.manifest()
+                .iter()
+                .filter(|file| {
+                    file.path()
+                        .to_string_lossy()
+                        .starts_with("nand/dbs/ticket.db/")
+                })
+                .cloned(),
+        );
         for record in archive.tmd().contents() {
             if archive
                 .items()
@@ -154,9 +168,6 @@ impl CiaInstall {
     }
 }
 impl Installable for CiaInstall {
-    fn artifact(&self) -> &Artifact {
-        &self.artifact
-    }
     async fn next_batch(&mut self) -> Result<Option<Vec<DepotFile>>, Error> {
         let Some(entry) = self.entries.next() else {
             return Ok(None);
@@ -171,7 +182,10 @@ impl Installable for CiaInstall {
         .await
         .map_err(|e| Error::Unsupported(format!("CIA worker failed: {e}")))?
     }
-    async fn finish(self, artifact: Artifact) -> Result<Artifact, Error> {
+    async fn finish(self, manifest: Vec<DepotFile>) -> Result<Artifact, Error> {
+        let manifest = DepotFile::merge(self.retained, manifest);
+        let artifact =
+            super::metadata::InstalledTitle::read(&self.depot, &*self.storage, manifest)?;
         for path in self.old_paths {
             if path.starts_with(&format!("{}/", self.root))
                 && !artifact

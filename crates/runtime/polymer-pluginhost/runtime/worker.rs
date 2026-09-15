@@ -23,10 +23,6 @@ pub(super) struct WorkerOptions {
 }
 
 impl WorkerOptions {
-    pub(super) fn disable_network(&mut self) {
-        self.loader = self.loader.clone().with_network_hosts(Vec::new());
-    }
-
     pub(super) fn for_plugin(
         plugin: &dyn PluginInstance,
         directories: &polymer_library::Directories,
@@ -47,8 +43,6 @@ impl WorkerOptions {
                 )),
                 root: plugin.module_loader().root().to_owned(),
                 device: None,
-                settings: Value::Null,
-                runtime: None,
             },
             loader: plugin.module_loader().with_directories(directories),
             filesystem,

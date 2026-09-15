@@ -56,7 +56,7 @@ pub trait Depot: Sized {
     fn open(path: &Path) -> Result<Self, crate::Error>;
 
     /// Check whether the target NAND can accept this constructed depot.
-    fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> bool;
+    fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> Result<(), crate::Error>;
 
     /// Validate the contents of the depot.
     ///
@@ -79,6 +79,40 @@ pub enum IconHint {
     Builtin(DepotType),
     /// The icon is a file in the installed artifact.
     File(PathBuf),
+    /// A decoded icon stored in the Git metadata tree, never in the guest filesystem.
+    EmbeddedPng(std::sync::Arc<[u8]>),
+}
+
+impl IconHint {
+    pub(crate) fn image(image: image::RgbaImage) -> Result<Self, crate::Error> {
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .map_err(|error| crate::Error::malformed("icon", error.to_string()))?;
+        Ok(Self::EmbeddedPng(png.into_inner().into()))
+    }
+
+    pub(crate) fn read(
+        storage: &dyn crate::Storage,
+        path: &str,
+        kind: DepotType,
+    ) -> Result<Self, crate::Error> {
+        if !storage.exists(path) {
+            return Ok(Self::Builtin(kind));
+        }
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut storage.open_read(path)?, &mut bytes)
+            .map_err(|error| crate::Error::io(Path::new(path), error))?;
+        let decoded = if path.ends_with(".tga") {
+            image::load_from_memory_with_format(&bytes, image::ImageFormat::Tga)
+        } else {
+            image::load_from_memory(&bytes)
+        };
+        match decoded {
+            Ok(image) => Self::image(image.into_rgba8()),
+            Err(_) => Ok(Self::Builtin(kind)),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -89,6 +123,14 @@ pub struct DepotFile {
 }
 
 impl DepotFile {
+    /// Merge retained ownership with this installation; new paths win.
+    pub(crate) fn merge(retained: Vec<Self>, installed: Vec<Self>) -> Vec<Self> {
+        let mut files = std::collections::BTreeMap::new();
+        for file in retained.into_iter().chain(installed) {
+            files.insert(file.path.clone(), file);
+        }
+        files.into_values().collect()
+    }
     pub fn new(path: PathBuf, blake3: [u8; 32], byte_length: u64) -> Self {
         Self {
             path,

@@ -1,6 +1,5 @@
 use crate::Error;
-use crate::installable::artifacts::{Artifact, DescribeArtifact};
-use crate::installable::{DepotFile, Installable};
+use crate::installable::DepotFile;
 use crate::storage::Storage;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -14,31 +13,21 @@ pub struct DirectoryInstall {
     pub base: String,
     pub storage: Arc<dyn Storage>,
     entries: walkdir::IntoIter,
-    pub artifact: Artifact,
 }
 
 impl DirectoryInstall {
-    pub fn new(
-        root: PathBuf,
-        base: String,
-        storage: Arc<dyn Storage>,
-        artifact: &dyn DescribeArtifact,
-    ) -> Self {
+    pub fn new(root: PathBuf, base: String, storage: Arc<dyn Storage>) -> Self {
         let entries = WalkDir::new(&root).into_iter();
         Self {
             root,
             base,
             storage,
-            artifact: artifact.describe(),
             entries,
         }
     }
 }
-impl Installable for DirectoryInstall {
-    fn artifact(&self) -> &Artifact {
-        &self.artifact
-    }
-    async fn next_batch(&mut self) -> Result<Option<Vec<DepotFile>>, Error> {
+impl DirectoryInstall {
+    pub async fn next_batch(&mut self) -> Result<Option<Vec<DepotFile>>, Error> {
         for entry in self.entries.by_ref() {
             let entry = entry.map_err(|error| {
                 let path = error.path().unwrap_or(&self.root).to_owned();
@@ -83,8 +72,5 @@ impl Installable for DirectoryInstall {
             return Ok(Some(vec![file]));
         }
         Ok(None)
-    }
-    async fn finish(self, artifact: Artifact) -> Result<Artifact, Error> {
-        Ok(artifact)
     }
 }

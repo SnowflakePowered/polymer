@@ -2,7 +2,6 @@ import {
   op_consolestorage_platforms,
   op_consolestorage_inspect,
   op_consolestorage_recover,
-  op_consolestorage_preflight,
   op_consolestorage_install,
   op_consolestorage_bootstrap,
   op_consolestorage_uninstall,
@@ -62,7 +61,6 @@ export function createConsoleStorage() {
     get device() { return { platform: this.platform, id: this.id }; }
     async inspect() { return op_consolestorage_inspect(this.platform, this.id); }
     async recover() { return op_consolestorage_recover(this.platform, this.id); }
-    async preflight(operation = "launch", settings = {}) { return op_consolestorage_preflight(this.platform, this.id, operation, settings); }
     async install(source) { return op_consolestorage_install(this.platform, this.id, source); }
     async bootstrap(settings = {}) { return op_consolestorage_bootstrap(this.platform, this.id, settings); }
     get artifacts() {

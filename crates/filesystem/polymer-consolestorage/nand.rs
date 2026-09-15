@@ -108,12 +108,14 @@ macro_rules! nand_depots {
             let mut errors = Vec::new();
             $(
                 match <$depot>::open(path) {
-                    Ok(depot) if depot.satisfies(self) => {
+                    Ok(depot) => {
+                        depot.satisfies(self)?;
                         let missing = depot.validate_contents();
-                        if missing.is_empty() { return Ok(crate::installable::Installation::new(depot, self)); }
-                        errors.push(crate::Error::InvalidDepot { root: path.display().to_string(), missing }.to_string());
+                        if !missing.is_empty() {
+                            return Err(crate::Error::InvalidDepot { root: path.display().to_string(), missing });
+                        }
+                        return Ok(crate::installable::Installation::new(depot, self));
                     }
-                    Ok(_) => errors.push("Depot requirements are not satisfied by this NAND".into()),
                     Err(error) => errors.push(error.to_string()),
                 }
             )+

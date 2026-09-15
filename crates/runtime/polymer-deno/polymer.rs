@@ -24,9 +24,8 @@ pub use consolestorage::ConsoleStorage;
 use consolestorage::{
     op_consolestorage_bootstrap, op_consolestorage_create, op_consolestorage_delete,
     op_consolestorage_inspect, op_consolestorage_install, op_consolestorage_list,
-    op_consolestorage_plan_removal, op_consolestorage_platforms, op_consolestorage_preflight,
-    op_consolestorage_recover, op_consolestorage_set_label, op_consolestorage_supports,
-    op_consolestorage_uninstall,
+    op_consolestorage_plan_removal, op_consolestorage_platforms, op_consolestorage_recover,
+    op_consolestorage_set_label, op_consolestorage_supports, op_consolestorage_uninstall,
 };
 
 #[path = "library/mod.rs"]
@@ -493,7 +492,7 @@ deno_core::extension!(
         op_consolestorage_platforms,
         op_consolestorage_inspect,
         op_consolestorage_recover,
-        op_consolestorage_preflight,
+
         op_consolestorage_install,
         op_consolestorage_bootstrap,
         op_consolestorage_uninstall,
