@@ -423,10 +423,10 @@ async fn bootstrap_runs_platform_preflight_separately_with_one_worker() {
     let package = fixture.provider("kind-check", &format!(r#"
         export function onPreflight(request) {{
             if (request.operation !== 'install') return {{issues: []}};
-            if ('depot' in request || request.depot_kind !== null) throw new Error('wrong preflight contract');
+            if ('depot' in request || request.depot_kind !== 'appticket') throw new Error('wrong preflight contract');
             return {{issues:[{{code:'KIND_BLOCKED',message:'license installation blocked',severity:'blocking'}}]}};
         }}
-        export async function onBootstrap(device) {{ await device.install({{path:'pkg:{content}.rap'}}); }}
+        export async function onBootstrap(device) {{ await device.install('pkg:{content}.rap'); }}
     "#));
     let manifest = package.join("plugin.toml");
     std::fs::write(

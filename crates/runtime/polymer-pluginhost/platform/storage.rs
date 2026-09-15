@@ -1,7 +1,7 @@
 use super::{DeviceInspection, Operation, PreflightRequest};
 use polymer_consolestorage::{
     ConsoleStorage, StorageKind,
-    installable::artifacts::Artifact,
+    installable::{DepotType, artifacts::Artifact},
     nand::{NandCompletion, VirtualNand},
 };
 use polymer_library::StorageManager;
@@ -38,19 +38,17 @@ impl Device {
             id: self.id.simple().to_string(),
             platform: nand.platform().into(),
             minimal: nand.is_complete(NandCompletion::Minimal),
-            dirty: nand
-                .is_dirty()
-                .map_err(|error| error.to_string())?,
+            dirty: nand.is_dirty().map_err(|error| error.to_string())?,
             artifacts: Self::artifacts(&*nand).await?,
         })
     }
 
     pub async fn artifacts(nand: &dyn VirtualNand) -> Result<Value, String> {
-        Ok(Value::Array(nand.artifacts().await.map_err(|error| error.to_string())?.into_iter().map(|item| json!({"id": item.id, "label": item.label, "version": item.version, "depotType": u8::from(item.depot_type), "byteLength": item.byte_length})).collect()))
+        Ok(Value::Array(nand.artifacts().await.map_err(|error| error.to_string())?.into_iter().map(|item| json!({"id": item.id, "label": item.label, "version": item.version, "depotType": item.depot_type, "byteLength": item.byte_length})).collect()))
     }
 
     pub fn artifact(artifact: &Artifact) -> Value {
-        json!({"id": artifact.id(), "label": artifact.label(), "version": artifact.version(), "depotType": u8::from(artifact.depot_type()), "byteLength": artifact.byte_length()})
+        json!({"id": artifact.id(), "label": artifact.label(), "version": artifact.version(), "depotType": artifact.depot_type(), "byteLength": artifact.byte_length()})
     }
 
     pub async fn request(
@@ -58,7 +56,7 @@ impl Device {
         manager: &StorageManager,
         operation: Operation,
         settings: Value,
-        depot_kind: Option<u8>,
+        depot_kind: Option<DepotType>,
     ) -> Result<PreflightRequest, String> {
         Ok(PreflightRequest {
             platform: self.platform.clone(),

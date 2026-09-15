@@ -13,7 +13,8 @@ pub use directory::DirectoryInstall;
 pub use installation::{Installable, Installation};
 
 /// Discriminants are persisted in the artifact database, so they are fixed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 #[repr(u8)]
 pub enum DepotType {
     /// System file.

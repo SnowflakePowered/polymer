@@ -86,12 +86,19 @@ async fn op_platform_install(
         .runtime
         .as_ref()
         .ok_or_else(|| JsErrorBox::type_error("No bootstrap invocation"))?;
+    let nand = device
+        .open(&binding.manager)
+        .await
+        .map_err(JsErrorBox::generic)?;
+    let installation = nand
+        .try_install(&path)
+        .map_err(|error| JsErrorBox::generic(error.to_string()))?;
     let request = device
         .request(
             &binding.manager,
             Operation::Install,
             binding.settings.clone(),
-            None,
+            installation.depot_type(),
         )
         .await
         .map_err(JsErrorBox::generic)?;
@@ -101,15 +108,14 @@ async fn op_platform_install(
         .map_err(|error| JsErrorBox::generic(error.to_string()))?
         .ensure_ready()
         .map_err(|error| JsErrorBox::generic(error.to_string()))?;
-    source
-        .install(device, &binding.manager, &path, move |message| {
-            events.publish(
-                "loadprogress",
-                json!({"state": "loading", "message": message}),
-            );
-        })
-        .await
-        .map_err(JsErrorBox::generic)
+    DepotSource::finish_install(installation, |message| {
+        events.publish(
+            "loadprogress",
+            json!({"state": "loading", "message": message}),
+        );
+    })
+    .await
+    .map_err(JsErrorBox::generic)
 }
 
 deno_core::extension!(polymer_platform,

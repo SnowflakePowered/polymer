@@ -12,7 +12,7 @@ const files = new WeakMap();
 
 export function cacheFileLocation(file) {
   const location = files.get(file);
-  if (!location) throw new TypeError("database file must be opened from a plugin cache");
+  if (!location) throw new TypeError("file must be opened from a plugin cache");
   return location;
 }
 

@@ -20,12 +20,21 @@ pub trait Installable: Sized {
 /// Installation progress driven directly by `next().await`.
 /// Use `finish().await` to drain remaining progress and obtain the final artifact.
 pub struct Installation<'a> {
+    depot_type: Option<super::DepotType>,
     progress: Pin<Box<dyn Stream<Item = Result<String, Error>> + 'a>>,
     outcome: Pin<Box<dyn Future<Output = Result<Artifact, Error>> + 'a>>,
 }
 impl<'a> Installation<'a> {
     pub fn new<D: Depot + 'a, N: VirtualNand + ?Sized>(depot: D, nand: &'a N) -> Self {
-        depot.install(nand)
+        let kind = depot.depot_type();
+        let mut installation = depot.install(nand);
+        installation.depot_type = Some(kind);
+        installation
+    }
+
+    /// Kind detected by the depot constructor, before extraction starts.
+    pub fn depot_type(&self) -> Option<super::DepotType> {
+        self.depot_type
     }
 
     pub(crate) fn from_installable<I: Installable + 'a>(installable: I) -> Self {
@@ -48,6 +57,7 @@ impl<'a> Installation<'a> {
         F: Future<Output = Result<Artifact, Error>> + 'a,
     {
         Self {
+            depot_type: None,
             progress: Box::pin(progress.fuse()),
             outcome: Box::pin(outcome),
         }

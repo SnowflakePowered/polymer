@@ -112,8 +112,16 @@ impl Handler<Install> for StorageActor {
             if source.cache.is_some() {
                 return Err("Frontend installations require a local source".into());
             }
+            let path = PathBuf::from(&source.path);
+            let nand = device.open(&manager).await?;
+            let installation = nand.try_install(&path).map_err(|error| error.to_string())?;
             let request = device
-                .request(&manager, Operation::Install, Value::Null, None)
+                .request(
+                    &manager,
+                    Operation::Install,
+                    Value::Null,
+                    installation.depot_type(),
+                )
                 .await?;
             plugins
                 .preflight(request)
@@ -121,18 +129,16 @@ impl Handler<Install> for StorageActor {
                 .map_err(|error| error.to_string())?
                 .ensure_ready()
                 .map_err(|error| error.to_string())?;
-            let path = PathBuf::from(&source.path);
             let events = Arc::new(EventEmitter::new(&device.platform));
             let progress = events.scope(
                 "loadprogress",
                 json!({"state":"loading","message":"Installing contents"}),
                 json!({"state":"failed","message":"Installation interrupted"}),
             );
-            let result = source
-                .install(&device, &manager, &path, |message| {
-                    events.publish("loadprogress", json!({"state":"loading","message":message}))
-                })
-                .await;
+            let result = DepotSource::finish_install(installation, |message| {
+                events.publish("loadprogress", json!({"state":"loading","message":message}))
+            })
+            .await;
             progress.finish(match &result {
                 Ok(_) => json!({"state":"ready","message":"Installation complete"}),
                 Err(error) => json!({"state":"failed","message":error}),
@@ -186,10 +192,7 @@ impl Handler<Uninstall> for StorageActor {
                 .acquire()
                 .map_err(|error| error.to_string())?;
             let nand = device.open(&manager).await?;
-            if nand
-                .is_dirty()
-                .map_err(|error| error.to_string())?
-            {
+            if nand.is_dirty().map_err(|error| error.to_string())? {
                 return Err(
                     "Recover the NAND's uncommitted changes before removing artifacts.".into(),
                 );
