@@ -99,7 +99,7 @@ export function createEmulator(webrtc) {
     constructor(id, options) {
       super();
       this.id = id;
-      this.#launchSet = Object.freeze((options.launchSet ?? []).map(disc => Object.freeze({ ...disc })));
+      this.#launchSet = Object.freeze([...(options.launchSet ?? [])]);
       this.#currentDiscIndex = options.initialDiscIndex ?? 0;
       this.request = Object.freeze(options);
       this.quickResume = options.quickResume ?? null;

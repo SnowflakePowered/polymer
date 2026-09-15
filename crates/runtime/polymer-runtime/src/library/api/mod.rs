@@ -40,7 +40,7 @@ pub(crate) trait LibraryApi {
             "id": launchable.id.simple().to_string(),
             "binaryId": launchable.binary_id.simple().to_string(),
             "path": launchable.path,
-            "binaryBlake3": launchable.binary_blake3.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+            "__digestPath": launchable.path,
             "serial": launchable.serial,
             "titleId": launchable.title_id,
             "parentBinaryId": launchable.parent_binary_id.map(|id| id.simple().to_string()),

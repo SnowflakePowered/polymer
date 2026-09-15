@@ -14,6 +14,7 @@ import {
   op_vfs_mount_tree_resource,
   op_vfs_path,
   op_vfs_resource_bytes,
+  op_digest,
   op_vfs_resource_entries,
   op_vfs_resource_remove,
   op_vfs_scratch_resource,
@@ -63,6 +64,9 @@ function readableEntry(description, path, entry, root = false, saveState = false
   const value = Object.freeze({
     name: entry.name,
     kind: "file",
+    async digest(algorithm) {
+      return op_digest({ type: "resource", kind: description.kind, token: description.handle, components: current }, algorithm);
+    },
     async bytes() {
       return op_vfs_resource_bytes(description.kind, description.handle, current);
     },

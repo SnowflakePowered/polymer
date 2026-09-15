@@ -21,7 +21,7 @@ async fn successful_plugins_commit_repeated_values_and_publish_events() {
           main = "fixture.js"
 
           [scraper]
-          requires = ["package.platform"]
+          requires = ["package.platform", "any(package.serial, package.files)"]
           provides = ["meta.genre"]
         "#,
     )
@@ -30,8 +30,14 @@ async fn successful_plugins_commit_repeated_values_and_publish_events() {
         plugin.path().join("fixture.js"),
         r#"
           export async function* onScrape(input) {
+            const { packages } = input;
             await new Promise(resolve => setTimeout(resolve, 10));
             if (input["package.platform"][0].value !== "NINTENDO_NES") return;
+            if (packages.length !== 1 || packages[0].files.length !== 1) throw Error("missing raw file input");
+            const pkg = packages[0], file = pkg.files[0];
+            if ("binaryDigest" in pkg || input["package.hash.sha1"]) throw Error("eager hash leaked");
+            if (await file.digest("blake3") !== await pkg.digest("blake3")) throw Error("wrong package bytes");
+            if (await file.digest("blake3") === await pkg.binary.digest("blake3")) throw Error("binary was not normalized");
             yield { key: "meta.genre", value: "Action", source: "Fixture DB" };
             yield { key: "meta.genre", value: "Adventure", source: "Fixture DB" };
           }
@@ -48,10 +54,14 @@ async fn successful_plugins_commit_repeated_values_and_publish_events() {
         .await
         .unwrap(),
     );
+    let mut image = vec![0; 16];
+    image[..4].copy_from_slice(b"NES\x1a");
+    image.extend_from_slice(b"engine-fixture");
+    std::fs::write(directory.path().join("game.nes"), image).unwrap();
     let (launchable, _) = catalog
         .import_launchable_seeded(
             IdentifiedLaunchable {
-                path: directory.path().join("game.rom"),
+                path: directory.path().join("game.nes"),
                 binary_blake3: *blake3::hash(b"engine-fixture").as_bytes(),
                 serial: None,
                 title_id: None,

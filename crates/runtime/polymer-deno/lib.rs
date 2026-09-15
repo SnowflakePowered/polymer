@@ -12,6 +12,7 @@ use deno_core::{
 use deno_permissions::{PermissionsContainer, RuntimePermissionDescriptorParser};
 use std::{path::Path, rc::Rc, sync::Arc, time::Duration};
 
+pub mod digest;
 pub mod polymer;
 pub mod webstorage;
 
@@ -152,6 +153,7 @@ impl Runtime {
         let location = options.main_module.clone();
         let user_agent = options.user_agent;
         let mut extensions = vec![
+            digest::DigestHandler::extension(),
             deno_telemetry::deno_telemetry::init(),
             deno_webidl::deno_webidl::init(),
             deno_web::deno_web::init(

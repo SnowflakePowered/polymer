@@ -3,16 +3,16 @@ import {
   op_scraping_job, op_scraping_retry, op_scraping_scrapers, op_scraping_refresh,
 } from "ext:core/ops";
 
+import { Package as PackageValue } from "./00_package.js";
+
 // Gumshoe-backed package values live in the UI realm as immutable branded objects.
 export function createScraping() {
-  const packageData = new WeakMap();
   const internal = Symbol("Polymer.scraping.Package");
 
-  class Package {
+  class Package extends PackageValue {
     constructor(token, data) {
       if (token !== internal) throw new TypeError("Use Polymer.scraping.Package.fromPath()");
-      packageData.set(this, Object.freeze({ ...data }));
-      Object.freeze(this);
+      super(data);
     }
 
     static async fromPath(path, options = undefined) {
@@ -25,13 +25,6 @@ export function createScraping() {
       });
       return new Package(internal, await Promise.race([pending, aborted]));
     }
-
-    get filename() { return packageData.get(this).filename; }
-    get platform() { return packageData.get(this).platform; }
-    get serial() { return packageData.get(this).serial; }
-    get titleId() { return packageData.get(this).titleId; }
-    get binaryDigest() { return packageData.get(this).binaryDigest; }
-    toJSON() { return { ...packageData.get(this) }; }
   }
 
   const Scraping = new EventTarget();
@@ -52,11 +45,6 @@ export function createScraping() {
   });
   return Object.freeze({
     Scraping,
-    serialize(value) {
-      const data = packageData.get(value);
-      if (!data) throw new TypeError("Expected a Polymer.scraping.Package");
-      return data;
-    },
     request(detail) {
       Scraping.dispatchEvent(new CustomEvent("request", { detail: Object.freeze(detail) }));
     },

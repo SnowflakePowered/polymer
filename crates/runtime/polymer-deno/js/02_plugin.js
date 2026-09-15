@@ -1,3 +1,4 @@
+import { Package } from "./00_package.js";
 import { op_plugin_invoke, op_plugin_list } from "ext:core/ops";
 
 // Same-realm plugin facade. Calls cross only the Deno op boundary; pluginhost
@@ -40,6 +41,7 @@ export function createPlugin() {
     if (typeof value !== "object") {
       throw new TypeError("plugin arguments must contain only JSON-compatible values");
     }
+    if (value instanceof Package) return;
     if (ancestors.has(value)) throw new TypeError("plugin arguments must not contain cycles");
     if (!Array.isArray(value) && Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) {
       throw new TypeError("plugin arguments must contain only arrays and plain objects");
@@ -55,7 +57,7 @@ export function createPlugin() {
 
   const invoke = async (plugin, path, args) => {
     assertJson(args);
-    const result = await op_plugin_invoke(plugin, path, args);
+    const result = await op_plugin_invoke(plugin, path, Package.serialize(args));
     if (!result?.ok) throw errorFrom(result?.error);
     return result.value;
   };

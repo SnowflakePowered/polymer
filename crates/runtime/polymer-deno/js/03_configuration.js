@@ -1,3 +1,4 @@
+import { Package } from "./00_package.js";
 import {
   op_configuration_configure,
   op_configuration_describe,
@@ -95,7 +96,13 @@ export function createConfiguration(pluginApi) {
     },
     async prepare(launchableId, selection) {
       await stateFor(launchableId, selection.emulator, "prepare").settled();
-      return op_configuration_prepare(String(launchableId), selection);
+      const prepared = await op_configuration_prepare(String(launchableId), selection);
+      prepared.launchSet = prepared.launchSet.map(value => new Package(value));
+      prepared.arguments.package = new Package(prepared.arguments.package);
+      prepared.arguments.launchSet = prepared.arguments.launchSet.map(disc => Object.freeze({
+        ...disc, package: new Package(disc.package),
+      }));
+      return prepared;
     },
     async onLaunch(launchableId, selection) {
       const launchSet = Array.isArray(launchableId) ? [...launchableId] : [launchableId];
@@ -125,7 +132,7 @@ export function createConfiguration(pluginApi) {
         webrtcBind: prepared.webrtcBind,
         preparedFilesystem: plugin.preparedFilesystem,
         controllerSession: plugin.controllerSession,
-        launchSet: Object.freeze(prepared.launchSet.map(disc => Object.freeze({ ...disc }))),
+        launchSet: Object.freeze([...prepared.launchSet]),
         initialDiscIndex: plugin.initialDiscIndex,
         canChangeDisc: plugin.canChangeDisc,
         saveStates: plugin.saveStates ?? null,

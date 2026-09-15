@@ -74,11 +74,11 @@ function region(value: string): string {
   return match ? normalize(match[1]) : "";
 }
 
-function values(input: ScrapeInput, keys: readonly string[]): ScrapeCandidate[] {
+function values(input: ScrapeInput, keys: readonly `${string}.${string}`[]): ScrapeCandidate[] {
   return keys.flatMap((key) => input[key] ?? []);
 }
 
-function strings(input: ScrapeInput, keys: readonly string[]): string[] {
+function strings(input: ScrapeInput, keys: readonly `${string}.${string}`[]): string[] {
   return values(input, keys).map(({ value }) => value).filter((value): value is string => typeof value === "string");
 }
 

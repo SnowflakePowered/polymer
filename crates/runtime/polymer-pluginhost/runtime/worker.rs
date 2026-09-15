@@ -102,6 +102,7 @@ pub(super) fn create_worker_runtime(
         main_module,
         module_loader: Rc::new(loader),
         extensions: vec![
+            crate::digest::extension(),
             crate::actions::extension(),
             crate::automation::extension(),
             crate::controller::extension(),
@@ -131,6 +132,14 @@ pub(super) async fn invoke_scrape_generator(
     input: &ScrapeInput,
     provided: &BTreeSet<String>,
 ) -> Result<Vec<ScrapeResult>, PluginInvocationError> {
+    let mut input = input.clone();
+    for package in &mut input.packages {
+        runtime
+            .op_state()
+            .borrow_mut()
+            .borrow_mut::<crate::digest::DigestState>()
+            .package(package);
+    }
     let initialize = ExtensionFunction::get(runtime, "__polymerScraper", "initialize")
         .map_err(PluginInvocationError::worker)?;
     let arguments = [
@@ -190,7 +199,7 @@ pub(super) async fn invoke_export(
     runtime: &mut deno_core::JsRuntime,
     entrypoint: &str,
     export_path: &[String],
-    arguments: Vec<Value>,
+    mut arguments: Vec<Value>,
 ) -> Result<Value, PluginInvocationError> {
     let progress = matches!(export_path, [name] if name == "updateContents")
         || matches!(export_path, [default, name] if default == "default" && name == "updateContents");
@@ -203,6 +212,11 @@ pub(super) async fn invoke_export(
     });
     let invoke = ExtensionFunction::get(runtime, "__polymerPluginRuntime", "invoke")
         .map_err(PluginInvocationError::worker)?;
+    runtime
+        .op_state()
+        .borrow_mut()
+        .borrow_mut::<crate::digest::DigestState>()
+        .arguments(&mut arguments);
     let values = [
         ExtensionFunction::argument(runtime, entrypoint).map_err(PluginInvocationError::worker)?,
         ExtensionFunction::argument(runtime, export_path).map_err(PluginInvocationError::worker)?,
@@ -228,10 +242,15 @@ pub(super) async fn invoke_optional_export(
     runtime: &mut deno_core::JsRuntime,
     entrypoint: &str,
     name: &str,
-    arguments: Vec<Value>,
+    mut arguments: Vec<Value>,
 ) -> Result<Option<Value>, PluginInvocationError> {
     let invoke = ExtensionFunction::get(runtime, "__polymerPluginRuntime", "invokeOptional")
         .map_err(PluginInvocationError::worker)?;
+    runtime
+        .op_state()
+        .borrow_mut()
+        .borrow_mut::<crate::digest::DigestState>()
+        .arguments(&mut arguments);
     let values = [
         ExtensionFunction::argument(runtime, entrypoint).map_err(PluginInvocationError::worker)?,
         ExtensionFunction::argument(runtime, name).map_err(PluginInvocationError::worker)?,

@@ -7479,6 +7479,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "md-5"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69b6441f590336821bb897fb28fc622898ccceb1d6cea3fde5ea86b090c4de98"
+dependencies = [
+ "cfg-if",
+ "digest 0.11.3",
+]
+
+[[package]]
 name = "md5"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9885,12 +9895,15 @@ dependencies = [
  "actix",
  "blake3",
  "consolespec",
+ "crc32fast",
  "dashmap",
  "deno_ast",
  "deno_core",
  "deno_error",
  "futures-util",
  "glob",
+ "gumshoe",
+ "md-5 0.11.0",
  "parking_lot",
  "percent-encoding",
  "polymer-automation",
@@ -9908,6 +9921,8 @@ dependencies = [
  "serde",
  "serde_bytes",
  "serde_json",
+ "sha1 0.11.0",
+ "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
@@ -10071,20 +10086,17 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "consolespec",
- "crc32fast",
  "cuna",
  "futures-util",
  "gumshoe",
  "image 0.25.6",
  "language",
- "md-5 0.10.6",
  "object_store",
  "polymer-library",
  "polymer-pluginhost",
  "reqwest",
  "serde",
  "serde_json",
- "sha1 0.10.7",
  "shiratsu-naming",
  "tempfile",
  "thiserror 2.0.20",

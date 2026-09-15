@@ -1,5 +1,7 @@
 /** Host API types. Shared configuration references are declaration-only. */
 declare module "polymer:api" {
+    export type DigestAlgorithm = import("../js/package.ts").DigestAlgorithm;
+    export type Digestible = import("../js/package.ts").Digestible;
     /** Shared host-owned values exposed to emulator plugins. */
     export type Resource = Readonly<{
         kind: "tree" | "directory" | "file",
@@ -16,7 +18,7 @@ declare module "polymer:api" {
         remove(name: string): Promise<void>,
     }>;
 
-    export type FileEntry = Readonly<{
+    export type FileEntry = Digestible & Readonly<{
         name: string,
         kind: "file",
         bytes(): Promise<Uint8Array>,
@@ -38,7 +40,7 @@ declare module "polymer:api" {
     export type UpdateContents = (context: PluginProgressContext) => void | Promise<void>;
     export type OnPluginLoad = (context: PluginLoadContext) => void | Promise<void>;
 
-    export type PluginCacheFile = Readonly<{
+    export type PluginCacheFile = Digestible & Readonly<{
         readonly size: number,
         readable?: ReadableStream<Uint8Array>,
         writable?: WritableStream<Uint8Array | string>,
@@ -66,7 +68,11 @@ declare module "polymer:api" {
 
     export type ScrapeScalar = string | number | boolean;
     export type ScrapeCandidate = Readonly<{ source: string, value: ScrapeScalar }>;
-    export type ScrapeInput = Readonly<Record<string, readonly ScrapeCandidate[]>>;
+    export type ScrapeInput = Readonly<{
+        [key: `${string}.${string}`]: readonly ScrapeCandidate[];
+        /** Raw dump files remain associated with their package, including CUE backing files. */
+        packages: readonly (Package & Readonly<{ files: readonly (Pick<FileEntry, "name" | "kind" | "digest"> & { readonly size: number })[] }>)[];
+    }>;
     /** Raw media bytes; use application/x-cue for media.cue. */
     export type ScrapeInlineMedia = Readonly<{
         kind: "inline", mediaType: string, bytes: readonly number[],
@@ -105,7 +111,8 @@ declare module "polymer:api" {
         append(): Options,
     }>;
 
-    export type Package = import("../js/package.ts").Package;
+    /** digest() hashes the whole file; binary.digest() hashes the normalized executable. */
+    export type Package = import("../js/package.ts").Package & Digestible & Readonly<{ binary: Digestible }>;
 
     export type ConfigurationChoice = import("../js/configuration.ts").ConfigurationChoice;
     export type UserConfiguration = import("../js/configuration.ts").UserConfiguration;

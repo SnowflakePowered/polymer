@@ -259,9 +259,10 @@ export type PluginLoadProgress = Readonly<{
   total: number | null;
 }>;
 
-import type { Package as PackageData } from "./package.ts";
+import type { Package as PackageData, Digestible } from "./package.ts";
 
-export interface Package extends PackageData {
+export interface Package extends PackageData, Digestible {
+  readonly binary: Digestible;
   toJSON(): PackageData;
 }
 
@@ -417,12 +418,12 @@ export type LibraryMetadataInput = Readonly<{
     | Readonly<{ kind: "object"; mediaType: string; path: string }>;
 }>;
 
-export type LibraryLaunchable = Readonly<{
+export type LibraryLaunchable = Digestible & Readonly<{
   preparation?: Readonly<{ state: "pending" | "ready" | "failed"; error: string | null }> | null;
   id: string;
   binaryId: string;
   path: string;
-  binaryBlake3: string;
+  binary: Digestible;
   serial: string | null;
   titleId: string | null;
   parentBinaryId: string | null;

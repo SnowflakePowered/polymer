@@ -1,3 +1,4 @@
+import { Package } from "./00_package.js";
 import {
   op_library_games_list, op_library_games_get, op_library_games_delete,
   op_library_launchables_add, op_library_launchables_delete,
@@ -52,16 +53,22 @@ function metadataInput(input, sourceOverride) {
 export function createLibrary() {
   const Library = new EventTarget();
   const games = Object.freeze({
-    list(options = {}) { return op_library_games_list(optionalString(options.platform, "platform")); },
-    get(id) { return op_library_games_get(uuid(id, "rootBinaryId")); },
+    async list(options = {}) {
+      const games = await op_library_games_list(optionalString(options.platform, "platform"));
+      return games.map(game => ({ ...game, launchables: game.launchables.map(value => new Package(value)) }));
+    },
+    async get(id) {
+      const game = await op_library_games_get(uuid(id, "rootBinaryId"));
+      return game == null ? game : { ...game, launchables: game.launchables.map(value => new Package(value)) };
+    },
     delete(id) { return op_library_games_delete(uuid(id, "rootBinaryId")); },
   });
   const launchables = Object.freeze({
-    add(input) {
+    async add(input) {
       if (input === null || typeof input !== "object") throw new TypeError("launchable input must be an object");
       const path = optionalString(input.path, "path");
       if (path === null) throw new TypeError("path is required");
-      return op_library_launchables_add(path, optionalString(input.platform, "platform"), input.parentBinaryId == null ? null : uuid(input.parentBinaryId, "parentBinaryId"));
+      return new Package(await op_library_launchables_add(path, optionalString(input.platform, "platform"), input.parentBinaryId == null ? null : uuid(input.parentBinaryId, "parentBinaryId")));
     },
     delete(id) { return op_library_launchables_delete(uuid(id, "id")); },
   });

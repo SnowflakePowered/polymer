@@ -1,3 +1,5 @@
+import { createPackage } from "ext:polymer_digest/00_digest.js";
+
 async function launch(entrypoint, args, configurationId, explicitDefault) {
   const module = await import(entrypoint);
   const receiver = !explicitDefault && typeof module.onLaunch === "function"
@@ -23,7 +25,7 @@ async function launch(entrypoint, args, configurationId, explicitDefault) {
   }
   const discs = Object.freeze(launchSet.map(disc => Object.freeze({
     ...disc,
-    package: disc.package == null ? disc.package : Object.freeze({ ...disc.package }),
+    package: disc.package == null ? disc.package : createPackage(disc.package),
   })));
   args.launchSet = discs;
   args.initialDiscIndex = initialDiscIndex;

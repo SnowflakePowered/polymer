@@ -1,3 +1,5 @@
+import { createPackage } from "ext:polymer_digest/00_digest.js";
+
 let generator;
 
 async function initialize(entrypoint, input) {
@@ -6,7 +8,9 @@ async function initialize(entrypoint, input) {
   if (typeof callback !== "function") {
     throw new TypeError("plugin export 'onScrape' is not a function");
   }
-  generator = Reflect.apply(callback, namespace, [input]);
+  const { metadata } = input;
+  const packages = input.packages.map(createPackage);
+  generator = Reflect.apply(callback, namespace, [Object.freeze({ ...metadata, packages: Object.freeze(packages) })]);
   if (Object.prototype.toString.call(generator) !== "[object AsyncGenerator]" ||
       generator[Symbol.asyncIterator]?.() !== generator) {
     throw new TypeError("onScrape must return an async generator");

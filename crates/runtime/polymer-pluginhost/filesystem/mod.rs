@@ -117,7 +117,7 @@ impl ResourceFactory<dyn Volume> for SharedVolumeFactory {
     }
 }
 
-struct FilesystemState {
+pub(crate) struct FilesystemState {
     package_root: PathBuf,
     scratch_root: Option<PathBuf>,
     endpoint: FilesystemEndpoint,
@@ -400,6 +400,15 @@ impl FilesystemState {
         token: &str,
         components: &[String],
     ) -> Result<Vec<u8>, VfsError> {
+        Self::read_file(self.resource_file(kind, token, components)?)
+    }
+
+    pub(crate) fn resource_file(
+        &self,
+        kind: &str,
+        token: &str,
+        components: &[String],
+    ) -> Result<Arc<dyn FileNode>, VfsError> {
         match self.handle(kind, token)? {
             ResourceHandle::File(handle) if components.is_empty() => {
                 let resource = self.file(handle)?;
@@ -407,7 +416,7 @@ impl FilesystemState {
                     return Err(VfsError::PermissionDenied(VfsPathBuf::root()));
                 }
                 let materialized = resource.materialize()?;
-                Self::read_file(materialized.backend)
+                Ok(materialized.backend)
             }
             ResourceHandle::Tree(handle) => {
                 let resource = self.volume(handle)?;
@@ -421,7 +430,7 @@ impl FilesystemState {
                 let directory = Self::directory_at(materialized.backend.root()?, parents)?;
                 let component = VfsComponent::new(name)?;
                 match directory.lookup(&component)? {
-                    Some(Node::File(file)) => Self::read_file(file),
+                    Some(Node::File(file)) => Ok(file),
                     Some(Node::Directory(_) | Node::SyntheticDirectory) => {
                         Err(VfsError::IsDirectory(VfsPathBuf::root()))
                     }

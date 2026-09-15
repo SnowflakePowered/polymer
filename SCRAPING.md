@@ -1,12 +1,51 @@
 # Scraping
 
+## Lazy digests
+
+Files and packages expose the same `Digestible` interface:
+
+```ts
+type DigestAlgorithm = "sha2" | "sha1" | "md5" | "crc32" | "blake3";
+interface Digestible {
+  digest(algorithm: DigestAlgorithm): Promise<string>;
+}
+
+await file.digest("sha1");            // Complete file bytes
+await package_.digest("sha2");        // Complete package file bytes
+await package_.binary.digest("blake3"); // First normalized executable
+```
+
+Results are lowercase hexadecimal; `sha2` is SHA-256 and CRC32 is eight hex digits.
+Directory packages have no whole-file digest and reject `package.digest()`;
+their normalized binary can still be hashed. Hashing streams on a blocking worker
+and starts when requested. File digests observe current bytes on every call.
+Host files, VFS entries (including archive entries and save states), cache files,
+and Gumshoe binaries share the Rust `Digestible` trait.
+Both Deno realms use one `op_digest`, resolving each source through the realm's
+access checks. API boundaries construct package and file digest methods explicitly.
+
+Scrapers receive `onScrape(input)`, with packages in `input.packages` alongside
+the existing metadata keys such as `input["package.platform"]`. Each package has `digest()`,
+`binary.digest()`, and `files`, whose entries expose `name`, `kind`, `size`,
+and `digest()`. CUE backing files are separate entries. Dump candidates
+exclude container formats; the container itself remains hashable via
+`package.digest()`. Manifest requirements can use `package` or `package.files`.
+
+Library launchables also expose `digest()` and `binary.digest()`, replacing
+`binaryBlake3`. Prepared configuration arguments preserve these methods when
+passed back to a plugin.
+
+The old `package.binaryDigest` property and `package.hash.*` / `package.size`
+scalar inputs are removed. Legacy hash metadata is filtered from scraper input
+and cleared on reimport. Identifying a package no longer hashes its binary;
+library import and direct launch compute BLAKE3 when needed for internal identity.
+
 ## Hierarchy of scrape keys
 
 ### `package`
 `package` keys is information derived by the game package.
 
 * `package.platform` - The `consolespec` platform ID derived from the game package
-* `package.hash` - The hash of the first executable binary of the package. Requires one of subkey `md5`, `crc32`, `blake3`, `sha1`, `sha256`.
 * `package.internalname` - Any internal name of the game package
 * `package.serial` - Any internal serial of the game package
 * `package.titleid` - Any internal title id of the game package
@@ -64,7 +103,7 @@ Gumshoe identifies a complete disc and exposes its descriptor and dependencies
 through `package_files()`. Polymer stores the explicit descriptor path, original
 sheet, member paths, sizes, and modification signatures on the launchable. The
 normalized executable digest remains the binary identity. Raw dump fingerprints
-are collected separately for constituent files, never from the CUE text.
+are requested lazily from constituent file objects, independently of the CUE text.
 
 After metadata scraping settles, the host parses the saved sheet with `cuna` and
 stores a template whose FILE and CDTEXTFILE operands refer to manifest members.

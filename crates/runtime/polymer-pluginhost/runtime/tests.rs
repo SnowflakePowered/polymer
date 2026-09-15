@@ -351,6 +351,7 @@ fn scrape_input() -> ScrapeInput {
             }],
         ),
     ])
+    .into()
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -522,13 +523,18 @@ async fn scraper_requires_every_clause_but_accepts_any_alternative() {
         .plugin::<dyn ScraperPluginInstance>("scraper-test")
         .unwrap();
     assert!(plugin.accepts(&scrape_input()));
-    assert!(!plugin.accepts(&BTreeMap::from([(
-        "package.platform".to_owned(),
-        vec![ScrapeCandidate {
-            source: "Gumshoe".to_owned(),
-            value: ScrapeScalar::String("NINTENDO_NES".to_owned()),
-        }],
-    )])));
+    assert!(
+        !plugin.accepts(
+            &BTreeMap::from([(
+                "package.platform".to_owned(),
+                vec![ScrapeCandidate {
+                    source: "Gumshoe".to_owned(),
+                    value: ScrapeScalar::String("NINTENDO_NES".to_owned()),
+                }],
+            )])
+            .into()
+        )
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

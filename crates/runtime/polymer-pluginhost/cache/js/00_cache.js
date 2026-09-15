@@ -1,5 +1,6 @@
 import {
   op_cache_create,
+  op_digest,
   op_cache_keys,
   op_cache_read,
   op_cache_read_range,
@@ -58,6 +59,7 @@ function file(key, path, options) {
       }
       return op_cache_read_range(key, path, offset, length);
     },
+    async digest(algorithm) { return op_digest({ type: "cache", key, path }, algorithm); },
     async bytes() { return op_cache_read(key, path); },
     async text() { return new TextDecoder().decode(op_cache_read(key, path)); },
   });
