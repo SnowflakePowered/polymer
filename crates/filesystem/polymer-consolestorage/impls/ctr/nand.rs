@@ -68,6 +68,8 @@ impl CtrNand {
 
 #[async_trait]
 impl VirtualNand for CtrNand {
+    crate::nand::nand_depots!(super::depots::cia::CiaDepot);
+
     async fn new_empty<St: VolumeStorage + 'static>(
         storage: St,
         id: Uuid,

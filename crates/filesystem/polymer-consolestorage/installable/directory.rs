@@ -56,7 +56,14 @@ impl Installable for DirectoryInstall {
             if relative.is_empty() {
                 continue;
             }
-            let destination = format!("{}/{relative}", self.base);
+            let destination = if self.base.is_empty() {
+                relative
+            } else {
+                format!("{}/{relative}", self.base)
+            };
+            if entry.file_type().is_symlink() {
+                return Err(Error::InvalidPath(destination));
+            }
             if entry.file_type().is_dir() {
                 self.storage.create_dir_all(&destination)?;
                 continue;

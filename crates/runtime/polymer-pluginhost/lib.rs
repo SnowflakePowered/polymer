@@ -16,6 +16,7 @@ pub mod emulator;
 pub mod filesystem;
 mod handle;
 pub mod loading;
+pub mod platform;
 pub mod plugin;
 mod plugin_storage;
 pub mod runtime;

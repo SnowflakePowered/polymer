@@ -18,7 +18,17 @@ pub struct Ps3RapDepot {
 }
 
 impl Ps3RapDepot {
-    pub fn open(path: &Path) -> Result<Self, Error> {
+    pub fn content_id(&self) -> &str {
+        &self.content_id
+    }
+
+    pub fn install_path(&self) -> String {
+        format!("{GUEST_USER_ROOT}/exdata/{}.rap", self.content_id)
+    }
+}
+
+impl Depot for Ps3RapDepot {
+    fn open(path: &Path) -> Result<Self, Error> {
         let content_id = path
             .file_stem()
             .and_then(|stem| stem.to_str())
@@ -52,30 +62,7 @@ impl Ps3RapDepot {
         })
     }
 
-    pub fn content_id(&self) -> &str {
-        &self.content_id
-    }
-
-    pub fn install_path(&self) -> String {
-        format!("{GUEST_USER_ROOT}/exdata/{}.rap", self.content_id)
-    }
-}
-
-impl DescribeArtifact for Ps3RapDepot {
-    fn describe(&self) -> Artifact {
-        Artifact::new(
-            format!("{}:rap", self.content_id),
-            DepotType::AppTicket,
-            Vec::new(),
-            format!("{} license", self.content_id),
-            None,
-            IconHint::Builtin(DepotType::AppTicket),
-        )
-    }
-}
-
-impl Depot for Ps3RapDepot {
-    fn satisfies<N: VirtualNand>(&self, nand: &N) -> bool {
+    fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> bool {
         nand.platform() == Ps3Nand::PLATFORM && Ps3Nand::has_structure(&*nand.root())
     }
 
@@ -88,22 +75,24 @@ impl Depot for Ps3RapDepot {
         DepotType::AppTicket
     }
 
-    fn install<'a, N: VirtualNand>(&'a self, nand: &'a N) -> crate::installable::Installation<'a> {
+    fn install<'a, N: VirtualNand + ?Sized>(
+        self,
+        nand: &'a N,
+    ) -> crate::installable::Installation<'a>
+    where
+        Self: 'a,
+    {
+        let source = self;
+
         let (sender, receiver) = oneshot::channel();
         let operation = stream::once(async move {
-            let result = async {
-                if !self.satisfies(nand) {
-                    return Err(Error::Unsupported(format!(
-                        "a PS3 RAP cannot be installed to {}",
-                        nand.platform()
-                    )));
-                }
-                let path = self.install_path();
+            let result: Result<_, Error> = async {
+                let path = source.install_path();
                 let copied = nand
                     .root()
-                    .install_file(Box::new(Cursor::new(self.bytes)), &path)
+                    .install_file(Box::new(Cursor::new(source.bytes)), &path)
                     .await?;
-                let artifact = self.describe().with_manifest(vec![DepotFile::new(
+                let artifact = source.describe().with_manifest(vec![DepotFile::new(
                     PathBuf::from(&path),
                     copied.blake3,
                     copied.byte_length,
@@ -126,5 +115,18 @@ impl Depot for Ps3RapDepot {
         crate::installable::Installation::from_progress(operation, async move {
             receiver.await.unwrap_or(Err(Error::InstallIncomplete))
         })
+    }
+}
+
+impl DescribeArtifact for Ps3RapDepot {
+    fn describe(&self) -> Artifact {
+        Artifact::new(
+            format!("{}:rap", self.content_id),
+            DepotType::AppTicket,
+            Vec::new(),
+            format!("{} license", self.content_id),
+            None,
+            IconHint::Builtin(DepotType::AppTicket),
+        )
     }
 }

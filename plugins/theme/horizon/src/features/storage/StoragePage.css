@@ -1,0 +1,18 @@
+.horizon-storage-shell { display: flex; height: 100%; }
+.horizon-storage { flex: 1; overflow: auto; padding: 2.5rem; color: #f2f3f7; }
+.horizon-storage h1 { font-size: 2rem; margin: 0 0 1.5rem; }
+.horizon-storage h2 { font-size: 1.2rem; margin-top: 1.8rem; }
+.storage-columns { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 2.5rem; }
+.horizon-storage label { display: flex; flex-direction: column; gap: .45rem; margin: 1rem 0; }
+.horizon-storage input, .horizon-storage select, .horizon-storage button { font: inherit; color: inherit; background: #252936; border: 1px solid #545a6e; border-radius: .5rem; padding: .65rem .85rem; }
+.horizon-storage button { cursor: pointer; }
+.horizon-storage button:disabled { opacity: .45; cursor: default; }
+.horizon-storage :focus-visible { outline: 3px solid #81adff; outline-offset: 2px; }
+.horizon-storage p { line-height: 1.5; color: #cbd0df; }
+.storage-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+.storage-artifact { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin: .75rem 0; }
+.storage-confirm { background: #202432; border-radius: .75rem; padding: 1rem; margin-top: 1rem; }
+.storage-confirm button { margin: .25rem; }
+.horizon-storage progress { display: block; margin: .75rem 0; width: 100%; }
+.horizon-storage .storage-error { color: #ffb5af; }
+@media (max-width: 850px) { .storage-columns { grid-template-columns: 1fr; } .horizon-storage { padding: 1.5rem; } }

@@ -274,6 +274,16 @@ pub trait MountableStorage: Storage {
 
 /// A mountable filesystem with persistent volume identity and artifact metadata.
 pub trait VolumeStorage: MountableStorage {
+    /// Whether the checkout differs from the committed volume contents.
+    fn is_dirty(&self) -> Result<bool, Error> {
+        Err(Error::Unsupported("checkout inspection".into()))
+    }
+
+    /// Explicitly discard all uncommitted changes and restore the committed NAND.
+    fn recover(&self) -> Result<(), Error> {
+        Err(Error::Unsupported("NAND recovery".into()))
+    }
+
     /// User-facing name for this volume, if one has been assigned.
     fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>>;
 
@@ -368,6 +378,14 @@ impl<T: VolumeOverlay> MountableStorage for T {
 }
 
 impl<T: VolumeOverlay> VolumeStorage for T {
+    fn is_dirty(&self) -> Result<bool, Error> {
+        self.inner().is_dirty()
+    }
+
+    fn recover(&self) -> Result<(), Error> {
+        self.inner().recover()
+    }
+
     fn label(&self) -> BoxFuture<'_, Result<Option<String>, Error>> {
         self.inner().label()
     }

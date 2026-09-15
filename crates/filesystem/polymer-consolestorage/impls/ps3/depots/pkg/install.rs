@@ -13,8 +13,6 @@ use crate::installable::DepotFile;
 use crate::installable::artifacts::{Artifact, DescribeArtifact};
 use crate::{Error, VolumeStorage};
 
-/// Streams an installation into the NAND working tree, then records one artifact
-/// commit. Failed or cancelled writes are discarded by the NAND session finish().
 pub(super) struct Ps3PkgInstall {
     extraction: Arc<Mutex<PkgExtraction>>,
     artifact: Artifact,

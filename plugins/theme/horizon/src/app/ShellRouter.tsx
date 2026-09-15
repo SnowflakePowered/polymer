@@ -1,5 +1,6 @@
 import { MemoryRouter, Route, createMemoryHistory } from "@solidjs/router";
 import { ShellProvider } from "./ShellProvider";
+import { StoragePage } from "../features/storage/StoragePage";
 import { LibraryPage } from "../features/library/LibraryPage";
 import { GameDetailsPage } from "../features/details/GameDetailsPage";
 import { GameLayout } from "../features/game/GameLayout";
@@ -20,6 +21,7 @@ function NotFound() {
 export function ShellRouter() {
   return <MemoryRouter history={history} root={(props) => <InputProvider><ShellProvider>{props.children}</ShellProvider></InputProvider>}>
     <Route path="/" component={LibraryPage} />
+    <Route path="/storage" component={StoragePage} />
     <Route path="/details" component={GameDetailsPage} />
     <Route path="/game" component={GameLayout}>
       <Route path="/launching" component={LaunchingPage} />

@@ -197,7 +197,7 @@ async fn directory_depots_route_content_and_uninstall_without_touching_saves() {
             ]),
         )
         .unwrap();
-        let depot = VitaDirectoryDepot::new(source.path()).unwrap();
+        let depot = VitaDirectoryDepot::open(source.path()).unwrap();
         assert_eq!(depot.install_path(), path);
         let artifact = depot.install(&nand).finish().await.unwrap();
         assert_eq!(artifact.depot_type(), kind);
@@ -233,7 +233,7 @@ async fn directory_depots_route_content_and_uninstall_without_touching_saves() {
         ]),
     )
     .unwrap();
-    assert!(VitaDirectoryDepot::new(source.path()).is_err());
+    assert!(VitaDirectoryDepot::open(source.path()).is_err());
 }
 
 #[tokio::test]

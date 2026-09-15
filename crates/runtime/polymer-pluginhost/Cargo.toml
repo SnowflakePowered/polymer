@@ -8,6 +8,8 @@ license.workspace = true
 path = "lib.rs"
 
 [dependencies]
+polymer-consolestorage = { path = "../../filesystem/polymer-consolestorage" }
+uuid = { version = "1", features = ["v7"] }
 polymer-protocol.workspace = true
 consolespec.workspace = true
 deno_core = "0.409.0"

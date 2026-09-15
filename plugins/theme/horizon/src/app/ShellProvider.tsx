@@ -80,7 +80,10 @@ export function ShellProvider(props: ParentProps) {
     const message = error instanceof Error ? error.message : String(error);
     setModel("error", message);
     setModel("launcher", { kind: "error", message });
-    go("/", true);
+    const code = (error as { code?: string })?.code;
+    if (["PREFLIGHT_BLOCKED", "PLATFORM_UNAVAILABLE", "NAND_REQUIRED"].includes(code || "") && model.draft) {
+      go(`/storage?platform=${encodeURIComponent(model.draft.platform)}`, true);
+    } else go("/", true);
   };
 
   const showControllerToast = (source: ControllerDevice, index: number) => {

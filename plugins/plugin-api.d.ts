@@ -268,3 +268,31 @@ declare module "polymer:api" {
         filesystem: Filesystem,
     }>;
 }
+
+
+declare module "polymer:api" {
+    export interface PlatformRequirement { completion?: "minimal" | "full" | "verified"; artifacts?: string[] }
+    export interface PlatformArtifact { id: string; label: string; version: string | null; depotType: number; byteLength: number }
+    export interface PreflightRequest {
+        platform: string;
+        operation: "launch" | "install" | "bootstrap";
+        requirements: Record<string, PlatformRequirement>;
+        devices: Record<string, { id: string; platform: string; minimal: boolean; dirty: boolean; artifacts: PlatformArtifact[] } | null>;
+        settings: Record<string, unknown> | null;
+        package?: Package | null;
+        depot_kind?: number | null;
+    }
+    export interface PreflightResult { issues: { code: string; message: string; severity: "blocking" | "warning"; device?: string }[] }
+    export interface BootstrapDevice {
+        readonly artifacts: readonly PlatformArtifact[];
+        readonly id: string;
+        readonly platform: string;
+        install(source: { path: string; cache?: string }): Promise<PlatformArtifact>;
+    }
+    export interface BootstrapContext extends PluginProgressContext { readonly settings: Record<string, unknown> }
+}
+
+declare module "polymer:consolestorage" {
+    /** Read-only inspection of configured disk paths or pkg: resources. */
+    export const resources: { inspect(path: string): { exists: boolean; size?: number; directory?: boolean } };
+}

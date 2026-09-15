@@ -1,4 +1,12 @@
 import {
+  op_consolestorage_platforms,
+  op_consolestorage_inspect,
+  op_consolestorage_recover,
+  op_consolestorage_preflight,
+  op_consolestorage_install,
+  op_consolestorage_bootstrap,
+  op_consolestorage_uninstall,
+  op_consolestorage_plan_removal,
   op_consolestorage_create,
   op_consolestorage_delete,
   op_consolestorage_list,
@@ -51,6 +59,20 @@ export function createConsoleStorage() {
         : storages.filter((storage) => storage.kind === options.kind);
     }
 
+    get device() { return { platform: this.platform, id: this.id }; }
+    async inspect() { return op_consolestorage_inspect(this.platform, this.id); }
+    async recover() { return op_consolestorage_recover(this.platform, this.id); }
+    async preflight(operation = "launch", settings = {}) { return op_consolestorage_preflight(this.platform, this.id, operation, settings); }
+    async install(source) { return op_consolestorage_install(this.platform, this.id, source); }
+    async bootstrap(settings = {}) { return op_consolestorage_bootstrap(this.platform, this.id, settings); }
+    get artifacts() {
+      return Object.freeze({
+        list: async () => (await this.inspect()).artifacts,
+        planRemoval: (ids) => op_consolestorage_plan_removal(this.platform, this.id, ids),
+        uninstall: (plan) => op_consolestorage_uninstall(this.platform, this.id, plan.requested, plan.revision),
+      });
+    }
+
     get kind() { return storageData.get(this).kind; }
     get id() { return storageData.get(this).id; }
     get platform() { return storageData.get(this).platform; }
@@ -66,9 +88,9 @@ export function createConsoleStorage() {
 
     async delete() {
       const data = storageData.get(this);
+      await op_consolestorage_delete(data.kind, data.platform, data.id);
       deleted.add(this);
       storages.delete(this);
-      await op_consolestorage_delete(data.kind, data.platform, data.id);
     }
 
     toJSON() { return { ...storageData.get(this) }; }
@@ -83,6 +105,8 @@ export function createConsoleStorage() {
     }
   }
 
-  const ConsoleStorage = Object.freeze({ Storage });
+  const ConsoleStorage = Object.freeze({ Storage,
+    platforms: () => op_consolestorage_platforms(),
+  });
   return Object.freeze({ ConsoleStorage, gameSaved });
 }

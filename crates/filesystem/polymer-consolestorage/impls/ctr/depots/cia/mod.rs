@@ -1,12 +1,13 @@
+use crate::installable::{
+    IconHint,
+    artifacts::{Artifact, DescribeArtifact},
+};
 mod install;
 
 use crate::impls::ctr::{CtrNand, layout::Layout};
 use crate::{
     Error,
-    installable::{
-        Depot, DepotType, IconHint,
-        artifacts::{Artifact, DescribeArtifact},
-    },
+    installable::{Depot, DepotType},
     nand::VirtualNand,
 };
 use csis::{CiaArchive, CiaSection};
@@ -30,49 +31,6 @@ pub struct CiaDepot {
 }
 
 impl CiaDepot {
-    pub fn open(path: &Path) -> Result<Self, Error> {
-        let archive = CiaArchive::open(path).map_err(|e| Error::malformed("CIA", e.to_string()))?;
-        let id = archive.title_id();
-        if id >> 48 != 4 || archive.items().is_empty() {
-            return Err(Error::Unsupported(
-                "CIA requires a 3DS title with present content".into(),
-            ));
-        }
-        let category = (id >> 32) as u16;
-        let nand = category & (0x10 | 0x01 | 0x8000) != 0 || id & 0x02 != 0;
-        let base = if nand {
-            Layout::NAND_TITLE.to_owned()
-        } else {
-            format!("{}/title", Layout::SD)
-        };
-        let root = format!("{base}/{:08x}/{:08x}/content", id >> 32, id as u32);
-        let content_root = if archive
-            .tmd()
-            .contents()
-            .get(1)
-            .is_some_and(|r| r.content_type.is_optional())
-        {
-            format!("{root}/00000000")
-        } else {
-            root.clone()
-        };
-        let kind = match category {
-            0x000e => DepotType::AppUpdate,
-            0x008c => DepotType::AppContent,
-            _ if nand && category & 0x8000 == 0 => DepotType::System,
-            _ => DepotType::App,
-        };
-        Ok(Self {
-            path: path.to_owned(),
-            title_id: id,
-            ticket_id: archive.ticket().ticket_id(),
-            version: archive.tmd().title_version(),
-            root,
-            content_root,
-            kind,
-        })
-    }
-
     /// Select the ticket as a separate artifact. Installing contents never installs it.
     pub fn ticket_depot(&self) -> Self {
         let mut depot = self.clone();
@@ -120,26 +78,51 @@ impl CiaDepot {
     }
 }
 
-impl DescribeArtifact for CiaDepot {
-    fn describe(&self) -> Artifact {
-        let id = if self.kind == DepotType::AppTicket {
-            format!("{:016X}:{:016X}:ticket", self.title_id, self.ticket_id)
-        } else {
-            format!("{:016X}:contents", self.title_id)
-        };
-        Artifact::new(
-            id,
-            self.kind,
-            Vec::new(),
-            format!("{:016X}", self.title_id),
-            Some(self.version.to_string()),
-            IconHint::Builtin(self.kind),
-        )
-    }
-}
-
 impl Depot for CiaDepot {
-    fn satisfies<N: VirtualNand>(&self, nand: &N) -> bool {
+    fn open(path: &Path) -> Result<Self, Error> {
+        let archive = CiaArchive::open(path).map_err(|e| Error::malformed("CIA", e.to_string()))?;
+        let id = archive.title_id();
+        if id >> 48 != 4 || archive.items().is_empty() {
+            return Err(Error::Unsupported(
+                "CIA requires a 3DS title with present content".into(),
+            ));
+        }
+        let category = (id >> 32) as u16;
+        let nand = category & (0x10 | 0x01 | 0x8000) != 0 || id & 0x02 != 0;
+        let base = if nand {
+            Layout::NAND_TITLE.to_owned()
+        } else {
+            format!("{}/title", Layout::SD)
+        };
+        let root = format!("{base}/{:08x}/{:08x}/content", id >> 32, id as u32);
+        let content_root = if archive
+            .tmd()
+            .contents()
+            .get(1)
+            .is_some_and(|r| r.content_type.is_optional())
+        {
+            format!("{root}/00000000")
+        } else {
+            root.clone()
+        };
+        let kind = match category {
+            0x000e => DepotType::AppUpdate,
+            0x008c => DepotType::AppContent,
+            _ if nand && category & 0x8000 == 0 => DepotType::System,
+            _ => DepotType::App,
+        };
+        Ok(Self {
+            path: path.to_owned(),
+            title_id: id,
+            ticket_id: archive.ticket().ticket_id(),
+            version: archive.tmd().title_version(),
+            root,
+            content_root,
+            kind,
+        })
+    }
+
+    fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> bool {
         CtrNand::supports(nand.platform()) && nand.root().read_dir("nand/dbs", false).is_ok()
     }
     fn validate_contents(&self) -> Vec<String> {
@@ -161,16 +144,37 @@ impl Depot for CiaDepot {
     fn depot_type(&self) -> DepotType {
         self.kind
     }
-    fn install<'a, N: VirtualNand>(&'a self, nand: &'a N) -> crate::installable::Installation<'a> {
+    fn install<'a, N: VirtualNand + ?Sized>(
+        self,
+        nand: &'a N,
+    ) -> crate::installable::Installation<'a>
+    where
+        Self: 'a,
+    {
+        let source = self;
+
         crate::installable::Installation::prepare(async move {
-            if self.satisfies(nand) {
-                install::CiaInstall::new(self, nand.root()).await
-            } else {
-                Err(Error::Unsupported(format!(
-                    "CIA cannot be installed to {}",
-                    nand.platform()
-                )))
-            }
+            install::CiaInstall::new(&source, nand.root()).await
         })
+    }
+}
+
+impl DescribeArtifact for CiaDepot {
+    fn describe(&self) -> Artifact {
+        let id = if self.kind == DepotType::AppTicket {
+            format!("{:016X}:{:016X}:ticket", self.title_id, self.ticket_id)
+        } else {
+            format!("{:016X}:contents", self.title_id)
+        };
+        Artifact::new(
+            id,
+            self.kind,
+            Vec::new(),
+            // TODO: this should be the game.
+            format!("{:016X}", self.title_id),
+            Some(self.version.to_string()),
+            // TODO: this hsould be the icon
+            IconHint::Builtin(self.kind),
+        )
     }
 }

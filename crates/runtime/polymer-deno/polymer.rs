@@ -18,6 +18,17 @@ use std::{
     time::Duration,
 };
 
+#[path = "consolestorage/mod.rs"]
+pub mod consolestorage;
+pub use consolestorage::ConsoleStorage;
+use consolestorage::{
+    op_consolestorage_bootstrap, op_consolestorage_create, op_consolestorage_delete,
+    op_consolestorage_inspect, op_consolestorage_install, op_consolestorage_list,
+    op_consolestorage_plan_removal, op_consolestorage_platforms, op_consolestorage_preflight,
+    op_consolestorage_recover, op_consolestorage_set_label, op_consolestorage_supports,
+    op_consolestorage_uninstall,
+};
+
 #[path = "library/mod.rs"]
 pub mod library;
 
@@ -63,7 +74,7 @@ pub trait PolymerHost: Send + Sync {
         arguments: Vec<Value>,
     ) -> ApiFuture<Value>;
     fn release_prepared_filesystem(&self, token: String) -> bool;
-    fn consolestorage(&self, request: ConsoleStorageRequest) -> ApiFuture<Result<Value, String>>;
+    fn consolestorage(&self) -> Result<ConsoleStorage, String>;
     fn library(&self) -> Option<Library>;
     fn emulator_launch(
         &self,
@@ -118,31 +129,6 @@ pub trait PolymerHost: Send + Sync {
         targets: Vec<u32>,
     ) -> ApiFuture<Result<(), String>>;
     fn webrtc_stop(&self, token: InstanceToken) -> ApiFuture<Result<(), String>>;
-}
-
-#[derive(Debug)]
-pub enum ConsoleStorageRequest {
-    List,
-    Supports {
-        kind: String,
-        platform: String,
-    },
-    Create {
-        kind: String,
-        platform: String,
-        label: Option<String>,
-    },
-    Delete {
-        kind: String,
-        platform: String,
-        id: String,
-    },
-    SetLabel {
-        kind: String,
-        platform: String,
-        id: String,
-        label: Option<String>,
-    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -216,85 +202,6 @@ async fn op_scraping_package_from_path(
 ) -> Result<serde_json::Value, JsErrorBox> {
     let host = state.borrow().borrow::<Arc<dyn PolymerHost>>().clone();
     host.scrape(path).await.map_err(JsErrorBox::generic)
-}
-
-async fn consolestorage(
-    state: &Rc<RefCell<OpState>>,
-    request: ConsoleStorageRequest,
-) -> Result<serde_json::Value, JsErrorBox> {
-    let host = state.borrow().borrow::<Arc<dyn PolymerHost>>().clone();
-    host.consolestorage(request)
-        .await
-        .map_err(JsErrorBox::generic)
-}
-
-#[op2]
-#[serde]
-async fn op_consolestorage_list(
-    state: Rc<RefCell<OpState>>,
-) -> Result<serde_json::Value, JsErrorBox> {
-    consolestorage(&state, ConsoleStorageRequest::List).await
-}
-
-#[op2]
-#[serde]
-async fn op_consolestorage_supports(
-    state: Rc<RefCell<OpState>>,
-    #[string] kind: String,
-    #[string] platform: String,
-) -> Result<serde_json::Value, JsErrorBox> {
-    consolestorage(&state, ConsoleStorageRequest::Supports { kind, platform }).await
-}
-
-#[op2]
-#[serde]
-async fn op_consolestorage_create(
-    state: Rc<RefCell<OpState>>,
-    #[string] kind: String,
-    #[string] platform: String,
-    #[string] label: Option<String>,
-) -> Result<serde_json::Value, JsErrorBox> {
-    consolestorage(
-        &state,
-        ConsoleStorageRequest::Create {
-            kind,
-            platform,
-            label,
-        },
-    )
-    .await
-}
-
-#[op2]
-#[serde]
-async fn op_consolestorage_delete(
-    state: Rc<RefCell<OpState>>,
-    #[string] kind: String,
-    #[string] platform: String,
-    #[string] id: String,
-) -> Result<serde_json::Value, JsErrorBox> {
-    consolestorage(&state, ConsoleStorageRequest::Delete { kind, platform, id }).await
-}
-
-#[op2]
-#[serde]
-async fn op_consolestorage_set_label(
-    state: Rc<RefCell<OpState>>,
-    #[string] kind: String,
-    #[string] platform: String,
-    #[string] id: String,
-    #[string] label: Option<String>,
-) -> Result<serde_json::Value, JsErrorBox> {
-    consolestorage(
-        &state,
-        ConsoleStorageRequest::SetLabel {
-            kind,
-            platform,
-            id,
-            label,
-        },
-    )
-    .await
 }
 
 #[op2]
@@ -583,6 +490,14 @@ deno_core::extension!(
         op_plugin_list,
         op_plugin_invoke,
         op_prepared_filesystem_release,
+        op_consolestorage_platforms,
+        op_consolestorage_inspect,
+        op_consolestorage_recover,
+        op_consolestorage_preflight,
+        op_consolestorage_install,
+        op_consolestorage_bootstrap,
+        op_consolestorage_uninstall,
+        op_consolestorage_plan_removal,
         op_consolestorage_list,
         op_consolestorage_supports,
         op_consolestorage_create,

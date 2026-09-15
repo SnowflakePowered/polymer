@@ -21,7 +21,35 @@ pub struct VitaDirectoryDepot {
 }
 
 impl VitaDirectoryDepot {
-    pub fn new(root: &Path) -> Result<Self, Error> {
+    fn content_suffix<'a>(content_id: &'a str, title_id: &str) -> Result<&'a str, Error> {
+        let valid = content_id.len() == 36
+            && content_id.get(7..16) == Some(title_id)
+            && content_id.as_bytes()[6] == b'-'
+            && content_id.as_bytes()[16] == b'_'
+            && content_id.as_bytes()[19] == b'-'
+            && content_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
+        if !valid {
+            return Err(Error::malformed(
+                "sce_sys/param.sfo",
+                "invalid DLC CONTENT_ID",
+            ));
+        }
+        Ok(&content_id[20..])
+    }
+
+    pub fn title_id(&self) -> &str {
+        &self.title_id
+    }
+
+    pub fn install_path(&self) -> &str {
+        &self.destination
+    }
+}
+
+impl Depot for VitaDirectoryDepot {
+    fn open(root: &Path) -> Result<Self, Error> {
         let path = root.join("sce_sys/param.sfo");
         let sfo = SonyMetadata::read(
             File::open(&path).map_err(|error| Error::io(&path, error))?,
@@ -77,35 +105,7 @@ impl VitaDirectoryDepot {
         Ok(depot)
     }
 
-    fn content_suffix<'a>(content_id: &'a str, title_id: &str) -> Result<&'a str, Error> {
-        let valid = content_id.len() == 36
-            && content_id.get(7..16) == Some(title_id)
-            && content_id.as_bytes()[6] == b'-'
-            && content_id.as_bytes()[16] == b'_'
-            && content_id.as_bytes()[19] == b'-'
-            && content_id
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
-        if !valid {
-            return Err(Error::malformed(
-                "sce_sys/param.sfo",
-                "invalid DLC CONTENT_ID",
-            ));
-        }
-        Ok(&content_id[20..])
-    }
-
-    pub fn title_id(&self) -> &str {
-        &self.title_id
-    }
-
-    pub fn install_path(&self) -> &str {
-        &self.destination
-    }
-}
-
-impl Depot for VitaDirectoryDepot {
-    fn satisfies<N: VirtualNand>(&self, nand: &N) -> bool {
+    fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> bool {
         nand.platform() == super::VitaNand::PLATFORM
     }
 
@@ -137,26 +137,19 @@ impl Depot for VitaDirectoryDepot {
         self.kind
     }
 
-    fn install<'a, N: VirtualNand>(&'a self, nand: &'a N) -> Installation<'a> {
+    fn install<'a, N: VirtualNand + ?Sized>(self, nand: &'a N) -> Installation<'a>
+    where
+        Self: 'a,
+    {
+        let source = self;
+
         Installation::prepare(async move {
-            if !self.satisfies(nand) {
-                return Err(Error::Unsupported(
-                    "Vita content requires a Vita NAND".to_owned(),
-                ));
-            }
-            let missing = self.validate_contents();
-            if !missing.is_empty() {
-                return Err(Error::InvalidDepot {
-                    root: self.root.display().to_string(),
-                    missing,
-                });
-            }
             let storage: Arc<dyn Storage> = nand.root();
             Ok(DirectoryInstall::new(
-                self.root.clone(),
-                self.destination.clone(),
+                source.root.clone(),
+                source.destination.clone(),
                 storage,
-                self,
+                &source,
             ))
         })
     }

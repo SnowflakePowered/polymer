@@ -1,3 +1,7 @@
+use crate::installable::{
+    IconHint,
+    artifacts::{Artifact, DescribeArtifact},
+};
 mod install;
 mod metadata;
 
@@ -12,8 +16,7 @@ use sha1::{Digest, Sha1};
 
 use super::super::{Ps3Nand, TitleId};
 use crate::Error;
-use crate::installable::artifacts::{Artifact, DescribeArtifact};
-use crate::installable::{Depot, DepotType, IconHint};
+use crate::installable::{Depot, DepotType};
 use crate::nand::VirtualNand;
 
 /// A retail PS3 game, update, or additional-content PKG.
@@ -32,71 +35,6 @@ pub struct Ps3PkgDepot {
 }
 
 impl Ps3PkgDepot {
-    pub fn open(path: &Path) -> Result<Self, Error> {
-        let mut file = File::open(path).map_err(|error| Error::io(path, error))?;
-        let metadata = metadata::PackageMetadata::read(&mut file)?;
-        let kind = metadata.depot_type()?;
-        let size = file
-            .metadata()
-            .map_err(|error| Error::io(path, error))?
-            .len();
-        let mut digest = [0; 20];
-        file.seek(SeekFrom::End(-32))
-            .and_then(|_| file.read_exact(&mut digest))
-            .map_err(|error| Error::io(path, error))?;
-        let mut archive =
-            PkgArchive::from_reader(file, size).map_err(|error| Error::io(path, error))?;
-        if !archive.is_ps3() {
-            return Err(Error::Unsupported(
-                "a PS3 depot requires a PS3 PKG".to_owned(),
-            ));
-        }
-        let title_id = archive.title_id().to_owned();
-        let content_id = archive.content_id().to_owned();
-        if TitleId::parse(&title_id).is_none() || !content_id.is_ascii() {
-            return Err(Error::malformed("PKG", "invalid title or content ID"));
-        }
-        Self::validate_path(&content_id)?;
-        if content_id.contains('/') {
-            return Err(Error::InvalidPath(content_id));
-        }
-        Self::validate_entries(&archive)?;
-        let sfo = Self::read_sfo(&mut archive)?;
-        if sfo.get_string("TITLE_ID").is_some_and(|id| id != title_id) {
-            return Err(Error::malformed(
-                "PARAM.SFO",
-                "TITLE_ID differs from the PKG content ID",
-            ));
-        }
-        let directory = metadata.directory.as_deref().unwrap_or(&title_id);
-        Self::validate_path(directory)?;
-        if directory.contains('/') {
-            return Err(Error::InvalidPath(directory.to_owned()));
-        }
-        Ok(Self {
-            install_path: format!("dev_hdd0/game/{directory}"),
-            label: sfo
-                .get_string("TITLE")
-                .filter(|title| !title.is_empty())
-                .unwrap_or(&title_id)
-                .to_owned(),
-            version: sfo
-                .get_string("APP_VER")
-                .filter(|version| !version.is_empty())
-                .map(str::to_owned)
-                .or(metadata.version),
-            icon: archive
-                .items()
-                .iter()
-                .any(|item| item.is_file && item.name == "ICON0.PNG"),
-            path: path.to_path_buf(),
-            title_id,
-            content_id,
-            kind,
-            digest,
-        })
-    }
-
     pub fn title_id(&self) -> &str {
         &self.title_id
     }
@@ -207,6 +145,102 @@ impl Ps3PkgDepot {
     }
 }
 
+impl Depot for Ps3PkgDepot {
+    fn open(path: &Path) -> Result<Self, Error> {
+        let mut file = File::open(path).map_err(|error| Error::io(path, error))?;
+        let metadata = metadata::PackageMetadata::read(&mut file)?;
+        let kind = metadata.depot_type()?;
+        let size = file
+            .metadata()
+            .map_err(|error| Error::io(path, error))?
+            .len();
+        let mut digest = [0; 20];
+        file.seek(SeekFrom::End(-32))
+            .and_then(|_| file.read_exact(&mut digest))
+            .map_err(|error| Error::io(path, error))?;
+        let mut archive =
+            PkgArchive::from_reader(file, size).map_err(|error| Error::io(path, error))?;
+        if !archive.is_ps3() {
+            return Err(Error::Unsupported(
+                "a PS3 depot requires a PS3 PKG".to_owned(),
+            ));
+        }
+        let title_id = archive.title_id().to_owned();
+        let content_id = archive.content_id().to_owned();
+        if TitleId::parse(&title_id).is_none() || !content_id.is_ascii() {
+            return Err(Error::malformed("PKG", "invalid title or content ID"));
+        }
+        Self::validate_path(&content_id)?;
+        if content_id.contains('/') {
+            return Err(Error::InvalidPath(content_id));
+        }
+        Self::validate_entries(&archive)?;
+        let sfo = Self::read_sfo(&mut archive)?;
+        if sfo.get_string("TITLE_ID").is_some_and(|id| id != title_id) {
+            return Err(Error::malformed(
+                "PARAM.SFO",
+                "TITLE_ID differs from the PKG content ID",
+            ));
+        }
+        let directory = metadata.directory.as_deref().unwrap_or(&title_id);
+        Self::validate_path(directory)?;
+        if directory.contains('/') {
+            return Err(Error::InvalidPath(directory.to_owned()));
+        }
+        Ok(Self {
+            install_path: format!("dev_hdd0/game/{directory}"),
+            label: sfo
+                .get_string("TITLE")
+                .filter(|title| !title.is_empty())
+                .unwrap_or(&title_id)
+                .to_owned(),
+            version: sfo
+                .get_string("APP_VER")
+                .filter(|version| !version.is_empty())
+                .map(str::to_owned)
+                .or(metadata.version),
+            icon: archive
+                .items()
+                .iter()
+                .any(|item| item.is_file && item.name == "ICON0.PNG"),
+            path: path.to_path_buf(),
+            title_id,
+            content_id,
+            kind,
+            digest,
+        })
+    }
+
+    fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> bool {
+        nand.platform() == Ps3Nand::PLATFORM && Ps3Nand::has_structure(&*nand.root())
+    }
+
+    fn validate_contents(&self) -> Vec<String> {
+        match self.verified_file() {
+            Ok(_) => Vec::new(),
+            Err(_) => vec![self.path.display().to_string()],
+        }
+    }
+
+    fn depot_type(&self) -> DepotType {
+        self.kind
+    }
+
+    fn install<'a, N: VirtualNand + ?Sized>(
+        self,
+        nand: &'a N,
+    ) -> crate::installable::Installation<'a>
+    where
+        Self: 'a,
+    {
+        let source = self;
+
+        crate::installable::Installation::prepare(async move {
+            install::Ps3PkgInstall::new(&source, nand.root()).await
+        })
+    }
+}
+
 impl DescribeArtifact for Ps3PkgDepot {
     fn describe(&self) -> Artifact {
         // Base games and patches may share a content ID and install directory.
@@ -229,35 +263,5 @@ impl DescribeArtifact for Ps3PkgDepot {
                 IconHint::Builtin(self.kind)
             },
         )
-    }
-}
-
-impl Depot for Ps3PkgDepot {
-    fn satisfies<N: VirtualNand>(&self, nand: &N) -> bool {
-        nand.platform() == Ps3Nand::PLATFORM && Ps3Nand::has_structure(&*nand.root())
-    }
-
-    fn validate_contents(&self) -> Vec<String> {
-        match self.verified_file() {
-            Ok(_) => Vec::new(),
-            Err(_) => vec![self.path.display().to_string()],
-        }
-    }
-
-    fn depot_type(&self) -> DepotType {
-        self.kind
-    }
-
-    fn install<'a, N: VirtualNand>(&'a self, nand: &'a N) -> crate::installable::Installation<'a> {
-        crate::installable::Installation::prepare(async move {
-            if self.satisfies(nand) {
-                install::Ps3PkgInstall::new(self, nand.root()).await
-            } else {
-                Err(Error::Unsupported(format!(
-                    "a PS3 PKG cannot be installed to {}",
-                    nand.platform()
-                )))
-            }
-        })
     }
 }

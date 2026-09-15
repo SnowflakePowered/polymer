@@ -24,6 +24,8 @@ pub struct VolumeInfo {
 }
 
 pub trait ArtifactRegistry: Send + Sync {
+    fn revision(&self) -> Result<String, Error>;
+    fn affected<'a>(&'a self, ids: &'a [&'a str]) -> BoxFuture<'a, Result<Vec<String>, Error>>;
     fn record<'a>(&'a self, artifact: &'a Artifact) -> BoxFuture<'a, Result<(), Error>>;
     fn summaries(&self) -> BoxFuture<'_, Result<Vec<ArtifactSummary>, Error>>;
     fn artifact<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<Option<Artifact>, Error>>;

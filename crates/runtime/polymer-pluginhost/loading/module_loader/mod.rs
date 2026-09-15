@@ -17,6 +17,7 @@ const API_MODULE: &str = "polymer:api";
 const UI_AUTOMATION_MODULE: &str = "polymer:uiautomation";
 const ACTIONS_MODULE: &str = "polymer:actions";
 const PLUGIN_STORAGE_MODULE: &str = "polymer:pluginStorage";
+const CONSOLESTORAGE_MODULE: &str = "polymer:consolestorage";
 const CACHE_MODULE: &str = "polymer:cache";
 const DATABASE_MODULE: &str = "polymer:database";
 const JSR_ORIGIN: &str = "https://jsr.io";
@@ -238,6 +239,7 @@ impl ModuleLoader for PluginModuleLoader {
                 | UI_AUTOMATION_MODULE
                 | ACTIONS_MODULE
                 | PLUGIN_STORAGE_MODULE
+                | CONSOLESTORAGE_MODULE
                 | CACHE_MODULE
                 | DATABASE_MODULE
         ) {
@@ -313,6 +315,13 @@ impl ModuleLoader for PluginModuleLoader {
             Ok(ModuleSource::new(
                 ModuleType::JavaScript,
                 ModuleSourceCode::String(include_str!("js/01_cache.js").to_owned().into()),
+                module_specifier,
+                None,
+            ))
+        } else if module_specifier.as_str() == CONSOLESTORAGE_MODULE {
+            Ok(ModuleSource::new(
+                ModuleType::JavaScript,
+                ModuleSourceCode::String(include_str!("js/07_consolestorage.js").to_owned().into()),
                 module_specifier,
                 None,
             ))

@@ -19,3 +19,6 @@ definitions = [
     "config/sections/content-*.toml",
     "config/sections/graphics-packs.toml"
 ]
+
+[emulator.preflight.NINTENDO_WIIU.mlc]
+completion = "minimal"

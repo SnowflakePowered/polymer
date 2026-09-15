@@ -48,9 +48,11 @@ At an architectural level, input handling is modeled as **HAL**s and **listeners
 
 For listeners, we support hooking SDL 2 and SDL 3 in the guest process as well as limited support for DInput (soon to be deprecated). We also support hooking the Win32 Bluetooth API for *bluetooth passthrough*. 
 
-Bluetooth support is handled via two crates, `polymer-bluetooth`, which is a userspace bluetooth driver, and `polymer-input-bluetooth`, which is the HAL for the input IPC. `polymer-input-bluetooth` is responsible for decoding the raw HID messages from the userspace driver and publishing those messages to the `polymer-input` hub. This allows us to support zero-click support for non-standard Bluetooth input devices, such as Wii Remotes, Nintendo Switch and Switch 2 controllers, and DualShock 3/4/DualSense with complete support for their respective features such as pressure sensitive buttons, HD rumble, touchpads, and adaptive triggers. By bypassing the OS device manager we can support native-like pairing of these non standard devices. The userspace Bluetooth driver handles and expects two separate Bluetooth radios; the onboard Bluetooth radio used for BLE communication for BLE-class devices, such as Joy-Con 2 and the Nintendo Switch Online GameCube controller, and an external bluetooth radio with the WinUSB driver installed that we take complete control of to handle EDR devices like Wii Remotes, DualShock 3, and Joy-Con 1.
+Bluetooth support is handled via two crates, `polymer-bluetooth`, which is a userspace bluetooth driver, and `polymer-input-bluetooth`, which is the HAL for the input IPC. `polymer-input-bluetooth` is responsible for decoding the raw HID messages from the userspace driver and publishing those messages to the `polymer-input` hub. This allows us to support zero-click support for non-standard Bluetooth input devices, such as Wii Remotes, Nintendo Switch and Switch 2 controllers, and DualShock 3/4/DualSense with complete support for their respective features such as pressure sensitive buttons, HD rumble, touchpads, and adaptive triggers. 
+
+By bypassing the OS device manager we can support native-like pairing of these non standard devices. The userspace Bluetooth driver handles and expects two separate Bluetooth radios; the onboard Bluetooth radio used for BLE communication for BLE-class devices, such as Joy-Con 2 and the Nintendo Switch Online GameCube controller, and an external bluetooth radio with the WinUSB driver installed that we take complete control of to handle EDR devices like Wii Remotes, DualShock 3, and Joy-Con 1.
   
-Listener crates can also subscribe to raw HID reports, which allow *bluetooth passthrough*. While it is really only used for Dolphin since only Wii Remotes are "unique" enough to reequire support for this, it is in principle supported for any emulator that requires speaking a custom Bluetooth protocol.  
+Listener crates can also subscribe to raw HID reports, which allow *bluetooth passthrough*. While it is really only used for Dolphin since only Wii Remotes are "unique" enough to require support for this, it is in principle supported for any emulator that requires speaking a custom Bluetooth protocol.  
 
 The **Input IPC** system is contained in the following crates
 
@@ -67,7 +69,7 @@ For example, to launch a game from a PKG for PlayStation 3, a user must first in
 
 Additionally, memory cards are are emulated in the same way. Through the virtual filesystem, Polymer detects writes to a mounted memory card file by the guest process, and redirects them to individual save file directories on the host. This allows "Folder Memory Cards" without giving up compatibility or cross-game save reading such as in Metal Gear Solid 2. 
 
-This is all implemented via the `polymer-consolestorage` crate, which handles each console manually. Each emulated file system is backed by a Git repository on the host disk, so save files are versioned and can be rolled-backed or backed up simply by pushing to a Git server. `polymer-vfs` then glues all of this together during runtime, exposing a jailed filesystem that the guest process can't escape easily out of, ensuring all writes and reads are logged. This allows Polymer to control exactly where save files, configuration files, and game data is read and written. 
+This is all implemented via the `polymer-consolestorage` crate, which handles each console manually. Emulated file systems are backed by a Git repository on the host disk (one per platform), so save files are versioned and can be rolled-backed or backed up simply by pushing to a Git server. `polymer-vfs` then glues all of this together during runtime, exposing a jailed filesystem that the guest process can't escape easily out of, ensuring all writes and reads are logged. This allows Polymer to control exactly where save files, configuration files, and game data is read and written. 
 
 `consolestorage` also provides reflection on each individual emulated NAND and memory card. It provides endpoints for save and game ("depot") enumeration as well as icons and metadata associated with each save and installed game. This allows the GUI to manipulate NANDs and memory cards within the frontend itself.
 
@@ -123,6 +125,8 @@ Emulator plugins are used to orchestrate the execution of guest emulator process
   * `saveStates` -- Save states for quick resume, if present.
 
   `onLaunch` must return an object describing the launch shape of the guest process, including which hooks to use, and surfaces to track.
+
+  Because emulator launches live within a virtualized filesystem, the game package as well as the emulator executable itself must be mounted on the filesystem before launch can continue. Additionally, the emulator plugin is responsible for setting configuration options for the emulator. 
   
 * `onConfigure`  -- Called when retrieving user-facing configuration options. Returns the set of options exposed to the user.
 
@@ -169,10 +173,21 @@ Emulator plugins are used to orchestrate the execution of guest emulator process
 
 ##### Configuration
 
-Emulator plugins must define the configuration files of the guest emulator via TOML definitions under the `emulator.configuration.definitions` key. All TOML files under this key are effective concatenated together during evaluation.
+Emulator plugins must define the configuration files of the guest emulator via TOML definitions under the `emulator.configuration.definitions` key. This is separate from the `onConfigure`, which specifies a regular JSON object for **user-facing** configuration. The emulator plugin is to take this JSON object and apply it to the `configuration` object at `onLaunch`.
 
+The `configuration` object is created via the TOML definitions specified. By convention, they live in the `config` folder in a plugin. Each TOML file under the  `emulator.configuration.definitions` key are effective concatenated together during evaluation. 
 
-**This section is incomplete**
+Configuration is specified by *targets* and *sections*. A *target* defines the final serialized output of a set of configuration options. Targets are hierarchical and can have sub-targets, but a root target must have an `output` key which defines the final format and canonical output path of the configuration file. All sub-targets of root targets are serialized into the same file.
+
+A *section* is a description of what ends up serialized in the *target*. By default they are name-matched to a *target*, but this can be overriden with the `target` key such that the serialize will then walk the provided section when serializing the specified target. Sections provide the content; each section contains a collection of *options* which represent the actual configuration option of the configuration file. The `emit` key provides various override behaviours, including `bool_style` which defines the styling of boolean options.
+
+During serialization, the serializer walks these sections and targets to create the set of required configuration files. These configuration options can be modified at `onLaunch` via the `configuration.options()` proxy API, which exposes the configuration graph as a JS object.
+
+Opaque to the configuration graph, there are *actions* and *inputs*. These are used for hotkeys and input mapping. 
+
+The `action` block is a special *section* that also requires defining a `target`. Then `actions.map` defines the expression and hotkey action title map. The expression is not abstracted and is an emulator-native string; the raw string is passed to `onParseHotkey` to map to Polymer input expressions or keycodes before an action is executed.
+
+The `input` block defines input mapping for Polymer's virtual gamepad. Targets must be defined for each gamepad mapping. `input.mapping` defines the mapping between Polymer's input expressions and the emulator-native pad vocabulary for the standard virtual gamepad. Then each `layout` definition defines the mapping between an input expression and the vocabulary for the emulated controller. *input* layouts are also a special case of *section* and can define a set of options as well that is exposed via the controller topology slot, if the given topology aligns with the layout.
 
 
 #### `scraper` plugins

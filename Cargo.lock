@@ -9895,6 +9895,7 @@ dependencies = [
  "percent-encoding",
  "polymer-automation",
  "polymer-config",
+ "polymer-consolestorage",
  "polymer-controllers",
  "polymer-deno",
  "polymer-input",
@@ -9915,6 +9916,7 @@ dependencies = [
  "tracing",
  "turso",
  "url",
+ "uuid",
 ]
 
 [[package]]

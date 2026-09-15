@@ -30,6 +30,8 @@ pub struct WiiNand {
 
 #[async_trait]
 impl VirtualNand for WiiNand {
+    crate::nand::nand_depots!(super::depots::wad::WiiWadDepot);
+
     async fn new_empty<St: VolumeStorage + 'static>(
         storage: St,
         id: Uuid,
@@ -93,8 +95,7 @@ impl VirtualNand for WiiNand {
         match completion {
             NandCompletion::Minimal => {
                 Self::has_structure(&*self.storage)
-                    && index::SharedContentMap::load(&*self.storage)
-                        .is_ok_and(|map| map.is_valid())
+                    && index::SharedContentMap::load(&*self.storage).is_ok_and(|map| map.is_valid())
                     && index::UidMap::load(&*self.storage).is_ok_and(|map| map.is_valid())
             }
             NandCompletion::Full | NandCompletion::Verified => false,
@@ -203,6 +204,11 @@ mod tests {
 
         assert!(saves.checkpoint_saves().await.unwrap());
         composed.finish("").unwrap();
+        assert!(nand.is_dirty().unwrap());
+        assert!(nand.root().exists("tmp/runtime-only"));
+        drop(transient);
+        nand.recover().unwrap();
+        assert!(!nand.is_dirty().unwrap());
         drop(composed);
         drop(saves);
         drop(nand);

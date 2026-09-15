@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use polymer_consolestorage::{ConsoleStorage, Error, PlatformRepository, StorageKind, VolumeInfo};
+use polymer_consolestorage::{
+    ConsoleStorage, Error, PlatformRepository, StorageKind, VolumeInfo, VolumeStorage,
+};
 use uuid::Uuid;
 
 pub struct StorageManager {
@@ -129,6 +131,28 @@ impl StorageManager {
 
         storages.sort_by_key(|(_, metadata)| metadata.id);
         Ok(storages)
+    }
+
+    /// Read a volume's committed identity without opening its NAND or save data.
+    pub async fn volume_info(
+        &self,
+        platform: &str,
+        id: Uuid,
+    ) -> Result<Option<(StorageKind, VolumeInfo)>, Error> {
+        if !self.platform_path(platform).join(".git").is_dir() {
+            return Ok(None);
+        }
+        let repository = self.repository(platform)?;
+        for kind in StorageKind::ALL {
+            if repository.ids(kind)?.contains(&id) {
+                return Ok(repository
+                    .volume(kind, id)
+                    .volumeinfo()
+                    .await?
+                    .map(|info| (kind, info)));
+            }
+        }
+        Ok(None)
     }
 
     pub async fn delete(&self, kind: StorageKind, platform: &str, id: Uuid) -> Result<(), Error> {

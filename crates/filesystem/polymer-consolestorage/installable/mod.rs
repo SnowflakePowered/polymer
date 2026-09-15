@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 pub mod artifacts;
 mod directory;
 mod installation;
+#[cfg(test)]
+mod tests;
 mod writer;
 pub(crate) use writer::StorageWriter;
 
@@ -48,8 +50,12 @@ impl TryFrom<u8> for DepotType {
     }
 }
 
-pub trait Depot {
-    fn satisfies<N: VirtualNand>(&self, nand: &N) -> bool;
+pub trait Depot: Sized {
+    /// Parse this depot type from a path. Invalid input must fail construction.
+    fn open(path: &Path) -> Result<Self, crate::Error>;
+
+    /// Check whether the target NAND can accept this constructed depot.
+    fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> bool;
 
     /// Validate the contents of the depot.
     ///
@@ -61,7 +67,9 @@ pub trait Depot {
     /// Install a depot, exposing progress through `next().await` and its result
     /// through `finish().await`. Calling `finish` also drives any remaining work.
     #[must_use]
-    fn install<'a, N: VirtualNand>(&'a self, nand: &'a N) -> Installation<'a>;
+    fn install<'a, N: VirtualNand + ?Sized>(self, nand: &'a N) -> Installation<'a>
+    where
+        Self: 'a;
 }
 
 #[derive(Clone)]

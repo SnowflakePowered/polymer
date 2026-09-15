@@ -19,9 +19,14 @@ pub(super) struct WorkerOptions {
     filesystem: crate::filesystem::FilesystemOptions,
     cache: crate::cache::CacheOptions,
     database: crate::database::DatabaseOptions,
+    pub(super) platform: crate::platform::PlatformBinding,
 }
 
 impl WorkerOptions {
+    pub(super) fn disable_network(&mut self) {
+        self.loader = self.loader.clone().with_network_hosts(Vec::new());
+    }
+
     pub(super) fn for_plugin(
         plugin: &dyn PluginInstance,
         directories: &polymer_library::Directories,
@@ -36,6 +41,15 @@ impl WorkerOptions {
         let cache = crate::cache::CacheOptions::for_plugin(directories, plugin);
         filesystem.caches = cache.filesystem_caches();
         Ok(Self {
+            platform: crate::platform::PlatformBinding {
+                manager: Arc::new(polymer_library::StorageManager::new(
+                    directories.consolestorage(),
+                )),
+                root: plugin.module_loader().root().to_owned(),
+                device: None,
+                settings: Value::Null,
+                runtime: None,
+            },
             loader: plugin.module_loader().with_directories(directories),
             filesystem,
             cache,
@@ -65,8 +79,13 @@ where
         if control.install_isolate(isolate) {
             return Err(PluginInvocationError::cancelled());
         }
-        lifecycle.load(&mut runtime, &entrypoint).await?;
-        operation(runtime).await
+        tokio::select! {
+            () = control.cancelled_notification() => Err(PluginInvocationError::cancelled()),
+            result = async {
+                lifecycle.load(&mut runtime, &entrypoint).await?;
+                operation(runtime).await
+            } => result,
+        }
     })
 }
 
@@ -80,6 +99,7 @@ pub(super) fn create_worker_runtime(
         filesystem,
         cache,
         database,
+        platform,
     } = options;
     let main_module =
         deno_core::ModuleSpecifier::parse(entrypoint).map_err(PluginInvocationError::worker)?;
@@ -88,6 +108,7 @@ pub(super) fn create_worker_runtime(
         main_module,
         module_loader: Rc::new(loader),
         extensions: vec![
+            crate::platform::extension(platform),
             crate::actions::extension(),
             crate::automation::extension(),
             crate::controller::extension(),

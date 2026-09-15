@@ -10,4 +10,4 @@ pub use module_loader::PluginModuleLoader;
 pub use package::{PackageError, PluginCache};
 pub use registry::{PluginRegistry, PluginRegistryError};
 
-pub(crate) use package::{EmulatorPlugin, ScraperPlugin, ThemePlugin};
+pub(crate) use package::{EmulatorPlugin, PlatformPlugin, ScraperPlugin, ThemePlugin};

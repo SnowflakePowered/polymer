@@ -42,54 +42,6 @@ pub struct WiiWadDepot {
 }
 
 impl WiiWadDepot {
-    pub fn open(path: &Path) -> Result<Self, Error> {
-        let mut file = File::open(path).map_err(|source| Error::io(path, source))?;
-        let file_size = file
-            .metadata()
-            .map_err(|source| Error::io(path, source))?
-            .len();
-        let mut header_bytes = [0; size_of::<WadHeader>()];
-        file.read_exact(&mut header_bytes)
-            .map_err(|source| Error::io(path, source))?;
-        let header = WadHeader::ref_from_bytes(&header_bytes)
-            .map_err(|_| Error::malformed("WAD", "invalid header layout"))?;
-        if header.header_size.get() < size_of::<WadHeader>() as u32 {
-            return Err(Error::malformed("WAD", "header is smaller than 0x20 bytes"));
-        }
-        let certificate_offset = align(u64::from(header.header_size.get()), 0x40)?;
-        let ticket_offset =
-            Self::section_end(certificate_offset, u64::from(header.certificate_size.get()))?;
-        let tmd_offset = Self::section_end(ticket_offset, u64::from(header.ticket_size.get()))?;
-        let data_offset = Self::section_end(tmd_offset, u64::from(header.tmd_size.get()))?;
-        let footer_offset = Self::section_end(data_offset, u64::from(header.data_size.get()))?;
-        let end = footer_offset
-            .checked_add(u64::from(header.footer_size.get()))
-            .ok_or_else(|| Error::malformed("WAD", "footer range overflows"))?;
-        if end > file_size {
-            return Err(Error::malformed("WAD", "declared sections exceed the file"));
-        }
-        let ticket_bytes = Self::read_section(
-            &mut file,
-            ticket_offset,
-            u64::from(header.ticket_size.get()),
-            path,
-        )?;
-        let tmd_size = u64::from(header.tmd_size.get());
-        let tmd_bytes = Self::read_section(&mut file, tmd_offset, tmd_size, path)?;
-        let ticket = Ticket::parse(ticket_bytes)?;
-        let tmd = Tmd::parse(&tmd_bytes, data_offset, u64::from(header.data_size.get()))?;
-        if ticket.title_id != tmd.title_id {
-            return Err(Error::malformed("WAD", "ticket and TMD title IDs differ"));
-        }
-        Ok(Self {
-            path: path.to_path_buf(),
-            ticket,
-            tmd,
-            tmd_offset,
-            tmd_size,
-        })
-    }
-
     pub fn title_id(&self) -> u64 {
         self.tmd.title_id
     }
@@ -145,7 +97,55 @@ impl WiiWadDepot {
 }
 
 impl Depot for WiiWadDepot {
-    fn satisfies<N: VirtualNand>(&self, nand: &N) -> bool {
+    fn open(path: &Path) -> Result<Self, Error> {
+        let mut file = File::open(path).map_err(|source| Error::io(path, source))?;
+        let file_size = file
+            .metadata()
+            .map_err(|source| Error::io(path, source))?
+            .len();
+        let mut header_bytes = [0; size_of::<WadHeader>()];
+        file.read_exact(&mut header_bytes)
+            .map_err(|source| Error::io(path, source))?;
+        let header = WadHeader::ref_from_bytes(&header_bytes)
+            .map_err(|_| Error::malformed("WAD", "invalid header layout"))?;
+        if header.header_size.get() < size_of::<WadHeader>() as u32 {
+            return Err(Error::malformed("WAD", "header is smaller than 0x20 bytes"));
+        }
+        let certificate_offset = align(u64::from(header.header_size.get()), 0x40)?;
+        let ticket_offset =
+            Self::section_end(certificate_offset, u64::from(header.certificate_size.get()))?;
+        let tmd_offset = Self::section_end(ticket_offset, u64::from(header.ticket_size.get()))?;
+        let data_offset = Self::section_end(tmd_offset, u64::from(header.tmd_size.get()))?;
+        let footer_offset = Self::section_end(data_offset, u64::from(header.data_size.get()))?;
+        let end = footer_offset
+            .checked_add(u64::from(header.footer_size.get()))
+            .ok_or_else(|| Error::malformed("WAD", "footer range overflows"))?;
+        if end > file_size {
+            return Err(Error::malformed("WAD", "declared sections exceed the file"));
+        }
+        let ticket_bytes = Self::read_section(
+            &mut file,
+            ticket_offset,
+            u64::from(header.ticket_size.get()),
+            path,
+        )?;
+        let tmd_size = u64::from(header.tmd_size.get());
+        let tmd_bytes = Self::read_section(&mut file, tmd_offset, tmd_size, path)?;
+        let ticket = Ticket::parse(ticket_bytes)?;
+        let tmd = Tmd::parse(&tmd_bytes, data_offset, u64::from(header.data_size.get()))?;
+        if ticket.title_id != tmd.title_id {
+            return Err(Error::malformed("WAD", "ticket and TMD title IDs differ"));
+        }
+        Ok(Self {
+            path: path.to_path_buf(),
+            ticket,
+            tmd,
+            tmd_offset,
+            tmd_size,
+        })
+    }
+
+    fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> bool {
         nand.platform() == WiiNand::PLATFORM && WiiNand::has_structure(&*nand.root())
     }
 
@@ -172,30 +172,34 @@ impl Depot for WiiWadDepot {
         }
     }
 
-    fn install<'a, N: VirtualNand>(&'a self, nand: &'a N) -> crate::installable::Installation<'a> {
+    fn install<'a, N: VirtualNand + ?Sized>(
+        self,
+        nand: &'a N,
+    ) -> crate::installable::Installation<'a>
+    where
+        Self: 'a,
+    {
+        let source = self;
+
         let (sender, receiver) = oneshot::channel();
         let operation = stream::once(async move {
-            let result = async {
-                if !self.satisfies(nand) {
-                    return Err(Error::Unsupported(format!(
-                        "a Wii WAD cannot be installed to {}",
-                        nand.platform()
-                    )));
-                }
-                let selected = self.select_title_key()?;
+            let result: Result<_, Error> = async {
+                let selected = source.select_title_key()?;
 
                 let storage = nand.root();
-                let artifact_id = format!("{:016x}", self.title_id());
+                let artifact_id = format!("{:016x}", source.title_id());
                 let old = storage.artifacts().artifact(&artifact_id).await?;
                 let mut shared = SharedContentMap::load(&*storage)?;
                 let mut shared_changed = false;
                 let mut manifest = Vec::new();
                 let mut installed = Vec::new();
-                let content_root =
-                    format!("{}/content", crate::impls::wii::title_path(self.title_id()));
+                let content_root = format!(
+                    "{}/content",
+                    crate::impls::wii::title_path(source.title_id())
+                );
 
-                for content in &self.tmd.contents {
-                    let bytes = self.decrypt_content(content, &selected.key)?;
+                for content in &source.tmd.contents {
+                    let bytes = source.decrypt_content(content, &selected.key)?;
                     let path = if content.is_shared() {
                         let id = match shared.find(&content.sha1) {
                             Some(entry) => entry.id.clone(),
@@ -255,10 +259,10 @@ impl Depot for WiiWadDepot {
 
                 let ticket_path = format!(
                     "ticket/{:08x}/{:08x}.tik",
-                    self.title_id() >> 32,
-                    self.title_id() as u32
+                    source.title_id() >> 32,
+                    source.title_id() as u32
                 );
-                let ticket = self.ticket.bytes_with_key_index(selected.index);
+                let ticket = source.ticket.bytes_with_key_index(selected.index);
                 let copied = storage
                     .install_file(Box::new(Cursor::new(ticket)), &ticket_path)
                     .await?;
@@ -270,12 +274,12 @@ impl Depot for WiiWadDepot {
                 installed.push(ticket_path);
 
                 UidMap::load(&*storage)?
-                    .insert(&*storage, self.title_id())
+                    .insert(&*storage, source.title_id())
                     .await?;
 
                 let tmd_path = format!("{content_root}/title.tmd");
                 let copied = storage
-                    .install_file(Box::new(Cursor::new(self.read_tmd()?)), &tmd_path)
+                    .install_file(Box::new(Cursor::new(source.read_tmd()?)), &tmd_path)
                     .await?;
                 manifest.push(DepotFile::new(
                     PathBuf::from(&tmd_path),
@@ -299,11 +303,11 @@ impl Depot for WiiWadDepot {
 
                 let artifact = Artifact::new(
                     artifact_id,
-                    self.depot_type(),
+                    source.depot_type(),
                     manifest,
-                    format!("{:016x}", self.title_id()),
-                    Some(self.title_version().to_string()),
-                    IconHint::Builtin(self.depot_type()),
+                    format!("{:016x}", source.title_id()),
+                    Some(source.title_version().to_string()),
+                    IconHint::Builtin(source.depot_type()),
                 );
                 nand.record(&artifact).await?;
                 Ok((artifact, installed))
@@ -508,5 +512,18 @@ mod tests {
 
     fn align_usize(value: usize, alignment: usize) -> usize {
         (value + alignment - 1) & !(alignment - 1)
+    }
+}
+
+impl crate::installable::artifacts::DescribeArtifact for WiiWadDepot {
+    fn describe(&self) -> Artifact {
+        Artifact::new(
+            format!("{:016x}", self.title_id()),
+            self.depot_type(),
+            Vec::new(),
+            format!("{:016x}", self.title_id()),
+            Some(self.title_version().to_string()),
+            IconHint::Builtin(self.depot_type()),
+        )
     }
 }

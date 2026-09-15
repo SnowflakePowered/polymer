@@ -51,6 +51,8 @@ impl VolumeOverlay for WiiUSaveRepo {
 
 #[async_trait]
 impl VirtualNand for WiiUNand {
+    crate::nand::nand_depots!(super::depots::WiiUMetaXmlDepot);
+
     fn root(&self) -> Arc<dyn VolumeStorage> {
         self.storage.clone()
     }

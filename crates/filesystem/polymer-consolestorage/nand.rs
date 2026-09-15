@@ -35,6 +35,25 @@ pub trait VirtualNand: Send + Sync {
 
     fn root(&self) -> Arc<dyn VolumeStorage>;
 
+    fn is_dirty(&self) -> Result<bool, Error> {
+        self.root().is_dirty()
+    }
+
+    /// Discard uncommitted NAND contents, preserving its committed artifacts.
+    fn recover(&self) -> Result<(), Error> {
+        self.root().recover()
+    }
+
+    /// Construct an installation from a compatible depot without starting extraction.
+    fn try_install<'a>(
+        &'a self,
+        _path: &std::path::Path,
+    ) -> Result<crate::installable::Installation<'a>, Error> {
+        Err(Error::Unsupported(
+            "This NAND has no depot constructors".into(),
+        ))
+    }
+
     /// Compose this system NAND with its writable save repository. The returned
     /// storage is fixed for the lifetime of the emulating instance.
     fn compose(&self, saves: Arc<dyn SaveRepo>) -> Result<Arc<dyn MountableStorage>, Error>;
@@ -81,3 +100,25 @@ pub trait VirtualNand: Send + Sync {
         self.root().artifacts().uninstall(ids).await
     }
 }
+
+macro_rules! nand_depots {
+    ($($depot:ty),+ $(,)?) => {
+        fn try_install<'a>(&'a self, path: &std::path::Path) -> Result<crate::installable::Installation<'a>, crate::Error> {
+            use crate::installable::Depot;
+            let mut errors = Vec::new();
+            $(
+                match <$depot>::open(path) {
+                    Ok(depot) if depot.satisfies(self) => {
+                        let missing = depot.validate_contents();
+                        if missing.is_empty() { return Ok(crate::installable::Installation::new(depot, self)); }
+                        errors.push(crate::Error::InvalidDepot { root: path.display().to_string(), missing }.to_string());
+                    }
+                    Ok(_) => errors.push("Depot requirements are not satisfied by this NAND".into()),
+                    Err(error) => errors.push(error.to_string()),
+                }
+            )+
+            Err(crate::Error::Unsupported(format!("No compatible depot: {}", errors.join("; "))))
+        }
+    };
+}
+pub(crate) use nand_depots;
