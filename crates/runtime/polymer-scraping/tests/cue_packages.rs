@@ -30,7 +30,7 @@ async fn complete_disc_identifies_imports_and_prepares_without_track_launchables
             .eq_ignore_ascii_case("cue")
     );
     let explicit = Package::from_path(&from_directory.path).unwrap();
-    assert_eq!(explicit.binary_digest, from_directory.binary_digest);
+    assert_eq!(explicit.path, from_directory.path);
     let (first, _) = from_directory.import(&catalog).await.unwrap();
     let (same, created) = explicit.import(&catalog).await.unwrap();
     assert_eq!(same.id, first.id);

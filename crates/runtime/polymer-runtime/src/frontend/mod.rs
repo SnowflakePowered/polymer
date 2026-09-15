@@ -6,6 +6,7 @@
 mod commands;
 pub mod emulator;
 pub mod input;
+mod packages;
 mod quickresume;
 pub mod webrtc;
 pub use commands::{
@@ -605,6 +606,30 @@ impl PolymerHost for FrontendServices {
         })
     }
 
+    fn digest(
+        &self,
+        path: String,
+        binary: bool,
+        algorithm: String,
+    ) -> ApiFuture<Result<String, String>> {
+        use polymer_pluginhost::digest::{DigestAlgorithm, Digestible, PackageBinary};
+        Box::pin(async move {
+            let algorithm: DigestAlgorithm = serde_json::from_value(Value::String(algorithm))
+                .map_err(|error| error.to_string())?;
+            tokio::task::spawn_blocking(move || {
+                let path = std::path::Path::new(&path);
+                if binary {
+                    PackageBinary(path).digest(algorithm)
+                } else {
+                    path.digest(algorithm)
+                }
+            })
+            .await
+            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())
+        })
+    }
+
     fn describe_configuration(
         &self,
         launchable_id: String,
@@ -742,6 +767,21 @@ impl PolymerHost for FrontendServices {
         let controller_sessions = self.controller_sessions.clone();
         let notifications = self.notifications.clone();
         Box::pin(async move {
+            if matches!(path.as_slice(), [name] if name == "onLaunch")
+                || matches!(path.as_slice(), [default, name] if default == "default" && name == "onLaunch")
+            {
+                arguments = match packages::LaunchPackages::prepare(arguments).await {
+                    Ok(arguments) => arguments,
+                    Err(error) => {
+                        let error = polymer_pluginhost::runtime::PluginInvocationError::new(
+                            "Error",
+                            "PACKAGE_DIGEST_FAILED",
+                            error,
+                        );
+                        return serde_json::json!({ "ok": false, "error": error });
+                    }
+                };
+            }
             let (quick_resume, quick_resume_cache) =
                 quickresume::QuickResume::prepare(&handle, &plugin, &path, &mut arguments).await;
             let storage =

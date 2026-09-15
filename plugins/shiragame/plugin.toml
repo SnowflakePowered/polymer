@@ -14,7 +14,6 @@ label = "Shiragame Database"
 [scraper]
 requires = [
     "package.platform",
-    "any(package.serial, package.hash.sha1, package.hash.md5, package.hash.crc32)",
-    "any(package.platform, package.size)",
+    "any(package.serial, package.files)",
 ]
 provides = ["media.cue"]

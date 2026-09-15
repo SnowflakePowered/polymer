@@ -4,9 +4,9 @@ import { Serial } from "pkg:serial.ts";
 const MAX_MATCHES = 128;
 const MAX_CUES = 256;
 const hashes = [
-  { key: "package.hash.sha1", column: "sha1", length: 40 },
-  { key: "package.hash.md5", column: "md5", length: 32 },
-  { key: "package.hash.crc32", column: "crc", length: 8 },
+  { algorithm: "sha1", column: "sha1" },
+  { algorithm: "md5", column: "md5" },
+  { algorithm: "crc32", column: "crc" },
 ] as const;
 type HashColumn = typeof hashes[number]["column"];
 type Dump = { game_id: number; sha1: string | null; md5: string | null; crc: string | null; size: number };
@@ -61,7 +61,7 @@ export class ShiragameMatcher {
   async matchHashes(input: ScrapeInput, platform: string): Promise<{ games: Set<number>; matched: boolean }> {
     const games = new Set<number>();
     let matched = false;
-    for (const fingerprint of this.fingerprints(input)) {
+    for await (const fingerprint of this.fingerprints(input)) {
       const rows = await this.lookup(fingerprint, platform);
       matched ||= rows.length > 0;
       const compatible = rows.filter(row => this.agrees(row, fingerprint));
@@ -98,39 +98,14 @@ export class ShiragameMatcher {
       || row[column]?.toLowerCase() === fingerprint.digests[column]);
   }
 
-  private fingerprints(input: ScrapeInput): Fingerprint[] {
-    const groups = new Map<string, Map<string, Set<string>>>();
-    for (const key of [...hashes.map(hash => hash.key), "package.size"]) {
-      for (const candidate of input[key] ?? []) {
-        if (typeof candidate.value !== "string" && typeof candidate.value !== "number") continue;
-        let fields = groups.get(candidate.source);
-        if (!fields) groups.set(candidate.source, fields = new Map());
-        let values = fields.get(key);
-        if (!values) fields.set(key, values = new Set());
-        values.add(String(candidate.value).trim().toLowerCase());
-      }
+  private async *fingerprints(input: ScrapeInput): AsyncGenerator<Fingerprint> {
+    const files = input.packages.flatMap(package_ => package_.files);
+    if (files.length > MAX_MATCHES) throw new Error("Too many dump fingerprints supplied to Shiragame");
+    for (const file of files) {
+      const digests: Fingerprint["digests"] = {};
+      for (const hash of hashes) digests[hash.column] = await file.digest(hash.algorithm);
+      yield { digests, size: file.size };
     }
-    if (groups.size > MAX_MATCHES) throw new Error("Too many dump fingerprints supplied to Shiragame");
-    return [...groups.values()].flatMap(fields => {
-      const fingerprint = this.fingerprint(fields);
-      return fingerprint ? [fingerprint] : [];
-    });
-  }
-
-  private fingerprint(fields: Map<string, Set<string>>): Fingerprint | undefined {
-    // A flat input with multiple values per source cannot safely associate tracks.
-    if ([...fields.values()].some(values => values.size !== 1)) return;
-    const digests: Fingerprint["digests"] = {};
-    for (const hash of hashes) {
-      const value = fields.get(hash.key)?.values().next().value;
-      if (value === undefined) continue;
-      if (value.length !== hash.length || !/^[0-9a-f]+$/.test(value)) return;
-      digests[hash.column] = value;
-    }
-    const value = fields.get("package.size")?.values().next().value;
-    const size = value === undefined ? undefined : Number(value);
-    if (value !== undefined && (!/^\d+$/.test(value) || !Number.isSafeInteger(size) || size! < 0)) return;
-    return { digests, size };
   }
 
   async matchSerials(input: ScrapeInput, platform: string): Promise<Set<number>> {

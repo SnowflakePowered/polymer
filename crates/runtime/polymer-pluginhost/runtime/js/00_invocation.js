@@ -1,3 +1,4 @@
+import { createPackage } from "ext:polymer_digest/00_digest.js";
 import { op_plugin_emit_event } from "ext:core/ops";
 const progressContext = Object.freeze({ progress: ({ message, completed = null, total = null }) => {
     if (typeof message !== "string" ||
@@ -9,6 +10,17 @@ const progressContext = Object.freeze({ progress: ({ message, completed = null, 
     op_plugin_emit_event("loadprogress", { state: "loading", message, completed, total });
   } });
 async function invoke(entrypoint, path, args) {
+  args = args.map(argument => {
+    if (argument?.__digestToken !== undefined) return createPackage(argument);
+    if (argument?.package === undefined && argument?.launchSet === undefined) return argument;
+    return {
+      ...argument,
+      ...(argument.package === undefined ? {} : { package: createPackage(argument.package) }),
+      ...(argument.launchSet === undefined ? {} : {
+        launchSet: argument.launchSet.map(disc => ({ ...disc, package: createPackage(disc.package) })),
+      }),
+    };
+  });
   const namespace = await import(entrypoint);
   let receiver;
   let value;
@@ -44,6 +56,17 @@ async function invoke(entrypoint, path, args) {
 }
 
 async function invokeOptional(entrypoint, name, args) {
+  args = args.map(argument => {
+    if (argument?.__digestToken !== undefined) return createPackage(argument);
+    if (argument?.package === undefined && argument?.launchSet === undefined) return argument;
+    return {
+      ...argument,
+      ...(argument.package === undefined ? {} : { package: createPackage(argument.package) }),
+      ...(argument.launchSet === undefined ? {} : {
+        launchSet: argument.launchSet.map(disc => ({ ...disc, package: createPackage(disc.package) })),
+      }),
+    };
+  });
   const namespace = await import(entrypoint);
   let receiver = namespace;
   let value = namespace[name];

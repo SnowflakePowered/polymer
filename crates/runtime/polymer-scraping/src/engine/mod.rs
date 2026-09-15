@@ -339,6 +339,10 @@ impl ScrapingEngine {
             metadata.extend(self.inner.catalog.metadata(trigger).await?);
         }
         for value in metadata {
+            // Old catalogs may still contain eagerly imported hash metadata.
+            if value.key.starts_with("package.hash.") || value.key == "package.size" {
+                continue;
+            }
             let scalar = match value.data {
                 MetadataData::Scalar(value) => value,
                 MetadataData::Media {
@@ -354,7 +358,25 @@ impl ScrapingEngine {
                 value: scalar,
             });
         }
-        Ok(input)
+        let mut launchables = self.inner.catalog.launchables_for_binary(root).await?;
+        if trigger != root {
+            launchables.extend(self.inner.catalog.launchables_for_binary(trigger).await?);
+        }
+        let packages = tokio::task::spawn_blocking(move || {
+            launchables
+                .into_iter()
+                .map(|launchable| {
+                    crate::Package::from_launchable(launchable)
+                        .map(|package| package.scrape_value())
+                })
+                .collect::<Result<Vec<_>, GameCatalogError>>()
+        })
+        .await
+        .map_err(|error| ScrapingError::Io(std::io::Error::other(error)))??;
+        Ok(ScrapeInput {
+            metadata: input,
+            packages,
+        })
     }
 
     async fn run_plugin(

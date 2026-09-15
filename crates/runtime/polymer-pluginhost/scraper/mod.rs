@@ -17,7 +17,37 @@ pub struct ScrapeCandidate {
     pub value: ScrapeScalar,
 }
 
-pub type ScrapeInput = BTreeMap<String, Vec<ScrapeCandidate>>;
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct ScrapeInput {
+    pub metadata: BTreeMap<String, Vec<ScrapeCandidate>>,
+    pub packages: Vec<serde_json::Value>,
+}
+
+impl From<BTreeMap<String, Vec<ScrapeCandidate>>> for ScrapeInput {
+    fn from(metadata: BTreeMap<String, Vec<ScrapeCandidate>>) -> Self {
+        Self {
+            metadata,
+            packages: Vec::new(),
+        }
+    }
+}
+
+impl ScrapeInput {
+    fn contains(&self, key: &str) -> bool {
+        match key {
+            "package.files" => self.packages.iter().any(|package| {
+                package["files"]
+                    .as_array()
+                    .is_some_and(|files| !files.is_empty())
+            }),
+            "package" => !self.packages.is_empty(),
+            _ => self
+                .metadata
+                .get(key)
+                .is_some_and(|values| !values.is_empty()),
+        }
+    }
+}
 
 /// Scraper capability projected from a registered scripted plugin.
 pub trait ScraperPluginInstance: PluginInstance {
@@ -28,23 +58,29 @@ pub trait ScraperPluginInstance: PluginInstance {
         self.requirements()
             .iter()
             .all(|requirement| match requirement {
-                ScrapeRequirement::Key(key) => {
-                    input.get(key).is_some_and(|values| !values.is_empty())
-                }
-                ScrapeRequirement::Any(keys) => keys
-                    .iter()
-                    .any(|key| input.get(key).is_some_and(|values| !values.is_empty())),
+                ScrapeRequirement::Key(key) => input.contains(key),
+                ScrapeRequirement::Any(keys) => keys.iter().any(|key| input.contains(key)),
             })
     }
 
     fn requested_input(&self, input: &ScrapeInput) -> ScrapeInput {
-        self.requirements()
+        let metadata = self
+            .requirements()
             .iter()
             .flat_map(|requirement| match requirement {
                 ScrapeRequirement::Key(key) => std::slice::from_ref(key).iter(),
                 ScrapeRequirement::Any(keys) => keys.iter(),
             })
-            .filter_map(|key| input.get(key).map(|values| (key.clone(), values.clone())))
-            .collect()
+            .filter_map(|key| {
+                input
+                    .metadata
+                    .get(key)
+                    .map(|values| (key.clone(), values.clone()))
+            })
+            .collect();
+        ScrapeInput {
+            metadata,
+            packages: input.packages.clone(),
+        }
     }
 }

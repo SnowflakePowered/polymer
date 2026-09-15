@@ -1,4 +1,5 @@
-mod hashes;
+mod files;
+mod identity;
 
 use gumshoe::{
     GeneralIdentifier, IdentifyPackage, PlatformIdentifier,
@@ -7,8 +8,7 @@ use gumshoe::{
 };
 use image::{DynamicImage, ImageFormat, codecs::gif::GifEncoder};
 use polymer_library::{
-    GameCatalog, GameCatalogError, IdentifiedLaunchable, Launchable, MetadataInput,
-    MetadataInputData, MetadataValue,
+    GameCatalogError, Launchable, MetadataInput, MetadataInputData, MetadataValue,
 };
 use shiratsu_naming::naming::{
     TokenizedName,
@@ -26,7 +26,8 @@ use std::{
 ///
 /// Metadata and extracted media stay host-private while the package is serialized
 /// into the frontend realm. A package produced by [`Package::identify`] can later
-/// be imported without identifying or parsing the file a second time.
+/// be imported without extracting metadata a second time. Binary hashing is
+/// deferred until a digest request, library import, or launch needs it.
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Package {
@@ -34,7 +35,7 @@ pub struct Package {
     pub bundle: Option<crate::LaunchBundle>,
     #[serde(skip)]
     manifest: Option<polymer_library::PackageManifest>,
-    #[serde(skip)]
+    #[serde(default, rename = "__digestPath")]
     pub path: PathBuf,
     pub filename: String,
     pub platform: String,
@@ -47,10 +48,9 @@ pub struct Package {
 
 #[derive(Clone, Debug)]
 struct PackageImport {
-    launchable: IdentifiedLaunchable,
+    parent_binary_id: Option<uuid::Uuid>,
     gumshoe: Vec<MetadataInput>,
     filename: Vec<MetadataInput>,
-    raw_file: Vec<MetadataInput>,
 }
 
 impl Package {
@@ -79,8 +79,9 @@ impl Package {
         })
     }
 
-    /// Prepare launch-only data without changing binary identity or reading ROM contents.
+    /// Prepare launch data, computing identity only for an unregistered package.
     pub fn prepare_launch(&mut self) -> Result<(), crate::ScrapingError> {
+        self.ensure_binary_identity()?;
         if let Some(manifest) = &mut self.manifest {
             // Direct path launches have no scrape job; registered packages must already be prepared.
             if self.import.is_some() && manifest.template.is_none() {
@@ -148,46 +149,13 @@ impl Package {
                     path: path.clone(),
                     platform: format!("{:?}", package.platform()),
                 })?;
-        let binary = package
-            .binaries(NormalizationOptions::decrypt_common())
-            .next()
-            .ok_or_else(|| crate::ScrapingError::Identify {
-                path: path.clone(),
-                reason: "Gumshoe returned no executable binary".to_owned(),
-            })?
-            .map_err(|source| crate::ScrapingError::Identify {
-                path: path.clone(),
-                reason: source.to_string(),
-            })?;
-        let binary_blake3: [u8; 32] = binary
-            .digest::<blake3::Hasher>(None)
-            .map_err(|source| crate::ScrapingError::Identify {
-                path: path.clone(),
-                reason: source.to_string(),
-            })?
-            .into();
         let serial = package.serial().map(str::to_owned);
         let title_id = package.titleid();
-        let launchable = IdentifiedLaunchable {
-            path: path.clone(),
-            binary_blake3,
-            serial: serial.clone(),
-            title_id: title_id.clone(),
-            parent_binary_id,
-            platform: platform.to_owned(),
-        };
-        let gumshoe = Self::gumshoe_metadata(package.as_ref(), platform, binary_blake3);
+        let gumshoe = Self::gumshoe_metadata(package.as_ref(), platform);
         let filename = Self::filename_metadata(&path);
-        let raw_file = if let Some(manifest) = &manifest {
-            let mut metadata = Vec::new();
-            for file in &manifest.files {
-                metadata.extend(hashes::FileDigests::metadata(&file.path)?);
-            }
+        if let Some(manifest) = &manifest {
             crate::ingest::CuePreparation::validate_files(manifest)?;
-            metadata
-        } else {
-            hashes::FileDigests::metadata(&path)?
-        };
+        }
         let name = path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
@@ -201,37 +169,13 @@ impl Package {
             platform: platform.to_owned(),
             serial,
             title_id,
-            binary_digest: blake3::Hash::from_bytes(binary_blake3).to_hex().to_string(),
+            binary_digest: String::new(),
             import: Some(PackageImport {
-                launchable,
+                parent_binary_id,
                 gumshoe,
                 filename,
-                raw_file,
             }),
         })
-    }
-
-    pub async fn import(
-        self,
-        catalog: &GameCatalog,
-    ) -> Result<(Launchable, bool), GameCatalogError> {
-        let seed = self.import.ok_or_else(|| {
-            GameCatalogError::InvalidData(
-                "a Package without import metadata cannot be imported; identify it from its path first"
-                    .to_owned(),
-            )
-        })?;
-        catalog
-            .import_package(
-                seed.launchable,
-                vec![
-                    ("host:gumshoe".to_owned(), seed.gumshoe),
-                    ("host:shiratsu".to_owned(), seed.filename),
-                    ("host:raw-file".to_owned(), seed.raw_file),
-                ],
-                self.manifest,
-            )
-            .await
     }
 
     fn scalar(key: &str, source: &str, value: impl Into<String>) -> MetadataInput {
@@ -244,19 +188,8 @@ impl Package {
         }
     }
 
-    fn gumshoe_metadata(
-        package: &dyn gumshoe::Package,
-        platform: &str,
-        digest: [u8; 32],
-    ) -> Vec<MetadataInput> {
-        let mut result = vec![
-            Self::scalar("package.platform", "Gumshoe", platform),
-            Self::scalar(
-                "package.hash.blake3",
-                "Gumshoe",
-                blake3::Hash::from_bytes(digest).to_hex().to_string(),
-            ),
-        ];
+    fn gumshoe_metadata(package: &dyn gumshoe::Package, platform: &str) -> Vec<MetadataInput> {
+        let mut result = vec![Self::scalar("package.platform", "Gumshoe", platform)];
         if let Some(serial) = package.serial() {
             result.push(Self::scalar("package.serial", "Gumshoe", serial));
         }

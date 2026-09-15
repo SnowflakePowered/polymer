@@ -49,20 +49,18 @@ ambiguity fails the scrape rather than silently choosing or truncating matches.
 Successful rescapes replace only this plugin's media; failures preserve the last
 successful result, and an empty successful match clears stale shiragame candidates.
 
-## Importing hashes
+## Lazy file hashes
 
-Polymer imports `package.hash.sha1`, `package.hash.md5`, `package.hash.crc32`, and
-`package.size` from one streaming pass over the original file. These describe the
-complete file bytes, independently of the normalized BLAKE3 executable identity.
-Their shared source identifies the file fingerprint when root and child metadata
-are combined. Directories and recognized compressed/container formats are skipped;
-this implementation does not calculate decompressed CHD or per-track hashes.
-Serial matching remains available for those packages.
+The host supplies packages and raw dump file objects through the scraper context.
+Shiragame requests SHA-1, MD5, and CRC32 with `file.digest(algorithm)` and checks
+the file's size. Each file stays distinct when root and child packages or CUE
+backing files are combined. Import does not compute or persist these dump hashes.
+Existing launchables can be scraped directly without reimporting for hashes.
 
-For an existing game imported before these hashes were available, re-import the
-same launchable and then start a scrape. Re-import enriches its metadata without
-creating a duplicate game. Header stripping and decryption are not applied to these
-dump hashes, so only byte-identical dump representations match.
+Directories and recognized compressed/container formats are excluded from raw
+dump matching; serial matching remains available. Header stripping and decryption
+are not applied to file digests, so only byte-identical dump representations match.
+`package.binary.digest()` is the separate normalized-executable interface.
 
 ## Cache lifecycle
 

@@ -2,6 +2,29 @@ use super::{GameCatalog, GameCatalogError, Launchable, PathBuf, Uuid};
 use serde_json::Value;
 
 impl GameCatalog {
+    pub async fn launchables_for_binary(
+        &self,
+        binary_id: Uuid,
+    ) -> Result<Vec<Launchable>, GameCatalogError> {
+        let connection = self.connection().await?;
+        let mut rows = connection
+            .query(
+                "SELECT id FROM launchables WHERE binary_id = ?1 ORDER BY path",
+                [Self::id(binary_id)],
+            )
+            .await?;
+        let mut ids = Vec::new();
+        while let Some(row) = rows.next().await? {
+            ids.push(Self::uuid(row.get_value(0)?)?);
+        }
+        drop(rows);
+        let mut launchables = Vec::new();
+        for id in ids {
+            launchables.push(self.launchable(id).await?);
+        }
+        Ok(launchables)
+    }
+
     pub async fn launchable(&self, id: Uuid) -> Result<Launchable, GameCatalogError> {
         let connection = self.connection().await?;
         let mut rows = connection.query(

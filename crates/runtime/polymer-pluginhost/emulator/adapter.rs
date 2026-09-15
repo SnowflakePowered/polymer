@@ -107,7 +107,7 @@ impl<'runtime> EmulatorWorker<'runtime> {
     ) -> Result<PendingDenoLaunch, DenoPluginError> {
         let EmulatorLaunchInvocation {
             plugin,
-            arguments,
+            mut arguments,
             configuration,
             storage: _,
             quick_resume: _,
@@ -119,6 +119,11 @@ impl<'runtime> EmulatorWorker<'runtime> {
                 "onLaunch arguments must be an object".to_owned(),
             ));
         }
+        self.runtime
+            .op_state()
+            .borrow_mut()
+            .borrow_mut::<crate::digest::DigestState>()
+            .launch(&mut arguments);
         let configuration_id = self.insert_configuration(configuration, &topology);
         let result = async {
             let launch = ExtensionFunction::get(self.runtime, "__polymerEmulator", "launch")
