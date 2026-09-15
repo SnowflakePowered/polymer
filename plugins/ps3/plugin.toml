@@ -1,0 +1,15 @@
+[plugin]
+id = "ps3"
+version = "0.1.0"
+class = "platform"
+main = "ps3.ts"
+
+[plugin.permissions.net]
+allowed-hosts = ["dus01.ps3.update.playstation.net"]
+
+[[plugin.caches]]
+key = "firmware"
+label = "PlayStation 3 system software"
+
+[platform]
+platforms = ["SONY_PS3"]

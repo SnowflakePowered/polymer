@@ -22,7 +22,14 @@ impl DepotSource {
         progress: impl Fn(String),
     ) -> Result<Value, String> {
         let nand = device.open(manager).await?;
-        let mut installation = nand.try_install(path).map_err(|error| error.to_string())?;
+        let installation = nand.try_install(path).map_err(|error| error.to_string())?;
+        Self::finish_install(installation, progress).await
+    }
+
+    pub async fn finish_install(
+        mut installation: polymer_consolestorage::installable::Installation<'_>,
+        progress: impl Fn(String),
+    ) -> Result<Value, String> {
         while let Some(item) = installation.next().await {
             progress(item.map_err(|error| error.to_string())?);
         }

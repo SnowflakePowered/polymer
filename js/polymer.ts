@@ -369,9 +369,10 @@ export interface ConfigurationApi {
 
 export type ConsoleStorageKind = "nand" | "saveRepo" | "memoryCard" | "battery";
 export type CreatableConsoleStorageKind = Exclude<ConsoleStorageKind, "battery">;
+export type DepotType = "system" | "app" | "appcontent" | "appupdate" | "appticket";
 
 export interface StorageArtifact {
-  id: string; label: string; version: string | null; depotType: number; byteLength: number;
+  id: string; label: string; version: string | null; depotType: DepotType; byteLength: number;
 }
 export interface StorageInspection { id: string; platform: string; minimal: boolean; dirty: boolean; artifacts: StorageArtifact[] }
 export interface StoragePreflight { issues: { code: string; message: string; severity: "blocking" | "warning"; device?: string }[] }

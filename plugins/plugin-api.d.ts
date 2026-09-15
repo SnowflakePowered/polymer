@@ -272,7 +272,8 @@ declare module "polymer:api" {
 
 declare module "polymer:api" {
     export interface PlatformRequirement { completion?: "minimal" | "full" | "verified"; artifacts?: string[] }
-    export interface PlatformArtifact { id: string; label: string; version: string | null; depotType: number; byteLength: number }
+    export type DepotType = "system" | "app" | "appcontent" | "appupdate" | "appticket";
+    export interface PlatformArtifact { id: string; label: string; version: string | null; depotType: DepotType; byteLength: number }
     export interface PreflightRequest {
         platform: string;
         operation: "launch" | "install" | "bootstrap";
@@ -280,14 +281,14 @@ declare module "polymer:api" {
         devices: Record<string, { id: string; platform: string; minimal: boolean; dirty: boolean; artifacts: PlatformArtifact[] } | null>;
         settings: Record<string, unknown> | null;
         package?: Package | null;
-        depot_kind?: number | null;
+        depot_kind?: DepotType | null;
     }
     export interface PreflightResult { issues: { code: string; message: string; severity: "blocking" | "warning"; device?: string }[] }
     export interface BootstrapDevice {
         readonly artifacts: readonly PlatformArtifact[];
         readonly id: string;
         readonly platform: string;
-        install(source: { path: string; cache?: string }): Promise<PlatformArtifact>;
+        install(source: string | PluginCacheFile): Promise<PlatformArtifact>;
     }
     export interface BootstrapContext extends PluginProgressContext { readonly settings: Record<string, unknown> }
 }

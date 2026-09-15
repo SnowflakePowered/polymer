@@ -16,7 +16,7 @@ pub struct PreflightRequest {
     #[serde(default)]
     pub settings: Value,
     #[serde(default)]
-    pub depot_kind: Option<u8>,
+    pub depot_kind: Option<polymer_consolestorage::installable::DepotType>,
     #[serde(default)]
     pub package: Option<Value>,
 }
