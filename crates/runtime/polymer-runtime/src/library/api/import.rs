@@ -14,7 +14,7 @@ impl Handler<LibraryImport> for LibraryBackend {
         _: &mut Context<Self>,
     ) -> Self::Result {
         let scraping = self.scraping.clone();
-        let firmware = self.firmware_runtime.handle();
+        let firmware_root = self.firmware_root.clone();
         self.mutate(async move {
             let path = PathBuf::from(path);
             let identification_path = path.clone();
@@ -23,9 +23,10 @@ impl Handler<LibraryImport> for LibraryBackend {
             match detected {
                 Ok(packages) => Ok(json!({ "kind": "games", "imports": Self::import_games(&scraping, packages).await? })),
                 Err(error) if error.firmware_candidate() && path.is_file() => {
-                    match firmware.install_firmware(&path).await {
+                    let firmware = polymer_library::firmware::FirmwareStore::open(firmware_root).await.map_err(|error| error.to_string())?;
+                    match firmware.install_bios(&path).await {
                         Ok(Some(installed)) => Ok(json!({ "kind": "firmware", "firmware": installed })),
-                        Ok(None) => Err(format!("{error}; no platform recognized this file as firmware")),
+                        Ok(None) => Err(format!("{error}; no consolespec BIOS hash matched this file")),
                         Err(firmware_error) => Err(format!("{error}; {firmware_error}")),
                     }
                 }

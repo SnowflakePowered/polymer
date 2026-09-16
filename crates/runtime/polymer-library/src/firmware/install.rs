@@ -1,49 +1,45 @@
-use super::{FirmwareDescription, FirmwareError, FirmwareInstallDescriptor, FirmwareStore};
+use super::{FirmwareDescription, FirmwareError, FirmwareStore, bios::BiosFile};
+use std::path::Path;
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
 impl FirmwareStore {
-    pub async fn install(
+    /// Recognize the complete file using consolespec BIOS hashes and install the first matching entry.
+    pub async fn install_bios(
         &self,
-        batch: &[FirmwareInstallDescriptor],
-        platforms: &[String],
-    ) -> Result<Vec<FirmwareDescription>, FirmwareError> {
-        FirmwareInstallDescriptor::validate_batch(batch, platforms)?;
-        let mut prepared = Vec::new();
-        for item in batch {
-            let digest = self.stage(item).await?;
-            prepared.push((
-                FirmwareDescription {
-                    platform: item.platform.clone(),
-                    firmware_type: item.firmware_type.clone(),
-                    label: item.label.clone(),
-                    byte_length: item.contents.len() as u64,
-                },
-                digest,
-            ));
-        }
+        path: &Path,
+    ) -> Result<Option<FirmwareDescription>, FirmwareError> {
+        let path = path.to_owned();
+        let Some(bios) = tokio::task::spawn_blocking(move || BiosFile::read(&path))
+            .await
+            .map_err(|error| {
+                FirmwareError::Invalid(format!("BIOS detection task failed: {error}"))
+            })??
+        else {
+            return Ok(None);
+        };
+        let item = &bios.description;
+        self.stage(&item.platform, &bios).await?;
         let mut connection = self.database.connect()?;
         let transaction = connection
             .transaction_with_behavior(turso::transaction::TransactionBehavior::Immediate)
             .await?;
-        for (item, digest) in &prepared {
-            transaction.execute(
+        transaction.execute(
                 "INSERT INTO firmware (platform, type, label, digest, byte_length) VALUES (?, ?, ?, ?, ?)
                  ON CONFLICT(platform, type, label) DO UPDATE SET digest = excluded.digest, byte_length = excluded.byte_length",
-                turso::params![item.platform.clone(), item.firmware_type.clone(), item.label.clone(), digest.clone(), item.byte_length as i64],
+                turso::params![item.platform.clone(), item.firmware_type.clone(), item.label.clone(), bios.digest.clone(), item.byte_length as i64],
             ).await?;
-        }
         transaction.commit().await?;
-        Ok(prepared.into_iter().map(|(item, _)| item).collect())
+        Ok(Some(bios.description))
     }
 
-    async fn stage(&self, item: &FirmwareInstallDescriptor) -> Result<String, FirmwareError> {
-        let digest = blake3::hash(&item.contents).to_hex().to_string();
-        let directory = self.root.join(&item.platform).join("objects");
+    async fn stage(&self, platform: &str, bios: &BiosFile) -> Result<(), FirmwareError> {
+        let digest = &bios.digest;
+        let directory = self.root.join(platform).join("objects");
         tokio::fs::create_dir_all(&directory).await?;
-        let destination = directory.join(&digest);
+        let destination = directory.join(digest);
         if tokio::fs::try_exists(&destination).await? {
-            return Ok(digest);
+            return Ok(());
         }
         let temporary = directory.join(format!(".{}.tmp", Uuid::now_v7().simple()));
         let result = async {
@@ -52,7 +48,7 @@ impl FirmwareStore {
                 .create_new(true)
                 .open(&temporary)
                 .await?;
-            file.write_all(&item.contents).await?;
+            file.write_all(&bios.contents).await?;
             file.sync_all().await?;
             drop(file);
             // Publishing by hard link is atomic and never overwrites an existing object.
@@ -64,6 +60,6 @@ impl FirmwareStore {
         .await;
         let _ = tokio::fs::remove_file(&temporary).await;
         result?;
-        Ok(digest)
+        Ok(())
     }
 }

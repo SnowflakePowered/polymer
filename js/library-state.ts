@@ -81,13 +81,12 @@ export class LibraryState {
       const result = await this.library.import({ path });
       if (result.kind === "firmware") {
         const revision = ++this.firmwareRevision;
-        for (const item of result.firmware) {
-          const key = JSON.stringify([item.platform, item.type, item.label]);
-          this.firmwareActivities.set(key, {
-            id: `firmware:${key}:${revision}`, title: "Firmware installed",
-            message: `${item.label} (${item.platform})`, state: "complete",
-          });
-        }
+        const item = result.firmware;
+        const key = JSON.stringify([item.platform, item.type, item.label]);
+        this.firmwareActivities.set(key, {
+          id: `firmware:${key}:${revision}`, title: "Firmware installed",
+          message: `${item.label} (${item.platform})`, state: "complete",
+        });
         return;
       }
       for (const { launchable, scrapeJob } of result.imports) {

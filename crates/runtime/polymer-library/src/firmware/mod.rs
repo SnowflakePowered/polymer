@@ -1,13 +1,10 @@
 //! User-supplied hardware data, independent of NANDs and game packages.
 
+mod bios;
 mod install;
 
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::BTreeSet,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, thiserror::Error)]
 pub enum FirmwareError {
@@ -29,41 +26,6 @@ pub struct FirmwareDescription {
     pub firmware_type: String,
     pub label: String,
     pub byte_length: u64,
-}
-
-/// Resolved installation contents; omitted JS contents are bound to the input snapshot.
-#[derive(Clone, Debug)]
-pub struct FirmwareInstallDescriptor {
-    pub platform: String,
-    pub firmware_type: String,
-    pub label: String,
-    pub contents: Arc<[u8]>,
-}
-
-impl FirmwareInstallDescriptor {
-    pub fn validate_batch(batch: &[Self], platforms: &[String]) -> Result<(), FirmwareError> {
-        let mut slots = BTreeSet::new();
-        for item in batch {
-            if !platforms.contains(&item.platform) || !FirmwareStore::valid_platform(&item.platform)
-            {
-                return Err(FirmwareError::Invalid(format!(
-                    "undeclared platform {}",
-                    item.platform
-                )));
-            }
-            if item.firmware_type.trim().is_empty() || item.label.trim().is_empty() {
-                return Err(FirmwareError::Invalid(
-                    "type and label must be nonempty".into(),
-                ));
-            }
-            if !slots.insert((&item.platform, &item.firmware_type, &item.label)) {
-                return Err(FirmwareError::Invalid(
-                    "duplicate slot in firmware batch".into(),
-                ));
-            }
-        }
-        Ok(())
-    }
 }
 
 #[derive(Clone)]
@@ -99,8 +61,7 @@ impl FirmwareStore {
         Ok(Self { root, database })
     }
 
-    // Platform names are validated against the plugin manifest by the host. Restrict
-    // path components here too, including callers which bypass the plugin runtime.
+    // Restrict stored platform names to known machines and safe path components.
     fn valid_platform(platform: &str) -> bool {
         consolespec::MachineSpec::try_from(platform).is_ok()
             && platform

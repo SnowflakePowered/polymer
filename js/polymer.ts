@@ -459,7 +459,7 @@ export type FirmwareDescription = Readonly<{
 export type GameImport = Readonly<{ launchable: LibraryLaunchable; scrapeJob: ScrapeJob | null }>;
 export type LibraryImportResult =
   | Readonly<{ kind: "games"; imports: readonly GameImport[] }>
-  | Readonly<{ kind: "firmware"; firmware: readonly FirmwareDescription[] }>;
+  | Readonly<{ kind: "firmware"; firmware: FirmwareDescription }>;
 
 export interface LibraryApi extends EventTarget {
   import(input: { path: string }): Promise<LibraryImportResult>;

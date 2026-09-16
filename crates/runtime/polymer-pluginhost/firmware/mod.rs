@@ -1,7 +1,7 @@
 mod bindings;
 pub(crate) use bindings::extension;
 
-use polymer_library::firmware::{FirmwareError, FirmwareInstallDescriptor, FirmwareStore};
+use polymer_library::firmware::{FirmwareError, FirmwareStore};
 use std::{path::PathBuf, sync::Arc};
 use tokio::sync::OnceCell;
 
@@ -9,9 +9,7 @@ use tokio::sync::OnceCell;
 pub(crate) struct FirmwareBinding {
     pub root: PathBuf,
     pub platform: Option<String>,
-    pub input: Option<(String, Arc<[u8]>)>,
     store: Arc<OnceCell<FirmwareStore>>,
-    pub results: Arc<parking_lot::Mutex<Vec<FirmwareInstallDescriptor>>>,
 }
 
 impl FirmwareBinding {
@@ -19,9 +17,7 @@ impl FirmwareBinding {
         Self {
             root,
             platform: None,
-            input: None,
             store: Default::default(),
-            results: Default::default(),
         }
     }
 
