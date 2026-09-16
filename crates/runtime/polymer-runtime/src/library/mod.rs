@@ -37,7 +37,7 @@ impl Actor for LibraryReader {
 }
 
 struct LibraryBackend {
-    firmware_runtime: Arc<polymer_pluginhost::runtime::PluginRuntime>,
+    firmware_root: std::path::PathBuf,
     catalog: Arc<GameCatalog>,
     scraping: polymer_scraping::ScrapingEngine,
     _lifetime: Rc<LibraryActorLifetime>,
@@ -70,11 +70,7 @@ impl LibraryService {
         directories: Directories,
     ) -> Result<Self, std::io::Error> {
         let media = server::MediaServer::start(catalog.clone()).await?;
-        let firmware_runtime = Arc::new(polymer_pluginhost::runtime::PluginRuntime::new(
-            plugins.clone(),
-            directories.clone(),
-            Default::default(),
-        ));
+        let firmware_root = directories.firmware();
         let scraping = polymer_scraping::ScrapingEngine::new(catalog.clone(), plugins, directories);
         if let Err(error) = scraping.resume().await {
             tracing::warn!(%error, "could not resume scrape jobs");
@@ -98,7 +94,7 @@ impl LibraryService {
                     let writer = LibraryBackend::create(move |ctx| {
                         ctx.set_mailbox_capacity(0);
                         LibraryBackend {
-                            firmware_runtime,
+                            firmware_root,
                             catalog: actor_catalog,
                             scraping: actor_scraping,
                             _lifetime: lifetime,

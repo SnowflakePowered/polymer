@@ -294,24 +294,14 @@ declare module "polymer:consolestorage" {
     export const resources: { inspect(path: string): { exists: boolean; size?: number; directory?: boolean } };
 }
 
-/** User-supplied hardware data, separate from downloadable system software and NANDs. */
+/** User-supplied BIOS files recognized by consolespec, separate from system software and keys. */
 declare module "polymer:api" {
-    export interface FirmwareInstallDescriptor {
-        readonly platform: string;
-        readonly type: string;
-        readonly label: string;
-        /** Omit to install the entire checked input file. */
-        readonly contents?: Uint8Array;
-    }
     export interface FirmwareDescription {
         readonly platform: string;
         readonly type: string;
         readonly label: string;
         readonly byteLength: number;
     }
-    export type OnCheckFirmware = (file: FileEntry) =>
-        readonly FirmwareInstallDescriptor[] | null | undefined |
-        Promise<readonly FirmwareInstallDescriptor[] | null | undefined>;
     /** Mixed into onLaunch arguments and the onBootstrap context by the host. */
     export interface FirmwareContext { readonly firmwareStore: FirmwareStore }
     export interface FirmwareStore {
