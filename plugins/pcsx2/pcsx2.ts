@@ -5,6 +5,7 @@ import type {
     Configuration as HostConfiguration,
     ControllerChangeContext as HostControllerChangeContext,
     Filesystem,
+    FirmwareContext,
     Resource,
     PauseResumeContext,
 } from "polymer:api";
@@ -44,7 +45,7 @@ type Configuration = HostConfiguration<{
         "emucore-gs": { renderer: number },
 }>;
 
-type EmulatorLaunchArgs = {
+type EmulatorLaunchArgs = FirmwareContext & {
     launchPath: string,
     console: string,
     configuration: Configuration,
@@ -52,14 +53,15 @@ type EmulatorLaunchArgs = {
     storage: Readonly<{ mem1?: Resource, mem2?: Resource }>,
 };
 
-function basename(path: string): string {
-    const name = path.replaceAll("\\", "/").split("/").at(-1);
-    if (!name) throw new TypeError(`path has no filename: ${path}`);
-    return name;
-}
-
-export const onLaunch = (args: EmulatorLaunchArgs) => {
-    const biosName = basename(config.plugin.config.bios);
+export const onLaunch = async (args: EmulatorLaunchArgs) => {
+    const bios = (await args.firmwareStore.list()).find(entry =>
+        entry.platform === "SONY_PS2" && entry.byteLength === 4 * 1024 * 1024
+    );
+    if (!bios) {
+        throw new Error("PCSX2 requires a PS2 BIOS. Drag and drop a PS2 BIOS file into Polymer, then launch again.");
+    }
+    const biosFile = await args.firmwareStore.open(bios.label);
+    const biosName = "bios.bin";
 
     // Keep the immutable PCSX2 distribution separate from invocation-local
     // state. Portable mode only needs its fixed `inis/` child to be writable;
@@ -73,7 +75,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
             format: config.plugin.config.memory_card_format,
         });
     }
-    args.filesystem.mountHostFile(`/User/bios/${biosName}`, config.plugin.config.bios, { mode: "r" });
+    args.filesystem.mountFile(`/User/bios/${biosName}`, biosFile, { mode: "r" });
     const gamePath = args.filesystem.mountPackage("/Game");
     args.filesystem.setWorkingDirectory("/PCSX2");
     args.filesystem.setProfile({

@@ -1,38 +1,37 @@
 # Firmware API
 
-Firmware storage holds user-supplied BIOS files identified by consolespec. Key storage is a separate mechanism and is outside this API's import flow. Downloadable system updates and NAND installation retain their existing flows.
+Firmware storage holds user-supplied BIOS files identified by consolespec. System updates use their own installation flow. Keys belong to the separate keystore, which is outside this API.
 
 ## Recognition and installation
 
-On drag-and-drop, Gumshoe runs first. If identification rejects a regular file, the host calculates its complete-file MD5 and SHA-256 hashes and compares them with the BIOS hashes in `consolespec::MachineSpec::all()`.
+On drag-and-drop, Gumshoe runs first. If identification rejects a regular file, the host compares its complete-file MD5 and SHA-256 hashes with consolespec BIOS definitions. The first matching BIOS supplies the platform and all known names; its first name is the display label. Each input installs exactly one description. Filenames do not affect recognition.
 
-Either listed hash can identify a BIOS. The first match supplies the platform from `MachineSpec::id()` and the label from `Bios::name()`, with type `bios`. Each file installs exactly one firmware description. Filenames do not affect identification. A file with no matching BIOS hash is rejected.
-
-The host checks and saves the same immutable file snapshot. The exact `(platform, type, label)` tuple is the primary key; reimport replaces that slot. No BIOS bytes are passed to plugins for recognition or sent to scrapers.
+The host retains an opened file handle through recognition and installation. On Windows it permits shared reads but denies writes and replacement during import. Only recognized BIOS files are streamed into a temporary destination and atomically published, using bounded memory. Recognition computes and caches only the digests it needs using streaming reads. Known consolespec hashes are stored only in the lookup index. Enumeration contains no hashes. To calculate a digest, open the file and call `file.digest(algorithm)`; the existing pluginhost `Digestible` implementation reads its actual stored bytes on demand. BIOS bytes are never sent to plugins for recognition or to scrapers.
 
 ## Reading and mounting
 
-`onLaunch` receives `args.firmwareStore`, and `onBootstrap(device, context)` receives `context.firmwareStore`. Both use `FirmwareContext` from `polymer:api`. The host binds the store to the launch console or bootstrap device; callers cannot redirect it by changing callback arguments.
+`onLaunch` receives `args.firmwareStore`; `onBootstrap(device, context)` receives `context.firmwareStore`. The host scopes each store to the launch console or bootstrap device platform.
 
 ```ts
-import type { FirmwareContext, Filesystem } from "polymer:api";
-
-async function configureBios(args: FirmwareContext & { filesystem: Filesystem }) {
-  const bios = (await args.firmwareStore.list()).find(entry =>
-    entry.type === "bios" && entry.label === "Recognized BIOS variant"
-  );
-  if (!bios) throw new Error("Add the required BIOS using drag-and-drop.");
-  const file = await args.firmwareStore.open(bios.type, bios.label);
-  args.filesystem.mountFile("/system/bios.bin", file, { mode: "r" });
-}
+const file = await args.firmwareStore.open("scph1001.bin");
+// Equivalent:
+const named = await args.firmwareStore.open({ name: "scph1001.bin" });
+const exact = await args.firmwareStore.open({ sha256: expectedSha256 });
+args.filesystem.mountFile("/system/bios.bin", file, { mode: "r" });
 ```
 
-`list()` returns descriptions containing `platform`, `type`, `label`, and `byteLength`. `open(type, label)` returns the existing read-only `FileEntry`, with the label as its name. Lookup uses the bound platform together with the supplied type and label. Missing entries reject. Opened and mounted files keep their original contents across replacement; later opens see the replacement.
+`open` accepts a name string, `{ name }`, or an object with `md5`, `sha1`, and/or `sha256`. With multiple hashes, only the first property is used; failure does not try later hashes. Names are exact and case-sensitive. Hash hexadecimal is case-insensitive. Empty lookups, missing matches, and ambiguous matches reject. Use a unique hash to disambiguate a name.
 
-The library allocates `<storage>/firmware/firmware.db` for metadata and `<storage>/firmware/<platform>/objects/<blake3>` for immutable contents. Superseded objects are retained in this initial implementation.
+`list()` returns one description per installed BIOS, containing `platform`, `label`, `names`, and `byteLength`. Aliases do not duplicate enumeration entries. An empty store returns `[]`.
+
+Opened files are read-only `FileEntry` resources named with the display label, supporting existing byte, text, and digest methods. Opened and mounted files retain their original content across replacement; later opens see the replacement.
+
+## Storage
+
+The library allocates `<storage>/firmware/firmware.db` and immutable blobs at `<storage>/firmware/<platform>/objects/<blake3>`. Metadata uses `(platform, label)` as its primary key. Separate `firmware_names` and `firmware_hashes` tables provide indexed, platform-scoped lookups. Import updates metadata, ordered names, and hashes in one transaction after staging content. Reimport replaces that slot. Superseded blobs are retained. This unshipped schema has no migration.
 
 ## Frontend import
 
-`Polymer.library.import({ path })` returns either `{ kind: "games", imports }` using the existing launchable/scrape-job records, or `{ kind: "firmware", firmware }` containing the single installed description. `launchables.add` remains game-only. Horizon routes dropped files through the general endpoint and reports firmware installation through its activity UI.
+`Polymer.library.import({ path })` returns either `{ kind: "games", imports }` with existing launchable/scrape-job records or `{ kind: "firmware", firmware }` with one installed description. `launchables.add` remains game-only. Horizon routes dropped files through the general endpoint and reports firmware installation through its activity UI.
 
-Emulator BIOS-setting migrations and a firmware management screen are separate work.
+Emulator BIOS-setting conversions and a firmware management screen are separate work.

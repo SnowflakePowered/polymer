@@ -296,16 +296,23 @@ declare module "polymer:consolestorage" {
 
 /** User-supplied BIOS files recognized by consolespec, separate from system software and keys. */
 declare module "polymer:api" {
+    export type FirmwareLookup = { readonly name: string } | {
+        readonly md5?: string;
+        readonly sha1?: string;
+        readonly sha256?: string;
+    };
     export interface FirmwareDescription {
         readonly platform: string;
-        readonly type: string;
         readonly label: string;
+        readonly names: readonly string[];
         readonly byteLength: number;
     }
     /** Mixed into onLaunch arguments and the onBootstrap context by the host. */
     export interface FirmwareContext { readonly firmwareStore: FirmwareStore }
     export interface FirmwareStore {
         list(): Promise<readonly FirmwareDescription[]>;
-        open(type: string, label: string): Promise<FileEntry>;
+        /** Strings delegate to { name }. Hash objects use their first hash in property order. */
+        open(name: string): Promise<FileEntry>;
+        open(lookup: FirmwareLookup): Promise<FileEntry>;
     }
 }

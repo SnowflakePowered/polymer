@@ -1,7 +1,6 @@
 import runtime from "pkg:bin/win-x64";
 import { actions } from "polymer:actions";
-import config from "pkg:plugin.toml";
-import type { Configuration as HostConfiguration, Filesystem, PauseResumeContext, Resource } from "polymer:api";
+import type { Configuration as HostConfiguration, FirmwareContext, Filesystem, PauseResumeContext, Resource } from "polymer:api";
 import { HotkeyParser } from "pkg:hotkeys.ts";
 
 type Configuration = HostConfiguration<{
@@ -44,7 +43,7 @@ type Configuration = HostConfiguration<{
         },
         input_sources: { sdl: boolean },
 }>;
-type EmulatorLaunchArgs = {
+type EmulatorLaunchArgs = FirmwareContext & {
     launchPath: string,
     console: string,
     configuration: Configuration,
@@ -52,15 +51,11 @@ type EmulatorLaunchArgs = {
     storage: Readonly<{ card1?: Resource, card2?: Resource }>,
 };
 
-function basename(path: string): string {
-    const name = path.replaceAll("\\", "/").split("/").at(-1);
-    if (!name) throw new TypeError(`path has no filename: ${path}`);
-    return name;
-}
-
-
-export const onLaunch = (args: EmulatorLaunchArgs) => {
-    const biosName = basename(config.plugin.config.bios);
+export const onLaunch = async (args: EmulatorLaunchArgs) => {
+    const biosFiles = (await args.firmwareStore.list()).filter(entry => entry.platform === "SONY_PSX");
+    if (biosFiles.length === 0) {
+        throw new Error("DuckStation requires a PlayStation BIOS. Drag and drop a PlayStation BIOS file into Polymer, then launch again.");
+    }
     const path = (virtualPath: string) => args.filesystem.path(virtualPath);
 
     args.filesystem.mountTree("/DuckStation", runtime, { mode: "rx" });
@@ -76,7 +71,10 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     } else {
         args.filesystem.mountScratch("/User/memcards", { mode: "rwx", backing: "temporary" });
     }
-    args.filesystem.mountHostFile(`/User/bios/${biosName}`, config.plugin.config.bios, { mode: "r" });
+    for (const [index, bios] of biosFiles.entries()) {
+        const file = await args.firmwareStore.open(bios.label);
+        args.filesystem.mountFile(`/User/bios/bios-${index}.bin`, file, { mode: "r" });
+    }
     const gamePath = args.filesystem.mountPackage("/Game");
     args.filesystem.setWorkingDirectory("/DuckStation");
     args.filesystem.setProfile({
@@ -93,7 +91,8 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     options.main.save_state_on_exit = false;
     options.main.pause_on_focus_loss = false;
     options.bios.search_directory = path("/User/bios");
-    options.bios.path_ntscu = biosName;
+    // Let DuckStation choose from the installed BIOS files by region and compatibility.
+    options.bios.path_ntscu = "";
     options.bios.patch_fast_boot = true;
     options.folders.cache = path("/User/cache");
     options.folders.cheats = path("/User/cheats");

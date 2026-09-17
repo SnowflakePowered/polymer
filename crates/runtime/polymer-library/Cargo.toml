@@ -7,9 +7,10 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-consolespec.workspace = true
-md-5 = "0.11"
 sha2 = "0.11"
+md-5 = "0.11"
+tempfile.workspace = true
+consolespec.workspace = true
 directories = "6.0.0"
 blake3.workspace = true
 futures-util = "0.3.32"

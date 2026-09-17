@@ -82,7 +82,7 @@ export class LibraryState {
       if (result.kind === "firmware") {
         const revision = ++this.firmwareRevision;
         const item = result.firmware;
-        const key = JSON.stringify([item.platform, item.type, item.label]);
+        const key = JSON.stringify([item.platform, item.label]);
         this.firmwareActivities.set(key, {
           id: `firmware:${key}:${revision}`, title: "Firmware installed",
           message: `${item.label} (${item.platform})`, state: "complete",

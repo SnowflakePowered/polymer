@@ -6,31 +6,31 @@ use polymer_pluginhost::{
     runtime::EventEmitter,
 };
 use polymer_vfs::ExclusiveResourceKey;
-use serde_json::{Value, json};
+use serde_json::json;
 use std::{path::PathBuf, sync::Arc};
 
 impl Handler<Platforms> for StorageActor {
-    type Result = ResponseActFuture<Self, Result<Value, String>>;
+    type Result = ResponseActFuture<Self, Result<Vec<StoragePlatform>, StorageError>>;
 
     fn handle(&mut self, _: Platforms, _: &mut Context<Self>) -> Self::Result {
         self.execute(move |_, plugins| async move {
-            Ok(json!(
-                plugins
-                    .registry()
-                    .plugins::<dyn polymer_pluginhost::platform::PlatformPluginInstance>()
-                    .iter()
-                    .flat_map(|plugin| plugin
-                        .platforms()
-                        .iter()
-                        .map(|platform| json!({"platform": platform, "plugin": plugin.id()})))
-                    .collect::<Vec<_>>()
-            ))
+            Ok(plugins
+                .registry()
+                .plugins::<dyn polymer_pluginhost::platform::PlatformPluginInstance>()
+                .iter()
+                .flat_map(|plugin| {
+                    plugin.platforms().iter().map(|platform| StoragePlatform {
+                        platform: platform.to_string(),
+                        plugin: plugin.id().to_string(),
+                    })
+                })
+                .collect::<Vec<_>>())
         })
     }
 }
 
 impl Handler<Inspect> for StorageActor {
-    type Result = ResponseActFuture<Self, Result<Value, String>>;
+    type Result = ResponseActFuture<Self, Result<StorageInspection, StorageError>>;
 
     fn handle(&mut self, Inspect { platform, id }: Inspect, _: &mut Context<Self>) -> Self::Result {
         self.execute(move |manager, _| async move {
@@ -38,13 +38,21 @@ impl Handler<Inspect> for StorageActor {
             let _lease = ExclusiveResourceKey::Resource(device.id)
                 .acquire()
                 .map_err(|error| error.to_string())?;
-            Ok(json!(device.inspect(&manager).await?))
+            let inspection = device.inspect(&manager).await?;
+            Ok(StorageInspection {
+                id: inspection.id,
+                platform: inspection.platform,
+                minimal: inspection.minimal,
+                dirty: inspection.dirty,
+                artifacts: serde_json::from_value(inspection.artifacts)
+                    .map_err(StorageError::from_display)?,
+            })
         })
     }
 }
 
 impl Handler<Recover> for StorageActor {
-    type Result = ResponseActFuture<Self, Result<Value, String>>;
+    type Result = ResponseActFuture<Self, Result<StorageInspection, StorageError>>;
 
     fn handle(&mut self, Recover { platform, id }: Recover, _: &mut Context<Self>) -> Self::Result {
         self.execute(move |manager, _| async move {
@@ -57,13 +65,21 @@ impl Handler<Recover> for StorageActor {
                 .await?
                 .recover()
                 .map_err(|error| error.to_string())?;
-            Ok(json!(device.inspect(&manager).await?))
+            let inspection = device.inspect(&manager).await?;
+            Ok(StorageInspection {
+                id: inspection.id,
+                platform: inspection.platform,
+                minimal: inspection.minimal,
+                dirty: inspection.dirty,
+                artifacts: serde_json::from_value(inspection.artifacts)
+                    .map_err(StorageError::from_display)?,
+            })
         })
     }
 }
 
 impl Handler<Install> for StorageActor {
-    type Result = ResponseActFuture<Self, Result<Value, String>>;
+    type Result = ResponseActFuture<Self, Result<StorageArtifact, StorageError>>;
 
     fn handle(
         &mut self,
@@ -102,12 +118,14 @@ impl Handler<Install> for StorageActor {
                 Err(error) => json!({"state":"failed","message":error}),
             });
             result
+                .and_then(|value| serde_json::from_value(value).map_err(|error| error.to_string()))
+                .map_err(StorageError::from)
         })
     }
 }
 
 impl Handler<Bootstrap> for StorageActor {
-    type Result = ResponseActFuture<Self, Result<Value, String>>;
+    type Result = ResponseActFuture<Self, Result<StorageInspection, StorageError>>;
 
     fn handle(
         &mut self,
@@ -126,13 +144,14 @@ impl Handler<Bootstrap> for StorageActor {
             plugins
                 .bootstrap(device, settings, plugins.cancellation_token())
                 .await
-                .map_err(|error| error.to_string())
+                .map_err(StorageError::from_display)
+                .and_then(|value| serde_json::from_value(value).map_err(StorageError::from_display))
         })
     }
 }
 
 impl Handler<Uninstall> for StorageActor {
-    type Result = ResponseActFuture<Self, Result<Value, String>>;
+    type Result = ResponseActFuture<Self, Result<Vec<StorageArtifact>, StorageError>>;
 
     fn handle(
         &mut self,
@@ -167,13 +186,14 @@ impl Handler<Uninstall> for StorageActor {
             nand.uninstall(&ids.iter().map(String::as_str).collect::<Vec<_>>())
                 .await
                 .map_err(|error| error.to_string())?;
-            Device::artifacts(&*nand).await
+            serde_json::from_value(Device::artifacts(&*nand).await?)
+                .map_err(StorageError::from_display)
         })
     }
 }
 
 impl Handler<PlanRemoval> for StorageActor {
-    type Result = ResponseActFuture<Self, Result<Value, String>>;
+    type Result = ResponseActFuture<Self, Result<StorageRemovalPlan, StorageError>>;
 
     fn handle(
         &mut self,
@@ -192,17 +212,21 @@ impl Handler<PlanRemoval> for StorageActor {
                 .affected(&ids.iter().map(String::as_str).collect::<Vec<_>>())
                 .await
                 .map_err(|error| error.to_string())?;
-            Ok(json!({
-                "requested": ids,
-                "affected": affected,
-                "revision": nand.root().artifacts().revision().map_err(|error| error.to_string())?,
-            }))
+            Ok(StorageRemovalPlan {
+                requested: ids,
+                affected,
+                revision: nand
+                    .root()
+                    .artifacts()
+                    .revision()
+                    .map_err(StorageError::from_display)?,
+            })
         })
     }
 }
 
 impl StorageActor {
-    fn device(platform: String, id: String) -> Result<Device, String> {
+    fn device(platform: String, id: String) -> Result<Device, StorageError> {
         Ok(Device {
             platform,
             id: Self::parse(&id)?,

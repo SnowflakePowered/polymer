@@ -451,8 +451,8 @@ export type LibraryGame = Readonly<{
 
 export type FirmwareDescription = Readonly<{
   platform: string;
-  type: string;
   label: string;
+  names: readonly string[];
   byteLength: number;
 }>;
 

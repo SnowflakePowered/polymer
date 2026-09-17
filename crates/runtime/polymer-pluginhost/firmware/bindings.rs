@@ -2,7 +2,7 @@ use super::FirmwareBinding;
 use crate::filesystem::JsResource;
 use deno_core::{OpState, op2};
 use deno_error::JsErrorBox;
-use polymer_library::firmware::FirmwareDescription;
+use polymer_library::firmware::{FirmwareDescription, FirmwareLookup};
 use polymer_vfs::HostFileFactory;
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -36,8 +36,7 @@ async fn op_firmware_list(
 #[serde]
 async fn op_firmware_open(
     state: Rc<RefCell<OpState>>,
-    #[string] firmware_type: String,
-    #[string] label: String,
+    #[serde] lookup: FirmwareLookup,
 ) -> Result<JsResource, JsErrorBox> {
     let binding = state.borrow().borrow::<FirmwareBinding>().clone();
     let platform = binding.platform()?;
@@ -45,7 +44,7 @@ async fn op_firmware_open(
         .store()
         .await
         .map_err(|error| JsErrorBox::generic(error.to_string()))?
-        .file(platform, &firmware_type, &label)
+        .file(platform, &lookup)
         .await
         .map_err(|error| JsErrorBox::generic(error.to_string()))?;
     tokio::fs::metadata(&path)

@@ -5,7 +5,6 @@ class = "emulator"
 main = "pcsx2.ts"
 
 [plugin.config]
-bios = "D:\\bios\\ps2\\scph-39001.BIN"
 memory_card_format = "pcsx2"
 
 [emulator]

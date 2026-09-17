@@ -1,51 +1,75 @@
 use super::{FirmwareDescription, FirmwareError};
-use md5::{Digest, Md5};
-use sha2::Sha256;
-use std::path::Path;
+use std::{collections::HashMap, path::Path};
 
-/// A single immutable snapshot used for both hash recognition and installation.
+/// Retains the source handle from recognition through installation.
 pub(super) struct BiosFile {
-    pub contents: Vec<u8>,
+    pub file: std::fs::File,
     pub description: FirmwareDescription,
     pub digest: String,
+    pub definition: consolespec::machine::Bios,
 }
 
 impl BiosFile {
     pub fn read(path: &Path) -> Result<Option<Self>, FirmwareError> {
-        let mut file = std::fs::File::open(path)?;
-        if !file.metadata()?.is_file() {
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            // Allow other readers while preventing writes or replacement during import.
+            options.share_mode(1);
+        }
+        let mut file = options.open(path)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() {
             return Err(FirmwareError::Invalid(
                 "BIOS input must be a regular file".into(),
             ));
         }
-        let mut contents = Vec::new();
-        std::io::Read::read_to_end(&mut file, &mut contents)?;
-        let md5: String = Md5::digest(&contents)
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
-        let sha256: String = Sha256::digest(&contents)
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
+        let byte_length = metadata.len();
+        let mut hashes = HashMap::new();
         for machine in consolespec::MachineSpec::all() {
             for bios in machine.bios() {
-                if bios.sha256().any(|hash| hash.eq_ignore_ascii_case(&sha256))
-                    || bios.md5().any(|hash| hash.eq_ignore_ascii_case(&md5))
-                {
+                if Self::matches(bios, &mut file, &mut hashes)? {
                     return Ok(Some(Self {
-                        digest: blake3::hash(&contents).to_hex().to_string(),
+                        digest: Self::calculate(&mut file, "blake3")?,
                         description: FirmwareDescription {
                             platform: machine.id().into(),
-                            firmware_type: "bios".into(),
-                            label: bios.name().into(),
-                            byte_length: contents.len() as u64,
+                            label: bios
+                                .names()
+                                .next()
+                                .ok_or_else(|| {
+                                    FirmwareError::Invalid("consolespec BIOS has no names".into())
+                                })?
+                                .into(),
+                            names: bios.names().map(str::to_owned).collect(),
+                            byte_length,
                         },
-                        contents,
+                        file,
+                        definition: bios,
                     }));
                 }
             }
         }
         Ok(None)
+    }
+    fn matches(
+        bios: consolespec::machine::Bios,
+        file: &mut std::fs::File,
+        hashes: &mut HashMap<&'static str, String>,
+    ) -> Result<bool, FirmwareError> {
+        for (algorithm, expected) in [("sha256", bios.sha256()), ("md5", bios.md5())] {
+            let Some(expected) = expected else { continue };
+            let actual = match hashes.entry(algorithm) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(Self::calculate(file, algorithm)?)
+                }
+            };
+            if actual.eq_ignore_ascii_case(expected) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 }

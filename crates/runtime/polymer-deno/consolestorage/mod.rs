@@ -25,7 +25,8 @@ pub(super) async fn op_consolestorage_recover(
         .send(Recover { platform, id })
         .await
         .map_err(|error| format!("storage actor unavailable: {error}"))
-        .and_then(|result| result)
+        .and_then(|result| result.map_err(|error| error.to_string()))
+        .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
         .map_err(JsErrorBox::generic)
 }
 
@@ -39,7 +40,8 @@ pub(super) async fn op_consolestorage_platforms(
         .send(Platforms)
         .await
         .map_err(|error| format!("storage actor unavailable: {error}"))
-        .and_then(|result| result)
+        .and_then(|result| result.map_err(|error| error.to_string()))
+        .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
         .map_err(JsErrorBox::generic)
 }
 
@@ -55,7 +57,8 @@ pub(super) async fn op_consolestorage_inspect(
         .send(Inspect { platform, id })
         .await
         .map_err(|error| format!("storage actor unavailable: {error}"))
-        .and_then(|result| result)
+        .and_then(|result| result.map_err(|error| error.to_string()))
+        .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
         .map_err(JsErrorBox::generic)
 }
 
@@ -76,7 +79,8 @@ pub(super) async fn op_consolestorage_install(
         })
         .await
         .map_err(|error| format!("storage actor unavailable: {error}"))
-        .and_then(|result| result)
+        .and_then(|result| result.map_err(|error| error.to_string()))
+        .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
         .map_err(JsErrorBox::generic)
 }
 
@@ -97,7 +101,8 @@ pub(super) async fn op_consolestorage_bootstrap(
         })
         .await
         .map_err(|error| format!("storage actor unavailable: {error}"))
-        .and_then(|result| result)
+        .and_then(|result| result.map_err(|error| error.to_string()))
+        .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
         .map_err(JsErrorBox::generic)
 }
 
@@ -120,7 +125,8 @@ pub(super) async fn op_consolestorage_uninstall(
         })
         .await
         .map_err(|error| format!("storage actor unavailable: {error}"))
-        .and_then(|result| result)
+        .and_then(|result| result.map_err(|error| error.to_string()))
+        .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
         .map_err(JsErrorBox::generic)
 }
 
@@ -137,7 +143,8 @@ pub(super) async fn op_consolestorage_plan_removal(
         .send(PlanRemoval { platform, id, ids })
         .await
         .map_err(|error| format!("storage actor unavailable: {error}"))
-        .and_then(|result| result)
+        .and_then(|result| result.map_err(|error| error.to_string()))
+        .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
         .map_err(JsErrorBox::generic)
 }
 
@@ -151,7 +158,8 @@ pub(super) async fn op_consolestorage_list(
         .send(List)
         .await
         .map_err(|error| format!("storage actor unavailable: {error}"))
-        .and_then(|result| result)
+        .and_then(|result| result.map_err(|error| error.to_string()))
+        .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
         .map_err(JsErrorBox::generic)
 }
 
@@ -167,7 +175,8 @@ pub(super) async fn op_consolestorage_supports(
         .send(Supports { kind, platform })
         .await
         .map_err(|error| format!("storage actor unavailable: {error}"))
-        .and_then(|result| result)
+        .and_then(|result| result.map_err(|error| error.to_string()))
+        .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
         .map_err(JsErrorBox::generic)
 }
 
@@ -188,7 +197,8 @@ pub(super) async fn op_consolestorage_create(
         })
         .await
         .map_err(|error| format!("storage actor unavailable: {error}"))
-        .and_then(|result| result)
+        .and_then(|result| result.map_err(|error| error.to_string()))
+        .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
         .map_err(JsErrorBox::generic)
 }
 
@@ -205,7 +215,8 @@ pub(super) async fn op_consolestorage_delete(
         .send(Delete { kind, platform, id })
         .await
         .map_err(|error| format!("storage actor unavailable: {error}"))
-        .and_then(|result| result)
+        .and_then(|result| result.map_err(|error| error.to_string()))
+        .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
         .map_err(JsErrorBox::generic)
 }
 
@@ -228,6 +239,7 @@ pub(super) async fn op_consolestorage_set_label(
         })
         .await
         .map_err(|error| format!("storage actor unavailable: {error}"))
-        .and_then(|result| result)
+        .and_then(|result| result.map_err(|error| error.to_string()))
+        .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
         .map_err(JsErrorBox::generic)
 }
