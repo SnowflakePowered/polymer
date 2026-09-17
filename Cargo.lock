@@ -2149,9 +2149,9 @@ dependencies = [
 
 [[package]]
 name = "consolespec"
-version = "0.0.1"
+version = "0.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ee5776989ad2eae51e062f030418f44ca90bf55acad6ceaee9e713b10cc383a"
+checksum = "b95a07545fa5680fbd9d7541392bc4d2efa8c87363edd1e629170c7ab1eec138"
 dependencies = [
  "consolespec-build",
  "phf 0.14.0",
@@ -9858,6 +9858,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tracing",

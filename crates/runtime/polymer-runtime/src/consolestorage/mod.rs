@@ -3,9 +3,9 @@ mod operations;
 mod volumes;
 
 use actix::{Actor, Addr, Context, ResponseActFuture, System, WrapFuture};
+use polymer_deno::polymer::consolestorage::StorageError;
 use polymer_library::{Directories, StorageManager};
 use polymer_pluginhost::runtime::PluginRuntimeHandle;
-use serde_json::Value;
 use std::{future::Future, sync::Arc};
 
 #[derive(Clone)]
@@ -30,18 +30,20 @@ impl StorageActor {
     // Track operations in the actor context so in-flight work keeps the actor
     // alive. Futures may interleave; resource leases protect each device across
     // awaits and also exclude emulators using its mounted filesystem.
-    fn execute<F>(
+    fn execute<F, T>(
         &self,
         operation: impl FnOnce(Arc<StorageManager>, PluginRuntimeHandle) -> F + 'static,
-    ) -> ResponseActFuture<Self, Result<Value, String>>
+    ) -> ResponseActFuture<Self, Result<T, StorageError>>
     where
-        F: Future<Output = Result<Value, String>> + 'static,
+        F: Future<Output = Result<T, StorageError>> + 'static,
+        T: 'static,
     {
         let manager = self.manager.clone();
         let plugins = self.plugins.clone();
         Box::pin(
             async move {
-                let manager = manager.ok_or_else(|| "console storage is unavailable".to_owned())?;
+                let manager = manager
+                    .ok_or_else(|| StorageError("console storage is unavailable".to_owned()))?;
                 operation(manager, plugins).await
             }
             .into_actor(self),

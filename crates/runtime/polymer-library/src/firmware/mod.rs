@@ -1,7 +1,9 @@
 //! User-supplied hardware data, independent of NANDs and game packages.
 
 mod bios;
+mod hashes;
 mod install;
+mod read;
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -22,10 +24,18 @@ pub enum FirmwareError {
 #[serde(rename_all = "camelCase")]
 pub struct FirmwareDescription {
     pub platform: String,
-    #[serde(rename = "type")]
-    pub firmware_type: String,
     pub label: String,
+    pub names: Vec<String>,
     pub byte_length: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FirmwareLookup {
+    Name(String),
+    Md5(String),
+    Sha1(String),
+    Sha256(String),
 }
 
 #[derive(Clone)]
@@ -50,12 +60,29 @@ impl FirmwareStore {
             .execute_batch(
                 "CREATE TABLE IF NOT EXISTS firmware (
                 platform TEXT NOT NULL,
-                type TEXT NOT NULL,
                 label TEXT NOT NULL,
                 digest TEXT NOT NULL,
                 byte_length INTEGER NOT NULL CHECK(byte_length >= 0),
-                PRIMARY KEY(platform, type, label)
-            ) STRICT;",
+                PRIMARY KEY(platform, label)
+            ) STRICT;
+            CREATE TABLE IF NOT EXISTS firmware_names (
+                platform TEXT NOT NULL,
+                label TEXT NOT NULL,
+                name TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                PRIMARY KEY(platform, label, name),
+                FOREIGN KEY(platform, label) REFERENCES firmware(platform, label) ON DELETE CASCADE
+            ) STRICT;
+            CREATE INDEX IF NOT EXISTS firmware_name_lookup ON firmware_names(platform, name);
+            CREATE TABLE IF NOT EXISTS firmware_hashes (
+                platform TEXT NOT NULL,
+                label TEXT NOT NULL,
+                algorithm TEXT NOT NULL CHECK(algorithm IN ('md5', 'sha1', 'sha256')),
+                hash TEXT NOT NULL,
+                PRIMARY KEY(platform, label, algorithm),
+                FOREIGN KEY(platform, label) REFERENCES firmware(platform, label) ON DELETE CASCADE
+            ) STRICT;
+            CREATE INDEX IF NOT EXISTS firmware_hash_lookup ON firmware_hashes(platform, algorithm, hash);",
             )
             .await?;
         Ok(Self { root, database })
@@ -67,50 +94,5 @@ impl FirmwareStore {
             && platform
                 .bytes()
                 .all(|c| c.is_ascii_alphanumeric() || c == b'_')
-    }
-
-    pub async fn list(&self, platform: &str) -> Result<Vec<FirmwareDescription>, FirmwareError> {
-        let connection = self.database.connect()?;
-        let mut rows = connection.query("SELECT platform, type, label, byte_length FROM firmware WHERE platform = ? ORDER BY type, label", [platform]).await?;
-        let mut result = Vec::new();
-        while let Some(row) = rows.next().await? {
-            result.push(FirmwareDescription {
-                platform: row.get(0)?,
-                firmware_type: row.get(1)?,
-                label: row.get(2)?,
-                byte_length: row.get::<i64>(3)? as u64,
-            });
-        }
-        Ok(result)
-    }
-
-    /// Resolve once: immutable object paths keep existing file resources stable on replacement.
-    pub async fn file(
-        &self,
-        platform: &str,
-        firmware_type: &str,
-        label: &str,
-    ) -> Result<(String, PathBuf), FirmwareError> {
-        let connection = self.database.connect()?;
-        let mut rows = connection
-            .query(
-                "SELECT label, digest FROM firmware WHERE platform = ? AND type = ? AND label = ?",
-                turso::params![platform, firmware_type, label],
-            )
-            .await?;
-        let row = rows.next().await?.ok_or_else(|| {
-            FirmwareError::NotFound(format!("{platform}/{firmware_type}/{label}"))
-        })?;
-        let digest: String = row.get(1)?;
-        if !Self::valid_platform(platform)
-            || digest.len() != 64
-            || !digest.bytes().all(|c| c.is_ascii_hexdigit())
-        {
-            return Err(FirmwareError::Invalid("invalid stored object path".into()));
-        }
-        Ok((
-            row.get(0)?,
-            self.root.join(platform).join("objects").join(digest),
-        ))
     }
 }

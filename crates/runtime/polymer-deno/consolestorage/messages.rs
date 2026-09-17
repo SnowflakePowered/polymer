@@ -1,5 +1,70 @@
 use actix::{Message, Recipient};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct StorageError(pub String);
+
+impl From<String> for StorageError {
+    fn from(error: String) -> Self {
+        Self(error)
+    }
+}
+
+impl From<&str> for StorageError {
+    fn from(error: &str) -> Self {
+        Self(error.to_owned())
+    }
+}
+
+impl StorageError {
+    pub fn from_display(error: impl std::fmt::Display) -> Self {
+        Self(error.to_string())
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct StoragePlatform {
+    pub platform: String,
+    pub plugin: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageArtifact {
+    pub id: String,
+    pub label: String,
+    pub version: Option<String>,
+    pub depot_type: String,
+    pub byte_length: u64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StorageInspection {
+    pub id: String,
+    pub platform: String,
+    pub minimal: bool,
+    pub dirty: bool,
+    pub artifacts: Vec<StorageArtifact>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StorageRemovalPlan {
+    pub requested: Vec<String>,
+    pub affected: Vec<String>,
+    pub revision: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StorageVolume {
+    pub kind: String,
+    pub id: String,
+    pub platform: String,
+    pub label: Option<String>,
+    pub created: String,
+    pub path: String,
+}
 
 /// Typed storage endpoints exposed to Deno without depending on the backend.
 #[derive(Clone, Debug)]
@@ -19,25 +84,25 @@ pub struct ConsoleStorage {
 }
 
 #[derive(Debug, Message)]
-#[rtype(result = "Result<Value, String>")]
+#[rtype(result = "Result<Vec<StoragePlatform>, StorageError>")]
 pub struct Platforms;
 
 #[derive(Debug, Message)]
-#[rtype(result = "Result<Value, String>")]
+#[rtype(result = "Result<StorageInspection, StorageError>")]
 pub struct Inspect {
     pub platform: String,
     pub id: String,
 }
 
 #[derive(Debug, Message)]
-#[rtype(result = "Result<Value, String>")]
+#[rtype(result = "Result<StorageInspection, StorageError>")]
 pub struct Recover {
     pub platform: String,
     pub id: String,
 }
 
 #[derive(Debug, Message)]
-#[rtype(result = "Result<Value, String>")]
+#[rtype(result = "Result<StorageArtifact, StorageError>")]
 pub struct Install {
     pub platform: String,
     pub id: String,
@@ -45,7 +110,7 @@ pub struct Install {
 }
 
 #[derive(Debug, Message)]
-#[rtype(result = "Result<Value, String>")]
+#[rtype(result = "Result<StorageInspection, StorageError>")]
 pub struct Bootstrap {
     pub platform: String,
     pub id: String,
@@ -53,7 +118,7 @@ pub struct Bootstrap {
 }
 
 #[derive(Debug, Message)]
-#[rtype(result = "Result<Value, String>")]
+#[rtype(result = "Result<Vec<StorageArtifact>, StorageError>")]
 pub struct Uninstall {
     pub platform: String,
     pub id: String,
@@ -62,7 +127,7 @@ pub struct Uninstall {
 }
 
 #[derive(Debug, Message)]
-#[rtype(result = "Result<Value, String>")]
+#[rtype(result = "Result<StorageRemovalPlan, StorageError>")]
 pub struct PlanRemoval {
     pub platform: String,
     pub id: String,
@@ -70,18 +135,18 @@ pub struct PlanRemoval {
 }
 
 #[derive(Debug, Message)]
-#[rtype(result = "Result<Value, String>")]
+#[rtype(result = "Result<Vec<StorageVolume>, StorageError>")]
 pub struct List;
 
 #[derive(Debug, Message)]
-#[rtype(result = "Result<Value, String>")]
+#[rtype(result = "Result<bool, StorageError>")]
 pub struct Supports {
     pub kind: String,
     pub platform: String,
 }
 
 #[derive(Debug, Message)]
-#[rtype(result = "Result<Value, String>")]
+#[rtype(result = "Result<StorageVolume, StorageError>")]
 pub struct Create {
     pub kind: String,
     pub platform: String,
@@ -89,7 +154,7 @@ pub struct Create {
 }
 
 #[derive(Debug, Message)]
-#[rtype(result = "Result<Value, String>")]
+#[rtype(result = "Result<(), StorageError>")]
 pub struct Delete {
     pub kind: String,
     pub platform: String,
@@ -97,7 +162,7 @@ pub struct Delete {
 }
 
 #[derive(Debug, Message)]
-#[rtype(result = "Result<Value, String>")]
+#[rtype(result = "Result<StorageVolume, StorageError>")]
 pub struct SetLabel {
     pub kind: String,
     pub platform: String,

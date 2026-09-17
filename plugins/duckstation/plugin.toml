@@ -4,9 +4,6 @@ version = "0.0.1"
 class = "emulator"
 main = "duckstation.ts"
 
-[plugin.config]
-bios = "D:\\bios\\SCPH1001.BIN"
-
 [emulator]
 platforms = ["SONY_PSX"]
 
