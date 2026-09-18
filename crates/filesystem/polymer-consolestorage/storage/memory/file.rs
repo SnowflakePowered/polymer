@@ -3,7 +3,6 @@ use std::sync::Arc;
 use jiff::Timestamp;
 use parking_lot::Mutex;
 
-use super::ReconcileWorker;
 use crate::{EntryKind, Error, Metadata, StorageFile};
 
 #[derive(Clone)]
@@ -35,26 +34,17 @@ impl MemoryFile {
         }
     }
 
-    pub(crate) fn handle(
-        &self,
-        worker: ReconcileWorker,
-        writable: bool,
-        schedule_writeback: bool,
-    ) -> Arc<dyn StorageFile> {
+    pub(crate) fn handle(&self, writable: bool) -> Arc<dyn StorageFile> {
         Arc::new(MemoryStorageFile {
             file: self.clone(),
-            worker,
             writable,
-            schedule_writeback,
         })
     }
 }
 
 struct MemoryStorageFile {
     file: MemoryFile,
-    worker: ReconcileWorker,
     writable: bool,
-    schedule_writeback: bool,
 }
 
 impl MemoryStorageFile {
@@ -65,12 +55,6 @@ impl MemoryStorageFile {
             Err(Error::Unsupported(
                 "in-memory file handle is read-only".to_owned(),
             ))
-        }
-    }
-
-    fn schedule(&self) {
-        if self.schedule_writeback {
-            self.worker.schedule();
         }
     }
 }
@@ -104,7 +88,6 @@ impl StorageFile for MemoryStorageFile {
         state.bytes[start..end].copy_from_slice(input);
         state.mtime = Timestamp::now();
         drop(state);
-        self.schedule();
         Ok(input.len())
     }
 
@@ -116,16 +99,14 @@ impl StorageFile for MemoryStorageFile {
         state.bytes.resize(len, 0);
         state.mtime = Timestamp::now();
         drop(state);
-        self.schedule();
         Ok(())
     }
 
     fn flush(&self) -> Result<(), Error> {
-        self.schedule();
         Ok(())
     }
 
     fn sync(&self) -> Result<(), Error> {
-        self.worker.reconcile()
+        Ok(())
     }
 }

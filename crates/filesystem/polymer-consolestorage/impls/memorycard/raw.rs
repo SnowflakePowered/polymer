@@ -1,7 +1,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use super::{MemoryFile, ReconcileWorker};
+use crate::storage::memory::MemoryFile;
 use crate::{
     BoxFuture, Error, InstallResult, MemoryCard, Metadata, MountableStorage, ReadDir, Reconcile,
     Storage, StorageFile,
@@ -22,7 +22,6 @@ impl CardImage {
 pub(crate) struct MemoryCardStorage<T: MemoryCard + 'static> {
     _backing: T,
     image: Arc<CardImage>,
-    worker: ReconcileWorker,
 }
 
 impl<T: MemoryCard + 'static> MemoryCardStorage<T> {
@@ -30,22 +29,26 @@ impl<T: MemoryCard + 'static> MemoryCardStorage<T> {
         card: T,
         primary: &[crate::savegame::SaveDepotId],
         bytes: Vec<u8>,
-        thread_name: &str,
-        display_name: &str,
     ) -> Result<Self, Error> {
         let reconcile = card.reconcile(primary)?;
         let image = Arc::new(CardImage {
             file: MemoryFile::new(bytes),
             reconcile,
         });
-        let background = image.clone();
-        let worker =
-            ReconcileWorker::spawn(thread_name, display_name, move || background.reconcile())?;
         Ok(Self {
             _backing: card,
             image,
-            worker,
         })
+    }
+}
+
+impl<T: MemoryCard + 'static> crate::ReconciliableStorage for MemoryCardStorage<T> {
+    fn reconcile(&self) -> Result<(), Error> {
+        self.image.reconcile()
+    }
+
+    fn filter(_path: &str) -> bool {
+        true
     }
 }
 
@@ -85,7 +88,7 @@ impl<T: MemoryCard + 'static> Storage for MemoryCardStorage<T> {
         if !path.is_empty() {
             return Err(Error::not_found(path));
         }
-        let handle = self.image.file.handle(self.worker.clone(), true, true);
+        let handle = self.image.file.handle(true);
         handle.set_len(0)?;
         Ok(handle)
     }
@@ -94,17 +97,14 @@ impl<T: MemoryCard + 'static> Storage for MemoryCardStorage<T> {
         if !path.is_empty() {
             return Err(Error::not_found(path));
         }
-        Ok(self.image.file.handle(self.worker.clone(), write, true))
+        Ok(self.image.file.handle(write))
     }
 
     fn remove(&self, path: &str) -> Result<(), Error> {
         if !path.is_empty() {
             return Err(Error::not_found(path));
         }
-        self.image
-            .file
-            .handle(self.worker.clone(), true, true)
-            .set_len(0)
+        self.image.file.handle(true).set_len(0)
     }
 
     fn install_file<'a>(
@@ -131,23 +131,13 @@ impl<T: MemoryCard + 'static> MountableStorage for MemoryCardStorage<T> {
         if !path.is_empty() {
             return Err(Error::not_found(path));
         }
-        self.image
-            .file
-            .handle(self.worker.clone(), true, true)
-            .set_len(len)
+        self.image.file.handle(true).set_len(len)
     }
 
     fn sync(&self, path: &str) -> Result<(), Error> {
         if !path.is_empty() {
             return Err(Error::not_found(path));
         }
-        self.worker.reconcile()
-    }
-
-    fn finish(&self, path: &str) -> Result<(), Error> {
-        if !path.is_empty() {
-            return Err(Error::not_found(path));
-        }
-        self.worker.shutdown()
+        Ok(())
     }
 }

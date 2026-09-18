@@ -379,12 +379,9 @@ impl MemoryCard for PlaystationMemoryCard {
             )));
         }
         let (image, _) = self.project(primary)?;
-        let storage: Arc<dyn MountableStorage> = Arc::new(MemoryCardStorage::<Self>::new(
-            self.clone(),
-            primary,
-            image,
+        let storage: Arc<dyn MountableStorage> = Arc::new(crate::ReconcileStorage::new(
+            MemoryCardStorage::<Self>::new(self.clone(), primary, image)?,
             "ps1-memory-card",
-            "PlayStation memory card",
         )?);
         MemoryCardView::new(storage, "")
     }

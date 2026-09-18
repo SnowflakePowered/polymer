@@ -431,38 +431,18 @@ impl MemoryCard for Playstation2MemoryCard {
     fn view(&self, primary: &[SaveDepotId], format: &str) -> Result<MemoryCardView, Error> {
         Self::validate_capacity(CAPACITY_BLOCKS)?;
         let saves = self.project_saves(primary, CAPACITY_BLOCKS)?;
-        let projected = saves
-            .iter()
-            .map(|save| save.name_bytes().to_vec())
-            .collect::<Vec<_>>();
         let storage: Arc<dyn MountableStorage> = match format {
             "raw" => {
                 let bytes = raw::card::MemoryCard::format(CAPACITY_BLOCKS, &saves, true)?;
-                Arc::new(MemoryCardStorage::<Self>::new(
-                    self.clone(),
-                    primary,
-                    bytes,
+                Arc::new(crate::ReconcileStorage::new(
+                    MemoryCardStorage::<Self>::new(self.clone(), primary, bytes)?,
                     "ps2-memory-card",
-                    "PlayStation 2 memory card",
                 )?)
             }
-            "pcsx2" => {
-                let card = self.clone();
-                let owned = Arc::new(Mutex::new(projected));
-                Arc::new(Pcsx2MemoryStorage::new(
-                    CAPACITY_BLOCKS,
-                    saves,
-                    move |saves| {
-                        let previous = owned.lock().clone();
-                        card.reconcile(&previous, saves)?;
-                        *owned.lock() = saves
-                            .iter()
-                            .map(|save| save.name_bytes().to_vec())
-                            .collect();
-                        Ok(())
-                    },
-                )?)
-            }
+            "pcsx2" => Arc::new(crate::ReconcileStorage::new(
+                Pcsx2MemoryStorage::new(self.clone(), CAPACITY_BLOCKS, saves)?,
+                "polymer-pcsx2-writeback",
+            )?),
             _ => {
                 return Err(Error::Unsupported(format!(
                     "PlayStation 2 memory cards do not support the '{format}' format"

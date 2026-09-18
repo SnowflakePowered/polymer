@@ -334,14 +334,11 @@ impl MemoryCard for GameCubeMemoryCard {
 
     fn view(&self, primary: &[SaveDepotId], format: &str) -> Result<MemoryCardView, Error> {
         let (region, projected) = self.project(primary)?;
-        let projected_paths = projected
-            .iter()
-            .map(|save| (save.identity(), format!("{SAVE_ROOT}/{}", save.file_name())))
-            .collect::<HashMap<_, _>>();
-        let card = self.clone();
-        let reconcile = move |saves: &[Save<'_>]| card.reconcile(region, &projected_paths, saves);
         let storage: Arc<dyn MountableStorage> = match format {
-            "dolphin" => Arc::new(DolphinMemoryStorage::new(&projected, reconcile)?),
+            "dolphin" => Arc::new(crate::ReconcileStorage::new(
+                DolphinMemoryStorage::new(self.clone(), region, &projected)?,
+                "polymer-gci-writeback",
+            )?),
             "raw" => {
                 let blocks = u32::from(raw::card::MC251_BLOCKS);
                 let mut image = raw::card::MemoryCard::empty(blocks)?;
@@ -349,12 +346,9 @@ impl MemoryCard for GameCubeMemoryCard {
                 for save in &projected {
                     image.append_save(Save::new(save.as_bytes())?)?;
                 }
-                Arc::new(MemoryCardStorage::<Self>::new(
-                    self.clone(),
-                    primary,
-                    image.into_owned(),
+                Arc::new(crate::ReconcileStorage::new(
+                    MemoryCardStorage::<Self>::new(self.clone(), primary, image.into_owned())?,
                     "gamecube-memory-card",
-                    "GameCube memory card",
                 )?)
             }
             _ => {
