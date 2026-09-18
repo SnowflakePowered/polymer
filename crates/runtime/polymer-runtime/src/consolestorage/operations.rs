@@ -38,15 +38,7 @@ impl Handler<Inspect> for StorageActor {
             let _lease = ExclusiveResourceKey::Resource(device.id)
                 .acquire()
                 .map_err(|error| error.to_string())?;
-            let inspection = device.inspect(&manager).await?;
-            Ok(StorageInspection {
-                id: inspection.id,
-                platform: inspection.platform,
-                minimal: inspection.minimal,
-                dirty: inspection.dirty,
-                artifacts: serde_json::from_value(inspection.artifacts)
-                    .map_err(StorageError::from_display)?,
-            })
+            device.inspect(&manager).await.map_err(StorageError::from)
         })
     }
 }
@@ -65,15 +57,7 @@ impl Handler<Recover> for StorageActor {
                 .await?
                 .recover()
                 .map_err(|error| error.to_string())?;
-            let inspection = device.inspect(&manager).await?;
-            Ok(StorageInspection {
-                id: inspection.id,
-                platform: inspection.platform,
-                minimal: inspection.minimal,
-                dirty: inspection.dirty,
-                artifacts: serde_json::from_value(inspection.artifacts)
-                    .map_err(StorageError::from_display)?,
-            })
+            device.inspect(&manager).await.map_err(StorageError::from)
         })
     }
 }
@@ -131,9 +115,7 @@ impl Handler<Install> for StorageActor {
                 Ok(_) => json!({"state":"ready","message":"Installation complete"}),
                 Err(error) => json!({"state":"failed","message":error}),
             });
-            result
-                .and_then(|value| serde_json::from_value(value).map_err(|error| error.to_string()))
-                .map_err(StorageError::from)
+            result.map_err(StorageError::from)
         })
     }
 }
@@ -159,7 +141,6 @@ impl Handler<Bootstrap> for StorageActor {
                 .bootstrap(device, settings, plugins.cancellation_token())
                 .await
                 .map_err(StorageError::from_display)
-                .and_then(|value| serde_json::from_value(value).map_err(StorageError::from_display))
         })
     }
 }
@@ -200,8 +181,7 @@ impl Handler<Uninstall> for StorageActor {
             nand.uninstall(&ids.iter().map(String::as_str).collect::<Vec<_>>())
                 .await
                 .map_err(|error| error.to_string())?;
-            serde_json::from_value(Device::artifacts(&*nand).await?)
-                .map_err(StorageError::from_display)
+            nand.artifacts().await.map_err(StorageError::from_display)
         })
     }
 }

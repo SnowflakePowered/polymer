@@ -6,13 +6,26 @@ use crate::error::Error;
 use crate::installable::DepotType;
 use crate::installable::artifacts::Artifact;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ArtifactSummary {
     pub id: String,
     pub depot_type: DepotType,
     pub label: String,
     pub version: Option<String>,
     pub byte_length: u64,
+}
+
+impl From<&Artifact> for ArtifactSummary {
+    fn from(artifact: &Artifact) -> Self {
+        Self {
+            id: artifact.id().to_owned(),
+            depot_type: artifact.depot_type(),
+            label: artifact.label().to_owned(),
+            version: artifact.version().map(str::to_owned),
+            byte_length: artifact.byte_length(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

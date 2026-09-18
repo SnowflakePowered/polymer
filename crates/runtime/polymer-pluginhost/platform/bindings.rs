@@ -68,7 +68,7 @@ fn op_platform_resource(
 async fn op_platform_install(
     state: Rc<RefCell<OpState>>,
     #[serde] source: DepotSource,
-) -> Result<serde_json::Value, JsErrorBox> {
+) -> Result<polymer_library::ArtifactSummary, JsErrorBox> {
     let (binding, path) = {
         let state = state.borrow();
         let binding = state.borrow::<PlatformBinding>().clone();
