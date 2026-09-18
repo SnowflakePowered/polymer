@@ -19,14 +19,13 @@ pub(super) async fn op_consolestorage_recover(
     state: Rc<RefCell<OpState>>,
     #[string] platform: String,
     #[string] id: String,
-) -> Result<serde_json::Value, JsErrorBox> {
+) -> Result<StorageInspection, JsErrorBox> {
     ConsoleStorage::from_state(&state)?
         .recover
         .send(Recover { platform, id })
         .await
         .map_err(|error| format!("storage actor unavailable: {error}"))
         .and_then(|result| result.map_err(|error| error.to_string()))
-        .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
         .map_err(JsErrorBox::generic)
 }
 
@@ -34,14 +33,13 @@ pub(super) async fn op_consolestorage_recover(
 #[serde]
 pub(super) async fn op_consolestorage_platforms(
     state: Rc<RefCell<OpState>>,
-) -> Result<serde_json::Value, JsErrorBox> {
+) -> Result<Vec<StoragePlatform>, JsErrorBox> {
     ConsoleStorage::from_state(&state)?
         .platforms
         .send(Platforms)
         .await
         .map_err(|error| format!("storage actor unavailable: {error}"))
         .and_then(|result| result.map_err(|error| error.to_string()))
-        .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
         .map_err(JsErrorBox::generic)
 }
 
@@ -51,14 +49,13 @@ pub(super) async fn op_consolestorage_inspect(
     state: Rc<RefCell<OpState>>,
     #[string] platform: String,
     #[string] id: String,
-) -> Result<serde_json::Value, JsErrorBox> {
+) -> Result<StorageInspection, JsErrorBox> {
     ConsoleStorage::from_state(&state)?
         .inspect
         .send(Inspect { platform, id })
         .await
         .map_err(|error| format!("storage actor unavailable: {error}"))
         .and_then(|result| result.map_err(|error| error.to_string()))
-        .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
         .map_err(JsErrorBox::generic)
 }
 
@@ -69,7 +66,7 @@ pub(super) async fn op_consolestorage_install(
     #[string] platform: String,
     #[string] id: String,
     #[serde] source: serde_json::Value,
-) -> Result<serde_json::Value, JsErrorBox> {
+) -> Result<StorageArtifact, JsErrorBox> {
     ConsoleStorage::from_state(&state)?
         .install
         .send(Install {
@@ -80,7 +77,6 @@ pub(super) async fn op_consolestorage_install(
         .await
         .map_err(|error| format!("storage actor unavailable: {error}"))
         .and_then(|result| result.map_err(|error| error.to_string()))
-        .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
         .map_err(JsErrorBox::generic)
 }
 
@@ -91,7 +87,7 @@ pub(super) async fn op_consolestorage_bootstrap(
     #[string] platform: String,
     #[string] id: String,
     #[serde] settings: serde_json::Value,
-) -> Result<serde_json::Value, JsErrorBox> {
+) -> Result<StorageInspection, JsErrorBox> {
     ConsoleStorage::from_state(&state)?
         .bootstrap
         .send(Bootstrap {
@@ -102,7 +98,6 @@ pub(super) async fn op_consolestorage_bootstrap(
         .await
         .map_err(|error| format!("storage actor unavailable: {error}"))
         .and_then(|result| result.map_err(|error| error.to_string()))
-        .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
         .map_err(JsErrorBox::generic)
 }
 
@@ -114,7 +109,7 @@ pub(super) async fn op_consolestorage_uninstall(
     #[string] id: String,
     #[serde] ids: Vec<String>,
     #[string] revision: String,
-) -> Result<serde_json::Value, JsErrorBox> {
+) -> Result<Vec<StorageArtifact>, JsErrorBox> {
     ConsoleStorage::from_state(&state)?
         .uninstall
         .send(Uninstall {
@@ -126,7 +121,6 @@ pub(super) async fn op_consolestorage_uninstall(
         .await
         .map_err(|error| format!("storage actor unavailable: {error}"))
         .and_then(|result| result.map_err(|error| error.to_string()))
-        .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
         .map_err(JsErrorBox::generic)
 }
 
@@ -137,14 +131,13 @@ pub(super) async fn op_consolestorage_plan_removal(
     #[string] platform: String,
     #[string] id: String,
     #[serde] ids: Vec<String>,
-) -> Result<serde_json::Value, JsErrorBox> {
+) -> Result<StorageRemovalPlan, JsErrorBox> {
     ConsoleStorage::from_state(&state)?
         .plan_removal
         .send(PlanRemoval { platform, id, ids })
         .await
         .map_err(|error| format!("storage actor unavailable: {error}"))
         .and_then(|result| result.map_err(|error| error.to_string()))
-        .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
         .map_err(JsErrorBox::generic)
 }
 
@@ -152,31 +145,28 @@ pub(super) async fn op_consolestorage_plan_removal(
 #[serde]
 pub(super) async fn op_consolestorage_list(
     state: Rc<RefCell<OpState>>,
-) -> Result<serde_json::Value, JsErrorBox> {
+) -> Result<Vec<StorageVolume>, JsErrorBox> {
     ConsoleStorage::from_state(&state)?
         .list
         .send(List)
         .await
         .map_err(|error| format!("storage actor unavailable: {error}"))
         .and_then(|result| result.map_err(|error| error.to_string()))
-        .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
         .map_err(JsErrorBox::generic)
 }
 
 #[op2]
-#[serde]
 pub(super) async fn op_consolestorage_supports(
     state: Rc<RefCell<OpState>>,
     #[string] kind: String,
     #[string] platform: String,
-) -> Result<serde_json::Value, JsErrorBox> {
+) -> Result<bool, JsErrorBox> {
     ConsoleStorage::from_state(&state)?
         .supports
         .send(Supports { kind, platform })
         .await
         .map_err(|error| format!("storage actor unavailable: {error}"))
         .and_then(|result| result.map_err(|error| error.to_string()))
-        .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
         .map_err(JsErrorBox::generic)
 }
 
@@ -187,7 +177,7 @@ pub(super) async fn op_consolestorage_create(
     #[string] kind: String,
     #[string] platform: String,
     #[string] label: Option<String>,
-) -> Result<serde_json::Value, JsErrorBox> {
+) -> Result<StorageVolume, JsErrorBox> {
     ConsoleStorage::from_state(&state)?
         .create
         .send(Create {
@@ -198,25 +188,22 @@ pub(super) async fn op_consolestorage_create(
         .await
         .map_err(|error| format!("storage actor unavailable: {error}"))
         .and_then(|result| result.map_err(|error| error.to_string()))
-        .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
         .map_err(JsErrorBox::generic)
 }
 
 #[op2]
-#[serde]
 pub(super) async fn op_consolestorage_delete(
     state: Rc<RefCell<OpState>>,
     #[string] kind: String,
     #[string] platform: String,
     #[string] id: String,
-) -> Result<serde_json::Value, JsErrorBox> {
+) -> Result<(), JsErrorBox> {
     ConsoleStorage::from_state(&state)?
         .delete
         .send(Delete { kind, platform, id })
         .await
         .map_err(|error| format!("storage actor unavailable: {error}"))
         .and_then(|result| result.map_err(|error| error.to_string()))
-        .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
         .map_err(JsErrorBox::generic)
 }
 
@@ -228,7 +215,7 @@ pub(super) async fn op_consolestorage_set_label(
     #[string] platform: String,
     #[string] id: String,
     #[string] label: Option<String>,
-) -> Result<serde_json::Value, JsErrorBox> {
+) -> Result<StorageVolume, JsErrorBox> {
     ConsoleStorage::from_state(&state)?
         .set_label
         .send(SetLabel {
@@ -240,6 +227,5 @@ pub(super) async fn op_consolestorage_set_label(
         .await
         .map_err(|error| format!("storage actor unavailable: {error}"))
         .and_then(|result| result.map_err(|error| error.to_string()))
-        .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
         .map_err(JsErrorBox::generic)
 }
