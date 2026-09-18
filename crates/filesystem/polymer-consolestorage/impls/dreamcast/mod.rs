@@ -422,12 +422,9 @@ impl MemoryCard for DreamcastMemoryCard {
             image.append_save(Save::new(save.vmi().as_bytes(), save.vms())?)?;
         }
         MemoryCardView::new(
-            Arc::new(MemoryCardStorage::<Self>::new(
-                self.clone(),
-                primary,
-                image.into_owned(),
+            Arc::new(crate::ReconcileStorage::new(
+                MemoryCardStorage::<Self>::new(self.clone(), primary, image.into_owned())?,
                 "dreamcast-vmu",
-                "Dreamcast VMU",
             )?),
             "",
         )

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -6,21 +6,24 @@ use jiff::Timestamp;
 use parking_lot::Mutex;
 use tokio::io::AsyncReadExt;
 
-use super::gci::{self, Save};
-use crate::impls::memorycard::{MemoryFile, ReconcileWorker};
+use super::{
+    GameCubeMemoryCard, SAVE_ROOT,
+    gci::{self, Region, Save},
+};
+use crate::storage::memory::MemoryFile;
 use crate::{
     BoxFuture, DirEntry, EntryKind, Error, InstallResult, Metadata, MountableStorage, ReadDir,
     Storage, StorageFile,
 };
 
-type Reconcile = dyn for<'save> Fn(&[Save<'save>]) -> Result<(), Error> + Send + Sync;
-
-struct Projection {
+pub(super) struct DolphinMemoryStorage {
     entries: Mutex<BTreeMap<String, MemoryFile>>,
-    reconcile: Box<Reconcile>,
+    card: GameCubeMemoryCard,
+    region: Region,
+    projected_paths: HashMap<Vec<u8>, String>,
 }
 
-impl Projection {
+impl DolphinMemoryStorage {
     fn saves(&self) -> Result<Option<Vec<Save<'static>>>, Error> {
         let entries = self.entries.lock();
         let mut identities = HashSet::new();
@@ -52,24 +55,15 @@ impl Projection {
         Ok(Some(saves))
     }
 
-    fn commit(&self) -> Result<(), Error> {
-        if let Some(saves) = self.saves()? {
-            (self.reconcile)(&saves)?;
-        }
-        Ok(())
-    }
-}
-
-pub(super) struct DolphinMemoryStorage {
-    projection: Arc<Projection>,
-    worker: ReconcileWorker,
-}
-
-impl DolphinMemoryStorage {
     pub(super) fn new(
+        card: GameCubeMemoryCard,
+        region: Region,
         saves: &[Save<'_>],
-        reconcile: impl for<'save> Fn(&[Save<'save>]) -> Result<(), Error> + Send + Sync + 'static,
     ) -> Result<Self, Error> {
+        let projected_paths = saves
+            .iter()
+            .map(|save| (save.identity(), format!("{SAVE_ROOT}/{}", save.file_name())))
+            .collect();
         let mut entries = BTreeMap::new();
         for save in saves {
             let mut name = save.file_name();
@@ -78,23 +72,16 @@ impl DolphinMemoryStorage {
             }
             entries.insert(name, MemoryFile::new(save.as_bytes().to_vec()));
         }
-        let projection = Arc::new(Projection {
+        Ok(Self {
             entries: Mutex::new(entries),
-            reconcile: Box::new(reconcile),
-        });
-        let background = Arc::downgrade(&projection);
-        let worker =
-            ReconcileWorker::spawn("polymer-gci-writeback", "Dolphin memory card", move || {
-                background
-                    .upgrade()
-                    .map_or(Ok(()), |projection| projection.commit())
-            })?;
-        Ok(Self { projection, worker })
+            card,
+            region,
+            projected_paths,
+        })
     }
 
     fn entry(&self, path: &str) -> Result<MemoryFile, Error> {
-        self.projection
-            .entries
+        self.entries
             .lock()
             .get(path)
             .cloned()
@@ -102,18 +89,32 @@ impl DolphinMemoryStorage {
     }
 }
 
+impl crate::ReconciliableStorage for DolphinMemoryStorage {
+    fn reconcile(&self) -> Result<(), Error> {
+        if let Some(saves) = self.saves()? {
+            self.card
+                .reconcile(self.region, &self.projected_paths, &saves)?;
+        }
+        Ok(())
+    }
+
+    fn filter(_path: &str) -> bool {
+        true
+    }
+}
+
 impl fmt::Debug for DolphinMemoryStorage {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("DolphinMemoryStorage")
-            .field("entries", &self.projection.entries.lock().len())
+            .field("entries", &self.entries.lock().len())
             .finish_non_exhaustive()
     }
 }
 
 impl Storage for DolphinMemoryStorage {
     fn exists(&self, path: &str) -> bool {
-        path.is_empty() || self.projection.entries.lock().contains_key(path)
+        path.is_empty() || self.entries.lock().contains_key(path)
     }
 
     fn metadata(&self, path: &str) -> Result<Metadata, Error> {
@@ -135,7 +136,6 @@ impl Storage for DolphinMemoryStorage {
             return ReadDir::recursive(self, path);
         }
         let entries = self
-            .projection
             .entries
             .lock()
             .iter()
@@ -163,20 +163,16 @@ impl Storage for DolphinMemoryStorage {
             return Err(Error::InvalidPath(path.to_owned()));
         }
         let entry = MemoryFile::new(Vec::new());
-        self.projection
-            .entries
-            .lock()
-            .insert(path.to_owned(), entry.clone());
-        Ok(entry.handle(self.worker.clone(), true, true))
+        self.entries.lock().insert(path.to_owned(), entry.clone());
+        Ok(entry.handle(true))
     }
 
     fn open(&self, path: &str, write: bool) -> Result<Arc<dyn StorageFile>, Error> {
-        Ok(self.entry(path)?.handle(self.worker.clone(), write, true))
+        Ok(self.entry(path)?.handle(write))
     }
 
     fn remove(&self, path: &str) -> Result<(), Error> {
-        self.projection.entries.lock().remove(path);
-        self.worker.schedule();
+        self.entries.lock().remove(path);
         Ok(())
     }
 
@@ -207,33 +203,23 @@ impl Storage for DolphinMemoryStorage {
 
 impl MountableStorage for DolphinMemoryStorage {
     fn rename(&self, from: &str, to: &str) -> Result<(), Error> {
-        let mut entries = self.projection.entries.lock();
+        let mut entries = self.entries.lock();
         let entry = entries.remove(from).ok_or_else(|| Error::not_found(from))?;
         if !to.to_ascii_lowercase().ends_with(".deleted") {
             entries.insert(to.to_owned(), entry);
         }
         drop(entries);
-        self.worker.schedule();
         Ok(())
     }
 
     fn truncate(&self, path: &str, len: u64) -> Result<(), Error> {
-        self.entry(path)?
-            .handle(self.worker.clone(), true, true)
-            .set_len(len)
+        self.entry(path)?.handle(true).set_len(len)
     }
 
     fn sync(&self, path: &str) -> Result<(), Error> {
         if !path.is_empty() {
             self.entry(path)?;
         }
-        self.worker.reconcile()
-    }
-
-    fn finish(&self, path: &str) -> Result<(), Error> {
-        if !path.is_empty() {
-            self.entry(path)?;
-        }
-        self.worker.shutdown()
+        Ok(())
     }
 }

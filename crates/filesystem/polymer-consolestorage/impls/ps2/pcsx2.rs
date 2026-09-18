@@ -6,19 +6,17 @@ use jiff::Timestamp;
 use parking_lot::Mutex;
 use tokio::io::AsyncReadExt;
 
-use crate::impls::memorycard::{MemoryFile, ReconcileWorker};
+use crate::storage::memory::MemoryFile;
 use crate::{
     BoxFuture, DirEntry, EntryKind, Error, InstallResult, Metadata, MountableStorage, ReadDir,
     Storage, StorageFile,
 };
 
 use super::psu::Save;
-use super::raw;
+use super::{Playstation2MemoryCard, raw};
 
 const SUPERBLOCK: &str = "_pcsx2_superblock";
 const DELETED_PREFIX: &str = "_pcsx2_deleted_";
-
-type Reconcile = dyn Fn(&[Save<'static>]) -> Result<(), Error> + Send + Sync;
 
 #[derive(Clone)]
 enum Entry {
@@ -53,30 +51,29 @@ impl Entry {
 
 /// An in-memory PCSX2 folder-card projection of PSU-backed saves.
 pub(super) struct Pcsx2MemoryStorage {
-    entries: Arc<Mutex<BTreeMap<String, Entry>>>,
-    worker: ReconcileWorker,
+    entries: Mutex<BTreeMap<String, Entry>>,
+    card: Playstation2MemoryCard,
+    projected: Mutex<Vec<Vec<u8>>>,
 }
 
 impl Pcsx2MemoryStorage {
     pub(super) fn new<'a>(
+        card: Playstation2MemoryCard,
         capacity_blocks: u32,
         saves: impl IntoIterator<Item = Save<'a>>,
-        reconcile: impl Fn(&[Save<'static>]) -> Result<(), Error> + Send + Sync + 'static,
     ) -> Result<Self, Error> {
         let superblock = raw::card::MemoryCard::formatted_superblock(capacity_blocks)?;
         let mut entries = BTreeMap::from([(SUPERBLOCK.to_owned(), Entry::file(superblock))]);
+        let mut projected = Vec::new();
         for save in saves {
+            projected.push(save.name_bytes().to_vec());
             Self::project_save(&mut entries, &save);
         }
-        let entries = Arc::new(Mutex::new(entries));
-        let reconcile = Arc::new(reconcile) as Arc<Reconcile>;
-        let background_entries = entries.clone();
-        let background_reconcile = reconcile.clone();
-        let worker =
-            ReconcileWorker::spawn("polymer-pcsx2-writeback", "PCSX2 memory card", move || {
-                background_reconcile(&Self::saves(&background_entries)?)
-            })?;
-        Ok(Self { entries, worker })
+        Ok(Self {
+            entries: Mutex::new(entries),
+            card,
+            projected: Mutex::new(projected),
+        })
     }
 
     fn project_save(entries: &mut BTreeMap<String, Entry>, save: &Save<'_>) {
@@ -189,8 +186,8 @@ impl Pcsx2MemoryStorage {
             .unwrap_or(u64::MAX)
     }
 
-    fn saves(entries: &Arc<Mutex<BTreeMap<String, Entry>>>) -> Result<Vec<Save<'static>>, Error> {
-        let entries = entries.lock();
+    fn saves(&self) -> Result<Vec<Save<'static>>, Error> {
+        let entries = self.entries.lock();
         let roots = entries
             .iter()
             .filter_map(|(path, entry)| {
@@ -247,6 +244,23 @@ impl Pcsx2MemoryStorage {
     }
 }
 
+impl crate::ReconciliableStorage for Pcsx2MemoryStorage {
+    fn reconcile(&self) -> Result<(), Error> {
+        let saves = self.saves()?;
+        let mut projected = self.projected.lock();
+        self.card.reconcile(&projected, &saves)?;
+        *projected = saves
+            .iter()
+            .map(|save| save.name_bytes().to_vec())
+            .collect();
+        Ok(())
+    }
+
+    fn filter(path: &str) -> bool {
+        path.contains('/')
+    }
+}
+
 impl fmt::Debug for Pcsx2MemoryStorage {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -297,7 +311,6 @@ impl Storage for Pcsx2MemoryStorage {
                 .or_insert_with(Entry::directory);
         }
         drop(entries);
-        self.worker.schedule();
         Ok(())
     }
 
@@ -309,18 +322,17 @@ impl Storage for Pcsx2MemoryStorage {
             entries.insert(path.to_owned(), entry.clone());
             entry
         };
-        self.worker.schedule();
         let Entry::File { file } = entry else {
             unreachable!()
         };
-        Ok(file.handle(self.worker.clone(), true, path.contains('/')))
+        Ok(file.handle(true))
     }
 
     fn open(&self, path: &str, write: bool) -> Result<Arc<dyn StorageFile>, Error> {
         let Entry::File { file } = self.entry(path)? else {
             return Err(Error::Unsupported(format!("`{path}` is not a file")));
         };
-        Ok(file.handle(self.worker.clone(), write, path.contains('/')))
+        Ok(file.handle(write))
     }
 
     fn remove(&self, path: &str) -> Result<(), Error> {
@@ -333,7 +345,6 @@ impl Storage for Pcsx2MemoryStorage {
         }
         entries.remove(path);
         drop(entries);
-        self.worker.schedule();
         Ok(())
     }
 
@@ -372,7 +383,6 @@ impl MountableStorage for Pcsx2MemoryStorage {
         {
             Self::remove_tree(&mut entries, from);
             drop(entries);
-            self.worker.schedule();
             return Ok(());
         }
         let source = entries.remove(from).ok_or_else(|| Error::not_found(from))?;
@@ -390,7 +400,6 @@ impl MountableStorage for Pcsx2MemoryStorage {
             entries.insert(format!("{to}/{}", &old[old_prefix.len()..]), entry);
         }
         drop(entries);
-        self.worker.schedule();
         Ok(())
     }
 
@@ -398,21 +407,13 @@ impl MountableStorage for Pcsx2MemoryStorage {
         let Entry::File { file } = self.entry(path)? else {
             return Err(Error::Unsupported(format!("`{path}` is not a file")));
         };
-        file.handle(self.worker.clone(), true, path.contains('/'))
-            .set_len(len)
+        file.handle(true).set_len(len)
     }
 
     fn sync(&self, path: &str) -> Result<(), Error> {
         if !path.is_empty() {
             self.entry(path)?;
         }
-        self.worker.reconcile()
-    }
-
-    fn finish(&self, path: &str) -> Result<(), Error> {
-        if !path.is_empty() {
-            self.entry(path)?;
-        }
-        self.worker.shutdown()
+        Ok(())
     }
 }

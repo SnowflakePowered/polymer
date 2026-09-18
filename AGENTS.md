@@ -23,4 +23,6 @@
     * Do not write tests against a removal of a feature.
     * Do not write change detector tests. Change detectors provide negative value.
     * Do not write constructors or logic that purely serve tests.
+* Make only the smallest change needed for a request or feature. 
+* Follow existing conventions for Actors and JS <-> Rust messaging.
 Read ARCHITECTURE.md for a high level overview of the architecture.
