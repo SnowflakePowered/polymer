@@ -1,15 +1,12 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
-use jiff::Timestamp;
 use parking_lot::Mutex;
-use tokio::io::AsyncReadExt;
 
-use crate::storage::memory::MemoryFile;
 use crate::{
-    BoxFuture, DirEntry, EntryKind, Error, InstallResult, Metadata, MountableStorage, ReadDir,
-    Storage, StorageFile,
+    BoxFuture, Error, InstallResult, MemoryStorage, Metadata, MountableStorage, ReadDir, Storage,
+    StorageFile,
 };
 
 use super::psu::Save;
@@ -18,40 +15,9 @@ use super::{Playstation2MemoryCard, raw};
 const SUPERBLOCK: &str = "_pcsx2_superblock";
 const DELETED_PREFIX: &str = "_pcsx2_deleted_";
 
-#[derive(Clone)]
-enum Entry {
-    Directory { mtime: Arc<Mutex<Timestamp>> },
-    File { file: MemoryFile },
-}
-
-impl Entry {
-    fn directory() -> Self {
-        Self::Directory {
-            mtime: Arc::new(Mutex::new(Timestamp::now())),
-        }
-    }
-
-    fn file(bytes: Vec<u8>) -> Self {
-        Self::File {
-            file: MemoryFile::new(bytes),
-        }
-    }
-
-    fn metadata(&self) -> Metadata {
-        match self {
-            Self::Directory { mtime } => Metadata {
-                kind: EntryKind::Directory,
-                len: 0,
-                mtime: *mtime.lock(),
-            },
-            Self::File { file } => file.metadata(),
-        }
-    }
-}
-
 /// An in-memory PCSX2 folder-card projection of PSU-backed saves.
 pub(super) struct Pcsx2MemoryStorage {
-    entries: Mutex<BTreeMap<String, Entry>>,
+    storage: MemoryStorage,
     card: Playstation2MemoryCard,
     projected: Mutex<Vec<Vec<u8>>>,
 }
@@ -63,39 +29,35 @@ impl Pcsx2MemoryStorage {
         saves: impl IntoIterator<Item = Save<'a>>,
     ) -> Result<Self, Error> {
         let superblock = raw::card::MemoryCard::formatted_superblock(capacity_blocks)?;
-        let mut entries = BTreeMap::from([(SUPERBLOCK.to_owned(), Entry::file(superblock))]);
+        let storage = MemoryStorage::writable([(SUPERBLOCK.to_owned(), superblock)])?;
         let mut projected = Vec::new();
         for save in saves {
             projected.push(save.name_bytes().to_vec());
-            Self::project_save(&mut entries, &save);
+            Self::project_save(&storage, &save)?;
         }
         Ok(Self {
-            entries: Mutex::new(entries),
+            storage,
             card,
             projected: Mutex::new(projected),
         })
     }
 
-    fn project_save(entries: &mut BTreeMap<String, Entry>, save: &Save<'_>) {
+    fn project_save(storage: &MemoryStorage, save: &Save<'_>) -> Result<(), Error> {
         let save_name = save.name().into_owned();
-        entries.insert(save_name.clone(), Entry::directory());
-        entries.insert(
-            format!("{save_name}/_pcsx2_meta_directory"),
-            Entry::file(save.raw_dirent().to_vec()),
-        );
+        storage
+            .create(&format!("{save_name}/_pcsx2_meta_directory"))?
+            .write_all_at(0, save.raw_dirent())?;
         let metadata = format!("{save_name}/_pcsx2_meta");
-        entries.insert(metadata.clone(), Entry::directory());
+        storage.create_dir_all(&metadata)?;
         let mut index = String::from("{\"$ROOT\":{\"timeCreated\":0,\"timeModified\":0}");
         for (order, file) in save.files().enumerate() {
             let file_name = file.name().into_owned();
-            entries.insert(
-                format!("{save_name}/{file_name}"),
-                Entry::file(file.data().to_vec()),
-            );
-            entries.insert(
-                format!("{metadata}/{file_name}"),
-                Entry::file(file.raw_dirent().to_vec()),
-            );
+            storage
+                .create(&format!("{save_name}/{file_name}"))?
+                .write_all_at(0, file.data())?;
+            storage
+                .create(&format!("{metadata}/{file_name}"))?
+                .write_all_at(0, file.raw_dirent())?;
             index.push(',');
             index.push_str(&serde_json::to_string(&file_name).expect("a string serializes"));
             index.push_str(":{\"order\":");
@@ -103,69 +65,20 @@ impl Pcsx2MemoryStorage {
             index.push_str(",\"timeCreated\":0,\"timeModified\":0}");
         }
         index.push('}');
-        entries.insert(
-            format!("{save_name}/_pcsx2_index"),
-            Entry::file(index.into_bytes()),
-        );
+        storage
+            .create(&format!("{save_name}/_pcsx2_index"))?
+            .write_all_at(0, index.as_bytes())?;
+        Ok(())
     }
 
     fn is_private(path: &str) -> bool {
         path.split('/').any(|part| part.starts_with("_pcsx2_"))
     }
 
-    fn create_parents(entries: &mut BTreeMap<String, Entry>, path: &str) {
-        let mut prefix = String::new();
-        let count = path.split('/').count();
-        for component in path.split('/').take(count.saturating_sub(1)) {
-            if !prefix.is_empty() {
-                prefix.push('/');
-            }
-            prefix.push_str(component);
-            entries
-                .entry(prefix.clone())
-                .or_insert_with(Entry::directory);
-        }
-    }
-
-    fn entry(&self, path: &str) -> Result<Entry, Error> {
-        self.entries
-            .lock()
-            .get(path)
-            .cloned()
-            .ok_or_else(|| Error::not_found(path))
-    }
-
-    fn children(&self, path: &str) -> Vec<DirEntry> {
-        let prefix = if path.is_empty() {
-            String::new()
-        } else {
-            format!("{path}/")
-        };
-        self.entries
-            .lock()
-            .iter()
-            .filter_map(|(entry_path, entry)| {
-                let suffix = entry_path.strip_prefix(&prefix)?;
-                (!suffix.is_empty() && !suffix.contains('/')).then(|| DirEntry {
-                    name: suffix.to_owned(),
-                    path: entry_path.clone(),
-                    metadata: entry.metadata(),
-                })
-            })
-            .collect()
-    }
-
-    fn bytes(entries: &BTreeMap<String, Entry>, path: &str) -> Vec<u8> {
-        match entries.get(path) {
-            Some(Entry::File { file }) => file.bytes(),
-            _ => Vec::new(),
-        }
-    }
-
-    fn dirent(entries: &BTreeMap<String, Entry>, path: &str, name: &str) -> Vec<u8> {
-        let bytes = Self::bytes(entries, path);
+    fn dirent<'a>(entries: &'a BTreeMap<String, Vec<u8>>, path: &str, name: &str) -> &'a [u8] {
+        let bytes = entries.get(path).map(Vec::as_slice).unwrap_or_default();
         let Some(raw_name) = bytes.get(0x40..0x60) else {
-            return Vec::new();
+            return &[];
         };
         let end = raw_name
             .iter()
@@ -174,44 +87,31 @@ impl Pcsx2MemoryStorage {
         if raw_name[..end] == *name.as_bytes() {
             bytes
         } else {
-            Vec::new()
+            &[]
         }
     }
 
-    fn file_order(entries: &BTreeMap<String, Entry>, root: &str, name: &str) -> u64 {
-        let index = Self::bytes(entries, &format!("{root}/_pcsx2_index"));
-        serde_json::from_slice::<serde_json::Value>(&index)
-            .ok()
-            .and_then(|index| index.get(name)?.get("order")?.as_u64())
-            .unwrap_or(u64::MAX)
-    }
-
     fn saves(&self) -> Result<Vec<Save<'static>>, Error> {
-        let entries = self.entries.lock();
+        let entries = self.storage.snapshot_files();
         let roots = entries
-            .iter()
-            .filter_map(|(path, entry)| {
-                (!path.contains('/')
-                    && !Self::is_private(path)
-                    && matches!(entry, Entry::Directory { .. }))
-                .then_some(path.clone())
+            .keys()
+            .filter_map(|path| {
+                let (root, _) = path.split_once('/')?;
+                (!Self::is_private(root)).then_some(root)
             })
-            .collect::<Vec<_>>();
+            .collect::<BTreeSet<_>>();
         let mut saves = Vec::new();
         for name in roots {
             let prefix = format!("{name}/");
             let mut files = entries
                 .iter()
-                .filter_map(|(path, entry)| {
+                .filter_map(|(path, bytes)| {
                     let child = path.strip_prefix(&prefix)?;
-                    (!child.contains('/')
-                        && !Self::is_private(child)
-                        && matches!(entry, Entry::File { .. }))
-                    .then(|| {
+                    (!child.contains('/') && !Self::is_private(child)).then(|| {
                         (
                             child.to_owned(),
                             Self::dirent(&entries, &format!("{name}/_pcsx2_meta/{child}"), child),
-                            Self::bytes(&entries, path),
+                            bytes.as_slice(),
                         )
                     })
                 })
@@ -219,28 +119,32 @@ impl Pcsx2MemoryStorage {
             if files.is_empty() {
                 continue;
             }
-            files.sort_by_key(|file| (Self::file_order(&entries, &name, &file.0), file.0.clone()));
-            let dirent = Self::dirent(&entries, &format!("{name}/_pcsx2_meta_directory"), &name);
+            let index = entries
+                .get(&format!("{name}/_pcsx2_index"))
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).ok());
+            files.sort_by_cached_key(|file| {
+                let order = index
+                    .as_ref()
+                    .and_then(|index| index.get(&file.0)?.get("order")?.as_u64())
+                    .unwrap_or(u64::MAX);
+                (order, file.0.clone())
+            });
+            let dirent = Self::dirent(&entries, &format!("{name}/_pcsx2_meta_directory"), name);
             saves.push(
                 Save::from_files(
-                    &name,
-                    &dirent,
-                    files.iter().map(|(name, dirent, data)| {
-                        (name.as_str(), dirent.as_slice(), data.as_slice())
-                    }),
+                    name,
+                    dirent,
+                    files
+                        .iter()
+                        .map(|(name, dirent, data)| (name.as_str(), *dirent, *data)),
                 )
                 .map_err(|error| Error::MalformedMetadata {
-                    file: name,
+                    file: name.to_owned(),
                     reason: error.to_string(),
                 })?,
             );
         }
         Ok(saves)
-    }
-
-    fn remove_tree(entries: &mut BTreeMap<String, Entry>, path: &str) {
-        let prefix = format!("{path}/");
-        entries.retain(|entry, _| entry != path && !entry.starts_with(&prefix));
     }
 }
 
@@ -265,155 +169,66 @@ impl fmt::Debug for Pcsx2MemoryStorage {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("Pcsx2MemoryStorage")
-            .field("entries", &self.entries.lock().len())
+            .field("storage", &self.storage)
             .finish_non_exhaustive()
     }
 }
 
 impl Storage for Pcsx2MemoryStorage {
     fn exists(&self, path: &str) -> bool {
-        path.is_empty() || self.entries.lock().contains_key(path)
+        self.storage.exists(path)
     }
 
     fn metadata(&self, path: &str) -> Result<Metadata, Error> {
-        if path.is_empty() {
-            return Ok(Metadata {
-                kind: EntryKind::Directory,
-                len: 0,
-                mtime: Timestamp::now(),
-            });
-        }
-        Ok(self.entry(path)?.metadata())
+        self.storage.metadata(path)
     }
 
     fn read_dir(&self, path: &str, recursive: bool) -> Result<ReadDir<'_>, Error> {
-        if recursive {
-            return ReadDir::recursive(self, path);
-        }
-        if !path.is_empty() && self.metadata(path)?.kind != EntryKind::Directory {
-            return Err(Error::Unsupported(format!("`{path}` is not a directory")));
-        }
-        let mut entries = self.children(path);
-        entries.sort_by(|left, right| left.name.cmp(&right.name));
-        Ok(ReadDir::surface(entries.into_iter()))
+        self.storage.read_dir(path, recursive)
     }
 
     fn create_dir_all(&self, path: &str) -> Result<(), Error> {
-        let mut entries = self.entries.lock();
-        let mut prefix = String::new();
-        for component in path.split('/').filter(|part| !part.is_empty()) {
-            if !prefix.is_empty() {
-                prefix.push('/');
-            }
-            prefix.push_str(component);
-            entries
-                .entry(prefix.clone())
-                .or_insert_with(Entry::directory);
-        }
-        drop(entries);
-        Ok(())
+        self.storage.create_dir_all(path)
     }
 
     fn create(&self, path: &str) -> Result<Arc<dyn StorageFile>, Error> {
-        let entry = {
-            let mut entries = self.entries.lock();
-            Self::create_parents(&mut entries, path);
-            let entry = Entry::file(Vec::new());
-            entries.insert(path.to_owned(), entry.clone());
-            entry
-        };
-        let Entry::File { file } = entry else {
-            unreachable!()
-        };
-        Ok(file.handle(true))
+        self.storage.create(path)
     }
 
     fn open(&self, path: &str, write: bool) -> Result<Arc<dyn StorageFile>, Error> {
-        let Entry::File { file } = self.entry(path)? else {
-            return Err(Error::Unsupported(format!("`{path}` is not a file")));
-        };
-        Ok(file.handle(write))
+        self.storage.open(path, write)
     }
 
     fn remove(&self, path: &str) -> Result<(), Error> {
-        let mut entries = self.entries.lock();
-        let prefix = format!("{path}/");
-        if entries.keys().any(|entry| entry.starts_with(&prefix)) {
-            return Err(Error::Unsupported(format!(
-                "directory `{path}` is not empty"
-            )));
-        }
-        entries.remove(path);
-        drop(entries);
-        Ok(())
+        self.storage.remove(path)
     }
 
     fn install_file<'a>(
         &'a self,
-        mut source: Box<dyn tokio::io::AsyncRead + Send + Unpin>,
+        source: Box<dyn tokio::io::AsyncRead + Send + Unpin>,
         dest: &str,
     ) -> BoxFuture<'a, Result<InstallResult, Error>> {
-        let dest = dest.to_owned();
-        Box::pin(async move {
-            let mut bytes = Vec::new();
-            source
-                .read_to_end(&mut bytes)
-                .await
-                .map_err(|source| Error::Io {
-                    path: dest.clone(),
-                    source,
-                })?;
-            let result = InstallResult {
-                blake3: *blake3::hash(&bytes).as_bytes(),
-                byte_length: bytes.len() as u64,
-            };
-            self.create(&dest)?.write_all_at(0, &bytes)?;
-            Ok(result)
-        })
+        self.storage.install_file(source, dest)
     }
 }
 
 impl MountableStorage for Pcsx2MemoryStorage {
     fn rename(&self, from: &str, to: &str) -> Result<(), Error> {
-        let mut entries = self.entries.lock();
         if to
             .rsplit('/')
             .next()
             .is_some_and(|name| name.starts_with(DELETED_PREFIX))
         {
-            Self::remove_tree(&mut entries, from);
-            drop(entries);
-            return Ok(());
+            return self.storage.remove_tree(from);
         }
-        let source = entries.remove(from).ok_or_else(|| Error::not_found(from))?;
-        let old_prefix = format!("{from}/");
-        let descendants = entries
-            .keys()
-            .filter(|path| path.starts_with(&old_prefix))
-            .cloned()
-            .collect::<Vec<_>>();
-        Self::remove_tree(&mut entries, to);
-        Self::create_parents(&mut entries, to);
-        entries.insert(to.to_owned(), source);
-        for old in descendants {
-            let entry = entries.remove(&old).expect("listed descendant");
-            entries.insert(format!("{to}/{}", &old[old_prefix.len()..]), entry);
-        }
-        drop(entries);
-        Ok(())
+        self.storage.rename(from, to)
     }
 
     fn truncate(&self, path: &str, len: u64) -> Result<(), Error> {
-        let Entry::File { file } = self.entry(path)? else {
-            return Err(Error::Unsupported(format!("`{path}` is not a file")));
-        };
-        file.handle(true).set_len(len)
+        self.storage.truncate(path, len)
     }
 
     fn sync(&self, path: &str) -> Result<(), Error> {
-        if !path.is_empty() {
-            self.entry(path)?;
-        }
-        Ok(())
+        self.storage.sync(path)
     }
 }

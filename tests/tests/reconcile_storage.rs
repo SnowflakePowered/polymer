@@ -114,6 +114,22 @@ async fn dolphin_folder_writes_reconcile_in_background_and_tombstones_delete_sav
     })
     .await
     .unwrap();
+    // Replacing the directory entry leaves the old handle detached from the
+    // projection that reconciliation persists.
+    let replacement = view.storage().create(&path).unwrap();
+    replacement
+        .write_all_at(0, fixture.save.as_bytes())
+        .unwrap();
+    replacement
+        .write_all_at(gci::DIRENT_SIZE as u64, b"replacement")
+        .unwrap();
+    file.write_all_at(gci::DIRENT_SIZE as u64, b"old handle")
+        .unwrap();
+    file.sync().unwrap();
+    assert_eq!(
+        &fixture.saved_bytes()[gci::DIRENT_SIZE..][..11],
+        b"replacement"
+    );
     view.storage()
         .rename(&path, &format!("{path}.deleted"))
         .unwrap();
@@ -122,7 +138,7 @@ async fn dolphin_folder_writes_reconcile_in_background_and_tombstones_delete_sav
     let mut retained = [0; 10];
     file.read_at(gci::DIRENT_SIZE as u64, &mut retained)
         .unwrap();
-    assert_eq!(&retained, b"background");
+    assert_eq!(&retained, b"old handle");
     view.storage().finish("").unwrap();
     assert!(!fixture.card.exists(&format!("card/{path}")));
 }
@@ -148,6 +164,16 @@ async fn pcsx2_folder_edits_roundtrip_through_psu_and_delete_at_finish() {
         .install_file(Box::new(std::io::Cursor::new(b"first payload")), &path)
         .await
         .unwrap();
+    let old = view.storage().open(&path, true).unwrap();
+    view.storage()
+        .create(&path)
+        .unwrap()
+        .write_all_at(0, b"first payload")
+        .unwrap();
+    old.write_all_at(0, b"stale").unwrap();
+    let mut retained = [0; 5];
+    old.read_at(0, &mut retained).unwrap();
+    assert_eq!(&retained, b"stale");
     view.storage()
         .rename(&path, &format!("{root}/renamed"))
         .unwrap();
@@ -223,6 +249,7 @@ fn memory_file_factory_shares_storage_across_handles_and_adoption() {
         truncate: false,
     };
     let reader = first.backend.open(read).unwrap();
+    assert!(!reader.metadata().unwrap().readonly);
     let source = MemoryFileFactory::immutable(b"replacement".to_vec())
         .materialize()
         .unwrap();
@@ -232,6 +259,8 @@ fn memory_file_factory_shares_storage_across_handles_and_adoption() {
     reader.read(0, &mut bytes).unwrap();
     assert_eq!(&bytes, b"Replacement");
     assert!(reader.write(0, b"x").is_err());
+    adoption.truncate(4).unwrap();
+    assert_eq!(reader.metadata().unwrap().len, 4);
     adoption.finalize().unwrap();
     reader.read(0, &mut bytes).unwrap();
     assert_eq!(&bytes, b"replacement");
@@ -244,4 +273,103 @@ fn memory_file_factory_shares_storage_across_handles_and_adoption() {
             })
             .is_err()
     );
+}
+
+#[test]
+fn memory_adoption_publishes_complete_replacements_to_existing_readers() {
+    let target = MemoryFileFactory::writable(vec![0x11; 1024 * 1024])
+        .materialize()
+        .unwrap();
+    let sources = [0x22, 0x33].map(|byte| {
+        MemoryFileFactory::immutable(vec![byte; 1024 * 1024])
+            .materialize()
+            .unwrap()
+    });
+    let reader = target
+        .backend
+        .open(OpenOptions {
+            read: true,
+            write: false,
+            truncate: false,
+        })
+        .unwrap();
+    let start = std::sync::Barrier::new(2);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            start.wait();
+            for index in 0..64 {
+                target
+                    .backend
+                    .adopt(sources[index % 2].backend.clone())
+                    .unwrap();
+            }
+        });
+        start.wait();
+        let mut bytes = vec![0; 1024 * 1024];
+        for _ in 0..512 {
+            assert_eq!(reader.read(0, &mut bytes).unwrap(), bytes.len());
+            assert!(matches!(bytes[0], 0x11 | 0x22 | 0x33));
+            assert!(
+                bytes.iter().all(|byte| *byte == bytes[0]),
+                "a partial replacement became visible"
+            );
+        }
+    });
+}
+
+#[cfg(windows)]
+#[test]
+fn failed_memory_adoption_and_finalization_leave_the_target_unchanged() {
+    // Windows byte-range locks make actual source reads fail, after metadata and open succeed.
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("source.bin");
+    std::fs::write(&path, vec![0x22; 128 * 1024]).unwrap();
+    let source = polymer_vfs::HostFileFactory::new(path.clone(), false)
+        .materialize()
+        .unwrap();
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    let target = MemoryFileFactory::writable(vec![0x11; 64 * 1024])
+        .materialize()
+        .unwrap();
+    let read = OpenOptions {
+        read: true,
+        write: false,
+        truncate: false,
+    };
+    let reader = target.backend.open(read).unwrap();
+
+    lock.lock().unwrap();
+    assert!(
+        source
+            .backend
+            .open(read)
+            .unwrap()
+            .read(0, &mut [0; 1])
+            .is_err()
+    );
+    assert!(target.backend.adopt(source.backend.clone()).is_err());
+    let mut bytes = vec![0; 64 * 1024];
+    assert_eq!(reader.metadata().unwrap().len, bytes.len() as u64);
+    assert_eq!(reader.read(0, &mut bytes).unwrap(), bytes.len());
+    assert!(bytes.iter().all(|byte| *byte == 0x11));
+    lock.unlock().unwrap();
+
+    let adoption = target.backend.adopt(source.backend.clone()).unwrap();
+    std::fs::write(&path, vec![0x33; 256 * 1024]).unwrap();
+    lock.lock().unwrap();
+    assert!(adoption.finalize().is_err());
+    bytes.resize(128 * 1024, 0);
+    assert_eq!(reader.metadata().unwrap().len, bytes.len() as u64);
+    assert_eq!(reader.read(0, &mut bytes).unwrap(), bytes.len());
+    assert!(bytes.iter().all(|byte| *byte == 0x22));
+    lock.unlock().unwrap();
+
+    adoption.finalize().unwrap();
+    bytes.resize(256 * 1024, 0);
+    assert_eq!(reader.read(0, &mut bytes).unwrap(), bytes.len());
+    assert!(bytes.iter().all(|byte| *byte == 0x33));
 }

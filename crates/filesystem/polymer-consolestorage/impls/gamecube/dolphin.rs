@@ -2,22 +2,17 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
-use jiff::Timestamp;
-use parking_lot::Mutex;
-use tokio::io::AsyncReadExt;
-
 use super::{
     GameCubeMemoryCard, SAVE_ROOT,
     gci::{self, Region, Save},
 };
-use crate::storage::memory::MemoryFile;
 use crate::{
-    BoxFuture, DirEntry, EntryKind, Error, InstallResult, Metadata, MountableStorage, ReadDir,
-    Storage, StorageFile,
+    BoxFuture, Error, InstallResult, MemoryStorage, Metadata, MountableStorage, ReadDir, Storage,
+    StorageFile,
 };
 
 pub(super) struct DolphinMemoryStorage {
-    entries: Mutex<BTreeMap<String, MemoryFile>>,
+    storage: MemoryStorage,
     card: GameCubeMemoryCard,
     region: Region,
     projected_paths: HashMap<Vec<u8>, String>,
@@ -25,14 +20,13 @@ pub(super) struct DolphinMemoryStorage {
 
 impl DolphinMemoryStorage {
     fn saves(&self) -> Result<Option<Vec<Save<'static>>>, Error> {
-        let entries = self.entries.lock();
+        let entries = self.storage.snapshot_files();
         let mut identities = HashSet::new();
         let mut saves = Vec::new();
-        for (path, entry) in entries.iter() {
+        for (path, bytes) in entries {
             if !path.to_ascii_lowercase().ends_with(".gci") {
                 continue;
             }
-            let bytes = entry.bytes();
             if bytes.len() < gci::DIRENT_SIZE {
                 return Ok(None);
             }
@@ -70,22 +64,14 @@ impl DolphinMemoryStorage {
             while entries.contains_key(&name) {
                 name.insert(name.len() - 4, '0');
             }
-            entries.insert(name, MemoryFile::new(save.as_bytes().to_vec()));
+            entries.insert(name, save.as_bytes().to_vec());
         }
         Ok(Self {
-            entries: Mutex::new(entries),
+            storage: MemoryStorage::writable(entries)?,
             card,
             region,
             projected_paths,
         })
-    }
-
-    fn entry(&self, path: &str) -> Result<MemoryFile, Error> {
-        self.entries
-            .lock()
-            .get(path)
-            .cloned()
-            .ok_or_else(|| Error::not_found(path))
     }
 }
 
@@ -107,45 +93,22 @@ impl fmt::Debug for DolphinMemoryStorage {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("DolphinMemoryStorage")
-            .field("entries", &self.entries.lock().len())
+            .field("storage", &self.storage)
             .finish_non_exhaustive()
     }
 }
 
 impl Storage for DolphinMemoryStorage {
     fn exists(&self, path: &str) -> bool {
-        path.is_empty() || self.entries.lock().contains_key(path)
+        self.storage.exists(path)
     }
 
     fn metadata(&self, path: &str) -> Result<Metadata, Error> {
-        if path.is_empty() {
-            return Ok(Metadata {
-                kind: EntryKind::Directory,
-                len: 0,
-                mtime: Timestamp::now(),
-            });
-        }
-        Ok(self.entry(path)?.metadata())
+        self.storage.metadata(path)
     }
 
     fn read_dir(&self, path: &str, recursive: bool) -> Result<ReadDir<'_>, Error> {
-        if !path.is_empty() {
-            return Err(Error::not_found(path));
-        }
-        if recursive {
-            return ReadDir::recursive(self, path);
-        }
-        let entries = self
-            .entries
-            .lock()
-            .iter()
-            .map(|(name, entry)| DirEntry {
-                name: name.clone(),
-                path: name.clone(),
-                metadata: entry.metadata(),
-            })
-            .collect::<Vec<_>>();
-        Ok(ReadDir::surface(entries.into_iter()))
+        self.storage.read_dir(path, recursive)
     }
 
     fn create_dir_all(&self, path: &str) -> Result<(), Error> {
@@ -162,64 +125,48 @@ impl Storage for DolphinMemoryStorage {
         if path.is_empty() || path.contains('/') {
             return Err(Error::InvalidPath(path.to_owned()));
         }
-        let entry = MemoryFile::new(Vec::new());
-        self.entries.lock().insert(path.to_owned(), entry.clone());
-        Ok(entry.handle(true))
+        self.storage.create(path)
     }
 
     fn open(&self, path: &str, write: bool) -> Result<Arc<dyn StorageFile>, Error> {
-        Ok(self.entry(path)?.handle(write))
+        self.storage.open(path, write)
     }
 
     fn remove(&self, path: &str) -> Result<(), Error> {
-        self.entries.lock().remove(path);
-        Ok(())
+        self.storage.remove(path)
     }
 
     fn install_file<'a>(
         &'a self,
-        mut source: Box<dyn tokio::io::AsyncRead + Send + Unpin>,
+        source: Box<dyn tokio::io::AsyncRead + Send + Unpin>,
         dest: &str,
     ) -> BoxFuture<'a, Result<InstallResult, Error>> {
-        let dest = dest.to_owned();
-        Box::pin(async move {
-            let mut bytes = Vec::new();
-            source
-                .read_to_end(&mut bytes)
-                .await
-                .map_err(|source| Error::Io {
-                    path: dest.clone(),
-                    source,
-                })?;
-            let result = InstallResult {
-                blake3: *blake3::hash(&bytes).as_bytes(),
-                byte_length: bytes.len() as u64,
-            };
-            self.create(&dest)?.write_all_at(0, &bytes)?;
-            Ok(result)
-        })
+        if dest.is_empty() || dest.contains('/') {
+            let error = Error::InvalidPath(dest.to_owned());
+            return Box::pin(async move { Err(error) });
+        }
+        self.storage.install_file(source, dest)
     }
 }
 
 impl MountableStorage for DolphinMemoryStorage {
     fn rename(&self, from: &str, to: &str) -> Result<(), Error> {
-        let mut entries = self.entries.lock();
-        let entry = entries.remove(from).ok_or_else(|| Error::not_found(from))?;
-        if !to.to_ascii_lowercase().ends_with(".deleted") {
-            entries.insert(to.to_owned(), entry);
+        if from.is_empty() || to.is_empty() || to.contains('/') {
+            return Err(Error::InvalidPath(to.to_owned()));
         }
-        drop(entries);
-        Ok(())
+        if to.to_ascii_lowercase().ends_with(".deleted") {
+            self.storage.metadata(from)?;
+            self.storage.remove(from)
+        } else {
+            self.storage.rename(from, to)
+        }
     }
 
     fn truncate(&self, path: &str, len: u64) -> Result<(), Error> {
-        self.entry(path)?.handle(true).set_len(len)
+        self.storage.truncate(path, len)
     }
 
     fn sync(&self, path: &str) -> Result<(), Error> {
-        if !path.is_empty() {
-            self.entry(path)?;
-        }
-        Ok(())
+        self.storage.sync(path)
     }
 }
