@@ -1,8 +1,7 @@
 use super::Device;
 use futures_util::StreamExt;
-use polymer_library::StorageManager;
+use polymer_library::{ArtifactSummary, StorageManager};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::path::Path;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -20,7 +19,7 @@ impl DepotSource {
         manager: &StorageManager,
         path: &Path,
         progress: impl Fn(String),
-    ) -> Result<Value, String> {
+    ) -> Result<ArtifactSummary, String> {
         let nand = device.open(manager).await?;
         let key_root = manager.root().join("keys");
         let installation = nand.try_install(path).map_err(|error| error.to_string())?;
@@ -43,7 +42,7 @@ impl DepotSource {
     pub async fn finish_install(
         mut installation: polymer_consolestorage::installable::Installation<'_>,
         progress: impl Fn(String),
-    ) -> Result<Value, String> {
+    ) -> Result<ArtifactSummary, String> {
         while let Some(item) = installation.next().await {
             progress(item.map_err(|error| error.to_string())?);
         }
@@ -51,6 +50,6 @@ impl DepotSource {
             .finish()
             .await
             .map_err(|error| error.to_string())?;
-        Ok(Device::artifact(&artifact))
+        Ok(ArtifactSummary::from(&artifact))
     }
 }

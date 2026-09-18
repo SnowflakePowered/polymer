@@ -3,6 +3,7 @@ use super::super::{
     worker::{WorkerOptions, invoke_export, run_worker},
 };
 use crate::platform::Device;
+use polymer_library::StorageInspection;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
@@ -12,7 +13,7 @@ impl PluginRuntimeHandle {
         device: Device,
         settings: Value,
         cancellation: super::super::PluginCancellationToken,
-    ) -> Result<Value, PluginInvocationError> {
+    ) -> Result<StorageInspection, PluginInvocationError> {
         let provider = self
             .registry()
             .platform(&device.platform)
@@ -69,6 +70,6 @@ impl PluginRuntimeHandle {
             .map_err(PluginInvocationError::worker)?;
 
         progress.finish(json!({"state": "ready", "message": "System setup complete"}));
-        Ok(json!(inspection))
+        Ok(inspection)
     }
 }

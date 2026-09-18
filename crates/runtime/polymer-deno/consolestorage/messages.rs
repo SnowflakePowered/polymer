@@ -1,5 +1,6 @@
 use actix::{Message, Recipient};
-use serde::{Deserialize, Serialize};
+pub use polymer_library::{ArtifactSummary as StorageArtifact, StorageInspection};
+use serde::Serialize;
 use serde_json::Value;
 
 #[derive(Debug, thiserror::Error)]
@@ -28,25 +29,6 @@ impl StorageError {
 pub struct StoragePlatform {
     pub platform: String,
     pub plugin: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StorageArtifact {
-    pub id: String,
-    pub label: String,
-    pub version: Option<String>,
-    pub depot_type: String,
-    pub byte_length: u64,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct StorageInspection {
-    pub id: String,
-    pub platform: String,
-    pub minimal: bool,
-    pub dirty: bool,
-    pub artifacts: Vec<StorageArtifact>,
 }
 
 #[derive(Debug, Serialize)]

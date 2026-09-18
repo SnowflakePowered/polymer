@@ -5,6 +5,15 @@ use polymer_consolestorage::{
 };
 use uuid::Uuid;
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct StorageInspection {
+    pub id: String,
+    pub platform: String,
+    pub minimal: bool,
+    pub dirty: bool,
+    pub artifacts: Vec<polymer_consolestorage::ArtifactSummary>,
+}
+
 pub struct StorageManager {
     root: PathBuf,
 }

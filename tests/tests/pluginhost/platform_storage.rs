@@ -338,7 +338,7 @@ async fn platform_install_persists_keys_before_validation_and_installs_content()
         .install(&device, &manager, &path, |_| {})
         .await
         .unwrap();
-    assert_eq!(installed["id"], "0005000c12345678");
+    assert_eq!(installed.id, "0005000c12345678");
     let composed = nand.compose(None, &keys).await.unwrap();
     let root = "usr/title/0005000c/12345678";
     let mut bytes = Vec::new();
