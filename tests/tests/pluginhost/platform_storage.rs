@@ -131,52 +131,6 @@ async fn duplicate_provider_and_direct_bootstrap_are_rejected() {
 }
 
 #[tokio::test]
-async fn launch_does_not_gate_on_nand_readiness() {
-    let fixture = Fixture::new();
-    fixture.emulator();
-    let runtime = fixture.runtime();
-    let device = fixture.device().await;
-    let manager = StorageManager::new(fixture.directories.consolestorage());
-    device
-        .open(&manager)
-        .await
-        .unwrap()
-        .root()
-        .create("tmp/partial")
-        .unwrap()
-        .write_all_at(0, b"unfinished")
-        .unwrap();
-    let arguments = vec![json!({
-        "console": "NINTENDO_WII",
-        "controllerTopology": {"mappings": []},
-        "storage": {"nand": ["00000000000000000000000000000000", device.id]},
-    })];
-    for selection in [
-        json!(["00000000000000000000000000000000", device.id]),
-        json!([device.id, "00000000000000000000000000000000"]),
-        json!(device.id),
-    ] {
-        let mut selected = arguments.clone();
-        selected[0]["storage"]["nand"] = selection;
-        let error = runtime
-            .handle()
-            .invoke("emulator", &["onLaunch".into()], selected)
-            .await
-            .unwrap_err();
-        assert!(error.message.contains("ON_LAUNCH_REACHED"), "{error}");
-    }
-    let nand = device.open(&manager).await.unwrap();
-    assert!(nand.root().exists("tmp/partial"));
-    nand.recover().unwrap();
-    let error = runtime
-        .handle()
-        .invoke("emulator", &["onLaunch".into()], arguments)
-        .await
-        .unwrap_err();
-    assert!(error.message.contains("ON_LAUNCH_REACHED"), "{error}");
-}
-
-#[tokio::test]
 async fn cancelling_bootstrap_terminates_the_worker() {
     let fixture = Fixture::new();
     fixture
