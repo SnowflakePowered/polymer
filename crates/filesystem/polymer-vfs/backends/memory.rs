@@ -1,31 +1,40 @@
 use crate::{
-    CreateOptions, DirectoryEntry, DirectoryIterator, DirectoryNode, FileKind, FileNode,
-    Materialized, Metadata, MetadataChanges, Node, NoopResourceLease, OpenFile, OpenOptions,
-    RemoveKind, ResourceFactory, VfsComponent, VfsError, VfsPath, VfsPathBuf, VfsPathUnit,
-    VfsResult, Volume,
+    AdoptHandle, CreateOptions, DirectoryEntry, DirectoryIterator, DirectoryNode, FileKind,
+    FileNode, Materialized, Metadata, MetadataChanges, Node, NoopResourceLease, OpenFile,
+    OpenOptions, RemoveKind, ResourceFactory, VfsComponent, VfsError, VfsPath, VfsPathBuf,
+    VfsPathUnit, VfsResult, Volume,
 };
 use parking_lot::{Mutex, RwLock};
+use polymer_consolestorage::Storage;
 use std::{
     collections::{BTreeMap, HashMap},
     sync::Arc,
 };
 
 pub struct MemoryFileFactory {
-    storage: Arc<polymer_consolestorage::MemoryStorage>,
+    file: Arc<RwLock<Arc<dyn polymer_consolestorage::StorageFile>>>,
     writable: bool,
 }
 
 impl MemoryFileFactory {
     pub fn immutable(bytes: Vec<u8>) -> Self {
         Self {
-            storage: Arc::new(polymer_consolestorage::MemoryStorage::file(bytes, false)),
+            file: Arc::new(RwLock::new(
+                polymer_consolestorage::MemoryStorage::file(bytes, false)
+                    .open("", false)
+                    .expect("the memory storage contains its root file"),
+            )),
             writable: false,
         }
     }
 
     pub fn writable(bytes: Vec<u8>) -> Self {
         Self {
-            storage: Arc::new(polymer_consolestorage::MemoryStorage::file(bytes, true)),
+            file: Arc::new(RwLock::new(
+                polymer_consolestorage::MemoryStorage::file(bytes, true)
+                    .open("", true)
+                    .expect("the memory storage contains its root file"),
+            )),
             writable: true,
         }
     }
@@ -33,19 +42,165 @@ impl MemoryFileFactory {
 
 impl ResourceFactory<dyn FileNode> for MemoryFileFactory {
     fn materialize(&self) -> VfsResult<Materialized<dyn FileNode>> {
-        let writable = self.writable;
-        Ok(super::storage::materialize_file(
-            self.storage.clone(),
-            String::new(),
-            Arc::new(move |_| {
-                if writable {
-                    crate::Permissions::ALL
-                } else {
-                    crate::Permissions::READ
-                }
+        Ok(Materialized {
+            backend: Arc::new(MemoryFile {
+                file: self.file.clone(),
+                writable: self.writable,
+                write_access: self.writable,
             }),
-            Arc::new(NoopResourceLease),
-        ))
+            lease: Arc::new(NoopResourceLease),
+        })
+    }
+}
+
+struct MemoryFile {
+    file: Arc<RwLock<Arc<dyn polymer_consolestorage::StorageFile>>>,
+    writable: bool,
+    write_access: bool,
+}
+
+impl FileNode for MemoryFile {
+    fn metadata(&self) -> VfsResult<Metadata> {
+        let metadata = self
+            .file
+            .read()
+            .metadata()
+            .map_err(|error| super::storage::storage_error(error, ""))?;
+        Ok(Metadata {
+            kind: FileKind::File,
+            len: metadata.len,
+            readonly: !self.writable,
+        })
+    }
+
+    fn set_metadata(&self, changes: MetadataChanges) -> VfsResult<()> {
+        if let Some(len) = changes.len {
+            OpenFile::truncate(self, len)?;
+        } else {
+            VfsError::require_writable(self.writable)?;
+        }
+        Ok(())
+    }
+
+    fn open(&self, options: OpenOptions) -> VfsResult<Box<dyn OpenFile>> {
+        if options.write || options.truncate {
+            VfsError::require_writable(self.writable)?;
+        }
+        if options.truncate {
+            OpenFile::truncate(self, 0)?;
+        }
+        Ok(Box::new(Self {
+            file: self.file.clone(),
+            writable: self.writable,
+            write_access: self.writable && options.write,
+        }))
+    }
+
+    fn adopt(&self, source: Arc<dyn FileNode>) -> VfsResult<Arc<dyn AdoptHandle>> {
+        VfsError::require_writable(self.writable)?;
+        let adoption = Arc::new(MemoryFileAdoption {
+            file: self.file.clone(),
+            source,
+            finalizing: Mutex::new(()),
+        });
+        adoption.finalize()?;
+        Ok(adoption)
+    }
+}
+
+impl OpenFile for MemoryFile {
+    fn metadata(&self) -> VfsResult<Metadata> {
+        FileNode::metadata(self)
+    }
+
+    fn read(&self, offset: u64, buffer: &mut [u8]) -> VfsResult<usize> {
+        self.file
+            .read()
+            .read_at(offset, buffer)
+            .map_err(|error| super::storage::storage_error(error, ""))
+    }
+
+    fn write(&self, offset: u64, buffer: &[u8]) -> VfsResult<usize> {
+        VfsError::require_writable(self.write_access)?;
+        self.file
+            .read()
+            .write_at(offset, buffer)
+            .map_err(|error| super::storage::storage_error(error, ""))
+    }
+
+    fn truncate(&self, len: u64) -> VfsResult<()> {
+        VfsError::require_writable(self.write_access)?;
+        self.file
+            .read()
+            .set_len(len)
+            .map_err(|error| super::storage::storage_error(error, ""))
+    }
+
+    fn flush(&self) -> VfsResult<()> {
+        self.file
+            .read()
+            .flush()
+            .map_err(|error| super::storage::storage_error(error, ""))
+    }
+
+    fn sync(&self) -> VfsResult<()> {
+        self.file
+            .read()
+            .sync()
+            .map_err(|error| super::storage::storage_error(error, ""))
+    }
+}
+
+struct MemoryFileAdoption {
+    file: Arc<RwLock<Arc<dyn polymer_consolestorage::StorageFile>>>,
+    source: Arc<dyn FileNode>,
+    finalizing: Mutex<()>,
+}
+
+impl AdoptHandle for MemoryFileAdoption {
+    fn write(&self, offset: u64, buffer: &[u8]) -> VfsResult<()> {
+        let _finalizing = self.finalizing.lock();
+        self.file
+            .read()
+            .write_all_at(offset, buffer)
+            .map_err(|error| super::storage::storage_error(error, ""))
+    }
+
+    fn truncate(&self, len: u64) -> VfsResult<()> {
+        let _finalizing = self.finalizing.lock();
+        self.file
+            .read()
+            .set_len(len)
+            .map_err(|error| super::storage::storage_error(error, ""))
+    }
+
+    fn finalize(&self) -> VfsResult<()> {
+        let _finalizing = self.finalizing.lock();
+        let len = usize::try_from(self.source.metadata()?.len)
+            .map_err(|_| VfsError::Unsupported("file length overflow".into()))?;
+        let source = self.source.open(OpenOptions {
+            read: true,
+            write: false,
+            truncate: false,
+        })?;
+        let mut replacement = vec![0_u8; len];
+        let mut offset = 0;
+        while offset < len {
+            let read = source.read(offset as u64, &mut replacement[offset..])?;
+            if read == 0 {
+                return Err(VfsError::Io(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "adopted source became shorter while reconciling",
+                )));
+            }
+            offset += read;
+        }
+        let replacement = polymer_consolestorage::MemoryStorage::file(replacement, true)
+            .open("", true)
+            .map_err(|error| super::storage::storage_error(error, ""))?;
+        // Only publish a fully read replacement. Every open handle shares this slot.
+        *self.file.write() = replacement;
+        Ok(())
     }
 }
 
