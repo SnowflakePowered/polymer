@@ -83,8 +83,40 @@ impl VirtualNand for WiiNand {
         self.storage.clone()
     }
 
-    fn compose(&self, saves: Arc<dyn SaveRepo>) -> Result<Arc<dyn MountableStorage>, Error> {
-        Ok(Arc::new(ComposedStorage::new(vec![saves, self.root()])?))
+    async fn compose(
+        &self,
+        saves: Option<Arc<dyn SaveRepo>>,
+        keys: &dyn crate::keys::KeyReader,
+    ) -> Result<Arc<dyn MountableStorage>, Error> {
+        let mut files = Vec::new();
+        for description in keys
+            .list(&crate::keys::KeyQuery {
+                namespace: Some("content".into()),
+                title_id: None,
+            })
+            .await
+            .map_err(|e| Error::Unsupported(e.to_string()))?
+        {
+            let Ok(title_id) = u64::from_str_radix(&description.identity.id, 16) else {
+                continue;
+            };
+            let record = keys
+                .read(&description.identity)
+                .await
+                .map_err(|e| Error::Unsupported(e.to_string()))?;
+            let ticket = super::ticket::Ticket::synthesize(title_id, &record.bytes)?;
+            files.push((
+                format!("ticket/{:08x}/{:08x}.tik", title_id >> 32, title_id as u32),
+                ticket,
+            ));
+        }
+        let mut layers: Vec<Arc<dyn MountableStorage>> =
+            vec![Arc::new(crate::MemoryStorage::new(files)?)];
+        if let Some(saves) = saves {
+            layers.push(saves);
+        }
+        layers.push(self.root());
+        Ok(Arc::new(ComposedStorage::new(layers)?))
     }
 
     fn platform(&self) -> &str {

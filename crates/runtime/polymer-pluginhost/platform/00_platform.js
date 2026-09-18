@@ -14,7 +14,7 @@ async function bootstrap(receiver, descriptor, context = {}) {
       return pending;
     },
   });
-  context = Object.freeze({ ...context, firmwareStore: __polymerFirmware.store });
+  context = Object.freeze({ ...context, firmwareStore: __polymerFirmware.store, keyStore: __polymerKeys.writer });
   let result = await receiver.onBootstrap(device, context);
   if (result?.[Symbol.asyncIterator]) {
     for await (const progress of result) context.progress(progress);

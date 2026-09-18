@@ -61,13 +61,53 @@ impl VirtualNand for WiiUNand {
         Self::PLATFORM
     }
 
-    fn compose(&self, saves: Arc<dyn SaveRepo>) -> Result<Arc<dyn MountableStorage>, Error> {
-        let save_storage: Arc<dyn MountableStorage> = saves;
+    async fn compose(
+        &self,
+        saves: Option<Arc<dyn SaveRepo>>,
+        keys: &dyn crate::keys::KeyReader,
+    ) -> Result<Arc<dyn MountableStorage>, Error> {
         let immutable: Arc<dyn MountableStorage> = self.root();
-        Ok(Arc::new(ComposedStorage::new(vec![
-            save_storage,
-            immutable,
-        ])?))
+        let mut files = Vec::new();
+        for description in keys
+            .list(&crate::keys::KeyQuery {
+                namespace: Some("content".into()),
+                title_id: None,
+            })
+            .await
+            .map_err(|e| Error::Unsupported(e.to_string()))?
+        {
+            let Ok(title_id) = u64::from_str_radix(&description.identity.id, 16) else {
+                continue;
+            };
+            let root = format!("usr/title/{:08x}/{:08x}", title_id >> 32, title_id as u32);
+            if !self.storage.exists(&root) {
+                continue;
+            }
+            let record = keys
+                .read(&description.identity)
+                .await
+                .map_err(|e| Error::Unsupported(e.to_string()))?;
+            let path = format!("{root}/meta/meta.xml");
+            let meta: xml::MetaXml =
+                xml::read_from(BufReader::new(self.storage.open_read(&path)?), &path)?;
+            let version = match meta.title_version.text.trim() {
+                "" => 0,
+                value => value
+                    .parse::<u16>()
+                    .map_err(|_| Error::malformed(&path, "invalid title version"))?,
+            };
+            files.push((
+                format!("{root}/code/title.tik"),
+                super::ticket::WiiUTicket::synthesize(title_id, version, &record.bytes)?,
+            ));
+        }
+        let mut layers: Vec<Arc<dyn MountableStorage>> =
+            vec![Arc::new(crate::MemoryStorage::new(files)?)];
+        if let Some(saves) = saves {
+            layers.push(saves);
+        }
+        layers.push(immutable);
+        Ok(Arc::new(ComposedStorage::new(layers)?))
     }
 
     async fn open<St: VolumeStorage + 'static>(storage: St) -> Result<Self, Error> {

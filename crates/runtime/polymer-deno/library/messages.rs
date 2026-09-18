@@ -1,10 +1,12 @@
 use actix::Recipient;
+use serde::Serialize;
 use serde_json::Value;
 
 /// Actix recipients exposed to Deno without depending on the runtime backend.
 #[derive(Clone, Debug)]
 pub struct Library {
     pub import: Recipient<LibraryImport>,
+    pub import_key: Recipient<LibraryImportKey>,
     pub games_list: Recipient<GamesList>,
     pub games_get: Recipient<GamesGet>,
     pub games_delete: Recipient<GamesDelete>,
@@ -28,6 +30,25 @@ pub struct Library {
 #[rtype(result = "Result<Value, String>")]
 pub struct LibraryImport {
     pub path: String,
+}
+
+#[derive(Debug, actix::Message)]
+#[rtype(result = "Result<ImportedKey, String>")]
+pub struct LibraryImportKey {
+    pub platform: String,
+    pub namespace: String,
+    pub key: Vec<u8>,
+    pub title_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportedKey {
+    pub namespace: String,
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title_id: Option<String>,
+    pub byte_length: usize,
 }
 
 #[derive(Debug, actix::Message)]

@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use crate::installable::artifacts::Artifact;
+use crate::keys::KeyReader;
 use crate::storage::VolumeStorage;
 use crate::storage::manifest::{ArtifactSummary, VolumeInfo};
 use crate::{Error, MountableStorage, Permissions, SaveRepo};
@@ -56,7 +57,11 @@ pub trait VirtualNand: Send + Sync {
 
     /// Compose this system NAND with its writable save repository. The returned
     /// storage is fixed for the lifetime of the emulating instance.
-    fn compose(&self, saves: Arc<dyn SaveRepo>) -> Result<Arc<dyn MountableStorage>, Error>;
+    async fn compose(
+        &self,
+        saves: Option<Arc<dyn SaveRepo>>,
+        keys: &dyn KeyReader,
+    ) -> Result<Arc<dyn MountableStorage>, Error>;
 
     /// The consolespec platform ID this NAND was created for.
     fn platform(&self) -> &str;
@@ -109,12 +114,7 @@ macro_rules! nand_depots {
             $(
                 match <$depot>::open(path) {
                     Ok(depot) => {
-                        depot.satisfies(self)?;
-                        let missing = depot.validate_contents();
-                        if !missing.is_empty() {
-                            return Err(crate::Error::InvalidDepot { root: path.display().to_string(), missing });
-                        }
-                        return Ok(crate::installable::Installation::new(depot, self));
+                        return crate::installable::Installation::new(depot, self);
                     }
                     Err(error) => errors.push(error.to_string()),
                 }

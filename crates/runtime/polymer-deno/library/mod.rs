@@ -23,6 +23,29 @@ pub(super) async fn op_library_import(
         .map_err(error)
 }
 
+#[op2]
+#[serde]
+pub(super) async fn op_library_import_key(
+    state: Rc<RefCell<OpState>>,
+    #[string] platform: String,
+    #[string] namespace: String,
+    #[serde] key: Vec<u8>,
+    #[string] title_id: Option<String>,
+) -> Result<ImportedKey, JsErrorBox> {
+    library(&state)?
+        .import_key
+        .send(LibraryImportKey {
+            platform,
+            namespace,
+            key,
+            title_id,
+        })
+        .await
+        .map_err(|_| "library service is unavailable".to_owned())
+        .and_then(|result| result)
+        .map_err(error)
+}
+
 fn library(state: &Rc<RefCell<OpState>>) -> Result<Library, JsErrorBox> {
     let host = state.borrow().borrow::<Arc<dyn PolymerHost>>().clone();
     host.library()

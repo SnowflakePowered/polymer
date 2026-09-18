@@ -1,5 +1,6 @@
 pub mod depots;
 mod nand;
+pub mod rap;
 mod save_repo;
 
 pub use nand::Ps3Nand;

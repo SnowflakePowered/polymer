@@ -18,12 +18,24 @@ pub trait Installable: Sized {
 /// Installation progress driven directly by `next().await`.
 /// Use `finish().await` to drain remaining progress and obtain the final artifact.
 pub struct Installation<'a> {
+    keys: Vec<crate::keys::KeyRecord>,
     progress: Pin<Box<dyn Stream<Item = Result<String, Error>> + 'a>>,
     outcome: Pin<Box<dyn Future<Output = Result<Artifact, Error>> + 'a>>,
 }
 impl<'a> Installation<'a> {
-    pub fn new<D: Depot + 'a, N: VirtualNand + ?Sized>(depot: D, nand: &'a N) -> Self {
-        depot.install(nand)
+    pub fn new<D: Depot + 'a, N: VirtualNand + ?Sized>(
+        depot: D,
+        nand: &'a N,
+    ) -> Result<Self, Error> {
+        let keys = depot.embedded_keys()?;
+        let mut installation = depot.install(nand);
+        installation.keys = keys;
+        Ok(installation)
+    }
+
+    /// Source keys for the host to persist before polling installation progress.
+    pub fn embedded_keys(&self) -> &[crate::keys::KeyRecord] {
+        &self.keys
     }
 
     /// Lazily prepare an archive when progress or completion is polled.
@@ -42,6 +54,7 @@ impl<'a> Installation<'a> {
         F: Future<Output = Result<Artifact, Error>> + 'a,
     {
         Self {
+            keys: Vec::new(),
             progress: Box::pin(progress.fuse()),
             outcome: Box::pin(outcome),
         }

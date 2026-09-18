@@ -9846,6 +9846,7 @@ dependencies = [
 name = "polymer-library"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "blake3",
  "consolespec",
  "directories",
@@ -10114,6 +10115,7 @@ dependencies = [
  "blake3",
  "cuna",
  "object_store",
+ "polymer-consolestorage",
  "polymer-library",
  "polymer-pluginhost",
  "polymer-scraping",

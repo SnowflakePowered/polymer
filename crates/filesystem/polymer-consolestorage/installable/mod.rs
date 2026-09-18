@@ -23,8 +23,6 @@ pub enum DepotType {
     AppContent = 2,
     /// An update for a game or application.
     AppUpdate = 3,
-    /// Ticket for a game or application.
-    AppTicket = 4,
 }
 
 impl From<DepotType> for u8 {
@@ -43,7 +41,6 @@ impl TryFrom<u8> for DepotType {
             1 => Ok(DepotType::App),
             2 => Ok(DepotType::AppContent),
             3 => Ok(DepotType::AppUpdate),
-            4 => Ok(DepotType::AppTicket),
             other => Err(other),
         }
     }
@@ -53,6 +50,11 @@ pub trait Depot: Sized {
     /// Parse this depot type from a path. Invalid input must fail construction.
     fn open(path: &Path) -> Result<Self, crate::Error>;
 
+    /// Keys embedded in this source, before an installation is constructed.
+    fn embedded_keys(&self) -> Result<Vec<crate::keys::KeyRecord>, crate::Error> {
+        Ok(Vec::new())
+    }
+
     /// Check whether the target NAND can accept this constructed depot.
     fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> Result<(), crate::Error>;
 
@@ -60,6 +62,19 @@ pub trait Depot: Sized {
     ///
     /// Returns the names of the contents that don't validate.
     fn validate_contents(&self) -> Vec<String>;
+
+    /// Validate immediately before starting extraction, after the host persists keys.
+    fn validate<N: VirtualNand + ?Sized>(&self, nand: &N, path: &Path) -> Result<(), crate::Error> {
+        self.satisfies(nand)?;
+        let missing = self.validate_contents();
+        if !missing.is_empty() {
+            return Err(crate::Error::InvalidDepot {
+                root: path.display().to_string(),
+                missing,
+            });
+        }
+        Ok(())
+    }
 
     fn depot_type(&self) -> DepotType;
 

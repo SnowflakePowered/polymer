@@ -22,6 +22,8 @@ impl PluginRuntimeHandle {
                 .map_err(PluginInvocationError::worker)?;
         worker.platform.device = Some(device.clone());
         worker.firmware.platform = Some(device.platform.clone());
+        worker.keys.platform = Some(device.platform.clone());
+        worker.keys.allow_write = true;
         let entrypoint = provider.entrypoint().to_string();
         let invocation_entrypoint = entrypoint.clone();
         let lifecycle = self.lifecycle(provider.id());

@@ -17,6 +17,7 @@ pub mod emulator;
 pub mod filesystem;
 mod firmware;
 mod handle;
+mod keys;
 pub mod loading;
 pub mod platform;
 pub mod plugin;

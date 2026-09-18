@@ -34,10 +34,11 @@ pub mod library;
 pub use library::Library;
 use library::{
     op_library_games_delete, op_library_games_get, op_library_games_list, op_library_import,
-    op_library_launchables_add, op_library_launchables_delete, op_library_metadata_add,
-    op_library_metadata_delete, op_library_metadata_replace, op_library_metadata_text,
-    op_library_metadata_update, op_library_metadata_url, op_scraping_job, op_scraping_jobs,
-    op_scraping_refresh, op_scraping_retry, op_scraping_scrapers, op_scraping_start,
+    op_library_import_key, op_library_launchables_add, op_library_launchables_delete,
+    op_library_metadata_add, op_library_metadata_delete, op_library_metadata_replace,
+    op_library_metadata_text, op_library_metadata_update, op_library_metadata_url, op_scraping_job,
+    op_scraping_jobs, op_scraping_refresh, op_scraping_retry, op_scraping_scrapers,
+    op_scraping_start,
 };
 
 pub type ApiFuture<T> = Pin<Box<dyn Future<Output = T> + 'static>>;
@@ -512,6 +513,7 @@ deno_core::extension!(
         op_library_games_get,
         op_library_games_delete,
         op_library_import,
+        op_library_import_key,
         op_library_launchables_add,
         op_library_launchables_delete,
         op_library_metadata_add,

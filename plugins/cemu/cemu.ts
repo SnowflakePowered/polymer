@@ -9,6 +9,7 @@ import type {
     Resource,
     RepeatedSection,
     UserConfiguration,
+    KeyReader,
 } from "polymer:api";
 import {
     loadGraphicsPacks,
@@ -40,6 +41,7 @@ type EmulatorLaunchArgs = {
     configuration: Configuration,
     userConfiguration?: UserConfiguration,
     filesystem: Filesystem,
+    keyStore: KeyReader,
     storage: Readonly<{
         slc?: Resource,
         slccmpt?: Resource,
@@ -93,7 +95,7 @@ export function onConfigure(
     };
 }
 
-export function onLaunch(args: EmulatorLaunchArgs) {
+export async function onLaunch(args: EmulatorLaunchArgs) {
     const userConfiguration = validUserConfiguration(args.userConfiguration);
     const api = selectedApi(userConfiguration);
     args.configuration.options().content.open_pad = true;
@@ -119,6 +121,15 @@ export function onLaunch(args: EmulatorLaunchArgs) {
 
     args.filesystem.mountScratch("/Cemu", { mode: "rwx", backing: "temporary" });
     args.filesystem.mountFile("/Cemu/Cemu.exe", new URL("pkg:bin/win-x64/Cemu.exe"), { mode: "rx" });
+    const discKeys: string[] = [];
+    for (const key of await args.keyStore.list({ namespace: "content" })) {
+        if (key.titleId !== undefined) continue;
+        const bytes = await (await args.keyStore.open(key)).bytes();
+        if (bytes.length !== 16) throw new Error(`Invalid Cemu disc key ${key.id}`);
+        discKeys.push(Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join(""));
+    }
+    const keyFile = new TextEncoder().encode(discKeys.join("\n") + (discKeys.length ? "\n" : ""));
+    args.filesystem.mountFile("/Cemu/keys.txt", keyFile, { mode: "r" });
     args.filesystem.mountTree("/Cemu/resources", new URL("pkg:bin/win-x64/resources"), { mode: "rx" });
     args.filesystem.mountTree("/Cemu/gameProfiles", new URL("pkg:bin/win-x64/gameProfiles"), { mode: "rx" });
     args.filesystem.mountTree("/Cemu/graphicPacks/downloadedGraphicPacks", graphicsPacks, { mode: "rx" });

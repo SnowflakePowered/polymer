@@ -278,7 +278,7 @@ declare module "polymer:api" {
 
 
 declare module "polymer:api" {
-    export type DepotType = "system" | "app" | "appcontent" | "appupdate" | "appticket";
+    export type DepotType = "system" | "app" | "appcontent" | "appupdate";
     export interface PlatformArtifact { id: string; label: string; version: string | null; depotType: DepotType; byteLength: number }
     export interface BootstrapDevice {
         readonly artifacts: readonly PlatformArtifact[];
@@ -286,7 +286,7 @@ declare module "polymer:api" {
         readonly platform: string;
         install(source: string | PluginCacheFile): Promise<PlatformArtifact>;
     }
-    export interface BootstrapContext extends PluginProgressContext, FirmwareContext { readonly settings: Record<string, unknown> }
+    export interface BootstrapContext extends PluginProgressContext, FirmwareContext, KeyWriterContext { readonly settings: Record<string, unknown> }
 }
 
 declare module "polymer:consolestorage" {
@@ -315,4 +315,19 @@ declare module "polymer:api" {
         open(name: string): Promise<FileEntry>;
         open(lookup: FirmwareLookup): Promise<FileEntry>;
     }
+
+    export interface KeyIdentity { readonly namespace: "system" | "content"; readonly id: string }
+    export interface KeyInput extends KeyIdentity { readonly titleId?: string; readonly bytes: Uint8Array }
+    export interface KeyDescription extends KeyIdentity { readonly titleId?: string; readonly byteLength: number }
+    export interface KeyQuery { readonly namespace?: "system" | "content"; readonly titleId?: string }
+    export interface KeyReader {
+        list(query?: KeyQuery): Promise<readonly KeyDescription[]>;
+        open(identity: KeyIdentity): Promise<FileEntry>;
+    }
+    export interface KeyWriter extends KeyReader {
+        put(records: readonly KeyInput[]): Promise<void>;
+        remove(identity: KeyIdentity): Promise<boolean>;
+    }
+    export interface KeyReaderContext { readonly keyStore: KeyReader }
+    export interface KeyWriterContext { readonly keyStore: KeyWriter }
 }

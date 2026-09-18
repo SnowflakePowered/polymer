@@ -1,7 +1,8 @@
-pub mod nand;
-pub mod save_repo;
 pub mod depots;
 mod index;
+pub mod nand;
+pub mod save_repo;
+pub mod ticket;
 
 pub use nand::WiiNand;
 pub use save_repo::WiiSaveRepo;

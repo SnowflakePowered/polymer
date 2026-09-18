@@ -1,6 +1,6 @@
 # Firmware API
 
-Firmware storage holds user-supplied BIOS files identified by consolespec. System updates use their own installation flow. Keys belong to the separate keystore, which is outside this API.
+Firmware storage holds user-supplied BIOS files identified by consolespec. System updates use their own installation flow. Keys belong to the separate keystore described in [KEYS.md](KEYS.md).
 
 ## Recognition and installation
 
@@ -32,6 +32,6 @@ The library allocates `<storage>/firmware/firmware.db` and immutable blobs at `<
 
 ## Frontend import
 
-`Polymer.library.import({ path })` returns either `{ kind: "games", imports }` with existing launchable/scrape-job records or `{ kind: "firmware", firmware }` with one installed description. `launchables.add` remains game-only. Horizon routes dropped files through the general endpoint and reports firmware installation through its activity UI.
+`Polymer.library.import({ path })` returns `{ kind: "games", imports }` with launchable/scrape-job records or `{ kind: "firmware", firmware }` with one installed BIOS. `launchables.add` remains game-only. Horizon reports firmware imports through its activity UI.
 
 Emulator BIOS-setting conversions and a firmware management screen are separate work.

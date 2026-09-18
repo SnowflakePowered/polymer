@@ -2,6 +2,7 @@ pub mod directories;
 pub mod firmware;
 pub mod games;
 pub mod inputstore;
+pub mod keys;
 pub mod quickresume;
 pub mod storage;
 mod storage_selection;

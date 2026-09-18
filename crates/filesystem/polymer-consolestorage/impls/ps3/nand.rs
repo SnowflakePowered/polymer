@@ -26,11 +26,7 @@ pub struct Ps3Nand {
 
 #[async_trait]
 impl VirtualNand for Ps3Nand {
-    crate::nand::nand_depots!(
-        super::depots::Ps3PupDepot,
-        super::depots::Ps3PkgDepot,
-        super::depots::Ps3RapDepot
-    );
+    crate::nand::nand_depots!(super::depots::Ps3PupDepot, super::depots::Ps3PkgDepot);
 
     async fn new_empty<St: VolumeStorage + 'static>(
         storage: St,
@@ -73,11 +69,45 @@ impl VirtualNand for Ps3Nand {
         self.storage.clone()
     }
 
-    fn compose(&self, saves: Arc<dyn SaveRepo>) -> Result<Arc<dyn MountableStorage>, Error> {
-        Ok(Arc::new(crate::ComposedStorage::new(vec![
-            saves,
-            self.root(),
-        ])?))
+    async fn compose(
+        &self,
+        saves: Option<Arc<dyn SaveRepo>>,
+        keys: &dyn crate::keys::KeyReader,
+    ) -> Result<Arc<dyn MountableStorage>, Error> {
+        let mut files = Vec::new();
+        for description in keys
+            .list(&crate::keys::KeyQuery {
+                namespace: Some("content".into()),
+                title_id: None,
+            })
+            .await
+            .map_err(|e| Error::Unsupported(e.to_string()))?
+        {
+            if super::rap::Rap::title_id(&description.identity.id).is_none() {
+                continue;
+            }
+            let record = keys
+                .read(&description.identity)
+                .await
+                .map_err(|e| Error::Unsupported(e.to_string()))?;
+            if record.bytes.len() != 16 {
+                return Err(Error::malformed("PS3 RAP", "expected 16 bytes"));
+            }
+            files.push((
+                format!(
+                    "dev_hdd0/home/00000001/exdata/{}.rap",
+                    description.identity.id
+                ),
+                record.bytes,
+            ));
+        }
+        let mut layers: Vec<Arc<dyn MountableStorage>> =
+            vec![Arc::new(crate::MemoryStorage::new(files)?)];
+        if let Some(saves) = saves {
+            layers.push(saves);
+        }
+        layers.push(self.root());
+        Ok(Arc::new(crate::ComposedStorage::new(layers)?))
     }
 
     fn platform(&self) -> &str {

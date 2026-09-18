@@ -1,6 +1,7 @@
 import { Package } from "./00_package.js";
 import {
   op_library_import,
+  op_library_import_key,
   op_library_games_list, op_library_games_get, op_library_games_delete,
   op_library_launchables_add, op_library_launchables_delete,
   op_library_metadata_add, op_library_metadata_update, op_library_metadata_delete,
@@ -94,6 +95,19 @@ export function createLibrary() {
       const result = await op_library_import(path);
       if (result.kind === "games") return { ...result, imports: result.imports.map(item => ({ ...item, launchable: new Package(item.launchable) })) };
       return result;
+    } },
+    importKey: { value: (platform, namespace, key, titleid) => {
+      platform = optionalString(platform, "platform");
+      if (platform === null) throw new TypeError("platform is required");
+      if (namespace !== "system" && namespace !== "content") throw new TypeError("namespace must be system or content");
+      if (typeof key === "string") {
+        if (key.length === 0 || key.length % 2 !== 0 || !/^[0-9a-f]+$/i.test(key)) throw new TypeError("key must be an even-length hexadecimal string");
+        const bytes = new Uint8Array(key.length / 2);
+        for (let i = 0; i < bytes.length; i++) bytes[i] = Number.parseInt(key.slice(i * 2, i * 2 + 2), 16);
+        key = bytes;
+      }
+      if (!(key instanceof Uint8Array) || key.length === 0) throw new TypeError("key must be a non-empty Uint8Array or hexadecimal string");
+      return op_library_import_key(platform, namespace, Array.from(key), optionalString(titleid, "titleid"));
     } },
     games: { value: games, enumerable: true },
     launchables: { value: launchables, enumerable: true },

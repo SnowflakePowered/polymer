@@ -52,8 +52,7 @@ pub(crate) unsafe fn get_physical_device_proc_addr(
     if name.is_null() {
         return None;
     }
-    if let Some(hook) =
-        crate::swapchain::instance_hook(unsafe { CStr::from_ptr(name) }.to_bytes())
+    if let Some(hook) = crate::swapchain::instance_hook(unsafe { CStr::from_ptr(name) }.to_bytes())
     {
         return Some(hook);
     }
@@ -392,8 +391,7 @@ pub(crate) unsafe fn create_device(
             handle: created,
         },
     );
-    if let Err(error) = unsafe { crate::swapchain::Device::install(created, &*create_info) }
-    {
+    if let Err(error) = unsafe { crate::swapchain::Device::install(created, &*create_info) } {
         let dispatch_key = unsafe { crate::layer::dispatch_key(created) };
         if let Some(destroy) = unsafe {
             device_proc::<vk::PFN_vkDestroyDevice>(bootstrap.next_gdpa, created, c"vkDestroyDevice")

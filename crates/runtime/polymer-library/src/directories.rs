@@ -71,4 +71,8 @@ impl Directories {
     pub fn firmware(&self) -> PathBuf {
         self.storage.join("firmware")
     }
+
+    pub fn keys(&self) -> PathBuf {
+        self.storage.join("keys")
+    }
 }

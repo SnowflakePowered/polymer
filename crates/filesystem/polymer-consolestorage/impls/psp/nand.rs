@@ -53,11 +53,17 @@ impl VirtualNand for PspMemoryStick {
         self.storage.clone()
     }
 
-    fn compose(&self, saves: Arc<dyn SaveRepo>) -> Result<Arc<dyn MountableStorage>, Error> {
-        Ok(Arc::new(crate::ComposedStorage::new(vec![
-            saves,
-            self.root(),
-        ])?))
+    async fn compose(
+        &self,
+        saves: Option<Arc<dyn SaveRepo>>,
+        _keys: &dyn crate::keys::KeyReader,
+    ) -> Result<Arc<dyn MountableStorage>, Error> {
+        let mut layers: Vec<Arc<dyn MountableStorage>> = Vec::new();
+        if let Some(saves) = saves {
+            layers.push(saves);
+        }
+        layers.push(self.root());
+        Ok(Arc::new(crate::ComposedStorage::new(layers)?))
     }
 
     fn platform(&self) -> &str {

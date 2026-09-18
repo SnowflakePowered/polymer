@@ -1,6 +1,6 @@
 use std::{io::Cursor, path::PathBuf, sync::Arc};
 
-use super::{WiiWadDepot, crypto::SelectedTitleKey, tmd::Content};
+use super::{WiiWadDepot, tmd::Content};
 use crate::impls::wii::index::{SharedContentMap, UidMap};
 use crate::installable::{Depot, DepotFile, Installable, artifacts::Artifact};
 use crate::{Error, VolumeStorage};
@@ -8,7 +8,7 @@ use crate::{Error, VolumeStorage};
 pub(super) struct WadInstall {
     source: WiiWadDepot,
     storage: Arc<dyn VolumeStorage>,
-    key: SelectedTitleKey,
+    key: [u8; 16],
     shared: SharedContentMap,
     index: usize,
     old: Option<Artifact>,
@@ -36,7 +36,7 @@ impl WadInstall {
     }
 
     async fn content(&mut self, content: &Content) -> Result<DepotFile, Error> {
-        let bytes = self.source.decrypt_content(content, &self.key.key)?;
+        let bytes = self.source.decrypt_content(content, &self.key)?;
         let mut changed = false;
         let path = if content.is_shared() {
             let id = match self.shared.find(&content.sha1) {
@@ -86,17 +86,6 @@ impl Installable for WadInstall {
         if self.index > self.source.tmd.contents.len() {
             return Ok(None);
         }
-        let ticket_path = format!(
-            "ticket/{:08x}/{:08x}.tik",
-            self.source.title_id() >> 32,
-            self.source.title_id() as u32
-        );
-        let ticket = self.source.ticket.bytes_with_key_index(self.key.index);
-        let copied = self
-            .storage
-            .install_file(Box::new(Cursor::new(ticket)), &ticket_path)
-            .await?;
-        let ticket = DepotFile::new(ticket_path.into(), copied.blake3, copied.byte_length);
         UidMap::load(&*self.storage)?
             .insert(&*self.storage, self.source.title_id())
             .await?;
@@ -106,10 +95,11 @@ impl Installable for WadInstall {
             .install_file(Box::new(Cursor::new(self.source.read_tmd()?)), &path)
             .await?;
         self.index += 1;
-        Ok(Some(vec![
-            ticket,
-            DepotFile::new(path.into(), copied.blake3, copied.byte_length),
-        ]))
+        Ok(Some(vec![DepotFile::new(
+            path.into(),
+            copied.blake3,
+            copied.byte_length,
+        )]))
     }
 
     async fn finish(self, manifest: Vec<DepotFile>) -> Result<Artifact, Error> {

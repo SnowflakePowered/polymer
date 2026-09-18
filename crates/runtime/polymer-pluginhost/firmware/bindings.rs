@@ -54,6 +54,7 @@ async fn op_firmware_open(
         &mut state.borrow_mut(),
         name,
         Arc::new(HostFileFactory::new(path, false)),
+        "firmware",
     ))
 }
 

@@ -3,8 +3,8 @@ mod dispatch;
 mod hook_chain;
 mod hooks;
 mod layer;
-mod terminal;
 mod swapchain;
+mod terminal;
 pub use hooks::{
     vk_layerGetPhysicalDeviceProcAddr, vkCreateDevice, vkCreateInstance, vkCreateSwapchainKHR,
     vkCreateWin32SurfaceKHR, vkDestroyDevice, vkDestroyInstance, vkDestroySurfaceKHR,
@@ -22,9 +22,7 @@ fn hook(pointer: *const ()) -> vk::PFN_vkVoidFunction {
 
 /// Central registration table for every entry point owned by the layer.
 pub(crate) fn registered_instance_hook(name: &[u8]) -> vk::PFN_vkVoidFunction {
-    if let Some(hook) =
-        swapchain::instance_hook(name).or_else(|| swapchain::device_hook(name))
-    {
+    if let Some(hook) = swapchain::instance_hook(name).or_else(|| swapchain::device_hook(name)) {
         return Some(hook);
     }
     match name {

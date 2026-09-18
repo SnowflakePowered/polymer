@@ -99,13 +99,25 @@ impl VirtualNand for VitaNand {
         Self::PLATFORM
     }
 
-    fn compose(&self, saves: Arc<dyn SaveRepo>) -> Result<Arc<dyn MountableStorage>, Error> {
-        if !saves.clone().into_any().is::<VitaSaveRepo>() {
+    async fn compose(
+        &self,
+        saves: Option<Arc<dyn SaveRepo>>,
+        _keys: &dyn crate::keys::KeyReader,
+    ) -> Result<Arc<dyn MountableStorage>, Error> {
+        if saves
+            .as_ref()
+            .is_some_and(|saves| !saves.clone().into_any().is::<VitaSaveRepo>())
+        {
             return Err(Error::Unsupported(
                 "Vita NAND requires a Vita save repository".to_owned(),
             ));
         }
-        Ok(Arc::new(ComposedStorage::new(vec![saves, self.root()])?))
+        let mut layers: Vec<Arc<dyn MountableStorage>> = Vec::new();
+        if let Some(saves) = saves {
+            layers.push(saves);
+        }
+        layers.push(self.root());
+        Ok(Arc::new(ComposedStorage::new(layers)?))
     }
 
     fn is_complete(&self, completion: NandCompletion) -> bool {

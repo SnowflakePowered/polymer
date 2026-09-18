@@ -1,6 +1,7 @@
 use super::LibraryBackend;
 use actix::{AtomicResponse, Context, Handler};
-use polymer_deno::polymer::library::LibraryImport;
+use polymer_consolestorage::keys::{KeyIdentity, KeyRecord, KeyWriter};
+use polymer_deno::polymer::library::{ImportedKey, LibraryImport, LibraryImportKey};
 use polymer_scraping::Ingestor;
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -32,6 +33,59 @@ impl Handler<LibraryImport> for LibraryBackend {
                 }
                 Err(error) => Err(error.to_string()),
             }
+        })
+    }
+}
+
+impl Handler<LibraryImportKey> for LibraryBackend {
+    type Result = AtomicResponse<Self, Result<ImportedKey, String>>;
+
+    fn handle(&mut self, message: LibraryImportKey, _: &mut Context<Self>) -> Self::Result {
+        let root = self.key_root.clone();
+        self.mutate(async move {
+            let LibraryImportKey {
+                platform,
+                namespace,
+                key,
+                title_id,
+            } = message;
+            if key.is_empty() {
+                return Err("TypeError: key must not be empty".into());
+            }
+            let supplied_id = title_id.as_deref().filter(|id| !id.is_empty());
+            if title_id.is_some() && supplied_id.is_none() {
+                return Err("TypeError: titleid must be a non-empty string".into());
+            }
+            if !matches!(namespace.as_str(), "system" | "content") {
+                return Err("TypeError: namespace must be system or content".into());
+            }
+            let id = supplied_id
+                .map(str::to_owned)
+                .unwrap_or_else(|| blake3::hash(&key).to_hex().to_string());
+            let record = KeyRecord {
+                identity: KeyIdentity {
+                    namespace: namespace.clone(),
+                    id,
+                },
+                title_id: (namespace == "content").then(|| title_id).flatten(),
+                bytes: key,
+            };
+            let description = ImportedKey {
+                namespace: record.identity.namespace.clone(),
+                id: record.identity.id.clone(),
+                title_id: record.title_id.clone(),
+                byte_length: record.bytes.len(),
+            };
+            let store = polymer_library::keys::KeyStore::open(root)
+                .await
+                .map_err(|error| error.to_string())?;
+            store
+                .for_platform(&platform)
+                .map_err(|error| error.to_string())?
+                .put(&[record])
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok(description)
         })
     }
 }

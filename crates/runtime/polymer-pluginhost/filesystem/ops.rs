@@ -20,13 +20,14 @@ impl JsResource {
         state: &mut OpState,
         name: String,
         factory: Arc<dyn ResourceFactory<dyn FileNode>>,
+        origin: &str,
     ) -> Self {
         let handle = state
             .borrow_mut::<FilesystemState>()
             .insert_file(Resource::new(
                 factory,
                 Permissions::READ,
-                ResourceOrigin::Other("firmware".into()),
+                ResourceOrigin::Other(origin.into()),
             ));
         Self::new(Some(name), ResourceHandle::File(handle))
     }

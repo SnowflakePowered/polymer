@@ -10,6 +10,7 @@ blake3.workspace = true
 cuna = "0.7"
 object_store.workspace = true
 polymer-library.workspace = true
+polymer-consolestorage = { path = "../crates/filesystem/polymer-consolestorage" }
 polymer-pluginhost = { path = "../crates/runtime/polymer-pluginhost" }
 polymer-scraping.workspace = true
 polymer-vfs.workspace = true

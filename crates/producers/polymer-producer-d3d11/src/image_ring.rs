@@ -6,8 +6,8 @@ use windows::{
         Graphics::{
             Direct3D11::{
                 D3D11_FENCE_FLAG_SHARED, D3D11_RESOURCE_MISC_SHARED,
-                D3D11_RESOURCE_MISC_SHARED_NTHANDLE,
-                D3D11_TEXTURE2D_DESC, ID3D11Device, ID3D11Device5, ID3D11Fence, ID3D11Texture2D,
+                D3D11_RESOURCE_MISC_SHARED_NTHANDLE, D3D11_TEXTURE2D_DESC, ID3D11Device,
+                ID3D11Device5, ID3D11Fence, ID3D11Texture2D,
             },
             Dxgi::IDXGIResource1,
         },
