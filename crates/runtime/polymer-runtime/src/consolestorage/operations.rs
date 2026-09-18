@@ -85,32 +85,17 @@ impl Handler<Install> for StorageActor {
                 return Err("Frontend installations require a local source".into());
             }
             let path = PathBuf::from(&source.path);
-            let nand = device.open(&manager).await?;
-            let key_root = manager.root().join("keys");
-            let installation = nand.try_install(&path).map_err(|error| error.to_string())?;
-            let records = installation.embedded_keys();
-            if !records.is_empty() {
-                use polymer_consolestorage::keys::KeyWriter;
-                let store = polymer_library::keys::KeyStore::open(key_root)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                store
-                    .for_platform(&device.platform)
-                    .map_err(|error| error.to_string())?
-                    .put(records)
-                    .await
-                    .map_err(|error| error.to_string())?;
-            }
             let events = Arc::new(EventEmitter::new(&device.platform));
             let progress = events.scope(
                 "loadprogress",
                 json!({"state":"loading","message":"Installing contents"}),
                 json!({"state":"failed","message":"Installation interrupted"}),
             );
-            let result = DepotSource::finish_install(installation, |message| {
-                events.publish("loadprogress", json!({"state":"loading","message":message}))
-            })
-            .await;
+            let result = source
+                .install(&device, &manager, &path, |message| {
+                    events.publish("loadprogress", json!({"state":"loading","message":message}))
+                })
+                .await;
             progress.finish(match &result {
                 Ok(_) => json!({"state":"ready","message":"Installation complete"}),
                 Err(error) => json!({"state":"failed","message":error}),
