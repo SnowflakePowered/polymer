@@ -76,6 +76,31 @@ impl MemoryStorage {
         Ok(self.entry_file(path)?.bytes())
     }
 
+    /// Copy file contents while holding the tree lock so reconciliation cannot
+    /// observe a rename or removal halfway through enumerating the projection.
+    pub(crate) fn snapshot_files(&self) -> BTreeMap<String, Vec<u8>> {
+        self.entries
+            .lock()
+            .iter()
+            .filter_map(|(path, entry)| match entry {
+                Entry::File(file) => Some((path.clone(), file.bytes())),
+                Entry::Directory(_) => None,
+            })
+            .collect()
+    }
+
+    pub(crate) fn remove_tree(&self, path: &str) -> Result<(), Error> {
+        self.require_writable(path)?;
+        if path.is_empty() {
+            return Err(Error::InvalidPath(path.to_owned()));
+        }
+        let prefix = format!("{path}/");
+        self.entries
+            .lock()
+            .retain(|entry, _| entry != path && !entry.starts_with(&prefix));
+        Ok(())
+    }
+
     fn validate(path: &str) -> Result<(), Error> {
         if !path.is_empty()
             && path
@@ -127,7 +152,7 @@ impl MemoryStorage {
         Ok(())
     }
 
-    fn insert(&self, path: &str, bytes: Vec<u8>) -> Result<(), Error> {
+    fn insert(&self, path: &str, bytes: Vec<u8>) -> Result<MemoryFile, Error> {
         self.require_writable(path)?;
         let mut entries = self.entries.lock();
         if matches!(entries.get(path), Some(Entry::Directory(_))) {
@@ -139,8 +164,9 @@ impl MemoryStorage {
                 path.rsplit_once('/').map_or("", |(parent, _)| parent),
             )?;
         }
-        entries.insert(path.to_owned(), Entry::File(MemoryFile::new(bytes)));
-        Ok(())
+        let file = MemoryFile::new(bytes);
+        entries.insert(path.to_owned(), Entry::File(file.clone()));
+        Ok(file)
     }
 }
 
@@ -213,24 +239,8 @@ impl Storage for MemoryStorage {
     }
 
     fn create(&self, path: &str) -> Result<Arc<dyn StorageFile>, Error> {
-        self.require_writable(path)?;
-        let mut entries = self.entries.lock();
-        if !path.is_empty() {
-            Self::ensure_directories(
-                &mut entries,
-                path.rsplit_once('/').map_or("", |(parent, _)| parent),
-            )?;
-        }
-        let entry = entries
-            .entry(path.to_owned())
-            .or_insert_with(|| Entry::File(MemoryFile::new(Vec::new())));
-        let Entry::File(file) = entry else {
-            return Err(Error::InvalidPath(path.to_owned()));
-        };
-        // Truncating an existing file retains the identity of its open handles.
-        let handle = file.handle(true);
-        handle.set_len(0)?;
-        Ok(handle)
+        // Replacement leaves existing handles attached to the old file.
+        Ok(self.insert(path, Vec::new())?.handle(true))
     }
 
     fn open(&self, path: &str, write: bool) -> Result<Arc<dyn StorageFile>, Error> {

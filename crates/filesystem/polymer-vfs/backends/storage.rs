@@ -470,7 +470,7 @@ fn vfs_path(path: &str) -> VfsPathBuf {
     VfsPathBuf::new(format!("/{path}")).unwrap_or_else(|_| VfsPathBuf::root())
 }
 
-fn storage_error(error: StorageError, path: &str) -> VfsError {
+pub(super) fn storage_error(error: StorageError, path: &str) -> VfsError {
     match error {
         StorageError::InvalidPath(path) => VfsError::InvalidPath {
             path,
