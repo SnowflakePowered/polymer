@@ -10,6 +10,7 @@ export type LibraryEntry = {
 };
 
 export type LibraryActivity = { id: string; title: string; message: string; state: "running" | "complete" | "error"; completed?: number; total?: number };
+/** Activities contain running jobs and newly completed notices, not notification history. */
 export type LibrarySnapshot = { games: LibraryEntry[]; status: string; activities: LibraryActivity[] };
 
 /** Catalog and scrape subscriptions, independent of theme rendering. */
@@ -57,8 +58,7 @@ export class LibraryState {
         // A notification received during the request is newer than this snapshot.
         if (this.jobs.get(job.id) !== previous.get(job.id)) continue;
         if (JSON.stringify(this.jobs.get(job.id)) === JSON.stringify(job)) continue;
-        if (this.jobsLoaded || job.state === "queued" || job.state === "running") this.sessionJobs.add(job.id);
-        this.jobs.set(job.id, job);
+        this.updateJob(job, this.jobsLoaded || job.state === "queued" || job.state === "running");
         changed = true;
       }
       this.jobsLoaded = true;
@@ -95,8 +95,7 @@ export class LibraryState {
           { triggerBinaryId: launchable.binaryId },
         );
         // Notifications may already have advanced beyond the enqueue response.
-        this.sessionJobs.add(job.id);
-        if (!this.jobs.has(job.id)) this.jobs.set(job.id, job);
+        if (!this.jobs.has(job.id)) this.updateJob(job, true);
       }
       this.refresh();
     } catch (error) {
@@ -127,11 +126,21 @@ export class LibraryState {
 
   private jobChanged = (event: Event) => {
     const job = (event as CustomEvent<ScrapeJob>).detail;
-    this.sessionJobs.add(job.id);
-    this.jobs.set(job.id, job);
+    if (JSON.stringify(this.jobs.get(job.id)) === JSON.stringify(job)) return;
+    this.updateJob(job, true);
     this.publish();
     if (job.state !== "queued" && job.state !== "running") this.refresh();
   };
+
+  private updateJob(job: ScrapeJob, notify: boolean) {
+    const previous = this.jobs.get(job.id);
+    // Terminal jobs are announced once. Later snapshots and metadata refreshes
+    // must not recreate an expired or dismissed completion notice.
+    if (notify && (job.state === "queued" || job.state === "running" || previous?.state !== job.state)) {
+      this.sessionJobs.add(job.id);
+    }
+    this.jobs.set(job.id, job);
+  }
 
   private title(game: LibraryGame): string {
     const titles = game.metadata.filter(item => item.key === "meta.title" || item.key.startsWith("meta.title."));
@@ -171,17 +180,22 @@ export class LibraryState {
     const jobs = [...this.jobs.values()].sort((a, b) => b.updatedAt - a.updatedAt);
     const active = jobs.filter(job => job.state === "queued" || job.state === "running");
     const visible = active.length ? active : jobs.slice(0, 1);
+    const activities: LibraryActivity[] = [
+      ...this.firmwareActivities.values(),
+      ...(this.imports.size ? [{ id: "imports", title: "Identifying games and firmware", message: [...this.imports.values()].join(", "), state: "running" as const }] : []),
+      ...jobs.filter(job => this.sessionJobs.has(job.id)).map(job => ({ id: job.id, title: "Scraping game library", message: this.progress(job),
+        state: (job.state === "queued" || job.state === "running" ? "running" : job.state === "completed" ? "complete" : "error") as LibraryActivity["state"],
+        completed: job.attempts.filter(attempt => attempt.state === "completed" || attempt.state === "failed").length,
+        total: job.attempts.length,
+      })),
+    ];
+    this.firmwareActivities.clear();
+    for (const activity of activities) {
+      if (activity.state !== "running") this.sessionJobs.delete(activity.id);
+    }
     this.changed({
       games: this.entries,
-      activities: [
-        ...this.firmwareActivities.values(),
-        ...(this.imports.size ? [{ id: "imports", title: "Identifying games and firmware", message: [...this.imports.values()].join(", "), state: "running" as const }] : []),
-        ...jobs.filter(job => this.sessionJobs.has(job.id)).map(job => ({ id: job.id, title: "Scraping game library", message: this.progress(job),
-          state: (job.state === "queued" || job.state === "running" ? "running" : job.state === "completed" ? "complete" : "error") as LibraryActivity["state"],
-          completed: job.attempts.filter(attempt => attempt.state === "completed" || attempt.state === "failed").length,
-          total: job.attempts.length,
-        })),
-      ],
+      activities,
       status: [...this.imports.values()].map(name => `Identifying ${name}…`).concat(visible.map(job => this.progress(job))).join(" · "),
     });
   }

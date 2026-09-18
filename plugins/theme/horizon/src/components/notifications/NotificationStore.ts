@@ -1,37 +1,42 @@
-import { createStore, reconcile } from "solid-js/store";
+import { createStore, produce, reconcile } from "solid-js/store";
 import type { Notification } from "./notification-context";
 
 /** Keeps job state after its toast expires, without restarting expiry on progress updates. */
 export class NotificationStore {
-  private readonly state = createStore<Notification[]>([]);
+  private readonly state = createStore<Record<string, Notification>>({});
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
-  readonly items = () => this.state[0];
+  readonly items = () => Object.values(this.state[0]);
 
   upsert(next: Omit<Notification, "dismissed">) {
-    const previous = this.items().find(item => item.id === next.id);
+    const previous = this.state[0][next.id];
     const sameNotice = previous?.state === next.state
       && (next.state === "running" || previous.message === next.message);
     const item = { ...next, dismissed: sameNotice ? previous!.dismissed : false };
-    this.state[1](reconcile(previous
-      ? this.items().map(value => value.id === next.id ? item : value)
-      : [...this.items(), item], { key: "id" }));
+    this.state[1](next.id, reconcile(item));
     if (!sameNotice) this.schedule(next.id);
   }
 
   remove(id: string) {
     clearTimeout(this.timers.get(id));
     this.timers.delete(id);
-    this.state[1](reconcile(this.items().filter(item => item.id !== id), { key: "id" }));
+    this.state[1](produce(items => { delete items[id]; }));
   }
 
   dismiss(id: string) {
+    const item = this.state[0][id];
+    if (!item) return;
+    if (item.state !== "running") {
+      this.remove(id);
+      return;
+    }
     clearTimeout(this.timers.get(id));
     this.timers.delete(id);
-    this.state[1](item => item.id === id, "dismissed", true);
+    this.state[1](id, "dismissed", true);
   }
 
   reopen(id: string) {
-    this.state[1](item => item.id === id, "dismissed", false);
+    if (!this.state[0][id]) return;
+    this.state[1](id, "dismissed", false);
     this.schedule(id);
   }
 
@@ -42,7 +47,7 @@ export class NotificationStore {
 
   private schedule(id: string) {
     clearTimeout(this.timers.get(id));
-    const item = this.items().find(item => item.id === id);
+    const item = this.state[0][id];
     if (!item || item.dismissed) return;
     const duration = item.state === "error" ? 8000 : item.state === "running" ? 5000 : 3500;
     this.timers.set(id, setTimeout(() => this.dismiss(id), duration));
