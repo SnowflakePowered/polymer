@@ -75,7 +75,7 @@ impl Depot for Ps3PupDepot {
         let source = self;
 
         crate::installable::Installation::prepare(async move {
-            source.satisfies(nand)?;
+            source.validate(nand, &source.path)?;
             install::PupInstall::new(&source, nand.root()).await
         })
     }

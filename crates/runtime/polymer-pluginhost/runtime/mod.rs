@@ -619,6 +619,7 @@ impl PluginRuntimeHandle {
         )
         .map_err(PluginInvocationError::worker)?;
         worker.firmware.platform = invocation.arguments["console"].as_str().map(str::to_owned);
+        worker.keys.platform = worker.firmware.platform.clone();
         let lifecycle = self.lifecycle(invocation.plugin.id());
         self.run_with_control(cancellation.control, move |control| {
             ControllerActor::spawn(invocation, worker, lifecycle, control)

@@ -6,7 +6,7 @@ pub unsafe extern "system" fn PolymerInstallD3d12Hook() -> i32 {
         return windows::Win32::Foundation::E_INVALIDARG.0;
     }
     polymer_hook_dxgi::register_virtual_claim(
-      polymer_producer_d3d12::swapchain::creation::D3d12Creation::claim,
+        polymer_producer_d3d12::swapchain::creation::D3d12Creation::claim,
     );
     0
 }

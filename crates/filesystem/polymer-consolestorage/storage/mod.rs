@@ -15,12 +15,14 @@ use crate::error::Error;
 use atomic_write_file::AtomicWriteFile;
 
 mod composed;
+mod generated;
 mod git;
 pub mod manifest;
 pub mod memorycard;
 pub(crate) mod permissions;
 
 pub use composed::ComposedStorage;
+pub use generated::MemoryStorage;
 pub use git::{GitVolumeStorage, PlatformRepository};
 
 use crate::storage::manifest::VolumeInfo;

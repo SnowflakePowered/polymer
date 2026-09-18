@@ -1,6 +1,7 @@
 use crate::Error;
 use crate::installable::DepotFile;
 use crate::storage::Storage;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use walkdir::WalkDir;
@@ -13,6 +14,7 @@ pub struct DirectoryInstall {
     pub base: String,
     pub storage: Arc<dyn Storage>,
     entries: walkdir::IntoIter,
+    excluded: BTreeSet<String>,
 }
 
 impl DirectoryInstall {
@@ -23,7 +25,13 @@ impl DirectoryInstall {
             base,
             storage,
             entries,
+            excluded: BTreeSet::new(),
         }
+    }
+
+    pub fn excluding(mut self, relative: impl Into<String>) -> Self {
+        self.excluded.insert(relative.into());
+        self
     }
 }
 impl DirectoryInstall {
@@ -43,6 +51,9 @@ impl DirectoryInstall {
                 .to_string_lossy()
                 .replace('\\', "/");
             if relative.is_empty() {
+                continue;
+            }
+            if self.excluded.contains(&relative) {
                 continue;
             }
             let destination = if self.base.is_empty() {

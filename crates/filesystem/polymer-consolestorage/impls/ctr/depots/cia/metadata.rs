@@ -6,7 +6,7 @@ use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned, byteorder::little_e
 
 use super::CiaDepot;
 use crate::impls::ctr::smdh::ExtdataIcon;
-use crate::installable::{DepotFile, DepotType, IconHint, artifacts::Artifact};
+use crate::installable::{DepotFile, IconHint, artifacts::Artifact};
 use crate::{Error, VolumeStorage};
 
 #[derive(FromBytes, Immutable, KnownLayout, Unaligned)]
@@ -91,17 +91,6 @@ impl InstalledTitle {
     ) -> Result<Artifact, Error> {
         let id = format!("{:016X}", depot.title_id);
         let path = format!("{}/00000000.tmd", depot.title_root);
-        let owns_tmd = manifest.iter().any(|file| file.path() == Path::new(&path));
-        if !owns_tmd {
-            return Ok(Artifact::new(
-                id.clone(),
-                DepotType::AppTicket,
-                manifest,
-                id,
-                None,
-                IconHint::Builtin(DepotType::AppTicket),
-            ));
-        }
         let mut bytes = Vec::new();
         storage
             .open_read(&path)?

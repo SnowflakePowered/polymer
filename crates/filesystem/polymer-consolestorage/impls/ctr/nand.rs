@@ -96,13 +96,47 @@ impl VirtualNand for CtrNand {
         &self.platform
     }
 
-    fn compose(&self, saves: Arc<dyn SaveRepo>) -> Result<Arc<dyn MountableStorage>, Error> {
-        if !saves.clone().into_any().is::<CtrSaveRepo>() {
+    async fn compose(
+        &self,
+        saves: Option<Arc<dyn SaveRepo>>,
+        keys: &dyn crate::keys::KeyReader,
+    ) -> Result<Arc<dyn MountableStorage>, Error> {
+        if saves
+            .as_ref()
+            .is_some_and(|saves| !saves.clone().into_any().is::<CtrSaveRepo>())
+        {
             return Err(Error::Unsupported(
                 "3DS NAND requires a 3DS save repository".to_owned(),
             ));
         }
-        Ok(Arc::new(ComposedStorage::new(vec![saves, self.root()])?))
+        let mut files = Vec::new();
+        for description in keys
+            .list(&crate::keys::KeyQuery {
+                namespace: Some("content".into()),
+                title_id: None,
+            })
+            .await
+            .map_err(|e| Error::Unsupported(e.to_string()))?
+        {
+            let Ok(title_id) = u64::from_str_radix(&description.identity.id, 16) else {
+                continue;
+            };
+            let record = keys
+                .read(&description.identity)
+                .await
+                .map_err(|e| Error::Unsupported(e.to_string()))?;
+            files.push((
+                format!("nand/dbs/ticket.db/{title_id:016X}.{title_id:016X}.tik"),
+                super::ticket::CtrTicket::synthesize(title_id, &record.bytes)?,
+            ));
+        }
+        let mut layers: Vec<Arc<dyn MountableStorage>> =
+            vec![Arc::new(crate::MemoryStorage::new(files)?)];
+        if let Some(saves) = saves {
+            layers.push(saves);
+        }
+        layers.push(self.root());
+        Ok(Arc::new(ComposedStorage::new(layers)?))
     }
 
     fn permissions(&self, path: &str) -> Permissions {

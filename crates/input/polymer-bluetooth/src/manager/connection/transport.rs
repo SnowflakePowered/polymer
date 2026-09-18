@@ -257,7 +257,8 @@ impl BluetoothActor {
             hid.set_automatic_flush_slots(slots);
         }
         let attach_result = if policy.host_opens_hid_on_reconnect {
-            hid.attach_inbound_host_hid_with_frames(handle, frames).await
+            hid.attach_inbound_host_hid_with_frames(handle, frames)
+                .await
         } else if policy.wait_for_encryption_before_inbound_hid {
             hid.attach_inbound_encrypted_with_frames(handle, frames, connection_events)
                 .await

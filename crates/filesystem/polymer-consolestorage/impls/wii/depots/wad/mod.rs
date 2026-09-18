@@ -1,15 +1,14 @@
-mod crypto;
+pub(crate) mod crypto;
 mod depot;
 mod install;
 mod metadata;
-mod ticket;
 mod tmd;
 
 pub use depot::WiiWadDepot;
 
 use crate::Error;
 
-fn signed_body<'a>(bytes: &'a [u8], file: &str) -> Result<(usize, &'a [u8]), Error> {
+pub(crate) fn signed_body<'a>(bytes: &'a [u8], file: &str) -> Result<(usize, &'a [u8]), Error> {
     let signature_type = u32::from_be_bytes(
         *bytes
             .first_chunk()

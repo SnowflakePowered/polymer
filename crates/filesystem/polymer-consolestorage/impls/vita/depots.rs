@@ -144,7 +144,7 @@ impl Depot for VitaDirectoryDepot {
         let source = self;
 
         Installation::prepare(async move {
-            source.satisfies(nand)?;
+            source.validate(nand, &source.root)?;
             let storage = nand.root();
             Ok(VitaInstall {
                 copy: DirectoryInstall::new(

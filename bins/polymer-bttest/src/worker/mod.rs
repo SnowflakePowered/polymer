@@ -2011,12 +2011,16 @@ fn spawn_br_scan(host: Arc<HciHost>, events: mpsc::Sender<Event>) -> JoinHandle<
                     // request. A slow device or cancelled scan must not hide it.
                     for inquiry in &found {
                         if !names.contains_key(&inquiry.addr) {
-                            let mut view = device_view(inquiry.clone(), "Resolving device name…".into());
+                            let mut view =
+                                device_view(inquiry.clone(), "Resolving device name…".into());
                             // Wait for identification before automatic pairing:
                             // a generic class match cannot choose Nintendo's PIN.
                             view.profile_id = None;
                             view.profile_name = None;
-                            diagnostic(&format!("Discovered BR/EDR address {} (name pending)", inquiry.addr));
+                            diagnostic(&format!(
+                                "Discovered BR/EDR address {} (name pending)",
+                                inquiry.addr
+                            ));
                             let _ = events.send(Event::Device(view));
                         }
                     }

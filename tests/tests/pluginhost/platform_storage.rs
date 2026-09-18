@@ -267,96 +267,144 @@ async fn bootstrap_uses_existing_progress_events_for_callbacks_and_generators() 
     assert!(callback < generator);
 }
 
+impl Fixture {
+    fn title_source(&self, root: &std::path::Path) {
+        for directory in ["code", "content", "meta"] {
+            std::fs::create_dir_all(root.join(directory)).unwrap();
+        }
+        std::fs::write(
+            root.join("code/app.xml"),
+            "<app><title_id>0005000c12345678</title_id></app>",
+        )
+        .unwrap();
+        std::fs::write(root.join("code/cos.xml"), "<app/>").unwrap();
+        std::fs::write(
+            root.join("meta/meta.xml"),
+            "<menu><title_id>0005000c12345678</title_id><title_version>7</title_version></menu>",
+        )
+        .unwrap();
+        std::fs::write(root.join("content/data.bin"), b"content").unwrap();
+        let ticket = polymer_consolestorage::impls::wiiu::ticket::WiiUTicket::synthesize(
+            0x0005000c12345678,
+            7,
+            &[0x42; 16],
+        )
+        .unwrap();
+        std::fs::write(root.join("code/title.tik"), ticket).unwrap();
+    }
+}
+
 #[tokio::test]
-async fn platform_constructors_find_and_install_a_rap_without_a_format_hint() {
+async fn platform_install_persists_keys_before_validation_and_installs_content() {
+    use polymer_consolestorage::keys::{KeyIdentity, KeyReader};
+    use polymer_library::keys::KeyStore;
     use polymer_pluginhost::platform::DepotSource;
-    use std::cell::RefCell;
     let fixture = Fixture::new();
-    let content = "UP0001-NPUB12345_00-0123456789ABCDEF";
-    // Recognition comes from the constructor, not a filename extension selector.
-    let path = fixture.root.path().join(format!("{content}.bin"));
-    std::fs::write(&path, [0x42; 16]).unwrap();
+    let path = fixture.root.path().join("title");
+    fixture.title_source(&path);
     let source: DepotSource = serde_json::from_value(json!({"path": path})).unwrap();
     let manager = StorageManager::new(fixture.directories.consolestorage());
     let volume = manager
-        .create(StorageKind::Nand, "SONY_PS3", None)
+        .create(StorageKind::Nand, "NINTENDO_WIIU", None)
         .await
         .unwrap();
     let device = Device {
-        platform: "SONY_PS3".into(),
+        platform: "NINTENDO_WIIU".into(),
         id: volume.metadata().await.unwrap().id,
     };
     let nand = device.open(&manager).await.unwrap();
     nand.root()
-        .create("dev_flash/sys/external/liblv2.sprx")
+        .create("unfinished")
         .unwrap()
-        .write_all_at(0, b"firmware")
+        .write_all_at(0, b"dirty")
         .unwrap();
-    nand.set_label(Some("Initialized test NAND")).await.unwrap();
-    assert!(nand.artifacts().await.unwrap().is_empty());
-    let wii = fixture.device().await;
-    assert!(
-        source
-            .install(&wii, &manager, &path, |_| panic!(
-                "incompatible NAND must not install"
-            ))
-            .await
-            .is_err()
-    );
-    let progress = RefCell::new(Vec::new());
-    let installed = source
-        .install(&device, &manager, &path, |item| {
-            progress.borrow_mut().push(item)
+    let error = source
+        .install(&device, &manager, &path, |_| {})
+        .await
+        .unwrap_err();
+    assert!(error.contains("uncommitted"), "{error}");
+    let store = KeyStore::open(fixture.directories.keys()).await.unwrap();
+    let keys = store.for_platform("NINTENDO_WIIU").unwrap();
+    let key = keys
+        .read(&KeyIdentity {
+            namespace: "content".into(),
+            id: "0005000c12345678".into(),
         })
         .await
         .unwrap();
-    assert_eq!(installed["id"], format!("{content}:rap"));
-    let target = format!("dev_hdd0/home/00000001/exdata/{content}.rap");
-    assert_eq!(*progress.borrow(), vec![target.clone()]);
-    let nand = device.open(&manager).await.unwrap();
+    assert_eq!(key.bytes, [0x42; 16]);
+    nand.recover().unwrap();
+    let installed = source
+        .install(&device, &manager, &path, |_| {})
+        .await
+        .unwrap();
+    assert_eq!(installed["id"], "0005000c12345678");
+    let composed = nand.compose(None, &keys).await.unwrap();
+    let root = "usr/title/0005000c/12345678";
     let mut bytes = Vec::new();
-    std::io::Read::read_to_end(&mut nand.root().open_read(&target).unwrap(), &mut bytes).unwrap();
-    assert_eq!(bytes, vec![0x42; 16]);
-    std::fs::write(&path, [0x42; 15]).unwrap();
-    assert!(
-        source
-            .install(&device, &manager, &path, |_| {})
-            .await
-            .is_err()
+    std::io::Read::read_to_end(
+        &mut composed
+            .open_read(&format!("{root}/code/title.tik"))
+            .unwrap(),
+        &mut bytes,
+    )
+    .unwrap();
+    assert_eq!(
+        polymer_consolestorage::impls::wiiu::ticket::WiiUTicket::decode(&bytes)
+            .unwrap()
+            .bytes,
+        key.bytes
     );
+    assert_eq!(&bytes[0x1e6..0x1e8], &7u16.to_be_bytes());
+    assert!(composed.exists(&format!("{root}/content/data.bin")));
+    assert!(!nand.is_dirty().unwrap());
+
+    // A recognized source with a malformed ticket is a preparation error.
+    std::fs::write(path.join("code/title.tik"), b"truncated").unwrap();
+    assert!(nand.try_install(&path).is_err());
+    std::fs::remove_file(path.join("code/title.tik")).unwrap();
+    assert!(nand.try_install(&path).unwrap().embedded_keys().is_empty());
+    source
+        .install(&device, &manager, &path, |_| {})
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
 async fn bootstrap_uses_native_requirements_with_one_worker() {
+    use polymer_consolestorage::keys::{KeyIdentity, KeyReader};
     let fixture = Fixture::new();
-    let content = "UP0001-NPUB12345_00-0123456789ABCDEF";
     let package = fixture.provider(
         "kind-check",
-        &format!(
-            r#"
-        export async function onBootstrap(device) {{ await device.install('pkg:{content}.rap'); }}
-    "#
-        ),
+        r#"
+        export async function onBootstrap(device) { await device.install('pkg:title'); }
+    "#,
     );
     let manifest = package.join("plugin.toml");
     std::fs::write(
         &manifest,
         std::fs::read_to_string(&manifest)
             .unwrap()
-            .replace("NINTENDO_WII", "SONY_PS3"),
+            .replace("NINTENDO_WII", "NINTENDO_WIIU"),
     )
     .unwrap();
-    std::fs::write(package.join(format!("{content}.rap")), [0x42; 16]).unwrap();
+    fixture.title_source(&package.join("title"));
     fixture.registry.load(package).unwrap();
     let manager = StorageManager::new(fixture.directories.consolestorage());
     let volume = manager
-        .create(StorageKind::Nand, "SONY_PS3", None)
+        .create(StorageKind::Nand, "NINTENDO_WIIU", None)
         .await
         .unwrap();
     let device = Device {
-        platform: "SONY_PS3".into(),
+        platform: "NINTENDO_WIIU".into(),
         id: volume.metadata().await.unwrap().id,
     };
+    let nand = device.open(&manager).await.unwrap();
+    nand.root()
+        .create("unfinished")
+        .unwrap()
+        .write_all_at(0, b"dirty")
+        .unwrap();
     let runtime = PluginRuntime::new(
         fixture.registry.clone(),
         fixture.directories.clone(),
@@ -367,58 +415,139 @@ async fn bootstrap_uses_native_requirements_with_one_worker() {
     );
     let error = tokio::time::timeout(
         Duration::from_secs(10),
-        runtime.handle().bootstrap(
-            device.clone(),
-            Value::Null,
-            runtime.handle().cancellation_token(),
-        ),
+        runtime
+            .handle()
+            .bootstrap(device, Value::Null, runtime.handle().cancellation_token()),
     )
     .await
     .unwrap()
     .unwrap_err();
-    assert!(
-        error
-            .message
-            .contains("Install PlayStation 3 system software"),
-        "{error}"
-    );
-    assert!(
-        device
-            .open(&manager)
-            .await
-            .unwrap()
-            .artifacts()
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert!(error.message.contains("uncommitted"), "{error}");
+    let store = polymer_library::keys::KeyStore::open(fixture.directories.keys())
+        .await
+        .unwrap();
+    let record = store
+        .for_platform("NINTENDO_WIIU")
+        .unwrap()
+        .read(&KeyIdentity {
+            namespace: "content".into(),
+            id: "0005000c12345678".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(record.bytes, [0x42; 16]);
 }
 
 #[tokio::test]
 async fn try_install_retains_depot_without_starting_extraction() {
     let fixture = Fixture::new();
+    let path = fixture.root.path().join("title");
+    fixture.title_source(&path);
     let manager = StorageManager::new(fixture.directories.consolestorage());
     let volume = manager
-        .create(StorageKind::Nand, "SONY_PS3", None)
+        .create(StorageKind::Nand, "NINTENDO_WIIU", None)
         .await
         .unwrap();
     let device = Device {
-        platform: "SONY_PS3".into(),
+        platform: "NINTENDO_WIIU".into(),
         id: volume.metadata().await.unwrap().id,
     };
     let nand = device.open(&manager).await.unwrap();
-    nand.root()
-        .create("dev_flash/sys/external/liblv2.sprx")
-        .unwrap()
-        .write_all_at(0, b"firmware")
-        .unwrap();
-    nand.set_label(Some("Initialized test NAND")).await.unwrap();
-    let content = "UP0001-NPUB12345_00-0123456789ABCDEF";
-    let path = fixture.root.path().join(format!("{content}.rap"));
-    std::fs::write(&path, [0x42; 16]).unwrap();
     let installation = nand.try_install(&path).unwrap();
+    assert!(!nand.is_dirty().unwrap());
     assert!(nand.artifacts().await.unwrap().is_empty());
-    std::fs::remove_file(&path).unwrap();
     let artifact = installation.finish().await.unwrap();
-    assert_eq!(artifact.id(), format!("{content}:rap"));
+    assert_eq!(artifact.id(), "0005000c12345678");
+}
+
+#[tokio::test]
+async fn rust_and_javascript_share_platform_keys_and_immutable_files() {
+    use polymer_consolestorage::keys::{KeyIdentity, KeyQuery, KeyReader, KeyRecord, KeyWriter};
+    use polymer_library::keys::KeyStore;
+    let fixture = Fixture::new();
+    let store = KeyStore::open(fixture.directories.keys()).await.unwrap();
+    let keys = store.for_platform("NINTENDO_WII").unwrap();
+    let identity = KeyIdentity {
+        namespace: "content".into(),
+        id: "license".into(),
+    };
+    keys.put(&[KeyRecord {
+        identity: identity.clone(),
+        title_id: Some("title".into()),
+        bytes: vec![1, 2, 3],
+    }])
+    .await
+    .unwrap();
+    fixture.registry.load(fixture.provider("key-platform", r#"
+        export async function onBootstrap(device, {keyStore}) {
+            const entries = await keyStore.list({namespace: 'content', titleId: 'title'});
+            if (entries.length !== 1 || entries[0].byteLength !== 3) throw new Error('bad enumeration');
+            const opened = await keyStore.open(entries[0]);
+            await keyStore.put([{namespace: 'content', id: 'license', bytes: new Uint8Array([4, 5])}]);
+            if ((await keyStore.list({titleId: 'title'})).length !== 0) throw new Error('stale title association');
+            if (String(await (await keyStore.open(entries[0])).bytes()) !== '4,5') throw new Error('replacement not visible');
+            if (!await keyStore.remove(entries[0])) throw new Error('remove failed');
+            if (String(await opened.bytes()) !== '1,2,3') throw new Error('open resource changed');
+            await keyStore.put([{namespace: 'system', id: 'native_name', bytes: new Uint8Array([7])}]);
+        }
+    "#)).unwrap();
+    let runtime = fixture.runtime();
+    runtime
+        .handle()
+        .bootstrap(
+            fixture.device().await,
+            Value::Null,
+            runtime.handle().cancellation_token(),
+        )
+        .await
+        .unwrap();
+    assert!(keys.read(&identity).await.is_err());
+    assert_eq!(
+        keys.read(&KeyIdentity {
+            namespace: "system".into(),
+            id: "native_name".into()
+        })
+        .await
+        .unwrap()
+        .bytes,
+        [7]
+    );
+    assert!(
+        store
+            .for_platform("SONY_PS3")
+            .unwrap()
+            .list(&KeyQuery::default())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    fixture.emulator();
+    std::fs::write(fixture.root.path().join("emulator/main.js"), r#"
+        export async function onLaunch({keyStore, filesystem}) {
+            const entry = await keyStore.open({namespace: 'system', id: 'native_name'});
+            if (String(await entry.bytes()) !== '7') throw new Error('Rust/JS read failed');
+            let denied = false;
+            try { await __polymerKeys.writer.put([{namespace: 'system', id: 'native_name', bytes: new Uint8Array([9])}]); }
+            catch (error) { denied = String(error).includes('read-only'); }
+            if (!denied) throw new Error('host did not enforce reader');
+            denied = false;
+            try { filesystem.mountFile('/key', entry, {mode: 'rw'}); }
+            catch { denied = true; }
+            if (!denied) throw new Error('key resource permitted writable mount');
+            throw new Error('KEY_READER_VERIFIED');
+        }
+    "#).unwrap();
+    let error = runtime
+        .handle()
+        .invoke(
+            "emulator",
+            &["onLaunch".into()],
+            vec![json!({
+                "console": "NINTENDO_WII", "controllerTopology": {"mappings": []},
+            })],
+        )
+        .await
+        .unwrap_err();
+    assert!(error.message.contains("KEY_READER_VERIFIED"), "{error}");
 }

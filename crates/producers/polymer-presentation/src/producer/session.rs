@@ -254,8 +254,9 @@ impl ProducerSession {
         self.receiver = Some(
             std::thread::Builder::new()
                 .name("polymer-buffer-availability".into())
-                .spawn(move || loop {
-                    let result = socket.receive().and_then(|message| {
+                .spawn(move || {
+                    loop {
+                        let result = socket.receive().and_then(|message| {
                             let Message::BufferAvailable {
                                 stream_id,
                                 through_sync_value,
@@ -278,14 +279,15 @@ impl ProducerSession {
                             state.available_through =
                                 state.available_through.max(through_sync_value);
                             Ok(())
-                    });
-                    match result {
-                        Ok(()) => availability.notify(),
-                        Err(error) => {
-                            availability.state.lock().error =
-                                Some((error.kind(), error.to_string()));
-                            availability.notify();
-                            return;
+                        });
+                        match result {
+                            Ok(()) => availability.notify(),
+                            Err(error) => {
+                                availability.state.lock().error =
+                                    Some((error.kind(), error.to_string()));
+                                availability.notify();
+                                return;
+                            }
                         }
                     }
                 })?,

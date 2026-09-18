@@ -16,6 +16,7 @@ const MAX_SCRAPE_RESULTS: usize = 4096;
 
 pub(super) struct WorkerOptions {
     pub(super) firmware: crate::firmware::FirmwareBinding,
+    pub(super) keys: crate::keys::KeyBinding,
     loader: PluginModuleLoader,
     filesystem: crate::filesystem::FilesystemOptions,
     cache: crate::cache::CacheOptions,
@@ -39,6 +40,7 @@ impl WorkerOptions {
         filesystem.caches = cache.filesystem_caches();
         Ok(Self {
             firmware: crate::firmware::FirmwareBinding::new(directories.firmware()),
+            keys: crate::keys::KeyBinding::new(directories.keys()),
             platform: crate::platform::PlatformBinding {
                 manager: Arc::new(polymer_library::StorageManager::new(
                     directories.consolestorage(),
@@ -92,6 +94,7 @@ pub(super) fn create_worker_runtime(
 ) -> Result<polymer_deno::Runtime, PluginInvocationError> {
     let WorkerOptions {
         firmware,
+        keys,
         loader,
         filesystem,
         cache,
@@ -106,6 +109,7 @@ pub(super) fn create_worker_runtime(
         module_loader: Rc::new(loader),
         extensions: vec![
             crate::firmware::extension(firmware),
+            crate::keys::extension(keys),
             crate::digest::extension(),
             crate::actions::extension(),
             crate::automation::extension(),

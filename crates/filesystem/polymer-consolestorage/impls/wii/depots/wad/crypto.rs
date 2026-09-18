@@ -6,7 +6,7 @@ use super::depot::WiiWadDepot;
 use super::tmd::Content;
 use crate::Error;
 
-const COMMON_KEYS: [[u8; 16]; 2] = [
+pub(crate) const COMMON_KEYS: [[u8; 16]; 2] = [
     [
         0xeb, 0xe4, 0x2a, 0x22, 0x5e, 0x85, 0x93, 0xe4, 0x48, 0xd9, 0xc5, 0x45, 0x73, 0x81, 0xaa,
         0xf7,
@@ -17,13 +17,8 @@ const COMMON_KEYS: [[u8; 16]; 2] = [
     ],
 ];
 
-pub(super) struct SelectedTitleKey {
-    pub(super) index: u8,
-    pub(super) key: [u8; 16],
-}
-
 impl WiiWadDepot {
-    pub(super) fn select_title_key(&self) -> Result<SelectedTitleKey, Error> {
+    pub(super) fn select_title_key(&self) -> Result<[u8; 16], Error> {
         let specified = usize::from(self.ticket.common_key_index);
         let mut candidates = Vec::new();
         if specified < COMMON_KEYS.len() {
@@ -50,17 +45,11 @@ impl WiiWadDepot {
                 specified_key = Some(key);
             }
             if self.decrypt_content(probe, &key).is_ok() {
-                return Ok(SelectedTitleKey {
-                    index: index as u8,
-                    key,
-                });
+                return Ok(key);
             }
         }
         if let Some(key) = specified_key {
-            return Ok(SelectedTitleKey {
-                index: specified as u8,
-                key,
-            });
+            return Ok(key);
         }
         Err(Error::IntegrityMatchFailed {
             failed: "WAD title key".to_owned(),

@@ -14,13 +14,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// CIA title contents or an independently installable ticket from the same CIA.
-/// `open()` selects contents; `ticket_depot()` selects only the ticket.
+/// CIA title contents.
 #[derive(Clone)]
 pub struct CiaDepot {
     path: PathBuf,
     title_id: u64,
-    ticket_id: u64,
     root: String,
     title_root: String,
     content_root: String,
@@ -28,17 +26,6 @@ pub struct CiaDepot {
 }
 
 impl CiaDepot {
-    /// Select only the ticket. Contents and tickets share one title artifact.
-    pub fn ticket_depot(&self) -> Self {
-        let mut depot = self.clone();
-        depot.kind = DepotType::AppTicket;
-        depot.root = format!(
-            "nand/dbs/ticket.db/{:016X}.{:016X}.tik",
-            self.title_id, self.ticket_id
-        );
-        depot
-    }
-
     pub fn title_id(&self) -> u64 {
         self.title_id
     }
@@ -62,12 +49,6 @@ impl CiaDepot {
     }
 
     fn jobs(&self, archive: &CiaArchive<File>) -> Vec<install::Entry> {
-        if self.kind == DepotType::AppTicket {
-            return vec![install::Entry {
-                path: self.root.clone(),
-                content: install::Content::Section(CiaSection::Ticket),
-            }];
-        }
         let mut jobs: Vec<_> = archive
             .items()
             .iter()
@@ -87,6 +68,10 @@ impl CiaDepot {
 }
 
 impl Depot for CiaDepot {
+    fn embedded_keys(&self) -> Result<Vec<crate::keys::KeyRecord>, Error> {
+        Ok(vec![super::super::ticket::CtrTicket::from_cia(&self.path)?])
+    }
+
     fn open(path: &Path) -> Result<Self, Error> {
         let archive = CiaArchive::open(path).map_err(|e| Error::malformed("CIA", e.to_string()))?;
         let id = archive.title_id();
@@ -117,7 +102,6 @@ impl Depot for CiaDepot {
         Ok(Self {
             path: path.to_owned(),
             title_id: id,
-            ticket_id: archive.ticket().ticket_id(),
             title_root: root.clone(),
             root,
             content_root,
@@ -144,9 +128,6 @@ impl Depot for CiaDepot {
             Ok(archive) => archive,
             Err(_) => return vec![self.path.display().to_string()],
         };
-        if self.kind == DepotType::AppTicket {
-            return Vec::new();
-        }
         let mut failures = Vec::new();
         for index in 0..archive.items().len() {
             if archive.stream_item(index, &mut io::sink()).is_err() {
@@ -168,7 +149,7 @@ impl Depot for CiaDepot {
         let source = self;
 
         crate::installable::Installation::prepare(async move {
-            source.satisfies(nand)?;
+            source.validate(nand, &source.path)?;
             install::CiaInstall::new(&source, nand.root()).await
         })
     }

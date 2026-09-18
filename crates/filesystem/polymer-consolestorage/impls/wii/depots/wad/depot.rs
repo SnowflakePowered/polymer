@@ -5,11 +5,12 @@ use std::path::{Path, PathBuf};
 use zerocopy::byteorder::big_endian::{U16, U32};
 use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
-use super::ticket::Ticket;
 use super::tmd::{Content, Tmd, align};
 use crate::Error;
 use crate::impls::wii::nand::WiiNand;
+use crate::impls::wii::ticket::Ticket;
 use crate::installable::{Depot, DepotType};
+use crate::keys::{KeyIdentity, KeyRecord};
 use crate::nand::VirtualNand;
 
 #[derive(FromBytes, Immutable, KnownLayout, Unaligned)]
@@ -92,6 +93,21 @@ impl WiiWadDepot {
 }
 
 impl Depot for WiiWadDepot {
+    fn embedded_keys(&self) -> Result<Vec<KeyRecord>, Error> {
+        let key = self.select_title_key()?;
+        let title_id = format!("{:016x}", self.title_id());
+        let record = KeyRecord {
+            identity: KeyIdentity {
+                namespace: "content".into(),
+                id: title_id.clone(),
+            },
+            title_id: Some(title_id),
+            bytes: key.to_vec(),
+        };
+
+        Ok(vec![record])
+    }
+
     fn open(path: &Path) -> Result<Self, Error> {
         let mut file = File::open(path).map_err(|source| Error::io(path, source))?;
         let file_size = file
@@ -161,7 +177,7 @@ impl Depot for WiiWadDepot {
             .contents
             .iter()
             .filter_map(|content| {
-                self.decrypt_content(content, &key.key)
+                self.decrypt_content(content, &key)
                     .err()
                     .map(|_| format!("{:08x}.app", content.id))
             })
@@ -186,7 +202,7 @@ impl Depot for WiiWadDepot {
         let source = self;
 
         crate::installable::Installation::prepare(async move {
-            source.satisfies(nand)?;
+            source.validate(nand, &source.path)?;
             super::install::WadInstall::new(source, nand.root()).await
         })
     }

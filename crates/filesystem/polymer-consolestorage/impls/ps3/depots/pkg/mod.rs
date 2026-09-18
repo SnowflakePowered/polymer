@@ -231,7 +231,7 @@ impl Depot for Ps3PkgDepot {
         let source = self;
 
         crate::installable::Installation::prepare(async move {
-            source.satisfies(nand)?;
+            source.validate(nand, &source.path)?;
             install::Ps3PkgInstall::new(&source, nand.root()).await
         })
     }
@@ -244,7 +244,6 @@ impl Ps3PkgDepot {
             DepotType::AppUpdate => "update",
             DepotType::AppContent => "content",
             DepotType::System => "system",
-            DepotType::AppTicket => "ticket",
         };
         format!("{}:{role}", self.content_id)
     }

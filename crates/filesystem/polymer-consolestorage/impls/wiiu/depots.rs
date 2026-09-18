@@ -54,6 +54,25 @@ impl WiiUMetaXmlDepot {
 }
 
 impl Depot for WiiUMetaXmlDepot {
+    fn embedded_keys(&self) -> Result<Vec<crate::keys::KeyRecord>, Error> {
+        let ticket = self.root.join("code/title.tik");
+        if !ticket
+            .try_exists()
+            .map_err(|error| Error::io(&ticket, error))?
+        {
+            return Ok(Vec::new());
+        }
+        let bytes = std::fs::read(&ticket).map_err(|error| Error::io(&ticket, error))?;
+        let record = super::ticket::WiiUTicket::decode(&bytes)?;
+        if record.identity.id != format!("{:016x}", self.title_id) {
+            return Err(Error::malformed(
+                "Wii U ticket",
+                "ticket and app.xml title IDs differ",
+            ));
+        }
+        Ok(vec![record])
+    }
+
     fn open(path: &Path) -> Result<WiiUMetaXmlDepot, Error> {
         requires_structure!(
             path,
@@ -122,14 +141,15 @@ impl Depot for WiiUMetaXmlDepot {
         let source = self;
 
         crate::installable::Installation::prepare(async move {
-            source.satisfies(nand)?;
+            source.validate(nand, &source.root)?;
             let storage = nand.root();
             Ok(WiiUInstall {
                 copy: DirectoryInstall::new(
                     source.root.clone(),
                     source.install_path(),
                     storage.clone(),
-                ),
+                )
+                .excluding("code/title.tik"),
                 depot: source,
                 storage,
             })

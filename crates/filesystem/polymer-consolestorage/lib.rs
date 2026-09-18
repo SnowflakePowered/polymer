@@ -3,6 +3,7 @@ pub mod error;
 pub mod history;
 pub mod impls;
 pub mod installable;
+pub mod keys;
 pub mod structure;
 
 pub mod nand;
@@ -26,6 +27,7 @@ pub use storage::manifest::{ArtifactRegistry, ArtifactSummary, VolumeInfo};
 pub use storage::memorycard::{MemoryCard, MemoryCardView, Reconcile};
 pub use storage::{
     BoxFuture, ChangeSignal, ComposedStorage, DirEntry, DirectoryStorage, EntryKind,
-    GitVolumeStorage, InstallResult, Metadata, MountableStorage, PlatformRepository, ReadDir,
-    Storage, StorageFile, StorageReader, VolumeStorage, permissions::*,
+    MemoryStorage, GitVolumeStorage, InstallResult, Metadata, MountableStorage,
+    PlatformRepository, ReadDir, Storage, StorageFile, StorageReader, VolumeStorage,
+    permissions::*,
 };

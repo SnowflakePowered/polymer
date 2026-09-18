@@ -102,7 +102,21 @@ impl Handler<Install> for StorageActor {
             }
             let path = PathBuf::from(&source.path);
             let nand = device.open(&manager).await?;
+            let key_root = manager.root().join("keys");
             let installation = nand.try_install(&path).map_err(|error| error.to_string())?;
+            let records = installation.embedded_keys();
+            if !records.is_empty() {
+                use polymer_consolestorage::keys::KeyWriter;
+                let store = polymer_library::keys::KeyStore::open(key_root)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                store
+                    .for_platform(&device.platform)
+                    .map_err(|error| error.to_string())?
+                    .put(records)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
             let events = Arc::new(EventEmitter::new(&device.platform));
             let progress = events.scope(
                 "loadprogress",

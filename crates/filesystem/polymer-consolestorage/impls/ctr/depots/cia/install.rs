@@ -1,7 +1,7 @@
 use super::CiaDepot;
 use crate::{
     Error, VolumeStorage,
-    installable::{DepotFile, DepotType, Installable, StorageWriter, artifacts::Artifact},
+    installable::{DepotFile, Installable, StorageWriter, artifacts::Artifact},
 };
 use csis::{CiaArchive, CiaSection};
 use parking_lot::Mutex;
@@ -79,19 +79,6 @@ impl CiaInstall {
         let Some(old) = old else {
             return Ok(retained);
         };
-        if depot.kind == DepotType::AppTicket {
-            return Ok(old.manifest().to_vec());
-        }
-        retained.extend(
-            old.manifest()
-                .iter()
-                .filter(|file| {
-                    file.path()
-                        .to_string_lossy()
-                        .starts_with("nand/dbs/ticket.db/")
-                })
-                .cloned(),
-        );
         for record in archive.tmd().contents() {
             if archive
                 .items()

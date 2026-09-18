@@ -370,7 +370,7 @@ export interface ConfigurationApi {
 
 export type ConsoleStorageKind = "nand" | "saveRepo" | "memoryCard" | "battery";
 export type CreatableConsoleStorageKind = Exclude<ConsoleStorageKind, "battery">;
-export type DepotType = "system" | "app" | "appcontent" | "appupdate" | "appticket";
+export type DepotType = "system" | "app" | "appcontent" | "appupdate";
 
 export interface StorageArtifact {
   id: string; label: string; version: string | null; depotType: DepotType; byteLength: number;
@@ -461,8 +461,11 @@ export type LibraryImportResult =
   | Readonly<{ kind: "games"; imports: readonly GameImport[] }>
   | Readonly<{ kind: "firmware"; firmware: FirmwareDescription }>;
 
+export type ImportedKey = Readonly<{ namespace: "system" | "content"; id: string; titleId?: string; byteLength: number }>;
+
 export interface LibraryApi extends EventTarget {
   import(input: { path: string }): Promise<LibraryImportResult>;
+  importKey(platform: string, namespace: "system" | "content", key: Uint8Array | string, titleid?: string): Promise<ImportedKey>;
   readonly games: Readonly<{
     list(options?: { platform?: string }): Promise<LibraryGame[]>;
     get(rootBinaryId: string): Promise<LibraryGame | null>;

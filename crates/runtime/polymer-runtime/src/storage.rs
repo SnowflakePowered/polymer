@@ -9,6 +9,7 @@ use polymer_consolestorage::impls::ps2::Playstation2MemoryCard;
 use polymer_consolestorage::savegame::{Package, SaveGameSink};
 use polymer_consolestorage::{BatteryIdentity, BatterySaveRepo, SaveRepo};
 use polymer_deno::polymer::{PolymerNotification, PolymerNotificationSender};
+use polymer_library::keys::KeyStore;
 use polymer_library::{ConsoleStorage, StorageKind, StorageManager};
 use polymer_pluginhost::filesystem::StorageFactories;
 use polymer_vfs::{
@@ -278,6 +279,10 @@ pub async fn launch_storage(
         .map(|device| device.id())
         .collect::<std::collections::BTreeSet<_>>();
     let manager = manager.ok_or_else(|| "console storage is unavailable".to_owned())?;
+    let key_store = KeyStore::open(manager.root().join("keys"))
+        .await
+        .map_err(|e| e.to_string())?;
+    let keys = key_store.for_platform(console).map_err(|e| e.to_string())?;
     let metadata = arguments
         .get("package")
         .map(|value| serde_json::from_value::<polymer_scraping::Package>(value.clone()))
@@ -377,7 +382,8 @@ pub async fn launch_storage(
                 return Err(format!("storage device '{name}' requires [save, nand]"));
             };
             let composed = nand
-                .compose(save.clone())
+                .compose(Some(save.clone()), &keys)
+                .await
                 .map_err(|error| error.to_string())?;
             storage.insert(
                 name.clone(),
@@ -415,7 +421,7 @@ pub async fn launch_storage(
             .map_err(|error| error.to_string())?;
         match volume {
             ConsoleStorage::Nand(nand) => {
-                let root = nand.root();
+                let root = nand.compose(None, &keys).await.map_err(|e| e.to_string())?;
                 storage.insert(
                     name.clone(),
                     Arc::new(NandVolumeFactory::new(nand, root, vec![id])),

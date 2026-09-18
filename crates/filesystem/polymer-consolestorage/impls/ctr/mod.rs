@@ -1,9 +1,10 @@
+pub mod depots;
 mod import;
 mod layout;
 mod nand;
 mod save_repo;
 mod smdh;
-pub mod depots;
+pub mod ticket;
 
 pub use depots::cia::CiaDepot;
 pub use nand::CtrNand;

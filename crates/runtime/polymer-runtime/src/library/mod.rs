@@ -38,6 +38,7 @@ impl Actor for LibraryReader {
 
 struct LibraryBackend {
     firmware_root: std::path::PathBuf,
+    key_root: std::path::PathBuf,
     catalog: Arc<GameCatalog>,
     scraping: polymer_scraping::ScrapingEngine,
     _lifetime: Rc<LibraryActorLifetime>,
@@ -71,6 +72,7 @@ impl LibraryService {
     ) -> Result<Self, std::io::Error> {
         let media = server::MediaServer::start(catalog.clone()).await?;
         let firmware_root = directories.firmware();
+        let key_root = directories.keys();
         let scraping = polymer_scraping::ScrapingEngine::new(catalog.clone(), plugins, directories);
         if let Err(error) = scraping.resume().await {
             tracing::warn!(%error, "could not resume scrape jobs");
@@ -95,6 +97,7 @@ impl LibraryService {
                         ctx.set_mailbox_capacity(0);
                         LibraryBackend {
                             firmware_root,
+                            key_root,
                             catalog: actor_catalog,
                             scraping: actor_scraping,
                             _lifetime: lifetime,
@@ -122,6 +125,7 @@ impl LibraryService {
     pub fn client(&self) -> Library {
         Library {
             import: self.actor.clone().recipient(),
+            import_key: self.actor.clone().recipient(),
             games_list: self.reader.clone().recipient(),
             games_get: self.reader.clone().recipient(),
             games_delete: self.actor.clone().recipient(),
