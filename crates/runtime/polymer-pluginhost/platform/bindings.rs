@@ -80,39 +80,15 @@ async fn op_platform_install(
         .borrow::<Arc<crate::runtime::EventEmitter>>()
         .clone();
     let device = binding.target()?;
-    let nand = device
-        .open(&binding.manager)
+    source
+        .install(device, &binding.manager, &path, |message| {
+            events.publish(
+                "loadprogress",
+                json!({"state": "loading", "message": message}),
+            );
+        })
         .await
-        .map_err(JsErrorBox::generic)?;
-    let key_root = state
-        .borrow()
-        .borrow::<crate::keys::KeyBinding>()
-        .root
-        .clone();
-    let installation = nand
-        .try_install(&path)
-        .map_err(|error| JsErrorBox::generic(error.to_string()))?;
-    let records = installation.embedded_keys();
-    if !records.is_empty() {
-        use polymer_consolestorage::keys::KeyWriter;
-        let store = polymer_library::keys::KeyStore::open(key_root)
-            .await
-            .map_err(|error| JsErrorBox::generic(error.to_string()))?;
-        store
-            .for_platform(&device.platform)
-            .map_err(|error| JsErrorBox::generic(error.to_string()))?
-            .put(records)
-            .await
-            .map_err(|error| JsErrorBox::generic(error.to_string()))?;
-    }
-    DepotSource::finish_install(installation, |message| {
-        events.publish(
-            "loadprogress",
-            json!({"state": "loading", "message": message}),
-        );
-    })
-    .await
-    .map_err(JsErrorBox::generic)
+        .map_err(JsErrorBox::generic)
 }
 
 deno_core::extension!(polymer_platform,
