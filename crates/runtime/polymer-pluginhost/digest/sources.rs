@@ -1,5 +1,6 @@
-use super::{DigestAlgorithm, algorithm::Crc32};
+use super::DigestAlgorithm;
 use gumshoe::{GeneralIdentifier, IdentifyPackage, binary::NormalizationOptions};
+use polymer_library::digest::Crc32;
 use polymer_vfs::{FileNode, OpenFile, OpenOptions};
 use std::{
     io::{self, Read},
@@ -14,7 +15,7 @@ pub trait Digestible {
 
 impl Digestible for Path {
     fn digest(&self, algorithm: DigestAlgorithm) -> io::Result<String> {
-        algorithm.read(std::fs::File::open(self)?)
+        algorithm.hash(std::fs::File::open(self)?)
     }
 }
 
@@ -27,7 +28,7 @@ impl Digestible for dyn FileNode {
                 truncate: false,
             })
             .map_err(io::Error::other)?;
-        algorithm.read(VfsReader { file, offset: 0 })
+        algorithm.hash(VfsReader { file, offset: 0 })
     }
 }
 

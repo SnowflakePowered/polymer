@@ -1,3 +1,4 @@
+pub mod digest;
 pub mod directories;
 pub mod firmware;
 pub mod games;
