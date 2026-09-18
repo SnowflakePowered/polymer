@@ -1,7 +1,6 @@
-mod algorithm;
 mod ops;
 mod sources;
 
-pub use algorithm::DigestAlgorithm;
 pub(crate) use ops::{DigestState, extension};
+pub use polymer_library::digest::DigestAlgorithm;
 pub use sources::{Digestible, PackageBinary};

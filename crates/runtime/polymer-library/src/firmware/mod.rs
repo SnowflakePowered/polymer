@@ -1,7 +1,6 @@
 //! User-supplied hardware data, independent of NANDs and game packages.
 
 mod bios;
-mod hashes;
 mod install;
 mod read;
 

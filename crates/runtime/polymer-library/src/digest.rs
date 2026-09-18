@@ -1,8 +1,8 @@
 use sha2::digest::{Digest, FixedOutput, HashMarker, Output, OutputSizeUser, Update, consts::U4};
 use std::io::{self, Read};
 
-/// The plugin digest vocabulary. `sha2` means SHA-256.
-#[derive(Clone, Copy, Debug, serde::Deserialize)]
+/// Supported digest algorithms. `sha2` means SHA-256 in serialized requests.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DigestAlgorithm {
     Sha2,
@@ -13,7 +13,9 @@ pub enum DigestAlgorithm {
 }
 
 impl DigestAlgorithm {
-    pub(super) fn read(self, reader: impl Read) -> io::Result<String> {
+    /// Hash from the reader's current position through EOF as lowercase hexadecimal.
+    /// Callers own source access and positioning; this performs blocking I/O.
+    pub fn hash(self, reader: impl Read) -> io::Result<String> {
         match self {
             Self::Sha2 => Self::hash_reader::<sha2::Sha256>(reader),
             Self::Sha1 => Self::hash_reader::<sha1::Sha1>(reader),
@@ -39,7 +41,8 @@ impl DigestAlgorithm {
         Ok(Self::hex(&digest.finalize()))
     }
 
-    pub(super) fn hex(bytes: &[u8]) -> String {
+    /// Format digest bytes produced by source-specific hashing APIs.
+    pub fn hex(bytes: &[u8]) -> String {
         use std::fmt::Write;
         let mut result = String::with_capacity(bytes.len() * 2);
         for byte in bytes {
@@ -49,9 +52,9 @@ impl DigestAlgorithm {
     }
 }
 
-/// Adapt CRC32 to Gumshoe's RustCrypto digest interface.
+/// Adapt CRC32 to the RustCrypto digest interface.
 #[derive(Default)]
-pub(super) struct Crc32(crc32fast::Hasher);
+pub struct Crc32(crc32fast::Hasher);
 
 impl OutputSizeUser for Crc32 {
     type OutputSize = U4;

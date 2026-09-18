@@ -1,5 +1,6 @@
 use super::{FirmwareDescription, FirmwareError};
-use std::{collections::HashMap, path::Path};
+use crate::digest::DigestAlgorithm;
+use std::{collections::HashMap, io::Seek, path::Path};
 
 /// Retains the source handle from recognition through installation.
 pub(super) struct BiosFile {
@@ -31,8 +32,9 @@ impl BiosFile {
         for machine in consolespec::MachineSpec::all() {
             for bios in machine.bios() {
                 if Self::matches(bios, &mut file, &mut hashes)? {
+                    file.rewind()?;
                     return Ok(Some(Self {
-                        digest: Self::calculate(&mut file, "blake3")?,
+                        digest: DigestAlgorithm::Blake3.hash(&mut file)?,
                         description: FirmwareDescription {
                             platform: machine.id().into(),
                             label: bios
@@ -56,14 +58,18 @@ impl BiosFile {
     fn matches(
         bios: consolespec::machine::Bios,
         file: &mut std::fs::File,
-        hashes: &mut HashMap<&'static str, String>,
+        hashes: &mut HashMap<DigestAlgorithm, String>,
     ) -> Result<bool, FirmwareError> {
-        for (algorithm, expected) in [("sha256", bios.sha256()), ("md5", bios.md5())] {
+        for (algorithm, expected) in [
+            (DigestAlgorithm::Sha2, bios.sha256()),
+            (DigestAlgorithm::Md5, bios.md5()),
+        ] {
             let Some(expected) = expected else { continue };
             let actual = match hashes.entry(algorithm) {
                 std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
                 std::collections::hash_map::Entry::Vacant(entry) => {
-                    entry.insert(Self::calculate(file, algorithm)?)
+                    file.rewind()?;
+                    entry.insert(algorithm.hash(&mut *file)?)
                 }
             };
             if actual.eq_ignore_ascii_case(expected) {
