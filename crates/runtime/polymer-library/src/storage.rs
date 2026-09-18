@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 
+use futures_util::StreamExt;
 use polymer_consolestorage::{
-    ConsoleStorage, Error, PlatformRepository, StorageKind, VolumeInfo, VolumeStorage,
+    ArtifactSummary, ConsoleStorage, Error, PlatformRepository, StorageKind, VolumeInfo,
+    VolumeStorage, keys::KeyWriter,
 };
 use uuid::Uuid;
 
@@ -101,6 +103,47 @@ impl StorageManager {
         let storage = self.open(kind, platform, id).await?;
         storage.set_label(label.as_deref()).await?;
         Ok(storage)
+    }
+
+    /// Persist embedded keys before validating and extracting a depot into a NAND.
+    pub async fn install(
+        &self,
+        platform: &str,
+        id: Uuid,
+        path: &Path,
+        progress: impl Fn(String),
+    ) -> Result<ArtifactSummary, String> {
+        if !ConsoleStorage::supports(StorageKind::Nand, platform) {
+            return Err("Unsupported NAND platform".into());
+        }
+        let ConsoleStorage::Nand(nand) = self
+            .open(StorageKind::Nand, platform, id)
+            .await
+            .map_err(|error| error.to_string())?
+        else {
+            return Err("device is not a NAND".into());
+        };
+        let mut installation = nand.try_install(path).map_err(|error| error.to_string())?;
+        let records = installation.embedded_keys();
+        if !records.is_empty() {
+            let store = crate::keys::KeyStore::open(self.root.join("keys"))
+                .await
+                .map_err(|error| error.to_string())?;
+            store
+                .for_platform(platform)
+                .map_err(|error| error.to_string())?
+                .put(records)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        while let Some(item) = installation.next().await {
+            progress(item.map_err(|error| error.to_string())?);
+        }
+        let artifact = installation
+            .finish()
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(ArtifactSummary::from(&artifact))
     }
 
     pub async fn fork(

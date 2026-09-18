@@ -61,7 +61,13 @@ export function createConsoleStorage() {
     get device() { return { platform: this.platform, id: this.id }; }
     async inspect() { return op_consolestorage_inspect(this.platform, this.id); }
     async recover() { return op_consolestorage_recover(this.platform, this.id); }
-    async install(source) { return op_consolestorage_install(this.platform, this.id, source); }
+    async install(source) {
+      if (!source || typeof source.path !== "string"
+        || Object.keys(source).some(key => key !== "path")) {
+        throw new TypeError("Frontend installations require a local source: { path: string }");
+      }
+      return op_consolestorage_install(this.platform, this.id, source.path);
+    }
     async bootstrap(settings = {}) { return op_consolestorage_bootstrap(this.platform, this.id, settings); }
     get artifacts() {
       return Object.freeze({

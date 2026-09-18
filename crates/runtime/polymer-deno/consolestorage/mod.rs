@@ -65,14 +65,14 @@ pub(super) async fn op_consolestorage_install(
     state: Rc<RefCell<OpState>>,
     #[string] platform: String,
     #[string] id: String,
-    #[serde] source: serde_json::Value,
+    #[string] path: String,
 ) -> Result<StorageArtifact, JsErrorBox> {
     ConsoleStorage::from_state(&state)?
         .install
         .send(Install {
             platform,
             id,
-            source,
+            path: path.into(),
         })
         .await
         .map_err(|error| format!("storage actor unavailable: {error}"))

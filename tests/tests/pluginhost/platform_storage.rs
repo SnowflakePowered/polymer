@@ -252,11 +252,9 @@ impl Fixture {
 async fn platform_install_persists_keys_before_validation_and_installs_content() {
     use polymer_consolestorage::keys::{KeyIdentity, KeyReader};
     use polymer_library::keys::KeyStore;
-    use polymer_pluginhost::platform::DepotSource;
     let fixture = Fixture::new();
     let path = fixture.root.path().join("title");
     fixture.title_source(&path);
-    let source: DepotSource = serde_json::from_value(json!({"path": path})).unwrap();
     let manager = StorageManager::new(fixture.directories.consolestorage());
     let volume = manager
         .create(StorageKind::Nand, "NINTENDO_WIIU", None)
@@ -272,8 +270,8 @@ async fn platform_install_persists_keys_before_validation_and_installs_content()
         .unwrap()
         .write_all_at(0, b"dirty")
         .unwrap();
-    let error = source
-        .install(&device, &manager, &path, |_| {})
+    let error = manager
+        .install(&device.platform, device.id, &path, |_| {})
         .await
         .unwrap_err();
     assert!(error.contains("uncommitted"), "{error}");
@@ -288,8 +286,8 @@ async fn platform_install_persists_keys_before_validation_and_installs_content()
         .unwrap();
     assert_eq!(key.bytes, [0x42; 16]);
     nand.recover().unwrap();
-    let installed = source
-        .install(&device, &manager, &path, |_| {})
+    let installed = manager
+        .install(&device.platform, device.id, &path, |_| {})
         .await
         .unwrap();
     assert_eq!(installed.id, "0005000c12345678");
@@ -318,8 +316,8 @@ async fn platform_install_persists_keys_before_validation_and_installs_content()
     assert!(nand.try_install(&path).is_err());
     std::fs::remove_file(path.join("code/title.tik")).unwrap();
     assert!(nand.try_install(&path).unwrap().embedded_keys().is_empty());
-    source
-        .install(&device, &manager, &path, |_| {})
+    manager
+        .install(&device.platform, device.id, &path, |_| {})
         .await
         .unwrap();
 }
