@@ -1,13 +1,10 @@
 use super::StorageActor;
 use actix::{Context, Handler, ResponseActFuture};
 use polymer_deno::polymer::consolestorage::*;
-use polymer_pluginhost::{
-    platform::{DepotSource, Device},
-    runtime::EventEmitter,
-};
+use polymer_pluginhost::{platform::Device, runtime::EventEmitter};
 use polymer_vfs::ExclusiveResourceKey;
 use serde_json::json;
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 
 impl Handler<Platforms> for StorageActor {
     type Result = ResponseActFuture<Self, Result<Vec<StoragePlatform>, StorageError>>;
@@ -67,32 +64,22 @@ impl Handler<Install> for StorageActor {
 
     fn handle(
         &mut self,
-        Install {
-            platform,
-            id,
-            source,
-        }: Install,
+        Install { platform, id, path }: Install,
         _: &mut Context<Self>,
     ) -> Self::Result {
         self.execute(move |manager, _| async move {
             let device = Self::device(platform, id)?;
-            let source: DepotSource =
-                serde_json::from_value(source).map_err(|error| error.to_string())?;
             let _lease = ExclusiveResourceKey::Resource(device.id)
                 .acquire()
                 .map_err(|error| error.to_string())?;
-            if source.cache.is_some() {
-                return Err("Frontend installations require a local source".into());
-            }
-            let path = PathBuf::from(&source.path);
             let events = Arc::new(EventEmitter::new(&device.platform));
             let progress = events.scope(
                 "loadprogress",
                 json!({"state":"loading","message":"Installing contents"}),
                 json!({"state":"failed","message":"Installation interrupted"}),
             );
-            let result = source
-                .install(&device, &manager, &path, |message| {
+            let result = manager
+                .install(&device.platform, device.id, &path, |message| {
                     events.publish("loadprogress", json!({"state":"loading","message":message}))
                 })
                 .await;

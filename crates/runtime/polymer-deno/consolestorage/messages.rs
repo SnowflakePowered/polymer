@@ -88,7 +88,7 @@ pub struct Recover {
 pub struct Install {
     pub platform: String,
     pub id: String,
-    pub source: Value,
+    pub path: std::path::PathBuf,
 }
 
 #[derive(Debug, Message)]

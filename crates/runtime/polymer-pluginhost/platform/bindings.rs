@@ -1,4 +1,4 @@
-use super::{DepotSource, Device};
+use super::Device;
 use deno_core::{OpState, op2};
 use deno_error::JsErrorBox;
 use polymer_library::StorageManager;
@@ -20,13 +20,16 @@ impl PlatformBinding {
             )
         })
     }
-    fn path(&self, state: &OpState, source: &DepotSource) -> Result<PathBuf, JsErrorBox> {
-        if let Some(cache) = &source.cache {
-            return state
-                .borrow::<crate::cache::CacheState>()
-                .path(cache, &source.path);
+    fn path(
+        &self,
+        state: &OpState,
+        path: &str,
+        cache: Option<&str>,
+    ) -> Result<PathBuf, JsErrorBox> {
+        if let Some(cache) = cache {
+            return state.borrow::<crate::cache::CacheState>().path(cache, path);
         }
-        if let Some(relative) = source.path.strip_prefix("pkg:") {
+        if let Some(relative) = path.strip_prefix("pkg:") {
             let path = self
                 .root
                 .join(relative)
@@ -37,7 +40,7 @@ impl PlatformBinding {
             }
             return Ok(path);
         }
-        let path = PathBuf::from(&source.path);
+        let path = PathBuf::from(path);
         Ok(if path.is_absolute() {
             path
         } else {
@@ -53,7 +56,7 @@ fn op_platform_resource(
     #[string] path: String,
 ) -> Result<serde_json::Value, JsErrorBox> {
     let binding = state.borrow::<PlatformBinding>();
-    let path = binding.path(state, &DepotSource { path, cache: None })?;
+    let path = binding.path(state, &path, None)?;
     match std::fs::metadata(path) {
         Ok(metadata) => {
             Ok(json!({"exists": true, "size": metadata.len(), "directory": metadata.is_dir()}))
@@ -67,12 +70,13 @@ fn op_platform_resource(
 #[serde]
 async fn op_platform_install(
     state: Rc<RefCell<OpState>>,
-    #[serde] source: DepotSource,
+    #[string] path: String,
+    #[string] cache: Option<String>,
 ) -> Result<polymer_library::ArtifactSummary, JsErrorBox> {
     let (binding, path) = {
         let state = state.borrow();
         let binding = state.borrow::<PlatformBinding>().clone();
-        let path = binding.path(&state, &source)?;
+        let path = binding.path(&state, &path, cache.as_deref())?;
         (binding, path)
     };
     let events = state
@@ -80,8 +84,9 @@ async fn op_platform_install(
         .borrow::<Arc<crate::runtime::EventEmitter>>()
         .clone();
     let device = binding.target()?;
-    source
-        .install(device, &binding.manager, &path, |message| {
+    binding
+        .manager
+        .install(&device.platform, device.id, &path, |message| {
             events.publish(
                 "loadprogress",
                 json!({"state": "loading", "message": message}),

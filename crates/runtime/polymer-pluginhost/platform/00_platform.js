@@ -7,9 +7,9 @@ async function bootstrap(receiver, descriptor, context = {}) {
     ...descriptor,
     install(source) {
       pending = pending.then(() => {
-        if (typeof source === "string") return op_platform_install({ path: source });
+        if (typeof source === "string") return op_platform_install(source, null);
         const { key, path } = cacheFileLocation(source);
-        return op_platform_install({ cache: key, path });
+        return op_platform_install(path, key);
       });
       return pending;
     },
