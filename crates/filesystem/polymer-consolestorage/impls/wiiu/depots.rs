@@ -95,11 +95,6 @@ impl Depot for WiiUMetaXmlDepot {
     }
 
     fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> Result<(), Error> {
-        if nand.is_dirty()? {
-            return Err(Error::HistoryConflict(
-                "This NAND has uncommitted changes. Recover it in Console storage before installing.".into(),
-            ));
-        }
         if nand.platform() != "NINTENDO_WIIU" {
             return Err(Error::Unsupported(
                 "Depot belongs to a different platform".into(),
