@@ -7,21 +7,10 @@ use crate::{
     Storage, StorageFile,
 };
 
-pub(crate) struct CardImage {
-    file: MemoryFile,
-    reconcile: Reconcile,
-}
-
-impl CardImage {
-    fn reconcile(&self) -> Result<(), Error> {
-        let bytes = self.file.bytes();
-        (self.reconcile)(&bytes)
-    }
-}
-
 pub(crate) struct MemoryCardStorage<T: MemoryCard + 'static> {
     _backing: T,
-    image: Arc<CardImage>,
+    file: MemoryFile,
+    reconcile: Reconcile,
 }
 
 impl<T: MemoryCard + 'static> MemoryCardStorage<T> {
@@ -31,20 +20,18 @@ impl<T: MemoryCard + 'static> MemoryCardStorage<T> {
         bytes: Vec<u8>,
     ) -> Result<Self, Error> {
         let reconcile = card.reconcile(primary)?;
-        let image = Arc::new(CardImage {
-            file: MemoryFile::new(bytes),
-            reconcile,
-        });
         Ok(Self {
             _backing: card,
-            image,
+            file: MemoryFile::new(bytes),
+            reconcile,
         })
     }
 }
 
 impl<T: MemoryCard + 'static> crate::ReconciliableStorage for MemoryCardStorage<T> {
     fn reconcile(&self) -> Result<(), Error> {
-        self.image.reconcile()
+        let bytes = self.file.bytes();
+        (self.reconcile)(&bytes)
     }
 
     fn filter(_path: &str) -> bool {
@@ -69,7 +56,7 @@ impl<T: MemoryCard + 'static> Storage for MemoryCardStorage<T> {
         if !path.is_empty() {
             return Err(Error::not_found(path));
         }
-        Ok(self.image.file.metadata())
+        Ok(self.file.metadata())
     }
 
     fn read_dir(&self, _path: &str, _recursive: bool) -> Result<ReadDir<'_>, Error> {
@@ -88,7 +75,7 @@ impl<T: MemoryCard + 'static> Storage for MemoryCardStorage<T> {
         if !path.is_empty() {
             return Err(Error::not_found(path));
         }
-        let handle = self.image.file.handle(true);
+        let handle = self.file.handle(true);
         handle.set_len(0)?;
         Ok(handle)
     }
@@ -97,14 +84,14 @@ impl<T: MemoryCard + 'static> Storage for MemoryCardStorage<T> {
         if !path.is_empty() {
             return Err(Error::not_found(path));
         }
-        Ok(self.image.file.handle(write))
+        Ok(self.file.handle(write))
     }
 
     fn remove(&self, path: &str) -> Result<(), Error> {
         if !path.is_empty() {
             return Err(Error::not_found(path));
         }
-        self.image.file.handle(true).set_len(0)
+        self.file.handle(true).set_len(0)
     }
 
     fn install_file<'a>(
@@ -131,7 +118,7 @@ impl<T: MemoryCard + 'static> MountableStorage for MemoryCardStorage<T> {
         if !path.is_empty() {
             return Err(Error::not_found(path));
         }
-        self.image.file.handle(true).set_len(len)
+        self.file.handle(true).set_len(len)
     }
 
     fn sync(&self, path: &str) -> Result<(), Error> {
