@@ -55,7 +55,7 @@ pub trait Depot: Sized {
         Ok(Vec::new())
     }
 
-    /// Check whether the target NAND can accept this constructed depot.
+    /// Check whether the target NAND meets this depot's format and platform requirements.
     fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> Result<(), crate::Error>;
 
     /// Validate the contents of the depot.
@@ -65,6 +65,11 @@ pub trait Depot: Sized {
 
     /// Validate immediately before starting extraction, after the host persists keys.
     fn validate<N: VirtualNand + ?Sized>(&self, nand: &N, path: &Path) -> Result<(), crate::Error> {
+        if nand.is_dirty()? {
+            return Err(crate::Error::HistoryConflict(
+                "This NAND has uncommitted changes. Recover it in Console storage before installing.".into(),
+            ));
+        }
         self.satisfies(nand)?;
         let missing = self.validate_contents();
         if !missing.is_empty() {
