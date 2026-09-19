@@ -8,18 +8,18 @@ impl ShellCoordinator {
         prepared_filesystem: Option<polymer_vfs::PreparedFilesystemLaunch>,
         controller_session: Option<polymer_pluginhost::controller::ControllerSession>,
     ) -> Result<(), String> {
-        let mounted_filesystem = if let Some(prepared) = prepared_filesystem {
-            let host = polymer_vfs_winfsp::WinFspFilesystemHost::default();
-            match polymer_runtime::mount_prepared_filesystem(&host, prepared, &options.command) {
-                Ok(filesystem) => Some(filesystem),
-                Err(error) => {
-                    self.emit_instance_event(token, "error", &instance_events::error(&error));
-                    self.emit_instance_event(token, "closed", &serde_json::Value::Null);
-                    return Err(error);
-                }
+        let host = polymer_vfs_winfsp::WinFspFilesystemHost::default();
+        let mounted_filesystem = match prepared_filesystem
+            .ok_or_else(|| "guest launch requires a prepared virtual filesystem".to_owned())
+            .and_then(|prepared| {
+                polymer_runtime::mount_prepared_filesystem(&host, prepared, &options.command)
+            }) {
+            Ok(filesystem) => filesystem,
+            Err(error) => {
+                self.emit_instance_event(token, "error", &instance_events::error(&error));
+                self.emit_instance_event(token, "closed", &serde_json::Value::Null);
+                return Err(error);
             }
-        } else {
-            None
         };
         if self.game_host.has_active_game() {
             let error = "another emulator instance is active".to_owned();

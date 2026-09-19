@@ -31,13 +31,13 @@ pub use controllers::{
 pub use frontend::{ControllerApiState, FrontendCommands, FrontendServices};
 pub use instance::{
     AudioState, EmulatorActionEndpoint, EmulatorInstance, EmulatorLaunchConfig, HotkeyChord,
-    HotkeyKey, InstanceExit, InstanceState, LaunchError, NormalizedVolume, PresentedFrameToken,
+    InstanceExit, InstanceState, LaunchError, NormalizedVolume, PresentedFrameToken,
     ResizeDimensions, SurfaceError, SurfaceEvent, SurfaceEventReceiver, SurfaceFrameReceiver,
     SurfaceFrameUpdate, SurfaceOffer, SurfacePointerUpdate, TrackedSurfaceConfig,
     TrackedSurfaceHandle, TrackedSurfaceId,
 };
 pub use library::LibraryService;
-pub use polymer_pluginhost::emulator::{GraphicsHook, Hooks, InputHook};
+pub use polymer_platform::{GraphicsHook, GuestWindowId, Hooks, InputHook};
 pub use savestates::{RgbaScreenshot, SaveStateManager, SaveStateMetadata};
 pub use session::{SessionController, mount_prepared_filesystem};
 pub use storage::launch_storage;

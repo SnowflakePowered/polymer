@@ -23,7 +23,6 @@ serde_json.workspace = true
 polymer-config.workspace = true
 polymer-consolestorage = { path = "../../filesystem/polymer-consolestorage" }
 polymer-deno = { path = "../polymer-deno" }
-polymer-hook.workspace = true
 polymer-input.workspace = true
 
 polymer-controllers.workspace = true
@@ -31,19 +30,20 @@ polymer-input-bluetooth = { path = "../../input/polymer-input-bluetooth" }
 polymer-library.workspace = true
 polymer-scraping.workspace = true
 polymer-ipc = { workspace = true, features = ["input-host"] }
-polymer-platform-windows.workspace = true
+polymer-platform.workspace = true
 polymer-pluginhost = { path = "../polymer-pluginhost" }
 polymer-protocol.workspace = true
 polymer-statistics.workspace = true
 polymer-vfs.workspace = true
-tempfile.workspace = true
 thiserror.workspace = true
 tokio = { version = "1.53.0", features = ["macros", "net", "rt", "sync", "time"] }
 tracing.workspace = true
 url = "2"
 uuid = "1.24.1"
 watchable.workspace = true
-winapi = { version = "0.3.9", features = ["errhandlingapi"] }
+
+[target.'cfg(windows)'.dependencies]
+polymer-platform-windows.workspace = true
 
 [lints]
 workspace = true

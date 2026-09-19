@@ -5,6 +5,12 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+polymer-platform.workspace = true
+polymer-vfs.workspace = true
+polymer-input.workspace = true
+polymer-ipc = { workspace = true, features = ["input-host"] }
+tempfile.workspace = true
+tracing.workspace = true
 exe.workspace = true
 ib-hook.workspace = true
 parking_lot.workspace = true

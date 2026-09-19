@@ -35,3 +35,6 @@ mod fixed_window;
 pub use fixed_window::FixedWindowBinding;
 mod window_lifetime;
 pub use window_lifetime::WindowLifetime;
+
+mod guest;
+pub use guest::GuestPlatform;

@@ -25,7 +25,7 @@ struct ActiveSession {
     token: u32,
     instance: EmulatorInstance,
     audio: AudioState,
-    filesystem: Option<polymer_vfs::MountedFilesystem>,
+    filesystem: polymer_vfs::MountedFilesystem,
 }
 
 /// Owns the native emulator lifecycle independently from shell presentation.
@@ -57,7 +57,7 @@ impl SessionController {
         &mut self,
         token: u32,
         config: EmulatorLaunchConfig,
-        filesystem: Option<polymer_vfs::MountedFilesystem>,
+        filesystem: polymer_vfs::MountedFilesystem,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Result<(), String> {
         self.launch_with_input(token, config, filesystem, wake, |_| Ok(()))
@@ -67,27 +67,27 @@ impl SessionController {
         &mut self,
         token: u32,
         config: EmulatorLaunchConfig,
-        mut filesystem: Option<polymer_vfs::MountedFilesystem>,
+        filesystem: polymer_vfs::MountedFilesystem,
         wake: impl Fn() + Send + Sync + 'static,
         configure_input: impl FnOnce(polymer_ipc::input::host::InputIpcListener) -> Result<(), String>,
     ) -> Result<(), String> {
         if self.active.is_some() {
             return Err("another emulator instance is active".to_owned());
         }
-        let instance = match EmulatorInstance::launch_with_input(config, wake, configure_input) {
-            Ok(instance) => instance,
-            Err(error) => {
-                let mut message = error.to_string();
-                if let Some(filesystem) = filesystem.take()
-                    && let Err(finalization) =
+        let instance =
+            match EmulatorInstance::launch_with_input(config, &filesystem, wake, configure_input) {
+                Ok(instance) => instance,
+                Err(error) => {
+                    let mut message = error.to_string();
+                    if let Err(finalization) =
                         filesystem.finish(polymer_vfs::FinalizationReason::LaunchFailed)
-                {
-                    message.push_str("; filesystem finalization failed: ");
-                    message.push_str(&finalization.to_string());
+                    {
+                        message.push_str("; filesystem finalization failed: ");
+                        message.push_str(&finalization.to_string());
+                    }
+                    return Err(message);
                 }
-                return Err(message);
-            }
-        };
+            };
         let audio = instance.audio_state();
         self.active = Some(ActiveSession {
             token,
@@ -145,22 +145,21 @@ impl SessionController {
         &mut self,
         reason: polymer_vfs::FinalizationReason,
     ) -> Result<Option<u32>, String> {
-        let Some(mut active) = self.active.take() else {
+        let Some(active) = self.active.take() else {
             return Ok(None);
         };
         let token = active.token;
         drop(active.instance);
-        if let Some(filesystem) = active.filesystem.take() {
-            if let Ok(path) = polymer_vfs::VfsPathBuf::new("/User/Logs/dolphin.log") {
-                let projected = filesystem.endpoint().project(path.as_path());
-                if let Ok(log) = std::fs::read_to_string(projected) {
-                    tracing::info!("polymer: Dolphin log before unmount:\n{log}");
-                }
+        let filesystem = active.filesystem;
+        if let Ok(path) = polymer_vfs::VfsPathBuf::new("/User/Logs/dolphin.log") {
+            let projected = filesystem.endpoint().project(path.as_path());
+            if let Ok(log) = std::fs::read_to_string(projected) {
+                tracing::info!("polymer: Dolphin log before unmount:\n{log}");
             }
-            filesystem
-                .finish(reason)
-                .map_err(|error| error.to_string())?;
         }
+        filesystem
+            .finish(reason)
+            .map_err(|error| error.to_string())?;
         Ok(Some(token))
     }
 }

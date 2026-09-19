@@ -1,18 +1,5 @@
 use crate::ProcessId;
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ProcessArchitecture {
-    X86_64,
-    Arm64,
-}
-
-impl ProcessArchitecture {
-    pub const fn executable_suffix(self) -> &'static str {
-        match self {
-            Self::X86_64 => "x86_64",
-            Self::Arm64 => "arm64",
-        }
-    }
-}
+pub use polymer_platform::ProcessArchitecture;
 
 pub fn executable_architecture(path: &std::path::Path) -> std::io::Result<ProcessArchitecture> {
     use exe::{ImageFileMachine, NTHeaders, PE, VecPE};

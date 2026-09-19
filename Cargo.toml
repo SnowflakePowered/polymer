@@ -107,6 +107,7 @@ polymer-ipc = { path = "crates/runtime/polymer-ipc" }
 polymer-egui = { path = "crates/consumer/polymer-egui" }
 polymer-statistics = { path = "crates/runtime/polymer-statistics" }
 polymer-ui = { path = "crates/runtime/polymer-ui" }
+polymer-platform = { path = "crates/runtime/polymer-platform" }
 polymer-platform-windows = { path = "crates/runtime/polymer-platform-windows" }
 polymer-automation = { path = "crates/runtime/polymer-automation" }
 polymer-input = { path = "crates/input/polymer-input" }

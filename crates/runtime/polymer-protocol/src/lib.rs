@@ -295,3 +295,6 @@ impl PresentationTransform {
 fn fixed_unsigned(value: u64) -> i64 {
     (value as i64) << PRESENTATION_COORD_FRACTIONAL_BITS
 }
+
+mod hooks;
+pub use hooks::{GraphicsHook, Hooks, InputHook};
