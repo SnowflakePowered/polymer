@@ -50,14 +50,17 @@ impl Ingestor {
     pub async fn import(
         engine: &ScrapingEngine,
         packages: Vec<Package>,
-    ) -> Result<Vec<(Launchable, polymer_library::ScrapeJob)>, ScrapingError> {
+    ) -> Result<Vec<(Launchable, Option<polymer_library::ScrapeJob>)>, ScrapingError> {
         let mut imported = Vec::new();
         for package in packages {
-            let (launchable, _) = package.import(engine.catalog()).await?;
+            let (launchable, created) = package.import(engine.catalog()).await?;
             let root = launchable.parent_binary_id.unwrap_or(launchable.binary_id);
             engine.publish_library_content(root);
-            // Re-imports and child discs need finalization too, even with no scrapers.
-            let job = engine.enqueue(root, launchable.binary_id).await?;
+            let job = if created {
+                Some(engine.enqueue(root, launchable.binary_id).await?)
+            } else {
+                None
+            };
             imported.push((launchable, job));
         }
         Ok(imported)

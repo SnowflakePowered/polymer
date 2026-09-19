@@ -207,7 +207,7 @@ impl GameCatalog {
     }
 
     /// Imports a launchable and replaces its host-produced seed metadata in one transaction.
-    /// The boolean is true only when this created a new root binary.
+    /// The boolean is true when this created a new binary, including a child disc.
     pub async fn import_launchable_seeded(
         &self,
         input: IdentifiedLaunchable,
@@ -319,7 +319,6 @@ impl GameCatalog {
         transaction.commit().await?;
         replaced_objects.extend(reassigned_objects);
         self.collect_objects(replaced_objects).await;
-        let created_root = !binary_existed && input.parent_binary_id.is_none();
         Ok((
             Launchable {
                 manifest,
@@ -332,7 +331,7 @@ impl GameCatalog {
                 parent_binary_id: input.parent_binary_id,
                 platform: input.platform,
             },
-            created_root,
+            !binary_existed,
         ))
     }
 
@@ -429,8 +428,8 @@ impl GameCatalog {
                 ).await?;
                 connection.execute_batch(SCHEMA).await?;
             }
-            2 | 3 => connection.execute_batch(SCHEMA).await?,
-            4 => {}
+            2 | 3 | 4 => connection.execute_batch(SCHEMA).await?,
+            5 => {}
             version => {
                 return Err(GameCatalogError::InvalidData(format!(
                     "library database schema version {version} is not supported"

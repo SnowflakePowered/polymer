@@ -76,7 +76,9 @@ impl CuePreparation {
         )
         .to_hex()
         .to_string();
-        Self::validate_files(&manifest)?;
+        if let Err(error) = Self::finalize(&mut manifest) {
+            manifest.error = Some(error.to_string());
+        }
         Ok(Some(manifest))
     }
 

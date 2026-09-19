@@ -89,13 +89,9 @@ export class LibraryState {
         });
         return;
       }
-      for (const { launchable, scrapeJob } of result.imports) {
-        const job = scrapeJob ?? await this.scraping.jobs.start(
-          launchable.parentBinaryId ?? launchable.binaryId,
-          { triggerBinaryId: launchable.binaryId },
-        );
+      for (const { scrapeJob: job } of result.imports) {
         // Notifications may already have advanced beyond the enqueue response.
-        if (!this.jobs.has(job.id)) this.updateJob(job, true);
+        if (job && !this.jobs.has(job.id)) this.updateJob(job, true);
       }
       this.refresh();
     } catch (error) {

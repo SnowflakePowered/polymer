@@ -130,7 +130,7 @@ impl GameCatalog {
                 "scrape trigger does not belong to the root game".to_owned(),
             ));
         }
-        let mut existing = transaction.query("SELECT id FROM scrape_jobs WHERE root_binary_id = ?1 AND state IN ('queued', 'running') LIMIT 1", [Self::id(root)]).await?;
+        let mut existing = transaction.query("SELECT id FROM scrape_jobs WHERE root_binary_id = ?1 AND trigger_binary_id = ?2 AND state IN ('queued', 'running') LIMIT 1", [Self::id(root), Self::id(trigger)]).await?;
         if let Some(row) = existing.next().await? {
             let id = Self::uuid(row.get_value(0)?)?;
             drop(existing);
