@@ -4,7 +4,7 @@ use polymer_library::{
     MetadataValue, ScrapeJobState,
 };
 use polymer_pluginhost::loading::PluginRegistry;
-use polymer_scraping::{ScrapingEngine, ScrapingEvent};
+use polymer_scraping::{Ingestor, Package, ScrapingEngine, ScrapingEvent};
 use std::{sync::Arc, time::Duration};
 
 #[tokio::test(flavor = "current_thread")]
@@ -141,4 +141,132 @@ async fn successful_plugins_commit_repeated_values_and_publish_events() {
         saw_running_attempt,
         "themes must be notified when a scraper starts"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn child_packages_keep_their_own_identity_and_scrape_results() {
+    let directory = tempfile::tempdir().unwrap();
+    let plugin = tempfile::tempdir().unwrap();
+    std::fs::write(
+        plugin.path().join("plugin.toml"),
+        r#"
+          [plugin]
+          id = "identity"
+          version = "1"
+          class = "scraper"
+          main = "identity.js"
+
+          [scraper]
+          requires = ["package"]
+          provides = ["meta.description"]
+        "#,
+    )
+    .unwrap();
+    std::fs::write(
+        plugin.path().join("identity.js"),
+        r#"
+          export async function* onScrape(input) {
+            for (const package_ of input.packages) {
+              yield {
+                key: "meta.description",
+                value: await package_.binary.digest("blake3"),
+                source: "Package identity",
+              };
+            }
+          }
+        "#,
+    )
+    .unwrap();
+    let catalog = Arc::new(
+        GameCatalog::open(
+            directory.path().join("library.db"),
+            Arc::new(InMemory::new()),
+        )
+        .await
+        .unwrap(),
+    );
+    let mut launchables = Vec::new();
+    let mut parent = None;
+    for (name, contents) in [("root.nes", 1), ("child.nes", 2)] {
+        let path = directory.path().join(name);
+        let mut image = vec![0; 16];
+        image[..4].copy_from_slice(b"NES\x1a");
+        image[4] = 1;
+        image.extend(vec![contents; 16 * 1024]);
+        std::fs::write(&path, image).unwrap();
+        let package = Package::identify(&path, None, parent).unwrap();
+        let (launchable, created) = package.import(&catalog).await.unwrap();
+        assert!(created, "each newly identified binary needs a scrape");
+        parent = Some(launchable.parent_binary_id.unwrap_or(launchable.binary_id));
+        launchables.push(launchable);
+    }
+    let root = launchables[0].binary_id;
+    assert_ne!(root, launchables[1].binary_id);
+    assert_eq!(launchables[1].parent_binary_id, Some(root));
+
+    // Both requests are pending before workers start: a child must not be
+    // coalesced into the root's job or overwrite its eventual metadata.
+    let mut jobs = Vec::new();
+    for launchable in &launchables {
+        let (job, _) = catalog
+            .queue_scrape(root, launchable.binary_id, &["identity".to_owned()])
+            .await
+            .unwrap();
+        jobs.push(job);
+    }
+    let registry = PluginRegistry::new();
+    registry.load(plugin.path()).unwrap();
+    let engine = ScrapingEngine::new(
+        catalog.clone(),
+        registry,
+        polymer_library::Directories::rooted(directory.path(), directory.path()),
+    );
+    engine.resume().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        for job in &jobs {
+            loop {
+                let current = catalog.scrape_job(job.id).await.unwrap().unwrap();
+                match current.state {
+                    ScrapeJobState::Completed => break,
+                    ScrapeJobState::Queued | ScrapeJobState::Running => {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    _ => panic!("scrape failed: {current:?}"),
+                }
+            }
+        }
+    })
+    .await
+    .expect("root and child scrapes did not complete");
+
+    for launchable in &launchables {
+        let descriptions = catalog
+            .metadata(launchable.binary_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|value| value.producer == "scraper:identity")
+            .collect::<Vec<_>>();
+        assert_eq!(descriptions.len(), 1);
+        let digest =
+            blake3::Hash::from_bytes(launchable.binary_blake3.as_ref().try_into().unwrap());
+        assert_eq!(
+            descriptions[0].data,
+            MetadataData::Scalar(MetadataValue::String(digest.to_hex().to_string()))
+        );
+        let package =
+            Package::identify(&launchable.path, None, launchable.parent_binary_id).unwrap();
+        let imported = Ingestor::import(&engine, vec![package]).await.unwrap();
+        assert!(imported[0].1.is_none());
+    }
+    let game = catalog.game(root).await.unwrap().unwrap();
+    assert_eq!(game.launchables.len(), 2);
+    assert_eq!(
+        game.metadata
+            .iter()
+            .filter(|value| value.producer == "scraper:identity")
+            .count(),
+        2
+    );
+    assert_eq!(catalog.scrape_jobs().await.unwrap().len(), 2);
 }

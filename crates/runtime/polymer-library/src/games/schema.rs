@@ -63,7 +63,8 @@ CREATE INDEX IF NOT EXISTS launchables_binary ON launchables(binary_id);
 CREATE INDEX IF NOT EXISTS metadata_parent ON metadata(parent_binary_id, key, source, ordinal);
 CREATE INDEX IF NOT EXISTS metadata_producer ON metadata(parent_binary_id, producer);
 CREATE INDEX IF NOT EXISTS metadata_object ON metadata(object_blake3);
-CREATE UNIQUE INDEX IF NOT EXISTS scrape_jobs_active ON scrape_jobs(root_binary_id) WHERE state IN ('queued', 'running');
+DROP INDEX IF EXISTS scrape_jobs_active;
+CREATE UNIQUE INDEX IF NOT EXISTS scrape_jobs_active_binary ON scrape_jobs(root_binary_id, trigger_binary_id) WHERE state IN ('queued', 'running');
 CREATE INDEX IF NOT EXISTS scrape_jobs_root ON scrape_jobs(root_binary_id, created_at DESC);
 CREATE TABLE IF NOT EXISTS launchable_configurations (
     launchable_id BLOB NOT NULL REFERENCES launchables(id) ON DELETE CASCADE,
@@ -77,5 +78,5 @@ CREATE TABLE IF NOT EXISTS launchable_manifests (
     revision TEXT NOT NULL,
     manifest_json TEXT NOT NULL
 ) STRICT;
-PRAGMA user_version = 4;
+PRAGMA user_version = 5;
 "#;

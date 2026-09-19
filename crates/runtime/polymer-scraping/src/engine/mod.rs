@@ -1,4 +1,3 @@
-mod finalize;
 mod media;
 
 use polymer_library::{
@@ -145,7 +144,7 @@ impl ScrapingEngine {
     }
 
     pub async fn enqueue(&self, root: Uuid, trigger: Uuid) -> Result<ScrapeJob, ScrapingError> {
-        let input = self.input(root, trigger).await?;
+        let input = self.input(trigger).await?;
         let plugins = self
             .scrapers()
             .iter()
@@ -176,19 +175,6 @@ impl ScrapingEngine {
 
     pub async fn resume(&self) -> Result<(), ScrapingError> {
         let jobs = self.inner.catalog.recover_scrape_jobs().await?;
-        let active: std::collections::BTreeSet<_> =
-            jobs.iter().map(|job| job.root_binary_id).collect();
-        let pending: std::collections::BTreeSet<_> = self
-            .inner
-            .catalog
-            .pending_manifests(None)
-            .await?
-            .into_iter()
-            .map(|(_, root, _)| root)
-            .collect();
-        for root in pending.difference(&active) {
-            self.finalize_packages(Some(*root)).await?;
-        }
         for job in jobs {
             let engine = self.clone();
             tokio::spawn(async move {
@@ -247,10 +233,6 @@ impl ScrapingEngine {
             }
         };
         self.inner.catalog.set_scrape_job_state(id, state).await?;
-        let job = self.inner.catalog.scrape_job(id).await?;
-        if let Some(job) = job {
-            self.finalize_packages(Some(job.root_binary_id)).await?;
-        }
         self.publish_job(id).await;
         outcome.map(|_| ())
     }
@@ -262,9 +244,7 @@ impl ScrapingEngine {
             .scrape_job(id)
             .await?
             .ok_or_else(|| GameCatalogError::NotFound(id.simple().to_string()))?;
-        let input = self
-            .input(job.root_binary_id, job.trigger_binary_id)
-            .await?;
+        let input = self.input(job.trigger_binary_id).await?;
         let mut tasks = tokio::task::JoinSet::new();
         let already_completed = job
             .attempts
@@ -287,7 +267,9 @@ impl ScrapingEngine {
                     .await?;
                 tracing::info!(job = %id, scraper = %plugin, "scraper started");
                 engine.publish_job(id).await;
-                let result = engine.run_plugin(job.root_binary_id, &plugin, input).await;
+                let result = engine
+                    .run_plugin(job.root_binary_id, job.trigger_binary_id, &plugin, input)
+                    .await;
                 match &result {
                     Ok(()) => {
                         tracing::info!(job = %id, scraper = %plugin, "scraper completed");
@@ -351,12 +333,9 @@ impl ScrapingEngine {
         }
     }
 
-    async fn input(&self, root: Uuid, trigger: Uuid) -> Result<ScrapeInput, ScrapingError> {
+    async fn input(&self, binary: Uuid) -> Result<ScrapeInput, ScrapingError> {
         let mut input = BTreeMap::<String, Vec<ScrapeCandidate>>::new();
-        let mut metadata = self.inner.catalog.metadata(root).await?;
-        if trigger != root {
-            metadata.extend(self.inner.catalog.metadata(trigger).await?);
-        }
+        let metadata = self.inner.catalog.metadata(binary).await?;
         for value in metadata {
             // Old catalogs may still contain eagerly imported hash metadata.
             if value.key.starts_with("package.hash.") || value.key == "package.size" {
@@ -377,10 +356,7 @@ impl ScrapingEngine {
                 value: scalar,
             });
         }
-        let mut launchables = self.inner.catalog.launchables_for_binary(root).await?;
-        if trigger != root {
-            launchables.extend(self.inner.catalog.launchables_for_binary(trigger).await?);
-        }
+        let launchables = self.inner.catalog.launchables_for_binary(binary).await?;
         let packages = tokio::task::spawn_blocking(move || {
             launchables
                 .into_iter()
@@ -401,6 +377,7 @@ impl ScrapingEngine {
     async fn run_plugin(
         &self,
         root: Uuid,
+        binary: Uuid,
         plugin: &str,
         input: ScrapeInput,
     ) -> Result<(), ScrapingError> {
@@ -435,7 +412,7 @@ impl ScrapingEngine {
         let inputs = self.stage_media(results, temporary.path()).await?;
         self.inner
             .catalog
-            .replace_metadata(root, &format!("scraper:{plugin}"), inputs)
+            .replace_metadata(binary, &format!("scraper:{plugin}"), inputs)
             .await?;
         self.publish_library_content(root);
         Ok(())

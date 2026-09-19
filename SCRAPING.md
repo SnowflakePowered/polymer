@@ -35,6 +35,14 @@ Library launchables also expose `digest()` and `binary.digest()`, replacing
 `binaryBlake3`. Prepared configuration arguments preserve these methods when
 passed back to a plugin.
 
+Every newly imported binary, including a child disc, follows the same scrape
+pipeline. A job uses only that binary's metadata and launchable packages and
+stores its results on that binary. The catalog combines root and child metadata
+when presenting a game. Active requests are deduplicated per root and triggering
+binary, so importing a child cannot be swallowed by its parent's active scrape.
+Unchanged reimports refresh host metadata and package preparation without starting
+another scrape; explicit scrape and retry requests remain available.
+
 The old `package.binaryDigest` property and `package.hash.*` / `package.size`
 scalar inputs are removed. Legacy hash metadata is filtered from scraper input
 and cleared on reimport. Identifying a package no longer hashes its binary;
@@ -105,13 +113,13 @@ sheet, member paths, sizes, and modification signatures on the launchable. The
 normalized executable digest remains the binary identity. Raw dump fingerprints
 are requested lazily from constituent file objects, independently of the CUE text.
 
-After metadata scraping settles, the host parses the saved sheet with `cuna` and
-stores a template whose FILE and CDTEXTFILE operands refer to manifest members.
+During identification, the host parses the captured sheet with `cuna` and
+builds a template whose FILE and CDTEXTFILE operands refer to manifest members.
 Original formatting, comments, track types, and indexes are retained. Preparation
-is independent of metadata scrape success; errors are exposed as
-`launchable.preparation`. Pending manifests recover on startup, including imports
-interrupted before a scrape was queued. Revision-checked writes prevent stale
-finalizers from replacing a re-imported manifest.
+is independent of metadata scraping; the template or preparation error is stored
+atomically with the launchable during import and exposed as
+`launchable.preparation`. Older pending manifests can still be prepared at launch
+or refreshed by reimporting the package.
 
 At launch, the host checks member availability and modification signatures and
 renders a CUE using deterministic filenames. Emulator plugins call

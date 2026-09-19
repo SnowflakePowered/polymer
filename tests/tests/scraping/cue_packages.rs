@@ -1,6 +1,5 @@
 use polymer_library::GameCatalog;
-use polymer_pluginhost::loading::PluginRegistry;
-use polymer_scraping::{Ingestor, Package, ScrapingEngine};
+use polymer_scraping::{Ingestor, Package};
 use std::{path::PathBuf, sync::Arc};
 
 /// Read-only integration against local dumps, never checked into the repository.
@@ -35,14 +34,12 @@ async fn complete_disc_identifies_imports_and_prepares_without_track_launchables
     let (same, created) = explicit.import(&catalog).await.unwrap();
     assert_eq!(same.id, first.id);
     assert!(!created);
-    let engine = ScrapingEngine::new(
-        catalog.clone(),
-        PluginRegistry::new(),
-        polymer_library::Directories::rooted(directory.path(), directory.path()),
-    );
-    engine.resume().await.unwrap();
     let stored = catalog.launchable(first.id).await.unwrap();
     let manifest = stored.manifest.as_ref().unwrap();
+    assert!(
+        manifest.template.is_some(),
+        "import must persist a prepared descriptor"
+    );
     for member in &manifest.files {
         if member.name.to_ascii_lowercase().ends_with(".bin") {
             assert!(
