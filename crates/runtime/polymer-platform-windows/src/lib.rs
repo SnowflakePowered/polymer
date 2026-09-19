@@ -1,28 +1,24 @@
 //! Windows-specific handle, process, desktop, timing, and window utilities.
 
-mod audio;
 mod automation;
 mod desktop;
 mod detour;
 mod handles;
 mod isolation;
 mod process;
-mod target;
 mod timing;
 mod types;
 mod window;
 
-pub use audio::{ProcessAudioState, process_audio_state, set_process_audio};
 pub use automation::WindowsAutomationDriver;
 pub use desktop::{DesktopThreadAttachment, PrivateDesktop};
 pub use detour::{InlineDetour, call_original};
 pub use handles::duplicate_handle_into_process;
-pub use isolation::{IsolatedProcess, KillOnCloseJob};
+pub use isolation::KillOnCloseJob;
 pub use process::{
     ProcessArchitecture, executable_architecture, process_architecture, process_tree_ids,
     resume_initial_thread,
 };
-pub use target::{InjectionLibrary, ProcessWaitHandle, TargetProcess, architecture_artifact_dir};
 pub use timing::{performance_counter, performance_frequency};
 pub use types::{NativeWindow, ProcessId};
 pub use window::{

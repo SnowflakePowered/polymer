@@ -1,22 +1,23 @@
 //! Windows implementation of the native guest session.
 
 mod audio;
+mod injection;
 mod launch;
+mod process;
+mod target;
 
 use self::audio::AudioWorker;
-use crate::{NativeWindow, TargetProcess, client_size, keyboard_code};
+use self::target::TargetProcess;
+use crate::{NativeWindow, client_size, keyboard_code};
 use polymer_input::{HostInputEvent, KeyCode};
 use polymer_ipc::{Message, input::host::InputIpcListener};
 use polymer_platform::{
     AudioState, Guest, GuestInput, GuestWindowId, HotkeyChord, NormalizedVolume,
-    ProcessArchitecture, ProcessExit, ProcessExitReceiver, ProcessId, ResizeDimensions,
+    ProcessArchitecture, ProcessExitReceiver, ProcessId, ResizeDimensions,
 };
 use std::{
     io,
-    sync::{
-        atomic::{AtomicU32, Ordering},
-        mpsc,
-    },
+    sync::atomic::{AtomicU32, Ordering},
     thread,
     time::{Duration, Instant},
 };
@@ -36,7 +37,7 @@ struct WindowsGuest {
 
 impl WindowsGuest {
     fn new(process: TargetProcess, input: InputIpcListener) -> io::Result<Self> {
-        let process_id = ProcessId(process.id());
+        let process_id = ProcessId(process.child.id());
         let audio = match AudioWorker::spawn(process_id) {
             Ok(audio) => audio,
             Err(error) => {
@@ -45,7 +46,7 @@ impl WindowsGuest {
             }
         };
         Ok(Self {
-            architecture: process.architecture(),
+            architecture: process.architecture,
             process: Some(process),
             process_id,
             input,
@@ -114,18 +115,7 @@ impl Guest for WindowsGuest {
             .process
             .as_ref()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "guest has exited"))?;
-        let wait = process.wait_handle()?;
-        let (sender, receiver) = mpsc::channel();
-        thread::Builder::new()
-            .name("polymer-windows-process-wait".to_owned())
-            .spawn(move || {
-                let exit = wait
-                    .wait()
-                    .and_then(|()| wait.exit_code())
-                    .map(|code| ProcessExit::Exited { code });
-                let _ = sender.send(exit);
-            })?;
-        Ok(receiver)
+        process.child.subscribe_exit()
     }
 
     fn window_dimensions(&self, window: GuestWindowId) -> io::Result<ResizeDimensions> {
