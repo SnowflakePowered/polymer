@@ -5,14 +5,13 @@ use crate::{
 };
 use crossfire::{MRx, MTx, mpmc, oneshot::TxOneshot};
 use dashmap::{DashMap, DashSet};
-use parking_lot::{Condvar, Mutex, RwLock};
+use parking_lot::{Mutex, RwLock};
 use polymer_input::{HostInputEvent, HostPointerInput};
+use polymer_ipc::StreamReady;
 use polymer_ipc::input::host::InputIpcListener;
-use polymer_ipc::{Message, StreamReady};
-use polymer_platform_windows::{
-    NativeWindow, ProcessId, ProcessWaitHandle, TargetProcess, client_size, process_audio_state,
-    process_tree_ids, set_process_audio,
-};
+pub use polymer_platform::{AudioState, HotkeyChord, NormalizedVolume, ResizeDimensions};
+use polymer_platform::{Guest, GuestInput, GuestWindowId, ProcessExitReceiver};
+
 use polymer_protocol::{
     ExternalImageKind, FrameReady,
     input::{PointerPhase, PointerSource},
@@ -26,7 +25,7 @@ use std::{
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     },
     thread::{self, JoinHandle},
-    time::{Duration, Instant},
+    time::Duration,
 };
 use watchable::{TimeoutError, Watchable, Watcher};
 
@@ -150,45 +149,6 @@ pub enum InstanceState {
     Exited(InstanceExit),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct NormalizedVolume(f32);
-
-impl NormalizedVolume {
-    pub fn new(value: f32) -> Option<Self> {
-        value.is_finite().then_some(Self(value.clamp(0.0, 1.0)))
-    }
-
-    pub const fn get(self) -> f32 {
-        self.0
-    }
-}
-
-impl Default for NormalizedVolume {
-    fn default() -> Self {
-        Self(1.0)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct AudioState {
-    pub available: bool,
-    pub volume: NormalizedVolume,
-    pub muted: bool,
-    pub active_sessions: usize,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ResizeDimensions {
-    pub width: u32,
-    pub height: u32,
-}
-
-impl ResizeDimensions {
-    pub const fn new(width: u32, height: u32) -> Self {
-        Self { width, height }
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct PresentedFrameToken {
     generation: u64,
@@ -274,19 +234,6 @@ pub struct SurfacePointerUpdate {
     pub timestamp: u32,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct HotkeyKey {
-    pub virtual_key: u32,
-    pub scan_code: u16,
-    pub extended: bool,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct HotkeyChord {
-    pub modifiers: Vec<HotkeyKey>,
-    pub key: HotkeyKey,
-}
-
 #[derive(Clone)]
 pub struct EmulatorActionEndpoint {
     lifecycle: Arc<InstanceLifecycle>,
@@ -294,11 +241,6 @@ pub struct EmulatorActionEndpoint {
 
 impl EmulatorActionEndpoint {
     pub fn activate_keyboard(&self, code: &str, modifiers: &[String]) -> Result<(), String> {
-        let key = Self::keyboard_key(code)?;
-        let modifiers = modifiers
-            .iter()
-            .map(|code| Self::keyboard_key(code))
-            .collect::<Result<Vec<_>, _>>()?;
         let surface = self
             .lifecycle
             .surfaces
@@ -308,7 +250,10 @@ impl EmulatorActionEndpoint {
             .map(|surface| surface.value().handle.clone())
             .ok_or_else(|| "emulator action has no active target surface".to_owned())?;
         surface
-            .send_hotkey(&HotkeyChord { modifiers, key })
+            .send_hotkey(&HotkeyChord {
+                modifiers: modifiers.to_vec(),
+                key: code.to_owned(),
+            })
             .map_err(|error| error.to_string())
     }
 
@@ -329,16 +274,6 @@ impl EmulatorActionEndpoint {
             .input
             .activate_buttons(polymer_input::PlayerIndex::new(player), buttons)
     }
-
-    fn keyboard_key(code: &str) -> Result<HotkeyKey, String> {
-        let (virtual_key, scan_code, extended) = polymer_platform_windows::keyboard_code(code)
-            .ok_or_else(|| format!("unknown KeyboardEvent code '{code}'"))?;
-        Ok(HotkeyKey {
-            virtual_key,
-            scan_code,
-            extended,
-        })
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -353,10 +288,8 @@ struct SurfaceSnapshot {
 
 struct SurfaceShared {
     snapshot: RwLock<SurfaceSnapshot>,
-    input: InputIpcListener,
+    guest: Weak<Mutex<Option<Box<dyn Guest>>>>,
     frames: RwLock<Watchable<Option<FrameReady>>>,
-    sequence: AtomicU32,
-    started: Instant,
 }
 
 #[derive(Clone)]
@@ -374,9 +307,9 @@ impl TrackedSurfaceHandle {
         self.snapshot().backend
     }
 
-    pub fn target_window(&self) -> Option<NativeWindow> {
+    pub fn target_window(&self) -> Option<GuestWindowId> {
         let window = self.snapshot().target_window;
-        (window != 0).then_some(NativeWindow(window as isize))
+        (window != 0).then_some(GuestWindowId(window))
     }
 
     pub fn transport_dimensions(&self) -> ResizeDimensions {
@@ -385,8 +318,17 @@ impl TrackedSurfaceHandle {
 
     pub fn window_dimensions(&self) -> Result<ResizeDimensions, SurfaceError> {
         let window = self.target_window().ok_or(SurfaceError::Unavailable)?;
-        let (width, height) = client_size(window).ok_or(SurfaceError::Unavailable)?;
-        Ok(ResizeDimensions::new(width, height))
+        let guest = self
+            .shared
+            .guest
+            .upgrade()
+            .ok_or(SurfaceError::Unavailable)?;
+        let guard = guest.lock();
+        guard
+            .as_ref()
+            .ok_or(SurfaceError::Unavailable)?
+            .window_dimensions(window)
+            .map_err(SurfaceError::Io)
     }
 
     pub fn subscribe_frames(&self) -> SurfaceFrameReceiver {
@@ -408,52 +350,63 @@ impl TrackedSurfaceHandle {
         self.validate_active_generation(&snapshot, frame.generation)?;
         let width = f64::from(update.coordinate_width.max(1));
         let height = f64::from(update.coordinate_height.max(1));
-        self.shared
-            .input
-            .publish_host(HostInputEvent::Pointer(HostPointerInput {
-                surface_id: snapshot.protocol_surface_id,
-                target_window: snapshot.target_window,
-                source: update.source as u8,
-                phase: update.phase as u8,
-                pointer_id: update.pointer_id,
-                x: update.x,
-                y: update.y,
-                coordinate_width: update.coordinate_width,
-                coordinate_height: update.coordinate_height,
-                button: update.button,
-                position: [f64::from(update.x) / width, f64::from(update.y) / height],
-                delta: [0.0; 2],
-                buttons: update.buttons,
-                wheel_horizontal: update.wheel_horizontal,
-                wheel_vertical: update.wheel_vertical,
-                timestamp_ms: update.timestamp,
-            }));
+        let guest = self
+            .shared
+            .guest
+            .upgrade()
+            .ok_or(SurfaceError::Unavailable)?;
+        let guard = guest.lock();
+        let guest = guard.as_ref().ok_or(SurfaceError::Unavailable)?;
+        guest
+            .send_input(GuestInput::Host(HostInputEvent::Pointer(
+                HostPointerInput {
+                    surface_id: snapshot.protocol_surface_id,
+                    target_window: snapshot.target_window,
+                    source: update.source as u8,
+                    phase: update.phase as u8,
+                    pointer_id: update.pointer_id,
+                    x: update.x,
+                    y: update.y,
+                    coordinate_width: update.coordinate_width,
+                    coordinate_height: update.coordinate_height,
+                    button: update.button,
+                    position: [f64::from(update.x) / width, f64::from(update.y) / height],
+                    delta: [0.0; 2],
+                    buttons: update.buttons,
+                    wheel_horizontal: update.wheel_horizontal,
+                    wheel_vertical: update.wheel_vertical,
+                    timestamp_ms: update.timestamp,
+                },
+            )))
+            .map_err(SurfaceError::Io)?;
         if update.wheel_horizontal != 0 || update.wheel_vertical != 0 {
-            self.shared.input.publish_host(HostInputEvent::Wheel {
-                horizontal: update.wheel_horizontal,
-                vertical: update.wheel_vertical,
-            });
+            guest
+                .send_input(GuestInput::Host(HostInputEvent::Wheel {
+                    horizontal: update.wheel_horizontal,
+                    vertical: update.wheel_vertical,
+                }))
+                .map_err(SurfaceError::Io)?;
         }
         Ok(())
     }
 
     pub fn send_hotkey(&self, chord: &HotkeyChord) -> Result<(), SurfaceError> {
-        const HOLD_TIME: std::time::Duration = std::time::Duration::from_millis(50);
         let snapshot = self.snapshot();
         self.validate_active_generation(&snapshot, snapshot.generation)?;
-        for key in &chord.modifiers {
-            self.send_raw_key(&snapshot, *key, true)?;
-        }
-        let result = self
-            .send_raw_key(&snapshot, chord.key, true)
-            .and_then(|()| {
-                std::thread::sleep(HOLD_TIME);
-                self.send_raw_key(&snapshot, chord.key, false)
-            });
-        for key in chord.modifiers.iter().rev() {
-            let _ = self.send_raw_key(&snapshot, *key, false);
-        }
-        result
+        let guest = self
+            .shared
+            .guest
+            .upgrade()
+            .ok_or(SurfaceError::Unavailable)?;
+        let guard = guest.lock();
+        guard
+            .as_ref()
+            .ok_or(SurfaceError::Unavailable)?
+            .send_input(GuestInput::Hotkey {
+                window: GuestWindowId(snapshot.target_window),
+                chord: chord.clone(),
+            })
+            .map_err(SurfaceError::Io)
     }
 
     pub fn resize_window(&self, dimensions: ResizeDimensions) -> Result<(), SurfaceError> {
@@ -462,35 +415,17 @@ impl TrackedSurfaceHandle {
         }
         let snapshot = self.snapshot();
         self.validate_active_generation(&snapshot, snapshot.generation)?;
-        self.shared
-            .input
-            .send_control(Message::ResizeWindow(polymer_protocol::ResizeWindow {
-                target_window: snapshot.target_window,
-                width: dimensions.width,
-                height: dimensions.height,
-            }))
-            .then_some(())
-            .ok_or(SurfaceError::Unavailable)
-    }
-
-    fn send_raw_key(
-        &self,
-        snapshot: &SurfaceSnapshot,
-        key: HotkeyKey,
-        pressed: bool,
-    ) -> Result<(), SurfaceError> {
-        self.shared.input.publish_host_action(HostInputEvent::Key {
-            code: polymer_input::KeyCode::new("hotkey"),
-            virtual_key: key.virtual_key as u16,
-            scan_code: key.scan_code,
-            pressed,
-            repeat: false,
-            extended: key.extended,
-            target_window: snapshot.target_window,
-            timestamp_ms: self.shared.started.elapsed().as_millis() as u32,
-            sequence: self.next_sequence(),
-        });
-        Ok(())
+        let guest = self
+            .shared
+            .guest
+            .upgrade()
+            .ok_or(SurfaceError::Unavailable)?;
+        let guard = guest.lock();
+        guard
+            .as_ref()
+            .ok_or(SurfaceError::Unavailable)?
+            .resize_window(GuestWindowId(snapshot.target_window), dimensions)
+            .map_err(SurfaceError::Io)
     }
 
     fn snapshot(&self) -> SurfaceSnapshot {
@@ -509,10 +444,6 @@ impl TrackedSurfaceHandle {
             return Err(SurfaceError::StaleGeneration);
         }
         Ok(())
-    }
-
-    fn next_sequence(&self) -> u32 {
-        self.shared.sequence.fetch_add(1, Ordering::AcqRel) + 1
     }
 }
 
@@ -623,23 +554,30 @@ pub struct EmulatorInstance {
 }
 
 impl EmulatorInstance {
-    pub fn launch(config: EmulatorLaunchConfig) -> Result<Self, LaunchError> {
-        Self::launch_with_waker(config, || {})
+    pub fn launch(
+        config: EmulatorLaunchConfig,
+        filesystem: &polymer_vfs::MountedFilesystem,
+    ) -> Result<Self, LaunchError> {
+        Self::launch_with_waker(config, filesystem, || {})
     }
 
     pub fn launch_with_waker(
         config: EmulatorLaunchConfig,
+        filesystem: &polymer_vfs::MountedFilesystem,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Result<Self, LaunchError> {
-        Self::launch_with_input(config, wake, |_| Ok(()))
+        Self::launch_with_input(config, filesystem, wake, |_| Ok(()))
     }
 
     pub fn launch_with_input(
         config: EmulatorLaunchConfig,
+        filesystem: &polymer_vfs::MountedFilesystem,
         wake: impl Fn() + Send + Sync + 'static,
         configure_input: impl FnOnce(InputIpcListener) -> Result<(), String>,
     ) -> Result<Self, LaunchError> {
         config.validate()?;
+        let request = config.guest_request(filesystem)?;
+        let guest = Arc::new(Mutex::new(None));
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(wake);
         let input = InputIpcListener::bind(&config.session)?;
         if let Err(error) = configure_input(input.clone()) {
@@ -654,7 +592,11 @@ impl EmulatorInstance {
             }
         };
         let (event_sender, event_receiver) = mpmc::unbounded_blocking();
-        let surfaces = Arc::new(SurfaceManager::new(&config, input.clone(), event_sender));
+        let surfaces = Arc::new(SurfaceManager::new(
+            &config,
+            Arc::downgrade(&guest),
+            event_sender,
+        ));
         let offer_manager = Arc::downgrade(&surfaces);
         let disconnect_manager = Arc::downgrade(&surfaces);
         let callbacks = capture::CaptureCallbacks {
@@ -680,44 +622,35 @@ impl EmulatorInstance {
             }
         };
         surfaces.install_router(router.clone());
-        let process = match crate::launch::launch(&config) {
-            Ok(process) => process,
-            Err(error) => {
-                surfaces.shutdown();
-                input.shutdown();
-                ui.shutdown();
-                return Err(error);
-            }
-        };
-        let process_id = process.id();
-        let wait_handle = match process.wait_handle() {
+        let mut process =
+            match crate::launch::GuestPlatform::launch(&request, filesystem, input.clone()) {
+                Ok(process) => process,
+                Err(error) => {
+                    surfaces.shutdown();
+                    input.shutdown();
+                    ui.shutdown();
+                    return Err(error.into());
+                }
+            };
+        let process_id = process.id().0;
+        let wait_handle = match process.subscribe_exit() {
             Ok(wait_handle) => wait_handle,
             Err(error) => {
+                let _ = process.terminate_tree_and_wait();
                 surfaces.shutdown();
                 input.shutdown();
                 ui.shutdown();
-                let _ = process.terminate_tree_and_wait();
                 return Err(error.into());
             }
         };
-        let audio = match AudioWorker::spawn(ProcessId(process_id)) {
-            Ok(audio) => audio,
-            Err(error) => {
-                surfaces.shutdown();
-                input.shutdown();
-                ui.shutdown();
-                let _ = process.terminate_tree_and_wait();
-                return Err(error.into());
-            }
-        };
+        *guest.lock() = Some(process);
         let state = Watchable::new(InstanceState::Starting);
         let lifecycle = Arc::new(InstanceLifecycle {
-            process: Mutex::new(Some(process)),
+            guest,
             input: input.clone(),
             ui,
             state: state.clone(),
             surfaces: surfaces.clone(),
-            audio,
             finishing: AtomicBool::new(false),
             monitor: Mutex::new(None),
         });
@@ -781,15 +714,28 @@ impl EmulatorInstance {
     }
 
     pub fn audio_state(&self) -> AudioState {
-        self.lifecycle.audio.state()
+        self.lifecycle
+            .guest
+            .lock()
+            .as_ref()
+            .and_then(|guest| guest.audio_state().ok())
+            .unwrap_or_default()
     }
 
     pub fn set_volume(&self, volume: NormalizedVolume) {
-        self.lifecycle.audio.set_volume(volume);
+        if let Some(guest) = self.lifecycle.guest.lock().as_ref()
+            && let Err(error) = guest.set_volume(volume)
+        {
+            tracing::warn!("polymer: setting guest volume failed: {error}");
+        }
     }
 
     pub fn set_muted(&self, muted: bool) {
-        self.lifecycle.audio.set_muted(muted);
+        if let Some(guest) = self.lifecycle.guest.lock().as_ref()
+            && let Err(error) = guest.set_muted(muted)
+        {
+            tracing::warn!("polymer: setting guest mute failed: {error}");
+        }
     }
 
     pub fn close(&mut self) -> InstanceExit {
@@ -849,7 +795,7 @@ struct ActiveSurface {
 pub(crate) struct SurfaceManager {
     hooks: Arc<[GraphicsHook]>,
     tracked_surfaces: Arc<[TrackedSurfaceConfig]>,
-    input: InputIpcListener,
+    guest: Weak<Mutex<Option<Box<dyn Guest>>>>,
     router: RwLock<Option<FrameRouter>>,
     events: SurfaceEventSender,
     active: DashMap<TrackedSurfaceId, ActiveSurface>,
@@ -864,13 +810,13 @@ pub(crate) struct SurfaceManager {
 impl SurfaceManager {
     fn new(
         config: &EmulatorLaunchConfig,
-        input: InputIpcListener,
+        guest: Weak<Mutex<Option<Box<dyn Guest>>>>,
         events: SurfaceEventSender,
     ) -> Self {
         Self {
             hooks: Arc::from(config.hooks.graphics.clone()),
             tracked_surfaces: Arc::from(config.tracked_surfaces.clone()),
-            input,
+            guest,
             router: RwLock::new(None),
             events,
             active: DashMap::new(),
@@ -1004,10 +950,8 @@ impl SurfaceManager {
                 id: surface_id,
                 shared: Arc::new(SurfaceShared {
                     snapshot: RwLock::new(snapshot.clone()),
-                    input: self.input.clone(),
+                    guest: self.guest.clone(),
                     frames: RwLock::new(frames.clone()),
-                    sequence: AtomicU32::new(0),
-                    started: Instant::now(),
                 }),
             });
         router.route(connection, frames.clone());
@@ -1172,180 +1116,30 @@ impl SurfaceManager {
     }
 }
 
-struct AudioControl {
-    stopping: bool,
-    desired: Option<(NormalizedVolume, bool)>,
-}
-
-struct AudioShared {
-    process_id: ProcessId,
-    state: RwLock<AudioState>,
-    control: Mutex<AudioControl>,
-    wake: Condvar,
-}
-
-struct AudioWorker {
-    shared: Arc<AudioShared>,
-    worker: Mutex<Option<JoinHandle<()>>>,
-}
-
-impl AudioWorker {
-    fn spawn(process_id: ProcessId) -> std::io::Result<Self> {
-        let shared = Arc::new(AudioShared {
-            process_id,
-            state: RwLock::new(AudioState::default()),
-            control: Mutex::new(AudioControl {
-                stopping: false,
-                desired: None,
-            }),
-            wake: Condvar::new(),
-        });
-        let worker_shared = shared.clone();
-        let worker = thread::Builder::new()
-            .name(format!("polymer-audio-{}", process_id.0))
-            .spawn(move || run_audio(worker_shared))?;
-        Ok(Self {
-            shared,
-            worker: Mutex::new(Some(worker)),
-        })
-    }
-
-    fn state(&self) -> AudioState {
-        *self.shared.state.read()
-    }
-
-    fn set_volume(&self, volume: NormalizedVolume) {
-        self.shared.state.write().volume = volume;
-        let mut control = self.shared.control.lock();
-        let muted = control
-            .desired
-            .map(|(_, muted)| muted)
-            .unwrap_or_else(|| self.shared.state.read().muted);
-        control.desired = Some((volume, muted));
-        self.shared.wake.notify_one();
-    }
-
-    fn set_muted(&self, muted: bool) {
-        self.shared.state.write().muted = muted;
-        let mut control = self.shared.control.lock();
-        let volume = control
-            .desired
-            .map(|(volume, _)| volume)
-            .unwrap_or_else(|| self.shared.state.read().volume);
-        control.desired = Some((volume, muted));
-        self.shared.wake.notify_one();
-    }
-
-    fn shutdown(&self) {
-        {
-            let mut control = self.shared.control.lock();
-            if !control.stopping {
-                control.stopping = true;
-                self.shared.wake.notify_one();
-            }
-        }
-        if let Some(worker) = self.worker.lock().take() {
-            let _ = worker.join();
-        }
-    }
-}
-
-impl Drop for AudioWorker {
-    fn drop(&mut self) {
-        self.shutdown();
-    }
-}
-
-fn run_audio(shared: Arc<AudioShared>) {
-    loop {
-        refresh_audio(&shared);
-        let mut control = shared.control.lock();
-        if control.stopping {
-            return;
-        }
-        shared
-            .wake
-            .wait_for(&mut control, Duration::from_millis(500));
-        if control.stopping {
-            return;
-        }
-    }
-}
-
-fn refresh_audio(shared: &AudioShared) {
-    let desired = shared.control.lock().desired;
-    let processes = process_tree_ids(shared.process_id).unwrap_or_else(|_| vec![shared.process_id]);
-    let mut sessions = 0;
-
-    if let Some((volume, muted)) = desired {
-        for process in processes {
-            sessions += set_process_audio(process.0, volume.get(), muted).unwrap_or_default();
-        }
-        *shared.state.write() = AudioState {
-            available: sessions != 0,
-            volume,
-            muted,
-            active_sessions: sessions,
-        };
-        return;
-    }
-
-    let mut discovered = None;
-    for process in processes {
-        let Ok(state) = process_audio_state(process.0) else {
-            continue;
-        };
-        sessions += state.sessions;
-        if discovered.is_none() && state.available {
-            discovered = Some((
-                NormalizedVolume::new(state.volume).unwrap_or_default(),
-                state.muted,
-            ));
-        }
-    }
-    let (volume, muted) = discovered.unwrap_or_else(|| {
-        let current = *shared.state.read();
-        (current.volume, current.muted)
-    });
-    *shared.state.write() = AudioState {
-        available: sessions != 0,
-        volume,
-        muted,
-        active_sessions: sessions,
-    };
-}
-
 struct InstanceLifecycle {
-    process: Mutex<Option<TargetProcess>>,
+    guest: Arc<Mutex<Option<Box<dyn Guest>>>>,
     input: InputIpcListener,
     ui: UiTransport,
     state: Watchable<InstanceState>,
     surfaces: Arc<SurfaceManager>,
-    audio: AudioWorker,
     finishing: AtomicBool,
     monitor: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl InstanceLifecycle {
-    fn start_monitor(self: &Arc<Self>, wait: ProcessWaitHandle) -> std::io::Result<()> {
+    fn start_monitor(self: &Arc<Self>, wait: ProcessExitReceiver) -> std::io::Result<()> {
         let lifecycle = Arc::downgrade(self);
         let worker = thread::Builder::new()
             .name("polymer-process-wait".to_owned())
             .spawn(move || {
-                let exit = wait.wait().map_or_else(
-                    |error| InstanceExit::Failed(Arc::from(error.to_string())),
-                    |()| {
-                        match wait.exit_code() {
-                            Ok(code) => tracing::info!(
-                                "polymer: emulator process exited with code 0x{code:08x}"
-                            ),
-                            Err(error) => tracing::warn!(
-                                "polymer: failed to read emulator process exit code: {error}"
-                            ),
-                        }
+                let exit = match wait.recv() {
+                    Ok(Ok(exit)) => {
+                        tracing::info!(?exit, "polymer: emulator process exited");
                         InstanceExit::Natural
-                    },
-                );
+                    }
+                    Ok(Err(error)) => InstanceExit::Failed(Arc::from(error.to_string())),
+                    Err(error) => InstanceExit::Failed(Arc::from(error.to_string())),
+                };
                 if let Some(lifecycle) = lifecycle.upgrade() {
                     lifecycle.finish(exit);
                 }
@@ -1363,13 +1157,12 @@ impl InstanceLifecycle {
         // shut down. Those workers can be blocked in target-owned IPC while
         // the emulator is alive, which previously prevented close() from ever
         // reaching the process termination step.
-        if let Some(process) = self.process.lock().take() {
+        if let Some(mut process) = self.guest.lock().take() {
             let _ = process.terminate_tree_and_wait();
         }
         self.surfaces.shutdown();
         self.input.shutdown();
         self.ui.shutdown();
-        self.audio.shutdown();
         self.state.replace(InstanceState::Exited(exit));
         self.state.shutdown();
     }

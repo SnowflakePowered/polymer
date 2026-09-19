@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+polymer-vfs.workspace = true
+polymer-vfs-winfsp.workspace = true
 ash.workspace = true
 egui = "0.29.1"
 egui-winit = "0.29.1"

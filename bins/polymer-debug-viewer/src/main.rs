@@ -27,6 +27,7 @@ use winit::{
     window::{Window, WindowId},
 };
 
+mod filesystem;
 mod gui;
 mod input;
 mod layout;
@@ -1325,6 +1326,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 struct ActiveTarget {
     instance: polymer_runtime::EmulatorInstance,
     ui: polymer_runtime::UiRequestReceiver,
+    // Declared after instance so the guest stops before the mount is released.
+    _filesystem: polymer_vfs::MountedFilesystem,
 }
 
 struct StartedTarget {
@@ -1343,7 +1346,7 @@ fn start_target_session(
     tracked_render_targets: Option<Vec<u32>>,
     tracked_surface_patterns: Vec<Option<String>>,
 ) -> Result<StartedTarget, Box<dyn Error>> {
-    let target = launcher.target().map_err(std::io::Error::other)?;
+    let mut target = launcher.target().map_err(std::io::Error::other)?;
     if launcher.hooks.is_empty() {
         return Err(std::io::Error::other("Select at least one graphics hook").into());
     }
@@ -1386,8 +1389,9 @@ fn start_target_session(
                 })
                 .collect()
         });
-    let mut instance =
-        polymer_runtime::EmulatorInstance::launch(polymer_runtime::EmulatorLaunchConfig {
+    let filesystem = filesystem::DebugFilesystem::mount(&mut target)?;
+    let mut instance = polymer_runtime::EmulatorInstance::launch(
+        polymer_runtime::EmulatorLaunchConfig {
             session: session.to_owned(),
             command: target[0].clone(),
             arguments: target[1..].to_vec(),
@@ -1404,7 +1408,9 @@ fn start_target_session(
             tracked_surfaces: configured_surfaces,
             tracking_enabled: tracked_render_targets.is_some(),
             skip_surfaces,
-        })?;
+        },
+        &filesystem,
+    )?;
     let provider = InputHub::default();
     let backend = Arc::new(
         polymer_input_sdl3::Sdl3Backend::new(Default::default())
@@ -1439,7 +1445,11 @@ fn start_target_session(
     let _ = instance.input().publish_topology(&topology);
     let ui = instance.subscribe_ui_requests();
     Ok(StartedTarget {
-        target: ActiveTarget { instance, ui },
+        target: ActiveTarget {
+            instance,
+            ui,
+            _filesystem: filesystem,
+        },
         provider,
         layouts,
     })

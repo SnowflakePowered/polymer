@@ -9431,6 +9431,8 @@ dependencies = [
  "polymer-runtime",
  "polymer-statistics",
  "polymer-ui",
+ "polymer-vfs",
+ "polymer-vfs-winfsp",
  "raw-window-handle",
  "regex",
  "serde_json",
@@ -9870,6 +9872,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "polymer-platform"
+version = "0.1.0"
+dependencies = [
+ "polymer-input",
+ "polymer-protocol",
+ "polymer-vfs",
+]
+
+[[package]]
 name = "polymer-platform-windows"
 version = "0.1.0"
 dependencies = [
@@ -9878,8 +9889,14 @@ dependencies = [
  "parking_lot",
  "polymer-automation",
  "polymer-hook",
+ "polymer-input",
+ "polymer-ipc",
+ "polymer-platform",
  "polymer-protocol",
+ "polymer-vfs",
  "serde_json",
+ "tempfile",
+ "tracing",
  "windows 0.61.3",
  "windows-sys 0.61.2",
  "xa11y-core",
@@ -10051,11 +10068,11 @@ dependencies = [
  "polymer-consolestorage",
  "polymer-controllers",
  "polymer-deno",
- "polymer-hook",
  "polymer-input",
  "polymer-input-bluetooth",
  "polymer-ipc",
  "polymer-library",
+ "polymer-platform",
  "polymer-platform-windows",
  "polymer-pluginhost",
  "polymer-protocol",
@@ -10065,14 +10082,12 @@ dependencies = [
  "rand 0.10.2",
  "serde",
  "serde_json",
- "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
  "url",
  "uuid",
  "watchable",
- "winapi",
 ]
 
 [[package]]

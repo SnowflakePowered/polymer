@@ -1,6 +1,4 @@
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(transparent)]
-pub struct ProcessId(pub u32);
+pub use polymer_platform::ProcessId;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(transparent)]

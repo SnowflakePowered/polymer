@@ -732,7 +732,7 @@ impl GameHost {
         &mut self,
         token: crate::shell_runtime::InstanceToken,
         options: AttachedLaunchPlan,
-        mut filesystem: Option<polymer_vfs::MountedFilesystem>,
+        filesystem: polymer_vfs::MountedFilesystem,
         controller_session: Option<polymer_pluginhost::controller::ControllerSession>,
         session: String,
         wake_window: impl Fn() -> bool + Send + Sync + 'static,
@@ -771,7 +771,7 @@ impl GameHost {
         self.session.launch_with_input(
             token.0,
             config,
-            filesystem.take(),
+            filesystem,
             move || {
                 dirty.store(true, std::sync::atomic::Ordering::Release);
                 if !wake_pending.swap(true, std::sync::atomic::Ordering::AcqRel) && !wake_window() {
