@@ -9,8 +9,8 @@ const progressContext = Object.freeze({ progress: ({ message, completed = null, 
     }
     op_plugin_emit_event("loadprogress", { state: "loading", message, completed, total });
   } });
-async function invoke(entrypoint, path, args) {
-  args = args.map(argument => {
+function bindArguments(args) {
+  return args.map(argument => {
     if (argument?.__digestToken !== undefined) return createPackage(argument);
     if (argument?.package === undefined && argument?.launchSet === undefined) return argument;
     return {
@@ -21,6 +21,10 @@ async function invoke(entrypoint, path, args) {
       }),
     };
   });
+}
+
+async function invoke(entrypoint, path, args) {
+  args = bindArguments(args);
   const namespace = await import(entrypoint);
   let receiver;
   let value;
@@ -56,17 +60,7 @@ async function invoke(entrypoint, path, args) {
 }
 
 async function invokeOptional(entrypoint, name, args) {
-  args = args.map(argument => {
-    if (argument?.__digestToken !== undefined) return createPackage(argument);
-    if (argument?.package === undefined && argument?.launchSet === undefined) return argument;
-    return {
-      ...argument,
-      ...(argument.package === undefined ? {} : { package: createPackage(argument.package) }),
-      ...(argument.launchSet === undefined ? {} : {
-        launchSet: argument.launchSet.map(disc => ({ ...disc, package: createPackage(disc.package) })),
-      }),
-    };
-  });
+  args = bindArguments(args);
   const namespace = await import(entrypoint);
   let receiver = namespace;
   let value = namespace[name];
