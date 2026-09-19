@@ -770,12 +770,12 @@ impl PolymerHost for FrontendServices {
             if matches!(path.as_slice(), [name] if name == "onLaunch")
                 || matches!(path.as_slice(), [default, name] if default == "default" && name == "onLaunch")
             {
-                arguments = match packages::LaunchPackages::prepare(arguments).await {
+                arguments = match Self::prepare_launch_packages(arguments).await {
                     Ok(arguments) => arguments,
                     Err(error) => {
                         let error = polymer_pluginhost::runtime::PluginInvocationError::new(
                             "Error",
-                            "PACKAGE_DIGEST_FAILED",
+                            "PACKAGE_PREPARATION_FAILED",
                             error,
                         );
                         return serde_json::json!({ "ok": false, "error": error });

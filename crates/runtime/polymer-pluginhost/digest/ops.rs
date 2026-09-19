@@ -36,6 +36,7 @@ impl DigestState {
             .insert(token.clone(), (PathBuf::from(path), package));
         values.insert("__digestToken".into(), token.into());
         values.remove("binaryDigest");
+        values.remove("__manifest");
     }
 
     pub(crate) fn launch(&mut self, value: &mut Value) {

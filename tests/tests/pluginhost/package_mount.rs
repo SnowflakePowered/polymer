@@ -2,6 +2,7 @@ use polymer_pluginhost::{
     loading::PluginRegistry,
     runtime::{PluginRuntime, PluginRuntimeOptions},
 };
+use polymer_scraping::Package;
 use std::collections::BTreeMap;
 
 #[tokio::test(flavor = "current_thread")]
@@ -56,7 +57,34 @@ async fn package_mounts_images_directories_and_cues_read_only() {
         polymer_library::Directories::rooted(storage.path(), storage.path()),
         PluginRuntimeOptions::default(),
     );
-    let cue = "FILE \"file-0000.bin\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n";
+    // A minimal Games Express PC Engine CD track recognized by Gumshoe.
+    // Use an original filename that must be rewritten for the mounted bundle.
+    let mut track = vec![0; 17 * 2048];
+    track[16 * 2048 + 8..16 * 2048 + 28].copy_from_slice(b"HACKER CD ROM SYSTEM");
+    std::fs::write(root.path().join("original track.bin"), &track).unwrap();
+    let source = root.path().join("source.cue");
+    std::fs::write(
+        &source,
+        "FILE \"original track.bin\" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n",
+    )
+    .unwrap();
+    let identified = Package::identify(&source, Some("NEC_TG16"), None).unwrap();
+    // Simulate the frontend round trip that drops the private CUE manifest.
+    let mut package: Package =
+        serde_json::from_value(serde_json::to_value(identified).unwrap()).unwrap();
+    package.prepare_launch().unwrap();
+    assert_eq!(
+        package.binary_digest,
+        blake3::hash(&track).to_hex().as_str()
+    );
+
+    // Prepared packages retain their bundle and identity across another round
+    // trip without reopening the original descriptor.
+    let mut package: Package =
+        serde_json::from_value(serde_json::to_value(package).unwrap()).unwrap();
+    std::fs::remove_file(&source).unwrap();
+    package.prepare_launch().unwrap();
+    let cue = "FILE \"file-0000.bin\" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n";
     let result = runtime
         .handle()
         .invoke_with_storage_owned(
@@ -65,10 +93,7 @@ async fn package_mounts_images_directories_and_cues_read_only() {
             vec![serde_json::json!({
                 "launchPath": root.path().join("source.cue"), "console": "TEST",
                 "controllerTopology": { "mappings": [] }, "virtualize": true,
-                "package": { "bundle": { "revision": "one", "entrypoint": "disc.cue", "files": [
-                    { "name": "file-0000.bin", "path": root.path().join("game.iso"), "text": null },
-                    { "name": "disc.cue", "path": null, "text": cue },
-                ] } },
+                "package": package,
             })],
             BTreeMap::new(),
         )
@@ -85,7 +110,7 @@ async fn package_mounts_images_directories_and_cues_read_only() {
     filesystem.materialize().unwrap();
     for (name, expected) in [
         ("disc.cue", cue.as_bytes()),
-        ("file-0000.bin", b"game".as_slice()),
+        ("file-0000.bin", track.as_slice()),
     ] {
         let path = format!("/Game/{name}").parse().unwrap();
         let file = filesystem
@@ -98,7 +123,7 @@ async fn package_mounts_images_directories_and_cues_read_only() {
                 },
             )
             .unwrap();
-        let mut bytes = [0; 256];
+        let mut bytes = vec![0; expected.len()];
         let length = file.read(0, &mut bytes).unwrap();
         assert_eq!(&bytes[..length], expected);
         assert!(
