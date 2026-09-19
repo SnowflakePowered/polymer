@@ -1,5 +1,5 @@
-use super::{GuestPlatform, WindowsGuest};
-use crate::{InjectionLibrary, TargetProcess, architecture_artifact_dir, executable_architecture};
+use super::{GuestPlatform, WindowsGuest, injection::InjectionLibrary, target::TargetProcess};
+use crate::executable_architecture;
 use polymer_hook::config;
 use polymer_platform::{GraphicsHook, Guest, GuestLaunchRequest, InputHook};
 use std::{ffi::OsString, path::Path};
@@ -41,7 +41,7 @@ impl GuestPlatform {
             .collect::<Vec<_>>();
         let target_architecture = executable_architecture(Path::new(&command)).ok();
         let artifact_dir = target_architecture
-            .map(|architecture| architecture_artifact_dir(&config.artifact_root, architecture))
+            .map(|architecture| Self::artifact_dir(&config.artifact_root, architecture))
             .unwrap_or_else(|| config.artifact_root.clone());
         let vulkan_manifest = config
             .hooks
@@ -89,9 +89,7 @@ impl GuestPlatform {
             config.isolate.then_some(&config.session),
             &libraries,
         )?;
-        if let Some(manifest) = vulkan_manifest {
-            process.retain(manifest);
-        }
+        process.vulkan_manifest = vulkan_manifest;
         Ok(process)
     }
 

@@ -1,6 +1,9 @@
-use crate::{ProcessId, process_audio_state, process_tree_ids, set_process_audio};
+mod sessions;
+
+use crate::{ProcessId, process_tree_ids};
 use parking_lot::{Condvar, Mutex, RwLock};
 use polymer_platform::{AudioState, NormalizedVolume};
+use sessions::ProcessAudioState;
 use std::{
     sync::Arc,
     thread::{self, JoinHandle},
@@ -21,7 +24,7 @@ struct AudioShared {
 
 pub(super) struct AudioWorker {
     shared: Arc<AudioShared>,
-    worker: Mutex<Option<JoinHandle<()>>>,
+    worker: Option<JoinHandle<()>>,
 }
 
 impl AudioWorker {
@@ -41,7 +44,7 @@ impl AudioWorker {
             .spawn(move || worker_shared.run())?;
         Ok(Self {
             shared,
-            worker: Mutex::new(Some(worker)),
+            worker: Some(worker),
         })
     }
 
@@ -71,7 +74,7 @@ impl AudioWorker {
         self.shared.wake.notify_one();
     }
 
-    pub(super) fn shutdown(&self) {
+    pub(super) fn shutdown(&mut self) {
         {
             let mut control = self.shared.control.lock();
             if !control.stopping {
@@ -79,7 +82,7 @@ impl AudioWorker {
                 self.shared.wake.notify_one();
             }
         }
-        if let Some(worker) = self.worker.lock().take() {
+        if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
     }
@@ -113,7 +116,8 @@ impl AudioShared {
 
         if let Some((volume, muted)) = desired {
             for process in processes {
-                sessions += set_process_audio(process.0, volume.get(), muted).unwrap_or_default();
+                sessions +=
+                    ProcessAudioState::set(process.0, volume.get(), muted).unwrap_or_default();
             }
             *self.state.write() = AudioState {
                 available: sessions != 0,
@@ -126,7 +130,7 @@ impl AudioShared {
 
         let mut discovered = None;
         for process in processes {
-            let Ok(state) = process_audio_state(process.0) else {
+            let Ok(state) = ProcessAudioState::read(process.0) else {
                 continue;
             };
             sessions += state.sessions;
