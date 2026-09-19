@@ -21,7 +21,7 @@ export class Package {
   }
 
   toJSON() {
-    const { __digestPath, binaryDigest, ...metadata } = this.#data;
+    const { __digestPath, __manifest, binaryDigest, ...metadata } = this.#data;
     return metadata;
   }
 

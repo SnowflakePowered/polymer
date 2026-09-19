@@ -33,7 +33,7 @@ use std::{
 pub struct Package {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bundle: Option<crate::LaunchBundle>,
-    #[serde(skip)]
+    #[serde(default, rename = "__manifest", skip_serializing_if = "Option::is_none")]
     manifest: Option<polymer_library::PackageManifest>,
     #[serde(default, rename = "__digestPath")]
     pub path: PathBuf,
@@ -83,8 +83,7 @@ impl Package {
     pub fn prepare_launch(&mut self) -> Result<(), crate::ScrapingError> {
         self.ensure_binary_identity()?;
         if let Some(manifest) = &mut self.manifest {
-            // Direct path launches have no scrape job; registered packages must already be prepared.
-            if self.import.is_some() && manifest.template.is_none() {
+            if manifest.template.is_none() {
                 crate::ingest::CuePreparation::finalize(manifest)?;
             }
             self.bundle = Some(crate::ingest::CuePreparation::bundle(manifest)?);
