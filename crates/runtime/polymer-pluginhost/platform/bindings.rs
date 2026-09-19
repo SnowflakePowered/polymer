@@ -1,25 +1,17 @@
-use super::Device;
 use deno_core::{OpState, op2};
 use deno_error::JsErrorBox;
 use polymer_library::StorageManager;
 use serde_json::json;
 use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::Arc};
+use uuid::Uuid;
 
 #[derive(Clone)]
 pub(crate) struct PlatformBinding {
-    pub manager: Arc<StorageManager>,
     pub root: PathBuf,
-    pub device: Option<Device>,
+    pub target: Option<(Arc<StorageManager>, String, Uuid)>,
 }
 
 impl PlatformBinding {
-    fn target(&self) -> Result<&Device, JsErrorBox> {
-        self.device.as_ref().ok_or_else(|| {
-            JsErrorBox::type_error(
-                "NAND installation is only available during host-owned bootstrap",
-            )
-        })
-    }
     fn path(
         &self,
         state: &OpState,
@@ -83,10 +75,11 @@ async fn op_platform_install(
         .borrow()
         .borrow::<Arc<crate::runtime::EventEmitter>>()
         .clone();
-    let device = binding.target()?;
-    binding
-        .manager
-        .install(&device.platform, device.id, &path, |message| {
+    let (manager, platform, id) = binding.target.as_ref().ok_or_else(|| {
+        JsErrorBox::type_error("NAND installation is only available during host-owned bootstrap")
+    })?;
+    manager
+        .install(platform, *id, &path, |message| {
             events.publish(
                 "loadprogress",
                 json!({"state": "loading", "message": message}),

@@ -2,28 +2,31 @@ use super::super::{
     PluginInvocationError, PluginRuntimeHandle,
     worker::{WorkerOptions, invoke_export, run_worker},
 };
-use crate::platform::Device;
-use polymer_library::StorageInspection;
+use polymer_library::{StorageInspection, StorageManager};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
+use uuid::Uuid;
 
 impl PluginRuntimeHandle {
     pub async fn bootstrap(
         &self,
-        device: Device,
+        manager: Arc<StorageManager>,
+        platform: &str,
+        id: Uuid,
         settings: Value,
         cancellation: super::super::PluginCancellationToken,
     ) -> Result<StorageInspection, PluginInvocationError> {
         let provider = self
             .registry()
-            .platform(&device.platform)
+            .platform(platform)
             .ok_or_else(|| PluginInvocationError::worker("Platform provider unavailable"))?;
         let mut worker =
             WorkerOptions::for_plugin(provider.as_ref(), self.directories(), BTreeMap::new(), None)
                 .map_err(PluginInvocationError::worker)?;
-        worker.platform.device = Some(device.clone());
-        worker.firmware.platform = Some(device.platform.clone());
-        worker.keys.platform = Some(device.platform.clone());
+        worker.platform.target = Some((manager.clone(), platform.to_owned(), id));
+        worker.firmware.platform = Some(platform.to_owned());
+        worker.keys.root = manager.root().join("keys");
+        worker.keys.platform = Some(platform.to_owned());
         worker.keys.allow_write = true;
         let entrypoint = provider.entrypoint().to_string();
         let invocation_entrypoint = entrypoint.clone();
@@ -33,10 +36,8 @@ impl PluginRuntimeHandle {
             guard = updates.lock() => guard,
             () = cancellation.control.cancelled_notification() => return Err(PluginInvocationError::cancelled()),
         };
-        let inspection = device
-            .inspect(&polymer_library::StorageManager::new(
-                self.directories().consolestorage(),
-            ))
+        let inspection = manager
+            .inspect(platform, id)
             .await
             .map_err(PluginInvocationError::worker)?;
         let events = lifecycle.events.clone();
@@ -63,9 +64,8 @@ impl PluginRuntimeHandle {
             )
         })
         .await?;
-        let manager = polymer_library::StorageManager::new(self.directories().consolestorage());
-        let inspection = device
-            .inspect(&manager)
+        let inspection = manager
+            .inspect(platform, id)
             .await
             .map_err(PluginInvocationError::worker)?;
 

@@ -12,7 +12,7 @@ pub mod savegame;
 mod savegroups;
 mod storage;
 
-pub use console::{ConsoleStorage, Nand, StorageKind};
+pub use console::{ConsoleStorage, StorageKind};
 pub use error::Error;
 pub use history::{
     AttachmentInfo, DeletedSaveInfo, Save, SaveAttachmentKind, SaveCommit, SaveCommitId,

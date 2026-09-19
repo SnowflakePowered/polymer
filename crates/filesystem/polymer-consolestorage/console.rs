@@ -17,8 +17,6 @@ use crate::impls::wiiu::nand::WiiUNand;
 use crate::nand::VirtualNand;
 use crate::{Error, GitVolumeStorage, SaveRepo, VersionedStorage, VolumeInfo, VolumeStorage};
 
-pub type Nand = Arc<dyn VirtualNand>;
-
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum StorageKind {
     Nand,
@@ -57,7 +55,7 @@ impl FromStr for StorageKind {
 }
 
 pub enum ConsoleStorage {
-    Nand(Nand),
+    Nand(Arc<dyn VirtualNand>),
     SaveRepo(Arc<dyn SaveRepo>),
     MemoryCard(Arc<dyn SaveRepo>),
     Battery(Arc<dyn SaveRepo>),
@@ -228,6 +226,13 @@ impl ConsoleStorage {
                 "no {} layout for `{other_platform}`",
                 other_kind.as_str()
             ))),
+        }
+    }
+
+    pub fn as_nand(&self) -> Option<Arc<dyn VirtualNand>> {
+        match self {
+            Self::Nand(nand) => Some(nand.clone()),
+            _ => None,
         }
     }
 

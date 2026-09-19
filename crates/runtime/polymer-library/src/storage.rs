@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use futures_util::StreamExt;
 use polymer_consolestorage::{
     ArtifactSummary, ConsoleStorage, Error, PlatformRepository, StorageKind, VolumeInfo,
-    VolumeStorage, keys::KeyWriter,
+    VolumeStorage, keys::KeyWriter, nand::NandCompletion,
 };
 use uuid::Uuid;
 
@@ -105,6 +105,21 @@ impl StorageManager {
         Ok(storage)
     }
 
+    pub async fn inspect(&self, platform: &str, id: Uuid) -> Result<StorageInspection, Error> {
+        let nand = self
+            .open(StorageKind::Nand, platform, id)
+            .await?
+            .as_nand()
+            .ok_or_else(|| Error::Unsupported("device is not a NAND".into()))?;
+        Ok(StorageInspection {
+            id: id.simple().to_string(),
+            platform: nand.platform().into(),
+            minimal: nand.is_complete(NandCompletion::Minimal),
+            dirty: nand.is_dirty()?,
+            artifacts: nand.artifacts().await?,
+        })
+    }
+
     /// Persist embedded keys before validating and extracting a depot into a NAND.
     pub async fn install(
         &self,
@@ -113,16 +128,12 @@ impl StorageManager {
         path: &Path,
         progress: impl Fn(String),
     ) -> Result<ArtifactSummary, String> {
-        if !ConsoleStorage::supports(StorageKind::Nand, platform) {
-            return Err("Unsupported NAND platform".into());
-        }
-        let ConsoleStorage::Nand(nand) = self
+        let nand = self
             .open(StorageKind::Nand, platform, id)
             .await
             .map_err(|error| error.to_string())?
-        else {
-            return Err("device is not a NAND".into());
-        };
+            .as_nand()
+            .ok_or("device is not a NAND")?;
         let mut installation = nand.try_install(path).map_err(|error| error.to_string())?;
         let records = installation.embedded_keys();
         if !records.is_empty() {
