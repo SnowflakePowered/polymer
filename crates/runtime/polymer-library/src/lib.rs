@@ -20,7 +20,7 @@ pub use inputstore::{
 };
 pub use polymer_consolestorage::nand::VirtualNand;
 pub use polymer_consolestorage::{
-    ArtifactSummary, ConsoleStorage, Nand, SaveRepo, StorageKind, VolumeInfo,
+    ArtifactSummary, ConsoleStorage, SaveRepo, StorageKind, VolumeInfo,
 };
 pub use quickresume::{QuickResumeEntry, QuickResumeKey, QuickResumeStore};
 pub use storage::{StorageInspection, StorageManager};

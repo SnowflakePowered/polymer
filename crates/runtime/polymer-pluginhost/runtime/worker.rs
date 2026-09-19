@@ -42,11 +42,8 @@ impl WorkerOptions {
             firmware: crate::firmware::FirmwareBinding::new(directories.firmware()),
             keys: crate::keys::KeyBinding::new(directories.keys()),
             platform: crate::platform::PlatformBinding {
-                manager: Arc::new(polymer_library::StorageManager::new(
-                    directories.consolestorage(),
-                )),
                 root: plugin.module_loader().root().to_owned(),
-                device: None,
+                target: None,
             },
             loader: plugin.module_loader().with_directories(directories),
             filesystem,

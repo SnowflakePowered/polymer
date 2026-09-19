@@ -1,24 +1,26 @@
 use polymer_library::{Directories, StorageKind, StorageManager};
 use polymer_pluginhost::{
     loading::PluginRegistry,
-    platform::Device,
     runtime::{PluginRuntime, PluginRuntimeOptions},
 };
 
 use serde_json::{Value, json};
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 struct Fixture {
     root: tempfile::TempDir,
     registry: PluginRegistry,
     directories: Directories,
+    manager: Arc<StorageManager>,
 }
 
 impl Fixture {
     fn new() -> Self {
         let root = tempfile::tempdir().unwrap();
+        let directories = Directories::rooted(root.path(), root.path());
         Self {
-            directories: Directories::rooted(root.path(), root.path()),
+            manager: Arc::new(StorageManager::new(directories.consolestorage())),
+            directories,
             root,
             registry: PluginRegistry::new(),
         }
@@ -90,15 +92,13 @@ impl Fixture {
             PluginRuntimeOptions::default(),
         )
     }
-    async fn device(&self) -> Device {
-        let volume = StorageManager::new(self.directories.consolestorage())
+    async fn device(&self) -> polymer_library::VolumeInfo {
+        let volume = self
+            .manager
             .create(StorageKind::Nand, "NINTENDO_WII", None)
             .await
             .unwrap();
-        Device {
-            platform: "NINTENDO_WII".into(),
-            id: volume.metadata().await.unwrap().id,
-        }
+        volume.metadata().await.unwrap()
     }
 }
 
@@ -153,8 +153,18 @@ async fn cancelling_bootstrap_terminates_the_worker() {
     let token = runtime.handle().cancellation_token();
     let handle = runtime.handle().clone();
     let cancellation = token.clone();
-    let operation =
-        tokio::spawn(async move { handle.bootstrap(device, Value::Null, cancellation).await });
+    let manager = fixture.manager.clone();
+    let operation = tokio::spawn(async move {
+        handle
+            .bootstrap(
+                manager,
+                &device.platform,
+                device.id,
+                Value::Null,
+                cancellation,
+            )
+            .await
+    });
     tokio::time::timeout(Duration::from_secs(10), async {
         while runtime
             .handle()
@@ -200,7 +210,13 @@ async fn bootstrap_uses_existing_progress_events_for_callbacks_and_generators() 
     let mut events = PluginEvent::subscribe();
     let error = runtime
         .handle()
-        .bootstrap(device, Value::Null, runtime.handle().cancellation_token())
+        .bootstrap(
+            fixture.manager.clone(),
+            &device.platform,
+            device.id,
+            Value::Null,
+            runtime.handle().cancellation_token(),
+        )
         .await
         .unwrap_err();
     assert!(error.message.contains("BOOTSTRAP_FAILURE"));
@@ -260,11 +276,13 @@ async fn platform_install_persists_keys_before_validation_and_installs_content()
         .create(StorageKind::Nand, "NINTENDO_WIIU", None)
         .await
         .unwrap();
-    let device = Device {
-        platform: "NINTENDO_WIIU".into(),
-        id: volume.metadata().await.unwrap().id,
-    };
-    let nand = device.open(&manager).await.unwrap();
+    let device = volume.metadata().await.unwrap();
+    let nand = manager
+        .open(StorageKind::Nand, &device.platform, device.id)
+        .await
+        .unwrap()
+        .as_nand()
+        .unwrap();
     nand.root()
         .create("unfinished")
         .unwrap()
@@ -323,13 +341,17 @@ async fn platform_install_persists_keys_before_validation_and_installs_content()
 }
 
 #[tokio::test]
-async fn bootstrap_uses_native_requirements_with_one_worker() {
+async fn bootstrap_uses_supplied_storage_and_native_requirements_with_one_worker() {
     use polymer_consolestorage::keys::{KeyIdentity, KeyReader};
     let fixture = Fixture::new();
     let package = fixture.provider(
         "kind-check",
         r#"
-        export async function onBootstrap(device) { await device.install('pkg:title'); }
+        export async function onBootstrap(device, {keyStore}) {
+            await device.install('pkg:title');
+            const key = await keyStore.open({namespace: 'content', id: '0005000c12345678'});
+            if ((await key.bytes()).length !== 16) throw new Error('installed key unavailable');
+        }
     "#,
     );
     let manifest = package.join("plugin.toml");
@@ -342,16 +364,21 @@ async fn bootstrap_uses_native_requirements_with_one_worker() {
     .unwrap();
     fixture.title_source(&package.join("title"));
     fixture.registry.load(package).unwrap();
-    let manager = StorageManager::new(fixture.directories.consolestorage());
+    // Storage belongs to the caller, independently of the plugin directories.
+    let manager = Arc::new(StorageManager::new(
+        fixture.root.path().join("console-storage"),
+    ));
     let volume = manager
         .create(StorageKind::Nand, "NINTENDO_WIIU", None)
         .await
         .unwrap();
-    let device = Device {
-        platform: "NINTENDO_WIIU".into(),
-        id: volume.metadata().await.unwrap().id,
-    };
-    let nand = device.open(&manager).await.unwrap();
+    let device = volume.metadata().await.unwrap();
+    let nand = manager
+        .open(StorageKind::Nand, &device.platform, device.id)
+        .await
+        .unwrap()
+        .as_nand()
+        .unwrap();
     nand.root()
         .create("unfinished")
         .unwrap()
@@ -367,15 +394,19 @@ async fn bootstrap_uses_native_requirements_with_one_worker() {
     );
     let error = tokio::time::timeout(
         Duration::from_secs(10),
-        runtime
-            .handle()
-            .bootstrap(device, Value::Null, runtime.handle().cancellation_token()),
+        runtime.handle().bootstrap(
+            manager.clone(),
+            &device.platform,
+            device.id,
+            Value::Null,
+            runtime.handle().cancellation_token(),
+        ),
     )
     .await
     .unwrap()
     .unwrap_err();
     assert!(error.message.contains("uncommitted"), "{error}");
-    let store = polymer_library::keys::KeyStore::open(fixture.directories.keys())
+    let store = polymer_library::keys::KeyStore::open(manager.root().join("keys"))
         .await
         .unwrap();
     let record = store
@@ -388,6 +419,29 @@ async fn bootstrap_uses_native_requirements_with_one_worker() {
         .await
         .unwrap();
     assert_eq!(record.bytes, [0x42; 16]);
+    nand.recover().unwrap();
+    let inspection = runtime
+        .handle()
+        .bootstrap(
+            manager,
+            &device.platform,
+            device.id,
+            Value::Null,
+            runtime.handle().cancellation_token(),
+        )
+        .await
+        .unwrap();
+    assert!(!inspection.dirty);
+    assert!(
+        inspection
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.id == "0005000c12345678")
+    );
+    assert!(
+        nand.root()
+            .exists("usr/title/0005000c/12345678/content/data.bin")
+    );
 }
 
 #[tokio::test]
@@ -400,11 +454,13 @@ async fn try_install_retains_depot_without_starting_extraction() {
         .create(StorageKind::Nand, "NINTENDO_WIIU", None)
         .await
         .unwrap();
-    let device = Device {
-        platform: "NINTENDO_WIIU".into(),
-        id: volume.metadata().await.unwrap().id,
-    };
-    let nand = device.open(&manager).await.unwrap();
+    let device = volume.metadata().await.unwrap();
+    let nand = manager
+        .open(StorageKind::Nand, &device.platform, device.id)
+        .await
+        .unwrap()
+        .as_nand()
+        .unwrap();
     let installation = nand.try_install(&path).unwrap();
     assert!(!nand.is_dirty().unwrap());
     assert!(nand.artifacts().await.unwrap().is_empty());
@@ -444,10 +500,13 @@ async fn rust_and_javascript_share_platform_keys_and_immutable_files() {
         }
     "#)).unwrap();
     let runtime = fixture.runtime();
+    let device = fixture.device().await;
     runtime
         .handle()
         .bootstrap(
-            fixture.device().await,
+            fixture.manager.clone(),
+            &device.platform,
+            device.id,
             Value::Null,
             runtime.handle().cancellation_token(),
         )

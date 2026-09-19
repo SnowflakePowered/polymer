@@ -1,7 +1,8 @@
 use super::StorageActor;
 use actix::{Context, Handler, ResponseActFuture};
 use polymer_deno::polymer::consolestorage::*;
-use polymer_pluginhost::{platform::Device, runtime::EventEmitter};
+use polymer_library::StorageKind;
+use polymer_pluginhost::runtime::EventEmitter;
 use polymer_vfs::ExclusiveResourceKey;
 use serde_json::json;
 use std::sync::Arc;
@@ -31,11 +32,14 @@ impl Handler<Inspect> for StorageActor {
 
     fn handle(&mut self, Inspect { platform, id }: Inspect, _: &mut Context<Self>) -> Self::Result {
         self.execute(move |manager, _| async move {
-            let device = Self::device(platform, id)?;
-            let _lease = ExclusiveResourceKey::Resource(device.id)
+            let id = Self::parse(&id)?;
+            let _lease = ExclusiveResourceKey::Resource(id)
                 .acquire()
                 .map_err(|error| error.to_string())?;
-            device.inspect(&manager).await.map_err(StorageError::from)
+            manager
+                .inspect(&platform, id)
+                .await
+                .map_err(StorageError::from_display)
         })
     }
 }
@@ -45,16 +49,22 @@ impl Handler<Recover> for StorageActor {
 
     fn handle(&mut self, Recover { platform, id }: Recover, _: &mut Context<Self>) -> Self::Result {
         self.execute(move |manager, _| async move {
-            let device = Self::device(platform, id)?;
-            let _lease = ExclusiveResourceKey::Resource(device.id)
+            let id = Self::parse(&id)?;
+            let _lease = ExclusiveResourceKey::Resource(id)
                 .acquire()
                 .map_err(|error| error.to_string())?;
-            device
-                .open(&manager)
-                .await?
+            manager
+                .open(StorageKind::Nand, &platform, id)
+                .await
+                .map_err(StorageError::from_display)?
+                .as_nand()
+                .ok_or("device is not a NAND")?
                 .recover()
                 .map_err(|error| error.to_string())?;
-            device.inspect(&manager).await.map_err(StorageError::from)
+            manager
+                .inspect(&platform, id)
+                .await
+                .map_err(StorageError::from_display)
         })
     }
 }
@@ -68,18 +78,18 @@ impl Handler<Install> for StorageActor {
         _: &mut Context<Self>,
     ) -> Self::Result {
         self.execute(move |manager, _| async move {
-            let device = Self::device(platform, id)?;
-            let _lease = ExclusiveResourceKey::Resource(device.id)
+            let id = Self::parse(&id)?;
+            let _lease = ExclusiveResourceKey::Resource(id)
                 .acquire()
                 .map_err(|error| error.to_string())?;
-            let events = Arc::new(EventEmitter::new(&device.platform));
+            let events = Arc::new(EventEmitter::new(&platform));
             let progress = events.scope(
                 "loadprogress",
                 json!({"state":"loading","message":"Installing contents"}),
                 json!({"state":"failed","message":"Installation interrupted"}),
             );
             let result = manager
-                .install(&device.platform, device.id, &path, |message| {
+                .install(&platform, id, &path, |message| {
                     events.publish("loadprogress", json!({"state":"loading","message":message}))
                 })
                 .await;
@@ -104,13 +114,19 @@ impl Handler<Bootstrap> for StorageActor {
         }: Bootstrap,
         _: &mut Context<Self>,
     ) -> Self::Result {
-        self.execute(move |_, plugins| async move {
-            let device = Self::device(platform, id)?;
-            let _lease = ExclusiveResourceKey::Resource(device.id)
+        self.execute(move |manager, plugins| async move {
+            let id = Self::parse(&id)?;
+            let _lease = ExclusiveResourceKey::Resource(id)
                 .acquire()
                 .map_err(|error| error.to_string())?;
             plugins
-                .bootstrap(device, settings, plugins.cancellation_token())
+                .bootstrap(
+                    manager,
+                    &platform,
+                    id,
+                    settings,
+                    plugins.cancellation_token(),
+                )
                 .await
                 .map_err(StorageError::from_display)
         })
@@ -131,11 +147,16 @@ impl Handler<Uninstall> for StorageActor {
         _: &mut Context<Self>,
     ) -> Self::Result {
         self.execute(move |manager, _| async move {
-            let device = Self::device(platform, id)?;
-            let _lease = ExclusiveResourceKey::Resource(device.id)
+            let id = Self::parse(&id)?;
+            let _lease = ExclusiveResourceKey::Resource(id)
                 .acquire()
                 .map_err(|error| error.to_string())?;
-            let nand = device.open(&manager).await?;
+            let nand = manager
+                .open(StorageKind::Nand, &platform, id)
+                .await
+                .map_err(StorageError::from_display)?
+                .as_nand()
+                .ok_or("device is not a NAND")?;
             if nand.is_dirty().map_err(|error| error.to_string())? {
                 return Err(
                     "Recover the NAND's uncommitted changes before removing artifacts.".into(),
@@ -167,11 +188,16 @@ impl Handler<PlanRemoval> for StorageActor {
         _: &mut Context<Self>,
     ) -> Self::Result {
         self.execute(move |manager, _| async move {
-            let device = Self::device(platform, id)?;
-            let _lease = ExclusiveResourceKey::Resource(device.id)
+            let id = Self::parse(&id)?;
+            let _lease = ExclusiveResourceKey::Resource(id)
                 .acquire()
                 .map_err(|error| error.to_string())?;
-            let nand = device.open(&manager).await?;
+            let nand = manager
+                .open(StorageKind::Nand, &platform, id)
+                .await
+                .map_err(StorageError::from_display)?
+                .as_nand()
+                .ok_or("device is not a NAND")?;
             let affected = nand
                 .root()
                 .artifacts()
@@ -187,15 +213,6 @@ impl Handler<PlanRemoval> for StorageActor {
                     .revision()
                     .map_err(StorageError::from_display)?,
             })
-        })
-    }
-}
-
-impl StorageActor {
-    fn device(platform: String, id: String) -> Result<Device, StorageError> {
-        Ok(Device {
-            platform,
-            id: Self::parse(&id)?,
         })
     }
 }
