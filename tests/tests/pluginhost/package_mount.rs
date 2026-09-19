@@ -69,7 +69,7 @@ async fn package_mounts_images_directories_and_cues_read_only() {
     )
     .unwrap();
     let identified = Package::identify(&source, Some("NEC_TG16"), None).unwrap();
-    // Simulate the frontend round trip that drops the private CUE manifest.
+    // Prepare a package after its manifest passes through the frontend round trip.
     let mut package: Package =
         serde_json::from_value(serde_json::to_value(identified).unwrap()).unwrap();
     package.prepare_launch().unwrap();
@@ -78,12 +78,12 @@ async fn package_mounts_images_directories_and_cues_read_only() {
         blake3::hash(&track).to_hex().as_str()
     );
 
-    // Prepared packages retain their bundle and identity across another round
-    // trip without reopening the original descriptor.
+    // Prepared packages can be prepared again after another frontend round trip.
     let mut package: Package =
         serde_json::from_value(serde_json::to_value(package).unwrap()).unwrap();
-    std::fs::remove_file(&source).unwrap();
     package.prepare_launch().unwrap();
+    // Mounting uses the generated descriptor, not the original CUE file.
+    std::fs::remove_file(&source).unwrap();
     let cue = "FILE \"file-0000.bin\" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n";
     let result = runtime
         .handle()

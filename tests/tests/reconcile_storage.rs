@@ -8,7 +8,10 @@ use polymer_consolestorage::{
     },
 };
 use polymer_library::StorageManager;
-use polymer_vfs::{MemoryFileFactory, OpenOptions, ResourceFactory};
+use polymer_vfs::{
+    CreateOptions, MemoryFileFactory, OpenOptions, ResourceFactory, ScratchBacking,
+    ScratchVolumeFactory, VfsComponent, VfsError,
+};
 
 struct GameCubeFixture {
     _directory: tempfile::TempDir,
@@ -239,6 +242,75 @@ async fn card_reconciliation_retries_failed_persistence_on_sync() {
 }
 
 #[test]
+fn memory_files_keep_open_access_separate_from_shared_contents() {
+    let standalone = MemoryFileFactory::writable(Vec::new())
+        .materialize()
+        .unwrap();
+    let scratch = ScratchVolumeFactory::new(ScratchBacking::Memory)
+        .materialize()
+        .unwrap();
+    let scratch_file = scratch
+        .backend
+        .root()
+        .unwrap()
+        .create_file(
+            &VfsComponent::new("scratch").unwrap(),
+            CreateOptions::default(),
+        )
+        .unwrap();
+    let read = OpenOptions {
+        read: true,
+        write: false,
+        truncate: false,
+    };
+
+    for file in [standalone.backend, scratch_file] {
+        let reader = file.open(read).unwrap();
+        let writer = file
+            .open(OpenOptions {
+                write: true,
+                ..read
+            })
+            .unwrap();
+        writer.write(2, b"data").unwrap();
+        assert!(!reader.metadata().unwrap().readonly);
+        assert!(matches!(
+            reader.write(0, b"x"),
+            Err(VfsError::PermissionDenied(_))
+        ));
+        assert!(matches!(
+            reader.truncate(0),
+            Err(VfsError::PermissionDenied(_))
+        ));
+        let mut bytes = [0xff; 6];
+        assert_eq!(reader.read(0, &mut bytes).unwrap(), bytes.len());
+        assert_eq!(&bytes, b"\0\0data");
+
+        writer.truncate(4).unwrap();
+        assert_eq!(reader.metadata().unwrap().len, 4);
+        // Open-time truncation does not grant write access to the returned handle.
+        let truncated = file
+            .open(OpenOptions {
+                truncate: true,
+                ..read
+            })
+            .unwrap();
+        assert_eq!(reader.metadata().unwrap().len, 0);
+        assert!(matches!(
+            truncated.write(0, b"x"),
+            Err(VfsError::PermissionDenied(_))
+        ));
+        assert!(matches!(
+            truncated.truncate(1),
+            Err(VfsError::PermissionDenied(_))
+        ));
+        writer.write(0, b"new").unwrap();
+        assert_eq!(truncated.read(0, &mut bytes).unwrap(), 3);
+        assert_eq!(&bytes[..3], b"new");
+    }
+}
+
+#[test]
 fn memory_file_factory_shares_storage_across_handles_and_adoption() {
     let factory = MemoryFileFactory::writable(b"before".to_vec());
     let first = factory.materialize().unwrap();
@@ -249,6 +321,13 @@ fn memory_file_factory_shares_storage_across_handles_and_adoption() {
         truncate: false,
     };
     let reader = first.backend.open(read).unwrap();
+    let writer = first
+        .backend
+        .open(OpenOptions {
+            write: true,
+            ..read
+        })
+        .unwrap();
     assert!(!reader.metadata().unwrap().readonly);
     let source = MemoryFileFactory::immutable(b"replacement".to_vec())
         .materialize()
@@ -264,6 +343,14 @@ fn memory_file_factory_shares_storage_across_handles_and_adoption() {
     adoption.finalize().unwrap();
     reader.read(0, &mut bytes).unwrap();
     assert_eq!(&bytes, b"replacement");
+    writer.write(0, b"R").unwrap();
+    second
+        .backend
+        .open(read)
+        .unwrap()
+        .read(0, &mut bytes)
+        .unwrap();
+    assert_eq!(&bytes, b"Replacement");
     assert!(
         source
             .backend

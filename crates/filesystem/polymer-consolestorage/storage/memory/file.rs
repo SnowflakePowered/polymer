@@ -5,8 +5,9 @@ use parking_lot::Mutex;
 
 use crate::{EntryKind, Error, Metadata, StorageFile};
 
+/// Shared in-memory file contents, independent of a storage tree.
 #[derive(Clone)]
-pub(crate) struct MemoryFile(Arc<Mutex<MemoryFileState>>);
+pub struct MemoryFile(Arc<Mutex<MemoryFileState>>);
 
 struct MemoryFileState {
     bytes: Vec<u8>,
@@ -14,7 +15,7 @@ struct MemoryFileState {
 }
 
 impl MemoryFile {
-    pub(crate) fn new(bytes: Vec<u8>) -> Self {
+    pub fn new(bytes: Vec<u8>) -> Self {
         Self(Arc::new(Mutex::new(MemoryFileState {
             bytes,
             mtime: Timestamp::now(),
@@ -25,7 +26,7 @@ impl MemoryFile {
         self.0.lock().bytes.clone()
     }
 
-    pub(crate) fn metadata(&self) -> Metadata {
+    pub fn metadata(&self) -> Metadata {
         let state = self.0.lock();
         Metadata {
             kind: EntryKind::File,
@@ -34,7 +35,14 @@ impl MemoryFile {
         }
     }
 
-    pub(crate) fn handle(&self, writable: bool) -> Arc<dyn StorageFile> {
+    /// Atomically replaces contents for all existing handles.
+    pub fn replace_contents(&self, bytes: Vec<u8>) {
+        let mut state = self.0.lock();
+        state.bytes = bytes;
+        state.mtime = Timestamp::now();
+    }
+
+    pub fn handle(&self, writable: bool) -> Arc<dyn StorageFile> {
         Arc::new(MemoryStorageFile {
             file: self.clone(),
             writable,
