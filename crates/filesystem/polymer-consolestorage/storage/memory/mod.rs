@@ -9,7 +9,7 @@ use super::{
     BoxFuture, DirEntry, EntryKind, Error, InstallResult, Metadata, MountableStorage, ReadDir,
     Storage, StorageFile,
 };
-pub(crate) use file::MemoryFile;
+pub use file::MemoryFile;
 
 enum Entry {
     Directory(Timestamp),

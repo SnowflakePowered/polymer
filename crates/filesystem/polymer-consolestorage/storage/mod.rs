@@ -24,7 +24,7 @@ mod reconcile;
 
 pub use composed::ComposedStorage;
 pub use git::{GitVolumeStorage, PlatformRepository};
-pub use memory::MemoryStorage;
+pub use memory::{MemoryFile, MemoryStorage};
 pub use reconcile::{ReconcileStorage, ReconciliableStorage};
 
 use crate::storage::manifest::VolumeInfo;

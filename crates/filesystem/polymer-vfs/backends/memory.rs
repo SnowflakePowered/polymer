@@ -4,37 +4,29 @@ use crate::{
     OpenOptions, RemoveKind, ResourceFactory, VfsComponent, VfsError, VfsPath, VfsPathBuf,
     VfsPathUnit, VfsResult, Volume,
 };
-use parking_lot::{Mutex, RwLock};
-use polymer_consolestorage::Storage;
+use parking_lot::Mutex;
+use polymer_consolestorage::{MemoryFile as StorageMemoryFile, StorageFile};
 use std::{
     collections::{BTreeMap, HashMap},
     sync::Arc,
 };
 
 pub struct MemoryFileFactory {
-    file: Arc<RwLock<Arc<dyn polymer_consolestorage::StorageFile>>>,
+    file: StorageMemoryFile,
     writable: bool,
 }
 
 impl MemoryFileFactory {
     pub fn immutable(bytes: Vec<u8>) -> Self {
         Self {
-            file: Arc::new(RwLock::new(
-                polymer_consolestorage::MemoryStorage::file(bytes, false)
-                    .open("", false)
-                    .expect("the memory storage contains its root file"),
-            )),
+            file: StorageMemoryFile::new(bytes),
             writable: false,
         }
     }
 
     pub fn writable(bytes: Vec<u8>) -> Self {
         Self {
-            file: Arc::new(RwLock::new(
-                polymer_consolestorage::MemoryStorage::file(bytes, true)
-                    .open("", true)
-                    .expect("the memory storage contains its root file"),
-            )),
+            file: StorageMemoryFile::new(bytes),
             writable: true,
         }
     }
@@ -46,7 +38,6 @@ impl ResourceFactory<dyn FileNode> for MemoryFileFactory {
             backend: Arc::new(MemoryFile {
                 file: self.file.clone(),
                 writable: self.writable,
-                write_access: self.writable,
             }),
             lease: Arc::new(NoopResourceLease),
         })
@@ -54,18 +45,13 @@ impl ResourceFactory<dyn FileNode> for MemoryFileFactory {
 }
 
 struct MemoryFile {
-    file: Arc<RwLock<Arc<dyn polymer_consolestorage::StorageFile>>>,
+    file: StorageMemoryFile,
     writable: bool,
-    write_access: bool,
 }
 
 impl FileNode for MemoryFile {
     fn metadata(&self) -> VfsResult<Metadata> {
-        let metadata = self
-            .file
-            .read()
-            .metadata()
-            .map_err(|error| super::storage::storage_error(error, ""))?;
+        let metadata = self.file.metadata();
         Ok(Metadata {
             kind: FileKind::File,
             len: metadata.len,
@@ -74,26 +60,22 @@ impl FileNode for MemoryFile {
     }
 
     fn set_metadata(&self, changes: MetadataChanges) -> VfsResult<()> {
+        VfsError::require_writable(self.writable)?;
         if let Some(len) = changes.len {
-            OpenFile::truncate(self, len)?;
-        } else {
-            VfsError::require_writable(self.writable)?;
+            self.file
+                .handle(true)
+                .set_len(len)
+                .map_err(|error| super::storage::storage_error(error, ""))?;
         }
         Ok(())
     }
 
     fn open(&self, options: OpenOptions) -> VfsResult<Box<dyn OpenFile>> {
-        if options.write || options.truncate {
-            VfsError::require_writable(self.writable)?;
-        }
-        if options.truncate {
-            OpenFile::truncate(self, 0)?;
-        }
-        Ok(Box::new(Self {
-            file: self.file.clone(),
-            writable: self.writable,
-            write_access: self.writable && options.write,
-        }))
+        Ok(Box::new(MemoryOpen::new(
+            &self.file,
+            !self.writable,
+            options,
+        )?))
     }
 
     fn adopt(&self, source: Arc<dyn FileNode>) -> VfsResult<Arc<dyn AdoptHandle>> {
@@ -108,51 +90,8 @@ impl FileNode for MemoryFile {
     }
 }
 
-impl OpenFile for MemoryFile {
-    fn metadata(&self) -> VfsResult<Metadata> {
-        FileNode::metadata(self)
-    }
-
-    fn read(&self, offset: u64, buffer: &mut [u8]) -> VfsResult<usize> {
-        self.file
-            .read()
-            .read_at(offset, buffer)
-            .map_err(|error| super::storage::storage_error(error, ""))
-    }
-
-    fn write(&self, offset: u64, buffer: &[u8]) -> VfsResult<usize> {
-        VfsError::require_writable(self.write_access)?;
-        self.file
-            .read()
-            .write_at(offset, buffer)
-            .map_err(|error| super::storage::storage_error(error, ""))
-    }
-
-    fn truncate(&self, len: u64) -> VfsResult<()> {
-        VfsError::require_writable(self.write_access)?;
-        self.file
-            .read()
-            .set_len(len)
-            .map_err(|error| super::storage::storage_error(error, ""))
-    }
-
-    fn flush(&self) -> VfsResult<()> {
-        self.file
-            .read()
-            .flush()
-            .map_err(|error| super::storage::storage_error(error, ""))
-    }
-
-    fn sync(&self) -> VfsResult<()> {
-        self.file
-            .read()
-            .sync()
-            .map_err(|error| super::storage::storage_error(error, ""))
-    }
-}
-
 struct MemoryFileAdoption {
-    file: Arc<RwLock<Arc<dyn polymer_consolestorage::StorageFile>>>,
+    file: StorageMemoryFile,
     source: Arc<dyn FileNode>,
     finalizing: Mutex<()>,
 }
@@ -161,7 +100,7 @@ impl AdoptHandle for MemoryFileAdoption {
     fn write(&self, offset: u64, buffer: &[u8]) -> VfsResult<()> {
         let _finalizing = self.finalizing.lock();
         self.file
-            .read()
+            .handle(true)
             .write_all_at(offset, buffer)
             .map_err(|error| super::storage::storage_error(error, ""))
     }
@@ -169,7 +108,7 @@ impl AdoptHandle for MemoryFileAdoption {
     fn truncate(&self, len: u64) -> VfsResult<()> {
         let _finalizing = self.finalizing.lock();
         self.file
-            .read()
+            .handle(true)
             .set_len(len)
             .map_err(|error| super::storage::storage_error(error, ""))
     }
@@ -195,64 +134,78 @@ impl AdoptHandle for MemoryFileAdoption {
             }
             offset += read;
         }
-        let replacement = polymer_consolestorage::MemoryStorage::file(replacement, true)
-            .open("", true)
-            .map_err(|error| super::storage::storage_error(error, ""))?;
-        // Only publish a fully read replacement. Every open handle shares this slot.
-        *self.file.write() = replacement;
+        // Only publish a fully read replacement. Every open handle shares the contents.
+        self.file.replace_contents(replacement);
         Ok(())
     }
 }
 
 struct MemoryOpen {
-    bytes: Arc<RwLock<Vec<u8>>>,
-    writable: bool,
+    handle: Arc<dyn StorageFile>,
+    readonly: bool,
+    write_access: bool,
+}
+
+impl MemoryOpen {
+    fn new(file: &StorageMemoryFile, readonly: bool, options: OpenOptions) -> VfsResult<Self> {
+        if options.write || options.truncate {
+            VfsError::require_writable(!readonly)?;
+        }
+        if options.truncate {
+            file.handle(true)
+                .set_len(0)
+                .map_err(|error| super::storage::storage_error(error, ""))?;
+        }
+        let write_access = !readonly && options.write;
+        Ok(Self {
+            handle: file.handle(write_access),
+            readonly,
+            write_access,
+        })
+    }
 }
 
 impl OpenFile for MemoryOpen {
     fn metadata(&self) -> VfsResult<Metadata> {
+        let metadata = self
+            .handle
+            .metadata()
+            .map_err(|error| super::storage::storage_error(error, ""))?;
         Ok(Metadata {
             kind: FileKind::File,
-            len: self.bytes.read().len() as u64,
-            readonly: !self.writable,
+            len: metadata.len,
+            readonly: self.readonly,
         })
     }
 
     fn read(&self, offset: u64, buffer: &mut [u8]) -> VfsResult<usize> {
-        let offset = offset as usize;
-        let bytes = self.bytes.read();
-        if offset >= bytes.len() {
-            return Ok(0);
-        }
-        let count = buffer.len().min(bytes.len() - offset);
-        buffer[..count].copy_from_slice(&bytes[offset..offset + count]);
-        Ok(count)
+        self.handle
+            .read_at(offset, buffer)
+            .map_err(|error| super::storage::storage_error(error, ""))
     }
 
     fn write(&self, offset: u64, buffer: &[u8]) -> VfsResult<usize> {
-        VfsError::require_writable(self.writable)?;
-        let offset = offset as usize;
-        let end = offset
-            .checked_add(buffer.len())
-            .ok_or_else(|| VfsError::Unsupported("file offset overflow".into()))?;
-        let mut bytes = self.bytes.write();
-        if bytes.len() < end {
-            bytes.resize(end, 0);
-        }
-        bytes[offset..end].copy_from_slice(buffer);
-        Ok(buffer.len())
+        VfsError::require_writable(self.write_access)?;
+        self.handle
+            .write_at(offset, buffer)
+            .map_err(|error| super::storage::storage_error(error, ""))
     }
 
     fn truncate(&self, len: u64) -> VfsResult<()> {
-        VfsError::require_writable(self.writable)?;
-        self.bytes.write().resize(len as usize, 0);
-        Ok(())
+        VfsError::require_writable(self.write_access)?;
+        self.handle
+            .set_len(len)
+            .map_err(|error| super::storage::storage_error(error, ""))
     }
     fn flush(&self) -> VfsResult<()> {
-        Ok(())
+        self.handle
+            .flush()
+            .map_err(|error| super::storage::storage_error(error, ""))
     }
     fn sync(&self) -> VfsResult<()> {
-        Ok(())
+        self.handle
+            .sync()
+            .map_err(|error| super::storage::storage_error(error, ""))
     }
 }
 
@@ -311,7 +264,7 @@ struct MemoryNode {
 
 enum MemoryKind {
     Directory(BTreeMap<Vec<VfsPathUnit>, (VfsComponent, u64)>),
-    File(Arc<RwLock<Vec<u8>>>),
+    File(StorageMemoryFile),
 }
 
 #[derive(Clone)]
@@ -622,7 +575,7 @@ impl DirectoryNode for MemoryDirectory {
                     },
                     len: match &child.kind {
                         MemoryKind::Directory(_) => 0,
-                        MemoryKind::File(bytes) => bytes.read().len() as u64,
+                        MemoryKind::File(file) => file.metadata().len,
                     },
                     readonly: child.readonly,
                 };
@@ -664,7 +617,7 @@ impl DirectoryNode for MemoryDirectory {
                 node,
             }));
         }
-        let node = state.allocate(MemoryKind::File(Arc::new(RwLock::new(Vec::new()))));
+        let node = state.allocate(MemoryKind::File(StorageMemoryFile::new(Vec::new())));
         let MemoryKind::Directory(children) = &mut state
             .nodes
             .get_mut(&self.node)
@@ -748,12 +701,12 @@ impl FileNode for MemoryTreeFile {
     fn metadata(&self) -> VfsResult<Metadata> {
         let state = self.state.lock();
         let node = state.nodes.get(&self.node).ok_or(VfsError::StaleNode)?;
-        let MemoryKind::File(bytes) = &node.kind else {
+        let MemoryKind::File(file) = &node.kind else {
             return Err(VfsError::IsDirectory(VfsPathBuf::root()));
         };
         Ok(Metadata {
             kind: FileKind::File,
-            len: bytes.read().len() as u64,
+            len: file.metadata().len,
             readonly: node.readonly,
         })
     }
@@ -766,10 +719,12 @@ impl FileNode for MemoryTreeFile {
         }
         if let Some(len) = changes.len {
             VfsError::require_writable(!node.readonly)?;
-            let MemoryKind::File(bytes) = &node.kind else {
+            let MemoryKind::File(file) = &node.kind else {
                 return Err(VfsError::IsDirectory(VfsPathBuf::root()));
             };
-            bytes.write().resize(len as usize, 0);
+            file.handle(true)
+                .set_len(len)
+                .map_err(|error| super::storage::storage_error(error, ""))?;
         }
         Ok(())
     }
@@ -777,18 +732,9 @@ impl FileNode for MemoryTreeFile {
     fn open(&self, options: OpenOptions) -> VfsResult<Box<dyn OpenFile>> {
         let state = self.state.lock();
         let node = state.nodes.get(&self.node).ok_or(VfsError::StaleNode)?;
-        let MemoryKind::File(bytes) = &node.kind else {
+        let MemoryKind::File(file) = &node.kind else {
             return Err(VfsError::IsDirectory(VfsPathBuf::root()));
         };
-        if options.write || options.truncate {
-            VfsError::require_writable(!node.readonly)?;
-        }
-        if options.truncate {
-            bytes.write().clear();
-        }
-        Ok(Box::new(MemoryOpen {
-            bytes: bytes.clone(),
-            writable: !node.readonly,
-        }))
+        Ok(Box::new(MemoryOpen::new(file, node.readonly, options)?))
     }
 }
