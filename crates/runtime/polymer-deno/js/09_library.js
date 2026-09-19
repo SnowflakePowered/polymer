@@ -70,7 +70,12 @@ export function createLibrary() {
       if (input === null || typeof input !== "object") throw new TypeError("launchable input must be an object");
       const path = optionalString(input.path, "path");
       if (path === null) throw new TypeError("path is required");
-      return new Package(await op_library_launchables_add(path, optionalString(input.platform, "platform"), input.parentBinaryId == null ? null : uuid(input.parentBinaryId, "parentBinaryId")));
+      const result = await op_library_launchables_add(path, optionalString(input.platform, "platform"), input.parentBinaryId == null ? null : uuid(input.parentBinaryId, "parentBinaryId"));
+      return {
+        ...result,
+        launchable: new Package(result.launchable),
+        imports: result.imports.map(item => ({ ...item, launchable: new Package(item.launchable) })),
+      };
     },
     delete(id) { return op_library_launchables_delete(uuid(id, "id")); },
   });
