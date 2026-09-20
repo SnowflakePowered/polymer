@@ -2,6 +2,7 @@
 use polymer_renderer::egui::{DebugOverlayModel, InputDiagnostics, draw_debug_overlay};
 use polymer_statistics::{FrameMetrics, LiveStatistics, PresentationMetrics, RecorderHandle};
 use std::{
+    cell::Cell,
     collections::HashMap,
     time::{Duration, Instant},
 };
@@ -11,6 +12,8 @@ pub struct OverlayFrame {
     pub primitives: Vec<egui::ClippedPrimitive>,
 }
 pub struct OverlayState {
+    shell_cursor: Cell<egui::CursorIcon>,
+    cursor_dirty: Cell<bool>,
     context: egui::Context,
     state: egui_winit::State,
     diagnostics: DebugOverlayModel,
@@ -44,6 +47,8 @@ impl OverlayState {
         diagnostics.backend = "Waiting".to_owned();
         diagnostics.consumer = consumer.to_owned();
         Self {
+            shell_cursor: Cell::new(egui::CursorIcon::Default),
+            cursor_dirty: Cell::new(false),
             context,
             state,
             diagnostics,
@@ -54,6 +59,51 @@ impl OverlayState {
             next_repaint: Instant::now(),
             interactive_until: None,
             counter,
+        }
+    }
+
+    pub fn set_shell_cursor(&self, window: &Window, icon: Option<cursor_icon::CursorIcon>) {
+        let cursor = match icon {
+            None => egui::CursorIcon::None,
+            Some(cursor_icon::CursorIcon::Alias) => egui::CursorIcon::Alias,
+            Some(cursor_icon::CursorIcon::AllScroll) => egui::CursorIcon::AllScroll,
+            Some(cursor_icon::CursorIcon::Cell) => egui::CursorIcon::Cell,
+            Some(cursor_icon::CursorIcon::ContextMenu) => egui::CursorIcon::ContextMenu,
+            Some(cursor_icon::CursorIcon::Copy) => egui::CursorIcon::Copy,
+            Some(cursor_icon::CursorIcon::Crosshair) => egui::CursorIcon::Crosshair,
+            Some(cursor_icon::CursorIcon::Default) => egui::CursorIcon::Default,
+            Some(cursor_icon::CursorIcon::Grab) => egui::CursorIcon::Grab,
+            Some(cursor_icon::CursorIcon::Grabbing) => egui::CursorIcon::Grabbing,
+            Some(cursor_icon::CursorIcon::Help) => egui::CursorIcon::Help,
+            Some(cursor_icon::CursorIcon::Move) => egui::CursorIcon::Move,
+            Some(cursor_icon::CursorIcon::NoDrop) => egui::CursorIcon::NoDrop,
+            Some(cursor_icon::CursorIcon::NotAllowed) => egui::CursorIcon::NotAllowed,
+            Some(cursor_icon::CursorIcon::Pointer) => egui::CursorIcon::PointingHand,
+            Some(cursor_icon::CursorIcon::Progress) => egui::CursorIcon::Progress,
+            Some(cursor_icon::CursorIcon::EwResize) => egui::CursorIcon::ResizeHorizontal,
+            Some(cursor_icon::CursorIcon::NeswResize) => egui::CursorIcon::ResizeNeSw,
+            Some(cursor_icon::CursorIcon::NwseResize) => egui::CursorIcon::ResizeNwSe,
+            Some(cursor_icon::CursorIcon::NsResize) => egui::CursorIcon::ResizeVertical,
+            Some(cursor_icon::CursorIcon::EResize) => egui::CursorIcon::ResizeEast,
+            Some(cursor_icon::CursorIcon::SeResize) => egui::CursorIcon::ResizeSouthEast,
+            Some(cursor_icon::CursorIcon::SResize) => egui::CursorIcon::ResizeSouth,
+            Some(cursor_icon::CursorIcon::SwResize) => egui::CursorIcon::ResizeSouthWest,
+            Some(cursor_icon::CursorIcon::WResize) => egui::CursorIcon::ResizeWest,
+            Some(cursor_icon::CursorIcon::NwResize) => egui::CursorIcon::ResizeNorthWest,
+            Some(cursor_icon::CursorIcon::NResize) => egui::CursorIcon::ResizeNorth,
+            Some(cursor_icon::CursorIcon::NeResize) => egui::CursorIcon::ResizeNorthEast,
+            Some(cursor_icon::CursorIcon::ColResize) => egui::CursorIcon::ResizeColumn,
+            Some(cursor_icon::CursorIcon::RowResize) => egui::CursorIcon::ResizeRow,
+            Some(cursor_icon::CursorIcon::Text) => egui::CursorIcon::Text,
+            Some(cursor_icon::CursorIcon::VerticalText) => egui::CursorIcon::VerticalText,
+            Some(cursor_icon::CursorIcon::Wait) => egui::CursorIcon::Wait,
+            Some(cursor_icon::CursorIcon::ZoomIn) => egui::CursorIcon::ZoomIn,
+            Some(cursor_icon::CursorIcon::ZoomOut) => egui::CursorIcon::ZoomOut,
+            _ => egui::CursorIcon::Default,
+        };
+        if self.shell_cursor.replace(cursor) != cursor {
+            self.cursor_dirty.set(true);
+            window.request_redraw();
         }
     }
 
@@ -129,7 +179,7 @@ impl OverlayState {
         self.interactive_until.is_some_and(|until| now < until)
     }
     pub fn repaint_due(&self, now: Instant) -> bool {
-        self.next_repaint <= now
+        self.cursor_dirty.get() || self.next_repaint <= now
     }
     pub fn next_repaint(&self) -> Instant {
         self.next_repaint
@@ -150,6 +200,12 @@ impl OverlayState {
         let mut output = self
             .context
             .run(input, |context| draw_debug_overlay(context, diagnostics));
+        // Egui owns the cursor only over its UI (or during a drag). Feed the
+        // shell cursor through the same writer/cache when returning to the DOM.
+        if !self.context.wants_pointer_input() && !self.context.is_using_pointer() {
+            output.platform_output.cursor_icon = self.shell_cursor.get();
+        }
+        self.cursor_dirty.set(false);
         self.state
             .handle_platform_output(window, std::mem::take(&mut output.platform_output));
         let primitives = self

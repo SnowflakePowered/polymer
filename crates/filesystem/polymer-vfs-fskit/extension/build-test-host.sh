@@ -29,8 +29,8 @@ if app.exists():
     raise SystemExit(f"Choose a fresh output directory; {app} already exists")
 profiles = []
 for path, identifier, capability in [
-    (host_profile, "org.polymer", "mount"),
-    (extension_profile, "org.polymer.filesystem", "fsmodule"),
+    (host_profile, "gg.polymer", "mount"),
+    (extension_profile, "gg.polymer.filesystem", "fsmodule"),
 ]:
     profile = plistlib.loads(subprocess.check_output(["security", "cms", "-D", "-i", str(path)]))
     team, = profile["TeamIdentifier"]
@@ -52,7 +52,7 @@ extension = app / "Contents/Extensions/PolymerFilesystem.appex"
 shutil.copytree(output / "PolymerFilesystem.appex", extension)
 (app / "Contents/Info.plist").write_bytes(plistlib.dumps({
     "CFBundleExecutable": "PolymerFSKitTest",
-    "CFBundleIdentifier": "org.polymer",
+    "CFBundleIdentifier": "gg.polymer",
     "CFBundleName": "Polymer FSKit Test",
     "CFBundlePackageType": "APPL",
     "CFBundleVersion": "1",

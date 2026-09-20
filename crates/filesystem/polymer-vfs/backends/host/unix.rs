@@ -89,6 +89,7 @@ pub(super) struct HostVolume {
 
 struct HostVolumeInner {
     root: PathBuf,
+    internal_links: bool,
     writable: bool,
 }
 
@@ -113,8 +114,19 @@ impl HostVolume {
             return Err(VfsError::Unsupported("volume root cannot be a link".into()));
         }
         Ok(Self {
-            inner: Arc::new(HostVolumeInner { root, writable }),
+            inner: Arc::new(HostVolumeInner {
+                root,
+                writable,
+                internal_links: false,
+            }),
         })
+    }
+
+    pub(super) fn with_internal_links(mut self, enabled: bool) -> Self {
+        Arc::get_mut(&mut self.inner)
+            .expect("new volume is exclusively owned")
+            .internal_links = enabled;
+        self
     }
 
     fn component(path: &VfsPath) -> VfsResult<VfsComponent> {
@@ -138,7 +150,7 @@ impl HostVolume {
 impl HostVolumeInner {
     fn confined_existing(&self, path: PathBuf) -> VfsResult<PathBuf> {
         let metadata = fs::symlink_metadata(&path)?;
-        if metadata.file_type().is_symlink() {
+        if metadata.file_type().is_symlink() && !self.internal_links {
             return Err(VfsError::Unsupported(
                 "links are not exposed by confined host volumes".into(),
             ));
@@ -165,6 +177,14 @@ impl HostVolumeInner {
             Ok(Node::Directory(Arc::new(HostDirectory {
                 volume: self.clone(),
                 path,
+            })))
+        } else if !self.writable {
+            // Cached package metadata must not pin one descriptor per file.
+            // Read-only trees cannot rename/unlink nodes through this volume;
+            // acquire their descriptors only for the lifetime of an open file.
+            Ok(Node::File(Arc::new(HostFile {
+                path,
+                writable: false,
             })))
         } else {
             let handle = fs::OpenOptions::new()
@@ -262,12 +282,8 @@ impl DirectoryNode for HostDirectory {
         let mut entries = Vec::new();
         for entry in fs::read_dir(&self.path)? {
             let entry = entry?;
-            let metadata = fs::symlink_metadata(entry.path())?;
-            if metadata.file_type().is_symlink() {
-                return Err(VfsError::Unsupported(
-                    "links are not exposed by confined host volumes".into(),
-                ));
-            }
+            let path = self.volume.confined_existing(entry.path())?;
+            let metadata = fs::metadata(path)?;
             entries.push(Ok(DirectoryEntry {
                 name: component_from_os(entry.file_name())?,
                 metadata: Metadata {

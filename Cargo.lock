@@ -9815,6 +9815,7 @@ name = "polymer-hook"
 version = "0.1.0"
 dependencies = [
  "dashmap",
+ "objc2 0.6.4",
  "parking_lot",
  "paste",
  "polymer-protocol",
@@ -10007,7 +10008,9 @@ dependencies = [
 name = "polymer-hook-sdl3"
 version = "0.1.0"
 dependencies = [
+ "bincode 2.0.1",
  "consolespec",
+ "libloading",
  "parking_lot",
  "polymer-controllers",
  "polymer-hook",
@@ -10015,6 +10018,7 @@ dependencies = [
  "polymer-input",
  "polymer-ipc",
  "polymer-platform-windows",
+ "tempfile",
  "tracing",
  "windows-sys 0.61.2",
 ]
@@ -10172,6 +10176,7 @@ dependencies = [
 name = "polymer-platform-macos"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "libc",
  "libloading",
  "mach2",
@@ -10239,6 +10244,7 @@ dependencies = [
  "polymer-input",
  "polymer-ipc",
  "polymer-library",
+ "polymer-platform-macos",
  "polymer-protocol",
  "polymer-vfs",
  "reqwest",

@@ -2,12 +2,13 @@
 #![cfg(target_os = "macos")]
 mod drawable;
 mod frontend;
+mod installation;
 mod tracker;
 use frontend::Frontend;
 use objc2::{
     AnyThread, ClassType, DefinedClass, MainThreadMarker, define_class, msg_send,
     rc::Retained,
-    runtime::{AnyObject, Imp, ProtocolObject, Sel},
+    runtime::{AnyObject, ProtocolObject, Sel},
     sel,
 };
 use objc2_app_kit::{NSApplication, NSView};
@@ -17,18 +18,15 @@ use polymer_presentation::swapchain::{Candidate, OwnerCell, SourceIdentity, Wind
 use std::{
     ffi::c_void,
     io,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex},
 };
 
 type Next =
     unsafe extern "C-unwind" fn(&CAMetalLayer, Sel) -> *mut ProtocolObject<dyn CAMetalDrawable>;
-static ORIGINAL: OnceLock<Next> = OnceLock::new();
 type SetSize = unsafe extern "C-unwind" fn(&CAMetalLayer, Sel, NSSize);
-static SET_SIZE: OnceLock<SetSize> = OnceLock::new();
 static ASSOCIATION: u8 = 0;
 static ATTACH: Mutex<()> = Mutex::new(());
 type UpdateWindows = unsafe extern "C-unwind" fn(&NSApplication, Sel);
-static UPDATE: OnceLock<UpdateWindows> = OnceLock::new();
 struct LayerState {
     frontend: OwnerCell<Option<Arc<Frontend>>>,
     window: Mutex<Option<(u64, String)>>,
@@ -52,40 +50,20 @@ impl Hook {
     }
     fn install() -> io::Result<()> {
         Frontend::initialize()?;
-        let method = CAMetalLayer::class()
-            .instance_method(sel!(nextDrawable))
-            .ok_or_else(|| io::Error::other("CAMetalLayer nextDrawable missing"))?;
-        unsafe {
-            ORIGINAL
-                .set(std::mem::transmute::<Imp, Next>(method.implementation()))
-                .map_err(|_| io::Error::other("Metal hook already installed"))?;
-            method.set_implementation(std::mem::transmute::<Next, Imp>(Self::next));
-        }
-        let method = CAMetalLayer::class()
-            .instance_method(sel!(setDrawableSize:))
-            .ok_or_else(|| io::Error::other("CAMetalLayer setDrawableSize missing"))?;
-        unsafe {
-            SET_SIZE
-                .set(std::mem::transmute::<Imp, SetSize>(method.implementation()))
-                .map_err(|_| io::Error::other("Metal size hook already installed"))?;
-            method.set_implementation(std::mem::transmute::<SetSize, Imp>(Self::set_size));
-        }
-        let method = NSApplication::class()
-            .instance_method(sel!(updateWindows))
-            .ok_or_else(|| io::Error::other("AppKit updateWindows missing"))?;
-        unsafe {
-            UPDATE
-                .set(std::mem::transmute::<Imp, UpdateWindows>(
-                    method.implementation(),
-                ))
-                .map_err(|_| io::Error::other("window hook already installed"))?;
-            method.set_implementation(std::mem::transmute::<UpdateWindows, Imp>(
-                Self::update_windows,
-            ));
-        }
+        installation::DrawableInstallation::install()
+            .map_err(|e| io::Error::other(format!("{e:?}")))?;
+        installation::SizeInstallation::install()
+            .map_err(|e| io::Error::other(format!("{e:?}")))?;
+        installation::WindowsInstallation::install()
+            .map_err(|e| io::Error::other(format!("{e:?}")))?;
         Ok(())
     }
-    unsafe extern "C-unwind" fn set_size(layer: &CAMetalLayer, selector: Sel, size: NSSize) {
+    unsafe fn set_size(
+        layer: &CAMetalLayer,
+        selector: Sel,
+        size: NSSize,
+        mut next: installation::SetSizeContext<'_>,
+    ) {
         // A captured layer keeps the extent reserved by the shared assignment.
         // Guest window resizes change presentation, never the exported images.
         let state = Self::association(layer);
@@ -95,15 +73,10 @@ impl Hook {
             .enter()
             .is_none_or(|owner| owner.is_some());
         if !assigned {
-            unsafe {
-                SET_SIZE.get().unwrap()(layer, selector, size);
-            }
+            polymer_hook::next!(next, layer, selector, size);
         }
     }
-    unsafe extern "C-unwind" fn update_windows(app: &NSApplication, selector: Sel) {
-        unsafe {
-            UPDATE.get().unwrap()(app, selector);
-        }
+    unsafe fn update_windows(app: &NSApplication, _selector: Sel, _result: ()) {
         for window in app.windows() {
             if let Some(view) = window.contentView() {
                 Self::associate_views(
@@ -126,15 +99,16 @@ impl Hook {
             Self::associate_views(&child, window, title);
         }
     }
-    unsafe extern "C-unwind" fn next(
+    unsafe fn next(
         layer: &CAMetalLayer,
         selector: Sel,
+        mut next: installation::NextDrawableContext<'_>,
     ) -> *mut ProtocolObject<dyn CAMetalDrawable> {
         let result = Self::frontend(layer)
             .and_then(|frontend| frontend.map(|value| value.next(layer)).transpose());
         match result {
             Ok(Some(drawable)) => Retained::autorelease_return(drawable),
-            Ok(None) => unsafe { ORIGINAL.get().unwrap()(layer, selector) },
+            Ok(None) => polymer_hook::next!(next, layer, selector),
             Err(error) => {
                 eprintln!("Polymer Metal nextDrawable: {error}");
                 std::ptr::null_mut()

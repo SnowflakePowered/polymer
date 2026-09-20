@@ -9,7 +9,7 @@ The host retains the live VFS and storage leases. The FSKit app extension runs
 Rust `objc2` implementations of `FSUnaryFileSystem` and `FSVolume`; only the
 Swift-only `UnaryFileSystemExtension` entry point is Swift. File operations
 cross a bounded NSXPC connection directly to the host. The per-user
-`org.polymer.ipc` broker transfers the anonymous listener endpoint; VFS traffic
+`gg.polymer.ipc` broker transfers the anonymous listener endpoint; VFS traffic
 does not pass through the broker. A random per-mount capability in the FSKit
 resource URL selects the endpoint, and listeners accept only the same user. Names remain
 byte strings, and permissions and mutations are enforced by `polymer-vfs`.
@@ -18,7 +18,7 @@ The host unmounts before stopping the server and finalizing storage.
 ## Build and package
 
 Register the [IPC broker](../../runtime/polymer-ipc/README.md) before mounting.
-The sandboxed extension has a Mach lookup exception for `org.polymer.ipc`;
+The sandboxed extension has a Mach lookup exception for `gg.polymer.ipc`;
 network client access is no longer needed.
 
 Run `extension/build.sh` from any directory. It builds
@@ -30,7 +30,7 @@ extension with `extension/Extension.entitlements` and the host with the
 additional entitlement in `extension/Host.entitlements`, using provisioning
 profiles that authorize the respective FSKit entitlements. Preserve any other
 host entitlements when merging these. The extension identifier is
-`org.polymer.filesystem`; the host passes that identifier to FSKit. Register the
+`gg.polymer.filesystem`; the host passes that identifier to FSKit. Register the
 containing app normally and enable the extension in System Settings.
 
 An ad-hoc signature is insufficient: FSKit requires provisioned entitlements.

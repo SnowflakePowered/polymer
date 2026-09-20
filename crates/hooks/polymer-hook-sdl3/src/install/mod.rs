@@ -1,4 +1,16 @@
-//! SDL3 module discovery and detour ownership.
+//! Shared SDL3 entry and function-table hooks.
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "windows")]
+mod windows;
+#[cfg(target_os = "macos")]
+pub use macos::SDL_DYNAPI_entry;
+#[cfg(target_os = "macos")]
+use macos::backend_module;
+#[cfg(target_os = "windows")]
+pub use windows::PolymerInstallSdl3Hook;
+#[cfg(target_os = "windows")]
+use windows::backend_module;
 
 use crate::api;
 use parking_lot::Mutex;
@@ -6,17 +18,11 @@ use polymer_hook::config;
 use polymer_hook_input_sdl::Runtime;
 use std::{
     ffi::c_void,
-    os::windows::ffi::OsStrExt,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
 };
-use windows_sys::Win32::{
-    Foundation::HMODULE,
-    System::LibraryLoader::{GetModuleHandleW, LoadLibraryW},
-};
-
 pub(crate) struct Sdl3TableState {
     backend: Mutex<api::Api>,
     runtime: Arc<Runtime>,
@@ -29,42 +35,15 @@ pub(crate) struct Sdl3EntryState {
     target: api::DynapiEntryFn,
 }
 
-pub(crate) struct Sdl3ExportState {
-    table: Sdl3TableState,
-}
-
-impl Default for Sdl3ExportState {
-    fn default() -> Self {
-        let table = create_table_state().expect("the SDL3 export hook state is valid");
-        if let Ok(session) = config::session() {
-            table.runtime.start_receiver(format!("{session}-input"));
-        }
-        Self { table }
-    }
-}
-
 impl Default for Sdl3EntryState {
     fn default() -> Self {
-        let module = dynamic_api_module()
-            .or_else(|| loaded_module(SDL3_DLL))
-            .expect("SDL3 module was resolved before entry-hook installation");
+        let module =
+            backend_module().expect("SDL3 module was resolved before entry-hook installation");
         let target = unsafe { api::symbol(module, c"SDL_DYNAPI_entry") }
             .expect("SDL3 dynamic API entry target was resolved before installation");
         Self { target }
     }
 }
-
-const SDL3_DLL: &[u16] = &[
-    b'S' as u16,
-    b'D' as u16,
-    b'L' as u16,
-    b'3' as u16,
-    b'.' as u16,
-    b'd' as u16,
-    b'l' as u16,
-    b'l' as u16,
-    0,
-];
 
 // SDL3's ABI-stable dynamic API table is append-only. These slots come from
 // SDL_dynapi_procs.h in the runtime staged with this hook.
@@ -85,9 +64,7 @@ fn dynapi_entry_target() -> api::DynapiEntryFn {
 }
 
 fn create_table_state() -> Result<Sdl3TableState, &'static str> {
-    let module = dynamic_api_module()
-        .or_else(|| loaded_module(SDL3_DLL))
-        .ok_or("SDL3 module is not loaded")?;
+    let module = backend_module().ok_or("SDL3 module is not loaded")?;
     let runtime = Arc::new(Runtime::new());
     let backend = unsafe { api::Api::load(module, Vec::new(), runtime.clone()) }
         .ok_or("SDL3 virtual joystick exports are unavailable")?;
@@ -100,45 +77,10 @@ fn create_table_state() -> Result<Sdl3TableState, &'static str> {
     })
 }
 
-type InitSubSystemFn = unsafe extern "C" fn(u32) -> bool;
-type GetGamepadAxisFn = unsafe extern "C" fn(*mut c_void, i32) -> i16;
-type GetGamepadButtonFn = unsafe extern "C" fn(*mut c_void, i32) -> bool;
-type GetJoystickAxisFn = unsafe extern "C" fn(*mut c_void, i32) -> i16;
-type GetJoystickButtonFn = unsafe extern "C" fn(*mut c_void, i32) -> bool;
-type PollEventFn = unsafe extern "C" fn(*mut c_void) -> bool;
-
-fn frontend_symbol<T: Copy>(name: &std::ffi::CStr) -> T {
-    let module = loaded_module(SDL3_DLL).expect("the SDL3 frontend module is loaded");
-    unsafe { api::symbol(module, name) }.expect("the SDL3 frontend export is available")
-}
-
-fn init_subsystem_target() -> InitSubSystemFn {
-    frontend_symbol(c"SDL_InitSubSystem")
-}
-
-fn get_gamepad_axis_target() -> GetGamepadAxisFn {
-    frontend_symbol(c"SDL_GetGamepadAxis")
-}
-
-fn get_gamepad_button_target() -> GetGamepadButtonFn {
-    frontend_symbol(c"SDL_GetGamepadButton")
-}
-
-fn get_joystick_axis_target() -> GetJoystickAxisFn {
-    frontend_symbol(c"SDL_GetJoystickAxis")
-}
-
-fn get_joystick_button_target() -> GetJoystickButtonFn {
-    frontend_symbol(c"SDL_GetJoystickButton")
-}
-
-fn poll_event_target() -> PollEventFn {
-    frontend_symbol(c"SDL_PollEvent")
-}
-
 polymer_hook::chain_hooks! {
     #![order(reverse)]
-    #![detour(polymer_platform_windows::InlineDetour<_>)]
+    #![cfg_attr(target_os = "windows", detour(polymer_platform_windows::InlineDetour<_>))]
+    #![cfg_attr(target_os = "macos", detour(polymer_hook::macos::ExportDetour<_>))]
     #[installer(state = Sdl3EntryState)]
     pub(crate) struct Sdl3EntryInstallation;
 
@@ -150,62 +92,6 @@ polymer_hook::chain_hooks! {
         table: *mut c_void,
         tablesize: u32,
     ) -> i32;
-}
-
-polymer_hook::chain_hooks! {
-    #![order(reverse)]
-    #![detour(polymer_platform_windows::InlineDetour<_>)]
-    #[installer(state = Sdl3ExportState)]
-    pub(crate) struct Sdl3ExportInstallation;
-
-    #[trampoline]
-    #[terminal(installed(target = init_subsystem_target()), fallback = false)]
-    #[postfix(|result, next| {
-        if result {
-            prepare_export_gamepads(next.state.as_ref());
-        }
-    })]
-    unsafe extern "C" fn init_subsystem(flags: u32) -> bool;
-
-    #[trampoline]
-    #[terminal(installed(target = get_gamepad_axis_target()), fallback = 0)]
-    #[prefix(|next| flush_gamepads(&next.state.table))]
-    unsafe extern "C" fn exported_get_gamepad_axis(
-        gamepad: *mut c_void,
-        axis: i32,
-    ) -> i16;
-
-    #[trampoline]
-    #[terminal(installed(target = get_gamepad_button_target()), fallback = false)]
-    #[prefix(|next| flush_gamepads(&next.state.table))]
-    unsafe extern "C" fn exported_get_gamepad_button(
-        gamepad: *mut c_void,
-        button: i32,
-    ) -> bool;
-
-    #[trampoline]
-    #[terminal(installed(target = get_joystick_axis_target()), fallback = 0)]
-    #[prefix(|next| flush_gamepads(&next.state.table))]
-    unsafe extern "C" fn exported_get_joystick_axis(
-        joystick: *mut c_void,
-        axis: i32,
-    ) -> i16;
-
-    #[trampoline]
-    #[terminal(installed(target = get_joystick_button_target()), fallback = false)]
-    #[prefix(|next| flush_gamepads(&next.state.table))]
-    unsafe extern "C" fn exported_get_joystick_button(
-        joystick: *mut c_void,
-        button: i32,
-    ) -> bool;
-
-    #[trampoline]
-    #[terminal(installed(target = poll_event_target()), fallback = false)]
-    #[prefix(|next| {
-        prepare_export_gamepads(next.state.as_ref());
-        flush_gamepads(&next.state.table);
-    })]
-    unsafe extern "C" fn exported_poll_event(event: *mut c_void) -> bool;
 }
 
 polymer_hook::function_table_hook! {
@@ -288,63 +174,6 @@ polymer_hook::function_table_hook! {
     }
 }
 
-#[unsafe(no_mangle)]
-/// Installs the SDL3 virtual-gamepad hooks into the current process.
-///
-/// # Safety
-///
-/// The caller must invoke this only after the DLL has been loaded into a
-/// Windows process whose module list and dynamic API table are valid.
-pub unsafe extern "system" fn PolymerInstallSdl3Hook() -> i32 {
-    polymer_hook::telemetry::init_file_tracing(config::sdl_log_file());
-    discover_loaded_module();
-    0
-}
-
-fn dynamic_api_module() -> Option<HMODULE> {
-    let path = std::env::var_os("SDL3_DYNAMIC_API")?;
-    let mut wide = path.encode_wide().collect::<Vec<_>>();
-    wide.push(0);
-    let module = unsafe { LoadLibraryW(wide.as_ptr()) };
-    if module.is_null() {
-        tracing::debug!("failed to preload SDL3_DYNAMIC_API runtime");
-        None
-    } else {
-        Some(module)
-    }
-}
-
-fn discover_loaded_module() {
-    if let Some(module) = dynamic_api_module().or_else(|| loaded_module(SDL3_DLL))
-        && (unsafe { api::symbol::<api::DynapiEntryFn>(module, c"SDL_DYNAPI_entry") }).is_some()
-    {
-        install();
-    }
-}
-
-fn loaded_module(name: &[u16]) -> Option<HMODULE> {
-    let module = unsafe { GetModuleHandleW(name.as_ptr()) };
-    (!module.is_null()).then_some(module)
-}
-
-fn install() {
-    let dynamic_module = dynamic_api_module().or_else(|| loaded_module(SDL3_DLL));
-    let frontend_module = loaded_module(SDL3_DLL);
-    if dynamic_module.is_some() && frontend_module.is_some() && dynamic_module != frontend_module {
-        if Sdl3ExportInstallation::install().is_err() {
-            tracing::debug!("failed to enable SDL3 frontend export detours");
-            return;
-        }
-        tracing::debug!("installed SDL3 frontend export gamepad hooks");
-    } else {
-        if Sdl3EntryInstallation::install().is_err() {
-            tracing::debug!("failed to enable SDL3 dynamic API detour");
-            return;
-        }
-        tracing::debug!("installed SDL3 dynamic API gamepad hooks");
-    }
-}
-
 unsafe fn captured_dynapi_table(
     table: *mut c_void,
     tablesize: u32,
@@ -355,6 +184,19 @@ unsafe fn captured_dynapi_table(
         return;
     }
 
+    if (tablesize as usize) < (DYNAPI_WAIT_EVENT_TIMEOUT + 1) * std::mem::size_of::<usize>() {
+        return;
+    }
+    // The guest may use the backing runtime itself. Calling its exported
+    // UpdateJoysticks after patching would re-enter this hook under the lock.
+    let original_update: unsafe extern "C" fn() = unsafe {
+        std::mem::transmute(
+            table
+                .cast::<*mut c_void>()
+                .add(DYNAPI_UPDATE_JOYSTICKS)
+                .read(),
+        )
+    };
     let state = match unsafe { Sdl3DynapiHook::install(table, tablesize) } {
         Ok(state) => state,
         Err(error) => {
@@ -362,6 +204,12 @@ unsafe fn captured_dynapi_table(
             return;
         }
     };
+    if !std::ptr::fn_addr_eq(
+        original_update,
+        update_joysticks_dispatch as unsafe extern "C" fn(),
+    ) {
+        state.backend.lock().update_joysticks = original_update;
+    }
     if let Ok(session) = config::session() {
         state.runtime.start_receiver(format!("{session}-input"));
     }
@@ -375,15 +223,6 @@ fn prepare_enumeration(state: &Sdl3TableState) -> bool {
         false
     } else {
         true
-    }
-}
-
-fn prepare_export_gamepads(state: &Sdl3ExportState) {
-    if prepare_enumeration(&state.table)
-        && !state.table.logged_enumeration.swap(true, Ordering::AcqRel)
-    {
-        let count = state.table.runtime.topology_pad_count();
-        tracing::debug!("enumerated {count} SDL3 gamepad(s) through frontend exports");
     }
 }
 

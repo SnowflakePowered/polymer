@@ -13,7 +13,7 @@ use std::{
 #[test]
 #[ignore = "requires the installed/enabled FSKit extension and a signed test host with the FSKit mount entitlement"]
 fn mounted_files_delegate_mutations_to_the_live_vfs() {
-    let host = FsKitFilesystemHost::new("org.polymer.filesystem");
+    let host = FsKitFilesystemHost::new("gg.polymer.filesystem");
     assert!(host.supported(), "enable the Polymer FSKit extension first");
     let native = tempfile::tempdir().unwrap();
     let mut plan = FilesystemPlan::default();

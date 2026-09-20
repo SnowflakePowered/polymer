@@ -40,6 +40,12 @@ impl Submissions {
     pub fn gpu_pending(&self) -> bool {
         self.gpu.load(Ordering::Acquire) != 0
     }
+    pub fn can_submit(&self) -> io::Result<bool> {
+        if let Some(error) = &*self.error.lock() {
+            return Err(io::Error::other(error.clone()));
+        }
+        Ok(self.gpu.load(Ordering::Acquire) < 2)
+    }
     pub fn available(&self) -> io::Result<bool> {
         if let Some(error) = &*self.error.lock() {
             return Err(io::Error::other(error.clone()));
@@ -51,14 +57,14 @@ impl Submissions {
     pub fn track(
         self: &Arc<Self>,
         commands: &ProtocolObject<dyn MTLCommandBuffer>,
-        drawable: &ProtocolObject<dyn CAMetalDrawable>,
+        drawable: Option<&ProtocolObject<dyn CAMetalDrawable>>,
         releases: Vec<(BufferReleaseSender, polymer_protocol::StreamId, u64)>,
     ) {
         self.active.fetch_add(1, Ordering::AcqRel);
         self.gpu.fetch_add(1, Ordering::AcqRel);
         let completion = Arc::new(Completion {
             owner: self.clone(),
-            finished: AtomicU8::new(0),
+            finished: AtomicU8::new(if drawable.is_some() { 0 } else { 2 }),
         });
         let presented = completion.clone();
         let display =
@@ -87,7 +93,9 @@ impl Submissions {
             },
         );
         unsafe {
-            drawable.addPresentedHandler(RcBlock::as_ptr(&display));
+            if let Some(drawable) = drawable {
+                drawable.addPresentedHandler(RcBlock::as_ptr(&display));
+            }
             commands.addCompletedHandler(RcBlock::as_ptr(&done));
         }
     }

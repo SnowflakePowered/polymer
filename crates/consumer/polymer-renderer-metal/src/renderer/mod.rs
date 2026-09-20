@@ -125,15 +125,17 @@ impl MetalCompositor {
             &[MetalFrame<'_>],
         ) -> Result<(), Box<dyn Error>>,
     ) -> Result<bool, Box<dyn Error>> {
-        if !self.submissions.available()? {
+        if !self.submissions.can_submit()? {
             return Ok(false);
         }
-        if self.extent.width == 0 || self.extent.height == 0 {
-            return Ok(false);
-        }
-        let Some(drawable) = self.layer.nextDrawable() else {
-            return Ok(false);
-        };
+        // Presentation may stop while the window is occluded. Continue consuming
+        // guest frames on the same queue so old leases can still be released.
+        let drawable =
+            if self.submissions.available()? && self.extent.width != 0 && self.extent.height != 0 {
+                self.layer.nextDrawable()
+            } else {
+                None
+            };
         let commands = self
             .queue
             .commandBuffer()
@@ -149,6 +151,54 @@ impl MetalCompositor {
                 surface.imported.wait(&commands, frame.sync_value);
             }
         }
+        if let Some(drawable) = &drawable {
+            self.paint_drawable(plan, &commands, drawable, paint)?;
+        }
+        let frames = self
+            .surfaces
+            .iter()
+            .filter_map(|(&connection, s)| s.frames.frame().map(|frame| (connection, s, frame)))
+            .map(|(connection, s, frame)| {
+                Ok(MetalFrame {
+                    connection,
+                    frame,
+                    texture: s.imported.texture(frame)?,
+                    quarter_turns: s.quarter_turns,
+                })
+            })
+            .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
+        capture(&commands, &frames)?;
+        let mut releases = Vec::new();
+        for surface in self.surfaces.values() {
+            if let Some(value) = surface.frames.release_value() {
+                surface.imported.release(&commands, value);
+                if let (Some(sender), Some(frame)) =
+                    (&surface.frames.release_sender, surface.frames.frame())
+                {
+                    releases.push((sender.clone(), frame.stream_id, value));
+                }
+            }
+        }
+        self.submissions
+            .track(&commands, drawable.as_deref(), releases);
+        if let Some(drawable) = &drawable {
+            commands.presentDrawable(ProtocolObject::from_ref(&**drawable));
+        }
+        commands.commit();
+        // Queue order protects producer textures. Only completion handlers emit
+        // host release acknowledgments; submission advances local ownership.
+        for surface in self.surfaces.values_mut() {
+            surface.frames.commit();
+        }
+        Ok(true)
+    }
+    fn paint_drawable(
+        &self,
+        plan: &CompositingPlan,
+        commands: &ProtocolObject<dyn MTLCommandBuffer>,
+        drawable: &ProtocolObject<dyn objc2_quartz_core::CAMetalDrawable>,
+        paint: impl FnOnce(&mut MetalRenderPass<'_>) -> Result<(), Box<dyn Error>>,
+    ) -> Result<(), Box<dyn Error>> {
         let description = MTLRenderPassDescriptor::new();
         // Attachment zero is within Metal's fixed color attachment array.
         let color = unsafe { description.colorAttachments().objectAtIndexedSubscript(0) };
@@ -203,40 +253,7 @@ impl MetalCompositor {
         }
         paint(&mut pass)?;
         encoder.endEncoding();
-        let frames = self
-            .surfaces
-            .iter()
-            .filter_map(|(&connection, s)| s.frames.frame().map(|frame| (connection, s, frame)))
-            .map(|(connection, s, frame)| {
-                Ok(MetalFrame {
-                    connection,
-                    frame,
-                    texture: s.imported.texture(frame)?,
-                    quarter_turns: s.quarter_turns,
-                })
-            })
-            .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
-        capture(&commands, &frames)?;
-        let mut releases = Vec::new();
-        for surface in self.surfaces.values() {
-            if let Some(value) = surface.frames.release_value() {
-                surface.imported.release(&commands, value);
-                if let (Some(sender), Some(frame)) =
-                    (&surface.frames.release_sender, surface.frames.frame())
-                {
-                    releases.push((sender.clone(), frame.stream_id, value));
-                }
-            }
-        }
-        self.submissions.track(&commands, &drawable, releases);
-        commands.presentDrawable(ProtocolObject::from_ref(&*drawable));
-        commands.commit();
-        // Queue order protects producer textures. Only completion handlers emit
-        // host release acknowledgments; submission advances local ownership.
-        for surface in self.surfaces.values_mut() {
-            surface.frames.commit();
-        }
-        Ok(true)
+        Ok(())
     }
 }
 impl Renderer for MetalCompositor {

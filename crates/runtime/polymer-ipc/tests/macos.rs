@@ -10,7 +10,7 @@ use std::{
 };
 
 #[test]
-#[ignore = "requires the per-user org.polymer.ipc broker"]
+#[ignore = "requires the per-user gg.polymer.ipc broker"]
 fn input_ring_and_feedback_cross_processes() {
     let name = format!("polymer-input-test-{}", std::process::id());
     let listener = LocalSocketListener::bind(&name).unwrap();
@@ -104,7 +104,7 @@ fn input_peer() {
 }
 
 #[test]
-#[ignore = "requires the per-user org.polymer.ipc broker and Metal"]
+#[ignore = "requires the per-user gg.polymer.ipc broker and Metal"]
 fn metal_resources_cross_processes() {
     use objc2::AnyThread;
     use objc2_foundation::{NSDictionary, NSNumber, NSString};
@@ -208,7 +208,7 @@ fn metal_peer() {
 }
 
 #[test]
-#[ignore = "requires the per-user org.polymer.ipc broker"]
+#[ignore = "requires the per-user gg.polymer.ipc broker"]
 fn listener_close_releases_registration_and_wakes_accept() {
     let name = format!("polymer-listener-test-{}", std::process::id());
     let listener = Listener::bind(&name).unwrap();

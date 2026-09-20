@@ -37,11 +37,24 @@ impl ResourceFactory<dyn FileNode> for HostFileFactory {
 
 pub struct PackageDirectoryFactory {
     root: PathBuf,
+    #[cfg(unix)]
+    internal_links: bool,
 }
 
 impl PackageDirectoryFactory {
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            #[cfg(unix)]
+            internal_links: false,
+        }
+    }
+
+    /// Expose bundle aliases as ordinary nodes, confined to this read-only tree.
+    #[cfg(unix)]
+    pub fn with_internal_links(mut self) -> Self {
+        self.internal_links = true;
+        self
     }
 }
 
@@ -49,7 +62,12 @@ impl ResourceFactory<dyn Volume> for PackageDirectoryFactory {
     fn materialize(&self) -> VfsResult<Materialized<dyn Volume>> {
         let lease = ExclusiveResourceKey::HostPath(self.root.clone()).acquire()?;
         Ok(Materialized {
-            backend: Arc::new(HostVolume::new(&self.root, false)?),
+            backend: {
+                let volume = HostVolume::new(&self.root, false)?;
+                #[cfg(unix)]
+                let volume = volume.with_internal_links(self.internal_links);
+                Arc::new(volume)
+            },
             lease,
         })
     }

@@ -38,6 +38,9 @@ fn run(
     runtime: &tokio::runtime::Runtime,
     system: &actix::SystemRunner,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Native event callbacks and application teardown also spawn async work.
+    // Keep their runtime context alive beyond the individual block_on turns.
+    let _runtime_context = runtime.enter();
     use window_manager::EventLoop;
     #[cfg(windows)]
     use window_manager::{EventLoopExtPumpEvents, PumpStatus};

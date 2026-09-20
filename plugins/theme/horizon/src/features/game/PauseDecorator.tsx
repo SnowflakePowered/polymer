@@ -37,11 +37,14 @@ class PauseRegistry {
         resolve();
         return;
       }
-      launch.setPauseState("resume").then(() => {
-        this.#leases.delete(launch);
-        launch.activateInput();
-        resolve();
-      }, reject);
+      launch.setPauseState("resume").finally(() => {
+        // Closing the last overlay must restore input even if resume fails.
+        // A new overlay may have acquired a lease while the command was pending.
+        if (this.#leases.get(launch) === 0) {
+          this.#leases.delete(launch);
+          launch.activateInput();
+        }
+      }).then(resolve, reject);
     }, 0));
   }
 }

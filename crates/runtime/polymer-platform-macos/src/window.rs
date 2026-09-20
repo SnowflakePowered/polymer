@@ -238,7 +238,28 @@ impl GuestEvents {
         if let Some(index) = CODES.iter().position(|candidate| *candidate == code) {
             return Ok(index as u16);
         }
+        // HIToolbox Events.h virtual key codes; function keys are not contiguous.
         match code {
+            "F1" => Ok(0x7A),
+            "F2" => Ok(0x78),
+            "F3" => Ok(0x63),
+            "F4" => Ok(0x76),
+            "F5" => Ok(0x60),
+            "F6" => Ok(0x61),
+            "F7" => Ok(0x62),
+            "F8" => Ok(0x64),
+            "F9" => Ok(0x65),
+            "F10" => Ok(0x6D),
+            "F11" => Ok(0x67),
+            "F12" => Ok(0x6F),
+            "F13" => Ok(0x69),
+            "F14" => Ok(0x6B),
+            "F15" => Ok(0x71),
+            "F16" => Ok(0x6A),
+            "F17" => Ok(0x40),
+            "F18" => Ok(0x4F),
+            "F19" => Ok(0x50),
+            "F20" => Ok(0x5A),
             "Escape" => Ok(53),
             "MetaRight" => Ok(54),
             "MetaLeft" => Ok(55),

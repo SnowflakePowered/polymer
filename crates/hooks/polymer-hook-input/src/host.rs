@@ -53,12 +53,14 @@ impl HostState {
                 value.pressed,
             ),
             InputMessage::HostPointer(value) => {
-                sample.delta = value.delta;
                 if value.coordinate_width != 0 && value.coordinate_height != 0 {
                     sample.pointer = Some(value.position.map(Self::axis));
                     sample.mouse_buttons = value.buttons as u8;
-                }
-                if value.delta != [0.0; 2] {
+                } else {
+                    // Raw motion and surface position arrive separately. A
+                    // position update has no delta and must not erase motion
+                    // before the emulator polls it.
+                    sample.delta = value.delta;
                     *self.moved_at.lock() = Some(Instant::now());
                 }
             }

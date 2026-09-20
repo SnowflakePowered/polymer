@@ -1,6 +1,8 @@
 //! Shared typed-hook infrastructure.
 
 pub mod config;
+#[cfg(target_os = "macos")]
+pub mod macos;
 pub mod telemetry;
 mod vtable;
 
@@ -461,8 +463,10 @@ macro_rules! next {
 ///
 /// Each terminal is declared as `direct = path`, `installed` with a fallback,
 /// or a backend-defined `dynamic(...)` source. An installed raw-hook group can
-/// select its lifecycle owner with `#![detour(Type)]`; each installed terminal
-/// then supplies its own `target` and optional `continuation`. A generated
+/// select its lifecycle owner with `#![detour(Type)]`, or mutually exclusive
+/// `#![cfg_attr(target_os = "macos", detour(Type))]` attributes. Conditional
+/// backends expand only on matching targets, including their installer state.
+/// Each installed terminal supplies its own `target` and optional `continuation`.
 /// A generated private registry owns transactional installation, idempotence,
 /// partial cleanup, and reinstallation. Dynamic sources select
 /// their callback with `#![terminal_resolver(name)]`; direct and installed-only
@@ -476,6 +480,34 @@ macro_rules! next {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! chain_hooks {
+    (
+        #![order($order:ident)]
+        #![cfg_attr($condition:meta, detour($backend:ty))]
+        $($items:tt)*
+    ) => {
+        $crate::chain_hooks!(@collect_detours [$order] [[$condition] [$backend]]; $($items)*);
+    };
+    (@collect_detours [$order:ident] [$($choices:tt)*];
+        #![cfg_attr($condition:meta, detour($backend:ty))] $($items:tt)*
+    ) => {
+        $crate::chain_hooks!(@collect_detours [$order] [$($choices)* [$condition] [$backend]]; $($items)*);
+    };
+    (@collect_detours [$order:ident] [$($choices:tt)*]; $($items:tt)*) => {
+        $crate::chain_hooks!(@conditional_detours [$order] [$($items)*]; $($choices)*);
+    };
+    (@conditional_detours [$order:ident] $items:tt;) => {};
+    (@conditional_detours [$order:ident] [$($items:tt)*];
+        [$condition:meta] [$backend:ty] $($remaining:tt)*
+    ) => {
+        #[cfg($condition)]
+        $crate::chain_hooks! {
+            #![order($order)]
+            #![detour($backend)]
+            $($items)*
+        }
+        $crate::chain_hooks!(@conditional_detours [$order] [$($items)*]; $($remaining)*);
+    };
+
     (
         #![terminal_resolver($resolve:ident)]
         #![order($order:ident)]
