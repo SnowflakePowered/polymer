@@ -144,6 +144,7 @@ polymer-hook = { path = "crates/hooks/polymer-hook" }
 thiserror = "2"
 arrayref = "=0.3.4"
 xa11y-core = { path = "../xa11y/xa11y-core" }
+xa11y-macos = { path = "../xa11y/xa11y-macos" }
 xa11y-windows = { path = "../xa11y/xa11y-windows" }
 
 [workspace.lints.rust]

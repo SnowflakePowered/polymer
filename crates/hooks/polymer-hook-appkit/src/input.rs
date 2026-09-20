@@ -17,12 +17,14 @@ impl Input {
         let Ok(session) = std::env::var("POLYMER_SESSION") else {
             return;
         };
+        super::keyboard::Keyboard::attach();
         let _ = std::thread::Builder::new()
             .name("polymer-appkit-input".into())
             .spawn(move || {
                 if let Err(error) = Self::receive(&session) {
                     eprintln!("Polymer AppKit input ended: {error}");
                 }
+                super::keyboard::Keyboard::clear();
             });
     }
     fn receive(session: &str) -> io::Result<()> {
@@ -41,14 +43,30 @@ impl Input {
                             }
                         }
                     }),
-                    Message::Blob { len, .. } => {
-                        subscriber.control.receive_blob(len)?;
+                    Message::Blob {
+                        kind: polymer_ipc::BlobKind::MacosAutomationEvent,
+                        data: bytes,
+                    } => {
+                        DispatchQueue::main().exec_async(move || {
+                            if let Err(error) = super::automation::AutomationInput::dispatch(&bytes)
+                            {
+                                eprintln!("Polymer automation input failed: {error}");
+                            }
+                        });
                     }
                     Message::Shutdown => return Ok(()),
                     _ => {}
                 }
             }
             subscriber.drain(|message| {
+                // Action keys use native macOS key codes and must stay held
+                // across polling ticks, even while the UI thread is busy.
+                if let InputMessage::HostKey(key) = &message {
+                    if KeyCode::from_wire(key.code).as_str() == "Unidentified" {
+                        super::keyboard::Keyboard::set(key.scan_code, key.pressed);
+                        return;
+                    }
+                }
                 let event = match message {
                     InputMessage::HostKey(key) => HostInputEvent::Key {
                         code: KeyCode::from_wire(key.code),

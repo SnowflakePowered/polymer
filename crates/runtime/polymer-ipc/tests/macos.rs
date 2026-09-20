@@ -32,8 +32,30 @@ fn input_ring_and_feedback_cross_processes() {
         }))
         .unwrap();
     socket
-        .send_blob(BlobKind::Topology, b"topology snapshot")
+        .send(Message::Blob {
+            kind: BlobKind::Topology,
+            data: b"topology snapshot".to_vec(),
+        })
         .unwrap();
+    socket
+        .send(Message::Blob {
+            kind: BlobKind::MacosAutomationEvent,
+            data: b"native event".to_vec(),
+        })
+        .unwrap();
+    for message in [
+        Message::Blob {
+            kind: BlobKind::Topology,
+            data: Vec::new(),
+        },
+        Message::StreamAccepted,
+        Message::Blob {
+            kind: BlobKind::Topology,
+            data: (0..65536).map(|i| i as u8).collect(),
+        },
+    ] {
+        socket.send(message).unwrap();
+    }
     assert_eq!(
         socket.receive().unwrap(),
         Message::GamepadFeedback(WireFeedback {
@@ -59,15 +81,41 @@ fn input_peer() {
         .unwrap();
     let Message::Blob {
         kind: BlobKind::Topology,
-        len,
+        data,
     } = input.control.receive().unwrap()
     else {
         panic!("missing topology")
     };
-    assert_eq!(
-        input.control.receive_blob(len).unwrap(),
-        b"topology snapshot"
-    );
+    assert_eq!(data, b"topology snapshot");
+    let Message::Blob {
+        kind: BlobKind::MacosAutomationEvent,
+        data,
+    } = input.control.receive().unwrap()
+    else {
+        panic!("missing native event")
+    };
+    assert_eq!(data, b"native event");
+    for expected in [
+        Message::Blob {
+            kind: BlobKind::Topology,
+            data: Vec::new(),
+        },
+        Message::StreamAccepted,
+        Message::Blob {
+            kind: BlobKind::Topology,
+            data: (0..65536).map(|i| i as u8).collect(),
+        },
+    ] {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(message) = input.control.try_receive().unwrap() {
+                assert_eq!(message, expected);
+                break;
+            }
+            assert!(Instant::now() < deadline, "control message did not arrive");
+            std::thread::yield_now();
+        }
+    }
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut connected = false;
     while !connected && Instant::now() < deadline {

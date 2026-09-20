@@ -37,6 +37,8 @@ pub struct WireFeedback {
 #[repr(u32)]
 pub enum BlobKind {
     Topology = 1,
+    /// Serialized CGEvent for process-scoped AppKit automation.
+    MacosAutomationEvent = 2,
 }
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -82,7 +84,7 @@ pub struct MapOffer {
     pub generation: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Message {
     Hello(Handshake),
     StreamReady(StreamReady),
@@ -92,7 +94,7 @@ pub enum Message {
     GamepadFeedback(WireFeedback),
     Blob {
         kind: BlobKind,
-        len: u32,
+        data: Vec<u8>,
     },
     /// The viewer has imported the stream resources and released its previous stream.
     StreamAccepted,
@@ -116,6 +118,7 @@ pub enum Message {
 #[cfg(windows)]
 pub struct LocalSocket {
     stream: Stream,
+    incoming: Vec<u8>,
     frame: Option<crate::frame::FramePublisher>,
 }
 #[cfg(windows)]
@@ -127,6 +130,7 @@ impl LocalSocket {
     pub fn try_clone(&self) -> io::Result<Self> {
         Ok(Self {
             stream: self.stream.try_clone()?,
+            incoming: Vec::new(),
             frame: None,
         })
     }
@@ -135,27 +139,16 @@ impl LocalSocket {
         self.stream.shutdown(Shutdown::Both)
     }
 
-    pub fn send(&mut self, message: Message) -> io::Result<()> {
-        if let (Some(frame), Message::FrameReady(value)) = (&mut self.frame, message) {
-            frame.publish(value)?;
-            return self
-                .stream
-                .write_all(encode(Message::FrameAvailable).as_bytes());
+    pub fn send(&mut self, mut message: Message) -> io::Result<()> {
+        if let (Some(frame), Message::FrameReady(value)) = (&mut self.frame, &message) {
+            frame.publish(*value)?;
+            message = Message::FrameAvailable;
         }
-        self.stream.write_all(encode(message).as_bytes())
-    }
-
-    pub fn send_blob(&mut self, kind: BlobKind, bytes: &[u8]) -> io::Result<()> {
-        let len = u32::try_from(bytes.len())
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "blob is too large"))?;
-        self.send(Message::Blob { kind, len })?;
-        self.stream.write_all(bytes)
-    }
-
-    pub fn receive_blob(&mut self, len: u32) -> io::Result<Vec<u8>> {
-        let mut bytes = vec![0; len as usize];
-        self.stream.read_exact(&mut bytes)?;
-        Ok(bytes)
+        self.stream.write_all(encode(&message)?.as_bytes())?;
+        if let Message::Blob { data, .. } = message {
+            self.stream.write_all(&data)?;
+        }
+        Ok(())
     }
 
     pub fn enable_frame_channel(&mut self, peer_process_id: u32) -> io::Result<()> {
@@ -166,11 +159,30 @@ impl LocalSocket {
     }
 
     pub fn receive(&mut self) -> io::Result<Message> {
-        let mut bytes = [0; mem::size_of::<WireMessage>()];
-        self.stream.read_exact(&mut bytes)?;
-        let wire = WireMessage::ref_from_bytes(&bytes)
+        let header_len = mem::size_of::<WireMessage>();
+        self.read_control_until(header_len)?;
+        let wire = WireMessage::ref_from_bytes(&self.incoming[..header_len])
             .map_err(|_| invalid_data("invalid wire message layout"))?;
-        decode(wire)
+        self.read_control_until(header_len + wire.data_len()?)?;
+        let bytes = mem::take(&mut self.incoming);
+        let (wire, data) = WireMessage::ref_from_prefix(&bytes)
+            .map_err(|_| invalid_data("invalid wire message layout"))?;
+        decode(wire, data.to_vec())
+    }
+
+    // Preserve partial reads across timeouts and polling calls, including blobs
+    // larger than the socket receive buffer.
+    fn read_control_until(&mut self, length: usize) -> io::Result<()> {
+        let mut buffer = [0; 8192];
+        while self.incoming.len() < length {
+            let count = buffer.len().min(length - self.incoming.len());
+            let read = self.stream.read(&mut buffer[..count])?;
+            if read == 0 {
+                return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
+            }
+            self.incoming.extend_from_slice(&buffer[..read]);
+        }
+        Ok(())
     }
 
     pub fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {

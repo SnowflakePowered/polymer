@@ -75,8 +75,8 @@ impl LocalSocket {
         Ok(())
     }
     pub fn send(&mut self, mut message: Message) -> io::Result<()> {
-        if let (Some(frame), Message::FrameReady(value)) = (&mut self.frame, message) {
-            frame.publish(value)?;
+        if let (Some(frame), Message::FrameReady(value)) = (&mut self.frame, &message) {
+            frame.publish(*value)?;
             message = Message::FrameAvailable;
         }
         let file = if let Message::MapOffer(ref mut offer) = message {
@@ -91,9 +91,13 @@ impl LocalSocket {
         } else {
             None
         };
+        let mut data = encode(&message)?.as_bytes().to_vec();
+        if let Message::Blob { data: payload, .. } = message {
+            data.extend_from_slice(&payload);
+        }
         self.connection.send(
             Packet {
-                data: encode(message).as_bytes().to_vec(),
+                data,
                 file,
                 ..Default::default()
             },
@@ -101,9 +105,9 @@ impl LocalSocket {
         )
     }
     fn decode(&mut self, packet: Packet) -> io::Result<Message> {
-        let wire = WireMessage::ref_from_bytes(&packet.data)
+        let (wire, data) = WireMessage::ref_from_prefix(&packet.data)
             .map_err(|_| invalid_data("invalid control packet"))?;
-        let mut message = decode(wire)?;
+        let mut message = decode(wire, data.to_vec())?;
         if let Message::StreamReady(ready) = &message {
             if ready.image_kind != ExternalImageKind::IOSurface || ready.sync_kind != ExternalSyncKind::MetalSharedEvent
                 || packet.surfaces.len() != ready.slot_count as usize || packet.surfaces.is_empty() {
@@ -128,7 +132,7 @@ impl LocalSocket {
     }
     pub fn send_stream(&mut self, ready: StreamReady, resources: crate::xpc::MetalResources) -> io::Result<()> {
         self.connection.send(Packet {
-            data: encode(Message::StreamReady(ready)).as_bytes().to_vec(), surfaces: resources.surfaces,
+            data: encode(&Message::StreamReady(ready))?.as_bytes().to_vec(), surfaces: resources.surfaces,
             event: Some(resources.ready), consumer_event: Some(resources.released), ..Default::default()
         }, self.write_timeout)
     }
@@ -156,21 +160,6 @@ impl LocalSocket {
         publisher.offer(self, peer_process_id)?;
         self.frame = Some(publisher);
         Ok(())
-    }
-    pub fn send_blob(&mut self, kind: BlobKind, bytes: &[u8]) -> io::Result<()> {
-        if bytes.len() > crate::xpc::MAX_PACKET_SIZE {
-            return Err(invalid_data("blob exceeds XPC packet limit"));
-        }
-        let len = u32::try_from(bytes.len()).map_err(|_| invalid_data("blob too large"))?;
-        self.send(Message::Blob { kind, len })?;
-        self.write_packet(bytes)
-    }
-    pub fn receive_blob(&mut self, len: u32) -> io::Result<Vec<u8>> {
-        let data = self.read_packet(len as usize)?;
-        if data.len() != len as usize {
-            return Err(invalid_data("blob length mismatch"));
-        }
-        Ok(data)
     }
     pub(crate) fn write_packet(&mut self, data: &[u8]) -> io::Result<()> {
         self.connection.send(

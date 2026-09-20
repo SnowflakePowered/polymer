@@ -139,7 +139,12 @@ class UiLocator {
   }
   async selectOption(name) {
     if (typeof name !== "string") throw new TypeError("option name must be a string");
-    await this.expand();
+    const control = await this.snapshot();
+    // Qt on macOS opens popup buttons through AXPress and exposes options as static text.
+    const axPopup = ["AXPopUpButton", "AXComboBox"].includes(control.raw?.ax_role);
+    if (axPopup) await this.press();
+    else await this.expand();
+    const optionSelector = axPopup ? "list > static_text, menu_item" : "list_item";
     const started = Date.now();
     let matches = [];
     let lastLookupError;
@@ -157,7 +162,7 @@ class UiLocator {
           Number(left.id === this.#window) - Number(right.id === this.#window));
       for (const snapshot of candidates) {
         const window = new UiWindow(snapshot);
-        const options = window.locator("list_item");
+        const options = window.locator(optionSelector);
         let items;
         try {
           items = await options.all({ limit: 100 });
@@ -208,7 +213,9 @@ class UiLocator {
         },
       });
     }
-    await matches[0].window.locator("list_item").#clickNode(matches[0].option);
+    const match = matches[0];
+    const option = match.window.locator(optionSelector);
+    await option.#clickNode(match.option);
 
     const selected = Date.now();
     let snapshot;
@@ -336,3 +343,5 @@ export const uiAutomation = Object.freeze({
 });
 
 Object.defineProperty(globalThis, "__polymerUiAutomation", { value: uiAutomation });
+
+Object.defineProperty(globalThis, "__polymerUiAutomationError", { value: UiAutomationError });

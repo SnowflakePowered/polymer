@@ -63,10 +63,10 @@ fn guest_receives_virtual_controller_and_returns_feedback() {
         ..Default::default()
     };
     socket
-        .send_blob(
-            BlobKind::Topology,
-            &bincode::serde::encode_to_vec(&topology, bincode::config::standard()).unwrap(),
-        )
+        .send(Message::Blob {
+            kind: BlobKind::Topology,
+            data: bincode::serde::encode_to_vec(&topology, bincode::config::standard()).unwrap(),
+        })
         .unwrap();
     publisher
         .publish(InputMessage::DeviceConnected(WireDeviceConnected {

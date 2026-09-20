@@ -43,7 +43,10 @@ impl Control {
         let mut writer = socket.try_clone()?;
         let topology = self.topology.lock().clone();
         if !topology.is_empty() {
-            writer.send_blob(BlobKind::Topology, &topology)?;
+            writer.send(Message::Blob {
+                kind: BlobKind::Topology,
+                data: topology,
+            })?;
         }
         let mut reader = socket.try_clone()?;
         thread::Builder::new()
@@ -73,13 +76,20 @@ impl Control {
         let bytes = topology::encode(value)?;
         *self.topology.lock() = bytes.clone();
         let mut clients = self.clients.lock();
-        clients.retain_mut(|client| client.send_blob(BlobKind::Topology, &bytes).is_ok());
+        clients.retain_mut(|client| {
+            client
+                .send(Message::Blob {
+                    kind: BlobKind::Topology,
+                    data: bytes.clone(),
+                })
+                .is_ok()
+        });
         Ok(())
     }
 
     pub fn send(&self, message: Message) -> bool {
         let mut clients = self.clients.lock();
-        clients.retain_mut(|client| client.send(message).is_ok());
+        clients.retain_mut(|client| client.send(message.clone()).is_ok());
         !clients.is_empty()
     }
 
