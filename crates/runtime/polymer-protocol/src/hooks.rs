@@ -6,10 +6,11 @@ pub enum GraphicsHook {
     Vulkan,
     D3d11,
     D3d12,
+    Metal,
 }
 
 impl GraphicsHook {
-    pub const ALL: [Self; 4] = [Self::Vulkan, Self::OpenGl, Self::D3d12, Self::D3d11];
+    pub const ALL: [Self; 5] = [Self::Vulkan, Self::OpenGl, Self::D3d12, Self::D3d11, Self::Metal];
 
     pub const fn label(self) -> &'static str {
         match self {
@@ -17,6 +18,7 @@ impl GraphicsHook {
             Self::OpenGl => "OpenGL",
             Self::D3d12 => "D3D12",
             Self::D3d11 => "D3D11",
+            Self::Metal => "Metal",
         }
     }
 
@@ -26,6 +28,7 @@ impl GraphicsHook {
             Self::D3d12 => 1,
             Self::OpenGl => 2,
             Self::Vulkan => 3,
+            Self::Metal => 4,
         }
     }
 }

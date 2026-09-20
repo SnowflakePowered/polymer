@@ -48,3 +48,6 @@ polymer-platform-windows.workspace = true
 [lints]
 workspace = true
 
+
+[target.'cfg(target_os = "macos")'.dependencies]
+polymer-platform-macos.workspace = true

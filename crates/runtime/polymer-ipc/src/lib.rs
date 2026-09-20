@@ -21,3 +21,6 @@ impl<T: MessageSink + ?Sized> MessageSink for std::sync::Arc<T> {
         (**self).send_message(message)
     }
 }
+
+#[cfg(target_os = "macos")]
+pub mod xpc;

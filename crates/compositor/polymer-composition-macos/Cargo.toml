@@ -1,0 +1,38 @@
+[package]
+name = "polymer-composition-macos"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+polymer-composition.workspace = true
+polymer-renderer = { path = "../../consumer/polymer-renderer" }
+polymer-renderer-metal = { path = "../../consumer/polymer-renderer-metal" }
+polymer-platform-macos.workspace = true
+polymer-runtime.workspace = true
+polymer-protocol.workspace = true
+polymer-statistics.workspace = true
+objc2.workspace = true
+block2.workspace = true
+objc2-app-kit.workspace = true
+objc2-foundation.workspace = true
+objc2-quartz-core = "0.3.2"
+objc2-core-graphics = "0.3.2"
+objc2-metal = "0.3.2"
+raw-window-handle.workspace = true
+cursor-icon = "1.2.0"
+winit = "0.30.13"
+egui = "0.29.1"
+egui-winit = "0.29.1"
+anyrender = "0.13.0"
+anyrender_vello = "0.14.0"
+kurbo = "0.13.1"
+vello = "0.10"
+wgpu-hal = { version = "29", features = ["metal"] }
+tracing.workspace = true
+
+[dev-dependencies]
+pollster = "0.4"

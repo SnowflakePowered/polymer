@@ -6,14 +6,13 @@ use crate::inspector::InspectorWindow;
 use crate::instance_events;
 use crate::launch::AttachedLaunchPlan;
 use crate::metrics::{TurnPhase, TurnProfile};
-use crate::shell_compositor::{ShellCompositor, ShellRasterizer};
 use crate::shell_document::{DomKeyboardEvent, DomMouseEvent, DomWheelEvent};
 use crate::shell_dom::{ShellSession, ShellSessionFactory};
 use crate::shell_runtime::{InstanceToken, PolymerNotification, PolymerNotificationSender};
 use crate::window_manager::{
-    EventLoopProxy, LoopDirective, ShellDeviceEvent, ShellImeEvent, ShellWindowEvent,
-    WindowCommand, WindowManager,
+    EventLoopProxy, LoopDirective, ShellDeviceEvent, ShellImeEvent, ShellWindowEvent, WindowCommand,
 };
+use polymer_composition::{CompositionScene, CompositorFactory, CompositorHandle};
 use polymer_config::input::InputTransaction;
 use polymer_pluginhost::controller::{ControllerChanged, PendingReply, Quit};
 use polymer_protocol::input::PointerPhase;
@@ -61,12 +60,13 @@ const SHELL_RUNTIME_POLL_INTERVAL: Duration = Duration::from_millis(16);
 
 struct ShellCoordinator {
     shell_dom: ShellSession,
-    window: WindowManager,
+    compositor: CompositorHandle,
+    pending_layouts: std::collections::BTreeMap<u64, Vec<crate::shell_dom::TrackedSurfaceLayout>>,
+    next_scene_revision: u64,
     profile: TurnProfile,
     session: String,
     proxy: EventLoopProxy<UserEvent>,
     game_host: GameHost,
-    shell_compositor: ShellCompositor,
     input: InputRouter,
     inspector: Option<InspectorWindow>,
     notifications: Option<PolymerNotificationSender>,
@@ -102,7 +102,7 @@ impl ShellCoordinator {
         options: ShellOptions,
         statistics_recorder: RecorderHandle,
         shell_factory: ShellSessionFactory,
-        shell_rasterizer: ShellRasterizer,
+        compositor_factory: CompositorFactory,
     ) -> Result<Self, Box<dyn Error>> {
         let ShellOptions {
             debug,
@@ -113,22 +113,18 @@ impl ShellCoordinator {
             library: _,
         } = options;
 
-        let window = WindowManager::new(window, statistics_recorder, proxy.clone(), debug)?;
-        let compositor = window.compositor();
-        let (game_host, shell_compositor) = {
-            // Prepare the retained Vello renderer before the first shell frame.
-            let raster_proxy = proxy.clone();
-            let mut shell_compositor =
-                ShellCompositor::new(&compositor, shell_rasterizer, move || {
-                    let _ =
-                        raster_proxy.send_event(UserEvent::Window(WindowCommand::ShellRasterReady));
-                })?;
-            let game_host = GameHost::new(shell_compositor.device_context())?;
-            shell_compositor.reconcile(&game_host)?;
-            (game_host, shell_compositor)
-        };
-        window.set_shell_root(shell_compositor.root_visual())?;
-        window.commit()?;
+        let compositor_proxy = proxy.clone();
+        let compositor = compositor_factory(
+            window,
+            statistics_recorder,
+            std::sync::Arc::new(move |command| {
+                compositor_proxy
+                    .send_event(UserEvent::Window(command))
+                    .is_ok()
+            }),
+            debug,
+        )?;
+        let game_host = GameHost::new(compositor.clone())?;
         let session = unique_session();
         let input_sources = shell_factory.input_sources();
         let controller_api = shell_factory.controller_api();
@@ -140,12 +136,13 @@ impl ShellCoordinator {
 
         let state = Self {
             shell_dom,
-            window,
+            compositor,
+            pending_layouts: Default::default(),
+            next_scene_revision: 0,
             profile: TurnProfile::default(),
             session,
             proxy,
             game_host,
-            shell_compositor,
             input,
             inspector: None,
             notifications: None,
@@ -171,8 +168,8 @@ impl ShellCoordinator {
             tracing::error!("polymer: loading the shell document failed: {error}");
         }
         if let Some(shell_source) = source {
-            let size = self.window.size();
-            let scale_factor = self.window.scale_factor();
+            let size = self.compositor.borrow_mut().size();
+            let scale_factor = self.compositor.borrow_mut().scale_factor();
             let html = shell_source.html.clone();
             let base_url = shell_source.base_url.clone();
             let notifications = match self

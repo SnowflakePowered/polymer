@@ -43,14 +43,7 @@ pub struct GameViewStyle {
     pub object_position: Position,
 }
 
-/// An outset box shadow that can be applied by the retained native
-/// compositor instead of being baked into a full-window chrome texture.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct CompositionShadowStyle {
-    pub offset: [f32; 2],
-    pub blur_radius: f32,
-    pub color: [u8; 4],
-}
+pub use polymer_composition::CompositionShadowStyle;
 
 /// Where one game view landed, and which chrome band it is drawn over.
 #[derive(Debug, Clone, PartialEq)]

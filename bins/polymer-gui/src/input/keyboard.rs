@@ -4,8 +4,8 @@ use polymer_controllers::{
     layout::InputLayout,
     mapping::{HostSample, Mapping},
 };
-use polymer_egui::InputSlotDiagnostics;
 use polymer_input::{GamepadButton, GamepadReport};
+use polymer_renderer::egui::InputSlotDiagnostics;
 use std::collections::BTreeMap;
 
 #[derive(Default)]

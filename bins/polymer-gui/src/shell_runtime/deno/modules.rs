@@ -11,13 +11,20 @@ use deno_core::{
 #[derive(Clone)]
 pub(super) struct BrowserModuleLoader {
     client: reqwest::Client,
+    requests: std::sync::Arc<tokio::sync::Semaphore>,
     inline: Rc<RefCell<HashMap<ModuleSpecifier, Vec<u8>>>>,
 }
 
 impl BrowserModuleLoader {
     pub(super) fn new() -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .pool_max_idle_per_host(16)
+                .build()
+                .expect("module HTTP client"),
+            // Deno can resolve hundreds of imports at once; bound active HTTP
+            // requests like a browser, including on macOS's small descriptor limit.
+            requests: std::sync::Arc::new(tokio::sync::Semaphore::new(16)),
             inline: Default::default(),
         }
     }
@@ -47,19 +54,24 @@ impl BrowserModuleLoader {
                     (code, specifier.clone())
                 }
                 "http" | "https" => {
+                    let _permit = self
+                        .requests
+                        .acquire()
+                        .await
+                        .map_err(|error| ModuleLoaderError::generic(error.to_string()))?;
                     let response = self
                         .client
                         .get(specifier.clone())
                         .send()
                         .await
                         .and_then(reqwest::Response::error_for_status)
-                        .map_err(|error| ModuleLoaderError::generic(error.to_string()))?;
+                        .map_err(|error| ModuleLoaderError::generic(format!("{error:#}")))?;
                     let found = ModuleSpecifier::parse(response.url().as_str())
                         .map_err(ModuleLoaderError::from_err)?;
                     let code = response
                         .bytes()
                         .await
-                        .map_err(|error| ModuleLoaderError::generic(error.to_string()))?
+                        .map_err(|error| ModuleLoaderError::generic(format!("{error:#}")))?
                         .to_vec();
                     (code, found)
                 }

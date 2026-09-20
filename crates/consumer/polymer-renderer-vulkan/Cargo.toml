@@ -1,0 +1,22 @@
+[package]
+name = "polymer-renderer-vulkan"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+egui = "0.29.1"
+egui-ash-renderer = "0.6.0"
+polymer-renderer = { path = "../polymer-renderer" }
+polymer-ipc.workspace = true
+polymer-protocol.workspace = true
+polymer-runtime.workspace = true
+raw-window-handle.workspace = true
+polymer-consumer-vulkan = { path = "../polymer-consumer-vulkan" }
+ash.workspace = true
+ash-window.workspace = true
+parking_lot.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

@@ -1,11 +1,15 @@
 use bcast::{HEADER_SIZE, Reader, RingBuffer, Writer};
 use memmap2::{Mmap, MmapMut, MmapOptions};
+#[cfg(target_os = "macos")]
+use std::os::fd::{AsRawFd, FromRawFd};
+#[cfg(windows)]
+use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use std::{
     fs::File,
     io,
-    os::windows::io::{AsRawHandle, FromRawHandle},
     sync::atomic::{AtomicU64, Ordering},
 };
+#[cfg(windows)]
 use windows_sys::Win32::{
     Foundation::{CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE},
     System::Threading::{GetCurrentProcess, OpenProcess, PROCESS_DUP_HANDLE},
@@ -49,6 +53,7 @@ impl Publisher {
         })
     }
 
+    #[cfg(windows)]
     pub fn duplicate_for(&self, process_id: u32) -> io::Result<i64> {
         // SAFETY: OpenProcess is called with a concrete peer PID obtained from
         // the control handshake.
@@ -79,6 +84,13 @@ impl Publisher {
         }
     }
 
+    // XPC send wraps this borrowed descriptor in NSFileHandle; the receiver
+    // gets its own descriptor, never this process-local integer.
+    #[cfg(target_os = "macos")]
+    pub fn duplicate_for(&self, _process_id: u32) -> io::Result<i64> {
+        Ok(i64::from(self.file.as_file().as_raw_fd()))
+    }
+
     pub fn publish(&mut self, bytes: &[u8]) -> io::Result<()> {
         if bytes.len() > self.writer.mtu() {
             return Err(io::Error::new(
@@ -107,6 +119,15 @@ unsafe impl Send for Subscriber {}
 
 impl Subscriber {
     pub unsafe fn from_handle(handle: i64, len: u64) -> io::Result<Self> {
+        #[cfg(windows)]
+        let file = unsafe { File::from_raw_handle(handle as isize as _) };
+        #[cfg(target_os = "macos")]
+        let file =
+            unsafe {
+                File::from_raw_fd(i32::try_from(handle).map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidData, "invalid descriptor")
+                })?)
+            };
         if len != (HEADER_SIZE + CAPACITY) as u64 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -115,7 +136,12 @@ impl Subscriber {
         }
         // SAFETY: ownership of the duplicated file handle was transferred by
         // the control message to this process.
-        let file = unsafe { File::from_raw_handle(handle as isize as _) };
+        if file.metadata()?.len() != len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "truncated shared mapping",
+            ));
+        }
         // SAFETY: the negotiated file has the validated fixed size and remains
         // owned for the lifetime of the mapping.
         let mapping = unsafe { MmapOptions::new().len(len as usize).map(&file)? };

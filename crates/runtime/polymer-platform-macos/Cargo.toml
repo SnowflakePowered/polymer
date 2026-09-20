@@ -1,0 +1,27 @@
+[package]
+name = "polymer-platform-macos"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+mach2 = "0.5"
+serde_json.workspace = true
+polymer-vfs.workspace = true
+polymer-protocol.workspace = true
+polymer-input.workspace = true
+polymer-ipc = { workspace = true, features = ["input-host"] }
+objc2-core-foundation = "0.3.2"
+objc2-core-graphics = "0.3.2"
+libloading.workspace = true
+zerocopy.workspace = true
+objc2.workspace = true
+objc2-foundation.workspace = true
+objc2-core-audio.workspace = true
+polymer-platform.workspace = true
+plist = "1.8"
+tempfile.workspace = true
+
+[lints]
+workspace = true

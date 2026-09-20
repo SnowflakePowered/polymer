@@ -18,6 +18,7 @@ use watchable::Watchable;
 pub enum ConsumerPreference {
     D3d12,
     Vulkan,
+    Metal,
 }
 
 #[derive(Clone)]
@@ -34,6 +35,8 @@ pub(crate) struct FrameRouter {
 }
 
 struct CaptureShared {
+    #[cfg(target_os = "macos")]
+    resources: DashMap<u64, polymer_ipc::xpc::MetalResources>,
     availability: DashMap<u64, Arc<Mutex<LocalSocket>>>,
     routes: DashMap<u64, Watchable<Option<FrameReady>>>,
     revoked: DashSet<u64>,
@@ -50,6 +53,11 @@ struct CaptureWorkers {
 }
 
 impl FrameRouter {
+    #[cfg(target_os = "macos")]
+    pub(crate) fn metal_resources(&self, connection: u64) -> Option<polymer_ipc::xpc::MetalResources> {
+        self.shared.resources.get(&connection).map(|v| v.clone())
+    }
+
     pub(crate) fn buffer_release_sender(&self, connection: u64) -> BufferReleaseSender {
         BufferReleaseSender {
             shared: Arc::downgrade(&self.shared),
@@ -100,6 +108,8 @@ impl CaptureShared {
     }
 
     fn revoke(&self, connection: u64) {
+        #[cfg(target_os = "macos")]
+        self.resources.remove(&connection);
         self.availability.remove(&connection);
         self.revoked.insert(connection);
         self.routes.remove(&connection);
@@ -142,6 +152,8 @@ pub(crate) fn bind(
 ) -> std::io::Result<FrameRouter> {
     let listener = LocalSocketListener::bind(session)?;
     let shared = Arc::new(CaptureShared {
+        #[cfg(target_os = "macos")]
+        resources: DashMap::new(),
         availability: DashMap::new(),
         routes: DashMap::new(),
         revoked: DashSet::new(),
@@ -195,6 +207,7 @@ fn spawn_acceptor(
                 let preferred_consumer = match preference {
                     ConsumerPreference::D3d12 => ConsumerApi::D3d12,
                     ConsumerPreference::Vulkan => ConsumerApi::Vulkan,
+                    ConsumerPreference::Metal => ConsumerApi::Metal,
                 };
                 if let Err(error) = socket.send(Message::Hello(Handshake {
                     protocol_version: PROTOCOL_VERSION,
@@ -243,13 +256,15 @@ fn receive_connection(
             }
             match message {
                 Message::RequestBufferAvailability if !accepted_stream => {
-                    let sender = socket.try_clone()?;
+                    let mut sender = socket.try_clone()?;
                     sender.set_write_timeout(Some(std::time::Duration::from_secs(2)))?;
                     shared
                         .availability
                         .insert(connection, Arc::new(Mutex::new(sender)));
                 }
                 Message::StreamReady(stream) => {
+                    #[cfg(target_os = "macos")]
+                    shared.resources.insert(connection, socket.take_stream_resources().ok_or_else(|| std::io::Error::other("missing Metal resources"))?);
                     let (accepted, mut response) = oneshot::oneshot();
                     (callbacks.offer)(connection, stream, accepted);
                     accepted_stream = loop {

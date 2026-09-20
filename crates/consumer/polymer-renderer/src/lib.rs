@@ -1,7 +1,9 @@
-//! Native Polymer rendering and WebRTC publishing.
+//! Shared rendering contracts, capture layout, and backend-neutral WebRTC publishing.
+//! GPU compositors and hardware encoders live in the polymer-renderer-* crates.
 
 pub mod capture;
 pub mod cli;
+pub mod egui;
 pub mod input;
 pub mod layout;
 pub mod pointer;
@@ -11,9 +13,8 @@ pub mod webrtc;
 pub use capture::{AcceptedSurface, SurfaceCapture, SurfaceCaptureEvent, SurfacePointerSender};
 pub use layout::Extent;
 pub use renderer::{
-    CompositingPlan, D3d12Compositor, D3d12RenderPass, MappedPointer, Presentation, RasterSurface,
-    ReceivedSurface, RenderWindow, Renderer, SurfaceContent, SurfacePlacement, SwapchainMode,
-    VideoSwapchain, VulkanCompositor, VulkanRenderPass, WebRtcCompositor,
+    CompositingPlan, MappedPointer, Presentation, ReceivedSurface, RenderWindow, Renderer,
+    SurfaceContent, SurfacePlacement, SwapchainMode,
 };
 
 pub fn fit_inside(

@@ -1,0 +1,55 @@
+[package]
+name = "polymer-composition-windows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(windows)'.dependencies]
+polymer-composition.workspace = true
+polymer-renderer = { path = "../../consumer/polymer-renderer" }
+polymer-renderer-d3d12 = { path = "../../consumer/polymer-renderer-d3d12" }
+anyrender = "0.13.0"
+anyrender_vello = "0.14.0"
+egui = "0.29.1"
+egui-winit = "0.29.1"
+kurbo = "0.13.1"
+cursor-icon = "1.2.0"
+parking_lot.workspace = true
+pollster = "0.4"
+raw-window-handle.workspace = true
+polymer-platform-windows.workspace = true
+polymer-protocol.workspace = true
+polymer-runtime.workspace = true
+polymer-statistics.workspace = true
+windows = { workspace = true, features = [
+    "Foundation",
+    "Foundation_Numerics",
+    "Graphics_Capture",
+    "Graphics_DirectX",
+    "Graphics_DirectX_Direct3D11",
+    "System",
+    "UI_Composition",
+    "UI_Composition_Core",
+    "UI_Composition_Desktop",
+    "Win32_Graphics_DirectComposition",
+    "Win32_Media",
+    "Win32_System_Com",
+    "Win32_System_WinRT",
+    "Win32_System_WinRT_Composition",
+    "Win32_System_WinRT_Direct3D11",
+    "Win32_System_WinRT_Graphics_Capture",
+    "Win32_UI_Input_KeyboardAndMouse",
+] }
+windows-numerics = "0.2.0"
+winit = "0.30.13"
+vello = "0.10"
+vello_encoding = "0.10"
+wgpu-hal = { version = "29", features = ["dx12"] }
+windows-wgpu = { package = "windows", version = "0.62", features = [
+    "Win32_Graphics_Direct3D12",
+    "Win32_Graphics_Dxgi_Common",
+] }
+tracing.workspace = true

@@ -11,17 +11,43 @@ pub(crate) struct DebugFilesystem;
 impl DebugFilesystem {
     pub(crate) fn mount(target: &mut [String]) -> Result<MountedFilesystem, Box<dyn Error>> {
         let executable = std::fs::canonicalize(&target[0])?;
+        #[cfg(target_os = "macos")]
+        let staged = executable
+            .ancestors()
+            .find(|path| path.extension().is_some_and(|extension| extension == "app"))
+            .map(|bundle| {
+                polymer_platform_macos::StagedBundle::prepare(
+                    bundle,
+                    &std::env::temp_dir().join("polymer-staging"),
+                )
+                .map(Arc::new)
+            })
+            .transpose()?;
+        #[cfg(target_os = "macos")]
+        let executable = staged
+            .as_ref()
+            .map_or(executable.clone(), |bundle| bundle.executable().to_owned());
         let directory = executable
             .parent()
             .ok_or("guest executable has no parent")?;
+        #[cfg(target_os = "macos")]
+        let directory = staged.as_ref().map_or(directory, |bundle| bundle.path());
+        let factory: Arc<dyn polymer_vfs::ResourceFactory<dyn polymer_vfs::Volume>> =
+            Arc::new(HostDirectoryFactory::new(directory.to_path_buf(), true));
+        #[cfg(target_os = "macos")]
+        let factory: Arc<dyn polymer_vfs::ResourceFactory<dyn polymer_vfs::Volume>> =
+            staged.as_ref().map_or(factory, |bundle| bundle.clone());
+        #[cfg(not(target_os = "macos"))]
         let host = polymer_vfs_winfsp::WinFspFilesystemHost::default();
+        #[cfg(target_os = "macos")]
+        let host = polymer_vfs_fskit::FsKitFilesystemHost::new("org.polymer.filesystem");
         let endpoint = host.allocate_endpoint();
         let mut plan = FilesystemPlan::default();
         let permissions = Permissions::READ | Permissions::WRITE | Permissions::EXECUTE;
         plan.mount_tree(
             VfsPathBuf::new("/emulator")?,
             Arc::new(Resource::new(
-                Arc::new(HostDirectoryFactory::new(directory.to_path_buf(), true)),
+                factory,
                 permissions,
                 ResourceOrigin::HostFile,
             )),

@@ -489,6 +489,11 @@ pub struct SurfaceOffer {
 }
 
 impl SurfaceOffer {
+    #[cfg(target_os = "macos")]
+    pub fn metal_resources(&self) -> Option<polymer_ipc::xpc::MetalResources> {
+        self.manager.upgrade()?.router()?.metal_resources(self.connection)
+    }
+
     pub fn buffer_release_sender(&self) -> Option<crate::capture::BufferReleaseSender> {
         self.manager
             .upgrade()?
@@ -1204,6 +1209,7 @@ fn logical_surface_index(surface_id: u64) -> Option<u32> {
 
 fn stream_backend(kind: ExternalImageKind) -> GraphicsHook {
     match kind {
+        ExternalImageKind::IOSurface => GraphicsHook::Metal,
         ExternalImageKind::D3d11D3d12Resource => GraphicsHook::D3d11,
         ExternalImageKind::D3d12Resource | ExternalImageKind::D3d12Heap => GraphicsHook::D3d12,
         ExternalImageKind::OpenGlD3d12Resource => GraphicsHook::OpenGl,

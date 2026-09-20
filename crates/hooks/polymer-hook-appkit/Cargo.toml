@@ -1,0 +1,24 @@
+[package]
+name = "polymer-hook-appkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2.workspace = true
+objc2-foundation.workspace = true
+objc2-app-kit.workspace = true
+polymer-platform-macos.workspace = true
+polymer-platform.workspace = true
+polymer-input.workspace = true
+polymer-ipc.workspace = true
+dispatch2 = "0.3.1"
+
+[lints]
+workspace = true
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+tempfile.workspace = true

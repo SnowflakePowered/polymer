@@ -23,7 +23,7 @@ use crate::shell_dom::{
 use crate::shell_runtime::{Mutation, ShellRuntime};
 use anyrender::PaintScene as _;
 use bands::BandedScene;
-pub use bands::{CompositionShadowStyle, GamePlacement, GameViewStyle};
+pub use bands::{GamePlacement, GameViewStyle};
 use blitz_dom::NodeId;
 use blitz_dom::local_name;
 use blitz_traits::net::{NetProvider, NetWaker};

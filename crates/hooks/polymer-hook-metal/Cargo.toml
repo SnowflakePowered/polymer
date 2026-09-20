@@ -1,0 +1,23 @@
+[package]
+name = "polymer-hook-metal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[lib]
+crate-type = ["cdylib"]
+[target.'cfg(target_os = "macos")'.dependencies]
+polymer-producer-metal = { path = "../../producers/polymer-producer-metal" }
+polymer-presentation = { workspace = true, features = ["producer"] }
+polymer-hook.workspace = true
+polymer-protocol.workspace = true
+objc2.workspace = true
+objc2-foundation.workspace = true
+objc2-app-kit.workspace = true
+objc2-metal = "0.3.2"
+objc2-quartz-core = "0.3.2"
+block2.workspace = true
+dashmap.workspace = true
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+polymer-ipc.workspace = true
+polymer-consumer-metal = { path = "../../consumer/polymer-consumer-metal" }
+tempfile.workspace = true

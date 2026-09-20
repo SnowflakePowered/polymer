@@ -234,7 +234,10 @@ impl<M: ?Sized> MemoryCardStorageVolume<M> {
         let format = components.next().ok_or_else(|| {
             VfsError::Unsupported("a memory-card storage root cannot be mutated".into())
         })?;
+        #[cfg(windows)]
         let format = format.to_string_lossy();
+        #[cfg(unix)]
+        let format = bstr::ByteSlice::to_str_lossy(format.as_ref() as &[u8]);
         let volume = self
             .views
             .lock()
