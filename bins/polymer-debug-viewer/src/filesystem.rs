@@ -18,7 +18,7 @@ impl DebugFilesystem {
             .map(|bundle| {
                 polymer_platform_macos::StagedBundle::prepare(
                     bundle,
-                    &std::env::temp_dir().join("polymer-staging"),
+                    &polymer_platform_macos::StagedBundle::cache_root()?,
                 )
                 .map(Arc::new)
             })
@@ -40,7 +40,7 @@ impl DebugFilesystem {
         #[cfg(not(target_os = "macos"))]
         let host = polymer_vfs_winfsp::WinFspFilesystemHost::default();
         #[cfg(target_os = "macos")]
-        let host = polymer_vfs_fskit::FsKitFilesystemHost::new("org.polymer.filesystem");
+        let host = polymer_vfs_fskit::FsKitFilesystemHost::new("gg.polymer.filesystem");
         let endpoint = host.allocate_endpoint();
         let mut plan = FilesystemPlan::default();
         let permissions = Permissions::READ | Permissions::WRITE | Permissions::EXECUTE;

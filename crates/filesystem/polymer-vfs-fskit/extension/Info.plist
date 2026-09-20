@@ -5,7 +5,7 @@
 	<key>CFBundleExecutable</key>
 	<string>PolymerFilesystem</string>
 	<key>CFBundleIdentifier</key>
-	<string>org.polymer.filesystem</string>
+	<string>gg.polymer.filesystem</string>
 	<key>CFBundleName</key>
 	<string>Polymer Filesystem</string>
 	<key>CFBundlePackageType</key>

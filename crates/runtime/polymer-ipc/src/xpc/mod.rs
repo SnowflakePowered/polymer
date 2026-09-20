@@ -13,7 +13,7 @@ use objc2_foundation::{NSArray, NSSet, NSXPCInterface};
 use objc2_io_surface::IOSurface;
 use std::{ffi::CStr, io, time::Duration};
 
-pub const BROKER_SERVICE: &str = "org.polymer.ipc";
+pub const BROKER_SERVICE: &str = "gg.polymer.ipc";
 pub const MAX_PACKET_SIZE: usize = 8 * 1024 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(10);
 

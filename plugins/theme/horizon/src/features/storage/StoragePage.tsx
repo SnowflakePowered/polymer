@@ -15,7 +15,7 @@ export function StoragePage() {
   const [platforms, setPlatforms] = createSignal<string[]>([]);
   const [platform, setPlatform] = createSignal(query.platform || shell.model.draft?.platform || "NINTENDO_WII");
   const [volumes, setVolumes] = createSignal<ConsoleStorageVolume[]>([]);
-  const [currentId, setCurrentId] = createSignal(selectedNand(platform()) || "");
+  const [currentId, setCurrentId] = createSignal("");
   const current = () => volumes().find(volume => volume.id === currentId() && volume.platform === platform());
   const [inspection, setInspection] = createSignal<StorageInspection>();
   const [label, setLabel] = createSignal("");
@@ -46,16 +46,16 @@ export function StoragePage() {
   const choose = (id: string) => {
     setCurrentId(id); setPlan(undefined); setConfirmDelete(false); setConfirmRecover(false); setInspection(undefined);
     const volume = volumes().find(item => item.id === id);
-    if (volume) selectNand(volume);
-    void run(refresh);
+    void run(async () => { if (volume) await selectNand(volume); });
   };
   const changePlatform = (value: string) => {
     setPlatform(value); setSource("");
-    choose(selectedNand(value) || "");
+    setCurrentId(""); setPlan(undefined); setConfirmDelete(false); setConfirmRecover(false); setInspection(undefined);
+    void run(async () => { setCurrentId(await selectedNand(value) || ""); });
   };
   const create = async () => {
     const volume = await api.Storage.create("nand", platform(), { label: label().trim() || `${friendly(platform())} NAND` });
-    setCurrentId(volume.id); selectNand(volume); setPlan(undefined);
+    setCurrentId(volume.id); await selectNand(volume); setPlan(undefined);
     if (platforms().includes(platform())) {
       await volume.bootstrap();
     }
@@ -69,7 +69,7 @@ export function StoragePage() {
   };
   onMount(() => {
     void api.platforms().then(items => setPlatforms(items.map(item => item.platform))).catch(reason => setError(String(reason)));
-    void run(refresh);
+    void run(async () => { setCurrentId(await selectedNand(platform()) || ""); });
   });
 
   return <main class="horizon-storage-shell"><AppSidebar /><section class="horizon-storage">
@@ -105,7 +105,7 @@ export function StoragePage() {
         </div>
         <Show when={confirmDelete()}><div role="alert" class="storage-confirm">
           <p>Delete “{volume().label || volume().id}” and its installed contents? Separate save profiles are kept.</p>
-          <button disabled={busy()} onClick={() => void run(async () => { await volume().delete(); localStorage.removeItem(`polymer.nand.${platform()}`); setCurrentId(""); setConfirmDelete(false); })}>Delete NAND</button>
+          <button disabled={busy()} onClick={() => void run(async () => { await volume().delete(); await localStorage.removeItem(`polymer.nand.${platform()}`); setCurrentId(""); setConfirmDelete(false); })}>Delete NAND</button>
           <button onClick={() => setConfirmDelete(false)}>Cancel</button>
         </div></Show>
         <h2>Install contents</h2>

@@ -89,6 +89,10 @@ impl Compositor for MacosCompositor {
         self.window.request_redraw();
     }
     fn set_cursor(&self, icon: Option<cursor_icon::CursorIcon>) {
+        if let Some(overlay) = &self.overlay {
+            overlay.set_shell_cursor(&self.window, icon);
+            return;
+        }
         self.window.set_cursor_visible(icon.is_some());
         if let Some(icon) = icon {
             self.window.set_cursor(icon);

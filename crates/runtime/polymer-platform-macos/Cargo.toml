@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
+blake3.workspace = true
 libc = "0.2"
 mach2 = "0.5"
 serde_json.workspace = true

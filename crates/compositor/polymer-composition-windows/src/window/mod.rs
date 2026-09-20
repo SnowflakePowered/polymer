@@ -90,6 +90,10 @@ impl WindowManager {
     }
 
     pub fn set_cursor(&self, icon: Option<cursor_icon::CursorIcon>) {
+        if let Some(overlay) = &self.overlay {
+            overlay.set_shell_cursor(&self.window, icon);
+            return;
+        }
         self.window.set_cursor(icon.unwrap_or_default());
         self.window.set_cursor_visible(icon.is_some());
     }

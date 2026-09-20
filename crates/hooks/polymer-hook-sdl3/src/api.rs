@@ -11,9 +11,9 @@ use polymer_hook_input_sdl::{
 
 use std::{
     ffi::{CString, c_char, c_void},
-    mem,
     sync::Arc,
 };
+#[cfg(target_os = "windows")]
 use windows_sys::Win32::{Foundation::HMODULE, System::LibraryLoader::GetProcAddress};
 
 pub(crate) type JoystickId = u32;
@@ -138,7 +138,7 @@ pub(crate) struct Api {
     set_axis: SetAxisFn,
     set_button: SetButtonFn,
     send_sensor: SendSensorFn,
-    update_joysticks: UpdateJoysticksFn,
+    pub(crate) update_joysticks: UpdateJoysticksFn,
     ids: Vec<JoystickId>,
     handles: Vec<usize>,
     layouts: Vec<OutputLayout>,
@@ -170,7 +170,7 @@ impl FeedbackContext {
 
 impl Api {
     pub(crate) unsafe fn load(
-        module: HMODULE,
+        module: Module,
         layouts: Vec<(OutputLayout, String)>,
         runtime: Arc<Runtime>,
     ) -> Option<Self> {
@@ -392,8 +392,23 @@ impl SdlBackend for Api {
     }
 }
 
-pub(crate) unsafe fn symbol<T: Copy>(module: HMODULE, name: &std::ffi::CStr) -> Option<T> {
+#[cfg(target_os = "windows")]
+pub(crate) unsafe fn symbol<T: Copy>(module: Module, name: &std::ffi::CStr) -> Option<T> {
     let address = unsafe { GetProcAddress(module, name.as_ptr().cast()) }?;
-    debug_assert_eq!(mem::size_of::<T>(), mem::size_of_val(&address));
-    Some(unsafe { mem::transmute_copy(&address) })
+    debug_assert_eq!(std::mem::size_of::<T>(), std::mem::size_of_val(&address));
+    Some(unsafe { std::mem::transmute_copy(&address) })
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) type Module = HMODULE;
+#[cfg(target_os = "macos")]
+pub(crate) type Module = &'static libloading::Library;
+#[cfg(target_os = "macos")]
+pub(crate) unsafe fn symbol<T: Copy>(module: Module, name: &std::ffi::CStr) -> Option<T> {
+    unsafe {
+        module
+            .get::<T>(name.to_bytes_with_nul())
+            .ok()
+            .map(|symbol| *symbol)
+    }
 }

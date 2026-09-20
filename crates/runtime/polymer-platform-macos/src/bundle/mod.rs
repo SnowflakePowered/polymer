@@ -1,5 +1,7 @@
 //! Prepare a private emulator copy for launch-time dyld injection.
 
+mod cache;
+
 use plist::Value;
 use std::{
     io,
@@ -7,22 +9,31 @@ use std::{
     process::{Command, Output},
 };
 
-/// Owns a freshly cloned and re-signed bundle. Retain it until the guest exits.
+/// References a cached, locally re-signed bundle.
 /// Stage before adding the bundle to the mandatory guest filesystem; this is
 /// preparation, not a launch API or a way to bypass the VFS.
 pub struct StagedBundle {
-    _directory: tempfile::TempDir,
     bundle: PathBuf,
     executable: PathBuf,
 }
 
 impl StagedBundle {
-    /// Each preparation uses a fresh APFS clone, so upstream updates cannot leave
-    /// a stale signed executable in a cache. Never modifies the source bundle.
+    /// Reuses a signed copy while the source contents and signing policy match.
+    /// Never modifies the source bundle; cached versions survive guest teardown.
     pub fn prepare(source: &Path, staging_root: &Path) -> io::Result<Self> {
-        let source = source.canonicalize()?;
+        cache::BundleCache::prepare(source, staging_root)
+    }
+
+    /// The per-user persistent cache shared by GUI and debug-viewer launches.
+    pub fn cache_root() -> io::Result<PathBuf> {
+        std::env::home_dir()
+            .map(|home| home.join("Library/Caches/gg.polymer/signed-bundles"))
+            .ok_or_else(|| io::Error::other("cannot locate the user's cache directory"))
+    }
+
+    fn open(bundle: PathBuf) -> io::Result<Self> {
         let info =
-            Value::from_file(source.join("Contents/Info.plist")).map_err(io::Error::other)?;
+            Value::from_file(bundle.join("Contents/Info.plist")).map_err(io::Error::other)?;
         let executable = info
             .as_dictionary()
             .and_then(|info| info.get("CFBundleExecutable"))
@@ -40,23 +51,28 @@ impl StagedBundle {
                 "CFBundleExecutable must be a file name",
             ));
         }
-        std::fs::create_dir_all(staging_root)?;
-        let directory = tempfile::Builder::new()
-            .prefix("polymer-guest-")
-            .tempdir_in(staging_root)?;
-        let bundle = directory.path().join(
-            source
-                .file_name()
-                .ok_or_else(|| io::Error::other("bundle has no name"))?,
-        );
-        Self::run(Command::new("/bin/cp").arg("-Rc").arg(&source).arg(&bundle))?;
+        let executable = bundle.join("Contents/MacOS").join(executable);
+        if !executable.is_file()
+            || !executable
+                .canonicalize()?
+                .starts_with(bundle.canonicalize()?)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "bundle executable is missing or escapes the staged bundle",
+            ));
+        }
+        Ok(Self { bundle, executable })
+    }
+
+    fn sign(bundle: &Path, directory: &Path) -> io::Result<()> {
         // Quarantine must go before the first launch or signature assessment.
         Self::run(
             Command::new("/usr/bin/xattr")
                 .args(["-dr", "com.apple.quarantine"])
                 .arg(&bundle),
         )?;
-        let entitlements = directory.path().join("entitlements.plist");
+        let entitlements = directory.join("entitlements.plist");
         Self::run(
             Command::new("/usr/bin/codesign")
                 .args(["-d", "--entitlements"])
@@ -93,22 +109,7 @@ impl StagedBundle {
                 .args(["--verify", "--deep", "--strict"])
                 .arg(&bundle),
         )?;
-        let executable = bundle.join("Contents/MacOS").join(executable);
-        if !executable.is_file()
-            || !executable
-                .canonicalize()?
-                .starts_with(bundle.canonicalize()?)
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "bundle executable is missing or escapes the staged bundle",
-            ));
-        }
-        Ok(Self {
-            _directory: directory,
-            bundle,
-            executable,
-        })
+        Ok(())
     }
 
     pub fn path(&self) -> &Path {
@@ -137,5 +138,41 @@ impl polymer_vfs::ResourceFactory<dyn polymer_vfs::Volume> for StagedBundle {
         &self,
     ) -> polymer_vfs::VfsResult<polymer_vfs::Materialized<dyn polymer_vfs::Volume>> {
         polymer_vfs::HostDirectoryFactory::new(self.path().to_owned(), true).materialize()
+    }
+}
+
+/// Materializes an injection-ready bundle only when the launch VFS is prepared.
+pub struct BundleFactory {
+    source: PathBuf,
+}
+impl BundleFactory {
+    pub fn new(source: PathBuf) -> Self {
+        Self { source }
+    }
+}
+impl polymer_vfs::ResourceFactory<dyn polymer_vfs::Volume> for BundleFactory {
+    fn materialize(
+        &self,
+    ) -> polymer_vfs::VfsResult<polymer_vfs::Materialized<dyn polymer_vfs::Volume>> {
+        let staged = StagedBundle::prepare(&self.source, &StagedBundle::cache_root()?)?;
+        let materialized = polymer_vfs::PackageDirectoryFactory::new(staged.path().to_owned())
+            .with_internal_links()
+            .materialize()?;
+        Ok(polymer_vfs::Materialized {
+            backend: materialized.backend,
+            lease: std::sync::Arc::new(BundleLease {
+                lease: materialized.lease,
+                _staged: staged,
+            }),
+        })
+    }
+}
+struct BundleLease {
+    lease: std::sync::Arc<dyn polymer_vfs::ResourceLease>,
+    _staged: StagedBundle,
+}
+impl polymer_vfs::ResourceLease for BundleLease {
+    fn finalize(&self, reason: polymer_vfs::FinalizationReason) -> polymer_vfs::VfsResult<()> {
+        self.lease.finalize(reason)
     }
 }

@@ -14,7 +14,7 @@ the frontend's responsibility. IOSurfaces are non-global, and event handles
 travel as NSXPC objects rather than serialized archives. Raw HID uses the same
 XPC transport on macOS and retains named pipes on Windows.
 
-`org.polymer.ipc` is a per-user launchd service that introduces named anonymous
+`gg.polymer.ipc` is a per-user launchd service that introduces named anonymous
 listeners. It only transfers `NSXPCListenerEndpoint` capabilities: after lookup,
 connections run directly between peers. Registrations disappear when their
 owner disconnects; existing direct connections do not depend on the broker.
@@ -31,18 +31,18 @@ crates/runtime/polymer-ipc/macos/install-broker.sh
 ```
 
 This builds the Rust broker and registers
-`~/Library/LaunchAgents/org.polymer.ipc.plist`, pointing at this checkout's debug
+`~/Library/LaunchAgents/gg.polymer.ipc.plist`, pointing at this checkout's debug
 binary. Running it again restarts the broker, so restart listeners afterward.
 Remove the registration with:
 
 ```sh
-launchctl bootout "gui/$(id -u)/org.polymer.ipc"
-rm "$HOME/Library/LaunchAgents/org.polymer.ipc.plist"
+launchctl bootout "gui/$(id -u)/gg.polymer.ipc"
+rm "$HOME/Library/LaunchAgents/gg.polymer.ipc.plist"
 ```
 
 A distributable macOS app must package and register the helper instead of using
 this development path. Sandboxed clients need permission to look up the
-`org.polymer.ipc` Mach service; the FSKit extension includes that entitlement.
+`gg.polymer.ipc` Mach service; the FSKit extension includes that entitlement.
 
 Most code uses objc2. `src/xpc/protocol.m` supplies clang's static extended
 protocol metadata, which NSXPC requires, and three typed proxy sends. Those

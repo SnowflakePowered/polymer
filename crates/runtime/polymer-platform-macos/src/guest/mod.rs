@@ -46,10 +46,15 @@ impl GuestPlatform {
                 "macOS capture supports Metal and MoltenVK",
             ));
         }
-        if !request.hooks.input.is_empty() {
+        if request
+            .hooks
+            .input
+            .iter()
+            .any(|hook| !matches!(hook, InputHook::Sdl3))
+        {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "macOS controller hooks are not implemented",
+                "macOS controller hooks support SDL3 only",
             ));
         }
         let executable = filesystem.endpoint().project(request.executable.as_path());
@@ -87,6 +92,19 @@ impl GuestPlatform {
                 if request.isolate { "1" } else { "0" },
             )
             .current_dir(Path::new(&executable).parent().unwrap());
+        if request.hooks.input.contains(&InputHook::Sdl3) {
+            command
+                .env(
+                    "SDL3_DYNAMIC_API",
+                    artifacts
+                        .join("libpolymer_hook_sdl3.dylib")
+                        .canonicalize()?,
+                )
+                .env(
+                    "POLYMER_SDL3_RUNTIME",
+                    artifacts.join("libSDL3.dylib").canonicalize()?,
+                );
+        }
         let process = Process::spawn(&mut command)?;
         Ok(Box::new(MacGuest {
             process,

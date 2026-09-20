@@ -415,7 +415,7 @@ emit = { key = "GCIFolderBPathOverride" }
 key = "gfx_backend"
 title = "Gfx Backend"
 type = "select"
-domain = [{ key = "D3D", label = "Direct3D 11", value = "D3D" }, { key = "D3D12", label = "Direct3D 12", value = "D3D12" }, { key = "OGL", label = "OpenGL", value = "OGL" }, { key = "Vulkan", label = "Vulkan", value = "Vulkan" }]
+domain = [{ key = "D3D", label = "Direct3D 11", value = "D3D" }, { key = "D3D12", label = "Direct3D 12", value = "D3D12" }, { key = "OGL", label = "OpenGL", value = "OGL" }, { key = "Vulkan", label = "Vulkan", value = "Vulkan" }, { key = "Metal", label = "Metal", value = "Metal" }]
 emit = { key = "GFXBackend" }
 
 [[sections.main.core.options]]

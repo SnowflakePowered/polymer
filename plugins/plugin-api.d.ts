@@ -1,3 +1,8 @@
+declare module "polymer:sys" {
+    /** Operating system and architecture of the Polymer host. */
+    export const osIdentifier: string;
+}
+
 /** Host API types. Shared configuration references are declaration-only. */
 declare module "polymer:api" {
     export type DigestAlgorithm = import("../js/package.ts").DigestAlgorithm;

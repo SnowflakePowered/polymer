@@ -6,7 +6,7 @@ mod bundle;
 pub mod spaces;
 
 pub use audio::SystemAudioState;
-pub use bundle::StagedBundle;
+pub use bundle::{BundleFactory, StagedBundle};
 
 mod guest;
 mod window;

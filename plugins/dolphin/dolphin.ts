@@ -1,4 +1,6 @@
-import runtime from "pkg:bin/win-x64";
+import { osIdentifier } from "polymer:sys";
+const isMacos = osIdentifier.startsWith("macos-");
+const runtime = (await import(`pkg:bin/${osIdentifier}${isMacos ? "/Dolphin.app" : ""}`)).default;
 import { uiAutomation } from "polymer:uiautomation";
 import { actions } from "polymer:actions";
 import type {
@@ -226,9 +228,11 @@ function pointerTopology(topology: ControllerTopology): ControllerTopology {
                 ...mapping.pointer,
                 mode: mapping.target.group !== "wii"
                     ? "none"
-                    : mapping.device?.capabilities.includes("pointerAngular")
-                        ? "absoluteDevice"
-                        : "relative",
+                    : mapping.source?.kind === "keyboardMouse" || mapping.pointer.source === "hostMouse"
+                        ? "absoluteScreen"
+                        : mapping.device?.capabilities.includes("pointerAngular")
+                            ? "absoluteDevice"
+                            : "relative",
             },
         })),
     };
@@ -477,7 +481,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     // Telemetry remains disabled and Dolphin does not open its consent dialog.
     options.analytics.enabled = false;
     options.analytics.permission_asked = true;
-    options.core.gfx_backend = "D3D";
+    options.core.gfx_backend = isMacos ? "Metal" : "D3D";
     args.configuration.options().gfx.settings.aspect_ratio = "Stretch";
     options.core.gci_folder_a_path = args.filesystem.path("/MemoryCard/USA");
     // Dolphin disables save states by default in current development builds.
@@ -544,12 +548,12 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     args.filesystem.mountConfiguration("/User", args.configuration, { mode: "rw" });
 
     return {
-        command: args.filesystem.path("/Dolphin/Dolphin.exe"),
+        command: args.filesystem.path(isMacos ? "/Dolphin/Contents/MacOS/Dolphin" : "/Dolphin/Dolphin.exe"),
         argv,
-        isolate: false,
+        isolate: true,
         hooks: {
-            graphics: ["d3d11"],
-            input: ["sdl3", "bluetooth-api-win32"],
+            graphics: isMacos ? ["metal"] : ["d3d11"],
+            input: isMacos ? ["sdl3"] : ["sdl3", "bluetooth-api-win32"],
         },
         controllerTopology,
         surfaces: [

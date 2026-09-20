@@ -13,6 +13,7 @@ mod jsr;
 
 const PLUGIN_SCHEME: &str = "pkg";
 const PLUGIN_HOST: &str = "plugin";
+const SYS_MODULE: &str = "polymer:sys";
 const API_MODULE: &str = "polymer:api";
 const UI_AUTOMATION_MODULE: &str = "polymer:uiautomation";
 const ACTIONS_MODULE: &str = "polymer:actions";
@@ -236,6 +237,7 @@ impl ModuleLoader for PluginModuleLoader {
         if matches!(
             specifier,
             API_MODULE
+                | SYS_MODULE
                 | UI_AUTOMATION_MODULE
                 | ACTIONS_MODULE
                 | PLUGIN_STORAGE_MODULE
@@ -283,7 +285,25 @@ impl ModuleLoader for PluginModuleLoader {
                 async move { loader.load_jsr(specifier, module_type).await }.boxed_local(),
             );
         }
-        let source = if module_specifier.as_str() == API_MODULE {
+        let source = if module_specifier.as_str() == SYS_MODULE {
+            let os = match std::env::consts::OS {
+                "windows" => "win",
+                os => os,
+            };
+            let architecture = match std::env::consts::ARCH {
+                "x86_64" => "x64",
+                "aarch64" => "arm64",
+                architecture => architecture,
+            };
+            Ok(ModuleSource::new(
+                ModuleType::JavaScript,
+                ModuleSourceCode::String(
+                    format!("export const osIdentifier = '{os}-{architecture}';").into(),
+                ),
+                module_specifier,
+                None,
+            ))
+        } else if module_specifier.as_str() == API_MODULE {
             Ok(ModuleSource::new(
                 ModuleType::JavaScript,
                 ModuleSourceCode::String("export {};".to_owned().into()),

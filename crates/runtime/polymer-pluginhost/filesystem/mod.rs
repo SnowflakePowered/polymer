@@ -231,6 +231,14 @@ impl FilesystemState {
     fn insert_path_resource(&mut self, path: PathBuf) -> Result<ResourceHandle, VfsError> {
         let permissions = Permissions::from_str("rx").expect("canonical package permissions");
         if path.is_dir() {
+            #[cfg(target_os = "macos")]
+            if path.extension().is_some_and(|extension| extension == "app") {
+                return Ok(ResourceHandle::Tree(self.insert_volume(Resource::new(
+                    Arc::new(polymer_platform_macos::BundleFactory::new(path.clone())),
+                    permissions,
+                    ResourceOrigin::Package(path.display().to_string()),
+                ))));
+            }
             return Ok(ResourceHandle::Tree(self.insert_volume(Resource::new(
                 Arc::new(PackageDirectoryFactory::new(path.clone())),
                 permissions,
