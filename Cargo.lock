@@ -9437,6 +9437,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
+ "xa11y-core",
 ]
 
 [[package]]
@@ -9834,6 +9835,8 @@ dependencies = [
  "dispatch2",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
  "objc2-foundation 0.3.2",
  "polymer-input",
  "polymer-ipc",
@@ -10186,6 +10189,7 @@ dependencies = [
  "objc2-core-graphics",
  "objc2-foundation 0.3.2",
  "plist",
+ "polymer-automation",
  "polymer-input",
  "polymer-ipc",
  "polymer-platform",
@@ -10193,6 +10197,8 @@ dependencies = [
  "polymer-vfs",
  "serde_json",
  "tempfile",
+ "xa11y-core",
+ "xa11y-macos",
  "zerocopy",
 ]
 
@@ -16326,6 +16332,17 @@ dependencies = [
  "serde_json",
  "strum 0.28.0",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "xa11y-macos"
+version = "0.13.0"
+dependencies = [
+ "cc",
+ "core-foundation 0.10.1",
+ "rayon",
+ "serde_json",
+ "xa11y-core",
 ]
 
 [[package]]

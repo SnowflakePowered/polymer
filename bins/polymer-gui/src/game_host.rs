@@ -7,7 +7,6 @@ use crate::{
     launch::AttachedLaunchPlan, shell_document::GameViewStyle, shell_dom::TrackedSurfaceLayout,
 };
 use polymer_composition::{CompositorHandle, SurfaceLayer as CapturedSurfaceSnapshot};
-#[cfg(target_os = "windows")]
 use polymer_pluginhost::controller::AttachAutomation;
 use polymer_pluginhost::controller::{
     AttachActions, ControllerChanged, DiscChange, PauseResume, PendingReply, Quit, StateAction,
@@ -565,26 +564,32 @@ impl GameHost {
                 return Err(error);
             }
         }
-        #[cfg(windows)]
         let automation = if let Some(controller_session) = &controller_session {
             let process_id = self
                 .session
                 .instance()
                 .expect("a successful session launch owns an emulator instance")
                 .process_id();
-            let attached = polymer_platform_windows::WindowsAutomationDriver::new(
+            #[cfg(windows)]
+            let driver = polymer_platform_windows::WindowsAutomationDriver::new(
                 process_id,
                 automation_desktop,
-            )
-            .and_then(polymer_automation::AutomationSession::spawn)
-            .map_err(|error| format!("could not start emulator UI automation: {error}"))
-            .and_then(|automation| {
-                futures::executor::block_on(
-                    controller_session.send(AttachAutomation(automation.client())),
-                )
-                .map_err(|error| error.to_string())??;
-                Ok(automation)
-            });
+            );
+            #[cfg(target_os = "macos")]
+            let driver = polymer_platform_macos::MacAutomationDriver::new(
+                process_id,
+                self.session.instance().unwrap().input(),
+            );
+            let attached = driver
+                .and_then(polymer_automation::AutomationSession::spawn)
+                .map_err(|error| format!("could not start emulator UI automation: {error}"))
+                .and_then(|automation| {
+                    futures::executor::block_on(
+                        controller_session.send(AttachAutomation(automation.client())),
+                    )
+                    .map_err(|error| error.to_string())??;
+                    Ok(automation)
+                });
             match attached {
                 Ok(automation) => Some(automation),
                 Err(error) => {
@@ -597,8 +602,6 @@ impl GameHost {
         } else {
             None
         };
-        #[cfg(target_os = "macos")]
-        let automation = None;
         self.capture.attach(
             self.session
                 .instance()

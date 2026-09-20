@@ -37,6 +37,22 @@ pub(super) struct WireMessage {
     payload: [u8; PAYLOAD_SIZE],
 }
 
+// Keep allocations bounded before reading a variable-length control payload.
+const MAX_CONTROL_DATA: usize = 8 * 1024 * 1024 - mem::size_of::<WireMessage>();
+impl WireMessage {
+    pub fn data_len(&self) -> io::Result<usize> {
+        let len = if self.kind.get() == MESSAGE_BLOB {
+            payload::<WireBlob>(self)?.len.get() as usize
+        } else {
+            0
+        };
+        if len > MAX_CONTROL_DATA {
+            return Err(invalid_data("control payload is too large"));
+        }
+        Ok(len)
+    }
+}
+
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
 struct WireHello {
@@ -130,7 +146,7 @@ struct WireMapOffer {
     generation: U64,
 }
 
-pub(super) fn encode(message: Message) -> WireMessage {
+pub(super) fn encode(message: &Message) -> io::Result<WireMessage> {
     let mut wire = WireMessage {
         kind: U32::ZERO,
         payload: [0; PAYLOAD_SIZE],
@@ -224,13 +240,16 @@ pub(super) fn encode(message: Message) -> WireMessage {
                 },
             );
         }
-        Message::Blob { kind, len } => {
+        Message::Blob { kind, data } => {
+            if data.len() > MAX_CONTROL_DATA {
+                return Err(invalid_data("control payload is too large"));
+            }
             set_payload(
                 &mut wire,
                 MESSAGE_BLOB,
                 &WireBlob {
-                    kind: U32::new(kind as u32),
-                    len: U32::new(len),
+                    kind: U32::new(*kind as u32),
+                    len: U32::new(data.len() as u32),
                 },
             );
         }
@@ -249,7 +268,7 @@ pub(super) fn encode(message: Message) -> WireMessage {
                 MESSAGE_BUFFER_AVAILABLE,
                 &WireBufferAvailable {
                     stream_id: U64::new(stream_id.0),
-                    through_sync_value: U64::new(through_sync_value),
+                    through_sync_value: U64::new(*through_sync_value),
                 },
             );
         }
@@ -268,7 +287,7 @@ pub(super) fn encode(message: Message) -> WireMessage {
         Message::FrameAvailable => wire.kind = U32::new(MESSAGE_FRAME_AVAILABLE),
         Message::MapAccepted => wire.kind = U32::new(MESSAGE_MAP_ACCEPTED),
     }
-    wire
+    Ok(wire)
 }
 
 fn set_payload<T: IntoBytes + Immutable>(wire: &mut WireMessage, kind: u32, payload: &T) {
@@ -277,7 +296,10 @@ fn set_payload<T: IntoBytes + Immutable>(wire: &mut WireMessage, kind: u32, payl
     wire.payload[..bytes.len()].copy_from_slice(bytes);
 }
 
-pub(super) fn decode(wire: &WireMessage) -> io::Result<Message> {
+pub(super) fn decode(wire: &WireMessage, data: Vec<u8>) -> io::Result<Message> {
+    if data.len() != wire.data_len()? {
+        return Err(invalid_data("control payload length mismatch"));
+    }
     match wire.kind.get() {
         MESSAGE_HELLO => {
             let value = payload::<WireHello>(wire)?;
@@ -384,12 +406,10 @@ pub(super) fn decode(wire: &WireMessage) -> io::Result<Message> {
             let value = payload::<WireBlob>(wire)?;
             let kind = match value.kind.get() {
                 1 => BlobKind::Topology,
+                2 => BlobKind::MacosAutomationEvent,
                 _ => return Err(invalid_data("unknown blob kind")),
             };
-            Ok(Message::Blob {
-                kind,
-                len: value.len.get(),
-            })
+            Ok(Message::Blob { kind, data })
         }
         MESSAGE_MAP_OFFER => {
             let value = payload::<WireMapOffer>(wire)?;
@@ -425,7 +445,7 @@ pub(super) fn invalid_data(message: &'static str) -> io::Error {
 }
 
 pub(crate) fn encode_frame(value: FrameReady) -> Vec<u8> {
-    let wire = encode(Message::FrameReady(value));
+    let wire = encode(&Message::FrameReady(value)).expect("fixed-size frame encoding");
     wire.payload[..mem::size_of::<WireFrameReady>()].to_vec()
 }
 
@@ -438,7 +458,7 @@ pub(crate) fn decode_frame(bytes: &[u8]) -> io::Result<FrameReady> {
         return Err(invalid_data("invalid shared frame size"));
     }
     wire.payload[..bytes.len()].copy_from_slice(bytes);
-    match decode(&wire)? {
+    match decode(&wire, Vec::new())? {
         Message::FrameReady(value) => Ok(value),
         _ => unreachable!(),
     }

@@ -174,8 +174,33 @@ impl Guest for MacGuest {
                 self.input.publish_host(event);
                 Ok(())
             }
-            action @ GuestInput::Hotkey { .. } => {
-                crate::window::GuestEvents::send(self.process.id(), action)
+            GuestInput::Hotkey { window, chord } => {
+                let keys = chord
+                    .modifiers
+                    .iter()
+                    .chain(std::iter::once(&chord.key))
+                    .map(|code| crate::GuestEvents::key_code(code))
+                    .collect::<io::Result<Vec<_>>>()?;
+                for pressed in [true, false] {
+                    for &key in &keys {
+                        self.input
+                            .publish_host_action(polymer_input::HostInputEvent::Key {
+                                code: polymer_input::KeyCode::new("Unidentified"),
+                                scan_code: key,
+                                virtual_key: key,
+                                pressed,
+                                repeat: false,
+                                extended: false,
+                                target_window: window.0,
+                                timestamp_ms: 0,
+                                sequence: 0,
+                            });
+                    }
+                    if pressed {
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                }
+                Ok(())
             }
         }
     }

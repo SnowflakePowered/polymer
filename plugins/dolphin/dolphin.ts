@@ -1,7 +1,7 @@
 import { osIdentifier } from "polymer:sys";
 const isMacos = osIdentifier.startsWith("macos-");
 const runtime = (await import(`pkg:bin/${osIdentifier}${isMacos ? "/Dolphin.app" : ""}`)).default;
-import { uiAutomation } from "polymer:uiautomation";
+import { uiAutomation, UiAutomationError, type UiLocator, type WindowQuery } from "polymer:uiautomation";
 import { actions } from "polymer:actions";
 import type {
     Actions,
@@ -130,7 +130,25 @@ export const onConfigure = (
 
 const WII_REMOTE_SLOT_COUNT = 4;
 const WII_REMOTE_SOURCE_NAMES = ["None", "Emulated Wii Remote", "Real Wii Remote"] as const;
-const DOLPHIN_WINDOW_CLOSE_SELECTOR = 'button[name="Close"][stable_id="Close"]';
+// Qt modal exec() can keep AXPress waiting after the dialog is already open.
+// Only accept that transport error when the expected window is observable.
+async function openDolphinWindow(button: UiLocator, query: WindowQuery) {
+    let pressError: unknown;
+    try {
+        await button.press();
+    } catch (error) {
+        if (!isMacos || !(error instanceof UiAutomationError)
+            || error.kind !== "platform" || !error.message.includes("-25204")) throw error;
+        pressError = error;
+    }
+    try {
+        return await uiAutomation.waitForWindow(query);
+    } catch (error) {
+        throw pressError ?? error;
+    }
+}
+
+const DOLPHIN_WINDOW_CLOSE_SELECTOR = isMacos ? 'button[name="Close"]' : 'button[name="Close"][stable_id="Close"]';
 let loadedWiimoteMappings: Array<ControllerMapping | undefined> | null = null;
 
 function usesRealWiimote(mapping: ControllerMapping): boolean {
@@ -271,9 +289,7 @@ async function applyWiiConnectionChanges(
         pattern: "^Dolphin [^|]+$",
         selector: 'button[name="Controllers"]',
     });
-    await dolphin.locator('button[name="Controllers"]').nth(1).press();
-
-    const settings = await uiAutomation.waitForWindow({
+    const settings = await openDolphinWindow(dolphin.locator('button[name="Controllers"]').nth(1), {
         pattern: "^Settings$",
         selector: 'group[name="Wii Remotes"] combo_box[enabled="true"]',
     });
@@ -335,26 +351,27 @@ async function applyWiiConnectionChanges(
             if (!currentMapping) continue;
             if (!mappingReloadPorts.has(port)) continue;
             const mappingStarted = Date.now();
-            const pattern = `^Wii Remote ${port + 1}$`;
-            const staleWindows = await uiAutomation.windows({ pattern });
+            const mappingQuery = isMacos
+                ? { pattern: "^$", selector: 'radio_button[name="Motion Simulation"]' }
+                : { pattern: `^Wii Remote ${port + 1}$` };
+            const staleWindows = await uiAutomation.windows(mappingQuery);
             for (const stale of staleWindows) {
                 await stale.locator(DOLPHIN_WINDOW_CLOSE_SELECTOR).nth(1).press();
             }
             if (staleWindows.length !== 0) {
                 const cleanupStarted = Date.now();
-                while ((await uiAutomation.windows({ pattern })).length !== 0) {
+                while ((await uiAutomation.windows(mappingQuery)).length !== 0) {
                     if (Date.now() - cleanupStarted >= 2_000) {
                         throw new Error(`Dolphin Wii Remote ${port + 1} configuration did not close`);
                     }
                     await new Promise(resolve => setTimeout(resolve, 25));
                 }
             }
-            await configure.nth(port + 1).press();
-            const mapping = await uiAutomation.waitForWindow({
-                pattern,
-            });
+            const mapping = await openDolphinWindow(configure.nth(port + 1), mappingQuery);
             try {
-                await mapping.locator('tab[name="Motion Simulation"]').nth(1).click();
+                const motionTab = mapping.locator(isMacos ? 'radio_button[name="Motion Simulation"]' : 'tab[name="Motion Simulation"]').nth(1);
+                if (isMacos) await motionTab.press();
+                else await motionTab.click();
                 // Dolphin puts empty QCheckBoxes beside separate QFormLayout
                 // labels. Qt UIA consequently names both Cursor bool settings
                 // "Point". Cursor defines Relative Input before Auto-Hide, so
@@ -545,7 +562,27 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
         args.filesystem.mountFile("/QuickResume/state.sav", quickResume.state, { mode: "r" });
         argv.push("--save_state", args.filesystem.path("/QuickResume/state.sav"));
     }
-    args.filesystem.mountConfiguration("/User", args.configuration, { mode: "rw" });
+    const configuration = isMacos ? {
+        ...args.configuration,
+        render() {
+            const files = { ...args.configuration.render() };
+            const path = "Config/Hotkeys.ini";
+            // Quartz polls native key state; its F13/F14 names are numeric.
+            const hotkeys = new TextDecoder().decode(files[path])
+                .replace("DInput/0/Keyboard Mouse", "Quartz/0/Keyboard & Mouse")
+                .replace(/\bCtrl\b/g, "`Left Control`")
+                .replace(/\bShift\b/g, "`Left Shift`")
+                .replace(/\bAlt\b/g, "`Left Alt`")
+                .replace(/\bESCAPE\b/g, "Escape")
+                .replace(/\bRETURN\b/g, "Return")
+                .replace(/\bTAB\b/g, "Tab")
+                .replace(/\bF13\b/g, "`Key 105`")
+                .replace(/\bF14\b/g, "`Key 107`");
+            files[path] = new TextEncoder().encode(hotkeys);
+            return files;
+        },
+    } : args.configuration;
+    args.filesystem.mountConfiguration("/User", configuration, { mode: "rw" });
 
     return {
         command: args.filesystem.path(isMacos ? "/Dolphin/Contents/MacOS/Dolphin" : "/Dolphin/Dolphin.exe"),
@@ -616,7 +653,11 @@ async function awaitNativeState(directory: DirectoryResource, slot: number): Pro
     const deadline = Date.now() + 25_000;
     do {
         for await (const entry of directory) {
-            if (entry.kind === "file" && entry.name.toLowerCase().endsWith(suffix)) return entry;
+            // macOS can create AppleDouble metadata alongside the actual state.
+            // Dolphin closes its temporary state before renaming it to this suffix.
+            if (entry.kind === "file" && !entry.name.startsWith("._") && entry.name.toLowerCase().endsWith(suffix)) {
+                return entry;
+            }
         }
         await new Promise(resolve => setTimeout(resolve, 50));
     } while (Date.now() < deadline);

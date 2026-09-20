@@ -13,3 +13,6 @@ pub use protocol::{
     WindowMatcher, WindowQuery, WindowSnapshot,
 };
 pub use session::{AutomationActor, AutomationClient, AutomationSession};
+
+mod xa11y;
+pub use xa11y::{AutomationBackend, Xa11yDriver};

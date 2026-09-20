@@ -28,3 +28,6 @@ pub fn performance_frequency() -> std::io::Result<u64> {
 }
 
 pub use window::GuestEvents;
+
+mod automation;
+pub use automation::MacAutomationDriver;

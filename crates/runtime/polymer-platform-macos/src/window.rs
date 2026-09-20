@@ -69,45 +69,6 @@ impl GuestEvents {
                 CGEvent::post_to_pid(pid as i32, Some(&event));
                 Ok(())
             }
-            GuestInput::Hotkey { chord, .. } => {
-                let keys = chord
-                    .modifiers
-                    .iter()
-                    .chain(std::iter::once(&chord.key))
-                    .map(|key| Self::key_code(key))
-                    .collect::<io::Result<Vec<_>>>()?;
-                let mut flags = CGEventFlags::empty();
-                for modifier in &chord.modifiers {
-                    flags |= match modifier.as_str() {
-                        "ShiftLeft" | "ShiftRight" => CGEventFlags::MaskShift,
-                        "ControlLeft" | "ControlRight" => CGEventFlags::MaskControl,
-                        "AltLeft" | "AltRight" => CGEventFlags::MaskAlternate,
-                        "MetaLeft" | "MetaRight" => CGEventFlags::MaskCommand,
-                        _ => CGEventFlags::empty(),
-                    };
-                }
-                for (key, down) in keys
-                    .iter()
-                    .map(|v| (*v, true))
-                    .chain(keys.iter().rev().map(|v| (*v, false)))
-                {
-                    let event = CGEvent::new_keyboard_event(None, key, down)
-                        .ok_or_else(|| io::Error::other("keyboard event allocation failed"))?;
-                    // Modifier-up events must clear their flag before delivery.
-                    if !down {
-                        flags.remove(match key {
-                            54 | 55 => CGEventFlags::MaskCommand,
-                            56 | 60 => CGEventFlags::MaskShift,
-                            58 | 61 => CGEventFlags::MaskAlternate,
-                            59 | 62 => CGEventFlags::MaskControl,
-                            _ => CGEventFlags::empty(),
-                        });
-                    }
-                    CGEvent::set_flags(Some(&event), flags);
-                    CGEvent::post_to_pid(pid as i32, Some(&event));
-                }
-                Ok(())
-            }
             GuestInput::Host(HostInputEvent::Pointer(pointer)) => Self::pointer(pid, pointer),
             GuestInput::Host(HostInputEvent::Wheel {
                 horizontal,
@@ -180,7 +141,7 @@ impl GuestEvents {
         CGEvent::post_to_pid(pid as i32, Some(&event));
         Ok(())
     }
-    fn key_code(code: &str) -> io::Result<u16> {
+    pub(crate) fn key_code(code: &str) -> io::Result<u16> {
         const CODES: &[&str] = &[
             "KeyA",
             "KeyS",

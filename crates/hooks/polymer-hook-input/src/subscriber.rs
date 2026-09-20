@@ -80,11 +80,8 @@ impl Subscriber {
             match subscriber.control.receive() {
                 Ok(Message::Blob {
                     kind: BlobKind::Topology,
-                    len,
+                    data: bytes,
                 }) => {
-                    let Ok(bytes) = subscriber.control.receive_blob(len) else {
-                        return;
-                    };
                     if let Ok((value, _)) = bincode::serde::decode_from_slice::<InputTopology, _>(
                         &bytes,
                         bincode::config::standard(),

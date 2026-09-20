@@ -1,8 +1,10 @@
 //! Injected AppKit desktop isolation.
 #![cfg(target_os = "macos")]
 
-mod isolation;
+mod automation;
 mod input;
+mod isolation;
+mod keyboard;
 
 #[used]
 #[unsafe(link_section = "__DATA,__mod_init_func")]

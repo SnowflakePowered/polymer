@@ -89,6 +89,7 @@ impl LocalSocketListener {
         let stream = unsafe { TcpStream::from_raw_socket(connected as _) };
         Ok(LocalSocket {
             stream,
+            incoming: Vec::new(),
             frame: None,
         })
     }
@@ -163,6 +164,7 @@ impl LocalSocket {
                 let stream = unsafe { TcpStream::from_raw_socket(socket as _) };
                 return Ok(Self {
                     stream,
+                    incoming: Vec::new(),
                     frame: None,
                 });
             }
@@ -175,8 +177,7 @@ impl LocalSocket {
         }
     }
 
-    /// Never consume a partial fixed-size control message. This keeps polling
-    /// safe even when the peer's write is split across transport packets.
+    /// Buffer partial messages without blocking, returning only complete messages.
     pub fn try_receive(&mut self) -> io::Result<Option<Message>> {
         use windows_sys::Win32::Networking::WinSock::{FIONREAD, ioctlsocket};
         let mut available = 0;
@@ -190,7 +191,17 @@ impl LocalSocket {
         {
             return Err(io::Error::from_raw_os_error(unsafe { WSAGetLastError() }));
         }
-        if (available as usize) < mem::size_of::<WireMessage>() {
+        let available = self.incoming.len() + available as usize;
+        let header_len = mem::size_of::<WireMessage>();
+        self.read_control_until(available.min(header_len))?;
+        if self.incoming.len() < header_len {
+            return Ok(None);
+        }
+        let wire = WireMessage::ref_from_bytes(&self.incoming[..header_len])
+            .map_err(|_| invalid_data("invalid wire message layout"))?;
+        let total = header_len + wire.data_len()?;
+        self.read_control_until(available.min(total))?;
+        if self.incoming.len() < total {
             return Ok(None);
         }
         self.receive().map(Some)
