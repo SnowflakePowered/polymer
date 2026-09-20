@@ -6,6 +6,9 @@ use polymer_platform::GuestLaunchRequest;
 #[cfg(windows)]
 pub(crate) use polymer_platform_windows::GuestPlatform;
 
+#[cfg(target_os = "macos")]
+pub(crate) use polymer_platform_macos::GuestPlatform;
+
 impl EmulatorLaunchConfig {
     pub(crate) fn guest_request(
         &self,

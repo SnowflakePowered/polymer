@@ -7,9 +7,11 @@ use std::{collections::HashSet, error::Error, net::SocketAddr};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum ViewerApi {
-    #[default]
+    #[cfg_attr(windows, default)]
     D3d12,
     Vulkan,
+    #[cfg_attr(not(windows), default)]
+    Metal,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -20,6 +22,7 @@ enum HookChoice {
     OpenGl,
     D3d12,
     D3d11,
+    Metal,
 }
 
 impl HookChoice {
@@ -30,17 +33,22 @@ impl HookChoice {
             Self::OpenGl => Some(GraphicsHook::OpenGl),
             Self::D3d12 => Some(GraphicsHook::D3d12),
             Self::D3d11 => Some(GraphicsHook::D3d11),
+            Self::Metal => Some(GraphicsHook::Metal),
         }
     }
 }
 
 /// The `--hook auto` selection, ordered from most to least likely to be the
 /// application's real renderer.
+#[cfg(windows)]
 pub const AUTO_HOOKS: [GraphicsHook; 3] = [
     GraphicsHook::Vulkan,
     GraphicsHook::D3d12,
     GraphicsHook::D3d11,
 ];
+
+#[cfg(target_os = "macos")]
+pub const AUTO_HOOKS: [GraphicsHook; 1] = [GraphicsHook::Metal];
 
 fn expand_hook_choices(
     hooks: &mut Vec<GraphicsHook>,

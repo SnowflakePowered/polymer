@@ -1,9 +1,7 @@
 //! WebRTC signaling and one-track-per-capture-stream publishing.
 #![allow(unsafe_code)]
 
-use crate::{CompositingPlan, D3d12Compositor, WebRtcCompositor};
 use parking_lot::Mutex;
-use polymer_protocol::AdapterLuid;
 use std::{
     collections::{HashMap, HashSet},
     error::Error,
@@ -44,11 +42,6 @@ use webrtc_ice::{
     udp_mux::{UDPMuxDefault, UDPMuxParams},
     udp_network::UDPNetwork,
 };
-use windows::Win32::Graphics::{
-    Direct3D12::{D3D12_RESOURCE_STATES, ID3D12Device, ID3D12Fence, ID3D12Resource},
-    Dxgi::Common::DXGI_FORMAT,
-};
-
 const FRAME_RATE: f32 = 60.0;
 const FRAME_DURATION: Duration = Duration::from_micros(16_667);
 const DEFAULT_BITRATE: u32 = 8_000_000;
@@ -56,94 +49,12 @@ const MAX_HTTP_HEADER: usize = 64 * 1024;
 /// Bounded frame handoff to the encoder thread. GPU-backed frame producers
 /// must never have more frames outstanding than this, so an accepted frame
 /// can never resolve after a later frame that was dropped by `try_send`.
-pub(crate) const FRAME_CHANNEL_CAPACITY: usize = 2;
+pub const FRAME_CHANNEL_CAPACITY: usize = 2;
 const ICE_GATHERING_TIMEOUT: Duration = Duration::from_secs(1);
 static NEXT_WHEP_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 
-mod encoders;
-
-pub struct VideoFrame {
-    pub(crate) connection: u64,
-    pub(crate) width: u32,
-    pub(crate) height: u32,
-    pub(crate) data: VideoFrameData,
-}
-
-pub(crate) enum VideoFrameData {
-    Rgba(Vec<u8>),
-    D3d12(D3d12Frame),
-    Vulkan(VulkanFrame),
-}
-
-pub(crate) struct VulkanFrame {
-    pub(crate) instance: ash::Instance,
-    pub(crate) physical_device: ash::vk::PhysicalDevice,
-    pub(crate) device: ash::Device,
-    pub(crate) queue: ash::vk::Queue,
-    pub(crate) queue_family: u32,
-    pub(crate) conversion_queue: ash::vk::Queue,
-    pub(crate) conversion_queue_family: u32,
-    pub(crate) image: ash::vk::Image,
-    pub(crate) format: ash::vk::Format,
-    pub(crate) layout: ash::vk::ImageLayout,
-    pub(crate) ready: ash::vk::Semaphore,
-    pub(crate) ready_value: u64,
-    pub(crate) completion: ash::vk::Semaphore,
-    pub(crate) completion_value: u64,
-    pub(crate) completion_submitted: bool,
-}
-
-impl VulkanFrame {
-    pub(crate) fn mark_completion_submitted(&mut self) {
-        self.completion_submitted = true;
-    }
-
-    pub(crate) fn completion_submitted(&self) -> bool {
-        self.completion_submitted
-    }
-}
-
-impl Drop for VulkanFrame {
-    fn drop(&mut self) {
-        if !self.completion_submitted {
-            let _ = unsafe {
-                self.device.signal_semaphore(
-                    &ash::vk::SemaphoreSignalInfo::default()
-                        .semaphore(self.completion)
-                        .value(self.completion_value),
-                )
-            };
-        }
-    }
-}
-
-pub(crate) struct D3d12Frame {
-    pub(crate) device: ID3D12Device,
-    pub(crate) resource: ID3D12Resource,
-    pub(crate) state: D3D12_RESOURCE_STATES,
-    pub(crate) format: DXGI_FORMAT,
-    pub(crate) ready_fence: ID3D12Fence,
-    pub(crate) ready_value: u64,
-    pub(crate) completion_fence: ID3D12Fence,
-    pub(crate) completion_value: u64,
-    pub(crate) completion_submitted: bool,
-}
-
-impl D3d12Frame {
-    pub(crate) fn mark_completion_submitted(&mut self) {
-        self.completion_submitted = true;
-    }
-}
-
-impl Drop for D3d12Frame {
-    fn drop(&mut self) {
-        if !self.completion_submitted {
-            // No GPU consumer took ownership (for example the bounded channel
-            // was full), so release the compositor cache immediately.
-            let _ = unsafe { self.completion_fence.Signal(self.completion_value) };
-        }
-    }
-}
+mod frame;
+pub use frame::{Codec, EncodedFrame, VideoFrame, VideoSwapchain};
 
 /// Publish targets and their capture connections. Tracks are created for
 /// every configured target index before signaling starts: a WHEP session can
@@ -168,8 +79,8 @@ const STATS_INTERVAL: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Copy)]
 struct Encoding {
-    backend: encoders::Backend,
-    codec: encoders::Codec,
+    backend: &'static str,
+    codec: Codec,
 }
 
 struct RuntimeStats {
@@ -204,8 +115,8 @@ impl RuntimeStats {
         connection: u64,
         encoded_bytes: usize,
         encode_time: Duration,
-        backend: encoders::Backend,
-        codec: encoders::Codec,
+        backend: &'static str,
+        codec: Codec,
     ) {
         self.encodings
             .insert(connection, Encoding { backend, codec });
@@ -242,133 +153,16 @@ pub struct Stats {
     pub codecs: String,
 }
 
+enum EncodeCommand {
+    Frame(VideoFrame),
+    Flush(mpsc::Sender<()>),
+}
+
 pub struct Publisher {
     tracks: Tracks,
-    frames: mpsc::SyncSender<VideoFrame>,
+    frames: mpsc::SyncSender<EncodeCommand>,
     stats: SharedStats,
     _runtime: Runtime,
-}
-
-/// Complete native WebRTC data plane for one D3D12 presentation domain.
-///
-/// Hosts control its lifetime, but stream registration, GPU video
-/// composition, frame draining, encoding, and publication stay together so a
-/// host cannot accidentally start signaling without feeding the negotiated
-/// tracks.
-pub struct Publication {
-    publisher: Publisher,
-    compositor: WebRtcCompositor,
-    targets: HashSet<u32>,
-    connections: HashMap<u64, u32>,
-}
-
-impl Publication {
-    pub fn start_d3d12(
-        bind: SocketAddr,
-        targets: &[u32],
-        compositor: &D3d12Compositor,
-    ) -> Result<Self, Box<dyn Error>> {
-        if targets.is_empty() {
-            return Err("WebRTC publication requires at least one render target".into());
-        }
-        let requested = targets.to_vec();
-        let targets = requested.iter().copied().collect::<HashSet<_>>();
-        if requested.len() != targets.len() {
-            return Err("WebRTC render-target indices must be unique".into());
-        }
-        Ok(Self {
-            publisher: Publisher::start(bind, &requested)?,
-            compositor: WebRtcCompositor::new_d3d12(compositor)?,
-            targets,
-            connections: HashMap::new(),
-        })
-    }
-
-    pub fn start_d3d12_device(
-        bind: SocketAddr,
-        targets: &[u32],
-        adapter: AdapterLuid,
-        device: &windows::Win32::Graphics::Direct3D12::ID3D12Device,
-    ) -> Result<Self, Box<dyn Error>> {
-        if targets.is_empty() {
-            return Err("WebRTC publication requires at least one render target".into());
-        }
-        let requested = targets.to_vec();
-        let targets = requested.iter().copied().collect::<HashSet<_>>();
-        if requested.len() != targets.len() {
-            return Err("WebRTC render-target indices must be unique".into());
-        }
-        Ok(Self {
-            publisher: Publisher::start(bind, &requested)?,
-            compositor: WebRtcCompositor::new_d3d12_device(adapter, device)?,
-            targets,
-            connections: HashMap::new(),
-        })
-    }
-
-    pub fn targets(&self) -> &HashSet<u32> {
-        &self.targets
-    }
-
-    pub fn add_stream(
-        &mut self,
-        connection: u64,
-        target_index: u32,
-    ) -> Result<bool, Box<dyn Error>> {
-        if !self.targets.contains(&target_index) {
-            return Ok(false);
-        }
-        self.compositor.import_d3d12_stream(connection)?;
-        self.publisher.add_stream(connection, target_index);
-        self.connections.insert(connection, target_index);
-        Ok(true)
-    }
-
-    pub fn remove_stream(&mut self, connection: u64) {
-        self.connections.remove(&connection);
-        self.compositor.disconnect_stream(connection);
-        self.publisher.remove_stream(connection);
-    }
-
-    /// Rebuilds only the GPU half after a presentation-adapter change. The
-    /// signaling server, peer sessions, and negotiated tracks remain alive.
-    pub fn reattach_d3d12(&mut self, compositor: &D3d12Compositor) -> Result<(), Box<dyn Error>> {
-        let mut replacement = WebRtcCompositor::new_d3d12(compositor)?;
-        for &connection in self.connections.keys() {
-            replacement.import_d3d12_stream(connection)?;
-        }
-        self.compositor = replacement;
-        Ok(())
-    }
-
-    pub fn reattach_d3d12_device(
-        &mut self,
-        adapter: AdapterLuid,
-        device: &windows::Win32::Graphics::Direct3D12::ID3D12Device,
-    ) -> Result<(), Box<dyn Error>> {
-        let mut replacement = WebRtcCompositor::new_d3d12_device(adapter, device)?;
-        for &connection in self.connections.keys() {
-            replacement.import_d3d12_stream(connection)?;
-        }
-        self.compositor = replacement;
-        Ok(())
-    }
-
-    pub fn present_d3d12(
-        &mut self,
-        compositor: &mut D3d12Compositor,
-        plan: &CompositingPlan,
-    ) -> Result<bool, Box<dyn Error>> {
-        let result = compositor.present_with_webrtc(plan, Some(&mut self.compositor));
-        for frame in self.compositor.take_frames() {
-            self.publisher.publish(frame);
-        }
-        result
-    }
-
-    pub fn stats(&self) -> Stats {
-        self.publisher.stats()
-    }
 }
 
 impl Publisher {
@@ -434,8 +228,16 @@ impl Publisher {
     }
 
     pub fn publish(&self, frame: VideoFrame) {
-        // Never stall the render loop behind CPU encoding or a slow peer.
-        let _ = self.frames.try_send(frame);
+        // Never stall the render loop behind hardware encoding or a slow peer.
+        let _ = self.frames.try_send(EncodeCommand::Frame(frame));
+    }
+
+    /// Finish previously submitted jobs before a backend destroys borrowed GPU resources.
+    pub fn flush(&self) {
+        let (done, completed) = mpsc::channel();
+        if self.frames.send(EncodeCommand::Flush(done)).is_ok() {
+            let _ = completed.recv();
+        }
     }
 
     pub fn stats(&self) -> Stats {
@@ -444,7 +246,7 @@ impl Publisher {
         let mut encoders = stats
             .encodings
             .values()
-            .map(|encoding| encoding.backend.name())
+            .map(|encoding| encoding.backend)
             .collect::<Vec<_>>();
         encoders.sort_unstable();
         encoders.dedup();
@@ -472,6 +274,7 @@ async fn build_api(bind: SocketAddr) -> Result<API, Box<dyn Error>> {
     let interceptors = register_default_interceptors(Registry::new(), &mut media)?;
     let mut settings = SettingEngine::default();
     let socket = tokio::net::UdpSocket::bind(bind).await?;
+    #[cfg(windows)]
     disable_udp_connection_reset(&socket)?;
     settings.set_udp_network(UDPNetwork::Muxed(UDPMuxDefault::new(UDPMuxParams::new(
         socket,
@@ -496,6 +299,7 @@ async fn build_api(bind: SocketAddr) -> Result<API, Box<dyn Error>> {
 /// Windows surfaces ICMP port-unreachable as `WSAECONNRESET` on the next UDP
 /// receive; the ICE mux read loop treats that as fatal and goes deaf, killing
 /// DTLS. Sends to unreachable candidates are routine, so drop those reports.
+#[cfg(windows)]
 fn disable_udp_connection_reset(socket: &tokio::net::UdpSocket) -> std::io::Result<()> {
     use std::os::windows::io::AsRawSocket;
     use windows_sys::Win32::Networking::WinSock::{SIO_UDP_CONNRESET, SOCKET_ERROR, WSAIoctl};
@@ -542,10 +346,10 @@ fn hevc_capability() -> RTCRtpCodecCapability {
     }
 }
 
-fn capability(codec: encoders::Codec) -> RTCRtpCodecCapability {
+fn capability(codec: Codec) -> RTCRtpCodecCapability {
     match codec {
-        encoders::Codec::Hevc => hevc_capability(),
-        encoders::Codec::H264 => h264_capability(),
+        Codec::Hevc => hevc_capability(),
+        Codec::H264 => h264_capability(),
     }
 }
 
@@ -599,17 +403,23 @@ fn spawn_encoder(
     tracks: Tracks,
     sessions: Sessions,
     stats: SharedStats,
-    frames: mpsc::Receiver<VideoFrame>,
+    frames: mpsc::Receiver<EncodeCommand>,
 ) {
     thread::Builder::new()
         .name("polymer-video-encode".to_owned())
         .spawn(move || {
-            let mut encoders = HashMap::<u64, encoders::Encoder>::new();
             let mut announced_crops = HashSet::new();
             let mut announced_samples = HashSet::new();
             let mut bitstream_dump = std::env::var_os("POLYMER_DUMP_BITSTREAM")
                 .and_then(|path| std::fs::File::create(path).ok());
-            while let Ok(mut frame) = frames.recv() {
+            while let Ok(command) = frames.recv() {
+                let mut frame = match command {
+                    EncodeCommand::Frame(frame) => frame,
+                    EncodeCommand::Flush(done) => {
+                        let _ = done.send(());
+                        continue;
+                    }
+                };
                 let existing = {
                     let table = tracks.lock();
                     table.connections.get(&frame.connection).copied().and_then(
@@ -640,21 +450,18 @@ fn spawn_encoder(
                         frame.height,
                     );
                 }
-                let encoder = encoders
-                    .entry(frame.connection)
-                    .or_insert_with(|| encoders::Encoder::new(DEFAULT_BITRATE, FRAME_RATE));
                 let connection = frame.connection;
                 let preferred = if existing_track
                     .codec()
                     .mime_type
                     .eq_ignore_ascii_case(MIME_TYPE_HEVC)
                 {
-                    encoders::Codec::Hevc
+                    Codec::Hevc
                 } else {
-                    encoders::Codec::H264
+                    Codec::H264
                 };
                 let encode_started = Instant::now();
-                match encoder.encode(frame, preferred) {
+                match frame.encode(preferred, DEFAULT_BITRATE, FRAME_RATE) {
                     Ok(encoded) => {
                         let encode_time = encode_started.elapsed();
                         stats

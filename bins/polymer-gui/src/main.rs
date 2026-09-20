@@ -3,6 +3,7 @@
 mod app;
 mod cli;
 mod commands;
+#[cfg(windows)]
 mod game_bar_watcher;
 mod game_host;
 mod input;
@@ -10,7 +11,6 @@ mod inspector;
 mod instance_events;
 mod launch;
 mod metrics;
-mod shell_compositor;
 mod shell_document;
 mod shell_dom;
 mod shell_runtime;
@@ -18,12 +18,17 @@ mod theme;
 mod window_manager;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .on_thread_start(window_manager::WorkerWinRtApartment::initialize_current_thread)
-        .on_thread_stop(window_manager::WorkerWinRtApartment::uninitialize_current_thread)
-        .build()?;
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    builder.worker_threads(2).enable_all();
+    #[cfg(windows)]
+    builder
+        .on_thread_start(
+            polymer_composition_windows::WorkerWinRtApartment::initialize_current_thread,
+        )
+        .on_thread_stop(
+            polymer_composition_windows::WorkerWinRtApartment::uninitialize_current_thread,
+        );
+    let runtime = builder.build()?;
     let runtime = std::sync::Arc::new(runtime);
     let system = actix::System::with_tokio_rt(|| runtime.clone());
     run(&runtime, &system)
@@ -33,11 +38,13 @@ fn run(
     runtime: &tokio::runtime::Runtime,
     system: &actix::SystemRunner,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use std::time::Duration;
-    use window_manager::{
-        EventLoop, EventLoopExtPumpEvents, PumpStatus, TimerResolution, WinRtApartment,
-    };
+    use window_manager::EventLoop;
+    #[cfg(windows)]
+    use window_manager::{EventLoopExtPumpEvents, PumpStatus};
 
+    #[cfg(windows)]
+    use polymer_composition_windows::{TimerResolution, WinRtApartment};
+    #[cfg(windows)]
     let _winrt_apartment = WinRtApartment::initialize()?;
 
     // The generated frontend bundle has enough nested module code to exceed
@@ -53,6 +60,7 @@ fn run(
         tracing_subscriber::EnvFilter::new("info,wgpu=warn,wgpu_core=warn,wgpu_hal=warn,naga=warn")
     });
     tracing_subscriber::fmt().with_env_filter(filter).init();
+    #[cfg(windows)]
     let _game_bar_watcher = match game_bar_watcher::GameBarWatcher::launch() {
         Ok(watcher) => Some(watcher),
         Err(error) => {
@@ -63,9 +71,17 @@ fn run(
     let statistics_recorder = polymer_statistics::install()?;
     let options = runtime.block_on(cli::parse())?;
     // Prepare native renderers before the shell document starts.
-    let shell_rasterizer = runtime.block_on(shell_compositor::ShellRasterizer::new())?;
+    #[cfg(windows)]
+    let compositor_factory =
+        runtime.block_on(polymer_composition_windows::WindowsCompositor::prepare())?;
+    #[cfg(target_os = "macos")]
+    let compositor_factory =
+        runtime.block_on(polymer_composition_macos::MacosCompositor::prepare())?;
+    #[cfg(windows)]
     let _timer_resolution = TimerResolution::raise();
-    let mut event_loop = EventLoop::<app::UserEvent>::with_user_event().build()?;
+    let event_loop = EventLoop::<app::UserEvent>::with_user_event().build()?;
+    #[cfg(windows)]
+    let mut event_loop = event_loop;
     let proxy = event_loop.create_proxy();
     let shell_factory = shell_dom::ShellSessionFactory::new(
         options.debug,
@@ -83,14 +99,28 @@ fn run(
                 options,
                 statistics_recorder,
                 shell_factory,
-                shell_rasterizer,
+                compositor_factory,
             ),
+            #[cfg(windows)]
+            polymer_composition_windows::NativeEventLoop::wait_for_events,
         ))
     });
+    #[cfg(target_os = "macos")]
+    {
+        // AppKit owns its run loop. Pumping and restarting NSApplication can
+        // repeatedly fire expired run-loop timers between external turns.
+        application.set_native_turn(|inner| {
+            system.block_on(async { tokio::task::yield_now().await });
+            runtime.block_on(inner.run_async_tasks());
+        });
+        event_loop.run_app(application.as_mut())?;
+    }
+    #[cfg(windows)]
     loop {
         application.wait_for_events()?;
         let status = system.block_on(async {
-            let status = event_loop.pump_app_events(Some(Duration::ZERO), application.as_mut());
+            let status =
+                event_loop.pump_app_events(Some(std::time::Duration::ZERO), application.as_mut());
             // Give local actors a turn after native callbacks release the DOM.
             tokio::task::yield_now().await;
             status

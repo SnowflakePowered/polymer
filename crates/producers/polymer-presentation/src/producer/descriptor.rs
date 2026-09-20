@@ -7,6 +7,8 @@ use std::io;
 /// Backend export metadata. Handles remain owned by the native resources;
 /// publication duplicates them without transferring the producer's ownership.
 pub struct ExportDescriptor<'a> {
+    #[cfg(target_os = "macos")]
+    pub resources: polymer_ipc::xpc::MetalResources,
     pub surface_id: SurfaceId,
     pub adapter_luid: AdapterLuid,
     pub source_window: i64,

@@ -5,14 +5,7 @@ use polymer_protocol::{FrameReady, PresentationMappingKind, ResizeWindow};
 use polymer_runtime::SurfaceOffer;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
-pub mod d3d12;
-mod frame_ownership;
-pub mod vulkan;
-pub mod webrtc;
-
-pub use d3d12::{D3d12Compositor, D3d12RenderPass, RasterSurface};
-pub use vulkan::{VulkanCompositor, VulkanRenderPass};
-pub use webrtc::{VideoSwapchain, WebRtcCompositor};
+pub mod frame_ownership;
 
 /// How a surface's pixels are sampled and drawn inside its layout rectangle.
 ///
@@ -159,7 +152,7 @@ pub struct ReceivedSurface {
 /// can have a storage aspect ratio that differs from the quad that displayed
 /// it (for example, emulated pixels with a non-square pixel aspect ratio), so
 /// prefer the graph-provided presentation bounds when they are available.
-pub(crate) fn frame_image_extent(
+pub fn frame_image_extent(
     frame: FrameReady,
     imported_width: u32,
     imported_height: u32,
@@ -281,86 +274,5 @@ pub trait Renderer {
         plan: &CompositingPlan,
     ) -> Vec<ResizeWindow> {
         window.resize_windows(&self.received_surfaces(), plan)
-    }
-}
-
-impl Renderer for D3d12Compositor {
-    fn import_surface_offer(
-        &mut self,
-        offer: &SurfaceOffer,
-        quarter_turns: u8,
-    ) -> Result<(), Box<dyn Error>> {
-        D3d12Compositor::import_stream(self, offer.connection_id(), offer.stream(), quarter_turns)?;
-        self.set_buffer_release_sender(offer);
-        Ok(())
-    }
-
-    fn disconnect_stream(&mut self, connection: u64) -> Result<(), Box<dyn Error>> {
-        D3d12Compositor::disconnect_stream(self, connection)
-    }
-
-    fn set_latest(&mut self, connection: u64, frame: FrameReady) {
-        D3d12Compositor::set_latest(self, connection, frame);
-    }
-
-    fn received_surfaces(&self) -> Vec<ReceivedSurface> {
-        D3d12Compositor::received_surfaces(self)
-    }
-
-    fn has_pending_frame(&self) -> bool {
-        D3d12Compositor::has_pending_frame(self)
-    }
-
-    fn recreate_swapchain(&mut self, window: &impl RenderWindow) -> Result<bool, Box<dyn Error>> {
-        self.resize(window)
-    }
-
-    fn begin_frame(&mut self) {
-        D3d12Compositor::begin_frame(self);
-    }
-
-    fn present(&mut self, plan: &CompositingPlan) -> Result<bool, Box<dyn Error>> {
-        D3d12Compositor::present(self, plan)
-    }
-}
-
-impl Renderer for VulkanCompositor {
-    fn import_surface_offer(
-        &mut self,
-        offer: &SurfaceOffer,
-        quarter_turns: u8,
-    ) -> Result<(), Box<dyn Error>> {
-        VulkanCompositor::import_stream(
-            self,
-            offer.connection_id(),
-            offer.stream(),
-            quarter_turns,
-        )?;
-        self.set_buffer_release_sender(offer);
-        Ok(())
-    }
-
-    fn disconnect_stream(&mut self, connection: u64) -> Result<(), Box<dyn Error>> {
-        VulkanCompositor::disconnect_stream(self, connection).map_err(Into::into)
-    }
-
-    fn set_latest(&mut self, connection: u64, frame: FrameReady) {
-        VulkanCompositor::set_latest(self, connection, frame);
-    }
-
-    fn received_surfaces(&self) -> Vec<ReceivedSurface> {
-        VulkanCompositor::received_surfaces(self)
-    }
-
-    fn has_pending_frame(&self) -> bool {
-        VulkanCompositor::has_pending_frame(self)
-    }
-
-    fn recreate_swapchain(&mut self, window: &impl RenderWindow) -> Result<bool, Box<dyn Error>> {
-        VulkanCompositor::recreate_swapchain(self, window)
-    }
-
-    fn present(&mut self, plan: &CompositingPlan) -> Result<bool, Box<dyn Error>> {
-        VulkanCompositor::present(self, plan)
     }
 }

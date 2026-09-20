@@ -1,0 +1,28 @@
+[package]
+name = "polymer-renderer-metal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+egui = "0.29.1"
+polymer-renderer = { path = "../polymer-renderer" }
+polymer-ipc.workspace = true
+polymer-protocol.workspace = true
+polymer-runtime.workspace = true
+raw-window-handle.workspace = true
+polymer-consumer-metal = { path = "../polymer-consumer-metal" }
+objc2.workspace = true
+block2.workspace = true
+objc2-metal = "0.3.2"
+objc2-video-toolbox = "0.3.2"
+objc2-core-media = "0.3.2"
+objc2-core-video = "0.3.2"
+objc2-core-foundation = "0.3.2"
+parking_lot.workspace = true
+objc2-quartz-core = "0.3.2"
+objc2-app-kit.workspace = true
+objc2-foundation.workspace = true
+
+[lints]
+workspace = true

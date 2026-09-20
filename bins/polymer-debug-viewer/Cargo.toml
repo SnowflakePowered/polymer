@@ -20,22 +20,30 @@ serde_json.workspace = true
 polymer-config.workspace = true
 taffy = { version = "0.12.2", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "parse"] }
 polymer-renderer = { path = "../../crates/consumer/polymer-renderer" }
-polymer-egui.workspace = true
 polymer-statistics.workspace = true
 polymer-input.workspace = true
-polymer-input-sdl3 = { path = "../../crates/input/polymer-input-sdl3" }
 polymer-controllers.workspace = true
 
-polymer-hook-input-dinput.workspace = true
 polymer-ipc = { workspace = true, features = ["input-host"] }
-polymer-platform-windows.workspace = true
 polymer-protocol.workspace = true
 polymer-runtime.workspace = true
 polymer-ui.workspace = true
 winit = "0.30.13"
-windows.workspace = true
 tokio = { version = "1.32", features = ["rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 webrtc = "0.14.0"
 
+
+[target.'cfg(target_os = "macos")'.dependencies]
+polymer-renderer-metal = { path = "../../crates/consumer/polymer-renderer-metal" }
+polymer-vfs-fskit.workspace = true
+polymer-platform-macos.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+polymer-renderer-vulkan = { path = "../../crates/consumer/polymer-renderer-vulkan" }
+polymer-renderer-d3d12 = { path = "../../crates/consumer/polymer-renderer-d3d12" }
+polymer-input-sdl3 = { path = "../../crates/input/polymer-input-sdl3" }
+polymer-hook-input-dinput.workspace = true
+polymer-platform-windows.workspace = true
+windows.workspace = true

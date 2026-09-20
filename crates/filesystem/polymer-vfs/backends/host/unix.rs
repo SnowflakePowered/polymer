@@ -359,7 +359,10 @@ impl FileNode for HostTreeFile {
         if options.truncate {
             file.set_len(0)?;
         }
-        Ok(Box::new(HostOpen { file }))
+        Ok(Box::new(HostOpen {
+            file,
+            writable: self.writable,
+        }))
     }
 }
 

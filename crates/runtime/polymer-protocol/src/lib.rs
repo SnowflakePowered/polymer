@@ -63,6 +63,7 @@ pub enum ConsumerApi {
     Unspecified = 0,
     Vulkan = 1,
     D3d12 = 2,
+    Metal = 3,
 }
 
 impl TryFrom<u32> for ConsumerApi {
@@ -73,6 +74,7 @@ impl TryFrom<u32> for ConsumerApi {
             0 => Ok(Self::Unspecified),
             1 => Ok(Self::Vulkan),
             2 => Ok(Self::D3d12),
+            3 => Ok(Self::Metal),
             _ => Err(()),
         }
     }
@@ -121,6 +123,7 @@ pub enum ExternalImageKind {
     /// Fence-synchronized D3D11 shared resource, opened through its NT handle
     /// by D3D12 or as D3D11_TEXTURE external memory by Vulkan.
     D3d11D3d12Resource = 7,
+    IOSurface = 8,
 }
 
 impl TryFrom<u32> for ExternalImageKind {
@@ -134,6 +137,7 @@ impl TryFrom<u32> for ExternalImageKind {
             5 => Ok(Self::OpenGlD3d12Resource),
             6 => Ok(Self::VulkanD3d12Resource),
             7 => Ok(Self::D3d11D3d12Resource),
+            8 => Ok(Self::IOSurface),
             _ => Err(()),
         }
     }
@@ -145,6 +149,7 @@ pub enum ExternalSyncKind {
     VulkanBinarySemaphore = 1,
     VulkanTimelineSemaphore = 2,
     D3d12Fence = 5,
+    MetalSharedEvent = 6,
 }
 
 impl TryFrom<u32> for ExternalSyncKind {
@@ -155,6 +160,7 @@ impl TryFrom<u32> for ExternalSyncKind {
             1 => Ok(Self::VulkanBinarySemaphore),
             2 => Ok(Self::VulkanTimelineSemaphore),
             5 => Ok(Self::D3d12Fence),
+            6 => Ok(Self::MetalSharedEvent),
             _ => Err(()),
         }
     }

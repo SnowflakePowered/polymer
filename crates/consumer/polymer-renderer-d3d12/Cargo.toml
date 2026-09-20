@@ -1,0 +1,22 @@
+[package]
+name = "polymer-renderer-d3d12"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+egui = "0.29.1"
+polymer-renderer = { path = "../polymer-renderer" }
+polymer-ipc.workspace = true
+polymer-protocol.workspace = true
+polymer-runtime.workspace = true
+polymer-statistics.workspace = true
+raw-window-handle.workspace = true
+polymer-consumer-d3d12 = { path = "../polymer-consumer-d3d12" }
+parking_lot.workspace = true
+tracing.workspace = true
+windows = { workspace = true, features = ["Foundation", "UI_Composition", "Win32_System_WinRT_Composition"] }
+windows-sys.workspace = true
+
+[lints]
+workspace = true

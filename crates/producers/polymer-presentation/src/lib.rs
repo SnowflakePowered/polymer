@@ -2,7 +2,7 @@
 pub mod frame;
 pub mod geometry;
 
-#[cfg(all(feature = "producer", windows))]
+#[cfg(feature = "producer")]
 pub mod producer;
 pub mod registry;
 pub mod scheduling;

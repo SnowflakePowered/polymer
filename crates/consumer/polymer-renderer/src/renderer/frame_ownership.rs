@@ -1,13 +1,13 @@
 use polymer_protocol::FrameReady;
 
-pub(super) struct Pending;
-pub(super) struct Prepared {
+pub struct Pending;
+pub struct Prepared {
     retention: Retention,
 }
-pub(super) struct Displayed;
+pub struct Displayed;
 
 #[derive(Clone, Copy)]
-pub(super) enum Retention {
+pub enum Retention {
     Retained,
     Cached,
 }
@@ -15,7 +15,7 @@ pub(super) enum Retention {
 /// A non-copyable lease. FrameReady is only the wire metadata; copying that
 /// metadata does not duplicate a lease or permit an ownership transition.
 /// Only pending leases can be prepared, and only prepared leases can submit.
-pub(super) struct FrameOwnership<State> {
+pub struct FrameOwnership<State> {
     ready: FrameReady,
     state: State,
 }
@@ -83,7 +83,7 @@ impl Replacement {
 /// Coordinates the independently displayed lease and its replacement.
 /// Backends prepare after checking producer readiness and commit after submit.
 #[derive(Default)]
-pub(super) struct SurfaceFrames {
+pub struct SurfaceFrames {
     pub release_sender: Option<polymer_runtime::BufferReleaseSender>,
     replacement: Option<Replacement>,
     displayed: Option<FrameOwnership<Displayed>>,

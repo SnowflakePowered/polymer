@@ -1,0 +1,172 @@
+//! Shared egui input, diagnostics and repaint policy; GPU painting stays in backends.
+use polymer_renderer::egui::{DebugOverlayModel, InputDiagnostics, draw_debug_overlay};
+use polymer_statistics::{FrameMetrics, LiveStatistics, PresentationMetrics, RecorderHandle};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
+use winit::{event::WindowEvent, window::Window};
+pub struct OverlayFrame {
+    pub output: egui::FullOutput,
+    pub primitives: Vec<egui::ClippedPrimitive>,
+}
+pub struct OverlayState {
+    context: egui::Context,
+    state: egui_winit::State,
+    diagnostics: DebugOverlayModel,
+    frames: HashMap<u64, FrameMetrics>,
+    statistics: LiveStatistics,
+    presentation: PresentationMetrics,
+    frequency: f64,
+    next_repaint: Instant,
+    interactive_until: Option<Instant>,
+    counter: fn() -> std::io::Result<u64>,
+}
+impl OverlayState {
+    pub fn new(
+        window: &Window,
+        recorder: RecorderHandle,
+        consumer: &str,
+        backend: &'static str,
+        frequency: u64,
+        counter: fn() -> std::io::Result<u64>,
+    ) -> Self {
+        let context = egui::Context::default();
+        let state = egui_winit::State::new(
+            context.clone(),
+            egui::ViewportId::ROOT,
+            window,
+            Some(window.scale_factor() as f32),
+            window.theme(),
+            None,
+        );
+        let mut diagnostics = DebugOverlayModel::default();
+        diagnostics.backend = "Waiting".to_owned();
+        diagnostics.consumer = consumer.to_owned();
+        Self {
+            context,
+            state,
+            diagnostics,
+            frames: HashMap::new(),
+            statistics: LiveStatistics::new(recorder),
+            presentation: PresentationMetrics::new(backend),
+            frequency: frequency as f64,
+            next_repaint: Instant::now(),
+            interactive_until: None,
+            counter,
+        }
+    }
+
+    pub fn set_backend(&mut self, backend: String) {
+        self.diagnostics.backend = backend;
+    }
+    pub fn set_input_diagnostics(&mut self, diagnostics: InputDiagnostics) {
+        self.diagnostics.input = diagnostics;
+    }
+    pub fn add_surface(&mut self, connection: u64, surface: u64, target: u32) {
+        self.frames
+            .insert(connection, FrameMetrics::new(connection, surface, target));
+    }
+    pub fn observe_frame_at(
+        &mut self,
+        connection: u64,
+        frame: polymer_protocol::FrameReady,
+        observed_qpc: Option<u64>,
+    ) {
+        let latency_ticks = observed_qpc
+            .or_else(|| (self.counter)().ok())
+            .unwrap_or(frame.timestamp_qpc)
+            .saturating_sub(frame.timestamp_qpc);
+        if let Some(metrics) = self.frames.get_mut(&connection) {
+            metrics.observe(
+                frame.frame_number,
+                frame.timestamp_qpc,
+                self.frequency,
+                Duration::from_secs_f64(latency_ticks as f64 / self.frequency.max(1.0)),
+            );
+        }
+        self.diagnostics.frame_number = frame.frame_number;
+        self.diagnostics.slot = frame.slot;
+        self.diagnostics.render_width = frame.render_width;
+        self.diagnostics.render_height = frame.render_height;
+        self.diagnostics.capture_x = frame.capture_x;
+        self.diagnostics.capture_y = frame.capture_y;
+        self.diagnostics.capture_width = frame.capture_width;
+        self.diagnostics.capture_height = frame.capture_height;
+    }
+    pub fn record_present(&mut self, carried_new_frame: bool) {
+        self.presentation.record_present(carried_new_frame);
+    }
+    pub fn record_clock(&mut self) {
+        self.presentation.record_clock();
+    }
+    pub fn set_note(&mut self, note: &str) {
+        let notes = &mut self.diagnostics.notes;
+        if note.is_empty() {
+            notes.clear();
+        } else if notes.first().is_none_or(|first| first != note) {
+            notes.clear();
+            notes.push(note.to_owned());
+        }
+    }
+    pub fn remove_target(&mut self, connection: u64) {
+        self.frames.remove(&connection);
+        self.statistics.remove_connection(connection);
+        self.diagnostics.statistics = self.statistics.snapshot().clone();
+    }
+    pub fn on_window_event(
+        &mut self,
+        window: &Window,
+        event: &WindowEvent,
+    ) -> egui_winit::EventResponse {
+        self.state.on_window_event(window, event)
+    }
+    pub fn note_interaction(&mut self, now: Instant) {
+        self.interactive_until = Some(now + EGUI_INTERACTION_GRACE);
+        self.next_repaint = self.next_repaint.min(now);
+    }
+    fn interactive(&self, now: Instant) -> bool {
+        self.interactive_until.is_some_and(|until| now < until)
+    }
+    pub fn repaint_due(&self, now: Instant) -> bool {
+        self.next_repaint <= now
+    }
+    pub fn next_repaint(&self) -> Instant {
+        self.next_repaint
+    }
+    pub fn request_immediate_repaint(&mut self) {
+        self.next_repaint = Instant::now();
+    }
+    pub fn prepare(&mut self, window: &Window) -> Option<OverlayFrame> {
+        let now = Instant::now();
+        let interactive = self.interactive(now);
+        if !interactive && !self.repaint_due(now) {
+            return None;
+        }
+        self.next_repaint = now + EGUI_STATISTICS_REFRESH;
+        self.diagnostics.statistics = self.statistics.sample().clone();
+        let input = self.state.take_egui_input(window);
+        let diagnostics = &self.diagnostics;
+        let mut output = self
+            .context
+            .run(input, |context| draw_debug_overlay(context, diagnostics));
+        self.state
+            .handle_platform_output(window, std::mem::take(&mut output.platform_output));
+        let primitives = self
+            .context
+            .tessellate(std::mem::take(&mut output.shapes), output.pixels_per_point);
+        if interactive {
+            let requested = output
+                .viewport_output
+                .get(&egui::ViewportId::ROOT)
+                .map_or(Duration::ZERO, |viewport| viewport.repaint_delay);
+            self.next_repaint = now + requested.min(EGUI_STATISTICS_REFRESH);
+        }
+        if self.context.is_using_pointer() || self.context.wants_pointer_input() {
+            self.note_interaction(now);
+        }
+        Some(OverlayFrame { output, primitives })
+    }
+}
+const EGUI_STATISTICS_REFRESH: Duration = Duration::from_millis(100);
+const EGUI_INTERACTION_GRACE: Duration = Duration::from_millis(250);

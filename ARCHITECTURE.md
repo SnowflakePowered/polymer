@@ -69,9 +69,16 @@ For example, to launch a game from a PKG for PlayStation 3, a user must first in
 
 Additionally, memory cards are are emulated in the same way. Through the virtual filesystem, Polymer detects writes to a mounted memory card file by the guest process, and redirects them to individual save file directories on the host. This allows "Folder Memory Cards" without giving up compatibility or cross-game save reading such as in Metal Gear Solid 2. 
 
-This is all implemented via the `polymer-consolestorage` crate, which handles each console manually. Emulated file systems are backed by a Git repository on the host disk (one per platform), so save files are versioned and can be rolled-backed or backed up simply by pushing to a Git server. `polymer-vfs` then glues all of this together during runtime, exposing a jailed filesystem that the guest process can't escape easily out of, ensuring all writes and reads are logged. This allows Polymer to control exactly where save files, configuration files, and game data is read and written. 
+
+This is all implemented via the `polymer-consolestorage` crate, which handles each console manually. "Raw" memory cards and "folder" memory card formats are backed by the same storage and are both constructed on the fly at runtime. The card population algorithm ensures that the requested title is always present in the folder memory card; it is when filled with other saves until the card is full up to 10% of remaining space. 
+
+Emulated file systems are backed by a Git repository on the host disk (one per platform). Save files are versioned on a per-game basis and can be rolled-backed or backed up simply by pushing to a Git server. Similarly, package installation is modeled as a single commit, so installed PKGs and WADs can be uninstalled via ostensibly a  `git revert`.  Save files and game contents are kept separately in different git trees in the same repository.
+
+`polymer-vfs` then glues all of this together during runtime, exposing a jailed filesystem that the guest process can't escape easily out of, ensuring all writes and reads are logged. This allows Polymer to control exactly where save files, configuration files, and game data is read and written. 
 
 `consolestorage` also provides reflection on each individual emulated NAND and memory card. It provides endpoints for save and game ("depot") enumeration as well as icons and metadata associated with each save and installed game. This allows the GUI to manipulate NANDs and memory cards within the frontend itself.
+
+During an installation, content tickets and title keys (RAPs, .tik, etc.) are not persisted to the backing storage but instead parsed and saved to a per-platform key store. This per-platform keystore is mounted at emulation launch time to ensure the correct keys are available when starting a game.
 
 The **Filesystem** system is contained in the following crates
 
@@ -85,11 +92,15 @@ The plugin runtime manages plugin registration and execution, which are small Ty
 It handles the lifecycle of a plugin, which is run in it's own Deno isolate, and provides the following APIs for plugins.
 
 * `pkg` import namespace -- import resources, `toml` configuration, and JS/TS modules within the package.
+  * `toml` files are serialized into JSON-safe objects.
+  * `ts` and `js` imports work as JavaScript module imports
+  * Raw folder and file imports import as `DirEntry` or `FileEntry` respectively. This is particularly useful when mounting. 
 * `polymer` import namespace -- plugin-host APIs
   * `polymer:uiautomation` -- UI automation host, implemented by `polymer-automation`
   * `polymer:cache` -- Plugin-local persistent cache directory
   * `polymer:pluginStorage` -- Plugin-local ephemeral storage, like `AsyncLocalStorage`, but only supports JSON-safe objects.
   * `polymer:database` -- Plugin-local persistent SQLite database, as a replacement for IndexedDB.
+  * `polymer:actions` -- Only available to emulator plugins that have defined an `actions.toml`. Allows
 * `jsr` imports from the [jsr.io](https://jsr.io) repository. 
   * Plugins get access to most of the ES2025 specification as well as a large subset of the Web API. Not supported is WebCrypto, IndexedDB, CacheStorage, or DOM APIs. The `Node` or `Deno` namespaces are also not available, and `npm` packages are not supported.
  
@@ -189,6 +200,20 @@ The `action` block is a special *section* that also requires defining a `target`
 
 The `input` block defines input mapping for Polymer's virtual gamepad. Targets must be defined for each gamepad mapping. `input.mapping` defines the mapping between Polymer's input expressions and the emulator-native pad vocabulary for the standard virtual gamepad. Then each `layout` definition defines the mapping between an input expression and the vocabulary for the emulated controller. *input* layouts are also a special case of *section* and can define a set of options as well that is exposed via the controller topology slot, if the given topology aligns with the layout.
 
+`targets` and `sections` can be marked `repeat` to indicate to the serializer that a section can have multiple entries of the same shape. This enables the `append` function for the plugin-side proxy object for the section, which appends a new entry to the repeated section. 
+
+##### Filesystem Mounting
+
+During `onLaunch`, emulator plugins must define the filesytem that the emulator executes in. For this, it provides a multitude of mount methods.
+
+* `mountTree` -- Mounts a `DirEntry` or URL as a tree under the route.
+* `mountScratch` -- Mounts a scratch directory that is backed either by memory or by a temporary directory on disk. This directory is deleted after the emulator shuts down.
+* `mountStorage` -- Mounts a managed storage device in `args.storage`. Depending on the storage, it may be mounted under the following formats.
+  * Omitting the file format mounts it as its natural directory or file format. 
+  * `raw` -- For memory cards, mount it as a raw memory card file structure
+  * `dolphin` -- For GCI memory cards, mounts it as a GameCube Memory Card folder in Dolphin's format.
+  * `pcsx2` --- For PS3 memory cards, mounts it as a PCSX2 Memory Card folder.
+* `mountFile` -- Mount either raw bytes which are hosted in memory, or a `FileEntry`. 
 
 #### `scraper` plugins
 
@@ -196,7 +221,72 @@ The `input` block defines input mapping for Polymer's virtual gamepad. Targets m
 Scraper plugins are used to interface with scraping databases.
 
 * `updateContents` -- Called to update the database of the scraper. This might be irrelevant if the scraper simply calls an external service, but is useful when it involves a local database or large binary file which needs to be parsed.
+  
 * `onScrape` -- Called to scrape a game.
+
+  `onScrape` is an async generator function that yields scrape results. Scrape result are keyed under a hierarchy of well-known keys and their string or URL value. In particular, `media` and `banner` keys are always interpreted as URLs, and the runtime will automatically cache these for frontends to dsiplay.
+
+  A `ScrapeResult` is a JSON-safe object `{ key: string, value: string | URL, source: string }`.
+
+ `onScrape` receives previous scrape candidate results defined by its `scraper.requires` configuration key in its context object, as well as the game package(s) metadata being scraped. Conversely, the keys a scraper returns must be defined in `scraper.provides`. A scraper will only be run if `all` of its `scraper.requires` requirements are fulfilled.
+
+##### Common scraping keys
+
+Listed is a hierarchy of well known scraping keys that frontends can rely on.
+###### `package`
+`package` keys is information derived by the game package.
+
+* `package.platform` - The `consolespec` platform ID derived from the game package
+* `package.internalname` - Any internal name of the game package
+* `package.serial` - Any internal serial of the game package
+* `package.titleid` - Any internal title id of the game package
+
+###### `filename`
+`filename` keys are information derived by the filename of the ROM or package.
+
+* `filename.raw` - The raw filename of the file.
+* `filename.nointro` - If the filename is parseable as NoIntro format, structured information from the filename. Has the subkeys `title`, `version`, `release`, `region`, `media`, `scene`, `language`, `flag`
+* `filename.tosec` - If the filename is parseable as NoIntro format, structured information from the filename. Has the subkeys `title`, `version`, `demo`, `date`, `publisher`, `system`, `video`, `region`, `language`, `copyright`, `development`, `dumpinfo`, `media`, `flag`
+* `filename.goodtools` - If the filename is parseable as NoIntro format, structured information from the filename. Has the subkeys `title`, `year`, `multilanguage`, `translation`, `version`, `volume`, `ninone`, `dumpcode`, `gamehack`, `media`, `flag`.
+
+###### `meta`
+`meta` keys are generic metadata that can be sourced via third party databases
+
+* `meta.title` - The title of the game release. Accepts BCP-47 language subkeys.
+* `meta.description` - The description of the game release. Accepts BCP-47 language subkeys.
+* `meta.publisher` - The publisher of the game release
+* `meta.genre` - A genre of the game release.
+* `meta.rating` - The age rating of the game release. Requires the subkeys `esrb`, `cero`, `usk`, `pegi`, `dgsc`, `acb`, `iarc`, `grac`, `rars`, `gmedia` (defined as https://www.globalratings.com/ratings-definitions/).
+* `meta.releasedate` - The release date of the game. Always in ISO8601 YYYY-MM-dd format.
+
+###### `media`
+`media` keys are any media sourced via third party databases, in the form of URLs.
+
+* `media.banner` - A horizontal banner, which could be animated.
+* `media.boxart` - Boxart images. Requires the subkeys `front`, `back`, `spine`, `full`.
+* `media.logo` -  A game title or logo image
+* `media.label.disc` - The front label of a disc
+* `media.label.cart` - The front label of a game cartridge
+
+###### `banner`
+`banner` keys are any media or icon derived from the game package, in the form of URLs.
+
+* `banner.icon` - A game icon embedded in the package
+* `banner.background` - A game background embedded in the package
+* `banner.logo` - A game title or logo image embedded in the package
+* `banner.audio` - An audio file embedded in the package
+* `banner.banner` - A horizontal banner embedded in the package, which could be animated.
+* `banner.3d` - A 3D model representing the game embedded in the package
+
+###### `runtime`
+`runtime` keys are information that is derived possibly from third party sources but may be needed to run the game.
+
+* `media.cue` - An optional scraped cuesheet candidate. This does not replace the descriptor of an identified package.
+
+#### `platform` plugins
+
+Platform plugins handle platform specific logic. Currently it is only used to bootstrap NAND installs by downloading firmware packages and installing the depot via `onBootstrap`.
+
 
 ### Frontend Runtime (GUI)
 
@@ -205,6 +295,8 @@ The frontend runtime glues all these parts together and can really be split into
 
 
 ### Library
+
+
 TODO:
 #### IPC
 The IPC protocol interacts with the **Input IPC** and **Graphics IPC** in order to ferry information between the guest process and the frontend host.

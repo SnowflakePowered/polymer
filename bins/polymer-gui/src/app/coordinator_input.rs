@@ -90,7 +90,7 @@ impl ShellCoordinator {
             // the guest itself. The redraw path still applies DOM motion once
             // per display frame, while guest capture/presentation remains
             // independent of chrome work.
-            self.window.request_redraw();
+            self.compositor.borrow_mut().request_redraw();
         }
         if kind == "mousemove"
             && let (Some(started), Some(hit_elapsed), Some(dispatch_elapsed)) =
@@ -135,7 +135,7 @@ impl ShellCoordinator {
     }
 
     pub(super) fn pointer_presentation(&self) -> (polymer_renderer::Presentation, CompositingPlan) {
-        let size = self.window.size();
+        let size = self.compositor.borrow_mut().size();
         self.game_host
             .pointer_presentation(Extent::new(size.width, size.height))
     }
@@ -185,7 +185,7 @@ impl ShellCoordinator {
     }
 
     pub(super) fn focus_game_input(&self) {
-        self.window.focus_host();
+        self.compositor.borrow_mut().focus_host();
     }
 
     pub(super) fn cancel_pointer_connection(&mut self, connection: u64) {
@@ -206,16 +206,16 @@ impl ShellCoordinator {
     }
 
     pub(super) fn resize(&mut self, width: u32, height: u32) {
-        if let Err(error) = self.window.resize_overlay() {
+        if let Err(error) = self.compositor.borrow_mut().resize_overlay() {
             tracing::error!("polymer: resizing egui composition overlay failed: {error}");
         }
         if self
             .shell_dom
-            .resize(width, height, self.window.scale_factor())
+            .resize(width, height, self.compositor.borrow_mut().scale_factor())
         {
             self.refresh_shell();
         }
-        self.window.request_redraw();
+        self.compositor.borrow_mut().request_redraw();
     }
 
     pub(super) fn handle_focus_lost(&mut self) {
@@ -301,7 +301,7 @@ impl ShellCoordinator {
         let Some(hit) = self.shell_dom.hit_test(css_x, css_y) else {
             return;
         };
-        let scale_factor = f64::from(self.window.scale_factor());
+        let scale_factor = f64::from(self.compositor.borrow_mut().scale_factor());
         let claimed = self.shell_dom.wheel_event(
             hit,
             DomWheelEvent {
@@ -335,10 +335,10 @@ impl ShellCoordinator {
 
     pub(super) fn draw_overlay(&mut self) {
         let entered = self.profile.enter();
-        if self.shell_compositor.is_pending() {
+        if self.compositor.borrow().scene_pending() {
             self.draw_pending_chrome();
         }
-        if let Err(error) = self.window.draw_overlay() {
+        if let Err(error) = self.compositor.borrow_mut().draw_overlay() {
             tracing::error!("polymer: drawing egui composition overlay failed: {error}");
         }
         self.profile.record(TurnPhase::Overlay, entered);
@@ -355,11 +355,13 @@ impl ShellCoordinator {
         let publication = self
             .input
             .build_publication(&applied_topology.mappings, self.game_host.has_active_game());
-        self.window.set_input_diagnostics(publication.diagnostics);
+        self.compositor
+            .borrow_mut()
+            .set_input_diagnostics(publication.diagnostics);
         if let Some(state) = publication.api_state {
             self.notify_polymer(PolymerNotification::ControllerApiStateChanged(state));
         }
-        self.window.request_overlay_repaint();
+        self.compositor.borrow_mut().request_overlay_repaint();
     }
 
     pub(super) fn publish_targets_for(&mut self, token: InstanceToken) {

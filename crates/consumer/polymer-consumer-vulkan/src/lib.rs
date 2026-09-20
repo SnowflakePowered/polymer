@@ -7,7 +7,7 @@ use std::{ffi::CStr, fmt};
 
 pub const BACKEND_NAME: &str = "vulkan";
 
-fn format_for_stream(stream: &StreamReady) -> Result<vk::Format, ImportError> {
+pub fn format_for_stream(stream: &StreamReady) -> Result<vk::Format, ImportError> {
     let format = match stream.image_kind {
         ExternalImageKind::VulkanOpaqueWin32 => vk::Format::from_raw(stream.format as i32),
         ExternalImageKind::D3d11D3d12Resource

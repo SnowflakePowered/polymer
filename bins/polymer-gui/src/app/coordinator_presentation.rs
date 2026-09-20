@@ -2,14 +2,15 @@ use super::*;
 
 impl ShellCoordinator {
     pub(super) fn handle_compositor_tick(&mut self) {
-        self.window.clear_clock_tick();
-        self.window.record_clock();
+        self.compositor.borrow_mut().clear_clock_tick();
+        self.compositor.borrow_mut().record_clock();
         self.refresh_pending_shell();
         self.present_pending_surfaces(PRESENT_PERMIT_WAIT);
         // A DXGI latency handle can remain signalled after the available frame
         // has been consumed. Stop waiting until capture publishes more work so
         // the clock thread cannot flood the UI loop with empty ticks.
-        self.window.set_clock_active(self.has_pending_surfaces());
+        let pending = self.has_pending_surfaces();
+        self.compositor.borrow().set_clock_active(pending);
     }
 
     pub(super) fn process_capture(&mut self) {
@@ -27,27 +28,21 @@ impl ShellCoordinator {
         let mut shell_refresh_required = false;
         let mut processed = 0;
         while processed < MAX_CAPTURE_EVENTS_PER_TURN {
-            let event = {
-                let size = self.window.size();
-                let render_window = self.window.surface(size.width.max(1), size.height.max(1));
-                self.game_host.try_capture_event(&render_window)
-            };
+            let event = self.game_host.try_capture_event();
             let Some(event) = event else {
                 break;
             };
             processed += 1;
             match event {
-                GameHostCaptureEvent::AdapterRequired(adapter) => {
-                    let replacement = self
-                        .shell_compositor
-                        .replace_adapter(adapter)
-                        .and_then(|context| self.game_host.replace_render_device(context));
+                GameHostCaptureEvent::DeviceRequired => {
+                    let replacement = self.game_host.replace_render_device();
                     match replacement {
                         Ok(stale_connections) => {
                             for connection in stale_connections {
-                                self.window.remove_target(connection);
+                                self.compositor.borrow_mut().remove_target(connection);
                                 self.cancel_pointer_connection(connection);
                             }
+                            self.pending_layouts.clear();
                             self.shell_dom.invalidate();
                             shell_refresh_required = true;
                             changed = true;
@@ -65,11 +60,11 @@ impl ShellCoordinator {
                         continue;
                     };
                     if let Some(previous) = surface.replaced_connection {
-                        self.window.remove_target(previous);
+                        self.compositor.borrow_mut().remove_target(previous);
                         self.cancel_pointer_connection(previous);
                     }
-                    self.window.set_backend(surface.backend);
-                    self.window.add_surface(
+                    self.compositor.borrow_mut().set_backend(surface.backend);
+                    self.compositor.borrow_mut().add_surface(
                         surface.connection,
                         surface.surface_id,
                         surface.target_index,
@@ -86,7 +81,8 @@ impl ShellCoordinator {
                     observed_qpc,
                     dimensions_changed,
                 } => {
-                    self.window
+                    self.compositor
+                        .borrow_mut()
                         .observe_frame_at(connection, frame, observed_qpc);
                     if dimensions_changed {
                         changed = true;
@@ -96,7 +92,7 @@ impl ShellCoordinator {
                     connection,
                     layout_changed,
                 } => {
-                    self.window.remove_target(connection);
+                    self.compositor.borrow_mut().remove_target(connection);
                     self.cancel_pointer_connection(connection);
                     if layout_changed {
                         changed = true;
@@ -131,7 +127,7 @@ impl ShellCoordinator {
     /// deadline — a stretch of doubled and dropped frames every time it
     /// crosses.
     pub(super) fn draw_unpaced_surfaces(&mut self) {
-        if !self.window.is_pacing() {
+        if !self.compositor.borrow_mut().is_pacing() {
             self.draw_pending_surfaces();
         }
     }
@@ -147,10 +143,12 @@ impl ShellCoordinator {
         let timing = std::env::var_os("POLYMER_GAME_LAYER_TIMING")
             .is_some()
             .then(std::time::Instant::now);
-        let size = self.window.size();
+        let size = self.compositor.borrow_mut().size();
         let presented = match self.game_host.draw(size.width, size.height, permit_wait) {
             Ok(Some(carried_new_frame)) => {
-                self.window.record_present(carried_new_frame);
+                self.compositor
+                    .borrow_mut()
+                    .record_present(carried_new_frame);
                 true
             }
             Ok(None) => false,
@@ -180,23 +178,31 @@ impl ShellCoordinator {
     }
 
     pub(super) fn draw_pending_chrome(&mut self) {
-        match self.shell_compositor.draw() {
-            Ok(Some(placements)) => {
-                self.game_host.apply_tracked_layout(&placements);
+        let publication = self.compositor.borrow_mut().publish_scene();
+        match publication {
+            Ok(Some(revision)) => {
+                if let Some(placements) = self.pending_layouts.remove(&revision) {
+                    self.game_host.apply_tracked_layout(&placements);
+                }
+                self.pending_layouts
+                    .retain(|pending, _| *pending > revision);
             }
             Ok(None) => {}
             Err(error) => tracing::error!("polymer: presenting shell chrome failed: {error}"),
         }
         self.sync_shell_visuals();
-        if self.shell_compositor.is_pending() {
-            self.window.request_redraw();
+        if self.compositor.borrow().scene_pending() {
+            self.compositor.borrow_mut().request_redraw();
         }
     }
 
     fn sync_shell_visuals(&mut self) {
-        match self.shell_compositor.reconcile(&self.game_host) {
+        let layers = self.game_host.captured_surface_snapshots();
+        let revision = self.game_host.composition_revision();
+        let reconciled = self.compositor.borrow_mut().reconcile(&layers, revision);
+        match reconciled {
             Ok(true) => {
-                if let Err(error) = self.window.commit() {
+                if let Err(error) = self.compositor.borrow_mut().commit() {
                     tracing::error!("polymer: committing shell visuals failed: {error}");
                 }
             }
@@ -220,7 +226,19 @@ impl ShellCoordinator {
         {
             inspector.document_updated(revision);
         }
-        self.shell_compositor.submit(frame);
+        self.next_scene_revision += 1;
+        let revision = self.next_scene_revision;
+        self.pending_layouts.insert(revision, frame.surface_layout);
+        let superseded = self.compositor.borrow_mut().submit_scene(CompositionScene {
+            revision,
+            raster_chunks: frame.raster_chunks,
+            composition_groups: frame.composition_groups,
+            width: frame.width,
+            height: frame.height,
+        });
+        if let Some(superseded) = superseded {
+            self.pending_layouts.remove(&superseded);
+        }
         self.draw_pending_chrome();
 
         self.profile.record(TurnPhase::Shell, entered);

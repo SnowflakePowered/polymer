@@ -1,11 +1,15 @@
 use polymer_config::input::SourceSelector;
 use polymer_controllers::layout::InputLayout;
 use polymer_input::InputHub;
+#[cfg(windows)]
 use polymer_ipc::StreamReady;
+#[cfg(windows)]
 use polymer_platform_windows::{
     NativeWindow, forward_character, performance_counter, performance_frequency,
 };
-use polymer_protocol::{ExternalImageKind, ExternalSyncKind, FrameReady, input::PointerPhase};
+#[cfg(windows)]
+use polymer_protocol::ExternalSyncKind;
+use polymer_protocol::{ExternalImageKind, FrameReady, input::PointerPhase};
 use polymer_renderer::Extent;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -33,21 +37,41 @@ mod input;
 mod layout;
 
 use gui::{LauncherState, draw_gamepad_window, draw_launcher_window, draw_layout_css_window};
-use polymer_egui::{D3d12EguiPainter, VulkanEguiPainter, draw_statistics_graph};
+#[cfg(target_os = "macos")]
+use polymer_platform_macos::{performance_counter, performance_frequency};
+use polymer_renderer::egui::{EguiPainter, draw_statistics_graph};
+#[cfg(windows)]
+use polymer_renderer_d3d12::D3d12EguiPainter;
+#[cfg(target_os = "macos")]
+use polymer_renderer_metal::MetalCompositor;
+#[cfg(target_os = "macos")]
+use polymer_renderer_metal::MetalEguiPainter;
+#[cfg(windows)]
+use polymer_renderer_vulkan::VulkanEguiPainter;
+#[cfg(target_os = "macos")]
+type WebRtcCompositor = std::convert::Infallible;
+#[cfg(windows)]
+use polymer_renderer::webrtc;
 use polymer_renderer::{
-    CompositingPlan, D3d12Compositor, Presentation, RenderWindow, Renderer, SurfaceCapture,
-    SurfaceCaptureEvent, VulkanCompositor, WebRtcCompositor,
+    CompositingPlan, Presentation, RenderWindow, Renderer, SurfaceCapture, SurfaceCaptureEvent,
     cli::{
         GraphicsHook, TrackedRenderTarget, ViewerApi, ViewerOptions, parse_target,
         split_command_arguments,
     },
     input::PointerRoutingState,
-    webrtc,
 };
+#[cfg(windows)]
+use polymer_renderer_d3d12::D3d12Compositor;
+#[cfg(windows)]
+use polymer_renderer_vulkan::VulkanCompositor;
+#[cfg(windows)]
+mod video;
 use polymer_runtime::UiRequest;
 use polymer_statistics::{
     FrameMetrics, LiveStatistics, PresentationMetrics, RecorderHandle, StatisticsSnapshot,
 };
+#[cfg(windows)]
+use video::WebRtcCompositor;
 
 use input::{
     dinput::{InputEndpoint, cancel_pointer_connection},
@@ -148,6 +172,7 @@ impl Statistics {
             presentation: PresentationMetrics::new(match backend {
                 ViewerApi::D3d12 => "d3d12",
                 ViewerApi::Vulkan => "vulkan",
+                ViewerApi::Metal => "metal",
             }),
             snapshot: StatisticsSnapshot::default(),
         }
@@ -190,23 +215,36 @@ impl Statistics {
     }
 }
 
+#[cfg(windows)]
 struct VulkanViewer {
     // Dropped before the compositor destroys the Vulkan device.
     painter: VulkanEguiPainter,
     compositor: VulkanCompositor,
 }
 
+#[cfg(windows)]
 struct D3d12Viewer {
     painter: D3d12EguiPainter,
     compositor: D3d12Compositor,
 }
 
+#[cfg(target_os = "macos")]
+struct MetalViewer {
+    painter: MetalEguiPainter,
+    compositor: MetalCompositor,
+}
+
 enum ViewerCompositor {
+    #[cfg(windows)]
     Vulkan(Box<VulkanViewer>),
+    #[cfg(windows)]
     D3d12(Box<D3d12Viewer>),
+    #[cfg(target_os = "macos")]
+    Metal(Box<MetalViewer>),
     Empty,
 }
 
+#[cfg(windows)]
 fn d3d12_viewer(compositor: D3d12Compositor) -> Result<D3d12Viewer, Box<dyn Error>> {
     let painter = D3d12EguiPainter::new(
         compositor.d3d12_device().clone(),
@@ -219,6 +257,7 @@ fn d3d12_viewer(compositor: D3d12Compositor) -> Result<D3d12Viewer, Box<dyn Erro
     })
 }
 
+#[cfg(windows)]
 fn vulkan_viewer(compositor: VulkanCompositor) -> Result<VulkanViewer, Box<dyn Error>> {
     let painter = VulkanEguiPainter::new(&compositor)?;
     Ok(VulkanViewer {
@@ -228,6 +267,7 @@ fn vulkan_viewer(compositor: VulkanCompositor) -> Result<VulkanViewer, Box<dyn E
 }
 
 /// Whether the native D3D12 consumer supports this shared-resource profile.
+#[cfg(windows)]
 fn d3d12_consumable(stream: &StreamReady) -> bool {
     matches!(
         stream.image_kind,
@@ -245,26 +285,47 @@ impl ViewerCompositor {
         publish_video: bool,
     ) -> Result<(Self, Option<WebRtcCompositor>), Box<dyn Error>> {
         match api {
+            #[cfg(target_os = "macos")]
+            ViewerApi::Metal if !publish_video => {
+                let compositor = MetalCompositor::new(window)?;
+                Ok((
+                    Self::Metal(Box::new(MetalViewer {
+                        painter: MetalEguiPainter::default(),
+                        compositor,
+                    })),
+                    None,
+                ))
+            }
+            #[cfg(target_os = "macos")]
+            _ => Err(
+                "macOS requires --api metal; WebRTC capture is not implemented for Metal".into(),
+            ),
+            #[cfg(windows)]
+            ViewerApi::Metal => Err("Metal is available only on macOS".into()),
+            #[cfg(windows)]
             ViewerApi::D3d12 if publish_video => {
                 let (compositor, webrtc) = D3d12Compositor::new_default_with_webrtc(window)?;
                 Ok((
                     Self::D3d12(Box::new(d3d12_viewer(compositor)?)),
-                    Some(webrtc),
+                    Some(WebRtcCompositor::D3d12(webrtc)),
                 ))
             }
+            #[cfg(windows)]
             ViewerApi::D3d12 => Ok((
                 Self::D3d12(Box::new(d3d12_viewer(D3d12Compositor::new_default(
                     window,
                 )?)?)),
                 None,
             )),
+            #[cfg(windows)]
             ViewerApi::Vulkan if publish_video => {
                 let (compositor, webrtc) = VulkanCompositor::new_with_webrtc(window, None)?;
                 Ok((
                     Self::Vulkan(Box::new(vulkan_viewer(compositor)?)),
-                    Some(webrtc),
+                    Some(WebRtcCompositor::Vulkan(webrtc)),
                 ))
             }
+            #[cfg(windows)]
             ViewerApi::Vulkan => Ok((
                 Self::Vulkan(Box::new(vulkan_viewer(VulkanCompositor::new(
                     window, None,
@@ -284,98 +345,122 @@ impl ViewerCompositor {
         quarter_turns: u8,
         video: &mut Option<WebRtcCompositor>,
     ) -> Result<(), Box<dyn Error>> {
-        let connection = offer.connection_id();
-        let stream = offer.stream();
-        if api == ViewerApi::D3d12 && !d3d12_consumable(stream) {
-            return Err(format!(
+        #[cfg(target_os = "macos")]
+        {
+            let Self::Metal(value) = self else {
+                return Err("Metal compositor unavailable".into());
+            };
+            Renderer::import_surface_offer(&mut value.compositor, offer, quarter_turns)
+        }
+        #[cfg(windows)]
+        {
+            let connection = offer.connection_id();
+            let stream = offer.stream();
+            if api == ViewerApi::D3d12 && !d3d12_consumable(stream) {
+                return Err(format!(
                 "the selected D3D12 viewer cannot consume {:?} output; enable a hook that exports D3D12-compatible resources",
                 stream.image_kind
             )
             .into());
-        }
-        if api == ViewerApi::D3d12 && d3d12_consumable(stream) {
-            let matches = matches!(
-                self,
-                Self::D3d12(value)
-                    if value.compositor.adapter_luid() == stream.adapter_luid
-            );
+            }
+            if api == ViewerApi::D3d12 && d3d12_consumable(stream) {
+                let matches = matches!(
+                    self,
+                    Self::D3d12(value)
+                        if value.compositor.adapter_luid() == stream.adapter_luid
+                );
+                if !matches {
+                    *video = None;
+                    drop(std::mem::replace(self, Self::Empty));
+                    if publish_video {
+                        let (compositor, webrtc) =
+                            D3d12Compositor::new_with_webrtc(window, stream.adapter_luid)?;
+                        *self = Self::D3d12(Box::new(d3d12_viewer(compositor)?));
+                        *video = Some(WebRtcCompositor::D3d12(webrtc));
+                    } else {
+                        *self = Self::D3d12(Box::new(d3d12_viewer(D3d12Compositor::new(
+                            window,
+                            stream.adapter_luid,
+                        )?)?));
+                        *video = None;
+                    }
+                }
+                let Self::D3d12(value) = self else {
+                    unreachable!()
+                };
+                Renderer::import_surface_offer(&mut value.compositor, offer, quarter_turns)?;
+                if publish_stream && let Some(video) = video {
+                    Renderer::import_surface_offer(video, offer, quarter_turns)?;
+                }
+                return Ok(());
+            }
+
+            let adapter = stream.adapter_luid;
+            let matches = matches!(self, Self::Vulkan(value)
+            if ((adapter.low_part == 0 && adapter.high_part == 0)
+                    || value.compositor.matches_adapter(adapter)));
             if !matches {
                 *video = None;
                 drop(std::mem::replace(self, Self::Empty));
+                let preferred =
+                    (adapter.low_part != 0 || adapter.high_part != 0).then_some(adapter);
                 if publish_video {
                     let (compositor, webrtc) =
-                        D3d12Compositor::new_with_webrtc(window, stream.adapter_luid)?;
-                    *self = Self::D3d12(Box::new(d3d12_viewer(compositor)?));
-                    *video = Some(webrtc);
+                        VulkanCompositor::new_with_webrtc(window, preferred)?;
+                    *self = Self::Vulkan(Box::new(vulkan_viewer(compositor)?));
+                    *video = Some(WebRtcCompositor::Vulkan(webrtc));
                 } else {
-                    *self = Self::D3d12(Box::new(d3d12_viewer(D3d12Compositor::new(
-                        window,
-                        stream.adapter_luid,
+                    *self = Self::Vulkan(Box::new(vulkan_viewer(VulkanCompositor::new(
+                        window, preferred,
                     )?)?));
                     *video = None;
                 }
             }
-            let Self::D3d12(value) = self else {
+            let Self::Vulkan(value) = self else {
                 unreachable!()
             };
             Renderer::import_surface_offer(&mut value.compositor, offer, quarter_turns)?;
             if publish_stream && let Some(video) = video {
-                video.import_d3d12_stream(connection)?;
+                Renderer::import_surface_offer(video, offer, quarter_turns)?;
             }
-            return Ok(());
+            Ok(())
         }
-
-        let adapter = stream.adapter_luid;
-        let matches = matches!(self, Self::Vulkan(value)
-            if ((adapter.low_part == 0 && adapter.high_part == 0)
-                    || value.compositor.matches_adapter(adapter)));
-        if !matches {
-            *video = None;
-            drop(std::mem::replace(self, Self::Empty));
-            let preferred = (adapter.low_part != 0 || adapter.high_part != 0).then_some(adapter);
-            if publish_video {
-                let (compositor, webrtc) = VulkanCompositor::new_with_webrtc(window, preferred)?;
-                *self = Self::Vulkan(Box::new(vulkan_viewer(compositor)?));
-                *video = Some(webrtc);
-            } else {
-                *self = Self::Vulkan(Box::new(vulkan_viewer(VulkanCompositor::new(
-                    window, preferred,
-                )?)?));
-                *video = None;
-            }
-        }
-        let Self::Vulkan(value) = self else {
-            unreachable!()
-        };
-        Renderer::import_surface_offer(&mut value.compositor, offer, quarter_turns)?;
-        if publish_stream && let Some(video) = video {
-            video.import_vulkan_stream(&value.compositor, connection)?;
-        }
-        Ok(())
     }
 
     fn recreate_swapchain(&mut self, window: &Window) -> Result<bool, Box<dyn Error>> {
         match self {
+            #[cfg(windows)]
             Self::Vulkan(value) => Renderer::recreate_swapchain(&mut value.compositor, window),
+            #[cfg(windows)]
             Self::D3d12(value) => Renderer::recreate_swapchain(&mut value.compositor, window),
+            #[cfg(target_os = "macos")]
+            Self::Metal(value) => Renderer::recreate_swapchain(&mut value.compositor, window),
             Self::Empty => Ok(false),
         }
     }
 
     fn set_latest(&mut self, connection: u64, frame: FrameReady) {
         match self {
+            #[cfg(windows)]
             Self::Vulkan(value) => Renderer::set_latest(&mut value.compositor, connection, frame),
+            #[cfg(windows)]
             Self::D3d12(value) => Renderer::set_latest(&mut value.compositor, connection, frame),
+            #[cfg(target_os = "macos")]
+            Self::Metal(value) => Renderer::set_latest(&mut value.compositor, connection, frame),
             Self::Empty => {}
         }
     }
 
     fn presentation(&self, viewer_extent: Extent) -> Presentation {
         match self {
+            #[cfg(windows)]
             Self::Vulkan(value) => {
                 Renderer::received_presentation(&value.compositor, viewer_extent)
             }
+            #[cfg(windows)]
             Self::D3d12(value) => Renderer::received_presentation(&value.compositor, viewer_extent),
+            #[cfg(target_os = "macos")]
+            Self::Metal(value) => Renderer::received_presentation(&value.compositor, viewer_extent),
             Self::Empty => Presentation::new(viewer_extent, Vec::new()),
         }
     }
@@ -384,24 +469,36 @@ impl ViewerCompositor {
         let presentation = self.presentation(window.render_extent());
         let plan = layout::composition_plan(&presentation);
         match self {
+            #[cfg(windows)]
             Self::Vulkan(value) => Renderer::resize_windows(&value.compositor, window, &plan),
+            #[cfg(windows)]
             Self::D3d12(value) => Renderer::resize_windows(&value.compositor, window, &plan),
+            #[cfg(target_os = "macos")]
+            Self::Metal(value) => Renderer::resize_windows(&value.compositor, window, &plan),
             Self::Empty => Vec::new(),
         }
     }
 
     fn has_pending_frame(&self) -> bool {
         match self {
+            #[cfg(windows)]
             Self::Vulkan(value) => Renderer::has_pending_frame(&value.compositor),
+            #[cfg(windows)]
             Self::D3d12(value) => Renderer::has_pending_frame(&value.compositor),
+            #[cfg(target_os = "macos")]
+            Self::Metal(value) => Renderer::has_pending_frame(&value.compositor),
             Self::Empty => false,
         }
     }
 
     fn begin_frame(&mut self) {
         match self {
+            #[cfg(windows)]
             Self::Vulkan(value) => Renderer::begin_frame(&mut value.compositor),
+            #[cfg(windows)]
             Self::D3d12(value) => Renderer::begin_frame(&mut value.compositor),
+            #[cfg(target_os = "macos")]
+            Self::Metal(value) => Renderer::begin_frame(&mut value.compositor),
             Self::Empty => {}
         }
     }
@@ -411,12 +508,17 @@ impl ViewerCompositor {
         connection: u64,
         video: &mut Option<WebRtcCompositor>,
     ) -> Result<(), Box<dyn Error>> {
+        #[cfg(windows)]
         if let Some(video) = video {
-            video.disconnect_stream(connection);
+            Renderer::disconnect_stream(video, connection)?;
         }
         match self {
+            #[cfg(windows)]
             Self::Vulkan(value) => Renderer::disconnect_stream(&mut value.compositor, connection),
+            #[cfg(windows)]
             Self::D3d12(value) => Renderer::disconnect_stream(&mut value.compositor, connection),
+            #[cfg(target_os = "macos")]
+            Self::Metal(value) => Renderer::disconnect_stream(&mut value.compositor, connection),
             Self::Empty => Ok(()),
         }
     }
@@ -429,19 +531,39 @@ impl ViewerCompositor {
         video: Option<&mut WebRtcCompositor>,
     ) -> Result<bool, Box<dyn Error>> {
         match self {
+            #[cfg(target_os = "macos")]
+            Self::Metal(value) => {
+                let MetalViewer {
+                    painter,
+                    compositor,
+                } = value.as_mut();
+                painter.prepare(compositor, output)?;
+                compositor.present_with(plan, |pass| painter.paint(pass, output, primitives))
+            }
+            #[cfg(windows)]
             Self::Vulkan(value) => {
                 let VulkanViewer {
                     painter,
                     compositor,
                 } = value.as_mut();
                 painter.prepare(compositor, output)?;
+                let video = match video {
+                    Some(WebRtcCompositor::Vulkan(value)) => Some(value),
+                    _ => None,
+                };
                 compositor.present_with(plan, video, |pass| painter.paint(pass, output, primitives))
             }
+            #[cfg(windows)]
             Self::D3d12(value) => {
                 let D3d12Viewer {
                     painter,
                     compositor,
                 } = value.as_mut();
+                painter.prepare(compositor, output)?;
+                let video = match video {
+                    Some(WebRtcCompositor::D3d12(value)) => Some(value),
+                    _ => None,
+                };
                 compositor.present_with(plan, video, |pass| painter.paint(pass, output, primitives))
             }
             Self::Empty => Ok(false),
@@ -480,11 +602,18 @@ fn main() -> Result<(), Box<dyn Error>> {
             .and_then(|targets| targets.iter().max().copied())
             .map_or(1, |index| index.saturating_add(1)),
     );
+    #[cfg(target_os = "macos")]
+    if options.webrtc.is_some() {
+        return Err("Metal WebRTC capture is not implemented".into());
+    }
     let viewer_api = options.api;
     let resize_guest = options.resize;
+    #[cfg(windows)]
     let webrtc = webrtc_targets
         .as_ref()
-        .map(|targets| webrtc::Publisher::start(options.bind_webrtc, targets))
+        .map(|targets| {
+            webrtc::Publisher::start(options.bind_webrtc, targets).map(std::sync::Arc::new)
+        })
         .transpose()?;
     let executable_dir = env::current_exe()?
         .parent()
@@ -542,6 +671,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .with_inner_size(LogicalSize::new(1280, 720))
                 .with_resizable(true),
         )?;
+        #[cfg(windows)]
         let viewer_window = native_window(&window)?;
         let mut egui_context = egui::Context::default();
         let mut egui_state = egui_winit::State::new(
@@ -552,7 +682,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             window.theme(),
             None,
         );
+        #[cfg(windows)]
         let publish_video = webrtc.is_some();
+        #[cfg(target_os = "macos")]
+        let publish_video = false;
         let (mut compositor, mut video_compositor) =
             ViewerCompositor::new(&window, viewer_api, publish_video)?;
         let frequency = performance_frequency().unwrap_or(1) as f64;
@@ -639,7 +772,21 @@ fn main() -> Result<(), Box<dyn Error>> {
                         return;
                     }
                     if let PhysicalKey::Code(code) = event.physical_key {
-                        let pressed = event.state == ElementState::Pressed;
+                        #[cfg(target_os = "macos")]
+                        if let Some(provider) = &gamepad_provider {
+                            use winit::platform::scancode::PhysicalKeyExtScancode;
+                            provider.publish_host(polymer_input::HostInputEvent::Key {
+                                code: polymer_input::KeyCode::new(&format!("{code:?}")),
+                                scan_code: event.physical_key.to_scancode().unwrap_or(0) as u16,
+                                virtual_key: 0,
+                                pressed: event.state == ElementState::Pressed,
+                                repeat: event.repeat,
+                                extended: false,
+                                target_window: 0,
+                                timestamp_ms: 0,
+                                sequence: 0,
+                            });
+                        }
                         match event.state {
                             ElementState::Pressed => {
                                 pressed_keys.insert(code);
@@ -649,12 +796,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                             }
                         }
                     }
+                    #[cfg(windows)]
                     if let Some(backing) = load_window(&backing_window) {
                         if event.state == ElementState::Pressed
                             && let Some(text) = event.text
                         {
                             for character in text.chars() {
                                 if !character.is_control() {
+                                    #[cfg(windows)]
                                     forward_character(backing, character);
                                 }
                             }
@@ -791,7 +940,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     | ExternalImageKind::D3d12Heap => "D3D12",
                                     ExternalImageKind::OpenGlD3d12Resource => "OpenGL",
                                     ExternalImageKind::VulkanD3d12Resource => "Vulkan",
+                                    ExternalImageKind::IOSurface => "Metal",
                                 };
+                                #[cfg(windows)]
                                 if stream.source_window != 0 {
                                     let source = NativeWindow(stream.source_window as isize);
                                     backing_window.store(source.0, Ordering::Release);
@@ -844,7 +995,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                                             );
                                             stream_indices.remove(&existing);
                                             stats.remove_surface(existing);
-                                            if let Some(publisher) = &webrtc {
+                                            #[cfg(windows)]
+if let Some(publisher) = &webrtc {
                                                 publisher.remove_stream(existing);
                                             }
                                             capture.revoke(existing);
@@ -863,7 +1015,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                                             stream.surface_id.0,
                                             stream_index,
                                         );
-                                        if publish_stream && let Some(publisher) = &webrtc {
+                                        #[cfg(windows)]
+if publish_stream && let Some(publisher) = &webrtc {
                                             publisher.add_stream(connection, stream_index);
                                         }
                                         // A deferred or replaced graphics backend has no copy
@@ -879,13 +1032,16 @@ fn main() -> Result<(), Box<dyn Error>> {
                                             window.theme(),
                                             None,
                                         );
-                                        active_consumer = if viewer_api == ViewerApi::D3d12
+                                        #[cfg(windows)]
+                                        { active_consumer = if viewer_api == ViewerApi::D3d12
                                             && d3d12_consumable(&stream)
                                         {
                                             "D3D12/DXGI"
                                         } else {
                                             "Vulkan"
-                                        };
+                                        }; }
+                                        #[cfg(target_os = "macos")]
+                                        { active_consumer = "Metal"; }
                                         tracing::info!(
                                             "polymer: imported {active_backend} stream {}x{} format {} {:?}/{:?} (surface {:#x}) for window {:#x} with {} slots using {}",
                                             stream.width,
@@ -920,6 +1076,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 }
                                 stats.observe_frame(connection, frame, frequency);
                                 compositor.set_latest(connection, frame);
+                                #[cfg(windows)]
+                                if let Some(video) = &mut video_compositor { Renderer::set_latest(video, connection, frame); }
                                 if active_backend == "D3D11" {
                                     // Keyed-mutex frames must be consumed and released in order;
                                     // do not overwrite one with a newer socket message.
@@ -928,7 +1086,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                             }
                             SurfaceCaptureEvent::Removed { connection, .. } => {
                                 stats.remove_surface(connection);
-                                if let Some(publisher) = &webrtc {
+                                #[cfg(windows)]
+if let Some(publisher) = &webrtc {
                                     publisher.remove_stream(connection);
                                 }
                                 let size = window.inner_size();
@@ -956,7 +1115,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                     let has_pending_frame = compositor.has_pending_frame();
                     stats.sample();
                     let input = egui_state.take_egui_input(&window);
-                    let webrtc_stats = webrtc.as_ref().map(webrtc::Publisher::stats);
+                    #[cfg(windows)]
+let webrtc_stats = webrtc.as_ref().map(|publisher| publisher.stats());
                     let last_pointer_sent = pointer_routing.last_sent();
                     let mut launch_requested = false;
                     let mut close_requested = false;
@@ -1178,7 +1338,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 &stats.snapshot.input.combined(),
                             );
                         }
-                        if let Some(webrtc_stats) = &webrtc_stats
+                        #[cfg(windows)]
+if let Some(webrtc_stats) = &webrtc_stats
                             && webrtc_stats.connected_clients > 0
                         {
                             let webrtc_frame = egui::Frame::window(&context.style())
@@ -1304,11 +1465,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                             target.exit();
                         }
                     }
-                    if let (Some(publisher), Some(video_compositor)) =
+                    #[cfg(windows)]
+if let (Some(publisher), Some(video_compositor)) =
                         (&webrtc, &mut video_compositor)
                     {
-                        for frame in video_compositor.take_frames() {
-                            publisher.publish(frame);
+                        video_compositor.set_publisher(publisher.clone());
+                        if let Err(error) = Renderer::present(video_compositor, &composition_plan) {
+                            tracing::error!("polymer: video publication failed: {error}");
+                            target.exit();
                         }
                     }
                 }
@@ -1390,7 +1554,7 @@ fn start_target_session(
                 .collect()
         });
     let filesystem = filesystem::DebugFilesystem::mount(&mut target)?;
-    let mut instance = polymer_runtime::EmulatorInstance::launch(
+    let instance = polymer_runtime::EmulatorInstance::launch(
         polymer_runtime::EmulatorLaunchConfig {
             session: session.to_owned(),
             command: target[0].clone(),
@@ -1398,11 +1562,15 @@ fn start_target_session(
             artifact_root: executable_dir.to_path_buf(),
             hooks: polymer_runtime::Hooks {
                 graphics: launcher.hooks.clone(),
+                #[cfg(windows)]
                 input: vec![polymer_runtime::InputHook::Sdl3],
+                #[cfg(target_os = "macos")]
+                input: Vec::new(),
             },
             consumer: match viewer_api {
                 ViewerApi::D3d12 => polymer_runtime::ConsumerPreference::D3d12,
                 ViewerApi::Vulkan => polymer_runtime::ConsumerPreference::Vulkan,
+                ViewerApi::Metal => polymer_runtime::ConsumerPreference::Metal,
             },
             isolate: launcher.isolate,
             tracked_surfaces: configured_surfaces,
@@ -1412,13 +1580,16 @@ fn start_target_session(
         &filesystem,
     )?;
     let provider = InputHub::default();
-    let backend = Arc::new(
-        polymer_input_sdl3::Sdl3Backend::new(Default::default())
-            .map_err(|error| std::io::Error::other(error.to_string()))?,
-    );
-    provider
-        .register_backend(backend)
-        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    #[cfg(windows)]
+    {
+        let backend = Arc::new(
+            polymer_input_sdl3::Sdl3Backend::new(Default::default())
+                .map_err(|error| std::io::Error::other(error.to_string()))?,
+        );
+        provider
+            .register_backend(backend)
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+    }
     instance.input().attach(&provider);
     let topology = polymer_controllers::topology::InputTopology {
         revision: 1,

@@ -8,7 +8,10 @@ impl ShellCoordinator {
         prepared_filesystem: Option<polymer_vfs::PreparedFilesystemLaunch>,
         controller_session: Option<polymer_pluginhost::controller::ControllerSession>,
     ) -> Result<(), String> {
+        #[cfg(not(target_os = "macos"))]
         let host = polymer_vfs_winfsp::WinFspFilesystemHost::default();
+        #[cfg(target_os = "macos")]
+        let host = polymer_vfs_fskit::FsKitFilesystemHost::new("org.polymer.filesystem");
         let mounted_filesystem = match prepared_filesystem
             .ok_or_else(|| "guest launch requires a prepared virtual filesystem".to_owned())
             .and_then(|prepared| {
@@ -102,9 +105,9 @@ impl ShellCoordinator {
         };
         for connection in finished.connections {
             self.cancel_pointer_connection(connection);
-            self.window.remove_target(connection);
+            self.compositor.borrow_mut().remove_target(connection);
         }
-        let _ = self.window.commit();
+        let _ = self.compositor.borrow_mut().commit();
         self.set_input_priority(InputPriority::Ui);
         self.publish_targets_for(finished.token);
         if let Some(error) = finished.finalization_error {

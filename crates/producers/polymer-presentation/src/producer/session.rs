@@ -1,4 +1,6 @@
-use super::{ExportDescriptor, SessionFailure, export::Export};
+#[cfg(windows)]
+use super::export::Export;
+use super::{ExportDescriptor, SessionFailure};
 use parking_lot::{Condvar, Mutex};
 use polymer_ipc::{LocalSocket, Message};
 use polymer_protocol::{ConsumerApi, PROTOCOL_VERSION};
@@ -167,10 +169,19 @@ impl ProducerSession {
                 "stream already published",
             ));
         }
-        let mut ready = descriptor.into_ready()?;
+        #[cfg(target_os = "macos")]
+        let resources = descriptor.resources.clone();
+        let ready = descriptor.into_ready()?;
+        #[cfg(windows)]
+        let mut ready = ready;
+        #[cfg(windows)]
         let mut export = Export::prepare(self.viewer_pid, &mut ready)?;
+        #[cfg(windows)]
         export.transfer();
+        #[cfg(windows)]
         self.socket.send(Message::StreamReady(ready))?;
+        #[cfg(target_os = "macos")]
+        self.socket.send_stream(ready, resources)?;
         // The existing wire protocol declines a stream by closing after
         // StreamReady without acceptance. A timeout/reset remains retryable.
         let response = self.socket.receive().map_err(|error| {

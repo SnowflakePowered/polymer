@@ -1,0 +1,99 @@
+use dispatch2::DispatchQueue;
+use objc2::MainThreadMarker;
+use objc2_app_kit::NSApplication;
+use objc2_foundation::NSSize;
+use polymer_input::{HostInputEvent, HostPointerInput, KeyCode};
+use polymer_ipc::{
+    Message,
+    input::{InputMessage, InputSubscriber},
+};
+use polymer_platform::GuestInput;
+use polymer_platform_macos::GuestEvents;
+use std::{io, time::Duration};
+
+pub(super) struct Input;
+impl Input {
+    pub fn initialize() {
+        let Ok(session) = std::env::var("POLYMER_SESSION") else {
+            return;
+        };
+        let _ = std::thread::Builder::new()
+            .name("polymer-appkit-input".into())
+            .spawn(move || {
+                if let Err(error) = Self::receive(&session) {
+                    eprintln!("Polymer AppKit input ended: {error}");
+                }
+            });
+    }
+    fn receive(session: &str) -> io::Result<()> {
+        let mut subscriber = InputSubscriber::connect(&format!("{session}-input"))?;
+        loop {
+            while let Some(message) = subscriber.control.try_receive()? {
+                match message {
+                    Message::ResizeWindow(size) => DispatchQueue::main().exec_async(move || {
+                        let main = MainThreadMarker::new().unwrap();
+                        for window in NSApplication::sharedApplication(main).windows() {
+                            if window.windowNumber() == size.target_window as isize {
+                                window.setContentSize(NSSize::new(
+                                    size.width as f64,
+                                    size.height as f64,
+                                ));
+                            }
+                        }
+                    }),
+                    Message::Blob { len, .. } => {
+                        subscriber.control.receive_blob(len)?;
+                    }
+                    Message::Shutdown => return Ok(()),
+                    _ => {}
+                }
+            }
+            subscriber.drain(|message| {
+                let event = match message {
+                    InputMessage::HostKey(key) => HostInputEvent::Key {
+                        code: KeyCode::from_wire(key.code),
+                        scan_code: key.scan_code,
+                        virtual_key: key.virtual_key,
+                        pressed: key.pressed,
+                        repeat: key.repeat,
+                        extended: key.extended,
+                        target_window: key.target_window,
+                        timestamp_ms: key.timestamp_ms,
+                        sequence: key.sequence,
+                    },
+                    InputMessage::HostPointer(p) => HostInputEvent::Pointer(HostPointerInput {
+                        surface_id: p.surface_id,
+                        target_window: p.target_window,
+                        source: p.source,
+                        phase: p.phase,
+                        pointer_id: p.pointer_id,
+                        x: p.x,
+                        y: p.y,
+                        coordinate_width: p.coordinate_width,
+                        coordinate_height: p.coordinate_height,
+                        button: p.button,
+                        position: p.position.map(f64::from),
+                        delta: p.delta.map(f64::from),
+                        buttons: p.buttons,
+                        wheel_horizontal: p.wheel_horizontal,
+                        wheel_vertical: p.wheel_vertical,
+                        timestamp_ms: p.timestamp_ms,
+                    }),
+                    InputMessage::HostWheel(wheel) => HostInputEvent::Wheel {
+                        horizontal: wheel.horizontal,
+                        vertical: wheel.vertical,
+                    },
+                    _ => return,
+                };
+                DispatchQueue::main().exec_async(move || {
+                    if let Err(error) =
+                        GuestEvents::send(std::process::id(), GuestInput::Host(event))
+                    {
+                        eprintln!("Polymer AppKit input failed: {error}");
+                    }
+                });
+            })?;
+            std::thread::sleep(Duration::from_millis(4));
+        }
+    }
+}

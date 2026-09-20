@@ -5,14 +5,14 @@ pub use matching::{
     SourceRegistration, WindowIdentity,
 };
 
-#[cfg(all(feature = "producer", windows))]
+#[cfg(feature = "producer")]
 mod backend;
-#[cfg(all(feature = "producer", windows))]
+#[cfg(feature = "producer")]
 mod controller;
 #[cfg(all(feature = "producer", windows))]
 mod maintenance;
 mod pacing;
-#[cfg(all(feature = "producer", windows))]
+#[cfg(feature = "producer")]
 mod retirement;
 #[cfg(all(feature = "producer", windows))]
 pub use maintenance::{DxgiMaintenance, PacingSource, RetiringResource};
@@ -20,13 +20,13 @@ pub use maintenance::{DxgiMaintenance, PacingSource, RetiringResource};
 mod latency;
 #[cfg(all(feature = "producer", windows))]
 pub use latency::FrameLatency;
-#[cfg(all(feature = "producer", windows))]
+#[cfg(feature = "producer")]
 mod state;
 pub use pacing::AcquireDeadline;
-#[cfg(all(feature = "producer", windows))]
+#[cfg(feature = "producer")]
 pub use {backend::*, controller::*, retirement::*, state::*};
 
 mod owner;
 pub use owner::{OwnerCall, OwnerCell, OwnerUnavailable};
-#[cfg(all(feature = "producer", windows))]
+#[cfg(feature = "producer")]
 mod budget;

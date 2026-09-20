@@ -63,6 +63,18 @@ impl FilesystemEndpoint {
         }
     }
 
+    #[cfg(unix)]
+    fn directory(&self) -> std::path::PathBuf {
+        #[cfg(target_os = "macos")]
+        {
+            std::path::PathBuf::from(format!("/Volumes/Polymer-{}", self.nonce))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            std::env::temp_dir().join(format!("polymer-vfs-{}", self.nonce))
+        }
+    }
+
     pub fn project(&self, path: &VfsPath) -> String {
         #[cfg(windows)]
         {
@@ -78,7 +90,10 @@ impl FilesystemEndpoint {
         }
         #[cfg(unix)]
         {
-            path.to_string_lossy()
+            self.directory()
+                .join(path.to_string_lossy().trim_start_matches('/'))
+                .to_string_lossy()
+                .into_owned()
         }
     }
 
@@ -95,7 +110,10 @@ impl FilesystemEndpoint {
         }
         #[cfg(unix)]
         {
-            crate::VfsPathBuf::new(projected).ok()
+            let suffix = std::path::Path::new(projected)
+                .strip_prefix(self.directory())
+                .ok()?;
+            crate::VfsPathBuf::new(format!("/{}", suffix.to_string_lossy())).ok()
         }
     }
 }

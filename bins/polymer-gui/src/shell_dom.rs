@@ -5,8 +5,8 @@
 //! emulator commands enter the shell through the event loop.
 
 use crate::shell_document::{
-    CompositionShadowStyle, DomKeyboardEvent, DomMouseEvent, DomWheelEvent, GameViewStyle,
-    ShellDocument, ShellDocumentFactory,
+    DomKeyboardEvent, DomMouseEvent, DomWheelEvent, GameViewStyle, ShellDocument,
+    ShellDocumentFactory,
 };
 use crate::shell_runtime::{ShellRuntime, ShellRuntimeOptions};
 use kurbo::Rect;
@@ -26,41 +26,7 @@ pub(crate) struct ShellFrame {
     pub height: u32,
 }
 
-#[derive(Clone)]
-pub(crate) struct ShellRasterChunk {
-    pub id: RasterChunkId,
-    pub scene: anyrender::Scene,
-    pub bounds: Rect,
-    pub z_order: i32,
-    pub group: Option<u64>,
-}
-
-/// Stable identity for one raster leaf within a retained compositor owner.
-/// Root chrome and each promoted stacking context have independent ordinal
-/// spaces, so unrelated group insertion does not churn existing WUC visuals.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct RasterChunkId {
-    pub owner: Option<u64>,
-    pub ordinal: u32,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct RasterChunkLayout {
-    pub id: RasterChunkId,
-    pub bounds: Rect,
-    pub z_order: i32,
-    pub group: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct ShellCompositionGroup {
-    pub id: u64,
-    pub parent: Option<u64>,
-    pub bounds: Rect,
-    pub z_order: i32,
-    pub opacity: f32,
-    pub shadow: Option<CompositionShadowStyle>,
-}
+pub use polymer_composition::{RasterChunkId, ShellCompositionGroup, ShellRasterChunk};
 
 /// Immutable compositor-facing layout published by the shell DOM.
 #[derive(Clone, Debug, PartialEq)]

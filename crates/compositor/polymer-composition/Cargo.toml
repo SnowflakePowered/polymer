@@ -1,0 +1,20 @@
+[package]
+name = "polymer-composition"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+egui = "0.29.1"
+egui-winit = "0.29.1"
+anyrender = "0.13.0"
+kurbo = "0.13.1"
+cursor-icon = "1.2.0"
+polymer-renderer = { path = "../../consumer/polymer-renderer" }
+polymer-protocol.workspace = true
+polymer-runtime.workspace = true
+polymer-statistics.workspace = true
+winit = "0.30.13"

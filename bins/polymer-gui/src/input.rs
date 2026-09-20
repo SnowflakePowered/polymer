@@ -1,10 +1,10 @@
 use polymer_config::input::{InputConfiguration, InputTransaction};
 use polymer_controllers::ControllerTopology;
-use polymer_egui::{InputAxisDiagnostics, InputDiagnostics, InputSlotDiagnostics};
 use polymer_input::{HostInputEvent, InputHub, KeyCode, PlayerIndex, PointerFlags, PointerReport};
 use polymer_ipc::input::host::InputIpcListener;
 use polymer_ipc::input::host::{RawHidChannel, RawHidSpec};
 use polymer_protocol::input::PointerPhase;
+use polymer_renderer::egui::{InputAxisDiagnostics, InputDiagnostics, InputSlotDiagnostics};
 use polymer_renderer::{
     input::{PointerEventSink, PointerRoutingState},
     layout::Rect,

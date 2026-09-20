@@ -1,0 +1,26 @@
+[package]
+name = "polymer-vfs-fskit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+polymer-vfs.workspace = true
+polymer-ipc.workspace = true
+objc2.workspace = true
+objc2-foundation.workspace = true
+objc2-fs-kit.workspace = true
+block2.workspace = true
+serde.workspace = true
+bincode.workspace = true
+rand.workspace = true
+parking_lot.workspace = true
+dashmap.workspace = true
+tempfile.workspace = true
+libc = "0.2"
+
+[lints]
+workspace = true

@@ -6,6 +6,7 @@ members = [
     "crates/producers/*",
     "crates/hooks/*",
     "crates/consumer/*",
+    "crates/compositor/*",
     "crates/input/*",
     "crates/runtime/*",
     "crates/filesystem/*",
@@ -20,6 +21,9 @@ repository = "https://github.com/polymer/polymer"
 rust-version = "1.94"
 
 [workspace.dependencies]
+polymer-composition = { path = "crates/compositor/polymer-composition" }
+polymer-composition-macos = { path = "crates/compositor/polymer-composition-macos" }
+polymer-composition-windows = { path = "crates/compositor/polymer-composition-windows" }
 actix = "=0.13.5"
 polymer-presentation = { path = "crates/producers/polymer-presentation" }
 async-trait = "0.1.89"
@@ -104,11 +108,17 @@ windows-sys = { version = "0.61.2", features = [
 zerocopy = { version = "0.8.55", features = ["derive"] }
 polymer-protocol = { path = "crates/runtime/polymer-protocol" }
 polymer-ipc = { path = "crates/runtime/polymer-ipc" }
-polymer-egui = { path = "crates/consumer/polymer-egui" }
 polymer-statistics = { path = "crates/runtime/polymer-statistics" }
 polymer-ui = { path = "crates/runtime/polymer-ui" }
 polymer-platform = { path = "crates/runtime/polymer-platform" }
 polymer-platform-windows = { path = "crates/runtime/polymer-platform-windows" }
+polymer-platform-macos = { path = "crates/runtime/polymer-platform-macos" }
+objc2 = "0.6.4"
+objc2-foundation = "0.3.2"
+objc2-app-kit = "0.3.2"
+objc2-core-audio = "0.3.2"
+objc2-fs-kit = "0.3.2"
+block2 = "0.6.2"
 polymer-automation = { path = "crates/runtime/polymer-automation" }
 polymer-input = { path = "crates/input/polymer-input" }
 polymer-config = { path = "crates/polymer-config" }
@@ -127,6 +137,7 @@ polymer-library = { path = "crates/runtime/polymer-library" }
 polymer-scraping = { path = "crates/runtime/polymer-scraping" }
 polymer-vfs = { path = "crates/filesystem/polymer-vfs" }
 polymer-vfs-winfsp = { path = "crates/filesystem/polymer-vfs-winfsp" }
+polymer-vfs-fskit = { path = "crates/filesystem/polymer-vfs-fskit" }
 
 polymer-hook = { path = "crates/hooks/polymer-hook" }
 
