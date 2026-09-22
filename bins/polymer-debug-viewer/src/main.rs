@@ -1558,6 +1558,8 @@ fn start_target_session(
         polymer_runtime::EmulatorLaunchConfig {
             session: session.to_owned(),
             command: target[0].clone(),
+            working_directory: None,
+            env: Vec::new(),
             arguments: target[1..].to_vec(),
             artifact_root: executable_dir.to_path_buf(),
             hooks: polymer_runtime::Hooks {

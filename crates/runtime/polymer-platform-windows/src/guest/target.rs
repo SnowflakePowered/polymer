@@ -22,12 +22,18 @@ impl TargetProcess {
         target: &[String],
         artifact_root: &Path,
         environment: &[(OsString, OsString)],
+        working_directory: Option<&Path>,
         private_desktop: Option<&str>,
         libraries: &[InjectionLibrary],
     ) -> std::io::Result<Self> {
         let job = KillOnCloseJob::new()?;
         let desktop = private_desktop.map(PrivateDesktop::create).transpose()?;
-        let mut child = ProcessHandle::spawn_suspended(target, environment, private_desktop)?;
+        let mut child = ProcessHandle::spawn_suspended(
+            target,
+            environment,
+            working_directory,
+            private_desktop,
+        )?;
         let setup = (|| {
             job.assign_process(child.raw_handle())?;
             Self::force_high_qos(child.raw_handle())?;

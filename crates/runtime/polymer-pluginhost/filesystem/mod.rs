@@ -2,6 +2,8 @@
 
 mod ops;
 pub(crate) use ops::JsResource;
+mod entry;
+mod mount;
 mod package;
 
 use deno_core::{JsRuntime, OpState, op2};
@@ -9,9 +11,9 @@ use deno_error::JsErrorBox;
 use polymer_vfs::{
     AsarVolumeFactory, DirectoryNode, FileKind, FileNode, FilesystemEndpoint, FilesystemPlan,
     HostDirectoryFactory, HostFileFactory, Materialized, MemoryFileFactory, Node, OpenOptions,
-    PackageDirectoryFactory, Permissions, PreparedFilesystemLaunch, ProfileLayout, RemoveKind,
-    Resource, ResourceFactory, ResourceLease, ResourceOrigin, ScratchBacking, ScratchVolumeFactory,
-    VfsComponent, VfsError, VfsPathBuf, Volume,
+    PackageDirectoryFactory, Permissions, PreparedFilesystemLaunch, RemoveKind, Resource,
+    ResourceFactory, ResourceLease, ResourceOrigin, TempDirectoryFactory, VfsComponent, VfsError,
+    VfsPathBuf, Volume,
 };
 use serde::Serialize;
 use serde_bytes::ByteBuf;
@@ -90,12 +92,12 @@ struct CacheResource {
 }
 
 struct SharedVolumeFactory {
-    source: Arc<dyn ResourceFactory<dyn Volume>>,
+    source: Resource<dyn Volume>,
     materialized: parking_lot::Mutex<Option<MaterializedVolume>>,
 }
 
 impl SharedVolumeFactory {
-    fn new(source: Arc<dyn ResourceFactory<dyn Volume>>) -> Self {
+    fn new(source: Resource<dyn Volume>) -> Self {
         Self {
             source,
             materialized: parking_lot::Mutex::new(None),
@@ -128,8 +130,6 @@ pub(crate) struct FilesystemState {
     storage: BTreeMap<String, ResourceHandle>,
     caches: BTreeMap<String, CacheResource>,
     used: bool,
-    working_directory_set: bool,
-    profile_set: bool,
     prepared: Option<Arc<polymer_vfs::PreparedFilesystem>>,
     staged_files: Vec<(VfsPathBuf, Vec<u8>)>,
     quick_resume: Option<(ResourceHandle, Option<ResourceHandle>)>,
@@ -149,8 +149,6 @@ impl FilesystemState {
             storage: BTreeMap::new(),
             caches: BTreeMap::new(),
             used: false,
-            working_directory_set: false,
-            profile_set: false,
             prepared: None,
             staged_files: Vec::new(),
             quick_resume: None,
@@ -266,6 +264,13 @@ impl FilesystemState {
         &mut self,
         resource: Resource<dyn polymer_vfs::Volume>,
     ) -> Handle<Resource<dyn polymer_vfs::Volume>> {
+        let authority = resource.authority();
+        let origin = resource.origin().clone();
+        let resource = Resource::new(
+            Arc::new(SharedVolumeFactory::new(resource)),
+            authority,
+            origin,
+        );
         let handle = Handle::new();
         let replaced = self.volumes.insert(handle, Arc::new(resource));
         debug_assert!(replaced.is_none());
@@ -484,22 +489,13 @@ impl FilesystemState {
         directory.remove(&component, kind)
     }
 
-    fn scratch_resource(&mut self, backing: &str) -> Result<ResourceHandle, VfsError> {
-        let factory = match backing {
-            "memory" => ScratchVolumeFactory::new(ScratchBacking::Memory),
-            "temporary" => {
-                ScratchVolumeFactory::temporary_in(self.scratch_root.clone().ok_or_else(|| {
-                    VfsError::Unsupported("temporary scratch storage is unavailable".into())
-                })?)
-            }
-            _ => {
-                return Err(VfsError::Unsupported(
-                    "scratch backing must be 'memory' or 'temporary'".into(),
-                ));
-            }
-        };
+    fn scratch_resource(&mut self) -> Result<ResourceHandle, VfsError> {
+        let factory =
+            TempDirectoryFactory::in_root(self.scratch_root.clone().ok_or_else(|| {
+                VfsError::Unsupported("temporary scratch storage is unavailable".into())
+            })?);
         Ok(ResourceHandle::Tree(self.insert_volume(Resource::new(
-            Arc::new(SharedVolumeFactory::new(Arc::new(factory))),
+            Arc::new(factory),
             Permissions::ALL,
             ResourceOrigin::Scratch,
         ))))

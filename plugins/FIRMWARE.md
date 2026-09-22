@@ -17,7 +17,7 @@ const file = await args.firmwareStore.open("scph1001.bin");
 // Equivalent:
 const named = await args.firmwareStore.open({ name: "scph1001.bin" });
 const exact = await args.firmwareStore.open({ sha256: expectedSha256 });
-args.filesystem.mountFile("/system/bios.bin", file, { mode: "r" });
+args.filesystem.mount("/system/bios.bin", file, { mode: "r" });
 ```
 
 `open` accepts a name string, `{ name }`, or an object with `md5`, `sha1`, and/or `sha256`. With multiple hashes, only the first property is used; failure does not try later hashes. Names are exact and case-sensitive. Hash hexadecimal is case-insensitive. Empty lookups, missing matches, and ambiguous matches reject. Use a unique hash to disambiguate a name.

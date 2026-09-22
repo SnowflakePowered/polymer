@@ -51,6 +51,8 @@ export function createEmulator(webrtc) {
   function wireOptions(options) {
     return {
       command: options.command,
+      workingDirectory: options.workingDirectory,
+      env: (options.env || []).map(entry => [...entry]),
       arguments: [...(options.arguments || [])],
       isolated: Boolean(options.isolated),
       hooks: {

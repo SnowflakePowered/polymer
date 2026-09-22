@@ -1,8 +1,9 @@
 import runtime from "pkg:bin/win-x64";
-import type { BatteryStorage, Filesystem } from "polymer:api";
+import type { Package, BatteryStorage, Filesystem } from "polymer:api";
 
 type EmulatorLaunchArgs = {
     launchPath: string,
+    package: Package,
     filesystem: Filesystem,
     storage: BatteryStorage,
 };
@@ -22,25 +23,25 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     const gameName = basename(args.launchPath);
     const path = (virtualPath: string) => args.filesystem.path(virtualPath);
 
-    args.filesystem.mountTree("/mGBA", runtime, { mode: "rx" });
-    args.filesystem.mountScratch("/Game", { mode: "rwx", backing: "temporary" });
-    args.filesystem.mountScratch("/User", { mode: "rwx", backing: "temporary" });
-    const gamePath = args.filesystem.mountPackage("/Game");
+    args.filesystem.mount("/mGBA", runtime, { mode: "rx" });
+    args.filesystem.mount("/User");
+    const gamePath = args.filesystem.mount("/Game", args.package, { mode: "rx" });
     if (args.storage.battery) {
-        args.filesystem.mountStorage(`/Game/${saveName(gameName)}`, args.storage.battery, {
+        args.filesystem.mount(`/Game/${saveName(gameName)}`, args.storage.battery, {
             mode: "rw",
         });
     }
-    args.filesystem.setWorkingDirectory("/mGBA");
-    args.filesystem.setProfile({
-        home: "/User",
-        roamingAppData: "/User/AppData/Roaming",
-        localAppData: "/User/AppData/Local",
-        temp: "/User/Temp",
-    });
 
     return {
         command: path("/mGBA/mGBA.exe"),
+        workingDirectory: args.filesystem.path("/mGBA"),
+        env: [
+            ["USERPROFILE", args.filesystem.path("/User")],
+            ["APPDATA", args.filesystem.path("/User/AppData/Roaming")],
+            ["LOCALAPPDATA", args.filesystem.path("/User/AppData/Local")],
+            ["TEMP", args.filesystem.path("/User/Temp")],
+            ["TMP", args.filesystem.path("/User/Temp")],
+        ],
         argv: [gamePath],
         isolate: true,
         hooks: { graphics: ["opengl"], input: ["sdl3"] },

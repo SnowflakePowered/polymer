@@ -1,5 +1,5 @@
 declare module "pkg:*" {
-    const resource: import("polymer:api").DirectoryResource;
+    const resource: import("polymer:api").DirEntry;
     export default resource;
 }
 
@@ -24,8 +24,4 @@ declare module "polymer:database" {
 
 declare module "polymer:uiautomation" {
     export const uiAutomation: import("polymer:api").UiAutomation;
-}
-
-declare module "polymer:actions" {
-    export const actions: import("polymer:api").Actions;
 }

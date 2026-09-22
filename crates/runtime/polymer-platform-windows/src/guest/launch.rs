@@ -86,6 +86,7 @@ impl GuestPlatform {
             &command_line,
             &config.artifact_root,
             &environment,
+            config.working_directory.as_deref(),
             config.isolate.then_some(&config.session),
             &libraries,
         )?;

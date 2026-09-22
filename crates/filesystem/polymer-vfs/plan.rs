@@ -1,16 +1,8 @@
 use crate::{
-    FileKind, FileNode, Permissions, PreparedFilesystem, Resource, VfsComponent, VfsError,
-    VfsPathBuf, VfsPathUnit, VfsResult, Volume,
+    FileKind, FileNode, Permissions, PreparedFilesystem, Resource, ResourceOrigin,
+    TempDirectoryFactory, VfsComponent, VfsError, VfsPathBuf, VfsPathUnit, VfsResult, Volume,
 };
 use std::{collections::BTreeMap, sync::Arc};
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ProfileLayout {
-    pub home: Option<VfsPathBuf>,
-    pub roaming_app_data: Option<VfsPathBuf>,
-    pub local_app_data: Option<VfsPathBuf>,
-    pub temp: Option<VfsPathBuf>,
-}
 
 #[derive(Clone, Debug)]
 pub enum BindingKind {
@@ -71,21 +63,9 @@ impl BindingSpec {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct FilesystemPlan {
     bindings: Vec<BindingSpec>,
-    working_directory: VfsPathBuf,
-    profile: Option<ProfileLayout>,
-}
-
-impl Default for FilesystemPlan {
-    fn default() -> Self {
-        Self {
-            bindings: Vec::new(),
-            working_directory: VfsPathBuf::root(),
-            profile: None,
-        }
-    }
 }
 
 impl FilesystemPlan {
@@ -130,14 +110,6 @@ impl FilesystemPlan {
         });
     }
 
-    pub fn set_working_directory(&mut self, path: VfsPathBuf) {
-        self.working_directory = path;
-    }
-
-    pub fn set_profile(&mut self, profile: ProfileLayout) {
-        self.profile = Some(profile);
-    }
-
     pub fn bindings(&self) -> &[BindingSpec] {
         &self.bindings
     }
@@ -177,8 +149,6 @@ impl Binding {
 #[derive(Debug)]
 pub struct CompiledFilesystem {
     bindings: Vec<Binding>,
-    working_directory: VfsPathBuf,
-    profile: Option<ProfileLayout>,
 }
 
 impl CompiledFilesystem {
@@ -226,27 +196,7 @@ impl CompiledFilesystem {
             }
         }
 
-        let working = plan.working_directory.normalized_components()?;
-        ensure_projected_directory(&working, &indexed, &plan.working_directory)?;
-        if let Some(profile) = &plan.profile {
-            for path in [
-                profile.home.as_ref(),
-                profile.roaming_app_data.as_ref(),
-                profile.local_app_data.as_ref(),
-                profile.temp.as_ref(),
-            ]
-            .into_iter()
-            .flatten()
-            {
-                let normalized = path.normalized_components()?;
-                let binding = resolve_binding(&normalized, &indexed)
-                    .ok_or_else(|| VfsError::NotFound(path.clone()))?;
-                if !binding.permissions.can_write() {
-                    return Err(VfsError::PermissionDenied(path.clone()));
-                }
-            }
-        }
-
+        Self::insert_scratch_parents(&mut indexed)?;
         let mut bindings = indexed.into_values().collect::<Vec<_>>();
         bindings.sort_by(|left, right| {
             left.normalized
@@ -254,23 +204,48 @@ impl CompiledFilesystem {
                 .cmp(&right.normalized.len())
                 .then_with(|| left.normalized.cmp(&right.normalized))
         });
-        Ok(Self {
-            bindings,
-            working_directory: plan.working_directory,
-            profile: plan.profile,
-        })
+        Ok(Self { bindings })
+    }
+
+    fn insert_scratch_parents(
+        indexed: &mut BTreeMap<Vec<Vec<VfsPathUnit>>, Binding>,
+    ) -> VfsResult<()> {
+        let mut missing = BTreeMap::new();
+        for binding in indexed.values() {
+            let mut parent = binding.at.parent();
+            while let Some(at) = parent {
+                let normalized = at.normalized_components()?;
+                // Explicit volumes own their whole subtree, including directories
+                // supplied by the backend. Only fill gaps outside those mounts.
+                let covered =
+                    (0..=normalized.len()).any(|depth| indexed.contains_key(&normalized[..depth]));
+                parent = at.parent();
+                if !covered {
+                    missing.entry(normalized).or_insert(at);
+                }
+            }
+        }
+        let permissions = Permissions::READ | Permissions::WRITE | Permissions::EXECUTE;
+        for (normalized, at) in missing {
+            indexed.insert(
+                normalized.clone(),
+                Binding {
+                    at,
+                    normalized,
+                    kind: BindingKind::Tree(Arc::new(Resource::new(
+                        Arc::new(TempDirectoryFactory::new()),
+                        permissions,
+                        ResourceOrigin::Scratch,
+                    ))),
+                    permissions,
+                },
+            );
+        }
+        Ok(())
     }
 
     pub fn bindings(&self) -> &[Binding] {
         &self.bindings
-    }
-
-    pub fn working_directory(&self) -> &VfsPathBuf {
-        &self.working_directory
-    }
-
-    pub fn profile(&self) -> Option<&ProfileLayout> {
-        self.profile.as_ref()
     }
 
     pub fn resolve(&self, path: &VfsPathBuf) -> VfsResult<Option<&Binding>> {
@@ -332,48 +307,5 @@ impl CompiledFilesystem {
             children.insert(binding.normalized[index].clone(), (component, kind));
         }
         Ok(children.into_values().collect())
-    }
-}
-
-fn resolve_binding<'a>(
-    path: &[Vec<VfsPathUnit>],
-    indexed: &'a BTreeMap<Vec<Vec<VfsPathUnit>>, Binding>,
-) -> Option<&'a Binding> {
-    (0..=path.len())
-        .rev()
-        .find_map(|depth| indexed.get(&path[..depth]))
-        .filter(|binding| {
-            matches!(
-                binding.kind,
-                BindingKind::Tree(_) | BindingKind::Storage { .. }
-            ) || binding.normalized.len() == path.len()
-        })
-}
-
-fn ensure_projected_directory(
-    path: &[Vec<VfsPathUnit>],
-    indexed: &BTreeMap<Vec<Vec<VfsPathUnit>>, Binding>,
-    original: &VfsPathBuf,
-) -> VfsResult<()> {
-    if path.is_empty() {
-        return Ok(());
-    }
-    match resolve_binding(path, indexed) {
-        Some(binding)
-            if matches!(
-                binding.kind,
-                BindingKind::Tree(_) | BindingKind::Storage { .. }
-            ) =>
-        {
-            Ok(())
-        }
-        Some(_) => Err(VfsError::NotDirectory(original.clone())),
-        None if indexed
-            .keys()
-            .any(|binding| binding.starts_with(path) && binding.len() > path.len()) =>
-        {
-            Ok(())
-        }
-        None => Err(VfsError::NotFound(original.clone())),
     }
 }

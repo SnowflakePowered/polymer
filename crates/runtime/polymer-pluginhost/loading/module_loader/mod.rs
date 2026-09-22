@@ -16,7 +16,6 @@ const PLUGIN_HOST: &str = "plugin";
 const SYS_MODULE: &str = "polymer:sys";
 const API_MODULE: &str = "polymer:api";
 const UI_AUTOMATION_MODULE: &str = "polymer:uiautomation";
-const ACTIONS_MODULE: &str = "polymer:actions";
 const PLUGIN_STORAGE_MODULE: &str = "polymer:pluginStorage";
 const CONSOLESTORAGE_MODULE: &str = "polymer:consolestorage";
 const CACHE_MODULE: &str = "polymer:cache";
@@ -143,14 +142,23 @@ impl PluginModuleLoader {
         module_type: ModuleType,
     ) -> Result<ModuleSource, ModuleLoaderError> {
         let path = self.path(specifier)?;
-        if path.is_dir()
-            || path
-                .extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("asar"))
+        let metadata = std::fs::metadata(&path).map_err(ModuleLoaderError::from_err)?;
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if metadata.is_dir()
+            || extension == "asar"
+            || (module_type == ModuleType::JavaScript
+                && !matches!(
+                    extension.as_str(),
+                    "js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx" | "mts" | "cts" | "json" | "toml"
+                ))
         {
             if module_type != ModuleType::JavaScript {
                 return Err(ModuleLoaderError::type_error(
-                    "package directories must be imported as JavaScript resources",
+                    "package directories and archives must be imported as JavaScript resources",
                 ));
             }
             let relative = specifier
@@ -239,7 +247,6 @@ impl ModuleLoader for PluginModuleLoader {
             API_MODULE
                 | SYS_MODULE
                 | UI_AUTOMATION_MODULE
-                | ACTIONS_MODULE
                 | PLUGIN_STORAGE_MODULE
                 | CONSOLESTORAGE_MODULE
                 | CACHE_MODULE
@@ -314,13 +321,6 @@ impl ModuleLoader for PluginModuleLoader {
             Ok(ModuleSource::new(
                 ModuleType::JavaScript,
                 ModuleSourceCode::String(include_str!("js/05_ui_automation.js").to_owned().into()),
-                module_specifier,
-                None,
-            ))
-        } else if module_specifier.as_str() == ACTIONS_MODULE {
-            Ok(ModuleSource::new(
-                ModuleType::JavaScript,
-                ModuleSourceCode::String(include_str!("js/06_actions.js").to_owned().into()),
                 module_specifier,
                 None,
             ))

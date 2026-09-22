@@ -11,6 +11,6 @@ pub use battery::BatteryStorageFactory;
 pub use host::{
     HostDirectoryFactory, HostFileFactory, PackageDirectoryFactory, TempDirectoryFactory,
 };
-pub use memory::{MemoryFileFactory, ScratchBacking, ScratchVolumeFactory};
+pub use memory::MemoryFileFactory;
 pub use memorycard::{MemoryCardFileFactory, MemoryCardStorageFactory, MemoryCardVolumeFactory};
 pub use nand::NandVolumeFactory;

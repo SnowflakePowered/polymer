@@ -8,13 +8,12 @@ declare module "polymer:api" {
     export type DigestAlgorithm = import("../js/package.ts").DigestAlgorithm;
     export type Digestible = import("../js/package.ts").Digestible;
     /** Shared host-owned values exposed to emulator plugins. */
-    export type Resource = Readonly<{
-        kind: "tree" | "directory" | "file",
-        path?: string,
+    export type Storage = Readonly<{
+        kind: "storage",
     }>;
 
     /** Host-provided storage for a ROM-adjacent battery save file. */
-    export type BatteryStorage = Readonly<{ battery?: Resource }>;
+    export type BatteryStorage = Readonly<{ battery?: Storage }>;
 
     export type DirectoryEntry = Readonly<{
         name: string,
@@ -53,7 +52,7 @@ declare module "polymer:api" {
         bytes(): Promise<Uint8Array>,
         text(): Promise<string>,
     }>;
-    export type PluginCache = Resource & Readonly<{
+    export type PluginCache = DirectoryEntry & Readonly<{
         open(path: string, options?: { read?: boolean, write?: boolean, create?: boolean, truncate?: boolean }): PluginCacheFile,
     }>;
 
@@ -85,26 +84,18 @@ declare module "polymer:api" {
     export type ScrapeResult = Readonly<{ key: string, value: ScrapeScalar | ScrapeInlineMedia, source: string }>;
     export type OnScrape = (input: ScrapeInput) => AsyncGenerator<ScrapeResult, void, void>;
 
+    export type Mountable = DirEntry | Uint8Array | Configuration | Storage | Package;
+
     export type Filesystem = {
-        /** Mounts the host-bound launch entry read-only; onDiscChange binds the requested disc. */
-        mountPackage(target: string): string,
-        mountHostTree(target: string, source: string, options: { mode: string }): void,
-        mountHostFile(target: string, source: string, options: { mode: string }): void,
-        mountTree(target: string, source: Resource | DirectoryResource | URL | string, options: { mode: string }): void,
-        mountFile(target: string, source: Resource | FileEntry | URL | string | Uint8Array, options: { mode: string }): void,
-        mountConfiguration(target: string, configuration: Configuration, options: { mode: string }): void,
+        /** Mounts a temporary scratch directory; mode defaults to rwx. */
+        mount(target: string, options?: { mode?: string, format?: never }): string,
+        /** Returns the emulator-visible mounted path, or the entrypoint inside a package. Missing parents outside explicit mounts become rwx scratch directories when the plan is finalized. Configurations refresh on flush and controller changes. */
+        mount(target: string, source: Mountable, options: { mode: string, format?: never }): string,
+        /** Memory-card storage defaults to the raw format when format is omitted. */
+        mount(target: string, source: Storage, options: { mode: string, format?: string }): string,
         /** Publishes staged mounted-file and configuration changes to the running emulator. */
         flush(): void,
-        mountStorage(target: string, source: Resource, options: { mode: string, format?: string }): void,
-        mountScratch(target: string, options: { mode: string, backing: "memory" | "temporary" }): void,
         path(path: string): string,
-        setWorkingDirectory(path: string): void,
-        setProfile(profile: {
-            home?: string,
-            roamingAppData?: string,
-            localAppData?: string,
-            temp?: string,
-        }): void,
     };
 
     export type Configuration<Options = unknown> = {
@@ -235,7 +226,11 @@ declare module "polymer:api" {
 
     export type Actions = Readonly<Record<string, HotkeyAction>>;
 
-    export type PauseResumeContext = Readonly<{
+    export interface ActionsContext {
+        readonly actions: Actions;
+    }
+
+    export type PauseResumeContext = ActionsContext & Readonly<{
         pauseState: "pause" | "resume",
     }>;
 
@@ -250,7 +245,7 @@ declare module "polymer:api" {
         initialDiscIndex: number,
     }>;
 
-    export type DiscChangeContext = Readonly<{
+    export type DiscChangeContext = ActionsContext & Readonly<{
         launchSet: readonly EmulatorLaunchable[],
         index: number,
         filesystem: Filesystem,
@@ -258,13 +253,13 @@ declare module "polymer:api" {
 
     export type OnDiscChange = (context: DiscChangeContext) => void | Promise<void>;
 
-    export type StateContext = Readonly<{
+    export type StateContext = ActionsContext & Readonly<{
         slot: number,
         filesystem: Filesystem,
         directory: DirectoryResource,
     }>;
 
-    export type QuitContext = Readonly<{
+    export type QuitContext = ActionsContext & Readonly<{
         filesystem: Filesystem,
         directory: DirectoryResource,
         launchPath: string,
@@ -273,7 +268,7 @@ declare module "polymer:api" {
         userConfiguration?: UserConfiguration,
     }>;
 
-    export type ControllerChangeContext<Options = unknown> = Readonly<{
+    export type ControllerChangeContext<Options = unknown> = ActionsContext & Readonly<{
         topology: ControllerTopology,
         previousTopology: ControllerTopology,
         configuration: Configuration<Options>,

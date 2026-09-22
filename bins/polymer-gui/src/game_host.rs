@@ -507,6 +507,8 @@ impl GameHost {
         let config = polymer_runtime::EmulatorLaunchConfig {
             session,
             command: options.command.clone(),
+            working_directory: options.working_directory.as_ref().map(Into::into),
+            env: options.env.clone(),
             arguments: options.arguments.clone(),
             artifact_root,
             hooks: options.hooks.clone(),

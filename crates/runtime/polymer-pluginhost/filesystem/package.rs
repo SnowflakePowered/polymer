@@ -4,39 +4,44 @@ impl FilesystemState {
     /// Standalone images and extracted packages use the same mounting contract.
     pub(super) fn mount_package_source(
         &mut self,
-        target: String,
+        mut entrypoint: VfsPathBuf,
         source: PathBuf,
-    ) -> Result<String, VfsError> {
+        name: Option<String>,
+        permissions: Permissions,
+    ) -> Result<VfsPathBuf, VfsError> {
         if !source.is_absolute() {
             return Err(VfsError::Unsupported(
                 "package source must be an absolute host path".into(),
             ));
         }
         let metadata = std::fs::metadata(&source)?;
-        let mut entrypoint = VfsPathBuf::new(if target.is_empty() { "/" } else { &target })?;
-        // Directory traversal requires execute permission; neither form permits writes.
-        let mode = if metadata.is_dir() { "rx" } else { "r" };
-        let permissions = Permissions::from_str(mode).expect("canonical package permissions");
-        if metadata.is_dir() {
+        let authority = Permissions::from_str("rx").expect("canonical package permissions");
+        if !authority.contains(permissions) {
+            return Err(VfsError::AuthorityExceeded {
+                authority,
+                requested: permissions,
+            });
+        }
+        if metadata.is_dir() && name.is_none() {
             let resource = Resource::new(
                 Arc::new(PackageDirectoryFactory::new(source)),
-                permissions,
+                authority,
                 ResourceOrigin::HostFile,
             );
             let handle = self.insert_volume(resource);
             self.plan
                 .mount_tree(entrypoint.clone(), self.volume(handle)?, permissions);
         } else if metadata.is_file() {
-            let name = source
-                .file_name()
-                .and_then(|name| name.to_str())
+            let name = name
+                .as_deref()
+                .or_else(|| source.file_name().and_then(|name| name.to_str()))
                 .ok_or_else(|| {
                     VfsError::Unsupported("package entrypoint has no UTF-8 filename".into())
                 })?;
             entrypoint = entrypoint.as_path().join(&VfsComponent::new(name)?);
             let resource = Resource::new(
                 Arc::new(HostFileFactory::new(source, false)),
-                permissions,
+                authority,
                 ResourceOrigin::HostFile,
             );
             let handle = self.insert_file(resource);
@@ -48,6 +53,6 @@ impl FilesystemState {
             ));
         }
         self.used = true;
-        Ok(self.endpoint.project(entrypoint.as_path()))
+        Ok(entrypoint)
     }
 }

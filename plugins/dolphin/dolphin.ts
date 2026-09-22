@@ -2,7 +2,6 @@ import { osIdentifier } from "polymer:sys";
 const isMacos = osIdentifier.startsWith("macos-");
 const runtime = (await import(`pkg:bin/${osIdentifier}${isMacos ? "/Dolphin.app" : ""}`)).default;
 import { uiAutomation, UiAutomationError, type UiLocator, type WindowQuery } from "polymer:uiautomation";
-import { actions } from "polymer:actions";
 import type {
     Actions,
     Configuration as HostConfiguration,
@@ -15,7 +14,7 @@ import type {
     FileEntry,
     Filesystem,
     QuitContext,
-    Resource,
+    Storage,
     PauseResumeContext,
     StateContext,
     UiNodeSnapshot,
@@ -76,7 +75,7 @@ type EmulatorLaunchArgs = {
     controllerTopology: ControllerTopology,
     configuration: Configuration,
     filesystem: Filesystem,
-    storage: Readonly<{ nand?: Resource, slotA?: Resource, slotB?: Resource }>,
+    storage: Readonly<{ nand?: Storage, slotA?: Storage, slotB?: Storage }>,
     userConfiguration?: UserConfiguration,
     saveStates: Readonly<{
         directory: DirectoryResource,
@@ -445,10 +444,9 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     // visible as files and be passed to Dolphin with -e.
     const launchesNandTitle = isWii && !isDiscImage(gameName);
 
-    args.filesystem.mountTree("/Dolphin", runtime, { mode: "rx" });
-    args.filesystem.mountScratch("/User", { mode: "rwx", backing: "temporary" });
-    args.filesystem.mountTree("/User/StateSaves", args.saveStates.directory, { mode: "rwx" });
-    args.filesystem.mountFile(
+    args.filesystem.mount("/Dolphin", runtime, { mode: "rx" });
+    args.filesystem.mount("/User/StateSaves", args.saveStates.directory, { mode: "rwx" });
+    args.filesystem.mount(
         "/User/Config/Logger.ini",
         new TextEncoder().encode([
             "[Logs]",
@@ -469,11 +467,9 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
         ].join("\n")),
         { mode: "rw" },
     );
-    args.filesystem.mountScratch("/User/Logs", { mode: "rwx", backing: "memory" });
-    args.filesystem.mountFile("/User/Logs/dolphin.log", new Uint8Array(), { mode: "rw" });
-    args.filesystem.mountScratch("/MemoryCard", { mode: "rwx", backing: "temporary" });
+    args.filesystem.mount("/User/Logs/dolphin.log", new Uint8Array(), { mode: "rw" });
     if (args.storage.slotA) {
-        args.filesystem.mountStorage("/MemoryCard/USA", args.storage.slotA, {
+        args.filesystem.mount("/MemoryCard/USA", args.storage.slotA, {
             mode: "rwx",
             format: "dolphin",
         });
@@ -482,16 +478,9 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
         if (!args.storage.nand) {
             throw new TypeError("a Wii launch requires installed NAND storage");
         }
-        args.filesystem.mountStorage("/User/Wii", args.storage.nand, { mode: "rwx" });
+        args.filesystem.mount("/User/Wii", args.storage.nand, { mode: "rwx" });
     }
-    const gamePath = launchesNandTitle ? null : args.filesystem.mountPackage("/Game");
-    args.filesystem.setWorkingDirectory("/Dolphin");
-    args.filesystem.setProfile({
-        home: "/User",
-        roamingAppData: "/User/AppData/Roaming",
-        localAppData: "/User/AppData/Local",
-        temp: "/User/Temp",
-    });
+    const gamePath = launchesNandTitle ? null : args.filesystem.mount("/Game", args.package, { mode: "rx" });
 
     const options = args.configuration.options().main;
     // Resolve Dolphin's first-run telemetry choice in generated Dolphin.ini.
@@ -559,7 +548,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
         argv.push("-e", gamePath!);
     }
     if (quickResume) {
-        args.filesystem.mountFile("/QuickResume/state.sav", quickResume.state, { mode: "r" });
+        args.filesystem.mount("/QuickResume/state.sav", quickResume.state, { mode: "r" });
         argv.push("--save_state", args.filesystem.path("/QuickResume/state.sav"));
     }
     const configuration = isMacos ? {
@@ -582,10 +571,18 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
             return files;
         },
     } : args.configuration;
-    args.filesystem.mountConfiguration("/User", configuration, { mode: "rw" });
+    args.filesystem.mount("/User", configuration, { mode: "rw" });
 
     return {
         command: args.filesystem.path(isMacos ? "/Dolphin/Contents/MacOS/Dolphin" : "/Dolphin/Dolphin.exe"),
+        workingDirectory: args.filesystem.path(isMacos ? "/Dolphin/Contents/MacOS" : "/Dolphin"),
+        env: isMacos ? [] : [
+            ["USERPROFILE", args.filesystem.path("/User")],
+            ["APPDATA", args.filesystem.path("/User/AppData/Roaming")],
+            ["LOCALAPPDATA", args.filesystem.path("/User/AppData/Local")],
+            ["TEMP", args.filesystem.path("/User/Temp")],
+            ["TMP", args.filesystem.path("/User/Temp")],
+        ],
         argv,
         isolate: true,
         hooks: {
@@ -629,7 +626,7 @@ export const onControllerChanged = async (context: ControllerChangeContext) => {
 export const onParseHotkey = (expression: string) => HotkeyParser.dolphin(expression);
 
 export const onPauseResume = (context: PauseResumeContext) => {
-    actions.pause?.activate();
+    context.actions.pause?.activate();
 };
 
 function nativeSlot(slot: number): number {
@@ -674,20 +671,20 @@ function activateStateAction(actions: Actions, operation: "load" | "save", slot:
 export const onStateSave = async (context: StateContext) => {
     const slot = nativeSlot(context.slot);
     await removeNativeState(context.directory, slot);
-    activateStateAction(actions, "save", slot);
+    activateStateAction(context.actions, "save", slot);
     await awaitNativeState(context.directory, slot);
 }
 
 export const onStateResume = (context: StateContext) => {
     const slot = nativeSlot(context.slot);
-    activateStateAction(actions, "load", slot);
+    activateStateAction(context.actions, "load", slot);
 }
 
 export const onQuit = async (context: QuitContext): Promise<FileEntry | null> => {
     if (!quickResumeEnabled(context.userConfiguration) || isNKit(context.launchPath)) return null;
     const slot = 10;
     await removeNativeState(context.directory, slot);
-    activateStateAction(actions, "save", slot);
+    activateStateAction(context.actions, "save", slot);
     return await awaitNativeState(context.directory, slot);
 }
 

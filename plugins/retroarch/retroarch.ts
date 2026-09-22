@@ -1,52 +1,37 @@
 import runtime from "pkg:bin/win-x64";
-import config from "pkg:plugin.toml";
-import type { Configuration as HostConfiguration, Filesystem } from "polymer:api";
+import type { Package, Configuration as HostConfiguration, Filesystem, FirmwareContext } from "polymer:api";
 
 type Configuration = HostConfiguration<{ core: { placeholder: boolean } }>;
 
-type EmulatorLaunchArgs = {
+type EmulatorLaunchArgs = FirmwareContext & {
     launchPath: string,
+    package: Package,
     console: string,
     configuration: Configuration,
     filesystem: Filesystem,
 };
 
-function basename(path: string): string {
-    const name = path.replaceAll("\\", "/").split("/").at(-1);
-    if (!name) throw new TypeError(`path has no filename: ${path}`);
-    return name;
-}
-
-function dirname(path: string): string {
-    const normalized = path.replaceAll("\\", "/");
-    const separator = normalized.lastIndexOf("/");
-    if (separator <= 0) throw new TypeError(`path has no parent: ${path}`);
-    return normalized.slice(0, separator);
-}
-
 function quoted(value: string): string {
     return `"${value.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")}"`;
 }
 
-export const onLaunch = (args: EmulatorLaunchArgs) => {
-    const biosName = basename(config.plugin.config.bios);
+export const onLaunch = async (args: EmulatorLaunchArgs) => {
+    const bios = (await args.firmwareStore.list()).find(entry =>
+        entry.platform === "SONY_PS2" && entry.byteLength === 4 * 1024 * 1024
+    );
+    if (!bios) {
+        throw new Error("PCSX2 requires a PS2 BIOS. Drag and drop a PS2 BIOS file into Polymer, then launch again.");
+    }
+    const biosFile = await args.firmwareStore.open(bios.label);
+    const biosName = "bios.bin";
 
-    args.filesystem.mountTree("/RetroArch", runtime, { mode: "rx" });
-    args.filesystem.mountScratch("/User", { mode: "rwx", backing: "temporary" });
-    args.filesystem.mountScratch("/User/saves", { mode: "rwx", backing: "temporary" });
-    args.filesystem.mountScratch("/User/states", { mode: "rwx", backing: "temporary" });
-    args.filesystem.mountScratch("/User/logs", { mode: "rwx", backing: "temporary" });
-    args.filesystem.mountScratch("/User/system/pcsx2/memcards", { mode: "rwx", backing: "temporary" });
-    args.filesystem.mountScratch("/Generated", { mode: "rwx", backing: "temporary" });
-    args.filesystem.mountHostTree("/User/system/pcsx2/bios", dirname(config.plugin.config.bios), { mode: "rx" });
-    const gamePath = args.filesystem.mountPackage("/Game");
-    args.filesystem.setWorkingDirectory("/RetroArch");
-    args.filesystem.setProfile({
-        home: "/User",
-        roamingAppData: "/User/AppData/Roaming",
-        localAppData: "/User/AppData/Local",
-        temp: "/User/Temp",
-    });
+    args.filesystem.mount("/RetroArch", runtime, { mode: "rx" });
+    args.filesystem.mount("/User/saves");
+    args.filesystem.mount("/User/states");
+    args.filesystem.mount("/User/logs");
+    args.filesystem.mount("/User/system/pcsx2/memcards");
+    args.filesystem.mount(`/User/system/pcsx2/bios/${biosName}`, biosFile, { mode: "r" });
+    const gamePath = args.filesystem.mount("/Game", args.package, { mode: "rx" });
 
     const runtimeConfig = [
         `config_save_on_exit = "false"`,
@@ -66,12 +51,12 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
         `quit_on_close_content = "1"`,
         "",
     ].join("\n");
-    args.filesystem.mountFile(
+    args.filesystem.mount(
         "/User/retroarch.cfg",
         new TextEncoder().encode(runtimeConfig),
         { mode: "r" },
     );
-    args.filesystem.mountFile(
+    args.filesystem.mount(
         "/User/core-options.cfg",
         new TextEncoder().encode([
             `pcsx2_bios = ${quoted(biosName)}`,
@@ -86,11 +71,19 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     const options = args.configuration.options();
     options.core.placeholder = false;
     for (const [name, bytes] of Object.entries(args.configuration.render())) {
-        args.filesystem.mountFile(`/Generated/${name}`, bytes, { mode: "rw" });
+        args.filesystem.mount(`/Generated/${name}`, bytes, { mode: "rw" });
     }
 
     return {
         command: args.filesystem.path("/RetroArch/retroarch.exe"),
+        workingDirectory: args.filesystem.path("/RetroArch"),
+        env: [
+            ["USERPROFILE", args.filesystem.path("/User")],
+            ["APPDATA", args.filesystem.path("/User/AppData/Roaming")],
+            ["LOCALAPPDATA", args.filesystem.path("/User/AppData/Local")],
+            ["TEMP", args.filesystem.path("/User/Temp")],
+            ["TMP", args.filesystem.path("/User/Temp")],
+        ],
         argv: [
             "-c", args.filesystem.path("/User/retroarch.cfg"),
             "-L", args.filesystem.path("/RetroArch/cores/pcsx2_libretro.dll"),

@@ -1,23 +1,25 @@
-function context(topology, previousTopology, configuration, filesystem) {
+function context(topology, previousTopology, configuration, filesystem, actions) {
   return Object.freeze({
     topology: Object.freeze(topology),
     previousTopology: Object.freeze(previousTopology),
     configuration,
     filesystem,
+    actions,
   });
 }
 
-function pauseContext(pauseState) {
-  return Object.freeze({ pauseState });
+function pauseContext(pauseState, actions) {
+  return Object.freeze({ pauseState, actions });
 }
 
-function stateContext(slot, filesystem, directory) {
-  return Object.freeze({ slot, filesystem, directory });
+function stateContext(slot, filesystem, directory, actions) {
+  return Object.freeze({ slot, filesystem, directory, actions });
 }
 
 function quitContext(active) {
   return Object.freeze({
-    filesystem: __polymerFilesystem.forLaunch(active.launchSet[active.disc.index]),
+    actions: active.actions,
+    filesystem: __polymerFilesystem.filesystem,
     directory: active.saveStateDirectory,
     launchPath: active.launchSet[active.disc.index].launchPath,
     console: active.launch.console,

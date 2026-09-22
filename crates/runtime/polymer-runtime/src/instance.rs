@@ -46,6 +46,8 @@ pub struct TrackedSurfaceConfig {
 pub struct EmulatorLaunchConfig {
     pub session: String,
     pub command: String,
+    pub working_directory: Option<PathBuf>,
+    pub env: Vec<(String, String)>,
     pub arguments: Vec<String>,
     pub artifact_root: PathBuf,
     pub hooks: Hooks,

@@ -1,12 +1,12 @@
 import runtime from "pkg:bin/win-x64";
-import { actions } from "polymer:actions";
 import config from "pkg:plugin.toml";
 import type {
+    Package,
     Configuration as HostConfiguration,
     ControllerChangeContext as HostControllerChangeContext,
     Filesystem,
     FirmwareContext,
-    Resource,
+    Storage,
     PauseResumeContext,
 } from "polymer:api";
 import { HotkeyParser } from "pkg:hotkeys.ts";
@@ -47,10 +47,11 @@ type Configuration = HostConfiguration<{
 
 type EmulatorLaunchArgs = FirmwareContext & {
     launchPath: string,
+    package: Package,
     console: string,
     configuration: Configuration,
     filesystem: Filesystem,
-    storage: Readonly<{ mem1?: Resource, mem2?: Resource }>,
+    storage: Readonly<{ mem1?: Storage, mem2?: Storage }>,
 };
 
 export const onLaunch = async (args: EmulatorLaunchArgs) => {
@@ -66,24 +67,16 @@ export const onLaunch = async (args: EmulatorLaunchArgs) => {
     // Keep the immutable PCSX2 distribution separate from invocation-local
     // state. Portable mode only needs its fixed `inis/` child to be writable;
     // every configurable data directory is redirected to /User below.
-    args.filesystem.mountTree("/PCSX2", runtime, { mode: "rx" });
-    args.filesystem.mountScratch("/PCSX2/inis", { mode: "rwx", backing: "memory" });
-    args.filesystem.mountScratch("/User", { mode: "rwx", backing: "temporary" });
+    args.filesystem.mount("/PCSX2", runtime, { mode: "rx" });
+    args.filesystem.mount("/PCSX2/inis");
     if (args.storage.mem1) {
-        args.filesystem.mountStorage("/User/memcards/Mcd001.ps2", args.storage.mem1, {
+        args.filesystem.mount("/User/memcards/Mcd001.ps2", args.storage.mem1, {
             mode: "rwx",
             format: config.plugin.config.memory_card_format,
         });
     }
-    args.filesystem.mountFile(`/User/bios/${biosName}`, biosFile, { mode: "r" });
-    const gamePath = args.filesystem.mountPackage("/Game");
-    args.filesystem.setWorkingDirectory("/PCSX2");
-    args.filesystem.setProfile({
-        home: "/User",
-        roamingAppData: "/User/AppData/Roaming",
-        localAppData: "/User/AppData/Local",
-        temp: "/User/Temp",
-    });
+    args.filesystem.mount(`/User/bios/${biosName}`, biosFile, { mode: "r" });
+    const gamePath = args.filesystem.mount("/Game", args.package, { mode: "rx" });
 
     const options = args.configuration.options();
     options.ui.settings_version = 1;
@@ -114,11 +107,19 @@ export const onLaunch = async (args: EmulatorLaunchArgs) => {
     options.input_sources.sdl = true;
     options["emucore-gs"].renderer = 3;
     for (const [name, bytes] of Object.entries(args.configuration.render())) {
-        args.filesystem.mountFile(`/PCSX2/${name}`, bytes, { mode: "rw" });
+        args.filesystem.mount(`/PCSX2/${name}`, bytes, { mode: "rw" });
     }
 
     return {
         command: args.filesystem.path("/PCSX2/pcsx2-qt.exe"),
+        workingDirectory: args.filesystem.path("/PCSX2"),
+        env: [
+            ["USERPROFILE", args.filesystem.path("/User")],
+            ["APPDATA", args.filesystem.path("/User/AppData/Roaming")],
+            ["LOCALAPPDATA", args.filesystem.path("/User/AppData/Local")],
+            ["TEMP", args.filesystem.path("/User/Temp")],
+            ["TMP", args.filesystem.path("/User/Temp")],
+        ],
         argv: ["-portable", "-batch", "--", gamePath],
         isolate: false,
         hooks: { graphics: ["d3d11"], input: ["sdl3"] },
@@ -133,14 +134,14 @@ type ControllerChangeContext = HostControllerChangeContext<ReturnType<Configurat
 
 export const onControllerChanged = (context: ControllerChangeContext) => {
     for (const [name, bytes] of Object.entries(context.configuration.render())) {
-        context.filesystem.mountFile(`/PCSX2/${name}`, bytes, { mode: "rw" });
+        context.filesystem.mount(`/PCSX2/${name}`, bytes, { mode: "rw" });
     }
 };
 
 export const onParseHotkey = (expression: string) => HotkeyParser.pcsx2(expression);
 
 export const onPauseResume = (context: PauseResumeContext) => {
-    actions.pause?.activate();
+    context.actions.pause?.activate();
 };
 
 export default { onLaunch, onControllerChanged, onParseHotkey, onPauseResume };

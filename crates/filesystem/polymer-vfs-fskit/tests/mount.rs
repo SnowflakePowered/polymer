@@ -1,7 +1,7 @@
 #![cfg(target_os = "macos")]
 use polymer_vfs::{
     FilesystemHost, FilesystemPlan, FinalizationReason, Permissions, Resource, ResourceOrigin,
-    ScratchVolumeFactory, VfsPathBuf,
+    TempDirectoryFactory, VfsPathBuf,
 };
 use polymer_vfs_fskit::FsKitFilesystemHost;
 use std::{
@@ -20,9 +20,7 @@ fn mounted_files_delegate_mutations_to_the_live_vfs() {
     plan.mount_tree(
         VfsPathBuf::root(),
         Arc::new(Resource::new(
-            Arc::new(ScratchVolumeFactory::new(
-                polymer_vfs::ScratchBacking::Memory,
-            )),
+            Arc::new(TempDirectoryFactory::new()),
             Permissions::ALL,
             ResourceOrigin::Scratch,
         )),

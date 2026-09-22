@@ -4,21 +4,6 @@ import {
   op_configuration_actions,
 } from "ext:core/ops";
 
-let currentActions = Object.freeze(Object.create(null));
-const actions = new Proxy(Object.create(null), {
-  get: (_, name) => currentActions[name],
-  has: (_, name) => name in currentActions,
-  ownKeys: () => Reflect.ownKeys(currentActions),
-  getOwnPropertyDescriptor: (_, name) => name in currentActions
-    ? { value: currentActions[name], enumerable: true, configurable: true, writable: false }
-    : undefined,
-  set: () => false,
-  defineProperty: () => false,
-  deleteProperty: () => false,
-  setPrototypeOf: () => false,
-  preventExtensions: () => false,
-});
-
 function create(configurationId, parse) {
   const definitions = op_configuration_actions(configurationId);
   const parsed = Object.create(null);
@@ -40,11 +25,11 @@ function create(configurationId, parse) {
       activate() { op_action_activate(name); },
     });
   }
-  currentActions = Object.freeze(actions);
+  return Object.freeze(actions);
 }
 
 Object.defineProperty(globalThis, "__polymerActions", {
-  value: Object.freeze({ create, actions }),
+  value: Object.freeze({ create }),
   configurable: false,
   enumerable: false,
   writable: false,
