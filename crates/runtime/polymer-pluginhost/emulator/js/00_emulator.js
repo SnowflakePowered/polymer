@@ -25,7 +25,7 @@ async function launch(entrypoint, args, configurationId, explicitDefault) {
   }
   const discs = Object.freeze(launchSet.map(disc => Object.freeze({
     ...disc,
-    package: disc.package == null ? disc.package : createPackage(disc.package),
+    package: disc.package == null ? disc.package : __polymerFilesystem.bindPackage(createPackage(disc.package), disc.launchPath),
   })));
   args.launchSet = discs;
   args.initialDiscIndex = initialDiscIndex;
@@ -35,12 +35,12 @@ async function launch(entrypoint, args, configurationId, explicitDefault) {
 
   const configuration = __polymerPluginHost.configuration(configurationId);
   args.configuration = configuration;
-  args.filesystem = __polymerFilesystem.forLaunch(discs[initialDiscIndex]);
+  args.filesystem = __polymerFilesystem.filesystem;
   args.storage = __polymerFilesystem.storage;
   args.firmwareStore = __polymerFirmware.store;
   args.keyStore = __polymerKeys.reader;
   const parserReceiver = typeof module.onParseHotkey === "function" ? module : receiver;
-  __polymerActions.create(configurationId, parserReceiver?.onParseHotkey);
+  const actions = __polymerActions.create(configurationId, parserReceiver?.onParseHotkey);
   args.saveStates = Object.freeze({
     directory: __polymerFilesystem.createSaveStateDirectory(),
     quickResume: __polymerFilesystem.quickResume,
@@ -77,6 +77,7 @@ async function launch(entrypoint, args, configurationId, explicitDefault) {
   if (controllerChanges || pauseResume || stateSave || stateResume || quit || discChanges) {
     Object.defineProperty(globalThis, "__polymerActiveEmulator", {
       value: Object.freeze({
+        actions,
         controllerReceiver,
         onControllerChanged,
         pauseReceiver,
@@ -128,7 +129,8 @@ async function controllerChanged(inputTopology, previousTopology) {
     inputTopology,
     previousTopology,
     active.configuration,
-    __polymerFilesystem.forLaunch(active.launchSet[active.disc.index]),
+    __polymerFilesystem.filesystem,
+    active.actions,
   );
   const result = typeof active.onControllerChanged === "function"
     ? await Reflect.apply(active.onControllerChanged, active.controllerReceiver, [context])
@@ -140,7 +142,7 @@ async function controllerChanged(inputTopology, previousTopology) {
 async function pauseResume(pauseState) {
   const active = globalThis.__polymerActiveEmulator;
   if (active == null || typeof active.onPauseResume !== "function") return;
-  const context = __polymerControllerChange.pauseContext(pauseState);
+  const context = __polymerControllerChange.pauseContext(pauseState, active.actions);
   await Reflect.apply(active.onPauseResume, active.pauseReceiver, [context]);
 }
 
@@ -156,8 +158,9 @@ async function stateAction(slot, save) {
   }
   const context = __polymerControllerChange.stateContext(
     slot,
-    __polymerFilesystem.forLaunch(active.launchSet[active.disc.index]),
+    __polymerFilesystem.filesystem,
     active.saveStateDirectory,
+    active.actions,
   );
   await Reflect.apply(callback, receiver, [context]);
 }
@@ -172,9 +175,10 @@ async function discChange(index) {
   }
   if (index === active.disc.index) return;
   await Reflect.apply(active.onDiscChange, active.discReceiver, [Object.freeze({
+    actions: active.actions,
     launchSet: active.launchSet,
     index,
-    filesystem: __polymerFilesystem.forLaunch(active.launchSet[index]),
+    filesystem: __polymerFilesystem.filesystem,
   })]);
 }
 

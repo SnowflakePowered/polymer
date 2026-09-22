@@ -154,13 +154,12 @@ where
 {
     fn root(&self) -> VfsResult<Arc<dyn crate::DirectoryNode>> {
         Err(VfsError::Unsupported(
-            "memory-card storage requires a format".into(),
+            "memory-card storage has no directory root".into(),
         ))
     }
 
     fn mount(&self, format: Option<&str>) -> VfsResult<Node> {
-        let format = format
-            .ok_or_else(|| VfsError::Unsupported("memory-card storage requires a format".into()))?;
+        let format = format.unwrap_or("raw");
         let mut views = self.views.lock();
         if let Some(mounted) = views.get(format) {
             return Ok(mounted.node.clone());

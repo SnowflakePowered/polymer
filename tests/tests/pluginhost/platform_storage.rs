@@ -543,7 +543,7 @@ async fn rust_and_javascript_share_platform_keys_and_immutable_files() {
             catch (error) { denied = String(error).includes('read-only'); }
             if (!denied) throw new Error('host did not enforce reader');
             denied = false;
-            try { filesystem.mountFile('/key', entry, {mode: 'rw'}); }
+            try { filesystem.mount('/key', entry, {mode: 'rw'}); }
             catch { denied = true; }
             if (!denied) throw new Error('key resource permitted writable mount');
             throw new Error('KEY_READER_VERIFIED');

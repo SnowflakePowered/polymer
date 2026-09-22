@@ -19,6 +19,7 @@ pub struct GuestLaunchRequest {
     pub executable: polymer_vfs::VfsPathBuf,
     pub arguments: Vec<String>,
     pub environment: Vec<(OsString, OsString)>,
+    pub working_directory: Option<PathBuf>,
     pub artifact_root: PathBuf,
     pub hooks: Hooks,
     /// Desktop isolation only; filesystem virtualization is always required.

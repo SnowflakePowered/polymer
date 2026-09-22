@@ -18,5 +18,11 @@ serde_json.workspace = true
 tempfile.workspace = true
 tokio = { version = "1.53.0", features = ["macros", "rt", "time"] }
 
+[target.'cfg(windows)'.dependencies]
+polymer-platform-windows = { path = "../crates/runtime/polymer-platform-windows" }
+polymer-platform.workspace = true
+polymer-ipc.workspace = true
+polymer-vfs-winfsp.workspace = true
+
 [lints]
 workspace = true

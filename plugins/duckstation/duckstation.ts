@@ -1,6 +1,5 @@
 import runtime from "pkg:bin/win-x64";
-import { actions } from "polymer:actions";
-import type { Configuration as HostConfiguration, FirmwareContext, Filesystem, PauseResumeContext, Resource } from "polymer:api";
+import type { Package, Configuration as HostConfiguration, FirmwareContext, Filesystem, PauseResumeContext, Storage } from "polymer:api";
 import { HotkeyParser } from "pkg:hotkeys.ts";
 
 type Configuration = HostConfiguration<{
@@ -45,10 +44,11 @@ type Configuration = HostConfiguration<{
 }>;
 type EmulatorLaunchArgs = FirmwareContext & {
     launchPath: string,
+    package: Package,
     console: string,
     configuration: Configuration,
     filesystem: Filesystem,
-    storage: Readonly<{ card1?: Resource, card2?: Resource }>,
+    storage: Readonly<{ card1?: Storage, card2?: Storage }>,
 };
 
 export const onLaunch = async (args: EmulatorLaunchArgs) => {
@@ -58,31 +58,22 @@ export const onLaunch = async (args: EmulatorLaunchArgs) => {
     }
     const path = (virtualPath: string) => args.filesystem.path(virtualPath);
 
-    args.filesystem.mountTree("/DuckStation", runtime, { mode: "rx" });
-    args.filesystem.mountFile("/DuckStation/portable.txt", new Uint8Array(), { mode: "r" });
-    args.filesystem.mountFile("/DuckStation/duckstation.log", new Uint8Array(), { mode: "rw" });
-    args.filesystem.mountScratch("/User", { mode: "rwx", backing: "temporary" });
-    args.filesystem.mountScratch("/User/generated", { mode: "rwx", backing: "temporary" });
+    args.filesystem.mount("/DuckStation", runtime, { mode: "rx" });
+    args.filesystem.mount("/DuckStation/portable.txt", new Uint8Array(), { mode: "r" });
+    args.filesystem.mount("/DuckStation/duckstation.log", new Uint8Array(), { mode: "rw" });
     if (args.storage.card1) {
-        args.filesystem.mountStorage("/User/memcards/polymer.mcd", args.storage.card1, {
+        args.filesystem.mount("/User/memcards/polymer.mcd", args.storage.card1, {
             mode: "rw",
             format: "raw",
         });
     } else {
-        args.filesystem.mountScratch("/User/memcards", { mode: "rwx", backing: "temporary" });
+        args.filesystem.mount("/User/memcards");
     }
     for (const [index, bios] of biosFiles.entries()) {
         const file = await args.firmwareStore.open(bios.label);
-        args.filesystem.mountFile(`/User/bios/bios-${index}.bin`, file, { mode: "r" });
+        args.filesystem.mount(`/User/bios/bios-${index}.bin`, file, { mode: "r" });
     }
-    const gamePath = args.filesystem.mountPackage("/Game");
-    args.filesystem.setWorkingDirectory("/DuckStation");
-    args.filesystem.setProfile({
-        home: "/User",
-        roamingAppData: "/User/AppData/Roaming",
-        localAppData: "/User/AppData/Local",
-        temp: "/User/Temp",
-    });
+    const gamePath = args.filesystem.mount("/Game", args.package, { mode: "rx" });
 
     const options = args.configuration.options();
     options.main.settings_version = 3;
@@ -116,9 +107,17 @@ export const onLaunch = async (args: EmulatorLaunchArgs) => {
     options.input_sources.sdl = true;
     const settings = args.configuration.render()["settings.ini"];
     if (!settings) throw new TypeError("DuckStation configuration did not render settings.ini");
-    args.filesystem.mountFile("/DuckStation/settings.ini", settings, { mode: "rw" });
+    args.filesystem.mount("/DuckStation/settings.ini", settings, { mode: "rw" });
     return {
         command: path("/DuckStation/duckstation-qt-x64-ReleaseLTCG.exe"),
+        workingDirectory: args.filesystem.path("/DuckStation"),
+        env: [
+            ["USERPROFILE", args.filesystem.path("/User")],
+            ["APPDATA", args.filesystem.path("/User/AppData/Roaming")],
+            ["LOCALAPPDATA", args.filesystem.path("/User/AppData/Local")],
+            ["TEMP", args.filesystem.path("/User/Temp")],
+            ["TMP", args.filesystem.path("/User/Temp")],
+        ],
         argv: ["-batch", "-fastboot", "--", gamePath],
         isolate: true,
         hooks: { graphics: ["d3d11"], input: ["sdl3"] },
@@ -129,7 +128,7 @@ export const onLaunch = async (args: EmulatorLaunchArgs) => {
 export const onParseHotkey = (expression: string) => HotkeyParser.pcsx2(expression);
 
 export const onPauseResume = (context: PauseResumeContext) => {
-    actions.pause?.activate();
+    context.actions.pause?.activate();
 };
 
 export default { onLaunch, onParseHotkey, onPauseResume };

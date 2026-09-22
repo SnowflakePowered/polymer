@@ -7,18 +7,23 @@ impl ProcessHandle {
     pub(super) fn spawn_suspended(
         target: &[String],
         environment: &[(std::ffi::OsString, std::ffi::OsString)],
+        working_directory: Option<&std::path::Path>,
         desktop: Option<&str>,
     ) -> std::io::Result<Self> {
         use std::os::windows::process::CommandExt;
         use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
 
         if let Some(desktop) = desktop {
-            return Self::spawn_isolated(target, environment, desktop);
+            return Self::spawn_isolated(target, environment, working_directory, desktop);
         }
         let executable = target.first().ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::InvalidInput, "target command is empty")
         })?;
-        let child = std::process::Command::new(executable)
+        let mut command = std::process::Command::new(executable);
+        if let Some(directory) = working_directory {
+            command.current_dir(directory);
+        }
+        let child = command
             .args(&target[1..])
             .envs(environment.iter().cloned())
             .creation_flags(CREATE_SUSPENDED)
@@ -32,6 +37,7 @@ impl ProcessHandle {
     fn spawn_isolated(
         target: &[String],
         environment_overrides: &[(std::ffi::OsString, std::ffi::OsString)],
+        working_directory: Option<&std::path::Path>,
         desktop: &str,
     ) -> std::io::Result<Self> {
         use std::os::windows::io::FromRawHandle;
@@ -43,6 +49,20 @@ impl ProcessHandle {
 
         let mut command_line = Self::command_line(target)?;
         let environment = Self::environment(environment_overrides)?;
+        let working_directory = working_directory
+            .map(|path| {
+                use std::os::windows::ffi::OsStrExt;
+                let mut directory = path.as_os_str().encode_wide().collect::<Vec<_>>();
+                if directory.contains(&0) {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "working directory contains a null character",
+                    ));
+                }
+                directory.push(0);
+                Ok(directory)
+            })
+            .transpose()?;
         let mut desktop = desktop.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
         let startup = STARTUPINFOW {
             cb: std::mem::size_of::<STARTUPINFOW>() as u32,
@@ -59,7 +79,9 @@ impl ProcessHandle {
                 false,
                 CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
                 Some(environment.as_ptr().cast()),
-                PCWSTR::null(),
+                working_directory
+                    .as_ref()
+                    .map_or(PCWSTR::null(), |path| PCWSTR(path.as_ptr())),
                 &startup,
                 &raw mut process_info,
             )

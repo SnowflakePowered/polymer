@@ -31,7 +31,12 @@ impl EmulatorLaunchConfig {
             session: self.session.clone(),
             executable,
             arguments: self.arguments.clone(),
-            environment: Vec::new(),
+            environment: self
+                .env
+                .iter()
+                .map(|(name, value)| (name.into(), value.into()))
+                .collect(),
+            working_directory: self.working_directory.clone(),
             artifact_root: self.artifact_root.clone(),
             hooks: self.hooks.clone(),
             isolate: self.isolate,

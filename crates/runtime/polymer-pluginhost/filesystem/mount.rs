@@ -1,0 +1,86 @@
+use super::*;
+
+#[derive(serde::Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub(super) enum MountSource {
+    Scratch,
+    Entry {
+        kind: String,
+        token: String,
+        components: Vec<String>,
+        directory: bool,
+    },
+    Storage {
+        kind: String,
+        token: String,
+        format: Option<String>,
+    },
+    Bytes {
+        contents: ByteBuf,
+    },
+    Package {
+        source: PathBuf,
+        name: Option<String>,
+    },
+}
+
+impl FilesystemState {
+    pub(super) fn mount(
+        &mut self,
+        target: VfsPathBuf,
+        source: MountSource,
+        permissions: Permissions,
+    ) -> Result<VfsPathBuf, VfsError> {
+        match source {
+            MountSource::Scratch => {
+                let ResourceHandle::Tree(handle) = self.scratch_resource()? else {
+                    unreachable!("scratch resources are always trees")
+                };
+                self.plan
+                    .mount_tree(target.clone(), self.volume(handle)?, permissions);
+            }
+            MountSource::Entry {
+                kind,
+                token,
+                components,
+                directory,
+            } => {
+                let handle = self.handle(&kind, &token)?;
+                self.mount_entry(target.clone(), handle, components, directory, permissions)?;
+            }
+            MountSource::Storage {
+                kind,
+                token,
+                format,
+            } => {
+                let handle = self.storage_handle(&kind, &token)?;
+                self.plan
+                    .mount_storage(target.clone(), self.volume(handle)?, permissions, format);
+            }
+            MountSource::Bytes { contents } => {
+                let contents = contents.into_vec();
+                if self.prepared.is_some() {
+                    self.staged_files.push((target.clone(), contents));
+                    return Ok(target);
+                }
+                let factory = if permissions.can_write() {
+                    MemoryFileFactory::writable(contents)
+                } else {
+                    MemoryFileFactory::immutable(contents)
+                };
+                let handle = self.insert_file(Resource::new(
+                    Arc::new(factory),
+                    permissions,
+                    ResourceOrigin::Memory,
+                ));
+                self.plan
+                    .mount_file(target.clone(), self.file(handle)?, permissions);
+            }
+            MountSource::Package { source, name } => {
+                return self.mount_package_source(target, source, name, permissions);
+            }
+        }
+        self.used = true;
+        Ok(target)
+    }
+}

@@ -11,6 +11,10 @@ use std::collections::HashSet;
 pub struct AttachedLaunchPlan {
     pub command: String,
     #[serde(default)]
+    pub working_directory: Option<String>,
+    #[serde(default)]
+    pub env: Vec<(String, String)>,
+    #[serde(default)]
     pub arguments: Vec<String>,
     #[serde(default)]
     pub isolated: bool,

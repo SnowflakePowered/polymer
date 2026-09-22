@@ -91,7 +91,12 @@ impl GuestPlatform {
                 "POLYMER_DESKTOP_ISOLATION",
                 if request.isolate { "1" } else { "0" },
             )
-            .current_dir(Path::new(&executable).parent().unwrap());
+            .current_dir(
+                request
+                    .working_directory
+                    .as_deref()
+                    .unwrap_or_else(|| Path::new(&executable).parent().unwrap()),
+            );
         if request.hooks.input.contains(&InputHook::Sdl3) {
             command
                 .env(

@@ -173,6 +173,10 @@ export type LaunchOptions = LaunchFields & RenderSelection<TrackedSurface>;
 
 type LaunchFields = {
   command: string;
+  /** Native path, obtained with filesystem.path() for a virtual directory. */
+  workingDirectory?: string;
+  /** Environment overrides as [name, value] pairs. */
+  env?: readonly (readonly [string, string])[];
   arguments: string[];
   isolated: boolean;
   hooks: Readonly<{

@@ -16,8 +16,7 @@ mod traits;
 pub use backends::{
     AsarVolumeFactory, BatteryStorageFactory, HostDirectoryFactory, HostFileFactory,
     MemoryCardFileFactory, MemoryCardStorageFactory, MemoryCardVolumeFactory, MemoryFileFactory,
-    NandVolumeFactory, PackageDirectoryFactory, ScratchBacking, ScratchVolumeFactory,
-    TempDirectoryFactory,
+    NandVolumeFactory, PackageDirectoryFactory, TempDirectoryFactory,
 };
 pub use error::{VfsError, VfsResult};
 pub use host::{
@@ -30,9 +29,7 @@ pub use path::{
     VfsPathUnit, WindowsPathSemantics,
 };
 pub use permissions::Permissions;
-pub use plan::{
-    Binding, BindingKind, BindingSpec, CompiledFilesystem, FilesystemPlan, ProfileLayout,
-};
+pub use plan::{Binding, BindingKind, BindingSpec, CompiledFilesystem, FilesystemPlan};
 pub(crate) use resource::NoopResourceLease;
 pub use resource::{
     CompositeResourceLease, ExclusiveResourceKey, FinalizationReason, Materialized,

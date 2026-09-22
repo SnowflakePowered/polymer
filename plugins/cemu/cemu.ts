@@ -1,4 +1,7 @@
+import cemuExecutable from "pkg:bin/win-x64/Cemu.exe";
 import graphicsPacks from "pkg:bin/graphicsPacks";
+import resources from "pkg:bin/win-x64/resources";
+import gameProfiles from "pkg:bin/win-x64/gameProfiles";
 import { caches } from "polymer:cache";
 import { pluginStorage } from "polymer:pluginStorage";
 import type {
@@ -6,7 +9,7 @@ import type {
     ConfigurationResult,
     Package,
     Filesystem,
-    Resource,
+    Storage,
     RepeatedSection,
     UserConfiguration,
     KeyReader,
@@ -43,10 +46,10 @@ type EmulatorLaunchArgs = {
     filesystem: Filesystem,
     keyStore: KeyReader,
     storage: Readonly<{
-        slc?: Resource,
-        slccmpt?: Resource,
-        mlc?: Resource,
-        sd?: Resource,
+        slc?: Storage,
+        slccmpt?: Storage,
+        mlc?: Storage,
+        sd?: Storage,
     }>,
 };
 
@@ -54,6 +57,7 @@ const GRAPHICS_GROUP = "graphics";
 const GRAPHICS_PACKS_STORAGE_KEY = "graphicsPacks";
 
 export async function onPluginLoad() {
+    if (graphicsPacks.kind !== "directory") throw new TypeError("Cemu graphics packs must be a directory");
     pluginStorage.setItem(
         GRAPHICS_PACKS_STORAGE_KEY,
         await loadGraphicsPacks(graphicsPacks),
@@ -119,8 +123,7 @@ export async function onLaunch(args: EmulatorLaunchArgs) {
         }
     }
 
-    args.filesystem.mountScratch("/Cemu", { mode: "rwx", backing: "temporary" });
-    args.filesystem.mountFile("/Cemu/Cemu.exe", new URL("pkg:bin/win-x64/Cemu.exe"), { mode: "rx" });
+    args.filesystem.mount("/Cemu/Cemu.exe", cemuExecutable, { mode: "rx" });
     const discKeys: string[] = [];
     for (const key of await args.keyStore.list({ namespace: "content" })) {
         if (key.titleId !== undefined) continue;
@@ -129,32 +132,33 @@ export async function onLaunch(args: EmulatorLaunchArgs) {
         discKeys.push(Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join(""));
     }
     const keyFile = new TextEncoder().encode(discKeys.join("\n") + (discKeys.length ? "\n" : ""));
-    args.filesystem.mountFile("/Cemu/keys.txt", keyFile, { mode: "r" });
-    args.filesystem.mountTree("/Cemu/resources", new URL("pkg:bin/win-x64/resources"), { mode: "rx" });
-    args.filesystem.mountTree("/Cemu/gameProfiles", new URL("pkg:bin/win-x64/gameProfiles"), { mode: "rx" });
-    args.filesystem.mountTree("/Cemu/graphicPacks/downloadedGraphicPacks", graphicsPacks, { mode: "rx" });
-    args.filesystem.mountTree("/Cemu/shaderCache", caches.shaderCache, { mode: "rwx" });
+    args.filesystem.mount("/Cemu/keys.txt", keyFile, { mode: "r" });
+    args.filesystem.mount("/Cemu/resources", resources, { mode: "rx" });
+    args.filesystem.mount("/Cemu/gameProfiles", gameProfiles, { mode: "rx" });
+    args.filesystem.mount("/Cemu/graphicPacks/downloadedGraphicPacks", graphicsPacks, { mode: "rx" });
+    args.filesystem.mount("/Cemu/shaderCache", caches.shaderCache, { mode: "rwx" });
     for (const [name, bytes] of Object.entries(args.configuration.render())) {
-        args.filesystem.mountFile(`/Cemu/${name}`, bytes, { mode: "rw" });
+        args.filesystem.mount(`/Cemu/${name}`, bytes, { mode: "rw" });
     }
     if (args.storage.mlc) {
-        args.filesystem.mountStorage("/Cemu/mlc01", args.storage.mlc, { mode: "rwx" });
+        args.filesystem.mount("/Cemu/mlc01", args.storage.mlc, { mode: "rwx" });
     }
-    const game = args.filesystem.mountPackage("/Game");
-    args.filesystem.mountScratch("/User", { mode: "rwx", backing: "temporary" });
-    args.filesystem.setWorkingDirectory("/Cemu");
-    args.filesystem.setProfile({
-        home: "/User",
-        roamingAppData: "/User/AppData/Roaming",
-        localAppData: "/User/AppData/Local",
-        temp: "/User/Temp",
-    });
+    const game = args.filesystem.mount("/Game", args.package, { mode: "rx" });
+    args.filesystem.mount("/User");
 
     const executable = args.filesystem.path("/Cemu/Cemu.exe");
     const mlc = args.filesystem.path("/Cemu/mlc01");
 
     return {
         command: executable,
+        workingDirectory: args.filesystem.path("/Cemu"),
+        env: [
+            ["USERPROFILE", args.filesystem.path("/User")],
+            ["APPDATA", args.filesystem.path("/User/AppData/Roaming")],
+            ["LOCALAPPDATA", args.filesystem.path("/User/AppData/Local")],
+            ["TEMP", args.filesystem.path("/User/Temp")],
+            ["TMP", args.filesystem.path("/User/Temp")],
+        ],
         argv: ["-g", game, "--mlc", mlc],
         isolate: true,
         hooks: { graphics: [api], input: ["sdl3"] },

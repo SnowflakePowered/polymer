@@ -114,6 +114,8 @@ export function createConfiguration(pluginApi) {
       const targets = new Set(prepared.webrtcTargets || []);
       const launch = Object.freeze({
         command: plugin.command,
+        workingDirectory: plugin.workingDirectory,
+        env: (plugin.env || []).map(entry => [...entry]),
         arguments: [...(plugin.argv || [])],
         isolated: Boolean(plugin.isolate),
         hooks: {
