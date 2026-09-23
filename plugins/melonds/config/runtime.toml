@@ -1,0 +1,115 @@
+[bool_style.lower]
+true = "true"
+false = "false"
+
+[targets.settings]
+output = { format = "ini", path = "melonDS.ini" }
+
+[sections.runtime]
+title = "runtime"
+target = "settings"
+
+[[sections.runtime.options]]
+key = "ScreenUseGL"
+title = "ScreenUseGL"
+type = "int"
+default = 1
+emit = { key = "ScreenUseGL" }
+
+[[sections.runtime.options]]
+key = "3DRenderer"
+title = "3DRenderer"
+type = "int"
+default = 1
+emit = { key = "3DRenderer" }
+
+[[sections.runtime.options]]
+key = "ScreenLayout"
+title = "ScreenLayout"
+type = "int"
+default = 0
+emit = { key = "ScreenLayout" }
+
+[[sections.runtime.options]]
+key = "ScreenSizing"
+title = "ScreenSizing"
+type = "int"
+default = 0
+emit = { key = "ScreenSizing" }
+
+[[sections.runtime.options]]
+key = "ScreenGap"
+title = "ScreenGap"
+type = "int"
+default = 0
+emit = { key = "ScreenGap" }
+
+[[sections.runtime.options]]
+key = "ScreenFilter"
+title = "ScreenFilter"
+type = "int"
+default = 0
+emit = { key = "ScreenFilter" }
+
+[[sections.runtime.options]]
+key = "ScreenVSync"
+title = "ScreenVSync"
+type = "int"
+default = 1
+emit = { key = "ScreenVSync" }
+
+[[sections.runtime.options]]
+key = "ExternalBIOSEnable"
+title = "ExternalBIOSEnable"
+type = "int"
+default = 0
+emit = { key = "ExternalBIOSEnable" }
+
+[[sections.runtime.options]]
+key = "DirectBoot"
+title = "DirectBoot"
+type = "int"
+default = 1
+emit = { key = "DirectBoot" }
+
+[[sections.runtime.options]]
+key = "ConsoleType"
+title = "ConsoleType"
+type = "int"
+default = 0
+emit = { key = "ConsoleType" }
+
+[[sections.runtime.options]]
+key = "JoystickID"
+title = "JoystickID"
+type = "int"
+default = 0
+emit = { key = "JoystickID" }
+
+[[sections.runtime.options]]
+key = "PauseLostFocus"
+title = "PauseLostFocus"
+type = "int"
+default = 0
+emit = { key = "PauseLostFocus" }
+
+[[sections.runtime.options]]
+key = "SaveFilePath"
+title = "SaveFilePath"
+type = "string"
+default = ""
+emit = { key = "SaveFilePath" }
+
+[[sections.runtime.options]]
+key = "SavestatePath"
+title = "SavestatePath"
+type = "string"
+default = ""
+emit = { key = "SavestatePath" }
+
+[[sections.runtime.options]]
+key = "HKKey_Pause"
+title = "HKKey_Pause"
+type = "int"
+default = 16777224
+emit = { key = "HKKey_Pause" }

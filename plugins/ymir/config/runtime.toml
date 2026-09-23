@@ -1,0 +1,57 @@
+[bool_style.lower]
+true = "true"
+false = "false"
+
+[targets.settings]
+output = { format = "ini", path = "Ymir.toml" }
+
+[sections.runtime]
+title = "runtime"
+target = "settings"
+
+[[sections.runtime.options]]
+key = "ConfigVersion"
+title = "ConfigVersion"
+type = "int"
+default = 5
+emit = { key = "ConfigVersion" }
+
+[targets.settings."System"]
+
+[sections.system]
+title = "system"
+target = "settings.System"
+
+[[sections.system.options]]
+key = "InternalBackupRAMImagePath"
+title = "InternalBackupRAMImagePath"
+type = "string"
+default = ""
+emit = { key = "InternalBackupRAMImagePath" }
+
+[[sections.system.options]]
+key = "InternalBackupRAMPerGame"
+title = "InternalBackupRAMPerGame"
+type = "bool"
+default = false
+emit = { key = "InternalBackupRAMPerGame", bool_style = "lower" }
+
+[targets.settings."IPL"]
+
+[sections.ipl]
+title = "ipl"
+target = "settings.IPL"
+
+[[sections.ipl.options]]
+key = "Override"
+title = "Override"
+type = "bool"
+default = true
+emit = { key = "Override", bool_style = "lower" }
+
+[[sections.ipl.options]]
+key = "Path"
+title = "Path"
+type = "string"
+default = ""
+emit = { key = "Path" }

@@ -1,0 +1,42 @@
+[targets.settings]
+output = { format = "ini", path = "melonDS.ini" }
+
+[input]
+driver = "sdl2"
+device = "{index}"
+
+[input.mapping]
+"button.a" = "0"
+"button.b" = "1"
+"button.x" = "2"
+"button.y" = "3"
+"button.select" = "4"
+"button.guide" = "5"
+"button.start" = "6"
+"button.clickl" = "7"
+"button.clickr" = "8"
+"button.l" = "9"
+"button.r" = "10"
+"directional.n" = "11"
+"directional.s" = "12"
+"directional.w" = "13"
+"directional.e" = "14"
+
+[input.layouts."NDS_LAYOUT"]
+"button.a" = "Joy_A"
+"button.b" = "Joy_B"
+"button.x" = "Joy_X"
+"button.y" = "Joy_Y"
+"button.select" = "Joy_Select"
+"button.start" = "Joy_Start"
+"button.l" = "Joy_L"
+"button.r" = "Joy_R"
+"directional.n" = "Joy_Up"
+"directional.s" = "Joy_Down"
+"directional.w" = "Joy_Left"
+"directional.e" = "Joy_Right"
+
+[platforms.NINTENDO_NDS.ports.layout.0]
+target = "settings"
+layouts = ["NDS_LAYOUT"]
+emit = {}

@@ -424,6 +424,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ares", required=True, type=Path)
     parser.add_argument("--out", type=Path, default=Path(__file__).parent.parent / "config")
     parser.add_argument("--consolespec", type=Path)
+    parser.add_argument("--revision", help="Source revision when using a release source archive")
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     arguments = parser.parse_args(argv)
@@ -440,7 +441,7 @@ def main(argv: list[str] | None = None) -> int:
                      if arguments.consolespec else consolespec.find_root())
         members = parse_members(read_text(settings_root / "settings.hpp"), report)
         settings = parse_bindings(read_text(settings_root / "settings.cpp"), members, report)
-        revision = revision_of(root)
+        revision = arguments.revision or revision_of(root)
         documents = build_definition(settings, revision, report)
         documents["input.toml"] = build_input(spec_root, revision, report)
     except (Bail, OSError, consolespec.SpecError) as error:

@@ -1,0 +1,15 @@
+[plugin]
+id = "rpcs3"
+version = "0.0.1"
+class = "emulator"
+main = "rpcs3.ts"
+
+[[plugin.caches]]
+key = "cache"
+label = "Shader and executable cache"
+
+[emulator]
+platforms = ["SONY_PS3"]
+
+[emulator.configuration]
+definitions = ["config/runtime.toml", "config/input.toml"]
