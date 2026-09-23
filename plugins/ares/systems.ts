@@ -1,0 +1,32 @@
+// System names and firmware slots from ares v148 desktop-ui/emulator.
+export type AresSystem = { name: string, firmwareSystem?: string, battery?: readonly [string, string], firmware: readonly (readonly [string, string?])[] };
+
+export const systems: Readonly<Record<string, AresSystem>> = {
+    ATARI_2600: { name: "Atari 2600", firmware: [] },
+    BANDAI_WS: { name: "WonderSwan", firmware: [] },
+    BANDAI_WSC: { name: "WonderSwan Color", firmware: [] },
+    COLECO_CV: { name: "ColecoVision", firmware: [["BIOS.World", "990bf1956f10207d8781b619eb74f89b00d921c8d45c95c334c16c8cceca09ad"]] },
+    NEC_SGFX: { name: "SuperGrafx", firmware: [] },
+    NEC_TG16: { name: "PC Engine", firmware: [] },
+    NEC_TGCD: { name: "PC Engine CD", firmware: [["System-Card-1.0.Japan", "afe9f27f91ac918348555b86298b4f984643eafa2773196f2c5441ea84f0c3bb"], ["System-Card-3.0.Japan", "e11527b3b96ce112a037138988ca72fd117a6b0779c2480d9e03eaebece3d9ce"], ["System-Card-3.0.US", "cadac2725711b3c442bcf237b02f5a5210c96f17625c35fa58f009e0ed39e4db"], ["Games-Express.Japan", "4b86bb96a48a4ca8375fc0109631d0b1d64f255a03b01de70594d40788ba6c3d"]] },
+    NINTENDO_FDS: { name: "Famicom Disk System", firmware: [["BIOS.Japan", "fdc1a76e654feea993fcb38366e05ee5f4eb641f86fe6bebaeefd412e112dd72"]] },
+    NINTENDO_GB: { name: "Game Boy", firmware: [] },
+    NINTENDO_GBA: { name: "Game Boy Advance", firmware: [["BIOS.World", "fd2547724b505f487e6dcb29ec2ecff3af35a841a77ab2e85fd87350abd36570"]] },
+    NINTENDO_GBC: { name: "Game Boy Color", firmware: [] },
+    NINTENDO_N64: { name: "Nintendo 64", firmware: [] },
+    NINTENDO_N64DD: { name: "Nintendo 64DD", firmware: [["BIOS.Japan", "806400ec0df94b0755de6c5b8249d6b6a9866124c5ddbdac198bde22499bfb8b"], ["BIOS.US", "e9fec87a45fba02399e88064b9e2f8cf0f2106e351c58279a87f05da5bc984ad"], ["BIOS.DEV", "9c2962a8b994a29e4cd04b3a6e4ed730a751414655ab6a9799ebf5fc08b79d44"]] },
+    NINTENDO_NES: { name: "Famicom", firmware: [] },
+    NINTENDO_SNES: { name: "Super Famicom", firmware: [] },
+    SEGA_32X: { name: "Mega 32X", firmware: [] },
+    SEGA_32X_CD: { name: "Mega 32X", firmwareSystem: "Mega CD", firmware: [["BIOS.US", "fb477cdbf94c84424c2feca4fe40656d85393fe7b7b401911b45ad2eb991258c"], ["BIOS.Japan", "7133fc2dd2fe5b7d0acd53a5f10f3d00b5d31270239ad20d74ef32393e24af88"], ["BIOS.Europe", "fe608a2a07676a23ab5fd5eee2f53c9e2526d69a28aa16ccd85c0ec42e6933cb"]] },
+    SEGA_CD: { name: "Mega CD", firmware: [["BIOS.US", "fb477cdbf94c84424c2feca4fe40656d85393fe7b7b401911b45ad2eb991258c"], ["BIOS.Japan", "7133fc2dd2fe5b7d0acd53a5f10f3d00b5d31270239ad20d74ef32393e24af88"], ["BIOS.Europe", "fe608a2a07676a23ab5fd5eee2f53c9e2526d69a28aa16ccd85c0ec42e6933cb"]] },
+    SEGA_GEN: { name: "Mega Drive", firmware: [] },
+    SEGA_GG: { name: "Game Gear", battery: ["Game Gear", ".ram"], firmware: [["BIOS.World", "8c8a21335038285cfa03dc076100c1f0bfadf3e4ff70796f11f3dfaaab60eee2"]] },
+    SEGA_SAT: { name: "Saturn", firmware: [["BIOS.US"], ["BIOS.Japan"], ["BIOS.Europe"]] },
+    SEGA_SG1000: { name: "SG-1000", firmware: [] },
+    SEGA_SMS: { name: "Master System", battery: ["Master System", ".ram"], firmware: [["BIOS.US", "477617917a12a30f9f43844909dc2de6e6a617430f5c9a36306c86414a670d50"], ["BIOS.Japan", "67846e26764bd862f19179294347f7353a4166b62ac4198a5ec32933b7da486e"], ["BIOS.Europe", "477617917a12a30f9f43844909dc2de6e6a617430f5c9a36306c86414a670d50"]] },
+    SNK_NG: { name: "Neo Geo AES", firmware: [["BIOS.World"]] },
+    SNK_NGP: { name: "Neo Geo Pocket", battery: ["Neo Geo Pocket", ".sav"], firmware: [["BIOS.World", "0293555b21c4fac516d25199df7809b26beeae150e1d4504a050db32264a6ad7"]] },
+    SNK_NGPC: { name: "Neo Geo Pocket Color", battery: ["Neo Geo Pocket Color", ".sav"], firmware: [["BIOS.World", "8fb845a2f71514cec20728e2f0fecfade69444f8d50898b92c2259f1ba63e10d"]] },
+    SONY_PSX: { name: "PlayStation", firmware: [["BIOS.US", "11052b6499e466bbf0a709b1f9cb6834a9418e66680387912451e971cf8a1fef"], ["BIOS.Japan", "9c0421858e217805f4abe18698afea8d5aa36ff0727eb8484944e00eb5e7eadb"], ["BIOS.Europe", "1faaa18fa820a0225e488d9f086296b8e6c46df739666093987ff7d8fd352c09"]] },
+};

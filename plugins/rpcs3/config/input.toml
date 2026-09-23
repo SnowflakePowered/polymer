@@ -1,0 +1,92 @@
+[targets.settings]
+output = { format = "ini", path = "runtime.ini" }
+
+[targets.settings."Player1"]
+
+[targets.settings."Player2"]
+
+[targets.settings."Player3"]
+
+[targets.settings."Player4"]
+
+[input]
+driver = "sdl3"
+device = "{index}"
+
+[input.mapping]
+"button.a" = "South"
+"button.b" = "East"
+"button.x" = "West"
+"button.y" = "North"
+"button.select" = "Back"
+"button.guide" = "Guide"
+"button.start" = "Start"
+"button.clickl" = "LS"
+"button.clickr" = "RS"
+"button.l" = "LB"
+"button.r" = "RB"
+"directional.n" = "Up"
+"directional.s" = "Down"
+"directional.w" = "Left"
+"directional.e" = "Right"
+"trigger.left" = "LT"
+"trigger.right" = "RT"
+"analog.stick.left.x-" = "LS X-"
+"analog.stick.left.x+" = "LS X+"
+"analog.stick.left.y-" = "LS Y-"
+"analog.stick.left.y+" = "LS Y+"
+"analog.stick.right.x-" = "RS X-"
+"analog.stick.right.x+" = "RS X+"
+"analog.stick.right.y-" = "RS Y-"
+"analog.stick.right.y+" = "RS Y+"
+
+[input.layouts."DUALSHOCK_3_CONTROLLER"]
+"button.a" = "Cross"
+"button.b" = "Circle"
+"button.x" = "Square"
+"button.y" = "Triangle"
+"button.select" = "Select"
+"button.start" = "Start"
+"button.l" = "L1"
+"button.r" = "R1"
+"directional.n" = "Up"
+"directional.s" = "Down"
+"directional.w" = "Left"
+"directional.e" = "Right"
+"button.clickl" = "L3"
+"button.clickr" = "R3"
+"button.guide" = "PS Button"
+"trigger.left" = "L2"
+"trigger.right" = "R2"
+"analog.stick.left.x-" = "Left Stick Left"
+"analog.stick.left.x+" = "Left Stick Right"
+"analog.stick.left.y-" = "Left Stick Down"
+"analog.stick.left.y+" = "Left Stick Up"
+"analog.stick.right.x-" = "Right Stick Left"
+"analog.stick.right.x+" = "Right Stick Right"
+"analog.stick.right.y-" = "Right Stick Down"
+"analog.stick.right.y+" = "Right Stick Up"
+
+[platforms.SONY_PS3.ports.controller.0]
+target = "settings.Player1"
+layouts = ["DUALSHOCK_3_CONTROLLER"]
+emit."unplugged" = [{ key = "Handler", value = "Null" }]
+emit."DUALSHOCK_3_CONTROLLER" = [{ key = "Handler", value = "SDL" }, { key = "Device", value = "{device}" }]
+
+[platforms.SONY_PS3.ports.controller.1]
+target = "settings.Player2"
+layouts = ["DUALSHOCK_3_CONTROLLER"]
+emit."unplugged" = [{ key = "Handler", value = "Null" }]
+emit."DUALSHOCK_3_CONTROLLER" = [{ key = "Handler", value = "SDL" }, { key = "Device", value = "{device}" }]
+
+[platforms.SONY_PS3.ports.controller.2]
+target = "settings.Player3"
+layouts = ["DUALSHOCK_3_CONTROLLER"]
+emit."unplugged" = [{ key = "Handler", value = "Null" }]
+emit."DUALSHOCK_3_CONTROLLER" = [{ key = "Handler", value = "SDL" }, { key = "Device", value = "{device}" }]
+
+[platforms.SONY_PS3.ports.controller.3]
+target = "settings.Player4"
+layouts = ["DUALSHOCK_3_CONTROLLER"]
+emit."unplugged" = [{ key = "Handler", value = "Null" }]
+emit."DUALSHOCK_3_CONTROLLER" = [{ key = "Handler", value = "SDL" }, { key = "Device", value = "{device}" }]

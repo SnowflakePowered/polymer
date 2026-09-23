@@ -1,0 +1,46 @@
+[bool_style.lower]
+true = "true"
+false = "false"
+
+[targets.settings]
+output = { format = "ini", path = "runtime.ini" }
+
+[targets.settings."Video"]
+
+[sections.video]
+title = "video"
+target = "settings.Video"
+
+[[sections.video.options]]
+key = "Renderer"
+title = "Renderer"
+type = "string"
+default = "Vulkan"
+emit = { key = "Renderer" }
+
+[targets.settings."Miscellaneous"]
+
+[sections.misc]
+title = "misc"
+target = "settings.Miscellaneous"
+
+[[sections.misc.options]]
+key = "Exit RPCS3 when process finishes"
+title = "Exit RPCS3 when process finishes"
+type = "bool"
+default = true
+emit = { key = "Exit RPCS3 when process finishes", bool_style = "lower" }
+
+[[sections.misc.options]]
+key = "Pause emulation on RPCS3 focus loss"
+title = "Pause emulation on RPCS3 focus loss"
+type = "bool"
+default = false
+emit = { key = "Pause emulation on RPCS3 focus loss", bool_style = "lower" }
+
+[[sections.misc.options]]
+key = "Start games in fullscreen mode"
+title = "Start games in fullscreen mode"
+type = "bool"
+default = false
+emit = { key = "Start games in fullscreen mode", bool_style = "lower" }

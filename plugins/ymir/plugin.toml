@@ -1,0 +1,15 @@
+[plugin]
+id = "ymir"
+version = "0.0.1"
+class = "emulator"
+main = "ymir.ts"
+
+[[plugin.caches]]
+key = "saves"
+label = "Saturn backup memory"
+
+[emulator]
+platforms = ["SEGA_SAT"]
+
+[emulator.configuration]
+definitions = ["config/runtime.toml", "config/input.toml"]

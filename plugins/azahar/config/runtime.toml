@@ -1,0 +1,121 @@
+[bool_style.lower]
+true = "true"
+false = "false"
+
+[targets.settings]
+output = { format = "ini", path = "qt-config.ini" }
+
+[targets.settings."Renderer"]
+
+[sections.renderer]
+title = "renderer"
+target = "settings.Renderer"
+
+[[sections.renderer.options]]
+key = "graphics_api"
+title = "graphics_api"
+type = "int"
+default = 2
+emit = { key = "graphics_api" }
+
+[[sections.renderer.options]]
+key = "resolution_factor"
+title = "resolution_factor"
+type = "int"
+default = 1
+emit = { key = "resolution_factor" }
+
+[targets.settings."Layout"]
+
+[sections.layout]
+title = "layout"
+target = "settings.Layout"
+
+[[sections.layout.options]]
+key = "layout_option"
+title = "layout_option"
+type = "int"
+default = 4
+emit = { key = "layout_option" }
+
+[targets.settings."UI"]
+
+[sections.ui]
+title = "ui"
+target = "settings.UI"
+
+[[sections.ui.options]]
+key = "first_start"
+title = "first_start"
+type = "bool"
+default = false
+emit = { key = "first_start", bool_style = "lower" }
+
+[[sections.ui.options]]
+key = "single_window_mode"
+title = "single_window_mode"
+type = "bool"
+default = false
+emit = { key = "single_window_mode", bool_style = "lower" }
+
+[[sections.ui.options]]
+key = "confirm_before_closing"
+title = "confirm_before_closing"
+type = "bool"
+default = false
+emit = { key = "confirm_before_closing", bool_style = "lower" }
+
+[[sections.ui.options]]
+key = "pause_when_in_background"
+title = "pause_when_in_background"
+type = "bool"
+default = false
+emit = { key = "pause_when_in_background", bool_style = "lower" }
+
+[[sections.ui.options]]
+key = "mute_when_in_background"
+title = "mute_when_in_background"
+type = "bool"
+default = false
+emit = { key = "mute_when_in_background", bool_style = "lower" }
+
+[[sections.ui.options]]
+key = "show_status_bar"
+title = "show_status_bar"
+type = "bool"
+default = false
+emit = { key = "show_status_bar", bool_style = "lower" }
+
+[[sections.ui.options]]
+key = "callout_flags"
+title = "callout_flags"
+type = "int"
+default = 2147483647
+emit = { key = "callout_flags" }
+
+[targets.settings."Data Storage"]
+
+[sections.storage]
+title = "storage"
+target = "settings.Data Storage"
+
+[[sections.storage.options]]
+key = "use_custom_storage"
+title = "use_custom_storage"
+type = "bool"
+default = true
+emit = { key = "use_custom_storage", bool_style = "lower" }
+
+[[sections.storage.options]]
+key = "nand_directory"
+title = "nand_directory"
+type = "string"
+default = ""
+emit = { key = "nand_directory" }
+
+[[sections.storage.options]]
+key = "sdmc_directory"
+title = "sdmc_directory"
+type = "string"
+default = ""
+emit = { key = "sdmc_directory" }

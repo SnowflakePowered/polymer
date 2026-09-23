@@ -1,0 +1,37 @@
+{
+  "azahar": {
+    "version": "2126.1.1",
+    "url": "https://github.com/azahar-emu/azahar/releases/download/2126.1.1/azahar-windows-msvc-2126.1.1.zip",
+    "sha256": "d65f8b710080ea839f9f35a99bd7cc9c4476d20c3abd701ae0786e1f4e175125",
+    "directory": "azahar-windows-msvc-2126.1.1",
+    "executable": "azahar.exe"
+  },
+  "melonds": {
+    "version": "1.1",
+    "url": "https://melonds.kuribo64.net/downloads/melonDS-1.1-windows-x86_64.zip",
+    "sha256": "9f3f8a244103be20b5b657af5b0ed1b2a66bb20a7181476a6d294c9a53d4f8c8",
+    "directory": "",
+    "executable": "melonDS.exe"
+  },
+  "rpcs3": {
+    "version": "0.0.42-20032-3efbf060",
+    "url": "https://github.com/RPCS3/rpcs3-binaries-win/releases/download/build-3efbf060a637b97e0194c038557e33a0e1029c8e/rpcs3-v0.0.42-20032-3efbf060_win64_msvc.7z",
+    "sha256": "71c1352fdb5533bba99ef4a2e36a2d45b3a93b23c1a334429b11e5de253abcdc",
+    "directory": "",
+    "executable": "rpcs3.exe"
+  },
+  "ymir": {
+    "version": "0.3.3 AVX2",
+    "url": "https://github.com/ymir-emu/Ymir/releases/download/v0.3.3/ymir-windows-x86_64-AVX2-v0.3.3.zip",
+    "sha256": "fef946a8e39742bbecb9df5a19281b25e48b682e7d469aa4f9d6bf311c6f911e",
+    "directory": "",
+    "executable": "ymir-sdl3.exe"
+  },
+  "ares": {
+    "version": "148",
+    "url": "https://github.com/ares-emulator/ares/releases/download/v148/ares-windows-x64.zip",
+    "sha256": "fa97958e1d359e3fe254353f87b6508f2762a959d7eb264c69965ad002037298",
+    "directory": "ares-v148",
+    "executable": "ares.exe"
+  }
+}

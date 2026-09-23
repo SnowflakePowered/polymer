@@ -1,0 +1,62 @@
+[targets.settings]
+output = { format = "ini", path = "Ymir.toml" }
+
+[targets.settings."Port1"]
+
+[targets.settings."Port2"]
+
+[input]
+driver = "sdl3"
+device = "{index}"
+
+[input.mapping]
+"button.a" = "[\"GamepadA@{device}\"]"
+"button.b" = "[\"GamepadB@{device}\"]"
+"button.x" = "[\"GamepadX@{device}\"]"
+"button.y" = "[\"GamepadY@{device}\"]"
+"button.select" = "[\"GamepadBack@{device}\"]"
+"button.guide" = "[\"GamepadGuide@{device}\"]"
+"button.start" = "[\"GamepadStart@{device}\"]"
+"button.clickl" = "[\"GamepadLeftThumb@{device}\"]"
+"button.clickr" = "[\"GamepadRightThumb@{device}\"]"
+"button.l" = "[\"GamepadLeftBumper@{device}\"]"
+"button.r" = "[\"GamepadRightBumper@{device}\"]"
+"directional.n" = "[\"GamepadDpadUp@{device}\"]"
+"directional.s" = "[\"GamepadDpadDown@{device}\"]"
+"directional.w" = "[\"GamepadDpadLeft@{device}\"]"
+"directional.e" = "[\"GamepadDpadRight@{device}\"]"
+"trigger.left" = "[\"GamepadLeftTriggerButton@{device}\"]"
+"trigger.right" = "[\"GamepadRightTriggerButton@{device}\"]"
+"button.0" = "[\"GamepadMisc1@{device}\"]"
+"button.1" = "[\"GamepadRightPaddle1@{device}\"]"
+
+[input.layouts."SAT_CONTROLLER"]
+"button.a" = "A"
+"button.b" = "B"
+"button.x" = "X"
+"button.y" = "Y"
+"button.start" = "Start"
+"button.l" = "L"
+"button.r" = "R"
+"directional.n" = "Up"
+"directional.s" = "Down"
+"directional.w" = "Left"
+"directional.e" = "Right"
+"button.c" = "C"
+"button.z" = "Z"
+
+[platforms.SEGA_SAT.ports.controller.0]
+target = "settings.Port1"
+layouts = ["SAT_CONTROLLER"]
+emit.unplugged = [{ key = "PeripheralType", value = '"None"', target = "settings.Type1" }]
+emit.SAT_CONTROLLER = [{ key = "PeripheralType", value = '"ControlPad"', target = "settings.Type1" }]
+
+[platforms.SEGA_SAT.ports.controller.1]
+target = "settings.Port2"
+layouts = ["SAT_CONTROLLER"]
+emit.unplugged = [{ key = "PeripheralType", value = '"None"', target = "settings.Type2" }]
+emit.SAT_CONTROLLER = [{ key = "PeripheralType", value = '"ControlPad"', target = "settings.Type2" }]
+
+[targets.settings.Type1]
+
+[targets.settings.Type2]

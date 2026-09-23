@@ -1,0 +1,11 @@
+[plugin]
+id = "azahar"
+version = "0.0.1"
+class = "emulator"
+main = "azahar.ts"
+
+[emulator]
+platforms = ["NINTENDO_3DS"]
+
+[emulator.configuration]
+definitions = ["config/runtime.toml", "config/input.toml"]
