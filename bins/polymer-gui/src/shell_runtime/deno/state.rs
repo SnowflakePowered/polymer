@@ -2,13 +2,12 @@ use deno_core::{OpState, op2};
 use serde_json::Value;
 
 use super::{
-    dom::{LayoutSnapshot, Mutation},
+    dom::LayoutSnapshot,
     input::EventResult,
 };
 
 #[derive(Default)]
 pub(super) struct BridgeState {
-    pub mutations: Vec<Mutation>,
     pub messages: Vec<Value>,
     pub event: EventResult,
     pub layout: Option<LayoutSnapshot>,

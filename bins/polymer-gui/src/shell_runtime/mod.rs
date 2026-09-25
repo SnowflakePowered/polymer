@@ -6,10 +6,11 @@
 pub(crate) mod deno;
 mod events;
 
+use crate::shell_document::SharedShellDocument;
 use blitz_dom::BaseDocument;
 use deno::EventResult;
 use serde_json::Value;
-use std::{collections::HashMap, error::Error};
+use std::error::Error;
 
 pub(crate) use polymer_deno::polymer::{
     InstanceToken, PolymerNotification, PolymerNotificationSender,
@@ -33,11 +34,7 @@ pub(crate) struct ShellRuntimeOptions {
 
 impl ShellRuntime {
     pub async fn start(
-        document: &BaseDocument,
-        width: u32,
-        height: u32,
-        scale_factor: f32,
-        node_ids: &HashMap<blitz_dom::NodeId, usize>,
+        document: SharedShellDocument,
         options: ShellRuntimeOptions,
     ) -> Result<(Self, PolymerNotificationSender), Box<dyn Error>> {
         let ShellRuntimeOptions {
@@ -51,31 +48,20 @@ impl ShellRuntime {
             input_sources,
             controller_api,
         } = options;
-        let result = match deno::Runtime::serialized_snapshot(
+        let (runtime, notifications) = deno::Runtime::start(
+            debug,
             document,
-            width,
-            height,
-            scale_factor,
-            node_ids,
-        ) {
-            Ok(initial_snapshot) => {
-                deno::Runtime::from_snapshot(
-                    debug,
-                    initial_snapshot,
-                    html,
-                    source_name,
-                    commands,
-                    plugin_runtime,
-                    local_storage,
-                    library,
-                    input_sources,
-                    controller_api,
-                )
-                .await
-            }
-            Err(error) => Err(Box::new(error) as Box<dyn Error>),
-        };
-        result.map(|(runtime, notifications)| (Self { runtime }, notifications))
+            html,
+            source_name,
+            commands,
+            plugin_runtime,
+            local_storage,
+            library,
+            input_sources,
+            controller_api,
+        )
+        .await?;
+        Ok((Self { runtime }, notifications))
     }
 
     pub fn resize(&mut self, width: u32, height: u32, scale_factor: f32) {
@@ -119,30 +105,24 @@ impl ShellRuntime {
         }
     }
 
-    pub fn sync(
+    pub fn stage_layout(
         &mut self,
         document: &BaseDocument,
         width: u32,
         height: u32,
         scale_factor: f32,
-        node_ids: &HashMap<blitz_dom::NodeId, usize>,
-        roots: Option<&[blitz_dom::NodeId]>,
     ) {
-        if let Err(error) =
-            self.runtime
-                .sync(document, width, height, scale_factor, node_ids, roots)
-        {
-            tracing::error!("polymer: synchronizing the shell DOM failed: {error}");
-        }
+        self.runtime
+            .stage_layout(document, width, height, scale_factor);
     }
 
-    pub fn take_mutations(&mut self) -> Vec<Mutation> {
-        self.runtime.take_mutations()
+    pub fn publish_layout(&mut self) {
+        if let Err(error) = self.runtime.publish_layout() {
+            tracing::error!("polymer: synchronizing the shell DOM failed: {error}");
+        }
     }
 
     pub(crate) fn inspector_address(&self) -> std::net::SocketAddr {
         self.runtime.inspector_address()
     }
 }
-
-pub(crate) use deno::Mutation;

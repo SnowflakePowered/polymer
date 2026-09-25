@@ -14,13 +14,15 @@ mod events;
 mod hit_test;
 mod mutations;
 mod providers;
+mod scrolling;
 mod tracked_surface;
 
 use crate::shell_dom::{
     RasterChunkId, ShellCompositionGroup, ShellFrame, ShellHitSnapshot, ShellRasterChunk,
     TrackedSurfaceLayout,
 };
-use crate::shell_runtime::{Mutation, ShellRuntime};
+use crate::shell_runtime::ShellRuntime;
+use crate::shell_runtime::deno::ScrollCommand;
 use anyrender::PaintScene as _;
 use bands::BandedScene;
 pub use bands::{GamePlacement, GameViewStyle};
@@ -29,10 +31,11 @@ use blitz_dom::local_name;
 use blitz_traits::net::{NetProvider, NetWaker};
 pub use events::{DomKeyboardEvent, DomMouseEvent, DomWheelEvent};
 use hit_test::{node_is_within_tracked_surface, pointer_hit};
-use mutations::apply_dom_mutations;
 use providers::NativeShellProvider;
 use std::{
+    cell::{Ref, RefCell, RefMut},
     collections::HashMap,
+    rc::Rc,
     sync::{
         Arc,
         mpsc::{Receiver, channel},
@@ -45,6 +48,7 @@ use tracked_surface::{
 /// How many times a paint will re-resolve to pick up assets that only became
 /// reachable through an asset it just loaded.
 const ASSET_ROUNDS: usize = 4;
+const ANIMATION_FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_micros(16_667);
 
 fn chrome_fragment_bounds(bounds: Option<kurbo::Rect>, viewport: kurbo::Rect) -> kurbo::Rect {
     // The desktop visual tree clips at the window. Keeping a promoted group's
@@ -106,17 +110,48 @@ pub struct ShellDocument {
     needs_resolve: bool,
     /// Geometry snapshots are only needed when layout may have changed.
     /// Paint-only declarations such as transforms still resolve and repaint,
-    /// but their synchronous DOM geometry is derived from the mirrored style.
+    /// but script derives their translated geometry from the inline style.
     needs_geometry_sync: bool,
+    scroll_animating: bool,
     animation_epoch: std::time::Instant,
-    /// Solid-created nodes use monotonically increasing JavaScript IDs while
-    /// Blitz allocates its own arena IDs. Initial parsed nodes are identity
-    /// mapped; these maps keep later mutations and hit testing in agreement.
-    script_to_dom: HashMap<usize, NodeId>,
-    dom_to_script: HashMap<NodeId, usize>,
+    last_animation_frame: std::time::Instant,
+    pending_scrolls: Vec<(NodeId, ScrollCommand)>,
     /// Paint-order hover path used only while Blitz's native hit target
     /// differs from the compositor-visible target.
     pointer_hover_path: Vec<NodeId>,
+}
+
+#[derive(Clone)]
+pub(crate) struct SharedShellDocument(pub(crate) Rc<RefCell<ShellDocument>>);
+
+impl blitz_dom::Document for SharedShellDocument {
+    fn inner(&self) -> blitz_dom::DocGuard<'_> {
+        blitz_dom::DocGuard::RefCell(Ref::map(self.0.borrow(), |shell| shell.document.as_ref()))
+    }
+
+    fn inner_mut(&mut self) -> blitz_dom::DocGuardMut<'_> {
+        blitz_dom::DocGuardMut::RefCell(RefMut::map(self.0.borrow_mut(), |shell| {
+            shell.document.as_mut()
+        }))
+    }
+}
+
+impl SharedShellDocument {
+    pub fn produce_frame(&self, runtime: &mut ShellRuntime) -> Option<ShellFrame> {
+        let frame = self.0.borrow_mut().produce_frame(runtime);
+        runtime.publish_layout();
+        frame
+    }
+
+    pub fn resize(&self, runtime: &mut ShellRuntime, width: u32, height: u32, scale_factor: f32) {
+        let (logical_width, logical_height, scale_factor) = {
+            let mut document = self.0.borrow_mut();
+            document.resize(width, height, scale_factor);
+            let (logical_width, logical_height) = document.logical_size();
+            (logical_width, logical_height, document.scale_factor())
+        };
+        runtime.resize(logical_width, logical_height, scale_factor);
+    }
 }
 
 /// Factory for a shell document and its native network/window providers.
@@ -154,21 +189,11 @@ impl ShellDocumentFactory {
                 base_url: Some(base_url.clone()),
                 net_provider: Some(net),
                 shell_provider: Some(shell_provider),
+                html_parser_provider: Some(Arc::new(blitz_html::HtmlProvider)),
                 ..Default::default()
             },
         );
         initialise_tracked_surfaces(&mut document);
-        let script_to_dom = document
-            .as_ref()
-            .tree()
-            .iter()
-            .enumerate()
-            .map(|(index, (id, _))| (index + 1, id))
-            .collect::<HashMap<_, _>>();
-        let dom_to_script = script_to_dom
-            .iter()
-            .map(|(script, dom)| (*dom, *script))
-            .collect();
         let mut document = ShellDocument {
             document,
             dom_structure_revision: 1,
@@ -181,9 +206,10 @@ impl ShellDocumentFactory {
             dirty: true,
             needs_resolve: true,
             needs_geometry_sync: true,
+            scroll_animating: false,
             animation_epoch: std::time::Instant::now(),
-            script_to_dom,
-            dom_to_script,
+            last_animation_frame: std::time::Instant::now(),
+            pending_scrolls: Vec::new(),
             pointer_hover_path: Vec::new(),
         };
         document.resize(width, height, scale_factor);
@@ -201,8 +227,17 @@ impl ShellDocument {
         (self.document.as_ref(), width, height, self.scale_factor)
     }
 
-    pub(crate) fn runtime_node_ids(&self) -> &HashMap<NodeId, usize> {
-        &self.dom_to_script
+    pub(crate) fn base(&self) -> &blitz_dom::BaseDocument {
+        self.document.as_ref()
+    }
+
+    pub(crate) fn is_script_node(&self, node: NodeId) -> bool {
+        let document = self.document.as_ref();
+        let anonymous = |node: Option<&blitz_dom::Node>| node.is_some_and(blitz_dom::Node::is_anonymous);
+        let Some(current) = document.get_node(node) else {
+            return false;
+        };
+        !anonymous(Some(current)) && !anonymous(current.parent.and_then(|parent| document.get_node(parent)))
     }
 
     pub(crate) const fn dom_structure_revision(&self) -> u64 {
@@ -263,7 +298,12 @@ impl ShellDocument {
     }
 
     pub fn needs_paint(&self) -> bool {
-        self.dirty || self.document.as_ref().is_animating()
+        self.dirty || self.animation_frame_due()
+    }
+
+    fn animation_frame_due(&self) -> bool {
+        self.document.as_ref().is_animating()
+            && self.last_animation_frame.elapsed() >= ANIMATION_FRAME_INTERVAL
     }
 
     fn animation_time(&self) -> f64 {
@@ -284,7 +324,7 @@ impl ShellDocument {
                 .get_node(*node)
                 .and_then(|node| node.parent)
         })
-        .find(|node| self.dom_to_script.contains_key(node))?;
+        .find(|node| self.is_script_node(*node))?;
         let over_tracked_surface = node_is_within_tracked_surface(self.document.as_ref(), target);
         Some(ShellHitSnapshot {
             node_id: target,
@@ -295,7 +335,7 @@ impl ShellDocument {
     /// Verifies that the attachment is the shell tracked-surface element
     /// whose `src` names this tracked render-target index.
     pub fn validates_attachment(&self, attachment: usize, index: u32) -> bool {
-        let dom_node = self.script_to_dom.get(&attachment).copied();
+        let dom_node = Some(NodeId::from_u64(attachment as u64));
         let element = dom_node
             .and_then(|node| self.document.as_ref().get_node(node))
             .and_then(blitz_dom::Node::element_data);
@@ -319,13 +359,42 @@ impl ShellDocument {
         valid
     }
 
+    fn resolve_document(&mut self, invalidate_layout: bool) {
+        if invalidate_layout {
+            // Blitz intrinsic measurement mutates Parley's line layout. A cached
+            // final Taffy box can then skip restoring it, painting min-content
+            // lines inside a correctly sized box. Invalidate measurement caches
+            // before geometry-changing resolves, including newly loaded fonts.
+            // Keep Stylo's incremental restyling and paint-only/scroll animation
+            // paths intact; this adds no extra resolve or delayed repaint.
+            let ids: Vec<_> = self
+                .document
+                .as_ref()
+                .tree()
+                .iter()
+                .map(|(id, _)| id)
+                .collect();
+            for id in ids {
+                self.document
+                    .as_mut()
+                    .get_node_mut(id)
+                    .unwrap()
+                    .clear_layout_cache();
+            }
+        }
+        let animation_time = self.animation_time();
+        self.document.as_mut().resolve(animation_time);
+    }
+
     /// Re-lays out and publishes paint scenes when the shell changed.
     pub fn produce_frame(&mut self, runtime: &mut ShellRuntime) -> Option<ShellFrame> {
         let assets_arrived = self.take_arrivals();
         let animating = self.document.as_ref().is_animating();
-        if !assets_arrived && !self.dirty && !animating {
+        self.scroll_animating &= animating;
+        if !assets_arrived && !self.dirty && !self.animation_frame_due() {
             return None;
         }
+        self.last_animation_frame = std::time::Instant::now();
         self.dirty = false;
         // Resolving is what issues the fetches, and this provider serves them
         // before returning, so anything the document asked for is waiting by
@@ -334,34 +403,33 @@ impl ShellDocument {
         // this paint, rather than waiting for an unrelated event to trigger the
         // next. The bound is there because a document that somehow kept asking
         // for more must not spin the shell.
-        if assets_arrived {
+        if assets_arrived || self.scroll_animating {
             self.needs_geometry_sync = true;
         }
         if assets_arrived || self.needs_resolve || animating {
+            let invalidate_layout =
+                assets_arrived || (self.needs_resolve && self.needs_geometry_sync);
             self.needs_resolve = false;
             let resolve_started = std::time::Instant::now();
-            let animation_time = self.animation_time();
-            self.document.as_mut().resolve(animation_time);
+            self.resolve_document(invalidate_layout);
+            self.apply_pending_scrolls();
             for _ in 0..ASSET_ROUNDS {
                 if !self.take_arrivals() {
                     break;
                 }
                 // Loaded images can change intrinsic dimensions even when CSS fixes their box.
                 self.needs_geometry_sync = true;
-                let animation_time = self.animation_time();
-                self.document.as_mut().resolve(animation_time);
+                self.resolve_document(true);
             }
             let resolved = resolve_started.elapsed();
             let sync_started = std::time::Instant::now();
             if std::mem::take(&mut self.needs_geometry_sync) {
                 let (logical_width, logical_height) = self.logical_size();
-                runtime.sync(
+                runtime.stage_layout(
                     self.document.as_ref(),
                     logical_width,
                     logical_height,
                     self.scale_factor,
-                    &self.dom_to_script,
-                    None,
                 );
             }
             if std::env::var_os(PAINT_TIMING).is_some() {
@@ -464,9 +532,7 @@ impl ShellDocument {
                 let Some(node_id) = placement.node_id else {
                     continue;
                 };
-                let Some(node_id) = self.dom_to_script.get(&node_id).copied() else {
-                    continue;
-                };
+                let node_id = node_id.as_u64() as usize;
                 surface_layout.push(TrackedSurfaceLayout {
                     node_id,
                     source_id: placement.source_id,
@@ -519,35 +585,5 @@ impl ShellDocument {
             arrived = true;
         }
         arrived
-    }
-
-    pub(crate) fn apply_script_mutations(&mut self, runtime: &mut ShellRuntime) {
-        let mutations = runtime.take_mutations();
-        if mutations.is_empty() {
-            return;
-        }
-        let structure_changed = mutations.iter().any(|mutation| {
-            matches!(
-                mutation,
-                Mutation::AppendChild { .. }
-                    | Mutation::InsertBefore { .. }
-                    | Mutation::RemoveChild { .. }
-            )
-        });
-        let effect = apply_dom_mutations(
-            &mut self.document,
-            &mut self.script_to_dom,
-            &mut self.dom_to_script,
-            mutations,
-        );
-        if structure_changed {
-            self.dom_structure_revision = self.dom_structure_revision.wrapping_add(1);
-        }
-        if !effect.needs_resolve {
-            return;
-        }
-        self.dirty = true;
-        self.needs_resolve |= effect.needs_resolve;
-        self.needs_geometry_sync |= effect.needs_geometry_sync;
     }
 }

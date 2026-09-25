@@ -11,7 +11,7 @@ pub(super) struct TrackedSurfaceWidget {
 }
 
 impl TrackedSurfaceWidget {
-    fn new(source_id: Option<u64>) -> Self {
+    pub(super) fn new(source_id: Option<u64>) -> Self {
         Self { source_id }
     }
 }

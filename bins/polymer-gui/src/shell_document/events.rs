@@ -1,4 +1,4 @@
-use super::ShellDocument;
+use super::{SharedShellDocument, ShellDocument};
 use crate::shell_dom::ShellHitSnapshot;
 use crate::shell_runtime::ShellRuntime;
 use blitz_dom::{EventDriver, EventHandler, NodeId};
@@ -7,12 +7,16 @@ use blitz_traits::events::{
     BlitzWheelEvent, DomEvent, DomEventData, EventState, KeyState, MouseEventButton,
     MouseEventButtons, Point, PointerCoords, PointerDetails, UiEvent,
 };
-use std::{cell::Cell, collections::HashMap, rc::Rc, str::FromStr};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    str::FromStr,
+};
 use style_dom::ElementState;
 
 struct DenoEventHandler<'a> {
     runtime: &'a mut ShellRuntime,
-    dom_to_script: &'a HashMap<NodeId, usize>,
+    document: Rc<RefCell<ShellDocument>>,
     claimed: Rc<Cell<bool>>,
     ordinary_dom_hit: bool,
     target_override: Option<usize>,
@@ -24,14 +28,25 @@ impl EventHandler for DenoEventHandler<'_> {
         &mut self,
         chain: &[NodeId],
         event: &mut DomEvent,
-        _document: &mut dyn blitz_dom::Document,
+        document: &mut dyn blitz_dom::Document,
         event_state: &mut EventState,
     ) {
+        if matches!(event.data, DomEventData::Focus(_) | DomEventData::FocusIn(_))
+            && document
+                .inner()
+                .try_root_element()
+                .is_some_and(|root| root.id == event.target)
+        {
+            return;
+        }
         let target = self.target_override.unwrap_or_else(|| {
+            let shell = self.document.borrow();
             chain
                 .iter()
-                .find_map(|node| self.dom_to_script.get(node).copied())
-                .unwrap_or(event.target.as_u64() as usize)
+                .copied()
+                .find(|node| shell.is_script_node(*node))
+                .unwrap_or(event.target)
+                .as_u64() as usize
         });
         let result = self.runtime.dispatch_event(
             event.name(),
@@ -147,6 +162,43 @@ impl ShellDocument {
         }
     }
 
+    fn pointer_target_override(&self, hit: ShellHitSnapshot, x: f32, y: f32) -> Option<usize> {
+        let native_script_target = self.document.as_ref().hit(x, y).and_then(|native| {
+            std::iter::successors(Some(native.node_id), |node| {
+                self.document
+                    .as_ref()
+                    .get_node(*node)
+                    .and_then(|node| node.parent)
+            })
+            .find(|node| self.is_script_node(*node))
+        });
+        (Some(hit.node_id) != native_script_target).then_some(hit.node_id.as_u64() as usize)
+    }
+
+    pub(super) fn mark_changed(&mut self) {
+        self.dirty = true;
+        self.needs_resolve = true;
+        self.needs_geometry_sync = true;
+    }
+}
+
+impl SharedShellDocument {
+    fn handler<'a>(
+        &self,
+        runtime: &'a mut ShellRuntime,
+        claimed: Rc<Cell<bool>>,
+        ordinary_dom_hit: bool,
+    ) -> DenoEventHandler<'a> {
+        DenoEventHandler {
+            runtime,
+            document: self.0.clone(),
+            claimed,
+            ordinary_dom_hit,
+            target_override: None,
+            default_prevented: None,
+        }
+    }
+
     /// Dispatches a mouse event to a target selected from a shell hit
     /// snapshot. The return value is true when script claims the pointer from
     /// the guest surface below this layer.
@@ -202,45 +254,29 @@ impl ShellDocument {
         };
         let claimed = Rc::new(Cell::new(false));
         if let Some(event) = event {
-            let native_script_target = self.document.as_ref().hit(x, y).and_then(|native| {
-                std::iter::successors(Some(native.node_id), |node| {
-                    self.document
-                        .as_ref()
-                        .get_node(*node)
-                        .and_then(|node| node.parent)
-                })
-                .find_map(|node| self.dom_to_script.get(&node).copied())
-            });
-            let target_override = self
-                .dom_to_script
-                .get(&hit.node_id)
-                .copied()
-                .filter(|target| Some(*target) != native_script_target);
+            let target_override = self.0.borrow().pointer_target_override(hit, x, y);
             let handler = DenoEventHandler {
-                runtime,
-                dom_to_script: &self.dom_to_script,
-                claimed: claimed.clone(),
-                ordinary_dom_hit: !hit.over_tracked_surface,
                 target_override,
-                default_prevented: None,
+                ..self.handler(runtime, claimed.clone(), !hit.over_tracked_surface)
             };
-            EventDriver::new(&mut self.document, handler).handle_ui_event(event);
+            EventDriver::new(self, handler).handle_ui_event(event);
+            let mut shell = self.0.borrow_mut();
             if target_override.is_some() {
                 // This clears an incorrect native hit, not a pointer leaving
                 // the window. Preserve its cursor (including CSS cursor:none)
                 // while replacing the hover ancestry below.
-                let cursor = self.document.as_ref().get_cursor();
-                let native_changed = self.document.as_mut().clear_hover();
-                self.document.as_ref().shell_provider.set_cursor(cursor);
+                let cursor = shell.document.as_ref().get_cursor();
+                let native_changed = shell.document.as_mut().clear_hover();
+                shell.document.as_ref().shell_provider.set_cursor(cursor);
                 if native_changed {
-                    self.dirty = true;
-                    self.needs_resolve = true;
-                    self.needs_geometry_sync = true;
+                    shell.mark_changed();
                 }
             }
-            self.set_pointer_hover(Some(hit.node_id));
+            shell.set_pointer_hover(Some(hit.node_id));
+            if shell.document.as_ref().scrollbar_drag_target().is_some() {
+                shell.mark_changed();
+            }
         }
-        self.apply_script_mutations(runtime);
         claimed.get()
     }
 
@@ -257,14 +293,10 @@ impl ShellDocument {
         let claimed = Rc::new(Cell::new(false));
         let default_prevented = Rc::new(Cell::new(false));
         let handler = DenoEventHandler {
-            runtime,
-            dom_to_script: &self.dom_to_script,
-            claimed: claimed.clone(),
-            ordinary_dom_hit: !hit.over_tracked_surface,
-            target_override: None,
             default_prevented: Some(default_prevented.clone()),
+            ..self.handler(runtime, claimed.clone(), !hit.over_tracked_surface)
         };
-        EventDriver::new(&mut self.document, handler).handle_dom_event(DomEvent::new(
+        EventDriver::new(self, handler).handle_dom_event(DomEvent::new(
             hit.node_id,
             DomEventData::Wheel(BlitzWheelEvent {
                 delta: BlitzWheelDelta::Pixels(event.horizontal, event.vertical),
@@ -283,22 +315,13 @@ impl ShellDocument {
         ));
         // Native wheel default actions mutate Blitz scroll offsets without a
         // script mutation, so explicitly schedule the resulting repaint.
-        self.dirty = true;
-        self.apply_script_mutations(runtime);
+        self.0.borrow_mut().mark_changed();
         claimed.get()
     }
 
     pub fn ime_event(&mut self, runtime: &mut ShellRuntime, event: BlitzImeEvent) {
-        let handler = DenoEventHandler {
-            runtime,
-            dom_to_script: &self.dom_to_script,
-            claimed: Rc::new(Cell::new(false)),
-            ordinary_dom_hit: false,
-            target_override: None,
-            default_prevented: None,
-        };
-        EventDriver::new(&mut self.document, handler).handle_ui_event(UiEvent::Ime(event));
-        self.apply_script_mutations(runtime);
+        let handler = self.handler(runtime, Rc::new(Cell::new(false)), false);
+        EventDriver::new(self, handler).handle_ui_event(UiEvent::Ime(event));
     }
 
     /// Dispatches a regular keyboard event to the shell window.
@@ -331,20 +354,30 @@ impl ShellDocument {
                 .then(|| event.key.clone().into()),
         };
         let claimed = Rc::new(Cell::new(false));
-        let handler = DenoEventHandler {
-            runtime,
-            dom_to_script: &self.dom_to_script,
-            claimed: claimed.clone(),
-            ordinary_dom_hit: false,
-            target_override: None,
-            default_prevented: None,
-        };
-        EventDriver::new(&mut self.document, handler).handle_ui_event(if event.kind == "keydown" {
+        let previous_focus = self.0.borrow().document.as_ref().get_focussed_node_id();
+        let handler = self.handler(runtime, claimed.clone(), false);
+        EventDriver::new(self, handler).handle_ui_event(if event.kind == "keydown" {
             UiEvent::KeyDown(data)
         } else {
             UiEvent::KeyUp(data)
         });
-        self.apply_script_mutations(runtime);
+        let mut shell = self.0.borrow_mut();
+        let next_focus = shell.document.as_ref().get_focussed_node_id();
+        if next_focus != previous_focus {
+            if let Some(node) = next_focus {
+                use crate::shell_runtime::deno::{ScrollAlignment, ScrollCommand};
+                super::scrolling::Scroller::apply(
+                    shell.document.as_mut(),
+                    node,
+                    ScrollCommand::IntoView {
+                        block: ScrollAlignment::Nearest,
+                        inline: ScrollAlignment::Nearest,
+                        nearest: false,
+                    },
+                );
+            }
+            shell.mark_changed();
+        }
         claimed.get()
     }
 }

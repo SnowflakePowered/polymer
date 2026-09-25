@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use blitz_dom::BaseDocument;
@@ -6,14 +5,20 @@ use deno_core::ModuleSpecifier;
 use serde_json::Value;
 
 use super::dom::{
-    Mutation, layout_snapshot, op_dom_append_child, op_dom_create_comment, op_dom_create_element,
-    op_dom_create_text, op_dom_focus, op_dom_insert_before, op_dom_parse_fragment,
-    op_dom_remove_attribute, op_dom_remove_child, op_dom_set_attribute, op_dom_set_text,
-    op_dom_take_layout, snapshot,
+    LayoutCache, LayoutSnapshot, ScriptNodeId, op_dom_append_child, op_dom_attributes,
+    op_dom_children, op_dom_clone, op_dom_closest, op_dom_create_comment, op_dom_create_element,
+    op_dom_create_fragment, op_dom_create_text, op_dom_element_by_id, op_dom_focus,
+    op_dom_focused, op_dom_get_attribute, op_dom_image_size, op_dom_insert_before,
+    op_dom_is_connected, op_dom_matches, op_dom_node_info, op_dom_query, op_dom_rect,
+    op_dom_relative, op_dom_remove_attribute, op_dom_remove_child, op_dom_scroll_metrics,
+    op_dom_set_attribute, op_dom_set_inner_html, op_dom_set_text, op_dom_take_layout,
+    op_dom_template_content, op_dom_text, op_dom_text_content,
 };
 use super::input::{EventResult, op_event_result};
 use super::modules::{BrowserModuleLoader, document_scripts, execute_document_script};
+use super::scroll::op_dom_scroll;
 use super::state::{BridgeState, op_post_message};
+use crate::shell_document::SharedShellDocument;
 use polymer_deno::polymer::PolymerNotificationSender;
 
 const BOOTSTRAP: &str = include_str!("runtime.js");
@@ -22,17 +27,37 @@ const EVENT_DISPATCH: &str = include_str!("event_dispatch.js");
 deno_core::extension!(
     polymer_shell_runtime,
     ops = [
+        op_dom_node_info,
+        op_dom_relative,
+        op_dom_children,
+        op_dom_text,
+        op_dom_text_content,
+        op_dom_is_connected,
+        op_dom_attributes,
+        op_dom_get_attribute,
+        op_dom_query,
+        op_dom_matches,
+        op_dom_closest,
+        op_dom_element_by_id,
+        op_dom_focused,
+        op_dom_rect,
+        op_dom_scroll_metrics,
+        op_dom_image_size,
         op_dom_create_element,
         op_dom_create_text,
         op_dom_create_comment,
+        op_dom_create_fragment,
+        op_dom_template_content,
+        op_dom_clone,
+        op_dom_set_inner_html,
         op_dom_append_child,
         op_dom_insert_before,
-        op_dom_parse_fragment,
         op_dom_remove_child,
         op_dom_set_text,
         op_dom_set_attribute,
         op_dom_remove_attribute,
         op_dom_focus,
+        op_dom_scroll,
         op_dom_take_layout,
         op_post_message,
         op_event_result,
@@ -41,42 +66,11 @@ deno_core::extension!(
     esm = ["ext:polymer_shell_runtime/bootstrap.js" = {
         source = r#"
                 import { core } from "ext:core/mod.js";
-                import {
-                  op_dom_append_child,
-                  op_dom_create_comment,
-                  op_dom_create_element,
-                  op_dom_create_text,
-                  op_dom_insert_before,
-                  op_dom_parse_fragment,
-                  op_dom_remove_attribute,
-                  op_dom_focus,
-                  op_dom_take_layout,
-                  op_dom_remove_child,
-                  op_dom_set_attribute,
-                  op_dom_set_text,
-                  op_event_result,
-                  op_post_message,
-                } from "ext:core/ops";
                 const webEvents = core.loadExtScript("ext:deno_web/02_event.js");
                 Object.defineProperty(globalThis, "__polymerRuntime", {
                   value: Object.freeze({
                     runMicrotasks: core.runMicrotasks,
-                    ops: Object.freeze({
-                      op_dom_append_child,
-                      op_dom_create_comment,
-                      op_dom_create_element,
-                      op_dom_create_text,
-                      op_dom_insert_before,
-                      op_dom_parse_fragment,
-                      op_dom_remove_attribute,
-                      op_dom_focus,
-                      op_dom_take_layout,
-                      op_dom_remove_child,
-                      op_dom_set_attribute,
-                      op_dom_set_text,
-                      op_event_result,
-                      op_post_message,
-                    }),
+                    ops: core.ops,
                     webEvents,
                   }),
                   configurable: true,
@@ -135,30 +129,14 @@ impl Drop for DenoRealm {
 pub struct Runtime {
     realm: DenoRealm,
     inspector_address: std::net::SocketAddr,
-    layout_cache: HashMap<usize, [f32; 6]>,
-    layout_view_state: Option<(Option<usize>, u32, u32, u32)>,
+    layout_cache: LayoutCache,
+    layout_view_state: Option<(u32, u32, u32)>,
 }
 
 impl Runtime {
-    pub(in crate::shell_runtime) fn serialized_snapshot(
-        document: &BaseDocument,
-        width: u32,
-        height: u32,
-        device_pixel_ratio: f32,
-        node_ids: &HashMap<blitz_dom::NodeId, usize>,
-    ) -> Result<String, serde_json::Error> {
-        serde_json::to_string(&snapshot(
-            document,
-            width,
-            height,
-            device_pixel_ratio,
-            Some(node_ids),
-        ))
-    }
-
-    pub(in crate::shell_runtime) async fn from_snapshot(
+    pub(in crate::shell_runtime) async fn start(
         debug: bool,
-        initial_snapshot: String,
+        document: SharedShellDocument,
         html: String,
         source_name: String,
         commands: polymer_runtime::FrontendCommands,
@@ -173,6 +151,14 @@ impl Runtime {
         // requires the embedder to choose one before fetch creates a client.
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         let inspector_address = Self::start_inspector_server()?;
+        let install = {
+            let shell = document.0.borrow();
+            let (base, width, height, scale_factor) = shell.runtime_context();
+            format!(
+                "__polymerDom.install({}, {width}, {height}, {scale_factor});",
+                base.root_node().id.to_script()
+            )
+        };
         let executor = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
@@ -200,6 +186,7 @@ impl Runtime {
                     local_storage,
                     inspect: true,
                 });
+                worker.js_runtime_mut().op_state().borrow_mut().put(document);
                 worker.js_runtime_mut().execute_script(
                     "polymer:shell/meta.js",
                     format!("Polymer.meta.debug = {debug}; Object.freeze(Polymer.meta);"),
@@ -210,10 +197,9 @@ impl Runtime {
                 worker
                     .js_runtime_mut()
                     .execute_script("polymer:shell/runtime.js", BOOTSTRAP)?;
-                worker.js_runtime_mut().execute_script(
-                    "polymer:shell/document.js",
-                    format!("__polymerDom.install({initial_snapshot});"),
-                )?;
+                worker
+                    .js_runtime_mut()
+                    .execute_script("polymer:shell/document.js", install)?;
                 for (index, script) in document_scripts(&html).enumerate() {
                     let result = execute_document_script(
                         &mut worker,
@@ -244,44 +230,54 @@ impl Runtime {
             Self {
                 realm: DenoRealm::new(worker, executor),
                 inspector_address,
-                layout_cache: HashMap::new(),
+                layout_cache: LayoutCache::new(),
                 layout_view_state: None,
             },
             notifications,
         ))
     }
 
-    pub fn sync(
+    pub fn stage_layout(
         &mut self,
         document: &BaseDocument,
         width: u32,
         height: u32,
         device_pixel_ratio: f32,
-        node_ids: &HashMap<blitz_dom::NodeId, usize>,
-        roots: Option<&[blitz_dom::NodeId]>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let layout = layout_snapshot(
+    ) {
+        let layout = LayoutSnapshot::capture(
             document,
             width,
             height,
             device_pixel_ratio,
-            node_ids,
             &mut self.layout_cache,
-            roots,
         );
         let view_state = layout.view_state();
-        if !layout.has_geometry_changes() && self.layout_view_state == Some(view_state) {
-            return Ok(());
+        if !layout.has_changes() && self.layout_view_state == Some(view_state) {
+            return;
         }
         self.layout_view_state = Some(view_state);
-        let (worker, executor) = self.realm.parts();
-        let _executor = executor.enter();
+        let (worker, _) = self.realm.parts();
         worker
             .js_runtime_mut()
             .op_state()
             .borrow_mut()
             .borrow_mut::<BridgeState>()
             .layout = Some(layout);
+    }
+
+    pub fn publish_layout(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let (worker, executor) = self.realm.parts();
+        let _executor = executor.enter();
+        if worker
+            .js_runtime_mut()
+            .op_state()
+            .borrow()
+            .borrow::<BridgeState>()
+            .layout
+            .is_none()
+        {
+            return Ok(());
+        }
         worker
             .js_runtime_mut()
             .execute_script("polymer:shell/sync.js", "__polymerDom.syncLayout();")?;
@@ -344,19 +340,6 @@ impl Runtime {
     /// tasks progress without blocking the window thread.
     pub async fn poll_event_loop(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         self.realm.poll_event_loop().await
-    }
-
-    pub fn take_mutations(&mut self) -> Vec<Mutation> {
-        let (worker, executor) = self.realm.parts();
-        let _executor = executor.enter();
-        std::mem::take(
-            &mut worker
-                .js_runtime_mut()
-                .op_state()
-                .borrow_mut()
-                .borrow_mut::<BridgeState>()
-                .mutations,
-        )
     }
 
     pub(crate) const fn inspector_address(&self) -> std::net::SocketAddr {
