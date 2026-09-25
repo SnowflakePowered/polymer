@@ -1,5 +1,5 @@
 import "../../components/CoverArt.css";
-import { For, Show, createSignal, onCleanup } from "solid-js";
+import { For, Show, createEffect, createSignal, onCleanup } from "solid-js";
 import { CoverArt, Tile, ScrollingText, PlayerBadge } from "../../ui";
 import { Progress as ProgressIndicator } from "../../ui";
 import type { RecentGame } from "../../app/models";
@@ -18,19 +18,19 @@ export function GameTile(props: {
   onContextMenu(event: MouseEvent): void;
 }) {
   const [focused, setFocused] = createSignal(false);
-  const [loaded, setLoaded] = createSignal<string>();
-  const ready = () => !!props.game.artwork && loaded() === props.game.artwork;
+  const [ready, setReady] = createSignal(false);
+  createEffect(() => { props.game.artwork; setReady(false); });
   const id = () => gameId(props.game);
   onCleanup(() => props.register(id(), null));
 
-  return <Tile selected={props.selected}
+  return <Tile
     ref={(element) => props.register(id(), element)}
     type="button"
     class="horizon-game-tile"
     data-select-ring
-    classList={{ selected: props.selected, "has-artwork-ratio": ready(), scraping: !!props.game.scraping }}
+    classList={{ "has-artwork-ratio": ready(), scraping: !!props.game.scraping }}
     data-controller={props.players.length ? props.players[0] % 8 : undefined}
-    style={{ left: `${props.placement.x}px`, top: `${props.placement.y}px`, width: `${props.placement.width}px`, height: `${props.placement.height}px`, "--tile-color": tileColor(id()), transform: `scale(${props.selected || props.players.length ? 1.06 : 1})` }}
+    style={{ left: `${props.placement.x}px`, top: `${props.placement.y}px`, width: `${props.placement.width}px`, height: `${props.placement.height}px`, "--tile-color": tileColor(id()) }}
     aria-label={`${props.game.name}, ${window.Polymer.machine(props.game.platform)?.name ?? props.game.platform}`}
     aria-current={props.selected ? "true" : undefined}
     aria-haspopup="dialog"
@@ -38,7 +38,7 @@ export function GameTile(props: {
     onClick={props.onActivate}
     onContextMenu={event => { event.preventDefault(); event.currentTarget.focus(); props.onContextMenu(event); }}
   >
-    <CoverArt class="horizon-cover-art" src={props.game.artwork} onRatio={props.onRatio} onReady={isReady => setLoaded(isReady ? props.game.artwork : undefined)} />
+    <CoverArt class="horizon-cover-art" src={props.game.artwork} onRatio={props.onRatio} onReady={setReady} />
     <span class="horizon-game-title"><ScrollingText active={focused()}>{props.game.name}</ScrollingText></span>
     <small>{window.Polymer.machine(props.game.platform)?.name ?? props.game.platform}</small><span class="horizon-game-players"><For each={props.players}>{player => <PlayerBadge player={player} />}</For></span>
     <Show when={props.game.scraping}>{progress => <div class="horizon-game-scraping">

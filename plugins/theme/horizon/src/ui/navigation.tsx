@@ -1,6 +1,6 @@
 import { Tabs as ArkTabs, Listbox, createListCollection, useTabs, useListbox } from "@ark-ui/solid";
 import { For, Index, Show, createMemo, createSignal, type JSX, type ParentProps } from "solid-js";
-import { useInputScope, useNavigation } from "./input";
+import { useFocusRing, useInputScope, useNavigation } from "./input";
 import { ScrollingText } from "./media";
 
 export type NavigationItem = { value: string; label: string; description?: string; disabled?: boolean };
@@ -38,6 +38,7 @@ export function SelectableList(props: { label: string; value: string | null; ite
   let root!: HTMLDivElement;
   const [focused, setFocused] = createSignal(false);
   const collection = createMemo(() => createListCollection({ items: [...props.items] }));
+  useFocusRing(() => root, () => { props.value; return root?.querySelector("[data-part='item'][data-state='checked']"); });
   const api = useListbox(() => ({ scrollToIndexFn: details => details.getElement()?.scrollIntoView?.({ block: "nearest" }), collection: collection(), value: props.value ? [props.value] : [], selectionMode: "single", selectOnHighlight: true, onValueChange: details => { if (details.value[0]) props.onValueChange(details.value[0]); } }));
   useInputScope(() => ({ root, handle: action => {
     if (action.origin !== "controller") return false;
@@ -49,6 +50,6 @@ export function SelectableList(props: { label: string; value: string | null; ite
     if (next) { api().selectValue(next.value); root.querySelector<HTMLElement>(`[data-value='${CSS.escape(next.value)}']`)?.scrollIntoView?.({ block: "nearest" }); }
     return true;
   } }));
-  return <Listbox.RootProvider onFocusIn={() => setFocused(true)} onFocusOut={event => { if (!root.contains(event.relatedTarget as Node)) setFocused(false); }} ref={root} value={api} class="hz-list" data-focused={focused() || undefined}><Listbox.Label class="hz-visually-hidden">{props.label}</Listbox.Label><Listbox.Content onKeyDown={event => { if (event.key === "Enter" && props.value) props.onActivate?.(props.value); }}><For each={props.items}>{item => <Listbox.Item item={item}><Listbox.ItemText><ListRow label={item.label} description={item.description} focused={focused() && props.value === item.value} /></Listbox.ItemText></Listbox.Item>}</For></Listbox.Content></Listbox.RootProvider>;
+  return <Listbox.RootProvider onFocusIn={() => setFocused(true)} onFocusOut={event => { if (!root.contains(event.relatedTarget as Node)) setFocused(false); }} ref={root} value={api} class="hz-list"><Listbox.Label class="hz-visually-hidden">{props.label}</Listbox.Label><Listbox.Content onKeyDown={event => { if (event.key === "Enter" && props.value) props.onActivate?.(props.value); }}><For each={props.items}>{item => <Listbox.Item item={item}><Listbox.ItemText><ListRow label={item.label} description={item.description} focused={focused() && props.value === item.value} /></Listbox.ItemText></Listbox.Item>}</For></Listbox.Content></Listbox.RootProvider>;
 }
 export function TileGrid(props: ParentProps<JSX.HTMLAttributes<HTMLDivElement>>) { return <div {...props} class={`hz-tile-grid ${props.class ?? ""}`} />; }

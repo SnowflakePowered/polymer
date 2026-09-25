@@ -58,7 +58,6 @@
 @media (max-width: 650px) { .hz-field { grid-template-columns: 1fr; } .hz-choice-trigger { text-align: left; } }
 
 /* Focus belongs to the whole setting, including its label and help text. */
-.hz-setting-row[data-focused] { border-radius: var(--hz-radius-card); background: var(--hz-panel); }
-.hz-setting-row[data-focused] :focus, .hz-setting-row[data-focused] [data-part][data-focus] { outline: none; }
-.hz-setting-row[data-focused] :focus::after { opacity: 0; animation: none; }
+.hz-setting-row[data-focus-ring] { border-radius: var(--hz-radius-card); background: var(--hz-panel); }
+.hz-setting-row[data-focus-ring] :focus, .hz-setting-row[data-focus-ring] [data-part][data-focus] { outline: none; }
 }

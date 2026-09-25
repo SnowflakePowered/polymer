@@ -5,7 +5,7 @@ import { css } from "../../../styled-system/css";
 import { Screen, ScreenHeader, MasterDetail, CategoryNavigation, TileGrid, Tile, Icon, DetailList, Section, Button, ActionGroup, Dialog, ConfirmDialog, ActionHints, EmptyState, ErrorState, Progress, Spinner } from "../../ui";
 import { AppSidebar } from "../../components/AppSidebar";
 import { useShell } from "../../app/shell-context";
-import { selectedNand } from "./selection";
+import { selectedNand, installPhases } from "./selection";
 import "./StoragePage.css";
 
 const depotTypes: Record<DepotType, string> = { system: "System title", app: "Application", appcontent: "Downloadable content", appupdate: "Update" };
@@ -13,9 +13,8 @@ const megabytes = (bytes: number) => `${(bytes / 1048576).toFixed(1)} MB`;
 const installedOn = (artifact: StorageArtifact) => Date.parse(artifact.installed) > 0 ? new Date(artifact.installed).toLocaleDateString() : "Unknown";
 
 const titleGrid = css({ gridTemplateColumns: "repeat(auto-fill, minmax(8.5rem, 1fr))", gap: "1rem" });
-const titleTile = css({ display: "flex", flexDirection: "column", alignItems: "center", gap: ".6rem", padding: ".75rem", bg: "panel", borderRadius: "card", "&[data-selected]": { bg: "raised", boxShadow: "inset 0 -4px 0 token(colors.action)" } });
-const titleIcon = css({ width: "6rem", height: "6rem", borderRadius: "control", objectFit: "cover", flex: "none", display: "flex", alignItems: "center", justifyContent: "center", bg: "overlay", "& svg": { width: "3rem", height: "3rem" } });
-const titleName = css({ width: "100%", overflow: "hidden", textAlign: "center", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: ".85em" });
+const titleTile = css({ display: "flex", flexDirection: "column", gap: ".4rem", padding: "var(--hz-focus-width)", bg: "transparent", borderRadius: "card", aspectRatio: "1", "&[data-selected]": { boxShadow: "none" } });
+const titleIcon = css({ width: "100%", flex: 1, minHeight: 0, borderRadius: "control", objectFit: "cover", display: "flex", alignItems: "center", justifyContent: "center", bg: "overlay", "& svg": { width: "3rem", height: "3rem" } });
 const detailIcon = css({ width: "100%", maxWidth: "12rem", aspectRatio: "1", borderRadius: "card", objectFit: "cover", display: "flex", alignItems: "center", justifyContent: "center", bg: "panel", "& svg": { width: "5rem", height: "5rem" } });
 
 const installTitle = (install: StorageInstall) => install.state === "running" ? install.detail.title : null;
@@ -32,7 +31,6 @@ export function StoragePage() {
   const [systems, setSystems] = createSignal<string[]>();
   const [volumes, setVolumes] = createSignal<ConsoleStorageVolume[]>([]);
   const [currentId, setCurrentId] = createSignal("");
-  const platformName = () => window.Polymer.machine(platform())?.name ?? platform();
   const current = () => volumes().find(volume => volume.id === currentId() && volume.platform === platform()) ?? volumes().find(volume => volume.platform === platform());
   const [plan, setPlan] = createSignal<StorageRemovalPlan>();
   const [confirmRecover, setConfirmRecover] = createSignal(false);
@@ -94,7 +92,7 @@ export function StoragePage() {
   const artifact = () => checked()?.artifacts.find(item => item.id === artifactId()) ?? checked()?.artifacts[0];
   const systemItems = () => [...new Set([...systems() ?? [], ...platform() ? [platform()] : []])].map(value => ({ value, label: window.Polymer.machine(value)?.name ?? value }));
   return <div class="horizon-storage-shell"><AppSidebar /><Screen class="horizon-storage" hints={[{ action: "move", label: "Change pane" }, { action: "back", label: "Back" }, { action: "activate", label: "Select" }]} onAction={action => { if (action.type !== "back") return false; shell.navigate("/"); return true; }}>
-    <ScreenHeader title="NAND management" description="System storage" />
+    <ScreenHeader title="System Storage" />
     <Show when={shell.model.draft && shell.model.launcher.kind === "error"}><ErrorState message={shell.model.error} /></Show>
     <Show when={error()}><ErrorState message={error()} /></Show><Show when={busy()}><Progress label="Storage operation" /></Show>
     <Show when={systems()} fallback={<Spinner label="Checking NANDs" />}><Show when={systemItems().length} fallback={<EmptyState title="No titles installed" description="Drag a title package onto your library to install it." />}>
@@ -102,27 +100,24 @@ export function StoragePage() {
       detail={<Show when={artifact()}>{item => <Section title={item().label}>
         <TitleIcon artifact={item()} class={detailIcon} />
         <DetailList items={[{ label: "Title ID", value: item().id }, { label: "Type", value: depotTypes[item().depotType] }, { label: "Version", value: item().version || "—" }, { label: "Installed size", value: megabytes(item().byteLength) }, { label: "Files", value: String(item().fileCount) }, { label: "Installed", value: installedOn(item()) }]} />
-        <Button appearance="danger" disabled={busy() || checked()?.dirty} onClick={() => void run(async () => setPlan(await current()!.artifacts.planRemoval([item().id])))}>Remove title…</Button>
+        <Button appearance="danger" disabled={busy() || checked()?.dirty} onClick={() => void run(async () => setPlan(await current()!.artifacts.planRemoval([item().id])))}>Uninstall</Button>
       </Section>}</Show>}>
 
-      <Section title={platformName()}>
-        <Show when={current()}>{volume => <>
+      <Show when={current()}>{volume => <>
           <Show when={checked()?.dirty}><ErrorState message="This NAND has uncommitted changes. Recover it before launching or installing contents."><Button disabled={busy()} onClick={() => setConfirmRecover(true)}>Recover NAND…</Button></ErrorState></Show>
-          <ActionGroup>
+          <Show when={platforms().includes(platform()) || shell.model.draft?.platform === platform()}><ActionGroup>
             <Show when={platforms().includes(platform())}><Button disabled={busy() || checked()?.dirty} onClick={() => void run(async () => { await volume().bootstrap(); })}>Complete setup</Button></Show>
             <Show when={shell.model.draft?.platform === platform()}><Button disabled={busy() || checked()?.dirty} onClick={() => shell.launchDraft()}>Continue launch</Button></Show>
-          </ActionGroup>
+          </ActionGroup></Show>
           <Section title="Installed titles"><Show when={checked()?.artifacts.length || pending().length} fallback={<Show when={checked()} fallback={<Spinner label="Checking NAND" />}><EmptyState title="No titles installed" description="Drag a title package onto your library to install it." /></Show>}>
             <TileGrid class={titleGrid} aria-label="Installed titles"><For each={pending()}>{install => <Tile class={titleTile} aria-label={`Installing ${installTitle(install)?.label ?? install.filename}`}>
               <Show when={installTitle(install)?.icon} fallback={<span class={titleIcon}><Icon name="gamepad" tone="muted" strokeWidth={1.2} /></span>}>{icon => <img class={titleIcon} src={icon()} alt="" />}</Show>
-              <span class={titleName}>{installTitle(install)?.label ?? install.filename}</span>
-              <Progress label={install.state === "running" ? install.detail.message : "Waiting to install"} completed={install.state === "running" ? install.detail.completed : undefined} total={install.state === "running" ? install.detail.total : undefined} />
+              <Progress label={install.state === "running" ? installPhases[install.detail.phase] : "Waiting to install"} completed={install.state === "running" ? install.detail.completed : undefined} total={install.state === "running" ? install.detail.total : undefined} />
             </Tile>}</For><For each={checked()?.artifacts ?? []}>{item => <Tile class={titleTile} selected={artifact()?.id === item.id} aria-label={item.label} onFocus={() => setArtifactId(item.id)} onClick={() => setArtifactId(item.id)}>
-              <TitleIcon artifact={item} class={titleIcon} /><span class={titleName}>{item.label}</span>
+              <TitleIcon artifact={item} class={titleIcon} />
             </Tile>}</For></TileGrid>
           </Show></Section>
-        </>}</Show>
-      </Section>
+      </>}</Show>
     </MasterDetail></Show></Show><ActionHints />
     <ConfirmDialog open={confirmRecover()} pending={busy()} title="Recover NAND?" description={`Discard uncommitted changes to ${current()?.label || currentId()}? Successfully installed contents and separate save profiles are kept.`} confirmLabel="Discard changes and recover" onClose={() => setConfirmRecover(false)} onConfirm={() => void run(async () => { await current()!.recover(); setConfirmRecover(false); setPlan(undefined); })} />
     <Dialog open={!!plan()} onOpenChange={open => { if (!open && !busy()) setPlan(undefined); }} pending={busy()} title="Remove installed titles" actions={<><Button disabled={busy()} onClick={() => setPlan(undefined)}>Cancel</Button><Button appearance="danger" pending={busy()} disabled={checked()?.dirty || !!plan()?.affected.length} onClick={() => void run(remove)}>Remove selected artifacts</Button></>}>
