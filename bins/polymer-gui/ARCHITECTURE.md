@@ -2,7 +2,7 @@
 
 The crate keeps its historical `polymer-shell-webview2` name, but it no
 longer creates a WebView or Chromium process. One Solid application executes in
-one Deno UI isolate and mirrors its DOM into one Blitz document.
+one Deno UI isolate against one Blitz document, which is the only DOM.
 
 ## Startup
 
@@ -10,8 +10,8 @@ The selected `theme` plugin identifies the only UI document. Selection uses a
 temporary `--theme` override, then `localStorage["Polymer.theme"]`, then the
 first loaded theme by ID. The shell creates the native Winit window, loads the
 theme document, parses it with `blitz-html`,
-starts the Deno runtime, executes the document's module script, applies queued
-DOM mutations, resolves layout, and paints the first frame.
+starts the Deno runtime, executes the document's module script, resolves
+layout, and paints the first frame.
 
 `--debug` starts the selected theme's `[theme.debug].serve` command from its
 package directory, waits for `[theme.debug].url`, and keeps that process alive
@@ -24,7 +24,7 @@ and fonts. Its waker posts a shell redraw event when a resource arrives.
 ## UI ownership
 
 - `ShellDocument` owns Blitz parsing, Stylo layout, the tracked-surface custom
-  widget, banded painting, hit testing, and script/DOM identity maps.
+  widget, banded painting, hit testing, and the DOM mutations script performs.
 - `ShellRuntime` owns the sole Deno UI realm and the DOM compatibility wrappers
   used by Solid and Ark UI. The optional `polymer-deno` extension owns the
   non-DOM `Polymer` facades, their ops, and a typed notification inbox.
@@ -84,9 +84,11 @@ the application-facing `Polymer` global.
 
 Deno supplies web events, timers, promises, fetch, WebSockets, URL, storage,
 streams, and structured clone. Blitz supplies DOM/CSS/layout/painting and
-native default actions. The bridge preserves JavaScript node identity, queues
-typed mutations, synchronizes post-layout geometry, and converts Blitz events
-to Deno event subclasses.
+native default actions. JavaScript nodes are identity-cached wrappers around
+Blitz node IDs; every DOM read and write is a synchronous op against the Blitz
+document, so script never runs while Rust holds a borrow of it. After layout,
+the bridge reports which nodes resized, scrolled, or loaded an image, and it
+converts Blitz events to Deno event subclasses.
 
 Pointer input is hit-tested against Blitz first and dispatched through Blitz's
 `EventDriver`. Script cancellation updates Blitz `EventState`, so native

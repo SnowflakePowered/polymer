@@ -1,273 +1,256 @@
-use super::tracked_surface::TrackedSurfaceWidget;
-use crate::shell_runtime::Mutation;
-use blitz_dom::{LocalName, NodeId, QualName, ns};
+use super::ShellDocument;
+use super::scrolling::Scroller;
+use super::tracked_surface::{TrackedSurfaceWidget, is_tracked_surface_element};
+use crate::shell_runtime::deno::{ScrollBehavior, ScrollCommand};
+use blitz_dom::node::NodeData;
+use blitz_dom::{LocalName, NodeId, QualName, local_name, ns};
 use std::collections::HashMap;
+use style::selector_parser::RestyleDamage;
 
-#[derive(Default)]
-pub(super) struct MutationEffect {
-    pub(super) needs_resolve: bool,
-    pub(super) needs_geometry_sync: bool,
-}
-
-pub(super) fn apply_dom_mutations(
-    document: &mut blitz_html::HtmlDocument,
-    script_to_dom: &mut HashMap<usize, NodeId>,
-    dom_to_script: &mut HashMap<NodeId, usize>,
-    mutations: Vec<Mutation>,
-) -> MutationEffect {
-    if mutations.is_empty() {
-        return MutationEffect::default();
+impl ShellDocument {
+    fn mark_structure_changed(&mut self) {
+        self.dom_structure_revision = self.dom_structure_revision.wrapping_add(1);
+        self.mark_changed();
     }
 
-    // Stylo assumes every descendant reached by attribute invalidation already
-    // has a primary computed style. Solid can append a newly-created subtree
-    // and then set an attribute on one of its ancestors in the same mutation
-    // batch. If we feed that order directly to Blitz, the later invalidation
-    // sees the attached-but-unstyled descendants and panics in
-    // `ElementStyles::primary`.
-    //
-    // Attach the new tree without attribute invalidations, give it its base
-    // styles, then apply attributes. The next normal paint resolve computes
-    // the final styles; the intermediate resolve is never presented.
-    let (focus, mutations): (Vec<_>, Vec<_>) = mutations
-        .into_iter()
-        .partition(|mutation| matches!(mutation, Mutation::Focus { .. }));
-    let has_new_elements = mutations
-        .iter()
-        .any(|mutation| matches!(mutation, Mutation::CreateElement { .. }));
-    let mut effect = if has_new_elements {
-        let (attributes, structure): (Vec<_>, Vec<_>) =
-            mutations.into_iter().partition(|mutation| {
-                matches!(
-                    mutation,
-                    Mutation::SetAttribute { .. } | Mutation::RemoveAttribute { .. }
-                )
-            });
-        apply_dom_mutation_batch(document, script_to_dom, dom_to_script, structure);
-        document.as_mut().resolve(1.0);
-        let mut effect =
-            apply_dom_mutation_batch(document, script_to_dom, dom_to_script, attributes);
-        effect.needs_resolve = true;
-        effect.needs_geometry_sync = true;
-        effect
-    } else {
-        apply_dom_mutation_batch(document, script_to_dom, dom_to_script, mutations)
-    };
-    if !focus.is_empty() {
-        effect.needs_resolve = true;
-        effect.needs_geometry_sync = true;
+    fn exists(&self, nodes: &[NodeId]) -> bool {
+        nodes
+            .iter()
+            .all(|node| self.document.as_ref().get_node(*node).is_some())
     }
-    for mutation in focus {
-        if let Mutation::Focus { node } = mutation
-            && let Some(node) = script_to_dom.get(&node).copied()
-            && document
-                .as_ref()
-                .get_node(node)
-                .is_some_and(|node| node.flags.is_in_document())
+
+    fn attach_tracked_surfaces(&mut self, root: NodeId) {
+        let mut surfaces = Vec::new();
+        let mut pending = vec![root];
+        while let Some(id) = pending.pop() {
+            let Some(node) = self.document.as_ref().get_node(id) else {
+                continue;
+            };
+            pending.extend(node.children.iter().copied());
+            if let Some(element) = node.element_data()
+                && is_tracked_surface_element(element)
+            {
+                let source = element
+                    .attr(local_name!("src"))
+                    .and_then(|source| source.parse().ok());
+                surfaces.push((id, source));
+            }
+        }
+        for (node, source) in surfaces {
+            self.document
+                .as_mut()
+                .set_custom_widget(node, Box::new(TrackedSurfaceWidget::new(source)));
+        }
+    }
+
+    pub(crate) fn create_element(&mut self, tag: &str, namespace: Option<&str>) -> NodeId {
+        let namespace = match namespace {
+            Some("http://www.w3.org/2000/svg") => ns!(svg),
+            _ => ns!(html),
+        };
+        let node = self
+            .document
+            .as_mut()
+            .mutate()
+            .create_element(QualName::new(None, namespace, LocalName::from(tag)), Vec::new());
+        self.attach_tracked_surfaces(node);
+        node
+    }
+
+    pub(crate) fn create_text(&mut self, text: &str) -> NodeId {
+        self.document.as_mut().mutate().create_text_node(text)
+    }
+
+    pub(crate) fn create_comment(&mut self, text: &str) -> NodeId {
+        self.document.as_mut().mutate().create_comment_node(text)
+    }
+
+    pub(crate) fn create_fragment(&mut self) -> NodeId {
+        self.create_element("#document-fragment", None)
+    }
+
+    pub(crate) fn template_content(&mut self, template: NodeId) -> Option<NodeId> {
+        self.exists(&[template])
+            .then(|| self.document.as_mut().mutate().template_contents(template))
+    }
+
+    pub(crate) fn clone_node(&mut self, node: NodeId, deep: bool) -> Option<NodeId> {
+        let document = self.document.as_mut();
+        let clone = match (&document.get_node(node)?.data, deep) {
+            (_, true) => document.deep_clone_node(node),
+            (NodeData::Element(element), false) => {
+                let (name, attributes) = (element.name.clone(), element.attrs().to_vec());
+                document.mutate().create_element(name, attributes)
+            }
+            (NodeData::Text(text), false) => {
+                let text = text.content.clone();
+                document.mutate().create_text_node(&text)
+            }
+            (NodeData::Comment { contents }, false) => {
+                let contents = contents.clone();
+                document.mutate().create_comment_node(&contents)
+            }
+            _ => return None,
+        };
+        self.attach_tracked_surfaces(clone);
+        Some(clone)
+    }
+
+    pub(crate) fn set_inner_html(&mut self, node: NodeId, html: &str) {
+        if !self.exists(&[node]) {
+            return;
+        }
+        self.document.as_mut().mutate().set_inner_html(node, html);
+        self.attach_tracked_surfaces(node);
+        self.mark_structure_changed();
+    }
+
+    pub(crate) fn append_child(&mut self, parent: NodeId, child: NodeId) {
+        if !self.exists(&[parent, child]) {
+            return;
+        }
+        self.document.as_mut().mutate().append_children(parent, &[child]);
+        self.mark_structure_changed();
+    }
+
+    pub(crate) fn insert_before(&mut self, parent: NodeId, child: NodeId, before: NodeId) {
+        if child == before
+            || !self.exists(&[parent, child, before])
+            || self.document.as_ref().get_node(before).and_then(|node| node.parent) != Some(parent)
         {
-            document.as_mut().set_focus_to(node);
+            return;
         }
+        self.document
+            .as_mut()
+            .mutate()
+            .insert_nodes_before(before, &[child]);
+        self.mark_structure_changed();
     }
-    effect
-}
 
-fn apply_dom_mutation_batch(
-    document: &mut blitz_html::HtmlDocument,
-    script_to_dom: &mut HashMap<usize, NodeId>,
-    dom_to_script: &mut HashMap<NodeId, usize>,
-    mutations: Vec<Mutation>,
-) -> MutationEffect {
-    let mut needs_resolve = false;
-    let mut needs_geometry_sync = false;
-
-    // A conditional UI subtree can be removed while one of its controls owns
-    // focus. Blitz keeps focus independently from tree membership, so leaving
-    // that detached node focused makes a later blur or style resolve operate
-    // on a node which is no longer in the document. Pause dialogs exercise
-    // this whenever their focussed Resume button disappears. Clear focus
-    // before detaching any subtree which contains it.
-    if let Some(focused) = document.as_ref().get_focussed_node_id()
-        && mutations.iter().any(|mutation| {
-            let Mutation::RemoveChild { child, .. } = mutation else {
-                return false;
-            };
-            let Some(removed) = script_to_dom.get(child).copied() else {
-                return false;
-            };
-            std::iter::successors(Some(focused), |node| {
-                document
-                    .as_ref()
-                    .get_node(*node)
-                    .and_then(|node| node.parent)
+    pub(crate) fn remove_child(&mut self, parent: NodeId, child: NodeId) {
+        let document = self.document.as_mut();
+        if document.get_node(child).and_then(|node| node.parent) != Some(parent) {
+            return;
+        }
+        // A conditional UI subtree can be removed while one of its controls owns
+        // focus. Pause dialogs exercise this whenever their focussed Resume
+        // button disappears. Clear focus before detaching any subtree which
+        // contains it.
+        if let Some(focused) = document.get_focussed_node_id()
+            && std::iter::successors(Some(focused), |node| {
+                document.get_node(*node).and_then(|node| node.parent)
             })
-            .any(|node| node == removed)
-        })
-    {
-        document.as_mut().clear_focus();
+            .any(|node| node == child)
+        {
+            document.clear_focus();
+        }
+        let containers = hoisted_layout_containers(document, child);
+        let mut mutator = document.mutate();
+        mutator.remove_node(child);
+        for container in containers {
+            if let Some(node) = mutator.doc.get_node_mut(container) {
+                node.insert_damage(RestyleDamage::from_bits_retain(u16::MAX));
+                node.mark_ancestors_dirty();
+            }
+        }
+        drop(mutator);
+        self.mark_structure_changed();
     }
 
-    let mut mutator = document.as_mut().mutate();
-    for mutation in mutations {
-        match mutation {
-            Mutation::CreateElement {
-                node,
-                tag,
-                namespace,
-            } => {
-                needs_resolve = true;
-                needs_geometry_sync = true;
-                let is_tracked_surface = tag == "tracked-surface";
-                let namespace = match namespace.as_deref() {
-                    Some("http://www.w3.org/2000/svg") => ns!(svg),
-                    _ => ns!(html),
-                };
-                let actual = mutator.create_element(
-                    QualName::new(None, namespace, LocalName::from(tag)),
-                    Vec::new(),
-                );
-                if is_tracked_surface {
-                    mutator
-                        .doc
-                        .set_custom_widget(actual, Box::new(TrackedSurfaceWidget::default()));
-                }
-                script_to_dom.insert(node, actual);
-                dom_to_script.insert(actual, node);
-            }
-            Mutation::CreateText { node, text } => {
-                needs_resolve = true;
-                needs_geometry_sync = true;
-                let actual = mutator.create_text_node(&text);
-                script_to_dom.insert(node, actual);
-                dom_to_script.insert(actual, node);
-            }
-            Mutation::CreateComment { node } => {
-                needs_resolve = true;
-                needs_geometry_sync = true;
-                let actual = mutator.create_comment_node("");
-                script_to_dom.insert(node, actual);
-                dom_to_script.insert(actual, node);
-            }
-            Mutation::AppendChild { parent, child } => {
-                needs_resolve = true;
-                needs_geometry_sync = true;
-                let Some((parent, child)) = script_to_dom
-                    .get(&parent)
-                    .copied()
-                    .zip(script_to_dom.get(&child).copied())
-                else {
-                    continue;
-                };
-                mutator.append_children(parent, &[child]);
-            }
-            Mutation::InsertBefore {
-                parent,
-                child,
-                before,
-            } => {
-                needs_resolve = true;
-                needs_geometry_sync = true;
-                let Some((parent, child, before)) = script_to_dom
-                    .get(&parent)
-                    .copied()
-                    .zip(script_to_dom.get(&child).copied())
-                    .zip(script_to_dom.get(&before).copied())
-                    .map(|((parent, child), before)| (parent, child, before))
-                else {
-                    continue;
-                };
-                if mutator.parent_id(before) == Some(parent) {
-                    mutator.insert_nodes_before(before, &[child]);
-                }
-            }
-            Mutation::RemoveChild { parent, child } => {
-                needs_resolve = true;
-                needs_geometry_sync = true;
-                let Some((parent, child)) = script_to_dom
-                    .get(&parent)
-                    .copied()
-                    .zip(script_to_dom.get(&child).copied())
-                else {
-                    continue;
-                };
-                if mutator.parent_id(child) == Some(parent) {
-                    mutator.remove_node(child);
-                    // Blitz keeps detached DOM nodes alive so they can be
-                    // reinserted, but their cached layout hierarchy can point
-                    // through anonymous boxes owned by the old parent. Those
-                    // boxes are deallocated when that parent is reconstructed.
-                    // Detached nodes generate no boxes, so discard their stale
-                    // layout ancestry until a later insertion rebuilds it.
-                    mutator.doc.iter_subtree_mut(child, |node, document| {
-                        if let Some(node) = document.get_node_mut(node) {
-                            node.layout_parent.set(None);
-                        }
-                    });
-                }
-            }
-            Mutation::SetText { node, text } => {
-                needs_resolve = true;
-                needs_geometry_sync = true;
-                if let Some(node) = script_to_dom.get(&node).copied() {
-                    mutator.set_node_text(node, &text);
-                }
-            }
-            Mutation::SetAttribute { node, name, value } => {
-                let Some(node) = script_to_dom.get(&node).copied() else {
-                    continue;
-                };
-                let attribute_name = LocalName::from(name);
-                let previous = mutator
-                    .doc
-                    .get_node(node)
-                    .and_then(blitz_dom::Node::element_data)
-                    .and_then(|element| element.attr(attribute_name.clone()))
-                    .map(str::to_owned);
-                if previous.as_deref() == Some(value.as_str()) {
-                    continue;
-                }
-                needs_resolve = true;
-                needs_geometry_sync |= attribute_name.as_ref() != "style"
-                    || style_change_requires_geometry(previous.as_deref(), Some(&value));
-                // HTML attributes are in the null namespace. Using the HTML
-                // element namespace here creates a second attribute instead
-                // of replacing one parsed from markup, leaving Stylo and hit
-                // testing on the stale value while the JavaScript mirror sees
-                // the update.
-                mutator.set_attribute(node, QualName::new(None, ns!(), attribute_name), &value);
-            }
-            Mutation::RemoveAttribute { node, name } => {
-                let Some(node) = script_to_dom.get(&node).copied() else {
-                    continue;
-                };
-                let attribute_name = LocalName::from(name);
-                let qualified_name = QualName::new(None, ns!(), attribute_name.clone());
-                if mutator
-                    .doc
-                    .get_node(node)
-                    .and_then(blitz_dom::Node::element_data)
-                    .and_then(|element| element.attr(attribute_name.clone()))
-                    .is_none()
-                {
-                    continue;
-                }
-                needs_resolve = true;
-                needs_geometry_sync |= attribute_name.as_ref() != "style"
-                    || style_change_requires_geometry(
-                        mutator
-                            .doc
-                            .get_node(node)
-                            .and_then(blitz_dom::Node::element_data)
-                            .and_then(|element| element.attr(attribute_name.clone())),
-                        None,
-                    );
-                mutator.clear_attribute(node, qualified_name);
-            }
-            Mutation::Focus { .. } => unreachable!("focus mutations are applied after DOM edits"),
+    pub(crate) fn set_text(&mut self, node: NodeId, text: &str) {
+        if !self.exists(&[node]) {
+            return;
         }
+        self.document.as_mut().mutate().set_node_text(node, text);
+        self.mark_changed();
     }
-    MutationEffect {
-        needs_resolve,
-        needs_geometry_sync,
+
+    fn attribute(&self, node: NodeId, name: &LocalName) -> Option<String> {
+        self.document
+            .as_ref()
+            .get_node(node)
+            .and_then(blitz_dom::Node::element_data)
+            .and_then(|element| element.attr(name.clone()))
+            .map(str::to_owned)
+    }
+
+    fn attribute_changed(&mut self, name: &LocalName, previous: Option<&str>, current: Option<&str>) {
+        self.dirty = true;
+        self.needs_resolve = true;
+        self.needs_geometry_sync |=
+            name.as_ref() != "style" || style_change_requires_geometry(previous, current);
+    }
+
+    pub(crate) fn set_attribute(&mut self, node: NodeId, name: &str, value: &str) {
+        let name = LocalName::from(name);
+        let previous = self.attribute(node, &name);
+        let is_element = self
+            .document
+            .as_ref()
+            .get_node(node)
+            .is_some_and(|node| node.element_data().is_some());
+        if !is_element || previous.as_deref() == Some(value) {
+            return;
+        }
+        // HTML attributes are in the null namespace. Using the HTML element
+        // namespace here creates a second attribute instead of replacing one
+        // parsed from markup.
+        self.document
+            .as_mut()
+            .mutate()
+            .set_attribute(node, QualName::new(None, ns!(), name.clone()), value);
+        self.attribute_changed(&name, previous.as_deref(), Some(value));
+    }
+
+    pub(crate) fn remove_attribute(&mut self, node: NodeId, name: &str) {
+        let name = LocalName::from(name);
+        let Some(previous) = self.attribute(node, &name) else {
+            return;
+        };
+        self.document
+            .as_mut()
+            .mutate()
+            .clear_attribute(node, QualName::new(None, ns!(), name.clone()));
+        self.attribute_changed(&name, Some(&previous), None);
+    }
+
+    pub(crate) fn focus(&mut self, node: NodeId) -> bool {
+        let document = self.document.as_mut();
+        let connected = document
+            .get_node(node)
+            .is_some_and(|node| node.flags.is_in_document());
+        if !connected || !document.set_focus_to(node) {
+            return false;
+        }
+        self.mark_changed();
+        true
+    }
+
+    pub(crate) fn scroll(&mut self, node: NodeId, command: ScrollCommand) {
+        let immediate = matches!(
+            command,
+            ScrollCommand::To { behavior, .. } | ScrollCommand::By { behavior, .. }
+                if !matches!(behavior, ScrollBehavior::Smooth)
+        ) && self
+            .document
+            .as_ref()
+            .get_node(node)
+            .is_some_and(|node| node.has_boxes());
+        if immediate {
+            self.scroll_animating |= command.animates();
+            Scroller::apply(self.document.as_mut(), node, command);
+        } else {
+            self.pending_scrolls.push((node, command));
+        }
+        self.mark_changed();
+    }
+
+    pub(super) fn apply_pending_scrolls(&mut self) {
+        for (node, command) in std::mem::take(&mut self.pending_scrolls) {
+            self.scroll_animating |= command.animates();
+            self.needs_geometry_sync = true;
+            Scroller::apply(self.document.as_mut(), node, command);
+        }
     }
 }
 
@@ -295,4 +278,28 @@ pub(super) fn style_change_requires_geometry(
         .chain(current.keys())
         .filter(|name| !matches!(name.as_str(), "transform" | "transform-origin" | "opacity"))
         .any(|name| previous.get(name) != current.get(name))
+}
+
+fn hoisted_layout_containers(document: &blitz_dom::BaseDocument, root: NodeId) -> Vec<NodeId> {
+    let mut subtree = std::collections::HashSet::new();
+    let mut containers = Vec::new();
+    let mut pending = vec![root];
+    while let Some(id) = pending.pop() {
+        subtree.insert(id);
+        if let Some(node) = document.get_node(id) {
+            pending.extend(node.children.iter().copied());
+        }
+    }
+    for id in &subtree {
+        let mut container = document.get_node(*id).and_then(|node| node.layout_parent.get());
+        while let Some(node) = container.and_then(|id| document.get_node(id))
+            && matches!(node.data, blitz_dom::node::NodeData::AnonymousBlock(_))
+        {
+            container = node.layout_parent.get();
+        }
+        if let Some(container) = container.filter(|container| !subtree.contains(container) && !containers.contains(container)) {
+            containers.push(container);
+        }
+    }
+    containers
 }

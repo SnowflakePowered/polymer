@@ -8,10 +8,9 @@
   delete globalThis.__polymerCreateEventDispatch;
   const { MouseEvent, PointerEvent, WheelEvent, KeyboardEvent, FocusEvent, InputEvent, CompositionEvent, dispatch, dispatchNativeEvent } = eventDispatch;
   delete globalThis.__polymerRuntime;
-  const nodes = new Map();
+  const wrappers = new Map();
   const pointerCaptures = new Map();
   let documentNode = null;
-  let nextNodeId = 1;
   function sendShellMessage(message) {
     ops.op_post_message(message);
   }
@@ -218,22 +217,54 @@
     takeRecords() { return []; }
   }
 
+  const HTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
+  const PARENT = 0;
+  const FIRST_CHILD = 1;
+  const LAST_CHILD = 2;
+  const NEXT_SIBLING = 3;
+  const PREVIOUS_SIBLING = 4;
+
+  function nodeFor(id) {
+    if (!id) return null;
+    const existing = wrappers.get(id);
+    if (existing) return existing;
+    const info = ops.op_dom_node_info(id);
+    if (!info) return null;
+    const node = makeNode(id, info);
+    wrappers.set(id, node);
+    if (node instanceof HTMLTrackedSurfaceElement) registerPolymerSurface(node, id);
+    return node;
+  }
+
+  function selectorError(error) {
+    return new DOMException(error?.message || String(error), "SyntaxError");
+  }
+
+  function query(scope, selector, all) {
+    try {
+      return ops.op_dom_query(scope.__id, String(selector), all).map(nodeFor).filter(Boolean);
+    } catch (error) {
+      throw selectorError(error);
+    }
+  }
+
+  function asNode(item) {
+    return item instanceof Node ? item : documentNode.createTextNode(String(item));
+  }
+
   class Node extends EventTarget {
-    constructor(snapshot) {
+    constructor(id) {
       super();
-      this.__update(snapshot);
+      this.__id = id;
+      this.__notifiedScroll = [0, 0];
     }
 
-    __update(snapshot) {
-      this.__id = snapshot.id;
-      this.__kind = snapshot.kind;
-      this.__parentId = snapshot.parent;
-      this.__childIds = snapshot.children || [];
-      this.__rect = snapshot.rect || { x: 0, y: 0, width: 0, height: 0 };
+    __relative(relation) {
+      return nodeFor(ops.op_dom_relative(this.__id, relation));
     }
 
     get parentNode() {
-      return nodes.get(this.__parentId) || null;
+      return this.__relative(PARENT);
     }
 
     get nodeType() {
@@ -258,69 +289,63 @@
     }
 
     get childNodes() {
-      return this.__childIds.map((id) => nodes.get(id)).filter(Boolean);
+      return ops.op_dom_children(this.__id).map(nodeFor).filter(Boolean);
     }
 
     get firstChild() {
-      return this.childNodes[0] || null;
+      return this.__relative(FIRST_CHILD);
     }
 
     get lastChild() {
-      return this.childNodes.at(-1) || null;
+      return this.__relative(LAST_CHILD);
     }
 
     get nextSibling() {
-      const siblings = this.parentNode?.childNodes || [];
-      const index = siblings.indexOf(this);
-      return index >= 0 ? siblings[index + 1] || null : null;
+      return this.__relative(NEXT_SIBLING);
     }
 
     get previousSibling() {
-      const siblings = this.parentNode?.childNodes || [];
-      const index = siblings.indexOf(this);
-      return index > 0 ? siblings[index - 1] : null;
+      return this.__relative(PREVIOUS_SIBLING);
+    }
+
+    __checkInsertion(child) {
+      if (!(child instanceof Node)) throw new TypeError("child must be a Node");
+      if (child.contains(this)) {
+        throw new DOMException("The new child is an ancestor of the parent", "HierarchyRequestError");
+      }
     }
 
     appendChild(child) {
-      if (!(child instanceof Node)) throw new TypeError("child must be a Node");
+      this.__checkInsertion(child);
       if (child instanceof DocumentFragment) {
-        for (const item of [...child.childNodes]) this.appendChild(item);
+        for (const item of child.childNodes) this.appendChild(item);
         return child;
       }
-      child.parentNode?.__removeLocalChild(child);
-      this.__childIds.push(child.__id);
-      child.__parentId = this.__id;
       ops.op_dom_append_child(this.__id, child.__id);
       notifyMutation(this, { type: "childList", addedNodes: [child], removedNodes: [] });
       return child;
     }
 
     insertBefore(child, before) {
-      if (before === null) return this.appendChild(child);
-      if (!(child instanceof Node) || !(before instanceof Node)) {
-        throw new TypeError("insertBefore expects Nodes");
+      if (before === null || before === undefined) return this.appendChild(child);
+      this.__checkInsertion(child);
+      if (!(before instanceof Node)) throw new TypeError("insertBefore expects Nodes");
+      if (before.parentNode !== this) {
+        throw new DOMException("The reference node is not a child", "NotFoundError");
       }
-      const index = this.__childIds.indexOf(before.__id);
-      if (index < 0) throw new DOMException("The reference node is not a child", "NotFoundError");
-      child.parentNode?.__removeLocalChild(child);
-      this.__childIds.splice(index, 0, child.__id);
-      child.__parentId = this.__id;
+      if (child instanceof DocumentFragment) {
+        for (const item of child.childNodes) this.insertBefore(item, before);
+        return child;
+      }
       ops.op_dom_insert_before(this.__id, child.__id, before.__id);
       notifyMutation(this, { type: "childList", addedNodes: [child], removedNodes: [] });
       return child;
     }
 
-    __removeLocalChild(child) {
-      const index = this.__childIds.indexOf(child.__id);
-      if (index >= 0) this.__childIds.splice(index, 1);
-      child.__parentId = null;
-    }
-
     removeChild(child) {
-      if (!(child instanceof Node) || child.__parentId !== this.__id) {
+      if (!(child instanceof Node) || child.parentNode !== this) {
         throw new DOMException("The node is not a child", "NotFoundError");
       }
-      this.__removeLocalChild(child);
       ops.op_dom_remove_child(this.__id, child.__id);
       notifyMutation(this, { type: "childList", addedNodes: [], removedNodes: [child] });
       return child;
@@ -337,30 +362,25 @@
     }
 
     append(...items) {
-      for (const item of items) {
-        this.appendChild(
-          item instanceof Node ? item : documentNode.createTextNode(String(item)),
-        );
-      }
+      for (const item of items) this.appendChild(asNode(item));
     }
 
     prepend(...items) {
-      for (const item of items.reverse()) {
-        this.insertBefore(item instanceof Node ? item : documentNode.createTextNode(String(item)), this.firstChild);
-      }
+      const first = this.firstChild;
+      for (const item of items) this.insertBefore(asNode(item), first);
     }
 
     before(...items) {
       const parent = this.parentNode;
       if (!parent) return;
-      for (const item of items) parent.insertBefore(item instanceof Node ? item : documentNode.createTextNode(String(item)), this);
+      for (const item of items) parent.insertBefore(asNode(item), this);
     }
 
     after(...items) {
       const parent = this.parentNode;
       if (!parent) return;
       const reference = this.nextSibling;
-      for (const item of items) parent.insertBefore(item instanceof Node ? item : documentNode.createTextNode(String(item)), reference);
+      for (const item of items) parent.insertBefore(asNode(item), reference);
     }
 
     replaceWith(...items) {
@@ -369,31 +389,18 @@
     }
 
     cloneNode(deep = false) {
-      let clone;
-      if (this instanceof HTMLTemplateElement) {
-        clone = documentNode.createElement("template");
-        if (deep) for (const child of this.content.childNodes) clone.content.appendChild(child.cloneNode(true));
-      } else if (this instanceof Element) {
-        clone = documentNode.createElementNS(this.namespaceURI, this.localName);
-        for (const { name, value } of this.attributes) clone.setAttribute(name, value);
-      } else if (this instanceof Text) clone = documentNode.createTextNode(this.data);
-      else if (this instanceof Comment) clone = documentNode.createComment(this.data);
-      else clone = documentNode.createDocumentFragment();
-      if (deep && !(this instanceof HTMLTemplateElement)) {
-        for (const child of this.childNodes) clone.appendChild(child.cloneNode(true));
-      }
-      return clone;
+      return nodeFor(ops.op_dom_clone(this.__id, Boolean(deep)));
     }
 
     contains(other) {
-      for (let current = other; current; current = current.parentNode) {
+      for (let current = other; current instanceof Node; current = current.parentNode) {
         if (current === this) return true;
       }
       return false;
     }
 
     get isConnected() {
-      return documentNode?.contains(this) || false;
+      return this === documentNode || ops.op_dom_is_connected(this.__id);
     }
 
     getRootNode() {
@@ -406,78 +413,25 @@
     }
 
     get textContent() {
-      if (this instanceof Text) return this.data;
-      return this.childNodes.map((child) => child.textContent || "").join("");
+      return ops.op_dom_text_content(this.__id);
     }
 
     set textContent(value) {
-      if (this instanceof Text) {
-        this.data = String(value ?? "");
-        return;
-      }
-      for (const child of [...this.childNodes]) this.removeChild(child);
+      for (const child of this.childNodes) this.removeChild(child);
       const text = String(value ?? "");
       if (text) this.appendChild(documentNode.createTextNode(text));
     }
   }
 
   class DocumentFragment extends Node {
-    constructor() {
-      super({ id: nextNodeId++, parent: null, children: [], kind: "fragment", rect: { x: 0, y: 0, width: 0, height: 0 } });
+    constructor(id = ops.op_dom_create_fragment()) {
+      super(id);
+      if (!wrappers.has(id)) wrappers.set(id, this);
     }
     get nodeType() { return 11; }
     get nodeName() { return "#document-fragment"; }
-    querySelectorAll(selector) { return descendants(this).filter((element) => element.matches(selector)); }
-    querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
-  }
-
-  function selectorParts(selector) {
-    return String(selector).trim().split(/\s+/).filter(Boolean);
-  }
-
-  function matchesSimple(element, selector) {
-    if (!(element instanceof Element)) return false;
-    let rest = selector;
-    const tag = rest.match(/^[a-zA-Z][\w-]*/)?.[0];
-    if (tag) {
-      if (element.localName !== tag.toLowerCase()) return false;
-      rest = rest.slice(tag.length);
-    }
-    for (const match of rest.matchAll(/([.#])([\w-]+)|\[([\w:-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\]]+)))?\]/g)) {
-      if (match[1] === "#" && element.id !== match[2]) return false;
-      if (match[1] === "." && !element.classList.contains(match[2])) return false;
-      if (match[3]) {
-        if (!element.hasAttribute(match[3])) return false;
-        const expected = match[4] ?? match[5] ?? match[6];
-        if (expected !== undefined && element.getAttribute(match[3]) !== expected.trim()) return false;
-      }
-    }
-    return true;
-  }
-
-  function matchesSelector(element, selector) {
-    return String(selector).split(",").some((candidate) => {
-      const parts = selectorParts(candidate);
-      let current = element;
-      for (let index = parts.length - 1; index >= 0; index -= 1) {
-        while (current && !matchesSimple(current, parts[index])) current = current.parentElement;
-        if (!current) return false;
-        if (index > 0) current = current.parentElement;
-      }
-      return parts.length > 0;
-    });
-  }
-
-  function descendants(root) {
-    const result = [];
-    const visit = (node) => {
-      for (const child of node?.childNodes || []) {
-        if (child instanceof Element) result.push(child);
-        visit(child);
-      }
-    };
-    visit(root);
-    return result;
+    querySelectorAll(selector) { return query(this, selector, true); }
+    querySelector(selector) { return query(this, selector, false)[0] || null; }
   }
 
   function cssPixel(value) {
@@ -492,10 +446,8 @@
   }
 
   function translatedClientRect(element) {
-    const rect = element.__rect;
-    let x = rect.x;
-    let y = rect.y;
-    // Blitz snapshots contain layout coordinates. CSS transforms do not alter
+    let [x, y, width, height] = ops.op_dom_rect(element.__id);
+    // Blitz geometry contains layout coordinates. CSS transforms do not alter
     // layout, but browsers include the element's and its ancestors' transforms
     // in getBoundingClientRect(). Keep this calculation synchronous so a drag
     // state machine can write its transform and read the new box in one event.
@@ -504,7 +456,7 @@
       x += translation.x;
       y += translation.y;
     }
-    return { x, y, width: rect.width, height: rect.height };
+    return { x, y, width, height };
   }
 
   function pointerCaptureTarget(pointerId) {
@@ -513,23 +465,24 @@
   }
 
   class Element extends Node {
-    constructor(snapshot) {
-      super(snapshot);
+    constructor(id, info) {
+      super(id);
+      this.namespaceURI = info.namespace || HTML_NAMESPACE;
+      this.localName = String(info.tag || "");
+      this.tagName = this.namespaceURI === HTML_NAMESPACE ? this.localName.toUpperCase() : this.localName;
+      this.nodeName = this.tagName;
       this.style = new CSSStyleDeclaration(this);
       this.classList = new DOMTokenList(this, "class");
       this.__capturedPointers = new Set();
-      this.__attributes = {};
-      this.__update(snapshot);
     }
 
-    __update(snapshot) {
-      super.__update(snapshot);
-      this.localName = String(snapshot.tag || "").toLowerCase();
-      this.tagName = this.localName.toUpperCase();
-      this.nodeName = this.tagName;
-      this.namespaceURI = "http://www.w3.org/1999/xhtml";
-      if (snapshot.namespace) this.namespaceURI = snapshot.namespace;
-      this.__attributes = { ...(snapshot.attributes || {}) };
+    __attributeName(name) {
+      name = String(name);
+      return this.namespaceURI === HTML_NAMESPACE ? name.toLowerCase() : name;
+    }
+
+    get __scroll() {
+      return ops.op_dom_scroll_metrics(this.__id);
     }
 
     get id() {
@@ -553,7 +506,7 @@
     }
 
     get attributes() {
-      return Object.entries(this.__attributes).map(([name, value]) => ({ name, value }));
+      return ops.op_dom_attributes(this.__id).map(([name, value]) => ({ name, value }));
     }
 
     get nextElementSibling() {
@@ -625,28 +578,35 @@
           element.removeAttribute(`data-${camelToDash(String(key))}`);
           return true;
         },
+        has(_, key) {
+          return typeof key === "string" && element.hasAttribute(`data-${camelToDash(key)}`);
+        },
         ownKeys() {
-          return Object.keys(element.__attributes)
+          return element.attributes
+            .map(({ name }) => name)
             .filter((name) => name.startsWith("data-"))
             .map((name) => dashToCamel(name.slice(5)));
+        },
+        getOwnPropertyDescriptor(_, key) {
+          if (typeof key !== "string") return undefined;
+          const value = element.getAttribute(`data-${camelToDash(key)}`);
+          if (value === null) return undefined;
+          return { value, writable: true, enumerable: true, configurable: true };
         },
       });
     }
 
     hasAttribute(name) {
-      return Object.hasOwn(this.__attributes, String(name).toLowerCase());
+      return this.getAttribute(name) !== null;
     }
 
     getAttribute(name) {
-      name = String(name).toLowerCase();
-      return this.hasAttribute(name) ? this.__attributes[name] : null;
+      return ops.op_dom_get_attribute(this.__id, this.__attributeName(name)) ?? null;
     }
 
     setAttribute(name, value) {
-      name = String(name).toLowerCase();
-      value = String(value);
-      this.__attributes[name] = value;
-      ops.op_dom_set_attribute(this.__id, name, value);
+      name = this.__attributeName(name);
+      ops.op_dom_set_attribute(this.__id, name, String(value));
       notifyMutation(this, { type: "attributes", attributeName: name });
     }
 
@@ -659,9 +619,8 @@
     }
 
     removeAttribute(name) {
-      name = String(name).toLowerCase();
+      name = this.__attributeName(name);
       if (!this.hasAttribute(name)) return;
-      delete this.__attributes[name];
       ops.op_dom_remove_attribute(this.__id, name);
       notifyMutation(this, { type: "attributes", attributeName: name });
     }
@@ -679,22 +638,27 @@
     }
 
     matches(selector) {
-      return matchesSelector(this, selector);
+      try {
+        return ops.op_dom_matches(this.__id, String(selector));
+      } catch (error) {
+        throw selectorError(error);
+      }
     }
 
     closest(selector) {
-      for (let current = this; current; current = current.parentElement) {
-        if (current.matches(selector)) return current;
+      try {
+        return nodeFor(ops.op_dom_closest(this.__id, String(selector)));
+      } catch (error) {
+        throw selectorError(error);
       }
-      return null;
     }
 
     querySelectorAll(selector) {
-      return descendants(this).filter((element) => element.matches(selector));
+      return query(this, selector, true);
     }
 
     querySelector(selector) {
-      return this.querySelectorAll(selector)[0] || null;
+      return query(this, selector, false)[0] || null;
     }
 
     getBoundingClientRect() {
@@ -715,41 +679,64 @@
     }
 
     get offsetLeft() {
-      return this.__rect.x;
+      return ops.op_dom_rect(this.__id)[0];
     }
 
     get offsetTop() {
-      return this.__rect.y;
+      return ops.op_dom_rect(this.__id)[1];
     }
 
     get offsetWidth() {
-      return this.__rect.width;
+      return ops.op_dom_rect(this.__id)[2];
     }
 
     get offsetHeight() {
-      return this.__rect.height;
+      return ops.op_dom_rect(this.__id)[3];
     }
 
     get clientWidth() {
-      return this.__rect.width;
+      return this.__scroll.clientWidth;
     }
 
     get clientHeight() {
-      return this.__rect.height;
+      return this.__scroll.clientHeight;
     }
+
+    get clientLeft() { return this.__scroll.clientLeft; }
+    get clientTop() { return this.__scroll.clientTop; }
 
     get scrollLeft() {
-      return 0;
+      return this.__scroll.left;
     }
+    set scrollLeft(value) { this.scrollTo({ left: value, behavior: "instant" }); }
 
     get scrollTop() {
-      return 0;
+      return this.__scroll.top;
     }
+    set scrollTop(value) { this.scrollTo({ top: value, behavior: "instant" }); }
 
-    get scrollWidth() { return this.__rect.width; }
-    get scrollHeight() { return this.__rect.height; }
-    scrollTo() {}
-    scrollBy() {}
+    get scrollWidth() { return this.__scroll.width; }
+    get scrollHeight() { return this.__scroll.height; }
+    scroll(...args) { this.scrollTo(...args); }
+    scrollTo(left, top) { this.__requestScroll("to", left, top); }
+    scrollBy(left, top) { this.__requestScroll("by", left, top); }
+    __requestScroll(kind, left, top) {
+      const options = typeof left === "object" ? (left ?? {}) : { left, top };
+      const behavior = options.behavior ?? "auto";
+      if (!["auto", "instant", "smooth"].includes(behavior)) throw new TypeError("Invalid scroll behavior");
+      const number = value => Number.isFinite(Number(value)) ? Number(value) : 0;
+      const x = options.left === undefined ? (kind === "by" ? 0 : null) : number(options.left);
+      const y = options.top === undefined ? (kind === "by" ? 0 : null) : number(options.top);
+      ops.op_dom_scroll(this.__id, { kind, left: x, top: y, behavior });
+    }
+    scrollIntoView(options = {}) {
+      if (typeof options === "boolean") options = { block: options ? "start" : "end" };
+      options ??= {};
+      const block = options.block ?? "start", inline = options.inline ?? "nearest";
+      const alignments = ["start", "center", "end", "nearest"];
+      if (!alignments.includes(block) || !alignments.includes(inline)) throw new TypeError("Invalid scroll alignment");
+      ops.op_dom_scroll(this.__id, { kind: "intoView", block, inline, nearest: options.container === "nearest" });
+    }
 
     setPointerCapture(pointerId) {
       const id = Number(pointerId);
@@ -773,6 +760,8 @@
     set value(value) { this.setAttribute("value", value); }
     get checked() { return this.hasAttribute("checked"); }
     set checked(value) { this.toggleAttribute("checked", Boolean(value)); }
+    get hidden() { return this.hasAttribute("hidden"); }
+    set hidden(value) { this.toggleAttribute("hidden", Boolean(value)); }
     get disabled() { return this.hasAttribute("disabled"); }
     set disabled(value) { this.toggleAttribute("disabled", Boolean(value)); }
     get readOnly() { return this.hasAttribute("readonly"); }
@@ -780,37 +769,38 @@
     get required() { return this.hasAttribute("required"); }
     set required(value) { this.toggleAttribute("required", Boolean(value)); }
 
-    focus() {
-      if (activeElement === this) return;
-      const previous = activeElement;
-      activeElement = this;
-      ops.op_dom_focus(this.__id);
+    focus(options = {}) {
+      const previous = nodeFor(ops.op_dom_focused());
+      if (previous === this || !ops.op_dom_focus(this.__id)) return;
       if (previous) { dispatch(previous, new Event("blur")); dispatch(previous, new Event("focusout", { bubbles: true })); }
       dispatch(this, new Event("focus")); dispatch(this, new Event("focusin", { bubbles: true }));
+      if (!options.preventScroll) this.scrollIntoView({ block: "nearest", inline: "nearest" });
     }
 
-    blur() { if (activeElement === this) documentNode?.body?.focus(); }
+    blur() { if (nodeFor(ops.op_dom_focused()) === this) documentNode?.body?.focus(); }
+
+    click() {
+      if (this.disabled) return;
+      this.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, composed: true }));
+    }
 
     get innerHTML() {
       return this.textContent;
     }
 
     set innerHTML(value) {
-      this.textContent = String(value ?? "");
+      ops.op_dom_set_inner_html(this.__id, String(value ?? ""));
+      notifyMutation(this, { type: "childList", addedNodes: this.childNodes, removedNodes: [] });
     }
   }
 
   class HTMLElement extends Element {}
   class HTMLImageElement extends HTMLElement {
-    get naturalWidth() { return this.__imageSize?.[0] || 0; }
-    get naturalHeight() { return this.__imageSize?.[1] || 0; }
+    get naturalWidth() { return ops.op_dom_image_size(this.__id)[0]; }
+    get naturalHeight() { return ops.op_dom_image_size(this.__id)[1]; }
     get complete() { return this.naturalWidth > 0 || !this.getAttribute("src"); }
-    __update(snapshot) {
-      super.__update(snapshot);
-      this.__syncImage(snapshot.imageSize);
-    }
-    __syncImage(size = [0, 0]) {
-      this.__imageSize = size;
+    __syncImage() {
+      const size = ops.op_dom_image_size(this.__id);
       const key = `${this.getAttribute("src")}:${size.join(":")}`;
       if (key === this.__loadedImage) return;
       this.__loadedImage = key;
@@ -822,37 +812,13 @@
   class HTMLHeadElement extends HTMLElement {}
   class HTMLBodyElement extends HTMLElement {}
   class HTMLTemplateElement extends HTMLElement {
-    constructor(snapshot) {
-      super(snapshot);
-      this.content = new DocumentFragment();
-    }
+    get content() { return nodeFor(ops.op_dom_template_content(this.__id)); }
     get innerHTML() { return this.content.textContent; }
-    set innerHTML(value) {
-      for (const child of [...this.content.childNodes]) this.content.removeChild(child);
-      for (const item of ops.op_dom_parse_fragment(String(value ?? ""))) {
-        this.content.appendChild(createFragmentNode(item));
-      }
-    }
+    set innerHTML(value) { ops.op_dom_set_inner_html(this.content.__id, String(value ?? "")); }
   }
-  class Text extends Node {
-    __update(snapshot) {
-      super.__update(snapshot);
-      this.__text = String(snapshot.text || "");
-      this.nodeName = "#text";
-    }
-
-    get nodeType() {
-      return 3;
-    }
-
+  class CharacterData extends Node {
     get data() {
-      return this.__text;
-    }
-
-    set data(value) {
-      this.__text = String(value);
-      ops.op_dom_set_text(this.__id, this.__text);
-      notifyMutation(this, { type: "characterData" });
+      return ops.op_dom_text(this.__id);
     }
 
     get nodeValue() {
@@ -863,22 +829,45 @@
       this.data = value ?? "";
     }
 
+    get textContent() {
+      return this.data;
+    }
+
+    set textContent(value) {
+      this.data = String(value ?? "");
+    }
+
     get length() {
-      return this.__text.length;
+      return this.data.length;
     }
   }
 
-  class Comment extends Node {
+  class Text extends CharacterData {
+    get nodeType() {
+      return 3;
+    }
+
+    get nodeName() {
+      return "#text";
+    }
+
+    get data() {
+      return super.data;
+    }
+
+    set data(value) {
+      ops.op_dom_set_text(this.__id, String(value));
+      notifyMutation(this, { type: "characterData" });
+    }
+  }
+
+  class Comment extends CharacterData {
     get nodeType() {
       return 8;
     }
 
     get nodeName() {
       return "#comment";
-    }
-
-    get data() {
-      return "";
     }
   }
 
@@ -908,6 +897,12 @@
       return globalThis;
     }
 
+    get textContent() {
+      return null;
+    }
+
+    get scrollingElement() { return this.documentElement; }
+
     get documentElement() {
       return this.childNodes.find((node) => node instanceof Element && node.localName === "html") || null;
     }
@@ -925,7 +920,8 @@
     }
 
     get activeElement() {
-      return activeElement || this.body;
+      const focused = nodeFor(ops.op_dom_focused());
+      return focused && focused !== this.documentElement ? focused : this.body;
     }
 
     get visibilityState() {
@@ -937,73 +933,37 @@
     }
 
     createElement(tag) {
-      return this.createElementNS("http://www.w3.org/1999/xhtml", tag);
+      return this.createElementNS(HTML_NAMESPACE, tag);
     }
 
     createElementNS(namespace, tag) {
-      const snapshot = {
-        id: nextNodeId++,
-        parent: null,
-        children: [],
-        kind: "element",
-        tag: String(tag).toLowerCase(),
-        namespace: namespace || "http://www.w3.org/1999/xhtml",
-        attributes: {},
-        rect: { x: 0, y: 0, width: 0, height: 0 },
-      };
-      const element = snapshot.tag === "template" ? new HTMLTemplateElement(snapshot) : makeNode(snapshot);
-      nodes.set(snapshot.id, element);
-      ops.op_dom_create_element(snapshot.id, snapshot.tag, snapshot.namespace);
-      return element;
+      namespace = namespace || HTML_NAMESPACE;
+      tag = namespace === HTML_NAMESPACE ? String(tag).toLowerCase() : String(tag);
+      return nodeFor(ops.op_dom_create_element(tag, namespace));
     }
 
-    createDocumentFragment() { return new DocumentFragment(); }
+    createDocumentFragment() { return nodeFor(ops.op_dom_create_fragment()); }
 
     importNode(node, deep = false) { return node.cloneNode(deep); }
 
     createTextNode(text) {
-      const snapshot = {
-        id: nextNodeId++,
-        parent: null,
-        children: [],
-        kind: "text",
-        text: String(text),
-        attributes: {},
-        rect: { x: 0, y: 0, width: 0, height: 0 },
-      };
-      const node = new Text(snapshot);
-      nodes.set(snapshot.id, node);
-      ops.op_dom_create_text(snapshot.id, snapshot.text);
-      return node;
+      return nodeFor(ops.op_dom_create_text(String(text)));
     }
 
-    createComment() {
-      const snapshot = {
-        id: nextNodeId++,
-        parent: null,
-        children: [],
-        kind: "comment",
-        attributes: {},
-        rect: { x: 0, y: 0, width: 0, height: 0 },
-      };
-      const node = new Comment(snapshot);
-      nodes.set(snapshot.id, node);
-      ops.op_dom_create_comment(snapshot.id);
-      return node;
+    createComment(data = "") {
+      return nodeFor(ops.op_dom_create_comment(String(data)));
     }
 
     getElementById(id) {
-      return descendants(this).find((element) => element.id === String(id)) || null;
+      return nodeFor(ops.op_dom_element_by_id(String(id)));
     }
 
     querySelectorAll(selector) {
-      const root = this.documentElement;
-      if (!root) return [];
-      return [root, ...descendants(root)].filter((element) => element.matches(selector));
+      return query(this, selector, true);
     }
 
     querySelector(selector) {
-      return this.querySelectorAll(selector)[0] || null;
+      return query(this, selector, false)[0] || null;
     }
 
     getElementsByTagName(tag) {
@@ -1011,18 +971,24 @@
     }
   }
 
-  function createFragmentNode(item) {
-    let node;
-    if (item.kind === "element") {
-      node = documentNode.createElementNS(item.namespace, item.tag);
-      for (const [name, value] of Object.entries(item.attributes || {})) node.setAttribute(name, value);
-    } else if (item.kind === "text") node = documentNode.createTextNode(item.text || "");
-    else node = documentNode.createComment(item.text || "");
-    for (const child of item.children || []) node.appendChild(createFragmentNode(child));
-    return node;
+  function makeNode(id, info) {
+    switch (info.kind) {
+      case "document": return new Document(id);
+      case "text": return new Text(id);
+      case "comment": return new Comment(id);
+      case "fragment": return new DocumentFragment(id);
+    }
+    switch (info.tag) {
+      case "tracked-surface": return new HTMLTrackedSurfaceElement(id, info);
+      case "template": return new HTMLTemplateElement(id, info);
+      case "img": return new HTMLImageElement(id, info);
+      case "head": return new HTMLHeadElement(id, info);
+      case "body": return new HTMLBodyElement(id, info);
+      default: return new HTMLElement(id, info);
+    }
   }
 
-  for (const type of ["mousedown", "mouseup", "mousemove", "click", "keydown", "keyup"]) {
+  for (const type of ["mousedown", "mouseup", "mousemove", "click", "keydown", "keyup", "scroll"]) {
     defineEventHandler(Element.prototype, type);
     defineEventHandler(Document.prototype, type);
     defineEventHandler(globalThis, type);
@@ -1031,73 +997,35 @@
 
   let dimensions = { width: 0, height: 0 };
   let deviceScaleFactor = 1;
-  let activeElement = null;
   const windowObject = globalThis;
 
   function setDeviceScaleFactor(value) {
     deviceScaleFactor = Number.isFinite(value) && value > 0 ? value : 1;
   }
 
-  function makeNode(snapshot) {
-    if (snapshot.kind === "document") return new Document(snapshot);
-    if (snapshot.kind === "text") return new Text(snapshot);
-    if (snapshot.kind === "comment") return new Comment(snapshot);
-    if (snapshot.tag === "tracked-surface") {
-      const surface = new HTMLTrackedSurfaceElement(snapshot);
-      registerPolymerSurface(surface, snapshot.id);
-      return surface;
-    }
-    if (snapshot.tag === "img") return new HTMLImageElement(snapshot);
-    if (snapshot.tag === "head") return new HTMLHeadElement(snapshot);
-    if (snapshot.tag === "body") return new HTMLBodyElement(snapshot);
-    return new HTMLElement(snapshot);
-  }
-
-  function sync(snapshot) {
-    dimensions = { width: snapshot.width, height: snapshot.height };
-    setDeviceScaleFactor(snapshot.devicePixelRatio);
-    const resized = [];
-    for (const item of snapshot.nodes) {
-      nextNodeId = Math.max(nextNodeId, item.id + 1);
-      const current = nodes.get(item.id);
-      if (current) {
-        const old = current.__rect;
-        current.__update(item);
-        if (!old || old.width !== item.rect.width || old.height !== item.rect.height) resized.push(current);
-      }
-      else nodes.set(item.id, makeNode(item));
-    }
-    for (const id of [...nodes.keys()]) {
-      if (!snapshot.nodes.some((item) => item.id === id)) nodes.delete(id);
-    }
-    documentNode = nodes.get(snapshot.document);
-    activeElement = nodes.get(snapshot.activeElement) || (activeElement?.isConnected ? activeElement : documentNode?.body || null);
-    if (resized.length) queueMicrotask(() => {
-      for (const observer of resizeObservers) {
-        const entries = resized.filter((target) => observer.targets.has(target)).map((target) => ({
-          target,
-          contentRect: target.getBoundingClientRect(),
-          borderBoxSize: [{ inlineSize: target.offsetWidth, blockSize: target.offsetHeight }],
-          contentBoxSize: [{ inlineSize: target.clientWidth, blockSize: target.clientHeight }],
-        }));
-        if (entries.length) observer.callback(entries, observer);
-      }
-    });
-  }
-
   function syncLayout(snapshot) {
     dimensions = { width: snapshot.width, height: snapshot.height };
     setDeviceScaleFactor(snapshot.devicePixelRatio);
-    const resized = [];
-    for (const item of snapshot.nodes) {
-      const current = nodes.get(item.id);
-      if (!current) continue;
-      const old = current.__rect;
-      current.__rect = item.rect;
-      if (current instanceof HTMLImageElement) current.__syncImage(item.imageSize);
-      if (!old || old.width !== item.rect.width || old.height !== item.rect.height) resized.push(current);
+    const scrolled = [];
+    for (const id of snapshot.scrolled) {
+      const node = wrappers.get(id);
+      if (!(node instanceof Element)) continue;
+      const { left, top } = node.__scroll;
+      if (node.__notifiedScroll[0] === left && node.__notifiedScroll[1] === top) continue;
+      node.__notifiedScroll = [left, top];
+      scrolled.push(node);
     }
-    activeElement = nodes.get(snapshot.activeElement) || (activeElement?.isConnected ? activeElement : documentNode?.body || null);
+    for (const id of snapshot.images) {
+      const node = wrappers.get(id);
+      if (node instanceof HTMLImageElement) node.__syncImage();
+    }
+    const resized = snapshot.resized.map((id) => wrappers.get(id)).filter(Boolean);
+    if (scrolled.length) queueMicrotask(() => {
+      for (const element of scrolled) {
+        const target = element === documentNode.documentElement ? documentNode : element;
+        dispatch(target, new Event("scroll", { bubbles: target === documentNode }));
+      }
+    });
     if (resized.length) queueMicrotask(() => {
       for (const observer of resizeObservers) {
         const entries = resized.filter((target) => observer.targets.has(target)).map((target) => ({
@@ -1154,11 +1082,9 @@
     HTMLTrackedSurfaceElement,
     Document,
     document: null,
-    // Memory routing still uses the browser scroll-restoration hooks. The
-    // shell viewport is fixed and element scrolling is owned by Blitz, so the
-    // window-level operation is intentionally a stable no-op.
-    scrollTo() {},
-    scrollBy() {},
+    scroll(...args) { documentNode.documentElement?.scrollTo(...args); },
+    scrollTo(...args) { documentNode.documentElement?.scrollTo(...args); },
+    scrollBy(...args) { documentNode.documentElement?.scrollBy(...args); },
     getComputedStyle: (element) => Object.freeze({
       getPropertyValue: (name) => element.style.getPropertyValue(name),
       get display() { return element.style.display || "block"; },
@@ -1173,10 +1099,10 @@
     innerWidth: { get: () => dimensions.width },
     innerHeight: { get: () => dimensions.height },
     devicePixelRatio: { get: () => deviceScaleFactor },
-    scrollX: { get: () => 0 },
-    scrollY: { get: () => 0 },
-    pageXOffset: { get: () => 0 },
-    pageYOffset: { get: () => 0 },
+    scrollX: { get: () => documentNode?.documentElement?.scrollLeft ?? 0 },
+    scrollY: { get: () => documentNode?.documentElement?.scrollTop ?? 0 },
+    pageXOffset: { get: () => documentNode?.documentElement?.scrollLeft ?? 0 },
+    pageYOffset: { get: () => documentNode?.documentElement?.scrollTop ?? 0 },
   });
   Object.defineProperty(globalThis, "CSS", { value: Object.freeze({
     escape(value) { return String(value).replace(/[^a-zA-Z0-9_-]/g, (character) => `\\${character}`); },
@@ -1198,14 +1124,16 @@
   };
 
   globalThis.__polymerDom = Object.freeze({
-    install(snapshot) {
-      sync(snapshot);
+    install(documentId, width, height, scaleFactor) {
+      dimensions = { width, height };
+      setDeviceScaleFactor(scaleFactor);
+      documentNode = nodeFor(documentId);
       globalThis.document = documentNode;
       windowObject.document = documentNode;
     },
-    sync,
     syncLayout() {
       syncLayout(ops.op_dom_take_layout());
+      runMicrotasks();
     },
     resize(width, height, scaleFactor) {
       dimensions = { width, height };
@@ -1213,7 +1141,14 @@
       dispatch(windowObject, new Event("resize"));
     },
     dispatchDom(type, targetId, eventClass, init, bubbles, cancelable) {
-      let target = nodes.get(targetId) || documentNode;
+      let target = nodeFor(targetId) || documentNode;
+      if (type === "scroll" && target instanceof Element) {
+        target.__notifiedScroll = [init.scrollLeft, init.scrollTop];
+        if (target === documentNode.documentElement) {
+          target = documentNode;
+          bubbles = true;
+        }
+      }
       if (eventClass === "pointer" || eventClass === "mouse") {
         target = pointerCaptureTarget(init.pointerId) || target;
       }

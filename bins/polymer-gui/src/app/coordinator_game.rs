@@ -30,7 +30,6 @@ impl ShellCoordinator {
             self.emit_instance_event(token, "closed", &serde_json::Value::Null);
             return Err(error);
         }
-        self.shell_dom.flush_script_mutations();
         let invalid_shell_attachment = self.shell_dom.invalid_attachment(&options);
         if let Some(index) = invalid_shell_attachment {
             let error = format!("surface {index} does not attach to its shell tracked-surface");

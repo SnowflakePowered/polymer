@@ -8,11 +8,11 @@ license.workspace = true
 polymer-composition.workspace = true
 actix.workspace = true
 anyrender = "0.13.0"
-blitz-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "a50cb8971a03fb4cac697b763f8f5d01ee83cefb", features = ["custom-widget"] }
-blitz-html = { git = "https://github.com/DioxusLabs/blitz", rev = "a50cb8971a03fb4cac697b763f8f5d01ee83cefb" }
-blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "a50cb8971a03fb4cac697b763f8f5d01ee83cefb" }
-blitz-paint = { git = "https://github.com/DioxusLabs/blitz", rev = "a50cb8971a03fb4cac697b763f8f5d01ee83cefb", features = ["custom-widget"] }
-blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "a50cb8971a03fb4cac697b763f8f5d01ee83cefb" }
+blitz-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "e99fbdbd1d03b9f0aa1622c3f810d95daac92042", features = ["custom-widget"] }
+blitz-html = { git = "https://github.com/DioxusLabs/blitz", rev = "e99fbdbd1d03b9f0aa1622c3f810d95daac92042" }
+blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "e99fbdbd1d03b9f0aa1622c3f810d95daac92042" }
+blitz-paint = { git = "https://github.com/DioxusLabs/blitz", rev = "e99fbdbd1d03b9f0aa1622c3f810d95daac92042", features = ["custom-widget"] }
+blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "e99fbdbd1d03b9f0aa1622c3f810d95daac92042" }
 arboard = "3.6.1"
 clap = "4.6.1"
 consolespec.workspace = true
@@ -29,8 +29,8 @@ serde.workspace = true
 serde_bytes = "0.11"
 serde_json.workspace = true
 polymer-config.workspace = true
-style = { package = "stylo", version = "0.20.0" }
-style_dom = { package = "stylo_dom", version = "0.20.0" }
+style = { package = "stylo", version = "0.21.0" }
+style_dom = { package = "stylo_dom", version = "0.21.0" }
 polymer-input.workspace = true
 
 polymer-input-sdl3 = { path = "../../crates/input/polymer-input-sdl3" }

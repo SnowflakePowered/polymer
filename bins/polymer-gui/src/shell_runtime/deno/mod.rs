@@ -1,17 +1,18 @@
 //! JavaScript and DOM bindings for the Blitz-owned shell document.
 //!
-//! Blitz remains the authoritative DOM. JavaScript sees stable wrapper objects
-//! backed by snapshots of that DOM, and mutations are immediately mirrored in
-//! JavaScript and queued back to Blitz through Deno ops. Keeping the bridge
-//! command-based avoids borrowing the document from inside V8 callbacks.
+//! Blitz is the only DOM. JavaScript sees stable wrapper objects keyed by
+//! Blitz node IDs, and every read or write goes straight to the document
+//! through synchronous Deno ops. Script only runs while Rust holds no borrow
+//! of the document.
 
 mod dom;
 mod input;
 mod modules;
 mod runtime;
+mod scroll;
 mod state;
 
-pub use dom::Mutation;
 pub use input::EventResult;
+pub(crate) use scroll::{ScrollAlignment, ScrollBehavior, ScrollCommand};
 
 pub(crate) use runtime::Runtime;

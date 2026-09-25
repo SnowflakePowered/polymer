@@ -5,8 +5,8 @@
 //! emulator commands enter the shell through the event loop.
 
 use crate::shell_document::{
-    DomKeyboardEvent, DomMouseEvent, DomWheelEvent, GameViewStyle, ShellDocument,
-    ShellDocumentFactory,
+    DomKeyboardEvent, DomMouseEvent, DomWheelEvent, GameViewStyle, SharedShellDocument,
+    ShellDocument, ShellDocumentFactory,
 };
 use crate::shell_runtime::{ShellRuntime, ShellRuntimeOptions};
 use kurbo::Rect;
@@ -59,7 +59,7 @@ enum ShellDocumentSlot {
 }
 
 struct ActiveShellDocument {
-    document: Rc<RefCell<ShellDocument>>,
+    document: SharedShellDocument,
     runtime: ShellRuntime,
 }
 
@@ -72,14 +72,14 @@ impl ShellSession {
 
     fn active(&self) -> Option<Ref<'_, ShellDocument>> {
         match &self.slot {
-            ShellDocumentSlot::Active(active) => Some(active.document.borrow()),
+            ShellDocumentSlot::Active(active) => Some(active.document.0.borrow()),
             ShellDocumentSlot::Awaiting(_) | ShellDocumentSlot::Disabled => None,
         }
     }
 
     fn active_mut(&mut self) -> Option<RefMut<'_, ShellDocument>> {
         match &mut self.slot {
-            ShellDocumentSlot::Active(active) => Some(active.document.borrow_mut()),
+            ShellDocumentSlot::Active(active) => Some(active.document.0.borrow_mut()),
             ShellDocumentSlot::Awaiting(_) | ShellDocumentSlot::Disabled => None,
         }
     }
@@ -90,7 +90,7 @@ impl ShellSession {
 
     pub(crate) fn inspector_document(&self) -> Weak<RefCell<ShellDocument>> {
         match &self.slot {
-            ShellDocumentSlot::Active(active) => Rc::downgrade(&active.document),
+            ShellDocumentSlot::Active(active) => Rc::downgrade(&active.document.0),
             ShellDocumentSlot::Awaiting(_) | ShellDocumentSlot::Disabled => Weak::new(),
         }
     }
@@ -125,17 +125,6 @@ impl ShellSession {
             .map(|surface| surface.index)
     }
 
-    /// Applies mutations queued by the UI isolate before a synchronous
-    /// runtime command consumes DOM node references from that same turn.
-    pub fn flush_script_mutations(&mut self) {
-        if let ShellDocumentSlot::Active(active) = &mut self.slot {
-            active
-                .document
-                .borrow_mut()
-                .apply_script_mutations(&mut active.runtime);
-        }
-    }
-
     pub async fn activate<F, Fut>(
         &mut self,
         create: F,
@@ -145,7 +134,7 @@ impl ShellSession {
         Fut: Future<
             Output = Result<
                 (
-                    ShellDocument,
+                    SharedShellDocument,
                     ShellRuntime,
                     crate::shell_runtime::PolymerNotificationSender,
                 ),
@@ -158,7 +147,7 @@ impl ShellSession {
             ShellDocumentSlot::Awaiting(factory) => {
                 let (document, runtime, notifications) = create(factory).await?;
                 self.slot = ShellDocumentSlot::Active(Box::new(ActiveShellDocument {
-                    document: Rc::new(RefCell::new(document)),
+                    document,
                     runtime,
                 }));
                 Ok(Some(notifications))
@@ -184,10 +173,7 @@ impl ShellSession {
         let ShellDocumentSlot::Active(active) = &mut self.slot else {
             return None;
         };
-        active
-            .document
-            .borrow_mut()
-            .produce_frame(&mut active.runtime)
+        active.document.produce_frame(&mut active.runtime)
     }
 
     pub async fn poll_runtime(&mut self) -> bool {
@@ -195,10 +181,6 @@ impl ShellSession {
             return false;
         };
         active.runtime.poll_event_loop().await;
-        active
-            .document
-            .borrow_mut()
-            .apply_script_mutations(&mut active.runtime);
         true
     }
 
@@ -206,13 +188,9 @@ impl ShellSession {
         let ShellDocumentSlot::Active(active) = &mut self.slot else {
             return false;
         };
-        let mut document = active.document.borrow_mut();
-        document.resize(width, height, scale_factor);
-        let (logical_width, logical_height) = document.logical_size();
         active
-            .runtime
-            .resize(logical_width, logical_height, document.scale_factor());
-        document.apply_script_mutations(&mut active.runtime);
+            .document
+            .resize(&mut active.runtime, width, height, scale_factor);
         true
     }
 
@@ -225,17 +203,14 @@ impl ShellSession {
         let ShellDocumentSlot::Active(active) = &mut self.slot else {
             return false;
         };
-        active
-            .document
-            .borrow_mut()
-            .mouse_event(&mut active.runtime, hit, event)
+        active.document.mouse_event(&mut active.runtime, hit, event)
     }
 
     pub fn clear_pointer_hover(&mut self) -> bool {
         let ShellDocumentSlot::Active(active) = &mut self.slot else {
             return false;
         };
-        let mut document = active.document.borrow_mut();
+        let mut document = active.document.0.borrow_mut();
         document.clear_pointer_hover();
         document.needs_paint()
     }
@@ -244,28 +219,19 @@ impl ShellSession {
         let ShellDocumentSlot::Active(active) = &mut self.slot else {
             return false;
         };
-        active
-            .document
-            .borrow_mut()
-            .keyboard_event(&mut active.runtime, event)
+        active.document.keyboard_event(&mut active.runtime, event)
     }
 
     pub fn wheel_event(&mut self, hit: ShellHitSnapshot, event: DomWheelEvent) -> bool {
         let ShellDocumentSlot::Active(active) = &mut self.slot else {
             return false;
         };
-        active
-            .document
-            .borrow_mut()
-            .wheel_event(&mut active.runtime, hit, event)
+        active.document.wheel_event(&mut active.runtime, hit, event)
     }
 
     pub fn ime_event(&mut self, event: blitz_traits::events::BlitzImeEvent) {
         if let ShellDocumentSlot::Active(active) = &mut self.slot {
-            active
-                .document
-                .borrow_mut()
-                .ime_event(&mut active.runtime, event);
+            active.document.ime_event(&mut active.runtime, event);
         }
     }
 }
@@ -324,22 +290,21 @@ impl ShellSessionFactory {
         commands: polymer_runtime::FrontendCommands,
     ) -> Result<
         (
-            ShellDocument,
+            SharedShellDocument,
             ShellRuntime,
             crate::shell_runtime::PolymerNotificationSender,
         ),
         Box<dyn std::error::Error>,
     > {
-        let mut document =
-            self.document
-                .create(html, base_url.clone(), width, height, scale_factor);
-        let (base_document, width, height, scale_factor) = document.runtime_context();
-        let (mut runtime, notifications) = ShellRuntime::start(
-            base_document,
+        let document = SharedShellDocument(Rc::new(RefCell::new(self.document.create(
+            html,
+            base_url.clone(),
             width,
             height,
             scale_factor,
-            document.runtime_node_ids(),
+        ))));
+        let (runtime, notifications) = ShellRuntime::start(
+            document.clone(),
             ShellRuntimeOptions {
                 debug: self.debug,
                 html: html.to_owned(),
@@ -353,7 +318,6 @@ impl ShellSessionFactory {
             },
         )
         .await?;
-        document.apply_script_mutations(&mut runtime);
         Ok((document, runtime, notifications))
     }
 }
