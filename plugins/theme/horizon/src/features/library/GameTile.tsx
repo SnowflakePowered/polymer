@@ -1,5 +1,5 @@
 import "../../components/CoverArt.css";
-import { For, Show, createEffect, createSignal, onCleanup } from "solid-js";
+import { For, Show, createSignal, onCleanup } from "solid-js";
 import { CoverArt, Tile, ScrollingText, PlayerBadge } from "../../ui";
 import { Progress as ProgressIndicator } from "../../ui";
 import type { RecentGame } from "../../app/models";
@@ -18,8 +18,8 @@ export function GameTile(props: {
   onContextMenu(event: MouseEvent): void;
 }) {
   const [focused, setFocused] = createSignal(false);
-  const [ready, setReady] = createSignal(false);
-  createEffect(() => { props.game.artwork; setReady(false); });
+  const [loaded, setLoaded] = createSignal<string>();
+  const ready = () => !!props.game.artwork && loaded() === props.game.artwork;
   const id = () => gameId(props.game);
   onCleanup(() => props.register(id(), null));
 
@@ -38,7 +38,7 @@ export function GameTile(props: {
     onClick={props.onActivate}
     onContextMenu={event => { event.preventDefault(); event.currentTarget.focus(); props.onContextMenu(event); }}
   >
-    <CoverArt class="horizon-cover-art" src={props.game.artwork} onRatio={props.onRatio} onReady={setReady} />
+    <CoverArt class="horizon-cover-art" src={props.game.artwork} onRatio={props.onRatio} onReady={isReady => setLoaded(isReady ? props.game.artwork : undefined)} />
     <span class="horizon-game-title"><ScrollingText active={focused()}>{props.game.name}</ScrollingText></span>
     <small>{window.Polymer.machine(props.game.platform)?.name ?? props.game.platform}</small><span class="horizon-game-players"><For each={props.players}>{player => <PlayerBadge player={player} />}</For></span>
     <Show when={props.game.scraping}>{progress => <div class="horizon-game-scraping">

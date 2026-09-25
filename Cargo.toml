@@ -149,3 +149,73 @@ xa11y-windows = { path = "../xa11y/xa11y-windows" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
+
+[profile.dev.package.aes]
+opt-level = 3
+
+[profile.dev.package.cbc]
+opt-level = 3
+
+[profile.dev.package.ctr]
+opt-level = 3
+
+[profile.dev.package.cipher]
+opt-level = 3
+
+[profile.dev.package.sha1]
+opt-level = 3
+
+[profile.dev.package.sha1-checked]
+opt-level = 3
+
+[profile.dev.package.sha1_smol]
+opt-level = 3
+
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.dev.package.blake3]
+opt-level = 3
+
+[profile.dev.package.md-5]
+opt-level = 3
+
+[profile.dev.package.crc32fast]
+opt-level = 3
+
+[profile.dev.package.flate2]
+opt-level = 3
+
+[profile.dev.package.zlib-rs]
+opt-level = 3
+
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+
+[profile.dev.package.csis]
+opt-level = 3
+
+[profile.dev.package.gix-features]
+opt-level = 3
+
+[profile.dev.package.gix-hash]
+opt-level = 3
+
+[profile.dev.package.gix-object]
+opt-level = 3
+
+[profile.dev.package.gix-odb]
+opt-level = 3
+
+[profile.dev.package.gix-pack]
+opt-level = 3
+
+[profile.dev.package.gix-index]
+opt-level = 3
+
+[profile.dev.package.gix-hashtable]
+opt-level = 3
+
+[patch.crates-io]
+consolespec = { path = "../consolespec/consolespec" }
+gumshoe = { path = "../gumshoe/gumshoe" }

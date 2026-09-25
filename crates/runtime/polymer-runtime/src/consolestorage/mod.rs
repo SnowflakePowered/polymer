@@ -3,6 +3,7 @@ mod operations;
 mod volumes;
 
 use actix::{Actor, Addr, Context, ResponseActFuture, System, WrapFuture};
+use dashmap::DashSet;
 use polymer_deno::polymer::consolestorage::StorageError;
 use polymer_library::{Directories, StorageManager};
 use polymer_pluginhost::runtime::PluginRuntimeHandle;
@@ -16,6 +17,8 @@ pub struct StorageService {
 struct StorageActor {
     manager: Option<Arc<StorageManager>>,
     plugins: PluginRuntimeHandle,
+    installs: Arc<tokio::sync::Mutex<()>>,
+    installing: Arc<DashSet<uuid::Uuid>>,
 }
 
 impl Actor for StorageActor {
@@ -62,7 +65,13 @@ impl StorageService {
             .spawn(move || {
                 let system = System::new();
                 let actor =
-                    system.block_on(async move { StorageActor { manager, plugins }.start() });
+                    system.block_on(async move { StorageActor {
+                        manager,
+                        plugins,
+                        installs: Default::default(),
+                        installing: Default::default(),
+                    }
+                    .start() });
                 if ready.send(actor).is_ok()
                     && let Err(error) = system.run()
                 {

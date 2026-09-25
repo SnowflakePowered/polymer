@@ -257,6 +257,47 @@ impl PluginRuntimeHandle {
         }
     }
 
+    /// Run `onPluginLoad` for every plugin implementing `I` now instead of on its first
+    /// invocation. Loads run in the background; failures are reported as load progress.
+    pub fn load<I>(&self)
+    where
+        I: PluginInstance + ?Sized,
+        Arc<I>: std::any::Any + Send + Sync,
+    {
+        for plugin in self.registry().plugins::<I>() {
+            let Some(plugin) = self.registry().plugin::<dyn PluginInstance>(plugin.id()) else {
+                continue;
+            };
+            let handle = self.clone();
+            tokio::spawn(async move {
+                let entrypoint = plugin.entrypoint().to_string();
+                let worker = WorkerOptions::for_plugin(
+                    plugin.as_ref(),
+                    handle.directories(),
+                    BTreeMap::new(),
+                    None,
+                )
+                .map_err(PluginInvocationError::worker);
+                let lifecycle = handle.lifecycle(plugin.id());
+                let loaded = match worker {
+                    Ok(worker) => {
+                        handle
+                            .run_with_control(handle.cancellation_token().control, move |control| {
+                                run_worker(entrypoint, worker, lifecycle, control, |_| async {
+                                    Ok(())
+                                })
+                            })
+                            .await
+                    }
+                    Err(error) => Err(error),
+                };
+                if let Err(error) = loaded {
+                    tracing::warn!(plugin = plugin.id(), %error, "plugin failed to load");
+                }
+            });
+        }
+    }
+
     fn lifecycle(&self, plugin_id: &str) -> Arc<PluginLifecycle> {
         self.state
             .plugins

@@ -4,7 +4,7 @@ mod metadata;
 use crate::impls::ctr::{CtrNand, layout::Layout};
 use crate::{
     Error,
-    installable::{Depot, DepotType},
+    installable::{Depot, DepotType, IconHint, InstallEvent, InstallEvents, InstallPreview},
     nand::VirtualNand,
 };
 use csis::{CiaArchive, CiaSection};
@@ -46,6 +46,28 @@ impl CiaDepot {
 
     fn content_path(&self, content_id: u32) -> String {
         format!("{}/{content_id:08x}.app", self.content_root)
+    }
+
+    fn verify(&self, report: &dyn Fn(InstallEvent)) -> Vec<String> {
+        let mut archive = match CiaArchive::open(&self.path) {
+            Ok(archive) => archive,
+            Err(_) => return vec![self.path.display().to_string()],
+        };
+        report(InstallEvent::Phase {
+            name: "Verifying".to_owned(),
+            total: archive.items().iter().map(|item| item.size).sum(),
+        });
+        let mut failures = Vec::new();
+        for index in 0..archive.items().len() {
+            let verified = archive.stream_item_with_progress(index, &mut io::sink(), |bytes| {
+                report(InstallEvent::Advance(bytes));
+                Ok(())
+            });
+            if verified.is_err() {
+                failures.push(format!("{:08x}.app", archive.items()[index].content_id));
+            }
+        }
+        failures
     }
 
     fn jobs(&self, archive: &CiaArchive<File>) -> Vec<install::Entry> {
@@ -118,18 +140,36 @@ impl Depot for CiaDepot {
         }
         Ok(())
     }
+    fn preview(&self) -> Option<InstallPreview> {
+        let mut archive = CiaArchive::open(&self.path).ok()?;
+        let mut meta = Vec::new();
+        let smdh = archive
+            .stream_section(CiaSection::Meta, &mut meta)
+            .ok()
+            .and_then(|_| meta.get(0x400..0x400 + 0x36c0))
+            .and_then(crate::impls::ctr::smdh::ExtdataIcon::parse);
+        let id = format!("{:016X}", self.title_id);
+        let label = smdh
+            .as_ref()
+            .map(|smdh| smdh.description().0)
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| id.clone());
+        let icon = smdh
+            .and_then(|smdh| IconHint::image(smdh.rgba()).ok())
+            .and_then(|icon| match icon {
+                IconHint::EmbeddedPng(png) => Some(crate::ArtifactSummary::icon_url(&png)),
+                _ => None,
+            });
+        Some(InstallPreview {
+            id,
+            label,
+            depot_type: self.kind,
+            icon,
+        })
+    }
+
     fn validate_contents(&self) -> Vec<String> {
-        let mut archive = match CiaArchive::open(&self.path) {
-            Ok(archive) => archive,
-            Err(_) => return vec![self.path.display().to_string()],
-        };
-        let mut failures = Vec::new();
-        for index in 0..archive.items().len() {
-            if archive.stream_item(index, &mut io::sink()).is_err() {
-                failures.push(format!("{:08x}.app", archive.items()[index].content_id));
-            }
-        }
-        failures
+        self.verify(&|_| {})
     }
     fn depot_type(&self) -> DepotType {
         self.kind
@@ -137,15 +177,26 @@ impl Depot for CiaDepot {
     fn install<'a, N: VirtualNand + ?Sized>(
         self,
         nand: &'a N,
+        events: InstallEvents,
     ) -> crate::installable::Installation<'a>
     where
         Self: 'a,
     {
         let source = self;
-
         crate::installable::Installation::prepare(async move {
-            source.validate(nand, &source.path)?;
-            install::CiaInstall::new(&source, nand.root()).await
+            source.validate_target(nand)?;
+            let verifying = source.clone();
+            let verified = events.clone();
+            let missing = tokio::task::spawn_blocking(move || verifying.verify(&*verified))
+                .await
+                .map_err(|e| Error::Unsupported(format!("CIA worker failed: {e}")))?;
+            if !missing.is_empty() {
+                return Err(Error::InvalidDepot {
+                    root: source.path.display().to_string(),
+                    missing,
+                });
+            }
+            install::CiaInstall::new(&source, nand.root(), events).await
         })
     }
 }

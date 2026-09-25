@@ -4,11 +4,14 @@ use std::path::{Path, PathBuf};
 pub mod artifacts;
 mod directory;
 mod installation;
+mod progress;
 mod writer;
 pub(crate) use writer::StorageWriter;
 
 pub use directory::DirectoryInstall;
 pub use installation::{Installable, Installation};
+pub(crate) use progress::ReportingReader;
+pub use progress::{InstallEvent, InstallEvents, InstallPreview};
 
 /// Discriminants are persisted in the artifact database, so they are fixed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -55,6 +58,11 @@ pub trait Depot: Sized {
         Ok(Vec::new())
     }
 
+    /// The title this depot installs, when it can be read without extraction.
+    fn preview(&self) -> Option<InstallPreview> {
+        None
+    }
+
     /// Check whether the target NAND meets this depot's format and platform requirements.
     fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> Result<(), crate::Error>;
 
@@ -63,14 +71,19 @@ pub trait Depot: Sized {
     /// Returns the names of the contents that don't validate.
     fn validate_contents(&self) -> Vec<String>;
 
-    /// Validate immediately before starting extraction, after the host persists keys.
-    fn validate<N: VirtualNand + ?Sized>(&self, nand: &N, path: &Path) -> Result<(), crate::Error> {
+    /// Check the target NAND is clean and compatible before extraction.
+    fn validate_target<N: VirtualNand + ?Sized>(&self, nand: &N) -> Result<(), crate::Error> {
         if nand.is_dirty()? {
             return Err(crate::Error::HistoryConflict(
                 "This NAND has uncommitted changes. Recover it in Console storage before installing.".into(),
             ));
         }
-        self.satisfies(nand)?;
+        self.satisfies(nand)
+    }
+
+    /// Validate immediately before starting extraction, after the host persists keys.
+    fn validate<N: VirtualNand + ?Sized>(&self, nand: &N, path: &Path) -> Result<(), crate::Error> {
+        self.validate_target(nand)?;
         let missing = self.validate_contents();
         if !missing.is_empty() {
             return Err(crate::Error::InvalidDepot {
@@ -83,10 +96,11 @@ pub trait Depot: Sized {
 
     fn depot_type(&self) -> DepotType;
 
-    /// Install a depot, exposing progress through `next().await` and its result
-    /// through `finish().await`. Calling `finish` also drives any remaining work.
+    /// Install a depot, exposing extracted files through `next().await`, byte progress
+    /// through `events`, and its result through `finish().await`. Calling `finish` also
+    /// drives any remaining work.
     #[must_use]
-    fn install<'a, N: VirtualNand + ?Sized>(self, nand: &'a N) -> Installation<'a>
+    fn install<'a, N: VirtualNand + ?Sized>(self, nand: &'a N, events: InstallEvents) -> Installation<'a>
     where
         Self: 'a;
 }

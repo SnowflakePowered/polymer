@@ -132,7 +132,11 @@ impl Depot for VitaDirectoryDepot {
         self.kind
     }
 
-    fn install<'a, N: VirtualNand + ?Sized>(self, nand: &'a N) -> Installation<'a>
+    fn install<'a, N: VirtualNand + ?Sized>(
+        self,
+        nand: &'a N,
+        events: crate::installable::InstallEvents,
+    ) -> Installation<'a>
     where
         Self: 'a,
     {
@@ -142,6 +146,7 @@ impl Depot for VitaDirectoryDepot {
             source.validate(nand, &source.root)?;
             let storage = nand.root();
             Ok(VitaInstall {
+                events,
                 copy: DirectoryInstall::new(
                     source.root.clone(),
                     source.destination.clone(),
@@ -158,6 +163,7 @@ struct VitaInstall {
     depot: VitaDirectoryDepot,
     copy: DirectoryInstall,
     storage: Arc<dyn VolumeStorage>,
+    events: crate::installable::InstallEvents,
 }
 
 impl Installable for VitaInstall {
@@ -200,7 +206,7 @@ impl Installable for VitaInstall {
                 .map(str::to_owned),
             icon,
         );
-        self.storage.artifacts().record(&artifact).await?;
+        self.storage.artifacts().record(&artifact, self.events).await?;
         Ok(artifact)
     }
 }

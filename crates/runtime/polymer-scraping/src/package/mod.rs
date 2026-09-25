@@ -33,7 +33,11 @@ use std::{
 pub struct Package {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bundle: Option<crate::LaunchBundle>,
-    #[serde(default, rename = "__manifest", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "__manifest",
+        skip_serializing_if = "Option::is_none"
+    )]
     manifest: Option<polymer_library::PackageManifest>,
     #[serde(default, rename = "__digestPath")]
     pub path: PathBuf,
@@ -42,6 +46,8 @@ pub struct Package {
     pub serial: Option<String>,
     pub title_id: Option<String>,
     pub binary_digest: String,
+    #[serde(skip)]
+    pub installable: bool,
     #[serde(skip)]
     import: Option<PackageImport>,
 }
@@ -75,6 +81,7 @@ impl Package {
             serial: launchable.serial,
             title_id: launchable.title_id,
             binary_digest: blake3::Hash::from_bytes(digest).to_hex().to_string(),
+            installable: false,
             import: None,
         })
     }
@@ -169,6 +176,7 @@ impl Package {
             serial,
             title_id,
             binary_digest: String::new(),
+            installable: package.installable(),
             import: Some(PackageImport {
                 parent_binary_id,
                 gumshoe,

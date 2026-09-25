@@ -219,6 +219,7 @@ impl Depot for Ps3PkgDepot {
     fn install<'a, N: VirtualNand + ?Sized>(
         self,
         nand: &'a N,
+        events: crate::installable::InstallEvents,
     ) -> crate::installable::Installation<'a>
     where
         Self: 'a,
@@ -227,7 +228,7 @@ impl Depot for Ps3PkgDepot {
 
         crate::installable::Installation::prepare(async move {
             source.validate(nand, &source.path)?;
-            install::Ps3PkgInstall::new(&source, nand.root()).await
+            install::Ps3PkgInstall::new(&source, nand.root(), events).await
         })
     }
 }

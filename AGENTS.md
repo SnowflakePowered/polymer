@@ -25,4 +25,5 @@
     * Do not write constructors or logic that purely serve tests.
 * Make only the smallest change needed for a request or feature. 
 * Follow existing conventions for Actors and JS <-> Rust messaging.
+* Do not leave explanatory comments in your code. 
 Read ARCHITECTURE.md for a high level overview of the architecture.

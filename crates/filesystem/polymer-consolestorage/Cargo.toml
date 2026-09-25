@@ -19,7 +19,8 @@ tar = "0.4"
 atomic-write-file.workspace = true
 thiserror.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "tga"] }
-jiff = "0.2.35"
+base64.workspace = true
+jiff = { version = "0.2.35", features = ["serde"] }
 walkdir = "2.5.0"
 tokio = { version = "1.53.0", features = ["fs", "io-util", "rt", "sync", "time"] }
 vfs = "0.13.0"

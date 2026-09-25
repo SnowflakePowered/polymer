@@ -252,6 +252,12 @@ async fn op_configuration_prepare(
 
 #[op2]
 #[serde]
+fn op_machine(#[string] id: String) -> Option<consolespec::MachineSpec> {
+    consolespec::MachineSpec::try_from(id.as_str()).ok()
+}
+
+#[op2]
+#[serde]
 fn op_plugin_list(state: &mut OpState) -> Result<serde_json::Value, JsErrorBox> {
     Ok(state.borrow::<Arc<dyn PolymerHost>>().list_plugins())
 }
@@ -489,6 +495,7 @@ async fn op_webrtc_stop(state: Rc<RefCell<OpState>>, token: u32) -> Result<(), J
 deno_core::extension!(
     polymer_api,
     ops = [
+        op_machine,
         op_scraping_package_from_path,
         op_configuration_describe,
         op_configuration_configure,

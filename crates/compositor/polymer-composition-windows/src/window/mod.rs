@@ -130,7 +130,7 @@ impl WindowManager {
             return false;
         };
         let response = overlay.on_window_event(&self.window, event);
-        if response.repaint {
+        if response.repaint && !matches!(event, WindowEvent::RedrawRequested) {
             self.window.request_redraw();
         }
         response.consumed

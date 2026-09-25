@@ -1,8 +1,11 @@
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
+use aes::Aes128;
+use aes::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
 use zerocopy::byteorder::big_endian as be;
-use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned, byteorder::little_endian::U32};
+use zerocopy::byteorder::little_endian::{U16, U32, U64};
+use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
 use super::CiaDepot;
 use crate::impls::ctr::smdh::ExtdataIcon;
@@ -15,7 +18,10 @@ struct NcchHeader {
     signature: [u8; 0x100],
     magic: [u8; 4],
     size: U32,
-    before_flags: [u8; 0x80],
+    partition_id: U64,
+    maker_code: [u8; 2],
+    version: U16,
+    before_flags: [u8; 0x74],
     flags: [u8; 8],
     before_exefs: [u8; 0x10],
     exefs_offset: U32,
@@ -32,6 +38,12 @@ struct ExeFsEntry {
 }
 
 const _: () = assert!(size_of::<NcchHeader>() == 0x200);
+
+const NCCH_KEYX_2C: u128 = 0xb98e95ceca3e4d171f76a94de934c053;
+const AES_GENERATOR: u128 = 0x1ff9e9aac5fe0408024591dc5d52768a;
+const NO_CRYPTO: u8 = 0x04;
+const FIXED_KEY: u8 = 0x01;
+const EXEFS_REGION: u8 = 2;
 const _: () = assert!(size_of::<ExeFsEntry>() == 0x10);
 
 pub(super) struct InstalledTitle;
@@ -147,9 +159,8 @@ impl InstalledTitle {
         reader
             .read_exact(&mut bytes)
             .map_err(|error| Error::io(Path::new(path), error))?;
-        let header = NcchHeader::ref_from_bytes(&bytes).expect("fixed NCCH header");
-        if header.magic != *b"NCCH" || header.flags[7] & 4 == 0 {
-            // TODO: use Gumshoe when its public readers support installed encrypted NCCH.
+        let header = NcchHeader::read_from_bytes(&bytes).expect("fixed NCCH header");
+        if header.magic != *b"NCCH" {
             return Ok(None);
         }
         let Some((offset, size)) = header.exefs_range(length) else {
@@ -159,6 +170,7 @@ impl InstalledTitle {
             .seek(SeekFrom::Start(offset))
             .and_then(|_| reader.read_exact(&mut bytes))
             .map_err(|error| Error::io(Path::new(path), error))?;
+        header.decrypt_exefs(offset, 0, &mut bytes);
         for bytes in bytes[..0xa0].chunks_exact(0x10) {
             let entry = ExeFsEntry::ref_from_bytes(bytes).expect("fixed ExeFS entry");
             if entry.name != *b"icon\0\0\0\0" {
@@ -173,6 +185,7 @@ impl InstalledTitle {
                 .seek(SeekFrom::Start(offset + start))
                 .and_then(|_| reader.read_exact(&mut icon))
                 .map_err(|error| Error::io(Path::new(path), error))?;
+            header.decrypt_exefs(offset, start, &mut icon);
             return Ok(ExtdataIcon::parse(&icon));
         }
         Ok(None)
@@ -180,6 +193,28 @@ impl InstalledTitle {
 }
 
 impl NcchHeader {
+    fn decrypt_exefs(&self, exefs_offset: u64, stream_offset: u64, bytes: &mut [u8]) {
+        if self.flags[7] & NO_CRYPTO != 0 {
+            return;
+        }
+        let key = if self.flags[7] & FIXED_KEY != 0 {
+            0
+        } else {
+            let key_y =
+                u128::from_be_bytes(self.signature[..0x10].try_into().expect("fixed signature"));
+            ((NCCH_KEYX_2C.rotate_left(2) ^ key_y).wrapping_add(AES_GENERATOR)).rotate_left(87)
+        };
+        let partition = self.partition_id.get();
+        let counter = match self.version.get() {
+            1 => (u128::from(partition.swap_bytes()) << 64) | u128::from(exefs_offset as u32),
+            _ => (u128::from(partition) << 64) | (u128::from(EXEFS_REGION) << 56),
+        };
+        let mut cipher =
+            ctr::Ctr128BE::<Aes128>::new(&key.to_be_bytes().into(), &counter.to_be_bytes().into());
+        cipher.seek(stream_offset);
+        cipher.apply_keystream(bytes);
+    }
+
     fn exefs_range(&self, length: u64) -> Option<(u64, u64)> {
         let unit = 0x200_u64.checked_shl(u32::from(self.flags[6]))?;
         let content_size = u64::from(self.size.get()).checked_mul(unit)?;

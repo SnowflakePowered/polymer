@@ -34,6 +34,10 @@ unsafe impl Sync for Publisher {}
 
 impl Publisher {
     pub fn create(label: &str) -> io::Result<Self> {
+        #[cfg(windows)]
+        let directory = crate::LocalSocketListener::directory();
+        #[cfg(not(windows))]
+        let directory = std::env::temp_dir();
         let file = tempfile::Builder::new()
             .prefix(&format!(
                 "polymer-{label}-{}-{}-",
@@ -41,7 +45,7 @@ impl Publisher {
                 NEXT_MAP.fetch_add(1, Ordering::Relaxed)
             ))
             .suffix(".map")
-            .tempfile()?;
+            .tempfile_in(directory)?;
         file.as_file().set_len((HEADER_SIZE + CAPACITY) as u64)?;
         // SAFETY: the file remains owned by this endpoint and is not resized.
         let mapping = unsafe { MmapOptions::new().map_mut(file.as_file())? };

@@ -17,7 +17,7 @@ use tokio::sync::Notify;
 use uuid::Uuid;
 
 use crate::installable::artifacts::Artifact;
-use crate::installable::{DepotFile, DepotType, IconHint};
+use crate::installable::{DepotFile, DepotType, IconHint, InstallEvent, InstallEvents, ReportingReader};
 use crate::storage::manifest::{ArtifactRegistry, ArtifactSummary, VolumeInfo};
 use crate::{
     BoxFuture, ChangeSignal, DirectoryStorage, EntryKind, Error, InstallResult, Metadata,
@@ -25,6 +25,12 @@ use crate::{
 };
 
 const SCHEMA_VERSION: u32 = 2;
+const CHECKOUT_STAT: gix::index::entry::stat::Options = gix::index::entry::stat::Options {
+    trust_ctime: false,
+    check_stat: true,
+    use_nsec: true,
+    use_stdev: false,
+};
 
 impl StorageKind {
     fn ref_name(self, id: Uuid) -> String {
@@ -667,15 +673,24 @@ impl GitVolumeStorage {
         index: &gix::index::File,
     ) -> Result<(), Error> {
         let checkout = self.inner.checkout.root();
-        if checkout.exists() {
-            fs::remove_dir_all(checkout).map_err(|error| Error::io(checkout, error))?;
-        }
         fs::create_dir_all(checkout).map_err(|error| Error::io(checkout, error))?;
-
+        let indexed = self.indexed_checkout(repo.object_hash())?;
+        let mut expected = BTreeSet::new();
         for entry in index.entries() {
             let relative = entry.path(index).to_str_lossy();
             Self::validate(&relative)?;
+            let path = PathBuf::from(relative.as_ref());
             let destination = checkout.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR));
+            let current = indexed
+                .get(&path)
+                .is_some_and(|(stat, id)| *id == entry.id && Self::stat_matches(stat, &destination));
+            expected.insert(path);
+            if current {
+                continue;
+            }
+            if destination.is_dir() {
+                fs::remove_dir_all(&destination).map_err(|error| Error::io(&destination, error))?;
+            }
             let parent = destination
                 .parent()
                 .ok_or_else(|| Error::InvalidPath(destination.display().to_string()))?;
@@ -693,8 +708,46 @@ impl GitVolumeStorage {
             Self::validate(&directory)?;
             let destination = checkout.join(directory.replace('/', std::path::MAIN_SEPARATOR_STR));
             fs::create_dir_all(&destination).map_err(|error| Error::io(&destination, error))?;
+            expected.insert(PathBuf::from(directory));
+        }
+        for path in expected.iter().cloned().collect::<Vec<_>>() {
+            expected.extend(
+                path.ancestors()
+                    .skip(1)
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .map(Path::to_path_buf),
+            );
+        }
+        Self::prune_checkout(checkout, checkout, &expected)
+    }
+
+    fn prune_checkout(root: &Path, directory: &Path, expected: &BTreeSet<PathBuf>) -> Result<(), Error> {
+        for entry in fs::read_dir(directory).map_err(|error| Error::io(directory, error))? {
+            let path = entry.map_err(|error| Error::io(directory, error))?.path();
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|_| Error::InvalidPath(path.display().to_string()))?;
+            let metadata = fs::symlink_metadata(&path).map_err(|error| Error::io(&path, error))?;
+            if expected.contains(relative) {
+                if metadata.is_dir() {
+                    Self::prune_checkout(root, &path, expected)?;
+                }
+                continue;
+            }
+            if metadata.is_dir() {
+                fs::remove_dir_all(&path).map_err(|error| Error::io(&path, error))?;
+            } else {
+                fs::remove_file(&path).map_err(|error| Error::io(&path, error))?;
+            }
         }
         Ok(())
+    }
+
+    fn stat_matches(stat: &gix::index::entry::Stat, path: &Path) -> bool {
+        gix::index::fs::Metadata::from_path_no_follow(path)
+            .ok()
+            .and_then(|metadata| gix::index::entry::Stat::from_fs(&metadata).ok())
+            .is_some_and(|current| stat.matches(&current, CHECKOUT_STAT))
     }
 
     fn refresh_checkout_locked(
@@ -752,6 +805,7 @@ impl GitVolumeStorage {
             Err(error) => return Err(Error::io(checkout, error)),
         }
         let mut expected = self.committed_checkout_entries(repo, root)?;
+        let indexed = self.indexed_checkout(repo.object_hash())?;
         let mut directories = vec![checkout.to_path_buf()];
         while let Some(directory) = directories.pop() {
             for entry in fs::read_dir(&directory).map_err(|error| Error::io(&directory, error))? {
@@ -763,7 +817,12 @@ impl GitVolumeStorage {
                 let Some(object) = expected.remove(relative) else {
                     return Ok(false);
                 };
-                if !Self::checkout_entry_matches(repo, &path, object)? {
+                let unchanged = object.is_some_and(|object| {
+                    indexed
+                        .get(relative)
+                        .is_some_and(|(stat, id)| *id == object && Self::stat_matches(stat, &path))
+                });
+                if !unchanged && !Self::checkout_entry_matches(repo, &path, object)? {
                     return Ok(false);
                 }
                 if object.is_none() {
@@ -772,6 +831,32 @@ impl GitVolumeStorage {
             }
         }
         Ok(expected.is_empty())
+    }
+
+    fn indexed_checkout(
+        &self,
+        object_hash: gix::hash::Kind,
+    ) -> Result<BTreeMap<PathBuf, (gix::index::entry::Stat, gix::ObjectId)>, Error> {
+        if !self.inner.index_path.is_file() {
+            return Ok(BTreeMap::new());
+        }
+        let index = gix::index::File::at(
+            &self.inner.index_path,
+            object_hash,
+            false,
+            gix::index::decode::Options::default(),
+        )
+        .map_err(|error| Error::git("read platform checkout index", error))?;
+        let prefix = self.index_prefix();
+        Ok(index
+            .entries()
+            .iter()
+            .filter_map(|entry| {
+                let path = entry.path(&index).to_str_lossy();
+                let relative = path.strip_prefix(&prefix)?;
+                Some((PathBuf::from(relative), (entry.stat, entry.id)))
+            })
+            .collect())
     }
 
     fn checkout_entry_matches(
@@ -901,6 +986,63 @@ impl GitVolumeStorage {
         message: &str,
         extra_parent: Option<gix::ObjectId>,
     ) -> Result<Option<gix::ObjectId>, Error> {
+        self.commit_pending_reporting(message, extra_parent, &|_| {})
+    }
+
+    /// Write blobs for pending files outside the operation lock, so large commits do not
+    /// block readers. A file changed after staging is written again under the lock.
+    fn stage_blobs(
+        &self,
+        report: &dyn Fn(InstallEvent),
+    ) -> Result<BTreeMap<String, (gix::ObjectId, fs::Metadata)>, Error> {
+        let files = self
+            .inner
+            .working
+            .read()
+            .entries
+            .iter()
+            .filter(|(_, entry)| matches!(entry, OverlayEntry::File))
+            .map(|(path, _)| {
+                let source = self.checkout_file(path);
+                let metadata = fs::metadata(&source).map_err(|error| Error::io(&source, error))?;
+                Ok((path.clone(), source, metadata))
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        report(InstallEvent::Phase {
+            name: "Saving".to_owned(),
+            total: files.iter().map(|(_, _, metadata)| metadata.len()).sum(),
+        });
+        let repo = self.inner.platform.repository().to_thread_local();
+        let mut staged = BTreeMap::new();
+        for (path, source, metadata) in files {
+            let file = fs::File::open(&source).map_err(|error| Error::io(&source, error))?;
+            let id = repo
+                .objects
+                .write_stream(
+                    gix::objs::Kind::Blob,
+                    metadata.len(),
+                    &mut ReportingReader { inner: file, report },
+                )
+                .map_err(|error| Error::git("write volume blob", error))?;
+            staged.insert(path, (id, metadata));
+        }
+        Ok(staged)
+    }
+
+    fn checkout_file(&self, path: &str) -> PathBuf {
+        self.inner
+            .checkout
+            .root()
+            .join(path.replace('/', std::path::MAIN_SEPARATOR_STR))
+    }
+
+    pub(crate) fn commit_pending_reporting(
+        &self,
+        message: &str,
+        extra_parent: Option<gix::ObjectId>,
+        report: &dyn Fn(InstallEvent),
+    ) -> Result<Option<gix::ObjectId>, Error> {
+        let staged = self.stage_blobs(report)?;
         let _guard = self.inner.platform.0.operation.lock();
         let reference = self.ref_name();
         let repo = self.inner.platform.repository().to_thread_local();
@@ -919,21 +1061,22 @@ impl GitVolumeStorage {
             let git_path = format!("files/{path}");
             match entry {
                 OverlayEntry::File => {
-                    let source = self
-                        .inner
-                        .checkout
-                        .root()
-                        .join(path.replace('/', std::path::MAIN_SEPARATOR_STR));
+                    let source = self.checkout_file(path);
                     let mut file =
                         fs::File::open(&source).map_err(|error| Error::io(&source, error))?;
-                    let length = file
-                        .metadata()
-                        .map_err(|error| Error::io(&source, error))?
-                        .len();
-                    let id = repo
-                        .objects
-                        .write_stream(gix::objs::Kind::Blob, length, &mut file)
-                        .map_err(|error| Error::git("write volume blob", error))?;
+                    let metadata = file.metadata().map_err(|error| Error::io(&source, error))?;
+                    let id = match staged.get(path) {
+                        Some((id, before))
+                            if before.len() == metadata.len()
+                                && before.modified().ok() == metadata.modified().ok() =>
+                        {
+                            *id
+                        }
+                        _ => repo
+                            .objects
+                            .write_stream(gix::objs::Kind::Blob, metadata.len(), &mut file)
+                            .map_err(|error| Error::git("write volume blob", error))?,
+                    };
                     editor
                         .upsert(git_path, gix::objs::tree::EntryKind::Blob, id)
                         .map_err(|error| Error::git("update volume file", error))?;
@@ -1463,6 +1606,7 @@ struct ArtifactRecord {
     icon_path: Option<PathBuf>,
     icon_png: Option<Arc<[u8]>>,
     byte_length: u64,
+    installed: Timestamp,
 }
 
 #[derive(Clone)]
@@ -1510,6 +1654,7 @@ impl From<&Artifact> for ArtifactRecord {
                 _ => None,
             },
             byte_length: artifact.byte_length(),
+            installed: artifact.installed(),
         }
     }
 }
@@ -1531,6 +1676,7 @@ impl ArtifactRecord {
                 .or_else(|| self.icon_path.clone().map(IconHint::File))
                 .unwrap_or(IconHint::Builtin(self.depot_type)),
         )
+        .with_installed(self.installed)
     }
 
     fn write(
@@ -1556,6 +1702,7 @@ impl ArtifactRecord {
         if let Some(version) = &self.version {
             write_text(repo, editor, &format!("{root}/version"), version)?;
         }
+        write_text(repo, editor, &format!("{root}/installed"), &self.installed.to_string())?;
         if let Some(path) = &self.icon_path {
             write_text(
                 repo,
@@ -1615,10 +1762,23 @@ impl GitArtifactRegistry {
     }
 
     fn records(&self) -> Result<Vec<ArtifactRecord>, Error> {
-        let storage = self.storage();
+        self.read_artifacts(read_artifact)
+    }
+
+    fn read_artifacts<T>(
+        &self,
+        read: impl Fn(&gix::Repository, &gix::Tree<'_>) -> Result<T, Error>,
+    ) -> Result<Vec<T>, Error> {
         let repo = self.0.platform.repository().to_thread_local();
-        let tip = GitVolumeStorage::tip_in(&repo, &storage.ref_name())?;
-        let tree = GitVolumeStorage::root_tree(&repo, tip)?;
+        let tip = GitVolumeStorage::tip_in(&repo, &self.storage().ref_name())?;
+        Self::artifacts_in(&repo, &GitVolumeStorage::root_tree(&repo, tip)?, read)
+    }
+
+    fn artifacts_in<T>(
+        repo: &gix::Repository,
+        tree: &gix::Tree<'_>,
+        read: impl Fn(&gix::Repository, &gix::Tree<'_>) -> Result<T, Error>,
+    ) -> Result<Vec<T>, Error> {
         let Some(artifacts) = tree
             .lookup_entry_by_path("meta/artifacts")
             .map_err(|error| Error::git("lookup artifacts", error))?
@@ -1634,7 +1794,10 @@ impl GitArtifactRegistry {
             if entry.kind() != gix::objs::tree::EntryKind::Tree {
                 continue;
             }
-            records.push(read_artifact(&repo, entry.oid().into())?);
+            let tree = repo
+                .find_tree(entry.oid())
+                .map_err(|error| Error::git("read artifact tree", error))?;
+            records.push(read(repo, &tree)?);
         }
         Ok(records)
     }
@@ -1742,7 +1905,12 @@ impl GitArtifactRegistry {
         repo: &gix::Repository,
         commit: &NandCommit,
         current: &mut BTreeMap<String, TreeLeaf>,
+        removed: &BTreeSet<String>,
     ) -> Result<Vec<String>, Error> {
+        let removed_metadata = removed
+            .iter()
+            .map(|id| format!("meta/artifacts/{}/", artifact_key(id)))
+            .collect::<Vec<_>>();
         let before = Self::parent_snapshot(repo, commit)?;
         let after = Self::tree_snapshot(repo, commit.commit.tree)?;
         let paths = before
@@ -1755,7 +1923,7 @@ impl GitArtifactRegistry {
         for path in paths {
             let before = before.get(&path).copied();
             let after = after.get(&path).copied();
-            if before == after {
+            if before == after || removed_metadata.iter().any(|prefix| path.starts_with(prefix)) {
                 continue;
             }
             let found = current.get(&path).copied();
@@ -1871,7 +2039,7 @@ impl GitArtifactRegistry {
                 {
                     continue;
                 }
-                let conflicts = Self::apply_delta(repo, commit, &mut current)?;
+                let conflicts = Self::apply_delta(repo, commit, &mut current, &selected)?;
                 if conflicts.is_empty() {
                     continue;
                 }
@@ -1922,7 +2090,7 @@ impl GitArtifactRegistry {
             {
                 continue;
             }
-            let conflicts = Self::apply_delta(repo, original, &mut current)?;
+            let conflicts = Self::apply_delta(repo, original, &mut current, removed)?;
             if !conflicts.is_empty() {
                 return Err(Error::HistoryConflict(format!(
                     "rewriting commit {} conflicts at {}",
@@ -1945,6 +2113,14 @@ impl GitArtifactRegistry {
         let new_tip = parent.ok_or_else(|| {
             Error::HistoryConflict("uninstall cannot remove the entire NAND history".to_owned())
         })?;
+        let rewritten = GitVolumeStorage::root_tree(repo, Some(new_tip))?;
+        let remaining = Self::artifacts_in(repo, &rewritten, read_artifact_summary)?;
+        if let Some(artifact) = remaining.iter().find(|artifact| removed.contains(&artifact.id)) {
+            return Err(Error::HistoryConflict(format!(
+                "rewritten NAND history still records {}",
+                artifact.id
+            )));
+        }
         let reference = self.storage().ref_name();
         let name = gix::refs::FullName::try_from(reference.as_str())
             .map_err(|error| Error::git("validate NAND reference", error))?;
@@ -2026,31 +2202,30 @@ impl ArtifactRegistry for GitArtifactRegistry {
         })
     }
 
-    fn record<'a>(&'a self, artifact: &'a Artifact) -> BoxFuture<'a, Result<(), Error>> {
+    fn record<'a>(
+        &'a self,
+        artifact: &'a Artifact,
+        events: InstallEvents,
+    ) -> BoxFuture<'a, Result<(), Error>> {
         Box::pin(async move {
             self.0.working.write().metadata.artifacts.insert(
                 artifact.id().to_owned(),
                 Some(ArtifactRecord::from(artifact)),
             );
-            self.storage()
-                .commit_pending(&format!("Polymer install {}", artifact.id()), None)?;
+            let storage = self.storage();
+            let message = format!("Polymer install {}", artifact.id());
+            tokio::task::spawn_blocking(move || {
+                storage.commit_pending_reporting(&message, None, &*events)
+            })
+            .await
+            .map_err(|error| Error::Unsupported(format!("commit worker failed: {error}")))??;
             Ok(())
         })
     }
 
     fn summaries(&self) -> BoxFuture<'_, Result<Vec<ArtifactSummary>, Error>> {
         Box::pin(async move {
-            let mut summaries = self
-                .records()?
-                .into_iter()
-                .map(|record| ArtifactSummary {
-                    id: record.id,
-                    depot_type: record.depot_type,
-                    label: record.label,
-                    version: record.version,
-                    byte_length: record.byte_length,
-                })
-                .collect::<Vec<_>>();
+            let mut summaries = self.read_artifacts(read_artifact_summary)?;
             summaries.sort_by(|left, right| left.id.cmp(&right.id));
             Ok(summaries)
         })
@@ -2058,16 +2233,31 @@ impl ArtifactRegistry for GitArtifactRegistry {
 
     fn artifact<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<Option<Artifact>, Error>> {
         Box::pin(async move {
-            Ok(self
-                .records()?
-                .into_iter()
-                .find(|record| record.id == id)
-                .map(|record| record.artifact()))
+            let repo = self.0.platform.repository().to_thread_local();
+            let tip = GitVolumeStorage::tip_in(&repo, &self.storage().ref_name())?;
+            let root = GitVolumeStorage::root_tree(&repo, tip)?;
+            let Some(entry) = root
+                .lookup_entry_by_path(format!("meta/artifacts/{}", artifact_key(id)))
+                .map_err(|error| Error::git("lookup artifact", error))?
+            else {
+                return Ok(None);
+            };
+            let tree = repo
+                .find_tree(entry.oid())
+                .map_err(|error| Error::git("read artifact tree", error))?;
+            Ok(Some(read_artifact(&repo, &tree)?.artifact()))
         })
     }
 
     fn contains<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<bool, Error>> {
-        Box::pin(async move { Ok(self.records()?.iter().any(|record| record.id == id)) })
+        Box::pin(async move {
+            let repo = self.0.platform.repository().to_thread_local();
+            let tip = GitVolumeStorage::tip_in(&repo, &self.storage().ref_name())?;
+            Ok(GitVolumeStorage::root_tree(&repo, tip)?
+                .lookup_entry_by_path(format!("meta/artifacts/{}", artifact_key(id)))
+                .map_err(|error| Error::git("lookup artifact", error))?
+                .is_some())
+        })
     }
 
     fn uninstall<'a>(&'a self, ids: &'a [&'a str]) -> BoxFuture<'a, Result<(), Error>> {
@@ -2114,42 +2304,77 @@ impl ArtifactRegistry for GitArtifactRegistry {
     }
 }
 
-fn read_artifact(repo: &gix::Repository, tree: gix::ObjectId) -> Result<ArtifactRecord, Error> {
-    let tree = repo
-        .find_tree(tree)
-        .map_err(|error| Error::git("read artifact tree", error))?;
-    let value = |path: &str| -> Result<Option<Vec<u8>>, Error> {
-        let Some(entry) = tree
-            .lookup_entry_by_path(path)
-            .map_err(|error| Error::git("lookup artifact value", error))?
-        else {
-            return Ok(None);
-        };
-        repo.find_blob(entry.oid())
-            .map(|blob| Some(blob.data.clone()))
-            .map_err(|error| Error::git("read artifact value", error))
+fn artifact_value(
+    repo: &gix::Repository,
+    tree: &gix::Tree<'_>,
+    path: &str,
+) -> Result<Option<Vec<u8>>, Error> {
+    let Some(entry) = tree
+        .lookup_entry_by_path(path)
+        .map_err(|error| Error::git("lookup artifact value", error))?
+    else {
+        return Ok(None);
     };
+    repo.find_blob(entry.oid())
+        .map(|blob| Some(blob.data.clone()))
+        .map_err(|error| Error::git("read artifact value", error))
+}
+
+fn read_artifact_summary(
+    repo: &gix::Repository,
+    tree: &gix::Tree<'_>,
+) -> Result<ArtifactSummary, Error> {
     let text = |path: &str| -> Result<String, Error> {
         String::from_utf8(
-            value(path)?
+            artifact_value(repo, tree, path)?
                 .ok_or_else(|| Error::HistoryConflict(format!("artifact has no `{path}`")))?,
         )
         .map_err(|error| Error::git("decode artifact value", error))
     };
-    let id = text("id")?;
     let depot_type = text("depot-type")?
         .parse::<u8>()
         .map_err(|error| Error::git("parse artifact type", error))?;
-    let depot_type = DepotType::try_from(depot_type)
-        .map_err(|value| Error::HistoryConflict(format!("invalid artifact type {value}")))?;
-    let label = text("label")?;
-    let byte_length = text("byte-length")?
-        .parse::<u64>()
-        .map_err(|error| Error::git("parse artifact size", error))?;
-    let version = value("version")?
-        .map(String::from_utf8)
-        .transpose()
-        .map_err(|error| Error::git("decode artifact version", error))?;
+    Ok(ArtifactSummary {
+        id: text("id")?,
+        depot_type: DepotType::try_from(depot_type)
+            .map_err(|value| Error::HistoryConflict(format!("invalid artifact type {value}")))?,
+        label: text("label")?,
+        version: artifact_value(repo, tree, "version")?
+            .map(String::from_utf8)
+            .transpose()
+            .map_err(|error| Error::git("decode artifact version", error))?,
+        byte_length: text("byte-length")?
+            .parse::<u64>()
+            .map_err(|error| Error::git("parse artifact size", error))?,
+        installed: text("installed")?
+            .parse::<Timestamp>()
+            .map_err(|error| Error::git("parse artifact install time", error))?,
+        file_count: match tree
+            .lookup_entry_by_path("files")
+            .map_err(|error| Error::git("lookup artifact files", error))?
+        {
+            Some(files) => repo
+                .find_tree(files.oid())
+                .map_err(|error| Error::git("read artifact files", error))?
+                .iter()
+                .count(),
+            None => 0,
+        },
+        icon: artifact_value(repo, tree, "icon.png")?.map(|png| ArtifactSummary::icon_url(&png)),
+    })
+}
+
+fn read_artifact(repo: &gix::Repository, tree: &gix::Tree<'_>) -> Result<ArtifactRecord, Error> {
+    let value = |path: &str| artifact_value(repo, tree, path);
+    let ArtifactSummary {
+        id,
+        depot_type,
+        label,
+        version,
+        byte_length,
+        installed,
+        ..
+    } = read_artifact_summary(repo, tree)?;
     let icon_path = value("icon-path")?
         .map(String::from_utf8)
         .transpose()
@@ -2206,6 +2431,7 @@ fn read_artifact(repo: &gix::Repository, tree: gix::ObjectId) -> Result<Artifact
         icon_path,
         icon_png: value("icon.png")?.map(Arc::from),
         byte_length,
+        installed,
     })
 }
 

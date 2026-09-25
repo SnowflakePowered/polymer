@@ -270,7 +270,11 @@ pub async fn launch_storage(
         return Err("launch storage requires a string console".to_owned());
     };
     let battery_supported = BatterySaveRepo::supports(console);
-    if requested.is_none_or(serde_json::Map::is_empty) && !battery_supported {
+    let default_device = ConsoleStorage::default_device(console);
+    if requested.is_none_or(serde_json::Map::is_empty)
+        && !battery_supported
+        && default_device.is_none()
+    {
         return Ok(BTreeMap::new());
     }
     let machine = MachineSpec::try_from(console).map_err(|error| error.to_string())?;
@@ -279,6 +283,16 @@ pub async fn launch_storage(
         .map(|device| device.id())
         .collect::<std::collections::BTreeSet<_>>();
     let manager = manager.ok_or_else(|| "console storage is unavailable".to_owned())?;
+    let mut requested = requested.cloned().unwrap_or_default();
+    if let Some((device, kind)) = default_device
+        && !requested.contains_key(device)
+    {
+        let selection = manager
+            .default_selection(kind, console)
+            .await
+            .map_err(|error| error.to_string())?;
+        requested.insert(device.to_owned(), selection);
+    }
     let key_store = KeyStore::open(manager.root().join("keys"))
         .await
         .map_err(|e| e.to_string())?;
@@ -295,7 +309,7 @@ pub async fn launch_storage(
 
     let mut storage = StorageFactories::new();
     if battery_supported {
-        let selection = requested.and_then(|requested| requested.get("battery"));
+        let selection = requested.get("battery");
         let (id, volume) = match selection {
             Some(selection) => {
                 let id = parse_id("battery", selection)?;
@@ -352,7 +366,7 @@ pub async fn launch_storage(
             ),
         );
     }
-    for (name, selection) in requested.into_iter().flatten() {
+    for (name, selection) in &requested {
         if name == "battery" && battery_supported {
             continue;
         }

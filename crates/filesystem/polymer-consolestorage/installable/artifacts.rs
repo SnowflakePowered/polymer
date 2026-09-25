@@ -1,4 +1,5 @@
 use crate::installable::{DepotFile, DepotType, IconHint};
+use jiff::Timestamp;
 
 #[derive(Clone)]
 pub struct Artifact {
@@ -9,6 +10,7 @@ pub struct Artifact {
     version: Option<String>,
     icon: IconHint,
     byte_length: u64,
+    installed: Timestamp,
 }
 
 impl Artifact {
@@ -29,7 +31,13 @@ impl Artifact {
             version,
             icon,
             byte_length,
+            installed: Timestamp::now(),
         }
+    }
+
+    pub(crate) fn with_installed(mut self, installed: Timestamp) -> Self {
+        self.installed = installed;
+        self
     }
 
     pub fn id(&self) -> &str {
@@ -58,5 +66,9 @@ impl Artifact {
 
     pub fn byte_length(&self) -> u64 {
         self.byte_length
+    }
+
+    pub fn installed(&self) -> Timestamp {
+        self.installed
     }
 }

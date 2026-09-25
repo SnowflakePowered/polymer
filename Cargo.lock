@@ -2150,8 +2150,6 @@ dependencies = [
 [[package]]
 name = "consolespec"
 version = "0.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b95a07545fa5680fbd9d7541392bc4d2efa8c87363edd1e629170c7ab1eec138"
 dependencies = [
  "consolespec-build",
  "phf 0.14.0",
@@ -2164,8 +2162,6 @@ dependencies = [
 [[package]]
 name = "consolespec-build"
 version = "0.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "622394d818a1e3325137c9b5f7bd03f54f387fb45c476de332a7669d34ab0941"
 dependencies = [
  "ruzstd",
 ]
@@ -5747,8 +5743,6 @@ dependencies = [
 [[package]]
 name = "gumshoe"
 version = "0.0.5-beta"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d315cdcf2e479c188edba93b243f48b290e5ec314e723f8cca63a9aa8091136"
 dependencies = [
  "aes 0.8.4",
  "atrac3p-decoder2",
@@ -9586,6 +9580,7 @@ dependencies = [
  "aes 0.8.4",
  "async-trait",
  "atomic-write-file",
+ "base64 0.22.1",
  "bitflags 2.13.1",
  "blake3",
  "cbc 0.1.2",
@@ -9710,6 +9705,7 @@ name = "polymer-deno"
 version = "0.1.0"
 dependencies = [
  "actix",
+ "consolespec",
  "deno_ast",
  "deno_core",
  "deno_error",

@@ -561,6 +561,12 @@ impl FrontendServices {
                 }
             }
         });
+        plugins
+            .handle()
+            .load::<dyn polymer_pluginhost::emulator::EmulatorPluginInstance>();
+        plugins
+            .handle()
+            .load::<dyn polymer_pluginhost::platform::PlatformPluginInstance>();
         let launchable_configurations = library.as_ref().map(|library| {
             Arc::new(
                 crate::launchable_configuration::LaunchableConfigurations::new(

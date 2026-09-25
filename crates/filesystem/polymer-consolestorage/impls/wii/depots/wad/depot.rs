@@ -190,6 +190,7 @@ impl Depot for WiiWadDepot {
     fn install<'a, N: VirtualNand + ?Sized>(
         self,
         nand: &'a N,
+        events: crate::installable::InstallEvents,
     ) -> crate::installable::Installation<'a>
     where
         Self: 'a,
@@ -198,7 +199,7 @@ impl Depot for WiiWadDepot {
 
         crate::installable::Installation::prepare(async move {
             source.validate(nand, &source.path)?;
-            super::install::WadInstall::new(source, nand.root()).await
+            super::install::WadInstall::new(source, nand.root(), events).await
         })
     }
 }

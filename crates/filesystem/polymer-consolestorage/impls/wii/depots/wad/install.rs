@@ -13,15 +13,21 @@ pub(super) struct WadInstall {
     index: usize,
     old: Option<Artifact>,
     root: String,
+    events: crate::installable::InstallEvents,
 }
 
 impl WadInstall {
-    pub async fn new(source: WiiWadDepot, storage: Arc<dyn VolumeStorage>) -> Result<Self, Error> {
+    pub async fn new(
+        source: WiiWadDepot,
+        storage: Arc<dyn VolumeStorage>,
+        events: crate::installable::InstallEvents,
+    ) -> Result<Self, Error> {
         let old = storage
             .artifacts()
             .artifact(&format!("{:016x}", source.title_id()))
             .await?;
         Ok(Self {
+            events,
             key: source.select_title_key()?,
             shared: SharedContentMap::load(&*storage)?,
             root: format!(
@@ -123,7 +129,7 @@ impl Installable for WadInstall {
                 }
             }
         }
-        self.storage.artifacts().record(&artifact).await?;
+        self.storage.artifacts().record(&artifact, self.events).await?;
         Ok(artifact)
     }
 }

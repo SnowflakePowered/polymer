@@ -8,6 +8,8 @@ pub struct ScraperBlock {
     #[serde(default)]
     requires: Vec<ScrapeRequirement>,
     #[serde(default)]
+    optional: Vec<ScrapeRequirement>,
+    #[serde(default)]
     provides: Vec<String>,
 }
 
@@ -95,6 +97,9 @@ impl<'de> Deserialize<'de> for ScrapeRequirement {
 impl ScraperPluginInstance for PluginPackage<ScraperBlock> {
     fn requirements(&self) -> &[ScrapeRequirement] {
         &self.block().requires
+    }
+    fn optional(&self) -> &[ScrapeRequirement] {
+        &self.block().optional
     }
     fn provides(&self) -> &[String] {
         &self.block().provides

@@ -22,6 +22,15 @@ impl Handler<LibraryImport> for LibraryBackend {
             let detected = tokio::task::spawn_blocking(move || Ingestor::identify(&identification_path, None, None))
                 .await.map_err(|error| format!("package detection task failed: {error}"))?;
             match detected {
+                Ok(packages) if packages.iter().any(|package| package.installable) => Ok(json!({
+                    "kind": "installables",
+                    "installables": packages.iter().map(|package| json!({
+                        "path": package.path,
+                        "filename": package.filename,
+                        "platform": package.platform,
+                        "titleId": package.title_id,
+                    })).collect::<Vec<_>>(),
+                })),
                 Ok(packages) => Ok(json!({ "kind": "games", "imports": Self::import_games(&scraping, packages).await? })),
                 Err(error) if error.firmware_candidate() && path.is_file() => {
                     let firmware = polymer_library::firmware::FirmwareStore::open(firmware_root).await.map_err(|error| error.to_string())?;
