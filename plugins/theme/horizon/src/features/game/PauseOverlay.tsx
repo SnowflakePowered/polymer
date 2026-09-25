@@ -1,4 +1,4 @@
-import { Show, createSignal } from "solid-js";
+import { Show, createMemo, createSignal } from "solid-js";
 import { useShell } from "../../app/shell-context";
 import { SidePanel, ConfirmDialog, ActionRow, SettingRow, Toggle, Icon, ActionHints } from "../../ui";
 import { VolumeSlider } from "./VolumeSlider";
@@ -8,14 +8,14 @@ import "./PauseOverlay.css";
 export function PauseOverlay() {
   const shell = useShell();
   const [confirmClose, setConfirmClose] = createSignal(false);
+  const game = createMemo(() => shell.model.libraryGames.find(entry => entry.path === shell.model.draft?.path));
   const resume = () => shell.setModel("pauseOpen", false);
   const setVolume = (value: number) => { shell.setModel("audio", "volume", value); shell.model.launch?.setVolume(value); };
-  const setMuted = (muted: boolean) => { shell.setModel("audio", "muted", muted); shell.model.launch?.setMuted(muted); };
+  const title = <span class="horizon-quick-menu-title"><Show when={game()?.icon}>{icon => <img src={icon()} alt="" />}</Show><span>{game()?.name ?? shell.model.draft?.name ?? "Game paused"}</span></span>;
   return <Show when={shell.model.pauseOpen}><PauseDecorator>
-    <SidePanel open class="horizon-quick-menu" onAction={action => { if (action.type !== "pause") return false; resume(); return true; }} onOpenChange={open => { if (!open) resume(); }} title={shell.model.draft?.name ?? "Game paused"} actions={<ActionHints />}>
+    <SidePanel open class="horizon-quick-menu" onAction={action => { if (action.type !== "pause") return false; resume(); return true; }} onOpenChange={open => { if (!open) resume(); }} title={title} actions={<ActionHints />}>
       <ActionRow autofocus onClick={resume}><Icon name="play" tone="action" /> Resume</ActionRow>
       <SettingRow><VolumeSlider value={shell.model.audio.volume} onChange={setVolume} /></SettingRow>
-      <SettingRow><Toggle label="Mute" checked={shell.model.audio.muted} onCheckedChange={setMuted} /></SettingRow>
       <Show when={shell.model.surfaces.length > 1}><SettingRow><Toggle label="Gamepad display" checked={shell.model.gamepadOpen} onCheckedChange={open => shell.setModel("gamepadOpen", open)} /></SettingRow></Show>
       <ActionRow onClick={() => { resume(); shell.navigate("/game/reorder"); }}><Icon name="gamepad" tone="action" /> Change controller order</ActionRow>
       <ActionRow appearance="danger" onClick={() => setConfirmClose(true)}><Icon name="close" tone="danger" /> Close game</ActionRow>
