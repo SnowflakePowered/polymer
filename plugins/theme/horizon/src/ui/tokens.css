@@ -1,0 +1,18 @@
+@property --hz-select-angle { syntax: '<angle>'; inherits: true; initial-value: 0deg; }
+@layer horizon {
+@font-face { font-family: Roboto; src: url('../assets/fonts/Roboto.ttf') format('truetype'); font-weight: 100 900; font-style: normal; font-display: swap; }
+:root {
+  --hz-surface: var(--hz-colors-surface); --hz-panel: var(--hz-colors-panel); --hz-raised: var(--hz-colors-raised); --hz-overlay: var(--hz-colors-overlay);
+  --hz-text: var(--hz-colors-text); --hz-muted: var(--hz-colors-muted); --hz-action: var(--hz-colors-action); --hz-on-action: var(--hz-colors-on-action); --hz-danger: var(--hz-colors-danger);
+  --hz-divider: var(--hz-colors-divider); --hz-track: var(--hz-colors-track); --hz-focus: var(--hz-colors-focus); --hz-ring-start: var(--hz-colors-ring-start); --hz-ring-middle: var(--hz-colors-ring-middle); --hz-ring-end: var(--hz-colors-ring-end);
+  --hz-brand: var(--hz-colors-brand); --hz-on-brand: var(--hz-colors-on-brand); --hz-scrim: var(--hz-colors-scrim); --hz-shadow: var(--hz-colors-shadow);
+  --hz-font: var(--hz-fonts-body);
+  --hz-space-1: .25rem; --hz-space-2: .5rem; --hz-space-3: .75rem; --hz-space-4: 1rem; --hz-space-6: 1.5rem; --hz-space-8: 2rem;
+  --hz-small: .875rem; --hz-body: clamp(1rem, 1.45vw, 1.5rem); --hz-title: clamp(1.6rem, 2.5vw, 2.25rem);
+  --hz-radius: var(--hz-radii-control); --hz-radius-card: var(--hz-radii-card); --hz-radius-panel: var(--hz-radii-panel);
+  --hz-focus-width: 3px;
+  --hz-motion: var(--hz-durations-motion); --hz-overlay-layer: 100;
+  color-scheme: light;
+}
+[data-color-mode=dark] { color-scheme: dark; }
+}

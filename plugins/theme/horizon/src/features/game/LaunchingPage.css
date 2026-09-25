@@ -1,5 +1,5 @@
-.horizon-launching { display: grid; width: 100%; height: 100%; z-index: 40; grid-area: 1 / 1; place-items: center; color: white; background: #050505; }
+@layer horizon {
+.horizon-launching { display: grid; width: 100%; height: 100%; z-index: 40; grid-area: 1 / 1; place-items: center; color: var(--hz-text); background: var(--hz-surface); font-family: var(--hz-font); }
 .horizon-launching > div { width: min(24rem, 70%); }
-.horizon-launching p { font-size: 1.25rem; font-weight: 750; }
-.horizon-launching [role="progressbar"] { height: 0.45rem; overflow: hidden; background: #444; }
-.horizon-launching [role="progressbar"] span { display: block; width: 48%; height: 100%; background: #e60012; }
+.horizon-launching p { font-size: 1.25rem; }
+}

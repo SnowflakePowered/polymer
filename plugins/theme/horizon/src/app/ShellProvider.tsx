@@ -8,11 +8,14 @@ import type { ControllerDevice } from "../../../../../js/polymer";
 import { NotificationProvider } from "../components/notifications/NotificationProvider";
 import { ToastRegion } from "../components/notifications/ToastRegion";
 import { InputNavigation } from "../components/InputNavigation";
+import { ColorModeProvider, type ColorMode } from "../ui";
 import { onLaunch, resolveGame } from "./launch";
+import { ensureNand } from "../features/storage/selection";
 import type { RecentGame, ShellModel } from "./models";
 import "./ShellProvider.css";
 
 const RECENT_KEY = "polymer.recentGames.v2";
+const COLOR_MODE_KEY = "polymer.horizon.colorMode";
 const RECENT_LIMIT = 100;
 const DEFAULT_AUDIO = { available: false, volume: 1, muted: false };
 
@@ -44,6 +47,14 @@ async function readRecent(): Promise<RecentGame[]> {
   }
 }
 
+async function readColorMode(): Promise<ColorMode> {
+  try {
+    return await localStorage.getItem(COLOR_MODE_KEY) === "dark" ? "dark" : "light";
+  } catch {
+    return "light";
+  }
+}
+
 export function ShellProvider(props: ParentProps) {
   const navigate = useNavigate();
   const [model, updateModel] = createStore<ShellModel>({
@@ -62,10 +73,16 @@ export function ShellProvider(props: ParentProps) {
     gamepadOpen: false,
     pauseOpen: false,
     controllerToast: null,
+    colorMode: "light",
   });
   const setModel = (...path: any[]) => (updateModel as (...args: any[]) => void)(...path);
   let recentLoaded = false;
+  let colorModeLoaded = false;
   onMount(() => {
+    void readColorMode().then((mode) => {
+      colorModeLoaded = true;
+      setModel("colorMode", mode);
+    });
     if (model.launch) navigate("/game/play", { replace: true });
     void readRecent().then((recent) => {
       recentLoaded = true;
@@ -186,7 +203,7 @@ export function ShellProvider(props: ParentProps) {
   const libraryState = new LibraryState(window.Polymer.library, window.Polymer.scraping, snapshot => {
     setModel("libraryGames", reconcile(snapshot.games, { key: "path" }));
     setModel("libraryActivities", reconcile(snapshot.activities, { key: "id" }));
-  }, fail);
+  }, fail, async item => (await ensureNand(item.platform)).install({ path: item.path }));
   libraryState.start();
   onCleanup(() => libraryState.dispose());
 
@@ -215,6 +232,12 @@ export function ShellProvider(props: ParentProps) {
         .catch(() => {});
     }
   });
+  createEffect(() => {
+    const mode = model.colorMode;
+    if (colorModeLoaded) {
+      void Promise.resolve(localStorage.setItem(COLOR_MODE_KEY, mode)).catch(() => {});
+    }
+  });
   onCleanup(() => {
     detection?.abort();
     if (toastTimer) clearTimeout(toastTimer);
@@ -234,11 +257,11 @@ export function ShellProvider(props: ParentProps) {
       closeGame,
       rememberGame,
     }}>
-      <NotificationProvider><div class="horizon-shell-root">
+      <ColorModeProvider mode={model.colorMode}><NotificationProvider><div class="horizon-shell-root">
         <div class="horizon-shell-content">{props.children}</div>
         <InputNavigation />
         <ToastRegion />
-      </div></NotificationProvider>
+      </div></NotificationProvider></ColorModeProvider>
     </ShellContext.Provider>
   );
 }

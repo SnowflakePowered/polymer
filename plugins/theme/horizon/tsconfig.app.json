@@ -17,5 +17,5 @@
     "jsxImportSource": "solid-js",
     "types": ["vite/client"]
   },
-  "include": ["src"]
+  "include": ["src", "styled-system"]
 }

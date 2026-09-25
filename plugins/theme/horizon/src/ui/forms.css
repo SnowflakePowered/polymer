@@ -1,0 +1,64 @@
+@layer horizon {
+.hz-field { display: grid; grid-template-columns: minmax(8rem, 1fr) minmax(8rem, 1fr); gap: .5rem 1rem; align-items: center; color: var(--hz-text); font-family: var(--hz-font); }
+.hz-field > [data-part='label'] { font-size: inherit; }
+.hz-field > [data-part='helper-text'], .hz-field > [data-part='error-text'] { grid-column: 1 / -1; font-size: .8em; color: var(--hz-muted); }
+.hz-field > [data-part='error-text'] { color: var(--hz-danger); }
+.hz-field input:not(.hz-hidden-input) { width: 100%; min-width: 0; min-height: 2.75rem; padding: .5rem .75rem; border: 1px solid var(--hz-divider); border-radius: var(--hz-radius); color: var(--hz-text); background: var(--hz-panel); font: inherit; }
+/* Ark's clip-based hiding is insufficient in Blitz. Keep native form/focus behavior
+   while removing UA input paint and keeping the hidden box inside its control. */
+.hz-hidden-input { position: absolute !important; top: 0 !important; left: 0 !important; width: 1px !important; height: 1px !important; min-width: 0 !important; min-height: 0 !important; padding: 0 !important; margin: 0 !important; border: 0 !important; opacity: 0 !important; outline: none !important; pointer-events: none; }
+.hz-field[data-invalid] input { border-color: var(--hz-danger); }
+.hz-number [data-part='control'] { display: grid; grid-template-columns: 2.75rem minmax(0, 1fr) 2.75rem; }
+.hz-number button { border: 1px solid var(--hz-divider); color: var(--hz-action); background: var(--hz-panel); font: inherit; }
+.hz-toggle, .hz-checkbox { position: relative; justify-self: end; display: inline-flex; align-items: center; }
+.hz-toggle [data-part='control'] { display: block; width: 3rem; height: 1.6rem; padding: .15rem; border-radius: 1rem; background: var(--hz-track); }
+.hz-toggle [data-part='control'][data-state='checked'] { background: var(--hz-action); }
+.hz-toggle [data-part='thumb'] { display: block; width: 1.3rem; height: 1.3rem; border-radius: 50%; background: #fff; transition: transform var(--hz-motion); }
+.hz-toggle [data-part='thumb'][data-state='checked'] { transform: translateX(1.4rem); }
+.hz-checkbox [data-part='control'] { display: flex; align-items: center; justify-content: center; width: 1.5rem; height: 1.5rem; border: 2px solid var(--hz-action); border-radius: var(--hz-radius); background: var(--hz-raised); color: var(--hz-action); }
+.hz-checkbox [data-part='indicator'], .hz-checkbox [data-part='indicator'] svg { display: block; width: 18px; height: 18px; }
+.hz-checkbox [data-part='control'][data-state='checked'], .hz-checkbox [data-part='control'][data-state='indeterminate'] { background: var(--hz-action); color: var(--hz-raised); }
+.hz-radio { display: flex; flex-wrap: wrap; gap: 1rem; }
+.hz-radio [data-part='item'] { position: relative; display: inline-flex; gap: .5rem; align-items: center; }
+.hz-radio [data-part='item-control'] { border: 2px solid var(--hz-divider); width: 1.2rem; height: 1.2rem; border-radius: 50%; }
+.hz-radio [data-part='item-control'][data-state='checked'] { border: .35rem solid var(--hz-action); }
+.hz-slider { display: flex; align-items: center; gap: 1rem; }
+.hz-slider [data-part='control'] { flex: 1; position: relative; min-width: 5rem; display: flex; height: 2.75rem; align-items: center; }
+.hz-slider [data-part='track'] { width: 100%; height: 5px; border-radius: 3px; background: var(--hz-track); }
+.hz-slider [data-part='range'] { height: 100%; border-radius: 3px; background: var(--hz-action); }
+.hz-slider [data-part='thumb'] { width: 1.2rem; height: 1.2rem; border-radius: 50%; background: var(--hz-action); --hz-ring-fill: var(--hz-action); --hz-ring-inset: -4px; }
+.hz-choice { position: relative; min-width: 0; }
+.hz-choice-trigger { display: flex; justify-content: flex-start; align-items: center; width: 100%; min-height: 2.75rem; padding: .5rem .75rem; border: 0; border-radius: var(--hz-radius); background: transparent; color: var(--hz-action); font: inherit; text-align: left; cursor: pointer; }
+.hz-choice-trigger > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hz-picker-positioner { z-index: calc(var(--hz-overlay-layer) + 30); }
+.hz-popup { width: max-content; min-width: min(16rem, calc(100vw - 2rem)); max-width: min(30rem, calc(100vw - 2rem)); max-height: min(34rem, var(--available-height, calc(100vh - 5rem)), calc(100vh - 5rem)); z-index: calc(var(--hz-overlay-layer) + 30); overflow: hidden; display: flex; flex-direction: column; padding: .25rem; background: var(--hz-overlay); border: 1px solid var(--hz-divider); border-radius: var(--hz-radius); box-shadow: 0 .5rem 1.5rem var(--hz-shadow); }
+.hz-popup[hidden], .hz-popup[data-state='closed'] { display: none !important; }
+.hz-choice-list { flex: 1; min-height: 0; overflow: auto; padding: .25rem; outline: none; }
+.hz-option { display: flex; align-items: center; justify-content: space-between; gap: 1.5rem; min-height: 3rem; padding: .6rem .75rem; border: var(--hz-focus-width) solid transparent; border-radius: .25rem; cursor: pointer; }
+.hz-option > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.hz-option small { display: block; font-size: .8em; color: var(--hz-muted); }
+.hz-option[data-highlighted] { background: var(--hz-raised); }
+.hz-option:not([data-disabled]):hover { background: var(--hz-raised); }
+.hz-option:not([data-disabled]):active { background: var(--hz-panel); }
+.hz-option[data-state='checked'] { color: var(--hz-action); }
+.hz-option-mark { display: inline-grid; place-content: center; width: 1.15em; height: 1.15em; flex: none; border: 2px solid var(--hz-divider); border-radius: 50%; font-size: 1em; }
+.hz-option[data-state='checked'] .hz-option-mark { border-color: var(--hz-action); background: var(--hz-action); color: var(--hz-raised); }
+.hz-option-mark:not([data-multiple]) [data-part='item-indicator'] { width: .35em; height: .35em; border-radius: 50%; background: currentColor; font-size: inherit; color: var(--hz-raised); overflow: hidden; text-indent: -9999px; }
+.hz-option-mark[data-multiple] { border-radius: .15rem; }
+.hz-option-mark[data-multiple] [data-part='item-indicator'] { font-size: .8em; line-height: 1; }
+.hz-option-group { color: var(--hz-muted); font-size: .8em; padding: .5rem .75rem; }
+.hz-picker-actions { display: flex; justify-content: flex-end; gap: .5rem; padding: .5rem; border-top: 1px solid var(--hz-divider); flex: none; }
+.hz-combobox-control { display: flex; min-width: 0; border-radius: var(--hz-radius); }
+.hz-field .hz-combobox-control > input { border: 0; background: transparent; color: var(--hz-action); text-overflow: ellipsis; cursor: pointer; }
+.hz-combobox-control > input::placeholder { color: var(--hz-action); opacity: 1; }
+.hz-combobox-control > input[data-state='open'] { background: var(--hz-panel); color: var(--hz-text); cursor: text; }
+.hz-combobox-control > input[data-state='open']::placeholder { color: var(--hz-muted); }
+.hz-field[data-invalid] .hz-combobox-control { box-shadow: inset 0 -1px var(--hz-danger); }
+.hz-choice-announcement { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; opacity: 0; clip-path: inset(50%); white-space: nowrap; }
+@media (max-width: 650px) { .hz-field { grid-template-columns: 1fr; } .hz-choice-trigger { text-align: left; } }
+
+/* Focus belongs to the whole setting, including its label and help text. */
+.hz-setting-row[data-focused] { border-radius: var(--hz-radius-card); background: var(--hz-panel); }
+.hz-setting-row[data-focused] :focus, .hz-setting-row[data-focused] [data-part][data-focus] { outline: none; }
+.hz-setting-row[data-focused] :focus::after { opacity: 0; animation: none; }
+}

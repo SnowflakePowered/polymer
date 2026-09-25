@@ -1,8 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { RecentGame } from "../../app/models";
 import { useShell } from "../../app/shell-context";
-import { useInputActions } from "../../app/InputProvider";
-import { hasActiveInputScope } from "../../components/InputNavigation";
+import { useInputScope } from "../../ui";
 import { CoverLayout } from "./cover-layout";
 import { GameTile } from "./GameTile";
 import { GameContextMenu } from "./GameContextMenu";
@@ -11,7 +10,6 @@ import "./GameWall.css";
 
 export function GameWall(props: { games: RecentGame[] }) {
   const shell = useShell();
-  const input = useInputActions();
   const [context, setContext] = createSignal<{ game: RecentGame }>();
   const [zoom, setZoom] = createSignal(1);
   const [viewport, setViewport] = createSignal({ width: 1, height: 800 });
@@ -55,31 +53,36 @@ export function GameWall(props: { games: RecentGame[] }) {
     const observer = new ResizeObserver(([entry]) => setViewport({ width: Math.max(1, entry.contentRect.width), height: entry.contentRect.height }));
     observer.observe(wall);
     onCleanup(() => observer.disconnect());
-    const unsubscribe = input.subscribe((action) => {
-      if (hasActiveInputScope()) return;
-      const focused = document.activeElement;
-      if (action.origin === "keyboard" && focused instanceof HTMLElement
-        && (focused.closest(".horizon-sidebar") || focused.closest(".horizon-toast-region"))) return;
-      if (!props.games.length) return;
-      const sourceId = action.sourceId;
-      const current = sourceId ? controllerSelections()[sourceId] || gameId(props.games[0]) : selected() || gameId(props.games[0]);
-      if (action.type === "move") {
-        action.event.preventDefault();
-        const next = nearestInDirection([...elements].map(([id, element]) => ({ id, rect: element.getBoundingClientRect() })), current, action.direction as Direction);
-        if (next && sourceId) setControllerSelections((values) => ({ ...values, [sourceId]: next }));
-        else if (next) choose(next);
-        return;
-      }
-      if (action.type === "activate") {
-        action.event.preventDefault();
-        const game = gameFor(current); if (game) shell.launchRecent(game);
-      } else if (action.type === "details") {
-        action.event.preventDefault();
-        const game = gameFor(current); if (game) shell.showDetails(game);
-      }
-    });
-    onCleanup(unsubscribe);
+    requestAnimationFrame(() => { if ((document.activeElement === document.body || document.activeElement === document.documentElement)) elements.get(selected() || "")?.focus(); });
   });
+  useInputScope(() => ({ root: wall, navigation: true,
+    hints: () => [{ action: "move", label: "Move" }, { action: "details", label: "Details" }, { action: "activate", label: "Start" }],
+    handle: action => {
+      if (!props.games.length) return false;
+      const sourceId = action.sourceId;
+      const focused = [...elements].find(([, element]) => element === document.activeElement)?.[0];
+      const current = sourceId ? controllerSelections()[sourceId] || gameId(props.games[0]) : focused || selected() || gameId(props.games[0]);
+      if (action.type === "previous" || action.type === "next") {
+        const entries = [...elements].sort((a, b) => a[1].offsetTop - b[1].offsetTop || a[1].offsetLeft - b[1].offsetLeft);
+        const index = entries.findIndex(([id]) => id === current);
+        const page = Math.max(1, entries.filter(([, element]) => Math.abs(element.offsetTop - (elements.get(current)?.offsetTop ?? 0)) < wall.clientHeight).length);
+        const next = entries[Math.max(0, Math.min(entries.length - 1, index + (action.type === "previous" ? -page : page)))]?.[0];
+        if (next) { if (sourceId) setControllerSelections(values => ({ ...values, [sourceId]: next })); else choose(next); elements.get(next)?.scrollIntoView?.({ block: "nearest" }); }
+        return true;
+      }
+      if (action.type === "move") {
+        const next = nearestInDirection([...elements].map(([id, element]) => ({ id, rect: element.getBoundingClientRect() })), current, action.direction as Direction);
+        if (!next) return false;
+        if (sourceId) setControllerSelections(values => ({ ...values, [sourceId]: next }));
+        else choose(next);
+        elements.get(next)?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+        return true;
+      }
+      if (action.type === "activate") { const game = gameFor(current); if (game) shell.launchRecent(game); return true; }
+      if (action.type === "details") { const game = gameFor(current); if (game) shell.showDetails(game); return true; }
+      return false;
+    },
+  }));
 
   return <section
     ref={wall}

@@ -1,4 +1,5 @@
 import { EnvironmentProvider } from "@ark-ui/solid";
+import "./index.css";
 import { render } from "solid-js/web";
 import "../../../../js/polymer";
 import { ShellRouter } from "./app/ShellRouter";

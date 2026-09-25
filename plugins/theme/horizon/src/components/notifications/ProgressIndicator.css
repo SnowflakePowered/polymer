@@ -1,5 +1,0 @@
-.horizon-progress { width: 100%; height: 6px; overflow: hidden; background: #d3d3d3; }
-.horizon-progress > span { display: block; height: 100%; background: #35e3d4; transition: width 180ms ease; }
-.horizon-progress > .indeterminate { animation: horizon-progress 1.4s ease-in-out infinite alternate; }
-@keyframes horizon-progress { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
-@media (prefers-reduced-motion: reduce) { .horizon-progress > .indeterminate { animation: none; } }

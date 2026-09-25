@@ -1,14 +1,8 @@
 import type { LibraryActivity, LibraryEntry } from "../../../../../js/library-state";
 import type { LaunchInstance, LaunchRequest, PackageConfiguration } from "../../../../../js/polymer";
+import type { ColorMode } from "../ui";
 
-export type RecentGame = {
-  path: string;
-  name: string;
-  platform: string;
-  emulator: string;
-  playedAt: number;
-  artwork?: string;
-};
+export type RecentGame = LibraryEntry;
 
 export type AudioState = { available: boolean; volume: number; muted: boolean };
 
@@ -35,4 +29,5 @@ export type ShellModel = {
   gamepadOpen: boolean;
   pauseOpen: boolean;
   controllerToast: { name: string; index: number } | null;
+  colorMode: ColorMode;
 };
