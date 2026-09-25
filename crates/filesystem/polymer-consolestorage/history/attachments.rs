@@ -150,8 +150,8 @@ fn detect_media_type(bytes: &[u8]) -> Option<&'static str> {
         Some("image/jpeg")
     } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
         Some("image/webp")
-    } else if bytes.starts_with(b"glTF") {
-        Some("model/gltf-binary")
+    } else if polymer_banner::ps2::Ps2Icon::parse(bytes).is_some() {
+        Some(polymer_banner::ps2::Ps2Icon::MEDIA_TYPE)
     } else {
         None
     }

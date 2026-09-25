@@ -5,6 +5,7 @@ use super::{
 use anyrender::PaintScene as _;
 use anyrender_vello::VelloScenePainter;
 use parking_lot::{Condvar, Mutex};
+use polymer_banner::BannerTextures;
 use polymer_composition::{
     CompositionScene as ShellFrame, RasterChunkId, RasterChunkLayout, ShellCompositionGroup,
 };
@@ -33,6 +34,11 @@ pub(crate) struct ShellRasterizer {
     /// Backend-neutral, layer-local scene represented by each retained texture.
     /// Compositor-only property changes therefore compare equal without Vello.
     recorded_scenes: HashMap<RasterChunkId, anyrender::Scene>,
+    /// Rendered banner placeholders, substituted into Vello's image atlas.
+    banners: BannerTextures,
+    /// Chunks showing a banner; their pixels change every frame
+    /// even though their recorded scene does not.
+    animated_chunks: HashSet<RasterChunkId>,
 }
 
 fn same_scene(left: &vello::Scene, right: &vello::Scene) -> bool {
@@ -215,6 +221,8 @@ impl ShellRasterizer {
             targets: HashMap::new(),
             rendered_scenes: HashMap::new(),
             recorded_scenes: HashMap::new(),
+            banners: BannerTextures::default(),
+            animated_chunks: HashSet::new(),
         })
     }
     /// Prepares the initial adapter before the shell document starts. A later foreign
@@ -312,7 +320,9 @@ impl ShellRasterizer {
             let target_is_current_size = self.targets.get(&id).is_some_and(|target| {
                 (target.width, target.height) == (target_width, target_height)
             });
+            let animated = self.animated_chunks.contains(&id);
             if target_is_current_size
+                && !animated
                 && let Some(retained) = self.recorded_scenes.get(&id)
                 && retained == &recorded_scene
             {
@@ -326,6 +336,7 @@ impl ShellRasterizer {
             VelloScenePainter::new(&mut scene)
                 .append_scene(recorded_scene.clone(), kurbo::Affine::IDENTITY);
             if target_is_current_size
+                && !animated
                 && self
                     .rendered_scenes
                     .get(&id)
@@ -357,8 +368,26 @@ impl ShellRasterizer {
             // Reassert only the images in a chunk that is actually being
             // rasterized. This is independent of guest presentation and keeps
             // retained/reused chrome frames free.
+            let mut animated = false;
             for image in scene_images(&scene) {
+                if let Some(texture) = self.banners.prepare(&self.device, &self.queue, image) {
+                    self.renderer.override_image(
+                        image,
+                        Some(wgpu::TexelCopyTextureInfoBase {
+                            texture,
+                            mip_level: 0,
+                            origin: wgpu::Origin3d::ZERO,
+                            aspect: wgpu::TextureAspect::All,
+                        }),
+                    );
+                }
+                animated |= self.banners.is_animated(image);
                 self.renderer.mark_override_image_dirty(image);
+            }
+            if animated {
+                self.animated_chunks.insert(id);
+            } else {
+                self.animated_chunks.remove(&id);
             }
             // Retained WUC visuals make translated and unchanged scenes free
             // above. When pixels truly change, redraw the complete local
@@ -386,7 +415,11 @@ impl ShellRasterizer {
         // here serialized every DOM transform update with the GPU and
         // starved both input delivery and guest presentation while dragging.
         self.device.poll(wgpu::PollType::Poll).ok();
+        for image in self.banners.release_stale() {
+            self.renderer.override_image(&image, None);
+        }
         self.targets.retain(|id, _| live.contains(id));
+        self.animated_chunks.retain(|id| live.contains(id));
         self.rendered_scenes.retain(|id, _| live.contains(id));
         self.recorded_scenes.retain(|id, _| live.contains(id));
         if std::env::var_os("POLYMER_GAME_LAYER_TIMING").is_some() {

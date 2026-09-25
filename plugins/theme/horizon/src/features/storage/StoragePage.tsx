@@ -2,7 +2,7 @@ import { For, Show, createResource, createSignal, onCleanup, onMount } from "sol
 import { useSearchParams } from "@solidjs/router";
 import type { ConsoleStorageVolume, DepotType, StorageArtifact, StorageInspection, StorageInstall, StorageRemovalPlan } from "../../../../../../js/polymer";
 import { css } from "../../../styled-system/css";
-import { Screen, ScreenHeader, MasterDetail, CategoryNavigation, TileGrid, Tile, Icon, DetailList, Section, Button, ActionGroup, Dialog, ConfirmDialog, ActionHints, EmptyState, ErrorState, Progress, Spinner } from "../../ui";
+import { Screen, ScreenHeader, MasterDetail, CategoryNavigation, TileGrid, Tile, Icon, DetailList, Section, Button, ActionGroup, Dialog, ConfirmDialog, ActionHints, EmptyState, ErrorState, Progress, Spinner, BannerImage } from "../../ui";
 import { AppSidebar } from "../../components/AppSidebar";
 import { useShell } from "../../app/shell-context";
 import { selectedNand, installPhases } from "./selection";
@@ -15,12 +15,13 @@ const installedOn = (artifact: StorageArtifact) => Date.parse(artifact.installed
 const titleGrid = css({ gridTemplateColumns: "repeat(auto-fill, minmax(8.5rem, 1fr))", gap: "1rem" });
 const titleTile = css({ display: "flex", flexDirection: "column", gap: ".4rem", padding: "var(--hz-focus-width)", bg: "transparent", borderRadius: "card", aspectRatio: "1", "&[data-selected]": { boxShadow: "none" } });
 const titleIcon = css({ width: "100%", flex: 1, minHeight: 0, borderRadius: "control", objectFit: "cover", display: "flex", alignItems: "center", justifyContent: "center", bg: "overlay", "& svg": { width: "3rem", height: "3rem" } });
+const detailBanner = css({ display: "block", width: "100%", aspectRatio: "5 / 3", borderRadius: "card", bg: "panel" });
 const detailIcon = css({ width: "100%", maxWidth: "12rem", aspectRatio: "1", borderRadius: "card", objectFit: "cover", display: "flex", alignItems: "center", justifyContent: "center", bg: "panel", "& svg": { width: "5rem", height: "5rem" } });
 
 const installTitle = (install: StorageInstall) => install.state === "running" ? install.detail.title : null;
 
-function TitleIcon(props: { artifact: StorageArtifact; class: string }) {
-  return <Show when={props.artifact.icon} fallback={<span class={props.class}><Icon name={props.artifact.depotType === "system" ? "settings" : "gamepad"} tone="muted" strokeWidth={1.2} /></span>}>{icon => <img class={props.class} src={icon()} alt="" />}</Show>;
+function TitleIcon(props: { artifact: StorageArtifact; class: string; icon: string | undefined }) {
+  return <Show when={props.icon} fallback={<span class={props.class}><Icon name={props.artifact.depotType === "system" ? "settings" : "gamepad"} tone="muted" strokeWidth={1.2} /></span>}>{icon => <BannerImage class={props.class} src={icon()} />}</Show>;
 }
 
 export function StoragePage() {
@@ -98,7 +99,7 @@ export function StoragePage() {
     <Show when={systems()} fallback={<Spinner label="Checking NANDs" />}><Show when={systemItems().length} fallback={<EmptyState title="No titles installed" description="Drag a title package onto your library to install it." />}>
     <MasterDetail navigation={<CategoryNavigation label="Systems" value={platform()} items={systemItems()} onValueChange={value => { if (value !== platform()) changePlatform(value); }} />}
       detail={<Show when={artifact()}>{item => <Section title={item().label}>
-        <TitleIcon artifact={item()} class={detailIcon} />
+        <TitleIcon artifact={item()} icon={item().icons.at(-1)} class={item().icons.at(-1)?.startsWith("data:application/x-3ds-banner") ? detailBanner : detailIcon} />
         <DetailList items={[{ label: "Title ID", value: item().id }, { label: "Type", value: depotTypes[item().depotType] }, { label: "Version", value: item().version || "—" }, { label: "Installed size", value: megabytes(item().byteLength) }, { label: "Files", value: String(item().fileCount) }, { label: "Installed", value: installedOn(item()) }]} />
         <Button appearance="danger" disabled={busy() || checked()?.dirty} onClick={() => void run(async () => setPlan(await current()!.artifacts.planRemoval([item().id])))}>Uninstall</Button>
       </Section>}</Show>}>
@@ -111,10 +112,10 @@ export function StoragePage() {
           </ActionGroup></Show>
           <Section title="Installed titles"><Show when={checked()?.artifacts.length || pending().length} fallback={<Show when={checked()} fallback={<Spinner label="Checking NAND" />}><EmptyState title="No titles installed" description="Drag a title package onto your library to install it." /></Show>}>
             <TileGrid class={titleGrid} aria-label="Installed titles"><For each={pending()}>{install => <Tile class={titleTile} aria-label={`Installing ${installTitle(install)?.label ?? install.filename}`}>
-              <Show when={installTitle(install)?.icon} fallback={<span class={titleIcon}><Icon name="gamepad" tone="muted" strokeWidth={1.2} /></span>}>{icon => <img class={titleIcon} src={icon()} alt="" />}</Show>
+              <Show when={installTitle(install)?.icon} fallback={<span class={titleIcon}><Icon name="gamepad" tone="muted" strokeWidth={1.2} /></span>}>{icon => <BannerImage class={titleIcon} src={icon()} />}</Show>
               <Progress label={install.state === "running" ? installPhases[install.detail.phase] : "Waiting to install"} completed={install.state === "running" ? install.detail.completed : undefined} total={install.state === "running" ? install.detail.total : undefined} />
             </Tile>}</For><For each={checked()?.artifacts ?? []}>{item => <Tile class={titleTile} selected={artifact()?.id === item.id} aria-label={item.label} onFocus={() => setArtifactId(item.id)} onClick={() => setArtifactId(item.id)}>
-              <TitleIcon artifact={item} class={titleIcon} />
+              <TitleIcon artifact={item} icon={item.icons[0]} class={titleIcon} />
             </Tile>}</For></TileGrid>
           </Show></Section>
       </>}</Show>

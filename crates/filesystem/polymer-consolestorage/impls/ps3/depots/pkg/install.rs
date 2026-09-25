@@ -163,7 +163,7 @@ impl Installable for Ps3PkgInstall {
                 .filter(|s| !s.trim().is_empty())
                 .map(str::to_owned)
                 .or(self.depot.version),
-            icon,
+            vec![icon],
         );
         self.storage
             .artifacts()

@@ -556,7 +556,7 @@ dependencies = [
  "asn1-rs-derive 0.4.0",
  "asn1-rs-impl 0.1.0",
  "displaydoc",
- "nom",
+ "nom 7.1.3",
  "num-traits",
  "rusticata-macros",
  "thiserror 1.0.69",
@@ -572,7 +572,7 @@ dependencies = [
  "asn1-rs-derive 0.5.1",
  "asn1-rs-impl 0.2.0",
  "displaydoc",
- "nom",
+ "nom 7.1.3",
  "num-traits",
  "rusticata-macros",
  "thiserror 1.0.69",
@@ -802,6 +802,27 @@ dependencies = [
  "object 0.37.3",
  "rustc-demangle",
  "windows-link 0.2.1",
+]
+
+[[package]]
+name = "bannerbobomb-parser"
+version = "0.1.0"
+dependencies = [
+ "binrw 0.15.2",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "bannerbobomb-svg"
+version = "0.1.0"
+dependencies = [
+ "bannerbobomb-parser",
+ "base64 0.22.1",
+ "clap",
+ "image 0.25.6",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -1772,7 +1793,7 @@ version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6fac387a98bb7c37292057cffc56d62ecb629900026402633ae9160df93a8766"
 dependencies = [
- "nom",
+ "nom 7.1.3",
 ]
 
 [[package]]
@@ -1792,6 +1813,35 @@ name = "cfg_block"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "18758054972164c3264f7c8386f5fc6da6114cb46b619fd365d4e3b2dc3ae487"
+
+[[package]]
+name = "cgfx-parser"
+version = "0.1.0"
+dependencies = [
+ "nom 8.0.0",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "cgfx-renderer"
+version = "0.1.0"
+dependencies = [
+ "cgfx-parser",
+ "glam",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "cgfx-wgpu"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "cgfx-parser",
+ "cgfx-renderer",
+ "glam",
+ "thiserror 2.0.20",
+ "wgpu",
+]
 
 [[package]]
 name = "cgl"
@@ -2579,7 +2629,7 @@ version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9a5facc425455986a13e7a8ad9fcf9c967e0740b72dcc0a3eaba3473a13c6ee1"
 dependencies = [
- "nom",
+ "nom 7.1.3",
  "thiserror 1.0.69",
 ]
 
@@ -3362,7 +3412,7 @@ checksum = "dbd676fbbab537128ef0278adb5576cf363cff6aa22a7b24effe97347cfab61e"
 dependencies = [
  "asn1-rs 0.5.2",
  "displaydoc",
- "nom",
+ "nom 7.1.3",
  "num-bigint",
  "num-traits",
  "rusticata-macros",
@@ -3376,7 +3426,7 @@ checksum = "5cd0a5c643689626bec213c4d8bd4d96acc8ffdb4ad4bb6bc16abf27d5f4b553"
 dependencies = [
  "asn1-rs 0.6.2",
  "displaydoc",
- "nom",
+ "nom 7.1.3",
  "num-bigint",
  "num-traits",
  "rusticata-macros",
@@ -5535,6 +5585,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "glam"
+version = "0.33.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "928452f9c953e142b2f0973e4bd5f34445fcaa8069556ea97a3c9d34d15a4cf8"
+
+[[package]]
 name = "glob"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5747,6 +5803,8 @@ dependencies = [
  "aes 0.8.4",
  "atrac3p-decoder2",
  "aws-lc-rs",
+ "bannerbobomb-parser",
+ "bannerbobomb-svg",
  "binrw 0.15.2",
  "block_compression",
  "bstr",
@@ -7820,6 +7878,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nom"
+version = "8.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df9761775871bdef83bee530e60050f7e54b1105350d6884eb0fb4f46c2f9405"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "nonempty"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9435,6 +9502,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "polymer-banner"
+version = "0.1.0"
+dependencies = [
+ "bannerbobomb-parser",
+ "bytemuck",
+ "cgfx-parser",
+ "cgfx-renderer",
+ "cgfx-wgpu",
+ "dashmap",
+ "peniko",
+ "u8arc",
+ "wgpu",
+ "zenwebp",
+ "zerocopy",
+]
+
+[[package]]
 name = "polymer-bluetooth"
 version = "0.1.0"
 dependencies = [
@@ -9536,6 +9620,7 @@ dependencies = [
  "kurbo",
  "parking_lot",
  "pollster",
+ "polymer-banner",
  "polymer-composition",
  "polymer-platform-windows",
  "polymer-protocol",
@@ -9590,7 +9675,6 @@ dependencies = [
  "flate2",
  "futures",
  "gix",
- "gltf",
  "hmac",
  "image 0.25.6",
  "jiff",
@@ -9599,6 +9683,7 @@ dependencies = [
  "phf 0.14.0",
  "phf_codegen 0.14.0",
  "pkgrip",
+ "polymer-banner",
  "quick-xml 0.39.4",
  "serde",
  "serde_json",
@@ -9743,6 +9828,7 @@ dependencies = [
  "actix",
  "anyrender",
  "arboard",
+ "base64 0.22.1",
  "blitz-dom",
  "blitz-html",
  "blitz-net",
@@ -9764,6 +9850,7 @@ dependencies = [
  "parking_lot",
  "peniko",
  "polymer-automation",
+ "polymer-banner",
  "polymer-bluetooth",
  "polymer-composition",
  "polymer-composition-macos",
@@ -10615,7 +10702,7 @@ version = "0.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4a63d338dec139f56dacc692ca63ad35a6be6a797442479b55acd611d79e906"
 dependencies = [
- "nom",
+ "nom 7.1.3",
 ]
 
 [[package]]
@@ -11546,7 +11633,7 @@ version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf0c4a6ece9950b9abdb62b1cfcf2a68b3b67a10ba445b3bb85be2a293d0632"
 dependencies = [
- "nom",
+ "nom 7.1.3",
 ]
 
 [[package]]
@@ -12257,7 +12344,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "350c37d7498fac6759c6936954de6143291227bd4df52e01f1fdb16fd870e5e8"
 dependencies = [
  "indexmap 1.9.3",
- "nom",
+ "nom 7.1.3",
  "phf 0.14.0",
 ]
 
@@ -15005,7 +15092,7 @@ checksum = "8d12a78aa0bab22d2f26ed1a96df7ab58e8a93506a3e20adb47c51a93b4e1357"
 dependencies = [
  "const_format",
  "itertools 0.11.0",
- "nom",
+ "nom 7.1.3",
  "pori",
  "regex",
  "thiserror 1.0.69",
@@ -16297,7 +16384,7 @@ dependencies = [
  "data-encoding",
  "der-parser 8.2.0",
  "lazy_static",
- "nom",
+ "nom 7.1.3",
  "oid-registry 0.6.1",
  "rusticata-macros",
  "thiserror 1.0.69",
@@ -16314,7 +16401,7 @@ dependencies = [
  "data-encoding",
  "der-parser 9.0.0",
  "lazy_static",
- "nom",
+ "nom 7.1.3",
  "oid-registry 0.7.1",
  "ring",
  "rusticata-macros",

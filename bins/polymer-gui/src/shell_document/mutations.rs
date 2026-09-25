@@ -1,8 +1,10 @@
 use super::ShellDocument;
+use super::banner::BannerWidget;
 use super::scrolling::Scroller;
 use super::tracked_surface::{TrackedSurfaceWidget, is_tracked_surface_element};
 use crate::shell_runtime::deno::{ScrollBehavior, ScrollCommand};
 use blitz_dom::node::NodeData;
+use blitz_dom::node::Widget;
 use blitz_dom::{LocalName, NodeId, QualName, local_name, ns};
 use std::collections::HashMap;
 use style::selector_parser::RestyleDamage;
@@ -19,27 +21,28 @@ impl ShellDocument {
             .all(|node| self.document.as_ref().get_node(*node).is_some())
     }
 
-    fn attach_tracked_surfaces(&mut self, root: NodeId) {
-        let mut surfaces = Vec::new();
+    fn attach_custom_widgets(&mut self, root: NodeId) {
+        let mut widgets: Vec<(NodeId, Box<dyn Widget>)> = Vec::new();
         let mut pending = vec![root];
         while let Some(id) = pending.pop() {
             let Some(node) = self.document.as_ref().get_node(id) else {
                 continue;
             };
             pending.extend(node.children.iter().copied());
-            if let Some(element) = node.element_data()
-                && is_tracked_surface_element(element)
-            {
+            let Some(element) = node.element_data() else {
+                continue;
+            };
+            if is_tracked_surface_element(element) {
                 let source = element
                     .attr(local_name!("src"))
                     .and_then(|source| source.parse().ok());
-                surfaces.push((id, source));
+                widgets.push((id, Box::new(TrackedSurfaceWidget::new(source))));
+            } else if BannerWidget::is_banner_element(element) {
+                widgets.push((id, Box::new(BannerWidget::from_element(element))));
             }
         }
-        for (node, source) in surfaces {
-            self.document
-                .as_mut()
-                .set_custom_widget(node, Box::new(TrackedSurfaceWidget::new(source)));
+        for (node, widget) in widgets {
+            self.document.as_mut().set_custom_widget(node, widget);
         }
     }
 
@@ -48,12 +51,11 @@ impl ShellDocument {
             Some("http://www.w3.org/2000/svg") => ns!(svg),
             _ => ns!(html),
         };
-        let node = self
-            .document
-            .as_mut()
-            .mutate()
-            .create_element(QualName::new(None, namespace, LocalName::from(tag)), Vec::new());
-        self.attach_tracked_surfaces(node);
+        let node = self.document.as_mut().mutate().create_element(
+            QualName::new(None, namespace, LocalName::from(tag)),
+            Vec::new(),
+        );
+        self.attach_custom_widgets(node);
         node
     }
 
@@ -92,7 +94,7 @@ impl ShellDocument {
             }
             _ => return None,
         };
-        self.attach_tracked_surfaces(clone);
+        self.attach_custom_widgets(clone);
         Some(clone)
     }
 
@@ -101,7 +103,7 @@ impl ShellDocument {
             return;
         }
         self.document.as_mut().mutate().set_inner_html(node, html);
-        self.attach_tracked_surfaces(node);
+        self.attach_custom_widgets(node);
         self.mark_structure_changed();
     }
 
@@ -109,14 +111,22 @@ impl ShellDocument {
         if !self.exists(&[parent, child]) {
             return;
         }
-        self.document.as_mut().mutate().append_children(parent, &[child]);
+        self.document
+            .as_mut()
+            .mutate()
+            .append_children(parent, &[child]);
         self.mark_structure_changed();
     }
 
     pub(crate) fn insert_before(&mut self, parent: NodeId, child: NodeId, before: NodeId) {
         if child == before
             || !self.exists(&[parent, child, before])
-            || self.document.as_ref().get_node(before).and_then(|node| node.parent) != Some(parent)
+            || self
+                .document
+                .as_ref()
+                .get_node(before)
+                .and_then(|node| node.parent)
+                != Some(parent)
         {
             return;
         }
@@ -174,7 +184,12 @@ impl ShellDocument {
             .map(str::to_owned)
     }
 
-    fn attribute_changed(&mut self, name: &LocalName, previous: Option<&str>, current: Option<&str>) {
+    fn attribute_changed(
+        &mut self,
+        name: &LocalName,
+        previous: Option<&str>,
+        current: Option<&str>,
+    ) {
         self.dirty = true;
         self.needs_resolve = true;
         self.needs_geometry_sync |=
@@ -195,10 +210,11 @@ impl ShellDocument {
         // HTML attributes are in the null namespace. Using the HTML element
         // namespace here creates a second attribute instead of replacing one
         // parsed from markup.
-        self.document
-            .as_mut()
-            .mutate()
-            .set_attribute(node, QualName::new(None, ns!(), name.clone()), value);
+        self.document.as_mut().mutate().set_attribute(
+            node,
+            QualName::new(None, ns!(), name.clone()),
+            value,
+        );
         self.attribute_changed(&name, previous.as_deref(), Some(value));
     }
 
@@ -291,13 +307,17 @@ fn hoisted_layout_containers(document: &blitz_dom::BaseDocument, root: NodeId) -
         }
     }
     for id in &subtree {
-        let mut container = document.get_node(*id).and_then(|node| node.layout_parent.get());
+        let mut container = document
+            .get_node(*id)
+            .and_then(|node| node.layout_parent.get());
         while let Some(node) = container.and_then(|id| document.get_node(id))
             && matches!(node.data, blitz_dom::node::NodeData::AnonymousBlock(_))
         {
             container = node.layout_parent.get();
         }
-        if let Some(container) = container.filter(|container| !subtree.contains(container) && !containers.contains(container)) {
+        if let Some(container) = container
+            .filter(|container| !subtree.contains(container) && !containers.contains(container))
+        {
             containers.push(container);
         }
     }

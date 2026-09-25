@@ -58,6 +58,16 @@ impl SaveRepo for GameCubeMemoryCard {
             .find(|save| save.depot_id() == id)
             .and_then(|save| save.read_icon()))
     }
+
+    fn blocks(&self, id: SaveDepotId) -> Result<Option<u64>, Error> {
+        Ok(Some(
+            self.saves()
+                .iter()
+                .filter(|save| save.depot_id() == id)
+                .map(|save| u64::from(save.block_count()))
+                .sum(),
+        ))
+    }
 }
 
 impl GameCubeMemoryCard {

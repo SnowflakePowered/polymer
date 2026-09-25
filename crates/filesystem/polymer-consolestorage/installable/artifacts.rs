@@ -8,7 +8,7 @@ pub struct Artifact {
     manifest: Vec<DepotFile>,
     label: String,
     version: Option<String>,
-    icon: IconHint,
+    icons: Vec<IconHint>,
     byte_length: u64,
     installed: Timestamp,
 }
@@ -20,7 +20,7 @@ impl Artifact {
         manifest: Vec<DepotFile>,
         label: String,
         version: Option<String>,
-        icon: IconHint,
+        icons: Vec<IconHint>,
     ) -> Self {
         let byte_length = manifest.iter().map(DepotFile::byte_length).sum();
         Self {
@@ -29,7 +29,7 @@ impl Artifact {
             manifest,
             label,
             version,
-            icon,
+            icons,
             byte_length,
             installed: Timestamp::now(),
         }
@@ -60,8 +60,8 @@ impl Artifact {
         self.version.as_deref()
     }
 
-    pub fn icon(&self) -> &IconHint {
-        &self.icon
+    pub fn icons(&self) -> &[IconHint] {
+        &self.icons
     }
 
     pub fn byte_length(&self) -> u64 {

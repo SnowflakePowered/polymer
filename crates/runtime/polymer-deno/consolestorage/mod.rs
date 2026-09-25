@@ -229,3 +229,99 @@ pub(super) async fn op_consolestorage_set_label(
         .and_then(|result| result.map_err(|error| error.to_string()))
         .map_err(JsErrorBox::generic)
 }
+
+#[op2]
+#[serde]
+pub(super) async fn op_consolestorage_fork(
+    state: Rc<RefCell<OpState>>,
+    #[serde] volume: VolumeRef,
+    #[string] label: Option<String>,
+) -> Result<StorageVolume, JsErrorBox> {
+    ConsoleStorage::from_state(&state)?
+        .fork
+        .send(Fork { volume, label })
+        .await
+        .map_err(|error| format!("storage actor unavailable: {error}"))
+        .and_then(|result| result.map_err(|error| error.to_string()))
+        .map_err(JsErrorBox::generic)
+}
+
+#[op2]
+#[serde]
+pub(super) async fn op_consolestorage_saves(
+    state: Rc<RefCell<OpState>>,
+    #[serde] volume: VolumeRef,
+) -> Result<Vec<StorageSave>, JsErrorBox> {
+    ConsoleStorage::from_state(&state)?
+        .saves
+        .send(ListSaves { volume })
+        .await
+        .map_err(|error| format!("storage actor unavailable: {error}"))
+        .and_then(|result| result.map_err(|error| error.to_string()))
+        .map_err(JsErrorBox::generic)
+}
+
+#[op2]
+#[serde]
+pub(super) async fn op_consolestorage_save_history(
+    state: Rc<RefCell<OpState>>,
+    #[serde] volume: VolumeRef,
+    #[string] save: String,
+) -> Result<Vec<StorageSaveCommit>, JsErrorBox> {
+    ConsoleStorage::from_state(&state)?
+        .save_history
+        .send(SaveHistory { volume, save })
+        .await
+        .map_err(|error| format!("storage actor unavailable: {error}"))
+        .and_then(|result| result.map_err(|error| error.to_string()))
+        .map_err(JsErrorBox::generic)
+}
+
+#[op2]
+#[serde]
+pub(super) async fn op_consolestorage_save_restore(
+    state: Rc<RefCell<OpState>>,
+    #[serde] volume: VolumeRef,
+    #[string] save: String,
+    #[string] commit: String,
+) -> Result<StorageSaveCommit, JsErrorBox> {
+    ConsoleStorage::from_state(&state)?
+        .restore_save
+        .send(RestoreSave { volume, save, commit })
+        .await
+        .map_err(|error| format!("storage actor unavailable: {error}"))
+        .and_then(|result| result.map_err(|error| error.to_string()))
+        .map_err(JsErrorBox::generic)
+}
+
+#[op2]
+#[serde]
+pub(super) async fn op_consolestorage_save_copy(
+    state: Rc<RefCell<OpState>>,
+    #[serde] volume: VolumeRef,
+    #[string] save: String,
+    #[serde] destination: VolumeRef,
+) -> Result<StorageSaveCommit, JsErrorBox> {
+    ConsoleStorage::from_state(&state)?
+        .copy_save
+        .send(CopySave { volume, save, destination })
+        .await
+        .map_err(|error| format!("storage actor unavailable: {error}"))
+        .and_then(|result| result.map_err(|error| error.to_string()))
+        .map_err(JsErrorBox::generic)
+}
+
+#[op2]
+pub(super) async fn op_consolestorage_save_delete(
+    state: Rc<RefCell<OpState>>,
+    #[serde] volume: VolumeRef,
+    #[string] save: String,
+) -> Result<(), JsErrorBox> {
+    ConsoleStorage::from_state(&state)?
+        .delete_save
+        .send(DeleteSave { volume, save })
+        .await
+        .map_err(|error| format!("storage actor unavailable: {error}"))
+        .and_then(|result| result.map_err(|error| error.to_string()))
+        .map_err(JsErrorBox::generic)
+}

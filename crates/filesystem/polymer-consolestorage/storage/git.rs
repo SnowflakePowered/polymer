@@ -17,7 +17,7 @@ use tokio::sync::Notify;
 use uuid::Uuid;
 
 use crate::installable::artifacts::Artifact;
-use crate::installable::{DepotFile, DepotType, IconHint, InstallEvents, Reporting};
+use crate::installable::{DepotFile, DepotType, EmbeddedIcon, IconHint, InstallEvents, Reporting};
 use crate::storage::manifest::{ArtifactRegistry, ArtifactSummary, VolumeInfo};
 use crate::{
     BoxFuture, ChangeSignal, DirectoryStorage, EntryKind, Error, InstallResult, Metadata,
@@ -681,9 +681,9 @@ impl GitVolumeStorage {
             Self::validate(&relative)?;
             let path = PathBuf::from(relative.as_ref());
             let destination = checkout.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR));
-            let current = indexed
-                .get(&path)
-                .is_some_and(|(stat, id)| *id == entry.id && Self::stat_matches(stat, &destination));
+            let current = indexed.get(&path).is_some_and(|(stat, id)| {
+                *id == entry.id && Self::stat_matches(stat, &destination)
+            });
             expected.insert(path);
             if current {
                 continue;
@@ -721,7 +721,11 @@ impl GitVolumeStorage {
         Self::prune_checkout(checkout, checkout, &expected)
     }
 
-    fn prune_checkout(root: &Path, directory: &Path, expected: &BTreeSet<PathBuf>) -> Result<(), Error> {
+    fn prune_checkout(
+        root: &Path,
+        directory: &Path,
+        expected: &BTreeSet<PathBuf>,
+    ) -> Result<(), Error> {
         for entry in fs::read_dir(directory).map_err(|error| Error::io(directory, error))? {
             let path = entry.map_err(|error| Error::io(directory, error))?.path();
             let relative = path
@@ -1008,7 +1012,10 @@ impl GitVolumeStorage {
                 Ok((path.clone(), source, metadata))
             })
             .collect::<Result<Vec<_>, Error>>()?;
-        events.phase(crate::installable::InstallPhase::Finalizing, files.iter().map(|(_, _, metadata)| metadata.len()).sum());
+        events.phase(
+            crate::installable::InstallPhase::Finalizing,
+            files.iter().map(|(_, _, metadata)| metadata.len()).sum(),
+        );
         let repo = self.inner.platform.repository().to_thread_local();
         let mut staged = BTreeMap::new();
         for (path, source, metadata) in files {
@@ -1027,6 +1034,43 @@ impl GitVolumeStorage {
             staged.insert(path, (id, metadata));
         }
         Ok(staged)
+    }
+
+    /// Metadata roots that record one of `ids` under a key other than its current
+    /// [`artifact_key`], left behind by earlier storage layouts.
+    fn stale_artifact_roots(
+        repo: &gix::Repository,
+        tree: &gix::Tree<'_>,
+        ids: &BTreeSet<&str>,
+    ) -> Result<Vec<String>, Error> {
+        let Some(entry) = tree
+            .lookup_entry_by_path("meta/artifacts")
+            .map_err(|error| Error::git("lookup artifacts", error))?
+        else {
+            return Ok(Vec::new());
+        };
+        let artifacts = repo
+            .find_tree(entry.oid())
+            .map_err(|error| Error::git("read artifacts", error))?;
+        let mut stale = Vec::new();
+        for entry in artifacts.iter() {
+            let entry = entry.map_err(|error| Error::git("decode artifact entry", error))?;
+            if entry.kind() != gix::objs::tree::EntryKind::Tree {
+                continue;
+            }
+            let record = repo
+                .find_tree(entry.oid())
+                .map_err(|error| Error::git("read artifact tree", error))?;
+            let Some(id) = artifact_value(repo, &record, "id")? else {
+                continue;
+            };
+            let id = String::from_utf8_lossy(&id).trim().to_owned();
+            let key = entry.filename().to_string();
+            if ids.contains(id.as_str()) && key != artifact_key(&id) {
+                stale.push(format!("meta/artifacts/{key}"));
+            }
+        }
+        Ok(stale)
     }
 
     fn checkout_file(&self, path: &str) -> PathBuf {
@@ -1139,6 +1183,17 @@ impl GitVolumeStorage {
             }
         }
 
+        let replaced = state
+            .metadata
+            .artifacts
+            .keys()
+            .map(String::as_str)
+            .collect();
+        for stale in Self::stale_artifact_roots(&repo, &root, &replaced)? {
+            editor
+                .remove(&stale)
+                .map_err(|error| Error::git("remove stale artifact metadata", error))?;
+        }
         for (artifact_id, artifact) in &state.metadata.artifacts {
             let root = format!("meta/artifacts/{}", artifact_key(artifact_id));
             editor
@@ -1604,7 +1659,7 @@ struct ArtifactRecord {
     label: String,
     version: Option<String>,
     icon_path: Option<PathBuf>,
-    icon_png: Option<Arc<[u8]>>,
+    icons: Vec<EmbeddedIcon>,
     byte_length: u64,
     installed: Timestamp,
 }
@@ -1645,14 +1700,18 @@ impl From<&Artifact> for ArtifactRecord {
                 .collect(),
             label: artifact.label().to_owned(),
             version: artifact.version().map(str::to_owned),
-            icon_path: match artifact.icon() {
+            icon_path: artifact.icons().iter().find_map(|icon| match icon {
                 IconHint::File(path) => Some(path.clone()),
-                IconHint::Builtin(_) | IconHint::EmbeddedPng(_) => None,
-            },
-            icon_png: match artifact.icon() {
-                IconHint::EmbeddedPng(bytes) => Some(bytes.clone()),
                 _ => None,
-            },
+            }),
+            icons: artifact
+                .icons()
+                .iter()
+                .filter_map(|icon| match icon {
+                    IconHint::Embedded(icon) => Some(icon.clone()),
+                    _ => None,
+                })
+                .collect(),
             byte_length: artifact.byte_length(),
             installed: artifact.installed(),
         }
@@ -1670,11 +1729,11 @@ impl ArtifactRecord {
                 .collect(),
             self.label.clone(),
             self.version.clone(),
-            self.icon_png
-                .clone()
-                .map(IconHint::EmbeddedPng)
-                .or_else(|| self.icon_path.clone().map(IconHint::File))
-                .unwrap_or(IconHint::Builtin(self.depot_type)),
+            match (&self.icon_path, self.icons.as_slice()) {
+                (Some(path), []) => vec![IconHint::File(path.clone())],
+                (None, []) => vec![IconHint::Builtin(self.depot_type)],
+                (_, icons) => icons.iter().cloned().map(IconHint::Embedded).collect(),
+            },
         )
         .with_installed(self.installed)
     }
@@ -1702,7 +1761,12 @@ impl ArtifactRecord {
         if let Some(version) = &self.version {
             write_text(repo, editor, &format!("{root}/version"), version)?;
         }
-        write_text(repo, editor, &format!("{root}/installed"), &self.installed.to_string())?;
+        write_text(
+            repo,
+            editor,
+            &format!("{root}/installed"),
+            &self.installed.to_string(),
+        )?;
         if let Some(path) = &self.icon_path {
             write_text(
                 repo,
@@ -1711,14 +1775,14 @@ impl ArtifactRecord {
                 &path.to_string_lossy(),
             )?;
         }
-        if let Some(png) = &self.icon_png {
+        for icon in &self.icons {
             let blob = repo
-                .write_blob(png.as_ref())
+                .write_blob(icon.bytes())
                 .map_err(|error| Error::git("write artifact icon", error))?
                 .detach();
             editor
                 .upsert(
-                    format!("{root}/icon.png"),
+                    format!("{root}/{}", icon.file_name()),
                     gix::objs::tree::EntryKind::Blob,
                     blob,
                 )
@@ -1923,7 +1987,11 @@ impl GitArtifactRegistry {
         for path in paths {
             let before = before.get(&path).copied();
             let after = after.get(&path).copied();
-            if before == after || removed_metadata.iter().any(|prefix| path.starts_with(prefix)) {
+            if before == after
+                || removed_metadata
+                    .iter()
+                    .any(|prefix| path.starts_with(prefix))
+            {
                 continue;
             }
             let found = current.get(&path).copied();
@@ -1965,26 +2033,64 @@ impl GitArtifactRegistry {
             .map_err(|error| Error::git("write rewritten NAND tree", error))
     }
 
+    /// Titles that list a path the selected titles also own, with different content.
+    /// Identical content at the same path is shared content: it stays installed for the
+    /// remaining owners and never forces them out.
     fn manifest_dependencies(
         records: &[ArtifactRecord],
         selected: &BTreeSet<String>,
     ) -> BTreeSet<String> {
-        let selected_paths = records
+        let selected_files = records
             .iter()
             .filter(|record| selected.contains(&record.id))
             .flat_map(|record| record.manifest.iter())
-            .map(|file| file.path.to_string_lossy().replace('\\', "/"))
-            .collect::<BTreeSet<_>>();
+            .map(|file| (file.path.to_string_lossy().replace('\\', "/"), file.blake3))
+            .collect::<BTreeMap<_, _>>();
         records
             .iter()
             .filter(|record| !selected.contains(&record.id))
             .filter(|record| {
                 record.manifest.iter().any(|file| {
-                    selected_paths.contains(&file.path.to_string_lossy().replace('\\', "/"))
+                    selected_files
+                        .get(&*file.path.to_string_lossy().replace('\\', "/"))
+                        .is_some_and(|hash| *hash != file.blake3)
                 })
             })
             .map(|record| record.id.clone())
             .collect()
+    }
+
+    /// Volume paths of every file still listed by a title that is not being removed.
+    fn retained_files(records: &[ArtifactRecord], removed: &BTreeSet<String>) -> BTreeSet<String> {
+        records
+            .iter()
+            .filter(|record| !removed.contains(&record.id))
+            .flat_map(|record| record.manifest.iter())
+            .map(|file| format!("files/{}", file.path.to_string_lossy().replace('\\', "/")))
+            .collect()
+    }
+
+    /// Keep a dropped install commit's changes to files that remaining titles still list.
+    fn retain_delta(
+        repo: &gix::Repository,
+        commit: &NandCommit,
+        current: &mut BTreeMap<String, TreeLeaf>,
+        retained: &BTreeSet<String>,
+    ) -> Result<(), Error> {
+        let before = Self::parent_snapshot(repo, commit)?;
+        let after = Self::tree_snapshot(repo, commit.commit.tree)?;
+        for path in retained {
+            match (before.get(path), after.get(path)) {
+                (before, after) if before == after => {}
+                (_, Some(entry)) => {
+                    current.insert(path.clone(), *entry);
+                }
+                (_, None) => {
+                    current.remove(path);
+                }
+            }
+        }
+        Ok(())
     }
 
     fn affected_depots(
@@ -2006,6 +2112,7 @@ impl GitArtifactRegistry {
         }
         loop {
             let mut added = Self::manifest_dependencies(records, &selected);
+            let retained = Self::retained_files(records, &selected);
             let first = history
                 .iter()
                 .position(|commit| {
@@ -2037,6 +2144,7 @@ impl GitArtifactRegistry {
                     .as_ref()
                     .is_some_and(|id| selected.contains(id))
                 {
+                    Self::retain_delta(repo, commit, &mut current, &retained)?;
                     continue;
                 }
                 let conflicts = Self::apply_delta(repo, commit, &mut current, &selected)?;
@@ -2067,6 +2175,7 @@ impl GitArtifactRegistry {
         repo: &gix::Repository,
         history: &[NandCommit],
         removed: &BTreeSet<String>,
+        retained: &BTreeSet<String>,
         old_tip: gix::ObjectId,
     ) -> Result<(), Error> {
         let first = history
@@ -2088,6 +2197,7 @@ impl GitArtifactRegistry {
                 .as_ref()
                 .is_some_and(|id| removed.contains(id))
             {
+                Self::retain_delta(repo, original, &mut current, retained)?;
                 continue;
             }
             let conflicts = Self::apply_delta(repo, original, &mut current, removed)?;
@@ -2115,7 +2225,10 @@ impl GitArtifactRegistry {
         })?;
         let rewritten = GitVolumeStorage::root_tree(repo, Some(new_tip))?;
         let remaining = Self::artifacts_in(repo, &rewritten, read_artifact_summary)?;
-        if let Some(artifact) = remaining.iter().find(|artifact| removed.contains(&artifact.id)) {
+        if let Some(artifact) = remaining
+            .iter()
+            .find(|artifact| removed.contains(&artifact.id))
+        {
             return Err(Error::HistoryConflict(format!(
                 "rewritten NAND history still records {}",
                 artifact.id
@@ -2299,9 +2412,21 @@ impl ArtifactRegistry for GitArtifactRegistry {
                     affected: affected.into_iter().collect(),
                 });
             }
-            self.rewrite_without(&repo, &history, &removed, tip)
+            let retained = Self::retained_files(&records, &removed);
+            self.rewrite_without(&repo, &history, &removed, &retained, tip)
         })
     }
+}
+
+/// The artifact's embedded icons, in the order of their supported formats.
+fn read_icons(repo: &gix::Repository, tree: &gix::Tree<'_>) -> Result<Vec<EmbeddedIcon>, Error> {
+    let mut icons = Vec::new();
+    for name in EmbeddedIcon::FILES {
+        if let Some(bytes) = artifact_value(repo, tree, name)? {
+            icons.extend(EmbeddedIcon::from_file(name, bytes));
+        }
+    }
+    Ok(icons)
 }
 
 fn artifact_value(
@@ -2360,7 +2485,10 @@ fn read_artifact_summary(
                 .count(),
             None => 0,
         },
-        icon: artifact_value(repo, tree, "icon.png")?.map(|png| ArtifactSummary::icon_url(&png)),
+        icons: read_icons(repo, tree)?
+            .iter()
+            .map(EmbeddedIcon::data_url)
+            .collect(),
     })
 }
 
@@ -2429,7 +2557,7 @@ fn read_artifact(repo: &gix::Repository, tree: &gix::Tree<'_>) -> Result<Artifac
         label,
         version,
         icon_path,
-        icon_png: value("icon.png")?.map(Arc::from),
+        icons: read_icons(repo, tree)?,
         byte_length,
         installed,
     })

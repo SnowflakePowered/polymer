@@ -6,8 +6,10 @@ license.workspace = true
 
 [dependencies]
 polymer-composition.workspace = true
+polymer-banner = { workspace = true, features = ["render"] }
 actix.workspace = true
 anyrender = "0.13.0"
+base64.workspace = true
 blitz-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "e99fbdbd1d03b9f0aa1622c3f810d95daac92042", features = ["custom-widget"] }
 blitz-html = { git = "https://github.com/DioxusLabs/blitz", rev = "e99fbdbd1d03b9f0aa1622c3f810d95daac92042" }
 blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "e99fbdbd1d03b9f0aa1622c3f810d95daac92042" }

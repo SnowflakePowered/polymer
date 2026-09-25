@@ -9,7 +9,7 @@ use super::tmd::{Content, Tmd, align};
 use crate::Error;
 use crate::impls::wii::nand::WiiNand;
 use crate::impls::wii::ticket::Ticket;
-use crate::installable::{Depot, DepotType, InstallEvents};
+use crate::installable::{Depot, DepotType, EmbeddedIcon, InstallEvents, InstallPreview};
 use crate::keys::{KeyIdentity, KeyRecord};
 use crate::nand::VirtualNand;
 
@@ -29,6 +29,13 @@ struct WadHeader {
 
 const _: () = assert!(size_of::<WadHeader>() == 0x20);
 
+/// The channel name and animated icon layout from a WAD's opening banner.
+#[derive(Clone, Default)]
+pub(super) struct Channel {
+    pub(super) name: Option<String>,
+    pub(super) icon: Option<EmbeddedIcon>,
+}
+
 #[derive(Clone)]
 pub struct WiiWadDepot {
     pub(super) path: PathBuf,
@@ -36,9 +43,29 @@ pub struct WiiWadDepot {
     pub(super) tmd: Tmd,
     tmd_offset: u64,
     tmd_size: u64,
+    channel: std::sync::OnceLock<Channel>,
 }
 
 impl WiiWadDepot {
+    /// The channel's name and icon archive from its opening banner (content 0),
+    /// decrypted once per depot.
+    pub(super) fn channel(&self) -> &Channel {
+        self.channel.get_or_init(|| {
+            let opening = self.select_title_key().ok().and_then(|key| {
+                let content = self.tmd.contents.iter().find(|content| content.index == 0)?;
+                self.decrypt_content(content, &key).ok()
+            });
+            let Some(opening) = opening else {
+                return Channel::default();
+            };
+            Channel {
+                name: super::metadata::InstalledTitle::channel_name(&opening),
+                icon: polymer_banner::wii::WiiBanner::icon_archive(&opening)
+                    .map(|archive| EmbeddedIcon::WiiBanner(archive.into())),
+            }
+        })
+    }
+
     /// Decrypt and hash every content, publishing progress as a verifying phase.
     /// Returns the names of the contents that don't validate.
     fn verify(&self, events: &InstallEvents) -> Vec<String> {
@@ -175,6 +202,7 @@ impl Depot for WiiWadDepot {
             tmd,
             tmd_offset,
             tmd_size,
+            channel: std::sync::OnceLock::new(),
         })
     }
 
@@ -188,6 +216,17 @@ impl Depot for WiiWadDepot {
     }
     fn validate_contents(&self) -> Vec<String> {
         self.verify(&InstallEvents::default())
+    }
+
+    fn preview(&self) -> Option<InstallPreview> {
+        let channel = self.channel();
+        let id = format!("{:016x}", self.title_id());
+        Some(InstallPreview {
+            label: channel.name.clone().unwrap_or_else(|| id.clone()),
+            id,
+            depot_type: self.depot_type(),
+            icon: channel.icon.as_ref().map(EmbeddedIcon::data_url),
+        })
     }
 
     fn depot_type(&self) -> DepotType {

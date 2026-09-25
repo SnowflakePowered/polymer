@@ -3,7 +3,7 @@ use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned, byteorder::big_endi
 
 use super::tmd::Tmd;
 use crate::impls::wii::index::SharedContentMap;
-use crate::installable::{DepotFile, DepotType, IconHint, artifacts::Artifact};
+use crate::installable::{DepotFile, DepotType, EmbeddedIcon, IconHint, artifacts::Artifact};
 use crate::{Error, VolumeStorage};
 
 #[derive(FromBytes, Immutable, KnownLayout, Unaligned)]
@@ -16,12 +16,17 @@ struct Imet {
 pub(super) struct InstalledTitle;
 
 impl InstalledTitle {
+    const IMET_SEARCH_SIZE: u64 = 0x640;
+}
+
+impl InstalledTitle {
     pub fn read(
         storage: &dyn VolumeStorage,
         root: &str,
         title: u64,
         kind: DepotType,
         manifest: Vec<DepotFile>,
+        icon: Option<EmbeddedIcon>,
     ) -> Result<Artifact, Error> {
         let path = format!("{root}/title.tmd");
         let mut bytes = Vec::new();
@@ -34,11 +39,8 @@ impl InstalledTitle {
             return Err(Error::malformed(path, "installed Wii identity changed"));
         }
         let mut label = format!("{title:016x}");
-        if let Some(content) = tmd
-            .contents
-            .iter()
-            .find(|content| content.index == tmd.boot_index)
-        {
+        // Channel names live in the IMET header of the banner, which is always content 0.
+        if let Some(content) = tmd.contents.iter().find(|content| content.index == 0) {
             let path = if content.is_shared() {
                 SharedContentMap::load(storage)?
                     .find(&content.sha1)
@@ -52,14 +54,13 @@ impl InstalledTitle {
                 }
             }
         }
-        // TODO: Gumshoe does not yet expose Wii channel banner decoding for installed content.
         Ok(Artifact::new(
             format!("{title:016x}"),
             kind,
             manifest,
             label,
             Some(tmd.title_version.to_string()),
-            IconHint::Builtin(kind),
+            vec![icon.map_or(IconHint::Builtin(kind), IconHint::Embedded)],
         ))
     }
 
@@ -67,16 +68,19 @@ impl InstalledTitle {
         let mut bytes = Vec::new();
         storage
             .open_read(path)?
-            .take(0x640)
+            .take(Self::IMET_SEARCH_SIZE)
             .read_to_end(&mut bytes)
             .map_err(|e| Error::io(Path::new(path), e))?;
-        let Some(offset) = bytes.windows(4).position(|window| window == b"IMET") else {
-            return Ok(None);
-        };
-        let Ok((imet, _)) = Imet::ref_from_prefix(&bytes[offset..]) else {
-            return Ok(None);
-        };
-        Ok(std::iter::once(&imet.names[1])
+        Ok(Self::channel_name(&bytes))
+    }
+
+    /// The English channel name from the IMET header of a channel's opening
+    /// banner (content 0), falling back to the first named language.
+    pub(super) fn channel_name(opening: &[u8]) -> Option<String> {
+        let header = &opening[..opening.len().min(Self::IMET_SEARCH_SIZE as usize)];
+        let offset = header.windows(4).position(|window| window == b"IMET")?;
+        let (imet, _) = Imet::ref_from_prefix(&header[offset..]).ok()?;
+        std::iter::once(&imet.names[1])
             .chain(imet.names.iter())
             .find_map(|name| {
                 let units = name
@@ -87,6 +91,6 @@ impl InstalledTitle {
                 String::from_utf16(&units)
                     .ok()
                     .filter(|name| !name.trim().is_empty())
-            }))
+            })
     }
 }

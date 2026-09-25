@@ -1,5 +1,6 @@
 mod api;
 mod operations;
+mod saves;
 mod volumes;
 
 use actix::{Actor, Addr, Context, ResponseActFuture, System, WrapFuture};
@@ -64,14 +65,15 @@ impl StorageService {
             .name("polymer-storage".to_owned())
             .spawn(move || {
                 let system = System::new();
-                let actor =
-                    system.block_on(async move { StorageActor {
+                let actor = system.block_on(async move {
+                    StorageActor {
                         manager,
                         plugins,
                         installs: Default::default(),
                         installing: Default::default(),
                     }
-                    .start() });
+                    .start()
+                });
                 if ready.send(actor).is_ok()
                     && let Err(error) = system.run()
                 {

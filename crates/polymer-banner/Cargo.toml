@@ -1,0 +1,24 @@
+[package]
+name = "polymer-banner"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+render = ["dep:bytemuck", "dep:cgfx-wgpu", "dep:dashmap", "dep:peniko", "dep:wgpu"]
+
+[dependencies]
+bannerbobomb-parser.workspace = true
+cgfx-parser.workspace = true
+cgfx-renderer.workspace = true
+cgfx-wgpu = { workspace = true, optional = true }
+u8arc.workspace = true
+zerocopy.workspace = true
+zenwebp = "0.4.4"
+bytemuck = { version = "1.25", features = ["derive"], optional = true }
+dashmap = { workspace = true, optional = true }
+peniko = { version = "0.6.1", optional = true }
+wgpu = { version = "29", default-features = false, features = ["wgsl"], optional = true }

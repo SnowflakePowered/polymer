@@ -1,7 +1,18 @@
-import { For, Show, createEffect, createSignal, onCleanup, onMount, splitProps, type JSX, type ParentProps } from "solid-js";
+import { For, Match, Show, Switch, createEffect, createSignal, onCleanup, onMount, splitProps, type JSX, type ParentProps } from "solid-js";
 import { Icon } from "./icons";
 import type { Tone } from "./palette";
 export { Icon, type IconName } from "./icons";
+
+/** A data URL image. Console banner formats a browser cannot display are drawn
+ * by the shell's native banner renderer. */
+export function BannerImage(props: { src: string; class?: string }) {
+  return <Switch fallback={<img class={props.class} src={props.src} alt="" />}>
+    <Match when={props.src.startsWith("data:application/x-ps2-icon")}><ps2-icon class={props.class} attr:src={props.src} /></Match>
+    <Match when={props.src.startsWith("data:application/x-wii-banner")}><wii-banner class={props.class} attr:src={props.src} /></Match>
+    <Match when={props.src.startsWith("data:image/webp")}><animated-image class={props.class} attr:src={props.src} /></Match>
+    <Match when={props.src.startsWith("data:application/x-3ds-banner")}><ctr-banner class={props.class} attr:src={props.src} /></Match>
+  </Switch>;
+}
 import a from "../assets/switch/button-a.svg";
 import b from "../assets/switch/button-b.svg";
 import l from "../assets/switch/button-l.svg";

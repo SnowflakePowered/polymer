@@ -9,7 +9,8 @@ use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
 use super::CiaDepot;
 use crate::impls::ctr::smdh::ExtdataIcon;
-use crate::installable::{DepotFile, IconHint, artifacts::Artifact};
+use crate::installable::{DepotFile, EmbeddedIcon, IconHint, artifacts::Artifact};
+use polymer_banner::ctr::CtrBanner;
 use crate::{Error, VolumeStorage};
 
 #[derive(FromBytes, Immutable, KnownLayout, Unaligned)]
@@ -115,7 +116,7 @@ impl InstalledTitle {
         }
         let kind = CiaDepot::title_kind(tmd.title_id.get());
         let mut label = id.clone();
-        let mut icon = IconHint::Builtin(kind);
+        let mut icons = vec![IconHint::Builtin(kind)];
         if let Some(content) = contents
             .iter()
             .find(|content| content.index.get() == tmd.boot_index.get())
@@ -130,13 +131,21 @@ impl InstalledTitle {
             };
             let path = format!("{root}/{:08x}.app", content.id.get());
             if manifest.iter().any(|file| file.path() == Path::new(&path)) {
-                if let Some(smdh) = Self::smdh(storage, &path)? {
+                let smdh = Self::exefs_file(storage, &path, *b"icon\0\0\0\0")?
+                    .and_then(|icon| ExtdataIcon::parse(icon.get(..size_of::<ExtdataIcon>())?));
+                if let Some(smdh) = smdh {
                     let name = smdh.description().0;
                     if !name.trim().is_empty() {
                         label = name;
                     }
-                    icon = IconHint::image(smdh.rgba())?;
+                    icons = vec![IconHint::image(smdh.rgba())?];
                 }
+                icons.extend(
+                    Self::exefs_file(storage, &path, *b"banner\0\0")?
+                        .and_then(|banner| Some(CtrBanner::strip_sound(&banner)?.to_vec()))
+                        .filter(|banner| CtrBanner::parse(banner).is_some())
+                        .map(|banner| IconHint::Embedded(EmbeddedIcon::CtrBanner(banner.into()))),
+                );
             }
         }
         Ok(Artifact::new(
@@ -145,11 +154,16 @@ impl InstalledTitle {
             manifest,
             label,
             Some(tmd.version.get().to_string()),
-            icon,
+            icons,
         ))
     }
 
-    fn smdh(storage: &dyn VolumeStorage, path: &str) -> Result<Option<ExtdataIcon>, Error> {
+    /// A decrypted ExeFS file of an installed NCCH content.
+    fn exefs_file(
+        storage: &dyn VolumeStorage,
+        path: &str,
+        name: [u8; 8],
+    ) -> Result<Option<Vec<u8>>, Error> {
         let length = storage.metadata(path)?.len;
         if length < 0x200 {
             return Ok(None);
@@ -173,20 +187,21 @@ impl InstalledTitle {
         header.decrypt_exefs(offset, 0, &mut bytes);
         for bytes in bytes[..0xa0].chunks_exact(0x10) {
             let entry = ExeFsEntry::ref_from_bytes(bytes).expect("fixed ExeFS entry");
-            if entry.name != *b"icon\0\0\0\0" {
+            if entry.name != name {
                 continue;
             }
             let start = 0x200 + u64::from(entry.offset.get());
-            if u64::from(entry.size.get()) < 0x36c0 || start + u64::from(entry.size.get()) > size {
+            let length = u64::from(entry.size.get());
+            if start + length > size {
                 return Ok(None);
             }
-            let mut icon = vec![0; 0x36c0];
+            let mut file = vec![0; length as usize];
             reader
                 .seek(SeekFrom::Start(offset + start))
-                .and_then(|_| reader.read_exact(&mut icon))
+                .and_then(|_| reader.read_exact(&mut file))
                 .map_err(|error| Error::io(Path::new(path), error))?;
-            header.decrypt_exefs(offset, start, &mut icon);
-            return Ok(ExtdataIcon::parse(&icon));
+            header.decrypt_exefs(offset, start, &mut file);
+            return Ok(Some(file));
         }
         Ok(None)
     }

@@ -11,6 +11,12 @@ import {
   op_consolestorage_list,
   op_consolestorage_set_label,
   op_consolestorage_supports,
+  op_consolestorage_fork,
+  op_consolestorage_saves,
+  op_consolestorage_save_history,
+  op_consolestorage_save_restore,
+  op_consolestorage_save_copy,
+  op_consolestorage_save_delete,
 } from "ext:core/ops";
 
 export function createConsoleStorage() {
@@ -75,6 +81,23 @@ export function createConsoleStorage() {
         planRemoval: (ids) => op_consolestorage_plan_removal(this.platform, this.id, ids),
         uninstall: (plan) => op_consolestorage_uninstall(this.platform, this.id, plan.requested, plan.revision),
       });
+    }
+
+    get saves() {
+      const { kind, platform, id } = storageData.get(this);
+      const volume = { kind, platform, id };
+      return Object.freeze({
+        list: () => op_consolestorage_saves(volume),
+        history: (save) => op_consolestorage_save_history(volume, save),
+        restore: (save, commit) => op_consolestorage_save_restore(volume, save, commit),
+        copyTo: (save, destination) => op_consolestorage_save_copy(volume, save, { kind: destination.kind, platform: destination.platform, id: destination.id }),
+        delete: (save) => op_consolestorage_save_delete(volume, save),
+      });
+    }
+
+    async fork(label = null) {
+      const { kind, platform, id } = storageData.get(this);
+      return new Storage(internal, await op_consolestorage_fork({ kind, platform, id }, label === null ? null : String(label)));
     }
 
     get kind() { return storageData.get(this).kind; }

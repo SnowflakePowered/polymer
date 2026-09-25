@@ -38,15 +38,19 @@ pub struct Label(pub String);
 
 impl<'de> Deserialize<'de> for Label {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let element = Text::deserialize(deserializer)?;
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Content {
+            Element(Text),
+            Attribute(String),
+        }
 
-        Ok(Label(
-            element
-                .text
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" "),
-        ))
+        let text = match Content::deserialize(deserializer)? {
+            Content::Element(element) => element.text,
+            Content::Attribute(value) => value,
+        };
+
+        Ok(Label(text.split_whitespace().collect::<Vec<_>>().join(" ")))
     }
 }
 

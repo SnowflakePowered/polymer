@@ -194,7 +194,7 @@ impl Installable for WiiUInstall {
             manifest,
             label,
             version,
-            icon,
+            vec![icon],
         );
         self.storage
             .artifacts()

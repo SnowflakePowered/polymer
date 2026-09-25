@@ -25,6 +25,8 @@ use consolestorage::{
     op_consolestorage_bootstrap, op_consolestorage_create, op_consolestorage_delete,
     op_consolestorage_inspect, op_consolestorage_install, op_consolestorage_list,
     op_consolestorage_plan_removal, op_consolestorage_platforms, op_consolestorage_recover,
+    op_consolestorage_fork, op_consolestorage_save_copy, op_consolestorage_save_delete,
+    op_consolestorage_save_history, op_consolestorage_save_restore, op_consolestorage_saves,
     op_consolestorage_set_label, op_consolestorage_supports, op_consolestorage_uninstall,
 };
 
@@ -516,6 +518,12 @@ deno_core::extension!(
         op_consolestorage_create,
         op_consolestorage_delete,
         op_consolestorage_set_label,
+        op_consolestorage_fork,
+        op_consolestorage_saves,
+        op_consolestorage_save_history,
+        op_consolestorage_save_restore,
+        op_consolestorage_save_copy,
+        op_consolestorage_save_delete,
         op_library_games_list,
         op_library_games_get,
         op_library_games_delete,

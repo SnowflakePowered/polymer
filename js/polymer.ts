@@ -378,10 +378,18 @@ export type DepotType = "system" | "app" | "appcontent" | "appupdate";
 
 export interface StorageArtifact {
   id: string; label: string; version: string | null; depotType: DepotType; byteLength: number;
-  installed: string; fileCount: number; icon: string | null;
+  installed: string; fileCount: number;
+  /** Data URLs from the plainest image to the richest animated banner. */
+  icons: string[];
 }
 export interface StorageInspection { id: string; platform: string; minimal: boolean; dirty: boolean; artifacts: StorageArtifact[] }
 export interface StorageRemovalPlan { requested: string[]; affected: string[]; revision: string }
+export interface StorageSave {
+  id: string; title: string; description: string; modified: string; icon: string | null;
+  byteLength: number; blocks: number | null; versions: number;
+}
+export type SaveCommitOperation = "initialImport" | "autosave" | "manual" | "restore";
+export interface StorageSaveCommit { id: string; parent: string | null; timestamp: string; operation: SaveCommitOperation; screenshot: string | null }
 export interface ConsoleStorageVolume extends EventTarget {
   inspect(): Promise<StorageInspection>;
   /** Discard uncommitted NAND changes and restore the last successful commit. */
@@ -393,6 +401,14 @@ export interface ConsoleStorageVolume extends EventTarget {
     planRemoval(ids: string[]): Promise<StorageRemovalPlan>;
     uninstall(plan: StorageRemovalPlan): Promise<StorageArtifact[]>;
   };
+  readonly saves: {
+    list(): Promise<StorageSave[]>;
+    history(save: string): Promise<StorageSaveCommit[]>;
+    restore(save: string, commit: string): Promise<StorageSaveCommit>;
+    copyTo(save: string, destination: ConsoleStorageVolume): Promise<StorageSaveCommit>;
+    delete(save: string): Promise<void>;
+  };
+  fork(label?: string | null): Promise<ConsoleStorageVolume>;
   readonly kind: ConsoleStorageKind;
   readonly id: string;
   readonly platform: string;
