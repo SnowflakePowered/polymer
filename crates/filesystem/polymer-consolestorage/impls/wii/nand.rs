@@ -111,8 +111,18 @@ impl VirtualNand for WiiNand {
             ));
         }
         let mut layers: Vec<Arc<dyn MountableStorage>> =
-            vec![Arc::new(crate::MemoryStorage::new(files)?)];
+            vec![Arc::new(crate::MemoryStorage::writable(files)?)];
         if let Some(saves) = saves {
+            for entry in self.storage.read_dir("title", true)? {
+                if let Some(id) = entry
+                    .path
+                    .strip_suffix("/content/title.tmd")
+                    .and_then(super::title_id_from_path)
+                    .filter(|id| (id >> 32) as u32 != super::SYSTEM_TITLE_HIGH)
+                {
+                    saves.create_dir_all(&super::data_path(id))?;
+                }
+            }
             layers.push(saves);
         }
         layers.push(self.root());
