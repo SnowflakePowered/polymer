@@ -146,10 +146,8 @@ impl ShellSession {
         match slot {
             ShellDocumentSlot::Awaiting(factory) => {
                 let (document, runtime, notifications) = create(factory).await?;
-                self.slot = ShellDocumentSlot::Active(Box::new(ActiveShellDocument {
-                    document,
-                    runtime,
-                }));
+                self.slot =
+                    ShellDocumentSlot::Active(Box::new(ActiveShellDocument { document, runtime }));
                 Ok(Some(notifications))
             }
             slot => {

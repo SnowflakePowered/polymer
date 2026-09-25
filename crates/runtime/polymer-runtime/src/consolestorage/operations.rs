@@ -112,7 +112,9 @@ impl Handler<Install> for StorageActor {
                     .map_err(|error| error.to_string())?;
                 let running = publish.clone();
                 manager
-                    .install(&platform, id, &path, move |status| running("running", json!(status)))
+                    .install(&platform, id, &path, move |status| {
+                        running("running", json!(status))
+                    })
                     .await
                     .map_err(StorageError::from)
             }

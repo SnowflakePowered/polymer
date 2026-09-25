@@ -61,7 +61,9 @@ pub struct AttachedTrackedSurface {
 }
 
 impl AttachedTrackedSurface {
-    fn deserialize_attach<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<usize, D::Error> {
+    fn deserialize_attach<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<usize, D::Error> {
         let value = <f64 as serde::Deserialize>::deserialize(deserializer)?;
         if value.fract() != 0.0 || !(0.0..=9_007_199_254_740_991.0).contains(&value) {
             return Err(serde::de::Error::custom(format!(

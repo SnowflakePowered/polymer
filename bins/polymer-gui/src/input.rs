@@ -117,7 +117,7 @@ impl InputRouter {
         .await?;
         let mut controllers = controller_manager.snapshot();
         bluetooth_ui.merge(&mut controllers);
-        controller_api.publish(controllers, controller_manager.assignment_snapshot());
+        controller_api.publish(&controllers, controller_manager.assignment_snapshot());
         Ok(Self {
             hub,
             controllers: controller_manager,
@@ -611,9 +611,9 @@ impl InputRouter {
         for effect in std::mem::take(&mut outcome.effects) {
             self.apply_controller_manager_effect(effect)?;
         }
-        let controllers = self.publish_controller_api();
+        self.publish_controller_api();
         if state_response {
-            outcome.response = controllers;
+            outcome.response = self.controller_api.controllers();
         }
         Ok(outcome)
     }
@@ -627,7 +627,8 @@ impl InputRouter {
             .controllers
             .settle_connection_session(session_id, committed)?;
         self.apply_controller_manager_effect(effect)?;
-        Ok(self.publish_controller_api())
+        self.publish_controller_api();
+        Ok(self.controller_api.controllers())
     }
 
     fn apply_controller_manager_effect(
@@ -711,11 +712,10 @@ impl InputRouter {
                 )
             })
             .collect();
-        let api = self.controller_api.snapshot();
-        let revision = api["revision"].as_u64().unwrap_or_default();
+        let revision = self.controller_api.revision();
         let api_state = (revision != self.last_controller_api_revision).then(|| {
             self.last_controller_api_revision = revision;
-            api
+            self.controller_api.snapshot()
         });
         InputPublication {
             diagnostics: InputDiagnostics {
@@ -734,12 +734,11 @@ impl InputRouter {
         }
     }
 
-    fn publish_controller_api(&mut self) -> serde_json::Value {
+    fn publish_controller_api(&mut self) {
         let mut controllers = self.controllers.snapshot();
         self.bluetooth_ui.merge(&mut controllers);
         self.controller_api
-            .publish(controllers.clone(), self.controllers.assignment_snapshot());
-        controllers
+            .publish(&controllers, self.controllers.assignment_snapshot());
     }
 
     fn rebuild_input_hooks(&mut self) -> Result<(), String> {
