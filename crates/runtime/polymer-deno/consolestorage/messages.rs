@@ -1,6 +1,6 @@
 use actix::{Message, Recipient};
 pub use polymer_library::{ArtifactSummary as StorageArtifact, StorageInspection};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Debug, thiserror::Error)]
@@ -39,6 +39,35 @@ pub struct StorageRemovalPlan {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageSave {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub modified: String,
+    pub icon: Option<String>,
+    pub byte_length: u64,
+    pub blocks: Option<u64>,
+    pub versions: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StorageSaveCommit {
+    pub id: String,
+    pub parent: Option<String>,
+    pub timestamp: String,
+    pub operation: &'static str,
+    pub screenshot: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct VolumeRef {
+    pub kind: String,
+    pub platform: String,
+    pub id: String,
+}
+
+#[derive(Debug, Serialize)]
 pub struct StorageVolume {
     pub kind: String,
     pub id: String,
@@ -63,6 +92,12 @@ pub struct ConsoleStorage {
     pub create: Recipient<Create>,
     pub delete: Recipient<Delete>,
     pub set_label: Recipient<SetLabel>,
+    pub fork: Recipient<Fork>,
+    pub saves: Recipient<ListSaves>,
+    pub save_history: Recipient<SaveHistory>,
+    pub restore_save: Recipient<RestoreSave>,
+    pub copy_save: Recipient<CopySave>,
+    pub delete_save: Recipient<DeleteSave>,
 }
 
 #[derive(Debug, Message)]
@@ -150,4 +185,47 @@ pub struct SetLabel {
     pub platform: String,
     pub id: String,
     pub label: Option<String>,
+}
+
+#[derive(Debug, Message)]
+#[rtype(result = "Result<StorageVolume, StorageError>")]
+pub struct Fork {
+    pub volume: VolumeRef,
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Message)]
+#[rtype(result = "Result<Vec<StorageSave>, StorageError>")]
+pub struct ListSaves {
+    pub volume: VolumeRef,
+}
+
+#[derive(Debug, Message)]
+#[rtype(result = "Result<Vec<StorageSaveCommit>, StorageError>")]
+pub struct SaveHistory {
+    pub volume: VolumeRef,
+    pub save: String,
+}
+
+#[derive(Debug, Message)]
+#[rtype(result = "Result<StorageSaveCommit, StorageError>")]
+pub struct RestoreSave {
+    pub volume: VolumeRef,
+    pub save: String,
+    pub commit: String,
+}
+
+#[derive(Debug, Message)]
+#[rtype(result = "Result<StorageSaveCommit, StorageError>")]
+pub struct CopySave {
+    pub volume: VolumeRef,
+    pub save: String,
+    pub destination: VolumeRef,
+}
+
+#[derive(Debug, Message)]
+#[rtype(result = "Result<(), StorageError>")]
+pub struct DeleteSave {
+    pub volume: VolumeRef,
+    pub save: String,
 }

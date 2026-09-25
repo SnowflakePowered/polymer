@@ -210,7 +210,9 @@ impl Installable for PupInstall {
             manifest,
             "PlayStation 3 system software".into(),
             Some(version),
-            crate::installable::IconHint::Builtin(crate::installable::DepotType::System),
+            vec![crate::installable::IconHint::Builtin(
+                crate::installable::DepotType::System,
+            )],
         );
         // A firmware image replaces the previous image. Remove only files owned
         // by its previous artifact, preserving unrelated NAND contents.

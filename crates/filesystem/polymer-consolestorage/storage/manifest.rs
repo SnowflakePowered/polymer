@@ -16,7 +16,7 @@ pub struct ArtifactSummary {
     pub byte_length: u64,
     pub installed: Timestamp,
     pub file_count: usize,
-    pub icon: Option<String>,
+    pub icons: Vec<String>,
 }
 
 impl From<&Artifact> for ArtifactSummary {
@@ -29,18 +29,15 @@ impl From<&Artifact> for ArtifactSummary {
             byte_length: artifact.byte_length(),
             installed: artifact.installed(),
             file_count: artifact.manifest().len(),
-            icon: match artifact.icon() {
-                crate::installable::IconHint::EmbeddedPng(png) => Some(ArtifactSummary::icon_url(png)),
-                _ => None,
-            },
+            icons: artifact
+                .icons()
+                .iter()
+                .filter_map(|icon| match icon {
+                    crate::installable::IconHint::Embedded(icon) => Some(icon.data_url()),
+                    _ => None,
+                })
+                .collect(),
         }
-    }
-}
-
-impl ArtifactSummary {
-    pub(crate) fn icon_url(png: &[u8]) -> String {
-        use base64::Engine as _;
-        format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(png))
     }
 }
 

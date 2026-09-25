@@ -138,6 +138,14 @@ impl SaveRepo for PlaystationMemoryCard {
         let payload = self.read_payload(&save)?;
         Ok(raw::Save::new(&save.native_id, &payload)?.read_icon())
     }
+
+    fn blocks(&self, id: SaveDepotId) -> Result<Option<u64>, Error> {
+        let mut blocks = 0;
+        for save in self.saves_in_depot(id) {
+            blocks += self.read_payload(&save)?.len().max(1).div_ceil(BLOCK_SIZE) as u64;
+        }
+        Ok(Some(blocks))
+    }
 }
 
 impl PlaystationMemoryCard {

@@ -58,6 +58,16 @@ impl SaveRepo for DreamcastMemoryCard {
             .find(|(product, _)| SaveDepotId::from(*product) == id)
             .and_then(|(_, save)| save.read_icon()))
     }
+
+    fn blocks(&self, id: SaveDepotId) -> Result<Option<u64>, Error> {
+        Ok(Some(
+            self.saves()
+                .iter()
+                .filter(|(product, _)| SaveDepotId::from(*product) == id)
+                .map(|(_, save)| save.block_count() as u64)
+                .sum(),
+        ))
+    }
 }
 
 impl DreamcastMemoryCard {

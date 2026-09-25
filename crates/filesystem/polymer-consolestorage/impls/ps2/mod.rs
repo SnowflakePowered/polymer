@@ -247,9 +247,10 @@ impl Playstation2MemoryCard {
             .metadata(&save.path())
             .map(|metadata| metadata.mtime)
             .unwrap_or_else(|_| Timestamp::now());
+        let title = self.read_save(save)?.title();
         Ok(SaveDescriptor {
             id: save.depot_id(),
-            title: save.display_name().into_owned(),
+            title: title.unwrap_or_else(|| save.display_name().into_owned()),
             description: save.display_name().into_owned(),
             timestamp,
             root_path: save.path(),

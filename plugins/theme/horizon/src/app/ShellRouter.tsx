@@ -2,6 +2,7 @@ import { lazy } from "solid-js";
 import { MemoryRouter, Route, createMemoryHistory, useNavigate } from "@solidjs/router";
 import { ShellProvider } from "./ShellProvider";
 import { StoragePage } from "../features/storage/StoragePage";
+import { SavesPage } from "../features/saves/SavesPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
 import { LibraryPage } from "../features/library/LibraryPage";
 import { GameDetailsPage } from "../features/details/GameDetailsPage";
@@ -32,6 +33,7 @@ export function ShellRouter() {
       const navigate = useNavigate();
       return <DevGallery onBack={() => navigate("/", { replace: true, scroll: false })} />;
     }} />}
+    <Route path="/saves" component={SavesPage} />
     <Route path="/storage" component={StoragePage} />
     <Route path="/settings" component={SettingsPage} />
     <Route path="/game" component={GameLayout}>

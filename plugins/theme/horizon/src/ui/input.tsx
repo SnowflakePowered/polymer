@@ -87,6 +87,8 @@ export class NavigationController {
       queueMicrotask(() => {
         const target = scope.returnFocus?.() ?? previous;
         const parent = this.scopes.filter(item => item.overlay).at(-1)?.root;
+        const active = document.activeElement;
+        if (active instanceof HTMLElement && active !== document.body && active.isConnected && !scope.root!.contains(active) && (!parent || parent.contains(active))) return;
         if (target?.isConnected && !target.hasAttribute("disabled") && target.getAttribute("aria-disabled") !== "true" && this.visible(target) && (!parent || parent.contains(target))) target.focus();
         else {
           const items = this.items(parent ?? document.body);

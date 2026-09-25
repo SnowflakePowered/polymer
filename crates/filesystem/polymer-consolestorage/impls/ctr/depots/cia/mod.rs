@@ -157,7 +157,7 @@ impl Depot for CiaDepot {
         let icon = smdh
             .and_then(|smdh| IconHint::image(smdh.rgba()).ok())
             .and_then(|icon| match icon {
-                IconHint::EmbeddedPng(png) => Some(crate::ArtifactSummary::icon_url(&png)),
+                IconHint::Embedded(icon) => Some(icon.data_url()),
                 _ => None,
             });
         Some(InstallPreview {

@@ -10,6 +10,7 @@
 //! around them.
 
 mod bands;
+mod banner;
 mod events;
 mod hit_test;
 mod mutations;
@@ -193,6 +194,9 @@ impl ShellDocumentFactory {
                 ..Default::default()
             },
         );
+        document
+            .as_mut()
+            .add_user_agent_stylesheet(banner::BannerWidget::USER_AGENT_CSS);
         initialise_tracked_surfaces(&mut document);
         let mut document = ShellDocument {
             document,
@@ -233,11 +237,13 @@ impl ShellDocument {
 
     pub(crate) fn is_script_node(&self, node: NodeId) -> bool {
         let document = self.document.as_ref();
-        let anonymous = |node: Option<&blitz_dom::Node>| node.is_some_and(blitz_dom::Node::is_anonymous);
+        let anonymous =
+            |node: Option<&blitz_dom::Node>| node.is_some_and(blitz_dom::Node::is_anonymous);
         let Some(current) = document.get_node(node) else {
             return false;
         };
-        !anonymous(Some(current)) && !anonymous(current.parent.and_then(|parent| document.get_node(parent)))
+        !anonymous(Some(current))
+            && !anonymous(current.parent.and_then(|parent| document.get_node(parent)))
     }
 
     pub(crate) const fn dom_structure_revision(&self) -> u64 {

@@ -125,7 +125,7 @@ impl StorageActor {
         Uuid::parse_str(id).map_err(|_| StorageError(format!("`{id}` is not a console storage id")))
     }
 
-    fn describe(
+    pub(super) fn describe(
         manager: &StorageManager,
         kind: StorageKind,
         metadata: &VolumeInfo,

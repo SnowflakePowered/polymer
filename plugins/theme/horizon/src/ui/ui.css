@@ -105,4 +105,5 @@ kbd.hz-button-glyph { display: inline-grid; place-content: center; border: 1px s
 .hz-option, .hz-list [data-part='item'] { --hz-ring-inset: calc(-1 * var(--hz-focus-width)); }
 .hz-toggle [data-part='control'][data-focus], .hz-checkbox [data-part='control'][data-focus], .hz-radio [data-part='item-control'][data-focus] { outline: var(--hz-focus-width) solid var(--hz-focus); outline-offset: 3px; }
 @keyframes hz-select-spin { to { --hz-select-angle: 360deg; } }
+ps2-icon, wii-banner, animated-image { overflow: hidden; }
 }

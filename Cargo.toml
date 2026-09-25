@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "tests",
     "crates/polymer-config",
+    "crates/polymer-banner",
     "crates/producers/*",
     "crates/hooks/*",
     "crates/consumer/*",
@@ -21,6 +22,12 @@ repository = "https://github.com/polymer/polymer"
 rust-version = "1.94"
 
 [workspace.dependencies]
+polymer-banner = { path = "crates/polymer-banner" }
+bannerbobomb-parser = { path = "../bannerbobomb/bannerbobomb-parser" }
+cgfx-parser = { path = "../cgfx/crates/cgfx-parser" }
+cgfx-renderer = { path = "../cgfx/crates/cgfx-renderer" }
+cgfx-wgpu = { path = "../cgfx/crates/cgfx-wgpu" }
+u8arc = "1"
 polymer-composition = { path = "crates/compositor/polymer-composition" }
 polymer-composition-macos = { path = "crates/compositor/polymer-composition-macos" }
 polymer-composition-windows = { path = "crates/compositor/polymer-composition-windows" }

@@ -166,6 +166,17 @@ impl SaveRepo for CtrSaveRepo {
         }
         Ok(ExtdataIcon::read(self.root.as_ref(), &self.archive_root(id)?).map(|icon| icon.image()))
     }
+
+    /// Wii and 3DS data management count 128 KiB blocks.
+    fn blocks(&self, id: SaveDepotId) -> Result<Option<u64>, Error> {
+        let bytes = self
+            .export_save(&id)?
+            .blobs
+            .iter()
+            .map(|blob| blob.bytes.len() as u64)
+            .sum::<u64>();
+        Ok(Some(bytes.div_ceil(128 * 1024)))
+    }
 }
 
 impl SaveGameSink for CtrSaveRepo {

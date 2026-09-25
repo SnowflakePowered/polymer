@@ -16,6 +16,12 @@ impl StorageService {
             create: self.actor.clone().recipient(),
             delete: self.actor.clone().recipient(),
             set_label: self.actor.clone().recipient(),
+            fork: self.actor.clone().recipient(),
+            saves: self.actor.clone().recipient(),
+            save_history: self.actor.clone().recipient(),
+            restore_save: self.actor.clone().recipient(),
+            copy_save: self.actor.clone().recipient(),
+            delete_save: self.actor.clone().recipient(),
         }
     }
 }

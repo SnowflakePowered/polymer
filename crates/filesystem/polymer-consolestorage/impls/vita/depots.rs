@@ -205,7 +205,7 @@ impl Installable for VitaInstall {
             sfo.get_string("APP_VER")
                 .filter(|s| !s.trim().is_empty())
                 .map(str::to_owned),
-            icon,
+            vec![icon],
         );
         self.storage
             .artifacts()

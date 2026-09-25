@@ -25,14 +25,22 @@ pub trait SaveRepo: VolumeStorage + SaveGameSink + DowncastSaveRepo {
     #[doc(hidden)]
     fn read_save_icon(&self, id: crate::savegame::SaveDepotId) -> Result<Option<SaveIcon>, Error>;
 
+    /// How many blocks the save occupies in the console's own save manager,
+    /// for consoles that count saves in blocks rather than bytes.
+    fn blocks(&self, id: crate::savegame::SaveDepotId) -> Result<Option<u64>, Error> {
+        let _ = id;
+        Ok(None)
+    }
+
     async fn save_icon(&self, id: crate::savegame::SaveDepotId) -> Result<Option<SaveIcon>, Error> {
         let tip = self.versioning().tip_id(id)?;
         if let Some(tip) = tip
             && let Some(bytes) = self
                 .versioning()
                 .attachment(id, tip, SaveAttachmentKind::Icon)?
+            && let Ok(icon) = SaveIcon::decode(&bytes)
         {
-            return SaveIcon::decode(&bytes).map(Some);
+            return Ok(Some(icon));
         }
 
         let Some(icon) = self.read_save_icon(id)? else {

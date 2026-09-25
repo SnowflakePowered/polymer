@@ -100,7 +100,11 @@ pub trait Depot: Sized {
     /// through `events`, and its result through `finish().await`. Calling `finish` also
     /// drives any remaining work.
     #[must_use]
-    fn install<'a, N: VirtualNand + ?Sized>(self, nand: &'a N, events: InstallEvents) -> Installation<'a>
+    fn install<'a, N: VirtualNand + ?Sized>(
+        self,
+        nand: &'a N,
+        events: InstallEvents,
+    ) -> Installation<'a>
     where
         Self: 'a;
 }
@@ -112,7 +116,57 @@ pub enum IconHint {
     /// The icon is a file in the installed artifact.
     File(PathBuf),
     /// A decoded icon stored in the Git metadata tree, never in the guest filesystem.
-    EmbeddedPng(std::sync::Arc<[u8]>),
+    Embedded(EmbeddedIcon),
+}
+
+/// An icon stored beside an artifact's metadata as `icon.png`, as `icon.arc`
+/// for a Wii channel's animated icon layout, or as `icon.cbmd` for a 3DS
+/// title's HOME Menu banner.
+#[derive(Clone)]
+pub enum EmbeddedIcon {
+    Png(std::sync::Arc<[u8]>),
+    /// A decompressed `icon.bin` archive that the shell renders and animates.
+    WiiBanner(std::sync::Arc<[u8]>),
+    /// A CBMD banner without its sound, rendered and animated by the shell.
+    CtrBanner(std::sync::Arc<[u8]>),
+}
+
+impl EmbeddedIcon {
+    pub(crate) const FILES: [&str; 3] = ["icon.png", "icon.arc", "icon.cbmd"];
+
+    pub(crate) fn file_name(&self) -> &'static str {
+        match self {
+            Self::Png(_) => Self::FILES[0],
+            Self::WiiBanner(_) => Self::FILES[1],
+            Self::CtrBanner(_) => Self::FILES[2],
+        }
+    }
+
+    pub(crate) fn from_file(name: &str, bytes: Vec<u8>) -> Option<Self> {
+        match name {
+            "icon.png" => Some(Self::Png(bytes.into())),
+            "icon.arc" => Some(Self::WiiBanner(bytes.into())),
+            "icon.cbmd" => Some(Self::CtrBanner(bytes.into())),
+            _ => None,
+        }
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        match self {
+            Self::Png(bytes) | Self::WiiBanner(bytes) | Self::CtrBanner(bytes) => bytes,
+        }
+    }
+
+    pub fn data_url(&self) -> String {
+        use base64::Engine as _;
+        let media_type = match self {
+            Self::Png(_) => "image/png",
+            Self::WiiBanner(_) => polymer_banner::wii::WiiBanner::MEDIA_TYPE,
+            Self::CtrBanner(_) => polymer_banner::ctr::CtrBanner::MEDIA_TYPE,
+        };
+        let encoded = base64::engine::general_purpose::STANDARD.encode(self.bytes());
+        format!("data:{media_type};base64,{encoded}")
+    }
 }
 
 impl IconHint {
@@ -121,7 +175,7 @@ impl IconHint {
         image::DynamicImage::ImageRgba8(image)
             .write_to(&mut png, image::ImageFormat::Png)
             .map_err(|error| crate::Error::malformed("icon", error.to_string()))?;
-        Ok(Self::EmbeddedPng(png.into_inner().into()))
+        Ok(Self::Embedded(EmbeddedIcon::Png(png.into_inner().into())))
     }
 
     pub(crate) fn read(

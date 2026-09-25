@@ -9,6 +9,7 @@ workspace = true
 
 [target.'cfg(windows)'.dependencies]
 polymer-composition.workspace = true
+polymer-banner = { workspace = true, features = ["render"] }
 polymer-renderer = { path = "../../consumer/polymer-renderer" }
 polymer-renderer-d3d12 = { path = "../../consumer/polymer-renderer-d3d12" }
 anyrender = "0.13.0"

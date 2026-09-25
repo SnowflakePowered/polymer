@@ -120,6 +120,7 @@ impl Installable for WadInstall {
             self.source.title_id(),
             self.source.depot_type(),
             manifest,
+            self.source.channel().icon.clone(),
         )?;
         if let Some(old) = self.old {
             for file in old.manifest() {
