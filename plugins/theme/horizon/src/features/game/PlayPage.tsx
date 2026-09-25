@@ -1,22 +1,12 @@
-import { onCleanup, onMount } from "solid-js";
-import { useInputActions } from "../../app/InputProvider";
+import { useInputScope } from "../../ui";
 import { useShell } from "../../app/shell-context";
 import { PauseOverlay } from "./PauseOverlay";
-
 export function PlayPage() {
   const shell = useShell();
-  const input = useInputActions();
-  onMount(() => {
-    const togglePause = () => shell.setModel("pauseOpen", (open: boolean) => !open);
-    const unsubscribe = input.subscribe((action) => {
-      if (
-        (action.type !== "pause" && !(action.type === "back" && action.origin === "keyboard"))
-        || action.event.defaultPrevented
-      ) return;
-      action.event.preventDefault();
-      togglePause();
-    });
-    onCleanup(unsubscribe);
-  });
+  useInputScope(() => ({ root: document.body, handle: action => {
+    if (action.type !== "pause" && !(action.type === "back" && action.origin === "keyboard")) return false;
+    shell.setModel("pauseOpen", (open: boolean) => !open);
+    return true;
+  } }));
   return <PauseOverlay />;
 }

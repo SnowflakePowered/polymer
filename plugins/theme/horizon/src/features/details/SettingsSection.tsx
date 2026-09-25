@@ -1,32 +1,56 @@
-import { Collapsible } from "@ark-ui/solid";
-import { For } from "solid-js";
+import { For, Show, createMemo, createSignal } from "solid-js";
 import type { EmulatorConfiguration, PackageConfiguration } from "../../../../../../js/polymer";
-import { ChoiceControl, OptionControl } from "../../components/FormControls";
-import { friendly } from "../../app/launch";
+import { CategoryNavigation, Select, SettingRow } from "../../ui";
+import { useInputScope, useNavigation } from "../../ui/input";
+import { OptionControl } from "./OptionControl";
+import { ControllerSection } from "./ControllerSection";
 import "./SettingsSection.css";
 
 export function SettingsSection(props: {
   game: PackageConfiguration;
   emulator: EmulatorConfiguration;
   selectEmulator(value: string): void;
+  updateEmulator(change: (emulator: EmulatorConfiguration) => void): void;
   updateConfiguration(group: string, option: string, value: boolean | number | string | null): void;
 }) {
-  return <aside class="horizon-settings-section">
-    <p class="horizon-settings-kicker">Game setup</p>
-    <h2>Emulation</h2>
-    <ChoiceControl label="Emulator" value={props.game.selectedEmulator} items={props.game.candidates.map((item) => ({ value: item.id, label: friendly(item.id) }))} onChange={props.selectEmulator} />
-    <Collapsible.Root defaultOpen>
-      <Collapsible.Trigger class="horizon-settings-trigger">Advanced settings <Collapsible.Indicator>⌄</Collapsible.Indicator></Collapsible.Trigger>
-      <Collapsible.Content class="horizon-settings-list">
-        <For each={props.emulator.configuration?.groups || []}>{(group) => <section>
-          <h3>{group.title}</h3>
-          <For each={group.options}>{(option) => <OptionControl
+  let categoryPane!: HTMLElement, panel!: HTMLElement;
+  const navigation = useNavigation();
+  useInputScope(() => ({ root: panel, navigation: true, handle: action => {
+    if (action.type !== "move" || action.direction !== "left") return false;
+    categoryPane.querySelector<HTMLElement>('[aria-current="true"]')?.focus();
+    return true;
+  } }));
+  const [selected, setSelected] = createSignal("emulation");
+  const categories = createMemo(() => [
+    { key: "emulation", title: "Emulation" },
+    { key: "controllers", title: "Controller topology" },
+    ...(props.emulator.configuration?.groups || []).map((group) => ({ key: `configuration:${group.key}`, title: group.title })),
+  ]);
+  const active = () => categories().find((category) => category.key === selected()) || categories()[0];
+  const group = () => props.emulator.configuration?.groups.find((item) => `configuration:${item.key}` === active().key);
+
+  return <div class="horizon-settings-section">
+    <aside ref={categoryPane} class="horizon-settings-categories"><CategoryNavigation label="Game settings categories" value={active().key} items={categories().map(item => ({ value: item.key, label: item.title }))} onValueChange={setSelected} onEnter={() => navigation.items(panel)[0]?.focus()} /></aside>
+    <section ref={panel} id="horizon-settings-panel" class="horizon-settings-panel" aria-labelledby="horizon-settings-title">
+      <h2 id="horizon-settings-title">{active().title}</h2>
+      <Show when={active().key === "emulation"}>
+        <SettingRow>
+          <Select label="Emulator" value={props.emulator.id} items={props.game.candidates.map((item) => ({ value: item.id, label: item.id }))} onValueChange={value => { if (value !== null) props.selectEmulator(value); }} />
+        </SettingRow>
+      </Show>
+      <Show when={active().key === "controllers"}>
+        <ControllerSection emulator={props.emulator} update={props.updateEmulator} />
+      </Show>
+      <Show when={group()}>{(current) => <>
+        <Show when={current().description}><p class="horizon-settings-description">{current().description}</p></Show>
+        <For each={current().options}>{(option) => <SettingRow>
+          <OptionControl
             option={option}
-            value={props.emulator.userConfiguration?.[group.key]?.[option.key] ?? option.default}
-            onChange={(value) => props.updateConfiguration(group.key, option.key, value)}
-          />}</For>
-        </section>}</For>
-      </Collapsible.Content>
-    </Collapsible.Root>
-  </aside>;
+            value={props.emulator.userConfiguration?.[current().key]?.[option.key] ?? option.default}
+            onChange={(value) => props.updateConfiguration(current().key, option.key, value)}
+          />
+        </SettingRow>}</For>
+      </>}</Show>
+    </section>
+  </div>;
 }

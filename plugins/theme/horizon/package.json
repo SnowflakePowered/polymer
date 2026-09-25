@@ -4,8 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1 --port 5174",
-    "build": "tsc -b && vite build",
+    "prepare": "panda codegen",
+    "dev": "panda codegen && vite --host 127.0.0.1 --port 5174",
+    "build": "panda codegen && tsc -b && vite build",
     "preview": "vite preview --host 127.0.0.1 --port 5174"
   },
   "dependencies": {
@@ -14,14 +15,21 @@
     "solid-js": "1.9.14"
   },
   "devDependencies": {
+    "@pandacss/dev": "^1.12.1",
     "@types/node": "26.1.1",
     "typescript": "7.0.2",
     "vite": "8.1.5",
     "vite-plugin-solid": "2.11.14"
   },
   "overrides": {
-    "@ark-ui/solid": { "solid-js": "$solid-js" },
-    "@zag-js/solid": { "solid-js": "$solid-js" },
-    "@solid-primitives/keyed": { "solid-js": "$solid-js" }
+    "@ark-ui/solid": {
+      "solid-js": "$solid-js"
+    },
+    "@zag-js/solid": {
+      "solid-js": "$solid-js"
+    },
+    "@solid-primitives/keyed": {
+      "solid-js": "$solid-js"
+    }
   }
 }

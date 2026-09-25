@@ -1,4 +1,4 @@
-import { Dialog } from "@ark-ui/solid";
+import { DialogParts as Dialog, Button, Spinner, ControllerSlot, ControllerIllustration, ButtonChord, ButtonGlyph } from "../../ui";
 import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { ConnectionSession, ManagedControllerDevice } from "../../../../../../js/polymer";
 import buttonA from "../../assets/switch/button-a.svg";
@@ -12,7 +12,7 @@ import controllerSwitch from "../../assets/switch/controller-switch.svg";
 import joyconLeft from "../../assets/switch/joycon-left-horizontal.svg";
 import joyconRight from "../../assets/switch/joycon-right-horizontal.svg";
 import { useShell } from "../../app/shell-context";
-import { OverlayPortal } from "../../components/OverlayPortal";
+import { OverlayPortal } from "../../ui";
 import { PauseDecorator, type PauseRelease } from "./PauseDecorator";
 import "./ControllerReorder.css";
 
@@ -119,13 +119,13 @@ export function ControllerReorder(props: { onClose?: () => void }) {
   });
 
   return <PauseDecorator releaseRef={(release) => { releasePause = release; }}>
-    <Dialog.Root open modal={false} closeOnEscape={false} preventScroll={false}>
+    <Dialog.Root open onOpenChange={details => { if (!details.open && !pending()) void commit(); }} closeOnEscape={!pending()} preventScroll={false}>
       <OverlayPortal><Dialog.Positioner class="horizon-order-positioner">
         <Dialog.Content ref={content} class="horizon-order-screen horizon-input-scope" onKeyDown={(event: KeyboardEvent) => {
-          if (event.key === "Escape" || event.key === "Enter") {
+          if (event.key === "Escape") {
             event.preventDefault();
             event.stopPropagation();
-            void commit();
+            if (!pending()) void commit();
           }
         }}>
           <Dialog.Title class="horizon-order-visually-hidden">Change Grip / Order</Dialog.Title>
@@ -133,7 +133,7 @@ export function ControllerReorder(props: { onClose?: () => void }) {
 
           <Show when={!configuring()} fallback={
             <section class="horizon-order-configuring" role="status" aria-live="polite">
-              <i class="horizon-order-configuring-spinner" aria-hidden="true" />
+              <Spinner label="Configuring controllers" />
               <h2>Configuring Controllers</h2>
               <p>Applying the new controller configuration…</p>
             </section>
@@ -148,23 +148,15 @@ export function ControllerReorder(props: { onClose?: () => void }) {
           </header>
 
           <main class="horizon-order-main">
-            <p class="horizon-order-join-prompt">Press <img src={buttonL} alt="L" /> <span>+</span> <img src={buttonR} alt="R" /> on the controller.</p>
+            <p class="horizon-order-join-prompt">Press <ButtonChord buttons={["l", "r"]} /> on the controller.</p>
             <section class="horizon-order-players" aria-label="Player order">
-              <For each={players()}>{(player) => <div class="horizon-order-slot-wrap" classList={{ assigned: Boolean(player.controller) }}>
-                <div class="horizon-order-slot" aria-label={player.controller ? `Player ${player.index + 1}, ${player.controller.name}` : `Player ${player.index + 1}, not assigned`}>
-                  <span class="horizon-order-player-number">{player.index + 1}</span>
-                  <Show when={player.controller}>{(controller) => <>
-                    <img class="horizon-order-assigned-controller" src={controllerPro} alt="" />
-                    <strong>{controller().name}</strong>
-                  </>}</Show>
-                </div>
-              </div>}</For>
+              <For each={players()}>{player => <ControllerSlot player={player.index} connected={!!player.controller} name={player.controller?.name}><Show when={player.controller}><ControllerIllustration kind="pro" /></Show></ControllerSlot>}</For>
             </section>
 
             <Show when={candidates().length > 0}>
               <section class="horizon-order-unassigned" aria-label="Discovered controllers">
                 <span>Discovered:</span>
-                <For each={candidates()}>{(candidate) => <button
+                <For each={candidates()}>{(candidate) => <Button
                   type="button"
                   classList={{ pairing: isPairing(candidate) }}
                   aria-busy={isPairing(candidate)}
@@ -172,16 +164,16 @@ export function ControllerReorder(props: { onClose?: () => void }) {
                   onClick={() => void connect(candidate)}
                 >
                   <img src={controllerPro} alt="" /><span>{candidate.name}</span>
-                  <Show when={isPairing(candidate)}><i class="horizon-order-pairing-spinner" aria-hidden="true" /></Show>
-                </button>}</For>
+                  <Show when={isPairing(candidate)}><Spinner label="Pairing" /></Show>
+                </Button>}</For>
               </section>
             </Show>
 
             <Show when={!session()}><p class="horizon-order-loading">{error() || "Preparing controllers…"}</p></Show>
             <Show when={error() && session()}><p class="horizon-order-error" role="alert">{error()}</p></Show>
-            <button type="button" class="horizon-order-ready" data-input-default disabled={!session() || pending()} onClick={() => void commit()}>
-              Press <img src={buttonA} alt="A" /> when you're ready.
-            </button>
+            <Button type="button" class="horizon-order-ready" data-input-default disabled={!session() || pending()} onClick={() => void commit()}>
+              Press <ButtonGlyph button="a" /> when you're ready.
+            </Button>
           </main>
 
           <footer class="horizon-order-footer">
@@ -191,7 +183,7 @@ export function ControllerReorder(props: { onClose?: () => void }) {
               <Show when={discoveryActive()}><strong><i /> Searching</strong></Show>
             </div>
             <div class="horizon-order-help"><span><img src={buttonMinus} alt="Minus" /><img src={buttonPlus} alt="Plus" /></span> Controller not connecting?</div>
-            <button type="button" class="horizon-order-back" onClick={() => void commit()}><img src={buttonB} alt="B" /> Back</button>
+            <Button type="button" class="horizon-order-back" onClick={() => void commit()}><ButtonGlyph button="b" /> Back</Button>
           </footer>
           </Show>
         </Dialog.Content>

@@ -1,30 +1,22 @@
-import { Tabs } from "@ark-ui/solid";
 import { For, Show } from "solid-js";
-import type { EmulatorConfiguration, PackageConfiguration } from "../../../../../../js/polymer";
-import { ChoiceControl } from "../../components/FormControls";
-import { friendly } from "../../app/launch";
+import type { EmulatorConfiguration } from "../../../../../../js/polymer";
+import { Select, SettingRow } from "../../ui";
 import "./ControllerSection.css";
 
 export function ControllerSection(props: {
-  game: PackageConfiguration;
   emulator: EmulatorConfiguration;
   update(change: (emulator: EmulatorConfiguration) => void): void;
 }) {
-  return <section class="horizon-controller-section">
-    <header><p>Virtual controller topology</p><h2>Controllers</h2></header>
-    <For each={props.emulator.groups}>{(group, groupIndex) => <article class="horizon-controller-group">
-      <div class="horizon-controller-heading">
-        <h3>{friendly(group.name)}</h3>
-        <div class="horizon-connected"><ChoiceControl label="Connected" value={String(group.connected)} items={Array.from({ length: group.ports.length + 1 }, (_, value) => ({ value: String(value), label: String(value) }))} onChange={(value) => props.update((emulator) => { emulator.groups[groupIndex()].connected = Number(value); })} /></div>
-      </div>
-      <Show when={group.connected > 0} fallback={<p class="horizon-controller-empty">No controllers connected.</p>}>
-        <Tabs.Root defaultValue={`port-${group.ports[0]?.index || 0}`}>
-          <Tabs.List class="horizon-port-tabs"><Tabs.Indicator /><For each={group.ports.slice(0, group.connected)}>{(port) => <Tabs.Trigger value={`port-${port.index}`}>Port {port.index + 1}</Tabs.Trigger>}</For></Tabs.List>
-          <For each={group.ports.slice(0, group.connected)}>{(port, portIndex) => <Tabs.Content value={`port-${port.index}`} class="horizon-port-content">
-            <ChoiceControl label="Layout" value={port.selectedLayout} items={port.layouts.map((value) => ({ value, label: friendly(value) }))} onChange={(value) => props.update((emulator) => { emulator.groups[groupIndex()].ports[portIndex()].selectedLayout = value; })} />
-          </Tabs.Content>}</For>
-        </Tabs.Root>
-      </Show>
-    </article>}</For>
-  </section>;
+  const layouts = new Map(window.Polymer.controllers.layouts.map((layout) => [layout.id, String(layout.name)]));
+  return <div class="horizon-controller-section">
+    <Show when={props.emulator.groups.length} fallback={<p class="horizon-settings-description">This emulator has no controller ports.</p>}>
+      <For each={props.emulator.groups}>{(group, groupIndex) => <section class="horizon-controller-group">
+        <Show when={props.emulator.groups.length > 1}><h3>{group.name}</h3></Show>
+        <For each={group.ports}>{(port, portIndex) => <SettingRow>
+          <Select label={`Port ${port.index + 1}`} value={port.selectedLayout} items={port.layouts.map((value) => ({ value, label: layouts.get(value) ?? value }))} onValueChange={(value) => value !== null && props.update((emulator) => { emulator.groups[groupIndex()].ports[portIndex()].selectedLayout = value; })} />
+        </SettingRow>}</For>
+      </section>}</For>
+    </Show>
+    <p class="horizon-settings-description">Choose a controller layout for each port. Controllers connect automatically based on your controller order.</p>
+  </div>;
 }

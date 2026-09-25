@@ -1,5 +1,8 @@
-.horizon-settings-section { min-width: 18rem; padding: 1.2rem; border: 1px solid #383838; border-radius: 0.4rem; background: #151515; }
-.horizon-settings-kicker { margin: 0 0 0.2rem; color: #e60012; font-size: 0.72rem; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; }
-.horizon-settings-section h2 { margin: 0 0 1rem; font-size: 1.75rem; }
-.horizon-settings-trigger { display: flex; width: 100%; align-items: center; justify-content: space-between; margin-top: 1.25rem; padding: 0.8rem 0; border: 0; border-top: 1px solid #444; border-bottom: 1px solid #444; color: white; background: transparent; text-align: left; }
-.horizon-settings-list { display: flex; flex-direction: column; gap: 0.9rem; padding: 1rem 0; }
+@layer horizon {
+.horizon-settings-section { display: grid; min-height: 0; flex: 1; grid-template-columns: 30% minmax(0, 1fr); }
+.horizon-settings-categories { min-height: 0; overflow: auto; padding: 1rem; border-right: 1px solid var(--hz-divider); }
+.horizon-settings-panel { min-width: 0; overflow-y: auto; padding: 1rem 2rem; }
+.horizon-settings-panel h2 { margin: 0 0 1rem; color: var(--hz-muted); font-weight: 400; font-size: 1.1em; }
+.horizon-settings-description { color: var(--hz-muted); font-size: .85em; }
+@media (max-width: 700px) { .horizon-settings-panel { padding: 1rem; } }
+}

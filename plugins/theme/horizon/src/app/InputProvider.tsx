@@ -1,118 +1,88 @@
-import { createContext, onCleanup, onMount, useContext, type Context, type ParentProps } from "solid-js";
-
-export type InputDirection = "left" | "right" | "up" | "down";
-export type InputOrigin = "controller" | "keyboard";
-export type InputAction =
-  | { type: "move"; direction: InputDirection; origin: InputOrigin; sourceId: string | null; event: Event }
-  | { type: "activate" | "back" | "details" | "pause"; origin: InputOrigin; sourceId: string | null; event: Event };
-
+import { createEffect, onCleanup, onMount, type ParentProps } from "solid-js";
+import { NavigationController, NavigationProvider, type InputAction, type Direction } from "../ui/input";
+export type { InputAction } from "../ui/input";
+export type InputDirection = Direction;
+export type InputOrigin = InputAction["origin"];
 type ActionListener = (action: InputAction) => void;
-type InputContextValue = { subscribe(listener: ActionListener): () => void };
-type ControllerAction =
-  | { type: "move"; direction: InputDirection }
-  | { type: "activate" | "back" | "details" | "pause" };
-
-const InputContext: Context<InputContextValue | undefined> = import.meta.hot?.data.inputContext ?? createContext<InputContextValue>();
-if (import.meta.hot) import.meta.hot.data.inputContext = InputContext;
-const controllerNavigationEvents = new WeakSet<Event>();
-const buttonActions: Partial<Record<string, ControllerAction>> = {
-  "directional.w": { type: "move", direction: "left" },
-  "directional.e": { type: "move", direction: "right" },
-  "directional.n": { type: "move", direction: "up" },
-  "directional.s": { type: "move", direction: "down" },
-  "button.a": { type: "activate" },
-  "button.b": { type: "back" },
-  "button.x": { type: "details" },
-  "button.guide": { type: "pause" },
-};
-
-export function dispatchControllerBack(target: EventTarget) {
-  const event = new KeyboardEvent("keydown", {
-    key: "Escape",
-    code: "Escape",
-    bubbles: true,
-    cancelable: true,
-  });
-  controllerNavigationEvents.add(event);
-  target.dispatchEvent(event);
+/** Host state stays here; the UI receives only semantic actions. */
+class ControllerRepeat {
+  private timers = new Map<string, ReturnType<typeof setTimeout>>();
+  constructor(private emit: ActionListener) {}
+  start(key: string, action: InputAction) {
+    this.stop(key);
+    const repeat = () => {
+      this.emit({ ...action, event: new Event("controller-repeat", { cancelable: true }) });
+      if (this.timers.has(key)) this.timers.set(key, setTimeout(repeat, 90));
+    };
+    this.timers.set(key, setTimeout(repeat, 350));
+  }
+  stop(key: string) { clearTimeout(this.timers.get(key)); this.timers.delete(key); }
+  clear() { for (const timer of this.timers.values()) clearTimeout(timer); this.timers.clear(); }
 }
-const axisDirections: Partial<Record<string, readonly [InputDirection, InputDirection]>> = {
-  "analog.stick.left.x+": ["left", "right"],
-  "analog.stick.left.y+": ["up", "down"],
-  "analog.stick.right.x+": ["left", "right"],
-  "analog.stick.right.y+": ["up", "down"],
-};
-
-export function useInputActions() {
-  const context = useContext(InputContext);
-  if (!context) throw new Error("Horizon input context is unavailable");
-  return context;
-}
-
 export function InputProvider(props: ParentProps) {
-  const listeners = new Set<ActionListener>();
-  const emit = (action: InputAction) => listeners.forEach((listener) => listener(action));
-  const subscribe = (listener: ActionListener) => {
-    listeners.add(listener);
-    return () => listeners.delete(listener);
-  };
-
+  const navigation = new NavigationController();
+  const emit = (action: InputAction) => { navigation.dispatch(action); };
+  const repeat = new ControllerRepeat(emit);
+  createEffect(() => { navigation.version(); repeat.clear(); });
   onMount(() => {
-    const axisLatch = new Map<string, -1 | 1>();
-    const previousButtons = new Map<number, number>();
-    const controllerInput = (event: Event) => {
-      const { index } = (event as CustomEvent<{ index: number }>).detail;
+    const axes = new Map<string, number>(), buttons = new Map<number, number>();
+    const reset = () => { repeat.clear(); axes.clear(); buttons.clear(); };
+    const input = (event: Event) => {
+      const index = (event as CustomEvent<{ index: number }>).detail.index;
       const state = window.Polymer.input.get(index);
-      if (!state) return;
-      const sourceId = window.Polymer.controllers.players.find((player) => player.index === index)?.controller?.id || null;
-      const prior = previousButtons.get(index) || 0;
-      previousButtons.set(index, state.buttons);
-      const buttons = [
-        [0, "button.a"], [1, "button.b"], [2, "button.x"], [5, "button.guide"],
-        [11, "directional.n"], [12, "directional.s"], [13, "directional.w"], [14, "directional.e"],
+      if (!state) { reset(); return; }
+      const sourceId = window.Polymer.controllers.players.find(player => player.index === index)?.controller?.id ?? null;
+      const previous = buttons.get(index) ?? 0;
+      buttons.set(index, state.buttons);
+      const mapping = [
+        [0, "activate"], [1, "back"], [2, "details"], [5, "pause"], [9, "previous"], [10, "next"],
+        [11, "up"], [12, "down"], [13, "left"], [14, "right"],
       ] as const;
-      for (const [bit, expression] of buttons) {
-        if ((state.buttons & (1 << bit)) === 0 || (prior & (1 << bit)) !== 0) continue;
-        const action = buttonActions[expression];
-        if (action) emit({ ...action, origin: "controller", sourceId, event } as InputAction);
+      for (const [bit, name] of mapping) {
+        const key = `${index}:button:${bit}`, pressed = !!(state.buttons & (1 << bit));
+        if (!pressed) { repeat.stop(key); continue; }
+        if (previous & (1 << bit)) continue;
+        const moving = bit >= 11;
+        const action: InputAction = { type: moving ? "move" : name as InputAction["type"], direction: moving ? name as Direction : undefined, origin: "controller", sourceId, event: new Event("controller-action", { cancelable: true }) };
+        const scopeVersion = navigation.version();
+        emit(action);
+        if (moving && navigation.version() === scopeVersion) repeat.start(key, action);
       }
-      const axes = [
-        ["analog.stick.left.x+", state.leftStick[0]], ["analog.stick.left.y+", state.leftStick[1]],
-        ["analog.stick.right.x+", state.rightStick[0]], ["analog.stick.right.y+", state.rightStick[1]],
-      ] as const;
-      for (const [expression, value] of axes) {
-        const directions = axisDirections[expression];
-        if (!directions) continue;
-        const key = `${index}\0${expression}`;
-        if (Math.abs(value) < 12000) {
-          axisLatch.delete(key);
-          continue;
-        }
-        const direction = value < 0 ? -1 : 1;
-        if (axisLatch.get(key) === direction) continue;
-        axisLatch.set(key, direction);
-        emit({ type: "move", direction: directions[direction < 0 ? 0 : 1], origin: "controller", sourceId, event });
-      }
+      [state.leftStick, state.rightStick].forEach((stick, stickIndex) => stick.forEach((value, axis) => {
+        const key = `${index}:stick:${stickIndex}:${axis}`, prior = axes.get(key) ?? 0;
+        const direction = Math.abs(value) >= 12000 ? Math.sign(value) : Math.abs(value) < 8000 ? 0 : prior;
+        if (direction === prior) return;
+        axes.set(key, direction); repeat.stop(key);
+        if (!direction) return;
+        const action: InputAction = { type: "move", direction: axis === 0 ? direction < 0 ? "left" : "right" : direction < 0 ? "up" : "down", origin: "controller", sourceId, event: new Event("controller-action", { cancelable: true }) };
+        const scopeVersion = navigation.version();
+        emit(action); if (navigation.version() === scopeVersion) repeat.start(key, action);
+      }));
     };
-    const keyboardInput = (event: KeyboardEvent) => {
-      if (controllerNavigationEvents.has(event)
-        || event.defaultPrevented || event.repeat || event.altKey || event.ctrlKey || event.metaKey) return;
-      const directions: Partial<Record<string, InputDirection>> = {
-        ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down",
-      };
-      const direction = directions[event.key];
-      if (direction) emit({ type: "move", direction, origin: "keyboard", sourceId: null, event });
-      else if (event.key === "Enter" || event.key === " ") emit({ type: "activate", origin: "keyboard", sourceId: null, event });
-      else if (event.key === "Escape") emit({ type: "back", origin: "keyboard", sourceId: null, event });
-      else if (event.key === "Shift") emit({ type: "details", origin: "keyboard", sourceId: null, event });
+    const keyboard = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey) return;
+      const target = event.target as HTMLElement | null;
+      if (event.key !== "Escape" && target?.closest("input:not([type='checkbox']), textarea, select, [contenteditable='true']")) return;
+      const directions: Record<string, Direction> = { ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down" };
+      const actions: Record<string, InputAction["type"]> = { Enter: "activate", " ": "activate", Escape: "back", Shift: "details", PageUp: "previous", PageDown: "next" };
+      if (event.repeat && !directions[event.key]) return;
+      const type = directions[event.key] ? "move" : actions[event.key];
+      if (type) emit({ type, direction: directions[event.key], origin: "keyboard", sourceId: null, event });
     };
-    window.Polymer.input.addEventListener("input", controllerInput);
-    window.addEventListener("keydown", keyboardInput);
+    const controllerStateChanged = () => repeat.clear();
+    window.Polymer.controllers.addEventListener("statechange", controllerStateChanged);
+    window.Polymer.input.addEventListener("input", input);
+    window.Polymer.controllers.addEventListener("playerchange", reset);
+    window.addEventListener("keydown", keyboard);
+    window.addEventListener("blur", reset);
+    document.addEventListener("focusin", navigation.focusChanged);
     onCleanup(() => {
-      window.Polymer.input.removeEventListener("input", controllerInput);
-      window.removeEventListener("keydown", keyboardInput);
+      window.Polymer.controllers.removeEventListener("statechange", controllerStateChanged);
+      reset(); window.Polymer.input.removeEventListener("input", input);
+      window.Polymer.controllers.removeEventListener("playerchange", reset);
+      window.removeEventListener("keydown", keyboard); window.removeEventListener("blur", reset);
+      document.removeEventListener("focusin", navigation.focusChanged);
     });
   });
-
-  return <InputContext.Provider value={{ subscribe }}>{props.children}</InputContext.Provider>;
+  return <NavigationProvider controller={navigation}>{props.children}</NavigationProvider>;
 }

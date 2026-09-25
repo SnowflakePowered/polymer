@@ -1,25 +1,15 @@
-import { For, Show, createSignal, onCleanup, onMount } from "solid-js";
+import { Match, Switch, createSignal } from "solid-js";
+import { ControllerOverview } from "../features/game/ControllerOverview";
 import { ControllerReorder } from "../features/game/ControllerReorder";
-import { Icon } from "./Icon";
-import "./ControllerStatus.css";
+import { SidebarButton } from "./SidebarButton";
 
 export function ControllerStatus() {
-  const [revision, setRevision] = createSignal(0);
-  const [open, setOpen] = createSignal(false);
-  const changed = () => setRevision((value) => value + 1);
-  onMount(() => {
-    window.Polymer.controllers.addEventListener("statechange", changed);
-    onCleanup(() => {
-      window.Polymer.controllers.removeEventListener("statechange", changed);
-    });
-  });
-  const controllerCount = () => (revision(), window.Polymer.controllers.connected.length);
+  const [view, setView] = createSignal<"closed" | "overview" | "reorder">("closed");
   return <>
-    <button type="button" class="horizon-controller-status" aria-label="Change controller grip or order" aria-expanded={open()} onClick={() => setOpen(true)}>
-      <Show when={controllerCount() > 0} fallback={<Icon name="keyboard" />}>
-        <span class="horizon-connected-squares"><For each={Array.from({ length: controllerCount() })}>{() => <i />}</For></span>
-      </Show>
-    </button>
-    <Show when={open()}><ControllerReorder onClose={() => setOpen(false)} /></Show>
+    <SidebarButton icon="gamepad" iconSize={42} label="Controllers" active={view() !== "closed"} expanded={view() !== "closed"} onClick={() => setView("overview")} />
+    <Switch>
+      <Match when={view() === "overview"}><ControllerOverview onChangeOrder={() => setView("reorder")} onClose={() => setView("closed")} /></Match>
+      <Match when={view() === "reorder"}><ControllerReorder onClose={() => setView("overview")} /></Match>
+    </Switch>
   </>;
 }

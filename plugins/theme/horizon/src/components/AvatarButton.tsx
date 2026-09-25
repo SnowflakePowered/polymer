@@ -1,6 +1,5 @@
-import { Icon } from "./Icon";
+import { Avatar, IconButton } from "../ui";
 import "./AvatarButton.css";
-
 export function AvatarButton() {
-  return <button type="button" class="horizon-avatar" aria-label="Profile" title="Profile"><span><Icon name="user" /></span></button>;
+  return <IconButton class="horizon-avatar" label="Profile" disabled title="Profile"><Avatar label="Profile" tone="onBrand" /></IconButton>;
 }

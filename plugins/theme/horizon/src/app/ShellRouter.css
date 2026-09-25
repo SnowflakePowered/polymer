@@ -1,4 +1,5 @@
-:root, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; color-scheme: dark; background: transparent; font-family: Arial, "Segoe UI", sans-serif; }
+@layer horizon {
+:root, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; font-family: var(--hz-font); }
 * { box-sizing: border-box; }
 [hidden],
 [data-scope="select"][data-part="positioner"][data-state="closed"],
@@ -11,8 +12,10 @@
 [data-scope="floating-panel"][data-part="positioner"][data-state="closed"] { display: none !important; }
 button, input, select { font: inherit; }
 button:not(:disabled) { cursor: pointer; }
-button:focus-visible, input:focus-visible { outline: 2px solid white; outline-offset: 2px; }
+button:focus, input:focus { outline: var(--hz-focus-width) solid var(--hz-focus); outline-offset: 2px; }
+button[data-select-ring]:focus { outline: none; }
 tracked-surface { display: block; overflow: hidden; background: transparent; object-fit: contain; object-position: center; }
 
 /* Keep all UI, including fixed overlays, below the debug toolbar. */
 body[data-debug="true"] { height: calc(100% - 32px); transform: translateY(32px); }
+}

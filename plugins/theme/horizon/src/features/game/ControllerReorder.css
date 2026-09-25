@@ -1,3 +1,4 @@
+@layer horizon {
 .horizon-order-positioner {
   position: absolute;
   inset: 0;
@@ -13,9 +14,13 @@
   min-height: 0;
   grid-template-rows: minmax(9.5rem, 26.5%) minmax(0, 1fr) minmax(4.5rem, 10%);
   overflow: hidden;
-  color: #303236;
-  background: #f8f8f8;
-  font-family: Arial, "Segoe UI", sans-serif;
+  color: var(--hz-text);
+  background: var(--hz-surface);
+  font-family: var(--hz-font);
+  width: 100%;
+  height: 100%;
+  max-height: 100%;
+  padding: 0;
 }
 
 .horizon-order-visually-hidden {
@@ -36,8 +41,8 @@
   place-content: center;
   justify-items: center;
   gap: 1rem;
-  color: #303236;
-  background: #fafafa;
+  color: var(--hz-text);
+  background: var(--hz-panel);
   text-align: center;
 }
 
@@ -135,11 +140,12 @@
 .horizon-order-main {
   display: grid;
   min-height: 0;
+  overflow: auto;
   grid-template-rows: auto minmax(8rem, 1fr) auto auto auto;
   justify-items: center;
   gap: clamp(0.6rem, 1.6vh, 1.2rem);
   padding: clamp(1rem, 4vh, 2.5rem) clamp(2rem, 8vw, 8rem) clamp(0.75rem, 2vh, 1.5rem);
-  background: #fafafa;
+  background: var(--hz-panel);
 }
 
 .horizon-order-join-prompt {
@@ -192,7 +198,7 @@
   border: 2px solid #bebfc1;
   border-radius: 0;
   color: #b7b8ba;
-  background: #fafafa;
+  background: var(--hz-panel);
   box-shadow: none;
 }
 
@@ -202,7 +208,7 @@
 
 .horizon-order-slot:not(:disabled):hover,
 .horizon-order-slot.selected,
-.horizon-order-slot:focus-visible {
+.horizon-order-slot:focus {
   border-color: #2459dc;
   background: #f4f7ff;
   outline: 0;
@@ -324,7 +330,7 @@
 }
 
 .horizon-order-ready:hover:not(:disabled),
-.horizon-order-ready:focus-visible {
+.horizon-order-ready:focus {
   color: #2459dc;
   outline: 0;
 }
@@ -357,7 +363,7 @@
 }
 
 .horizon-order-footer button:hover:not(:disabled),
-.horizon-order-footer button:focus-visible {
+.horizon-order-footer button:focus {
   color: white;
   background: rgb(255 255 255 / 12%);
   outline: 2px solid white;
@@ -502,4 +508,7 @@
     animation: none;
     box-shadow: none;
   }
+}
+
+.horizon-order-ready:focus { outline: 3px solid var(--hz-focus); }
 }

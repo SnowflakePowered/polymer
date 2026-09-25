@@ -1,3 +1,4 @@
+import "./Toast.css";
 import { useShell } from "../../app/shell-context";
 import { For, Show } from "solid-js";
 import { useNotifications } from "./notification-context";

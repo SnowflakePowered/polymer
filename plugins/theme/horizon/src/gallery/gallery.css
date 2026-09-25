@@ -1,0 +1,8 @@
+@layer horizon {
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; overflow: hidden; }
+.hz-gallery { height: 100%; }
+.hz-gallery-scroll { flex: 1; min-height: 0; overflow: auto; padding: 1rem .5rem; }
+.hz-gallery-scroll > .hz-section { max-width: 70rem; margin: 0 auto 3rem; }
+.hz-gallery .hz-navigation-rail { background: var(--hz-brand); padding: .5rem; }
+}
