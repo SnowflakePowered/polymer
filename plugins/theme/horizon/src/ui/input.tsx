@@ -15,6 +15,8 @@ export type ScopeOptions = {
   hints?: () => readonly ActionHint[];
   handle?: (action: InputAction) => boolean;
 };
+/** Moves the focus ring from the focused element within `root` to `target`. */
+export type FocusRingDelegate = { root: () => Element | undefined; target: () => Element | null | undefined };
 
 export const embeddedRuntime = "__polymerDom" in globalThis;
 const focusable = "button, a[href], input, textarea, select, [tabindex]";
@@ -26,11 +28,14 @@ export class NavigationController {
   private revision = createSignal(0);
   private modality = createSignal<"keyboard" | "controller">("keyboard");
   private active = createSignal<Element | null>(null);
+  private delegates = new Set<FocusRingDelegate>();
+  private ring: Element | null = null;
   readonly origin = this.modality[0];
   readonly version = this.revision[0];
   readonly focusChanged = () => {
     const active = document.activeElement;
     this.active[1](active);
+    this.updateRing();
     if (!embeddedRuntime) return;
     const overlay = this.scopes.filter(scope => scope.overlay).at(-1);
     if (overlay && active && !this.contains(overlay, active)) this.items(overlay.root!)[0]?.focus();
@@ -43,6 +48,19 @@ export class NavigationController {
     const index = items.indexOf(document.activeElement as HTMLElement);
     items[(index + (event.shiftKey ? -1 : 1) + items.length) % items.length]?.focus();
     event.preventDefault();
+  };
+  /** Exactly one element carries data-focus-ring: the focused element, or the target of its innermost delegate. */
+  readonly updateRing = () => {
+    const active = document.activeElement;
+    const owner = !active || active === document.body ? null : [...this.delegates]
+      .filter(delegate => delegate.root()?.contains(active))
+      .sort((a, b) => a.root()!.contains(b.root()!) ? 1 : -1)
+      .map(delegate => delegate.target())
+      .find(target => target) ?? active;
+    if (owner === this.ring) return;
+    this.ring?.removeAttribute("data-focus-ring");
+    owner?.setAttribute("data-focus-ring", "");
+    this.ring = owner;
   };
   readonly hasOverlay = () => { this.version(); return this.scopes.some(scope => scope.overlay); };
   readonly hints = () => {
@@ -80,6 +98,11 @@ export class NavigationController {
         }
       });
     };
+  }
+
+  delegateRing(delegate: FocusRingDelegate) {
+    this.delegates.add(delegate);
+    return () => { this.delegates.delete(delegate); this.updateRing(); };
   }
 
   dispatch(action: InputAction) {
@@ -128,7 +151,7 @@ export class NavigationController {
     const active = document.activeElement as HTMLElement | null;
     if (action.origin === "keyboard" && active?.closest("input:not([type='checkbox']), textarea, select, [contenteditable='true'], [role='combobox'][aria-expanded='true'], [role='listbox'], [role='tablist'], [role='menu']")) return false;
     if (action.type === "move" && action.direction) return this.move(root, action.direction);
-    if (action.type !== "activate" || action.origin !== "controller") return false;
+    if (action.type !== "activate") return false;
     if (!active || active.hasAttribute("disabled") || !(active.tagName === "BUTTON" || active.tagName === "A" && active.hasAttribute("href"))) return false;
     active.click();
     return true;
@@ -157,7 +180,11 @@ const NavigationContext: Context<NavigationController | undefined> = import.meta
 if (import.meta.hot) import.meta.hot.data.navigationContext = NavigationContext;
 export function NavigationProvider(props: ParentProps<{ controller?: NavigationController }>) {
   const controller = props.controller ?? new NavigationController();
-  onMount(() => { document.addEventListener("keydown", controller.trapTab); onCleanup(() => document.removeEventListener("keydown", controller.trapTab)); });
+  const focusout = () => queueMicrotask(controller.updateRing);
+  onMount(() => {
+    document.addEventListener("keydown", controller.trapTab); document.addEventListener("focusout", focusout);
+    onCleanup(() => { document.removeEventListener("keydown", controller.trapTab); document.removeEventListener("focusout", focusout); });
+  });
   return <NavigationContext.Provider value={controller}>{props.children}</NavigationContext.Provider>;
 }
 export function useNavigation() {
@@ -171,4 +198,9 @@ export function useInputScope(options: Accessor<ScopeOptions>) {
     const scope = options();
     if (scope.root && scope.enabled !== false) onCleanup(navigation.register(scope));
   });
+}
+export function useFocusRing(root: () => Element | undefined, target: () => Element | null | undefined) {
+  const navigation = useNavigation();
+  onCleanup(navigation.delegateRing({ root, target }));
+  createEffect(() => { target(); queueMicrotask(navigation.updateRing); });
 }

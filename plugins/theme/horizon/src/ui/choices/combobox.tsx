@@ -2,7 +2,7 @@ import { Combobox as Ark, createListCollection, useCombobox } from "@ark-ui/soli
 import { For, Show, createEffect, createMemo, onCleanup } from "solid-js";
 import { Button } from "../actions";
 import { Field, fieldAccessibility } from "../forms";
-import { useInputScope } from "../input";
+import { useFocusRing, useInputScope } from "../input";
 import { OverlayPortal } from "../portal";
 import { ChoiceSession, type ChoiceItem, type SingleChoiceProps, type MultipleChoiceProps } from "./state";
 
@@ -37,6 +37,7 @@ export function Combobox(props: ComboboxProps) {
     let active = true; onCleanup(() => { active = false; });
     queueMicrotask(() => { if (active) popup?.querySelector<HTMLElement>("[data-highlighted]")?.scrollIntoView?.({ block: "nearest" }); });
   });
+  useFocusRing(() => input, () => { api().highlightedValue; return session.open() ? popup?.querySelector("[data-highlighted]") : null; });
   useInputScope(() => ({ root, enabled: !session.open(), handle: action => {
     if (action.origin !== "controller" || action.type !== "activate") return false;
     if (!props.disabled && !props.readOnly) session.begin();

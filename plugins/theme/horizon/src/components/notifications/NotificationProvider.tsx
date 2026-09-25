@@ -3,6 +3,7 @@ import type { PluginEvent, PluginLoadProgress, StorageInstall } from "../../../.
 import { useShell } from "../../app/shell-context";
 import { NotificationContext } from "./notification-context";
 import { NotificationStore } from "./NotificationStore";
+import { installPhases } from "../../features/storage/selection";
 
 export function NotificationProvider(props: ParentProps) {
   const shell = useShell();
@@ -48,7 +49,7 @@ export function NotificationProvider(props: ParentProps) {
       titles.set(install.id, title);
       if (install.state === "complete" || install.state === "failed") titles.delete(install.id);
       notifications.upsert({ id: `install:${install.id}`, ...title,
-        message: install.state === "queued" ? "Waiting to install" : install.state === "running" ? install.detail.message : install.state === "complete" ? "Installed" : install.detail,
+        message: install.state === "queued" ? "Waiting to install" : install.state === "running" ? installPhases[install.detail.phase] : install.state === "complete" ? "Installed" : install.detail,
         state: install.state === "complete" ? "complete" : install.state === "failed" ? "error" : "running",
         completed: install.state === "running" && install.detail.total ? install.detail.completed : undefined,
         total: install.state === "running" && install.detail.total ? install.detail.total : undefined });

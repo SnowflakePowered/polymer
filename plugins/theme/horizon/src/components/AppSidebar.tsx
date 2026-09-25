@@ -24,7 +24,7 @@ export function AppSidebar() {
     <nav class={nav} aria-label="Library sections">
       <SidebarButton icon="library" iconSize={42} label="Your library" active={location.pathname === "/"} onClick={() => navigate("/")} />
       <SidebarButton icon="saves" iconSize={42} label="Saves" />
-      <SidebarButton icon="storage" iconSize={42} label="NAND management" active={location.pathname === "/storage"} onClick={() => navigate("/storage")} />
+      <SidebarButton icon="storage" iconSize={42} label="System Storage" active={location.pathname === "/storage"} onClick={() => navigate("/storage")} />
       <ControllerStatus />
       {import.meta.env.DEV && <SidebarButton icon="info" label="UI gallery" onClick={() => navigate("/gallery")} />}
       <SidebarButton icon="settings" iconSize={44} label="Settings" active={location.pathname === "/settings"} onClick={() => navigate("/settings")} />

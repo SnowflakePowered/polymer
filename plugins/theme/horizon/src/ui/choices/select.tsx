@@ -2,7 +2,7 @@ import { Select as Ark, createListCollection, useSelect } from "@ark-ui/solid";
 import { For, Show, createEffect, createMemo, onCleanup, onMount } from "solid-js";
 import { Button } from "../actions";
 import { Field, fieldAccessibility } from "../forms";
-import { useInputScope, useNavigation, type Direction } from "../input";
+import { useFocusRing, useInputScope, useNavigation, type Direction } from "../input";
 import { OverlayPortal } from "../portal";
 import { ChoiceSession, type ChoiceItem, type ChoiceProps, type SingleChoiceProps, type MultipleChoiceProps } from "./state";
 
@@ -27,6 +27,7 @@ function ChoiceSelect(props: Props) {
     let active = true; onCleanup(() => { active = false; });
     queueMicrotask(() => { if (active) list?.querySelector<HTMLElement>("[data-highlighted]")?.scrollIntoView?.({ block: "nearest" }); });
   });
+  useFocusRing(() => list, () => { api().highlightedValue; return session.open() ? list?.querySelector("[data-highlighted]") : null; });
   useInputScope(() => ({ root, handle: action => {
     if (action.origin !== "controller" || action.type !== "activate") return false;
     if (!props.disabled && !props.readOnly) session.begin();

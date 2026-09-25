@@ -1,5 +1,5 @@
-import { For, Show, createSignal, splitProps, type JSX, type ParentProps } from "solid-js";
-import { useInputScope, useNavigation, type ActionHint, type InputAction } from "./input";
+import { For, Show, splitProps, type JSX, type ParentProps } from "solid-js";
+import { useFocusRing, useInputScope, useNavigation, type ActionHint, type InputAction } from "./input";
 import { ButtonGlyph } from "./media";
 
 export function Screen(props: ParentProps<{ class?: string; hints?: readonly ActionHint[]; onAction?: (action: InputAction) => boolean }>) {
@@ -21,11 +21,9 @@ export function Section(props: ParentProps<{ title: string; description?: string
   return <section class="hz-section"><h2>{props.title}</h2><Show when={props.description}><p class="hz-description">{props.description}</p></Show>{props.children}</section>;
 }
 export function SettingRow(props: ParentProps<{ description?: string }>) {
-  // Blitz does not match :focus-within; preserve native focus on the control.
-  const [focused, setFocused] = createSignal(false);
-  return <div class="hz-setting-row" data-focused={focused() || undefined}
-    onFocusIn={event => setFocused(!(event.target as Element).closest(".hz-slider"))}
-    onFocusOut={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setFocused(false); }}>
+  let row!: HTMLDivElement;
+  useFocusRing(() => row, () => document.activeElement?.closest(".hz-slider") ? null : row);
+  return <div ref={row} class="hz-setting-row">
     {props.children}<Show when={props.description}><p class="hz-description">{props.description}</p></Show>
   </div>;
 }

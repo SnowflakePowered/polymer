@@ -403,9 +403,11 @@ export interface ConsoleStorageVolume extends EventTarget {
   delete(): Promise<void>;
 }
 
+export type InstallPhase = "preparing" | "verifying" | "installing" | "finalizing";
+
 export type StorageInstallStatus = Readonly<{
   title: Readonly<{ id: string; label: string; depotType: DepotType; icon: string | null }> | null;
-  message: string; completed: number; total: number;
+  phase: InstallPhase; file: string | null; completed: number; total: number;
 }>;
 
 export type StorageInstall = Readonly<{ id: string; platform: string; storage: string; filename: string }> & (
