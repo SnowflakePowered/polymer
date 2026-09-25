@@ -1,7 +1,9 @@
 use super::CiaDepot;
 use crate::{
     Error, VolumeStorage,
-    installable::{DepotFile, Installable, StorageWriter, artifacts::Artifact},
+    installable::{
+        DepotFile, InstallEvent, InstallEvents, Installable, StorageWriter, artifacts::Artifact,
+    },
 };
 use csis::{CiaArchive, CiaSection};
 use parking_lot::Mutex;
@@ -30,10 +32,15 @@ pub(in crate::impls::ctr) struct CiaInstall {
     old_paths: Vec<String>,
     root: String,
     storage: Arc<dyn VolumeStorage>,
+    events: InstallEvents,
 }
 
 impl CiaInstall {
-    pub async fn new(depot: &CiaDepot, storage: Arc<dyn VolumeStorage>) -> Result<Self, Error> {
+    pub async fn new(
+        depot: &CiaDepot,
+        storage: Arc<dyn VolumeStorage>,
+        events: InstallEvents,
+    ) -> Result<Self, Error> {
         let depot = depot.clone();
         let old = storage
             .artifacts()
@@ -43,6 +50,10 @@ impl CiaInstall {
             let archive = CiaArchive::open(&depot.path)
                 .map_err(|e| Error::malformed("CIA", e.to_string()))?;
             let entries = depot.jobs(&archive);
+            events(InstallEvent::Phase {
+                name: "Installing".to_owned(),
+                total: archive.items().iter().map(|item| item.size).sum(),
+            });
             let retained = Self::retain_contents(&depot, &archive, &*storage, old.as_ref())?;
             let old_paths = old
                 .as_ref()
@@ -61,6 +72,7 @@ impl CiaInstall {
                 old_paths,
                 root: depot.root.clone(),
                 storage,
+                events,
             })
         })
         .await
@@ -133,6 +145,7 @@ impl CiaInstall {
         archive: &mut CiaArchive<File>,
         storage: &dyn VolumeStorage,
         entry: Entry,
+        report: &dyn Fn(InstallEvent),
     ) -> Result<DepotFile, Error> {
         let mut writer = StorageWriter {
             file: storage.create(&entry.path)?,
@@ -140,7 +153,12 @@ impl CiaInstall {
             hash: blake3::Hasher::new(),
         };
         match entry.content {
-            Content::Item(index) => archive.stream_item(index, &mut writer),
+            Content::Item(index) => {
+                archive.stream_item_with_progress(index, &mut writer, |bytes| {
+                    report(InstallEvent::Advance(bytes));
+                    Ok(())
+                })
+            }
             Content::Section(section) => archive.stream_section(section, &mut writer),
         }
         .map_err(|e| Error::malformed("CIA", e.to_string()))?;
@@ -161,14 +179,16 @@ impl Installable for CiaInstall {
         };
         let archive = self.archive.clone();
         let storage = self.storage.clone();
+        let events = self.events.clone();
         tokio::task::spawn_blocking(move || {
             let mut archive = archive.lock();
-            let file = Self::write_entry(&mut archive, &*storage, entry)?;
+            let file = Self::write_entry(&mut archive, &*storage, entry, &*events)?;
             Ok(Some(vec![file]))
         })
         .await
         .map_err(|e| Error::Unsupported(format!("CIA worker failed: {e}")))?
     }
+
     async fn finish(self, manifest: Vec<DepotFile>) -> Result<Artifact, Error> {
         let manifest = DepotFile::merge(self.retained, manifest);
         let artifact =
@@ -183,7 +203,7 @@ impl Installable for CiaInstall {
                 self.storage.remove(&path)?;
             }
         }
-        self.storage.artifacts().record(&artifact).await?;
+        self.storage.artifacts().record(&artifact, self.events).await?;
         Ok(artifact)
     }
 }

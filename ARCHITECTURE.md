@@ -228,7 +228,7 @@ Scraper plugins are used to interface with scraping databases.
 
   A `ScrapeResult` is a JSON-safe object `{ key: string, value: string | URL, source: string }`.
 
- `onScrape` receives previous scrape candidate results defined by its `scraper.requires` configuration key in its context object, as well as the game package(s) metadata being scraped. Conversely, the keys a scraper returns must be defined in `scraper.provides`. A scraper will only be run if `all` of its `scraper.requires` requirements are fulfilled.
+ `onScrape` receives previous scrape candidate results for the keys named in its `scraper.requires` and `scraper.optional` configuration keys in its context object, as well as the game package(s) metadata being scraped. Conversely, the keys a scraper returns must be defined in `scraper.provides`. A scraper will only be run if `all` of its `scraper.requires` requirements are fulfilled. Both lists accept `any(...)` groups. A scraper waits for other scrapers that provide a key from one of its unfulfilled requirements.
 
 ##### Common scraping keys
 
@@ -257,6 +257,7 @@ Listed is a hierarchy of well known scraping keys that frontends can rely on.
 * `meta.publisher` - The publisher of the game release
 * `meta.genre` - A genre of the game release.
 * `meta.rating` - The age rating of the game release. Requires the subkeys `esrb`, `cero`, `usk`, `pegi`, `dgsc`, `acb`, `iarc`, `grac`, `rars`, `gmedia` (defined as https://www.globalratings.com/ratings-definitions/).
+* `meta.region` - The release region of the game as hyphen-separated ISO 3166 codes, with `EU` for Europe, `AS` for Asia, and `ZZ` for unknown.
 * `meta.releasedate` - The release date of the game. Always in ISO8601 YYYY-MM-dd format.
 
 ###### `media`

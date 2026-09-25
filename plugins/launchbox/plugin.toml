@@ -16,6 +16,9 @@ requires = [
     "package.platform",
     "any(meta.title, meta.title.en, filename.nointro.title, filename.tosec.title, filename.goodtools.title, package.internalname)",
 ]
+optional = [
+    "any(meta.region, filename.nointro.region, filename.tosec.region, filename.goodtools.region)",
+]
 provides = [
     "meta.description",
     "meta.publisher",

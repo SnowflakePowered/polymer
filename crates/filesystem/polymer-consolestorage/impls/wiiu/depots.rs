@@ -129,6 +129,7 @@ impl Depot for WiiUMetaXmlDepot {
     fn install<'a, N: VirtualNand + ?Sized>(
         self,
         nand: &'a N,
+        events: crate::installable::InstallEvents,
     ) -> crate::installable::Installation<'a>
     where
         Self: 'a,
@@ -139,6 +140,7 @@ impl Depot for WiiUMetaXmlDepot {
             source.validate(nand, &source.root)?;
             let storage = nand.root();
             Ok(WiiUInstall {
+                events,
                 copy: DirectoryInstall::new(
                     source.root.clone(),
                     source.install_path(),
@@ -156,6 +158,7 @@ struct WiiUInstall {
     depot: WiiUMetaXmlDepot,
     copy: DirectoryInstall,
     storage: Arc<dyn VolumeStorage>,
+    events: crate::installable::InstallEvents,
 }
 
 impl Installable for WiiUInstall {
@@ -192,7 +195,7 @@ impl Installable for WiiUInstall {
             version,
             icon,
         );
-        self.storage.artifacts().record(&artifact).await?;
+        self.storage.artifacts().record(&artifact, self.events).await?;
         Ok(artifact)
     }
 }

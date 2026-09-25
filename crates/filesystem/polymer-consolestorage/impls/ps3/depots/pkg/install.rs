@@ -18,6 +18,7 @@ pub(super) struct Ps3PkgInstall {
     depot: Ps3PkgDepot,
     retained: Vec<DepotFile>,
     storage: Arc<dyn VolumeStorage>,
+    events: crate::installable::InstallEvents,
 }
 
 struct PkgExtraction {
@@ -29,7 +30,11 @@ struct PkgExtraction {
 }
 
 impl Ps3PkgInstall {
-    pub async fn new(depot: &Ps3PkgDepot, storage: Arc<dyn VolumeStorage>) -> Result<Self, Error> {
+    pub async fn new(
+        depot: &Ps3PkgDepot,
+        storage: Arc<dyn VolumeStorage>,
+        events: crate::installable::InstallEvents,
+    ) -> Result<Self, Error> {
         let depot = depot.clone();
         let mut install = tokio::task::spawn_blocking(move || {
             let file = depot.verified_file()?;
@@ -40,6 +45,7 @@ impl Ps3PkgInstall {
             let archive = PkgArchive::from_reader(file, size)
                 .map_err(|error| Error::io(&depot.path, error))?;
             Ok::<_, Error>(Self {
+                events,
                 extraction: Arc::new(Mutex::new(PkgExtraction {
                     archive,
                     root: depot.install_path.clone(),
@@ -147,7 +153,7 @@ impl Installable for Ps3PkgInstall {
                 .or(self.depot.version),
             icon,
         );
-        self.storage.artifacts().record(&artifact).await?;
+        self.storage.artifacts().record(&artifact, self.events).await?;
         Ok(artifact)
     }
 }

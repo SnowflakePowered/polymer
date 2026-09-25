@@ -23,6 +23,13 @@ export class ShiragameMatcher {
     if (typeof platform !== "string" || !/^[A-Z0-9_]+$/.test(platform)) return;
     const hash = await this.matchHashes(input, platform);
     const games = hash.matched ? hash.games : await this.matchSerials(input, platform);
+    const { titles, regions } = await this.releases(games);
+    for (const title of titles) {
+      yield { key: "meta.title", value: title, source: `Shiragame ${this.release}` };
+    }
+    for (const region of regions) {
+      yield { key: "meta.region", value: region, source: `Shiragame ${this.release}` };
+    }
     for await (const cue of this.cues(games)) {
       yield {
         key: "media.cue",
@@ -30,6 +37,18 @@ export class ShiragameMatcher {
         source: `Shiragame ${this.release} / ${cue.source} / ${cue.entry_name} / ${cue.file_name}`,
       };
     }
+  }
+
+  private async releases(games: Set<number>): Promise<{ titles: Set<string>; regions: Set<string> }> {
+    const titles = new Set<string>();
+    const regions = new Set<string>();
+    for (const game of [...games].sort((a, b) => a - b)) {
+      const row = await this.db.prepare("SELECT COALESCE(release_title, entry_title) AS title, region FROM game WHERE game_id = ?")
+        .get<{ title: string | null; region: string }>([game]);
+      if (row?.title) titles.add(row.title);
+      if (row?.region && row.region !== "ZZ") regions.add(row.region);
+    }
+    return { titles, regions };
   }
 
   private async *cues(games: Set<number>): AsyncGenerator<Cue> {

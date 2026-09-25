@@ -37,6 +37,16 @@ unsafe impl Send for LocalSocketListener {}
 unsafe impl Sync for LocalSocketListener {}
 
 impl LocalSocketListener {
+    pub const DIRECTORY_ENV: &str = "POLYMER_IPC_DIRECTORY";
+
+    /// The host passes this directory to guests before redirecting their temp
+    /// directories, so sockets and shared mappings use host-backed storage.
+    pub fn directory() -> PathBuf {
+        std::env::var_os(Self::DIRECTORY_ENV)
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+    }
+
     pub fn bind(name: &str) -> io::Result<Self> {
         initialize_winsock()?;
         let (address, path) = socket_address(name)?;
@@ -237,7 +247,7 @@ fn socket_address(name: &str) -> io::Result<(SOCKADDR_UN, PathBuf)> {
             "local socket name must be a non-empty file name",
         ));
     }
-    let path = std::env::temp_dir().join(format!("{name}.sock"));
+    let path = LocalSocketListener::directory().join(format!("{name}.sock"));
     let path_bytes = path
         .to_str()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "non-Unicode socket path"))?

@@ -14,6 +14,7 @@ pub(super) struct PupInstall {
     extraction: Arc<Mutex<PupExtraction>>,
     version: String,
     storage: Arc<dyn VolumeStorage>,
+    events: crate::installable::InstallEvents,
 }
 
 struct PupExtraction {
@@ -25,7 +26,11 @@ struct PupExtraction {
     storage: Arc<dyn VolumeStorage>,
 }
 impl PupInstall {
-    pub async fn new(depot: &Ps3PupDepot, storage: Arc<dyn VolumeStorage>) -> Result<Self, Error> {
+    pub async fn new(
+        depot: &Ps3PupDepot,
+        storage: Arc<dyn VolumeStorage>,
+        events: crate::installable::InstallEvents,
+    ) -> Result<Self, Error> {
         let depot = depot.clone();
         tokio::task::spawn_blocking(move || {
             let mut pup = depot.verified_pup()?;
@@ -58,6 +63,7 @@ impl PupInstall {
                 return Err(Error::malformed("PUP", "no flash packages"));
             }
             Ok(Self {
+                events,
                 extraction: Arc::new(Mutex::new(PupExtraction {
                     file: pup.file,
                     packages,
@@ -215,7 +221,7 @@ impl Installable for PupInstall {
                 }
             }
         }
-        self.storage.artifacts().record(&artifact).await?;
+        self.storage.artifacts().record(&artifact, self.events).await?;
         Ok(artifact)
     }
 }

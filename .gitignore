@@ -5,6 +5,11 @@
 /plugins/theme/*/node_modules/
 /plugins/theme/*/dist/
 /plugins/theme/*/*.tsbuildinfo
+/plugins/ares/bin/
+/plugins/azahar/bin/
+/plugins/melonds/bin/
+/plugins/rpcs3/bin/
+/plugins/ymir/bin/
 *.pdb
 *.dll
 *.lib

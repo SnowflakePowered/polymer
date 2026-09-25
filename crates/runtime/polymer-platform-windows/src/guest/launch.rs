@@ -184,6 +184,10 @@ impl GuestPlatform {
             ),
         ));
         environment.extend(runtime.environment.iter().cloned());
+        environment.push((
+            OsString::from(polymer_ipc::LocalSocketListener::DIRECTORY_ENV),
+            polymer_ipc::LocalSocketListener::directory().into_os_string(),
+        ));
         environment
     }
 
@@ -291,11 +295,13 @@ impl GuestPlatform {
                 c"PolymerInstallUiHook",
             ));
         }
-        libraries.push(InjectionLibrary::new(
-            "SDL2",
-            "polymer_hook_sdl2.dll",
-            c"PolymerInstallSdl2Hook",
-        ));
+        if input_hooks.contains(&InputHook::Sdl2) {
+            libraries.push(InjectionLibrary::new(
+                "SDL2",
+                "polymer_hook_sdl2.dll",
+                c"PolymerInstallSdl2Hook",
+            ));
+        }
         libraries
     }
 }

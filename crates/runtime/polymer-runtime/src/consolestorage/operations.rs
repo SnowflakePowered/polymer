@@ -4,8 +4,7 @@ use polymer_deno::polymer::consolestorage::*;
 use polymer_library::StorageKind;
 use polymer_pluginhost::runtime::EventEmitter;
 use polymer_vfs::ExclusiveResourceKey;
-use serde_json::json;
-use std::sync::Arc;
+use serde_json::{Value, json};
 
 impl Handler<Platforms> for StorageActor {
     type Result = ResponseActFuture<Self, Result<Vec<StoragePlatform>, StorageError>>;
@@ -31,15 +30,20 @@ impl Handler<Inspect> for StorageActor {
     type Result = ResponseActFuture<Self, Result<StorageInspection, StorageError>>;
 
     fn handle(&mut self, Inspect { platform, id }: Inspect, _: &mut Context<Self>) -> Self::Result {
+        let installing = self.installing.clone();
         self.execute(move |manager, _| async move {
             let id = Self::parse(&id)?;
-            let _lease = ExclusiveResourceKey::Resource(id)
-                .acquire()
+            let busy = installing.contains(&id);
+            let _lease = (!busy)
+                .then(|| ExclusiveResourceKey::Resource(id).acquire())
+                .transpose()
                 .map_err(|error| error.to_string())?;
-            manager
+            let mut inspection = manager
                 .inspect(&platform, id)
                 .await
-                .map_err(StorageError::from_display)
+                .map_err(StorageError::from_display)?;
+            inspection.dirty &= !busy;
+            Ok(inspection)
         })
     }
 }
@@ -77,27 +81,48 @@ impl Handler<Install> for StorageActor {
         Install { platform, id, path }: Install,
         _: &mut Context<Self>,
     ) -> Self::Result {
+        let installs = self.installs.clone();
+        let installing = self.installing.clone();
         self.execute(move |manager, _| async move {
             let id = Self::parse(&id)?;
-            let _lease = ExclusiveResourceKey::Resource(id)
-                .acquire()
-                .map_err(|error| error.to_string())?;
-            let events = Arc::new(EventEmitter::new(&platform));
-            let progress = events.scope(
-                "loadprogress",
-                json!({"state":"loading","message":"Installing contents"}),
-                json!({"state":"failed","message":"Installation interrupted"}),
-            );
-            let result = manager
-                .install(&platform, id, &path, |message| {
-                    events.publish("loadprogress", json!({"state":"loading","message":message}))
-                })
-                .await;
-            progress.finish(match &result {
-                Ok(_) => json!({"state":"ready","message":"Installation complete"}),
-                Err(error) => json!({"state":"failed","message":error}),
+            let filename = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+            let source = json!({
+                "id": uuid::Uuid::now_v7().simple().to_string(),
+                "platform": platform,
+                "storage": id.simple().to_string(),
+                "filename": filename,
             });
-            result.map_err(StorageError::from)
+            let events = std::sync::Arc::new(EventEmitter::new(&platform));
+            let publish = move |state: &str, detail: Value| {
+                let mut event = source.clone();
+                event["state"] = json!(state);
+                event["detail"] = detail;
+                events.publish("installprogress", event);
+            };
+            let publish = std::sync::Arc::new(publish);
+            publish("queued", Value::Null);
+            let result = async {
+                let _queue = installs.lock().await;
+                installing.insert(id);
+                let _lease = ExclusiveResourceKey::Resource(id)
+                    .acquire()
+                    .map_err(|error| error.to_string())?;
+                let running = publish.clone();
+                manager
+                    .install(&platform, id, &path, move |status| running("running", json!(status)))
+                    .await
+                    .map_err(StorageError::from)
+            }
+            .await;
+            installing.remove(&id);
+            match &result {
+                Ok(artifact) => publish("complete", json!(artifact)),
+                Err(error) => publish("failed", json!(error.to_string())),
+            }
+            result
         })
     }
 }

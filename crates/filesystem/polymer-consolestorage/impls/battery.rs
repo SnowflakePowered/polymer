@@ -27,7 +27,7 @@ pub const PLATFORMS: &[&str] = &[
     "NINTENDO_GB",
     "NINTENDO_GBC",
     "NINTENDO_GBA",
-    "NINTENDO_DS",
+    "NINTENDO_NDS",
     "NINTENDO_NES",
     "NINTENDO_SNES",
     "NINTENDO_N64",

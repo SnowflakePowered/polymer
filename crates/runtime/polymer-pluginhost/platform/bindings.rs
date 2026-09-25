@@ -79,10 +79,15 @@ async fn op_platform_install(
         JsErrorBox::type_error("NAND installation is only available during host-owned bootstrap")
     })?;
     manager
-        .install(platform, *id, &path, |message| {
+        .install(platform, *id, &path, move |status| {
             events.publish(
                 "loadprogress",
-                json!({"state": "loading", "message": message}),
+                json!({
+                    "state": "loading",
+                    "message": status.message,
+                    "completed": status.completed,
+                    "total": status.total,
+                }),
             );
         })
         .await

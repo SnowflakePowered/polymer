@@ -49,17 +49,39 @@ impl ScrapeInput {
     }
 }
 
+impl ScrapeRequirement {
+    pub fn keys(&self) -> &[String] {
+        match self {
+            Self::Key(key) => std::slice::from_ref(key),
+            Self::Any(keys) => keys,
+        }
+    }
+
+    pub fn satisfied(&self, input: &ScrapeInput) -> bool {
+        self.keys().iter().any(|key| input.contains(key))
+    }
+}
+
 /// Scraper capability projected from a registered scripted plugin.
 pub trait ScraperPluginInstance: PluginInstance {
     fn requirements(&self) -> &[ScrapeRequirement];
+    fn optional(&self) -> &[ScrapeRequirement];
     fn provides(&self) -> &[String];
 
     fn accepts(&self, input: &ScrapeInput) -> bool {
         self.requirements()
             .iter()
-            .all(|requirement| match requirement {
-                ScrapeRequirement::Key(key) => input.contains(key),
-                ScrapeRequirement::Any(keys) => keys.iter().any(|key| input.contains(key)),
+            .all(|requirement| requirement.satisfied(input))
+    }
+
+    /// Whether this scraper still lacks `key` to satisfy one of its requirements.
+    fn awaits(&self, input: &ScrapeInput, key: &str) -> bool {
+        self.requirements()
+            .iter()
+            .chain(self.optional())
+            .any(|requirement| {
+                !requirement.satisfied(input)
+                    && requirement.keys().iter().any(|wanted| wanted == key)
             })
     }
 
@@ -67,10 +89,8 @@ pub trait ScraperPluginInstance: PluginInstance {
         let metadata = self
             .requirements()
             .iter()
-            .flat_map(|requirement| match requirement {
-                ScrapeRequirement::Key(key) => std::slice::from_ref(key).iter(),
-                ScrapeRequirement::Any(keys) => keys.iter(),
-            })
+            .chain(self.optional())
+            .flat_map(ScrapeRequirement::keys)
             .filter_map(|key| {
                 input
                     .metadata

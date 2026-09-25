@@ -165,7 +165,7 @@ declare module "polymer:api" {
         mappings: readonly ControllerMapping[],
     }>;
 
-    export type InputHook = "sdl3" | "bluetooth-api-win32";
+    export type InputHook = "sdl2" | "sdl3" | "bluetooth-api-win32";
 
     export type UiNodeSnapshot = Readonly<{
         role: string,

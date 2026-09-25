@@ -37,6 +37,7 @@ impl GraphicsHook {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum InputHook {
+    Sdl2,
     Sdl3,
     BluetoothApiWin32,
 }

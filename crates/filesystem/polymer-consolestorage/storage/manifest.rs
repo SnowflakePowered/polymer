@@ -14,6 +14,9 @@ pub struct ArtifactSummary {
     pub label: String,
     pub version: Option<String>,
     pub byte_length: u64,
+    pub installed: Timestamp,
+    pub file_count: usize,
+    pub icon: Option<String>,
 }
 
 impl From<&Artifact> for ArtifactSummary {
@@ -24,7 +27,20 @@ impl From<&Artifact> for ArtifactSummary {
             label: artifact.label().to_owned(),
             version: artifact.version().map(str::to_owned),
             byte_length: artifact.byte_length(),
+            installed: artifact.installed(),
+            file_count: artifact.manifest().len(),
+            icon: match artifact.icon() {
+                crate::installable::IconHint::EmbeddedPng(png) => Some(ArtifactSummary::icon_url(png)),
+                _ => None,
+            },
         }
+    }
+}
+
+impl ArtifactSummary {
+    pub(crate) fn icon_url(png: &[u8]) -> String {
+        use base64::Engine as _;
+        format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(png))
     }
 }
 
@@ -39,7 +55,12 @@ pub struct VolumeInfo {
 pub trait ArtifactRegistry: Send + Sync {
     fn revision(&self) -> Result<String, Error>;
     fn affected<'a>(&'a self, ids: &'a [&'a str]) -> BoxFuture<'a, Result<Vec<String>, Error>>;
-    fn record<'a>(&'a self, artifact: &'a Artifact) -> BoxFuture<'a, Result<(), Error>>;
+    /// Commit the artifact and pending files, publishing a saving phase while blobs are written.
+    fn record<'a>(
+        &'a self,
+        artifact: &'a Artifact,
+        events: crate::installable::InstallEvents,
+    ) -> BoxFuture<'a, Result<(), Error>>;
     fn summaries(&self) -> BoxFuture<'_, Result<Vec<ArtifactSummary>, Error>>;
     fn artifact<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<Option<Artifact>, Error>>;
     fn contains<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<bool, Error>>;

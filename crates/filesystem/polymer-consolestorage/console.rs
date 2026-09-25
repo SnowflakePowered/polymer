@@ -62,6 +62,22 @@ pub enum ConsoleStorage {
 }
 
 impl ConsoleStorage {
+    /// The consolespec storage device a platform's default volume is mounted as, and
+    /// that volume's kind. A NAND device also carries the platform's save repository.
+    pub fn default_device(platform: &str) -> Option<(&'static str, StorageKind)> {
+        Some(match platform {
+            WiiNand::PLATFORM => ("nand", StorageKind::Nand),
+            CtrNand::PLATFORM | CtrNand::NEW_PLATFORM => ("ctrnand", StorageKind::Nand),
+            WiiUNand::PLATFORM => ("mlc", StorageKind::Nand),
+            VitaNand::PLATFORM => ("emmc", StorageKind::Nand),
+            GameCubeMemoryCard::PLATFORM => ("slotA", StorageKind::MemoryCard),
+            DreamcastMemoryCard::PLATFORM => ("vmu", StorageKind::MemoryCard),
+            PlaystationMemoryCard::PLATFORM => ("card1", StorageKind::MemoryCard),
+            Playstation2MemoryCard::PLATFORM => ("mem1", StorageKind::MemoryCard),
+            _ => return None,
+        })
+    }
+
     pub fn supports(kind: StorageKind, platform: &str) -> bool {
         match kind {
             StorageKind::Nand | StorageKind::SaveRepo => {

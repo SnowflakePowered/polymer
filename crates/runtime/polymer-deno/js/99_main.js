@@ -8,7 +8,7 @@ import { createEmulator } from "./06_emulator.js";
 import { createConsoleStorage } from "./08_consolestorage.js";
 import { createControllers } from "./07_controllers.js";
 import { createLibrary } from "./09_library.js";
-import { op_controller_api_snapshot, op_polymer_next_notification } from "ext:core/ops";
+import { op_controller_api_snapshot, op_machine, op_polymer_next_notification } from "ext:core/ops";
 
 const scraping = createScraping();
 const plugin = createPlugin();
@@ -32,6 +32,7 @@ const Polymer = Object.freeze({
   webrtc: webrtc.WebRTC,
   consolestorage: consolestorage.ConsoleStorage,
   library: library.Library,
+  machine: (id) => op_machine(String(id)),
 });
 
 function dispatch(event) {
@@ -59,7 +60,8 @@ function dispatch(event) {
       consolestorage.gameSaved(event.detail);
       break;
     case "pluginEvent":
-      plugin.dispatch(event.detail);
+      if (event.detail?.name === "installprogress") consolestorage.installChanged(event.detail.detail);
+      else plugin.dispatch(event.detail);
       break;
     case "scrapeJobChanged":
       scraping.jobChanged(event.detail);

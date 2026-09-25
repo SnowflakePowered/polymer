@@ -44,6 +44,7 @@ type GameRecord = {
 };
 
 type ImageRecord = { id: number; fileName: string; type: string; region: string };
+type AlternateRecord = { id: number; name: string; region: string };
 type FileRecord = { platform: string; fileName: string; gameName: string };
 
 class CacheReader extends Reader<ReturnType<typeof caches.download.open>> {
@@ -130,9 +131,10 @@ async function buildIndex(context?: PluginProgressContext): Promise<void> {
   const games = new IndexWriter(db, "INSERT OR REPLACE INTO games_next", "games");
   const images = new IndexWriter(db, "INSERT OR IGNORE INTO images_next", "images");
   const aliases = new IndexWriter(db, "INSERT INTO raw_aliases_next", "aliases");
+  const alternates = new IndexWriter(db, "INSERT OR IGNORE INTO aliases_next", "alternate names");
   console.info("LaunchBox: building metadata index");
-  let record: GameRecord | ImageRecord | undefined;
-  let recordType: "Game" | "GameImage" | undefined;
+  let record: GameRecord | ImageRecord | AlternateRecord | undefined;
+  let recordType: "Game" | "GameImage" | "GameAlternateName" | undefined;
   let field = "";
   let text = "";
   const imageOrdinals = new Map<string, number>();
@@ -146,10 +148,11 @@ async function buildIndex(context?: PluginProgressContext): Promise<void> {
     context?.progress({ message: "Indexing game metadata", completed: 0, total: entry.uncompressedSize });
     const xml = new TransformStream<Uint8Array, Uint8Array>();
     const extraction = entry.getData(xml.writable);
-    await Promise.all([extraction, parseXmlStreamFromBytes(streamChunks(xml.readable, async () => { await games.flush(); await images.flush(); }, completed => context?.progress({ message: "Indexing game metadata", completed, total: entry.uncompressedSize })), {
+    await Promise.all([extraction, parseXmlStreamFromBytes(streamChunks(xml.readable, async () => { await games.flush(); await images.flush(); await alternates.flush(); }, completed => context?.progress({ message: "Indexing game metadata", completed, total: entry.uncompressedSize })), {
       onStartElement(name) {
         if (name === "Game") { recordType = "Game"; record = { id: 0, platform: "", name: "" }; }
         else if (name === "GameImage") { recordType = "GameImage"; record = { id: 0, fileName: "", type: "", region: "" }; }
+        else if (name === "GameAlternateName") { recordType = "GameAlternateName"; record = { id: 0, name: "", region: "" }; }
         else if (record) { field = name; text = ""; }
       },
       onText(value) { if (record && field) text += value; },
@@ -167,6 +170,11 @@ async function buildIndex(context?: PluginProgressContext): Promise<void> {
             else if (name === "ESRB") game.esrb = value;
             else if (name === "ReleaseDate") game.releaseDate = value.slice(0, 10);
             else if (name === "ReleaseYear") game.releaseYear = value;
+          } else if (recordType === "GameAlternateName") {
+            const alternate = record as AlternateRecord;
+            if (name === "DatabaseID") alternate.id = Number(value);
+            else if (name === "AlternateName") alternate.name = value;
+            else if (name === "Region") alternate.region = value;
           } else {
             const image = record as ImageRecord;
             if (name === "DatabaseID") image.id = Number(value);
@@ -183,6 +191,9 @@ async function buildIndex(context?: PluginProgressContext): Promise<void> {
               games.add([game.id, game.platform, game.name, normalize(game.name), game.overview ?? null, game.publisher ?? null, game.genres ?? null, game.esrb ?? null, game.releaseDate ?? (game.releaseYear ? `${game.releaseYear}-01-01` : null)]);
 
             }
+          } else if (recordType === "GameAlternateName") {
+            const alternate = record as AlternateRecord;
+            if (alternate.id && alternate.name) alternates.add([alternate.id, normalize(alternate.name), normalize(alternate.region)]);
           } else {
             const image = record as ImageRecord;
             const key = imageKey(image.type);
@@ -237,6 +248,7 @@ async function buildIndex(context?: PluginProgressContext): Promise<void> {
     })]);
     await games.flush();
     await images.flush();
+    await alternates.flush();
     await aliases.flush();
     context?.progress({ message: "Matching aliases and publishing metadata index" });
     console.info("LaunchBox: matching aliases and publishing metadata index");
@@ -261,7 +273,7 @@ async function buildIndex(context?: PluginProgressContext): Promise<void> {
       CREATE INDEX images_game ON images(game_id, key, ordinal);
       CREATE INDEX aliases_match ON aliases(normalized, region, game_id);
       CREATE TABLE IF NOT EXISTS content_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-      INSERT OR REPLACE INTO content_state VALUES ('ready', '2');
+      INSERT OR REPLACE INTO content_state VALUES ('ready', '3');
       COMMIT;
     `);
     console.info("LaunchBox: metadata index ready");
@@ -324,7 +336,7 @@ export const onPluginLoad: OnPluginLoad = async (context) => {
   try {
     version = (await db.prepare("SELECT value FROM content_state WHERE key = 'ready'").get<{ value: string }>())?.value;
   } catch { /* first use has no schema */ }
-  if (version === "2") {
+  if (version === "3") {
     // Startup requests an update after loading the plugin. The persistent index
     // satisfies that first request even when it was built by an earlier process.
     updatedDuringLoad = true;
@@ -404,15 +416,19 @@ class ArtworkRegions {
   static canonical(value: string): string {
     const name = normalize(value);
     const aliases: Record<string, string> = {
-      usa: "north america", us: "north america", canada: "north america",
+      usa: "north america", us: "north america", "united states": "north america", canada: "north america",
       japan: "japan", jp: "japan", europe: "europe", eur: "europe",
-      australia: "australia", aus: "australia", korea: "korea", southkorea: "korea",
+      australia: "australia", aus: "australia", au: "australia", korea: "korea", southkorea: "korea", kr: "korea",
+      eu: "europe", as: "asia", cn: "china", tw: "taiwan", hk: "hong kong", de: "germany", fr: "france",
+      es: "spain", it: "italy", gb: "united kingdom", ru: "russia", br: "brazil", nl: "the netherlands",
+      ca: "north america", se: "sweden", no: "norway", fi: "finland", gr: "greece",
     };
     return aliases[name] ?? name;
   }
 
   static select<T extends { key: string; region: string }>(images: T[], input: ScrapeInput): T[] {
-    const requested = strings(input, ["filename.nointro.region", "filename.tosec.region", "filename.goodtools.region"])
+    const catalogued = strings(input, ["meta.region"]).flatMap(value => value.split("-"));
+    const requested = (catalogued.length ? catalogued : strings(input, ["filename.nointro.region", "filename.tosec.region", "filename.goodtools.region"]))
       .flatMap(value => value.split(/[,;]/)).map(value => this.canonical(value));
     if (!requested.length || requested.includes("world")) return images;
     const rank = (image: T) => {

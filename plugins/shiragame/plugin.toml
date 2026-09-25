@@ -16,4 +16,4 @@ requires = [
     "package.platform",
     "any(package.serial, package.files)",
 ]
-provides = ["media.cue"]
+provides = ["media.cue", "meta.region", "meta.title"]

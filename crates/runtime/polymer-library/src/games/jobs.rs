@@ -257,13 +257,8 @@ impl GameCatalog {
         error: Option<&str>,
     ) -> Result<(), GameCatalogError> {
         let connection = self.connection().await?;
-        let changed = connection.execute("UPDATE scrape_attempts SET state = ?3, error = ?4 WHERE job_id = ?1 AND plugin_id = ?2", vec![Self::id(job), Value::from(plugin), Value::from(state.as_str()), error.map(Value::from).unwrap_or(Value::Null)]).await?;
-        if changed == 0 {
-            return Err(GameCatalogError::NotFound(format!(
-                "{}:{plugin}",
-                job.simple()
-            )));
-        }
+        // Scrapers whose requirements are filled in mid-job join it on their first attempt.
+        connection.execute("INSERT INTO scrape_attempts (job_id, plugin_id, state, error) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(job_id, plugin_id) DO UPDATE SET state = excluded.state, error = excluded.error", vec![Self::id(job), Value::from(plugin), Value::from(state.as_str()), error.map(Value::from).unwrap_or(Value::Null)]).await?;
         Ok(())
     }
 

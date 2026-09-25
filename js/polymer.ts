@@ -3,7 +3,7 @@ export interface HTMLTrackedSurfaceElement extends HTMLElement {
 }
 
 export type GraphicsHook = "vulkan" | "d3d11" | "d3d12" | "opengl";
-export type InputHook = "sdl3" | "bluetooth-api-win32";
+export type InputHook = "sdl2" | "sdl3" | "bluetooth-api-win32";
 export type ProjectionMode = "name" | "position" | "custom";
 export type PointerMode = "none" | "relative" | "absoluteDevice" | "absoluteScreen";
 
@@ -378,6 +378,7 @@ export type DepotType = "system" | "app" | "appcontent" | "appupdate";
 
 export interface StorageArtifact {
   id: string; label: string; version: string | null; depotType: DepotType; byteLength: number;
+  installed: string; fileCount: number; icon: string | null;
 }
 export interface StorageInspection { id: string; platform: string; minimal: boolean; dirty: boolean; artifacts: StorageArtifact[] }
 export interface StorageRemovalPlan { requested: string[]; affected: string[]; revision: string }
@@ -402,7 +403,21 @@ export interface ConsoleStorageVolume extends EventTarget {
   delete(): Promise<void>;
 }
 
-export interface ConsoleStorageApi {
+export type StorageInstallStatus = Readonly<{
+  title: Readonly<{ id: string; label: string; depotType: DepotType; icon: string | null }> | null;
+  message: string; completed: number; total: number;
+}>;
+
+export type StorageInstall = Readonly<{ id: string; platform: string; storage: string; filename: string }> & (
+  | Readonly<{ state: "queued"; detail: null }>
+  | Readonly<{ state: "running"; detail: StorageInstallStatus }>
+  | Readonly<{ state: "complete"; detail: StorageArtifact }>
+  | Readonly<{ state: "failed"; detail: string }>
+);
+
+export interface ConsoleStorageApi extends EventTarget {
+  /** Queued and running installs; `installchange` fires on each update. */
+  readonly installs: readonly StorageInstall[];
   platforms(): Promise<{ platform: string; plugin: string }[]>;
   readonly Storage: {
     readonly prototype: ConsoleStorageVolume;
@@ -462,7 +477,10 @@ export type FirmwareDescription = Readonly<{
 export type GameImport = Readonly<{ launchable: LibraryLaunchable; scrapeJob: ScrapeJob | null }>;
 export type LibraryImportResult =
   | Readonly<{ kind: "games"; imports: readonly GameImport[] }>
-  | Readonly<{ kind: "firmware"; firmware: FirmwareDescription }>;
+  | Readonly<{ kind: "firmware"; firmware: FirmwareDescription }>
+  | Readonly<{ kind: "installables"; installables: readonly InstallablePackage[] }>;
+
+export type InstallablePackage = Readonly<{ path: string; filename: string; platform: string; titleId: string | null }>;
 
 export type ImportedKey = Readonly<{ namespace: "system" | "content"; id: string; titleId?: string; byteLength: number }>;
 
@@ -499,6 +517,43 @@ export interface WebRtcPublication extends EventTarget {
   close(): Promise<void>;
 }
 
+export interface MachineFirmware {
+  names: string[];
+  md5: string | null;
+  sha1: string | null;
+  sha256: string | null;
+}
+
+export interface MachineSpec {
+  id: string;
+  name: string;
+  kind: "console" | "handheld" | "addon" | "arcade";
+  shortName: string | null;
+  modelNumbers: string[];
+  licensor: string | null;
+  manufacturer: string | null;
+  dependencies: string[];
+  regions: {
+    region: "northAmerica" | "europe" | "japan";
+    name: string | null;
+    englishName: string | null;
+    shortName: string | null;
+    modelNumbers: string[];
+    releaseDate: string | null;
+  }[];
+  inputGroups: { name: string; inputs: string[]; ports: number; isAccessoryGroup: boolean }[];
+  accessories: string[];
+  storageDevices: {
+    id: string;
+    name: string;
+    isRaw: boolean;
+    isUserStorage: boolean;
+    partitions: { id: string; name: string; isUserData: boolean }[];
+  }[];
+  bios: MachineFirmware[];
+  sysupdates: MachineFirmware[];
+}
+
 export interface WebRtcApi extends EventTarget {
   readonly activePublication: WebRtcPublication | null;
   start(options: {
@@ -522,6 +577,7 @@ declare global {
       readonly input: InputApi;
       readonly controllers: ControllersApi;
       readonly library: LibraryApi;
+      machine(id: string): MachineSpec | null;
     }>;
   }
 

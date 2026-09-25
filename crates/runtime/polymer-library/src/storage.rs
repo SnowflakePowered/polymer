@@ -3,7 +3,10 @@ use std::path::{Path, PathBuf};
 use futures_util::StreamExt;
 use polymer_consolestorage::{
     ArtifactSummary, ConsoleStorage, Error, PlatformRepository, StorageKind, VolumeInfo,
-    VolumeStorage, keys::KeyWriter, nand::NandCompletion,
+    VolumeStorage,
+    installable::{InstallEvent, InstallEvents},
+    keys::KeyWriter,
+    nand::NandCompletion,
 };
 use uuid::Uuid;
 
@@ -14,6 +17,41 @@ pub struct StorageInspection {
     pub minimal: bool,
     pub dirty: bool,
     pub artifacts: Vec<polymer_consolestorage::ArtifactSummary>,
+}
+
+/// A snapshot of a running installation, reported while it progresses.
+#[derive(Clone, Debug, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallStatus {
+    pub title: Option<polymer_consolestorage::installable::InstallPreview>,
+    pub message: String,
+    pub completed: u64,
+    pub total: u64,
+    #[serde(skip)]
+    percent: u64,
+}
+
+impl InstallStatus {
+    /// Fold in an event, returning whether the change is worth publishing.
+    fn apply(&mut self, event: InstallEvent) -> bool {
+        match event {
+            InstallEvent::Title(title) => self.title = Some(title),
+            InstallEvent::Phase { name, total } => {
+                (self.message, self.completed, self.total, self.percent) = (name, 0, total, 0);
+            }
+            InstallEvent::Advance(bytes) => {
+                self.completed += bytes;
+                let percent = self.completed * 100 / self.total.max(1);
+                if percent == self.percent {
+                    return false;
+                }
+                self.percent = percent;
+            }
+            InstallEvent::File(_) if self.total > 0 => return false,
+            InstallEvent::File(file) => self.message = file.display().to_string(),
+        }
+        true
+    }
 }
 
 pub struct StorageManager {
@@ -126,7 +164,7 @@ impl StorageManager {
         platform: &str,
         id: Uuid,
         path: &Path,
-        progress: impl Fn(String),
+        report: impl Fn(&InstallStatus) + Send + Sync + 'static,
     ) -> Result<ArtifactSummary, String> {
         let nand = self
             .open(StorageKind::Nand, platform, id)
@@ -134,7 +172,20 @@ impl StorageManager {
             .map_err(|error| error.to_string())?
             .as_nand()
             .ok_or("device is not a NAND")?;
-        let mut installation = nand.try_install(path).map_err(|error| error.to_string())?;
+        let status = std::sync::Mutex::new(InstallStatus::default());
+        let events: InstallEvents = std::sync::Arc::new(move |event| {
+            let mut status = status.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if status.apply(event) {
+                report(&status);
+            }
+        });
+        events(InstallEvent::Phase {
+            name: "Preparing".to_owned(),
+            total: 0,
+        });
+        let mut installation = nand
+            .try_install(path, events.clone())
+            .map_err(|error| error.to_string())?;
         let records = installation.embedded_keys();
         if !records.is_empty() {
             let store = crate::keys::KeyStore::open(self.root.join("keys"))
@@ -147,8 +198,8 @@ impl StorageManager {
                 .await
                 .map_err(|error| error.to_string())?;
         }
-        while let Some(item) = installation.next().await {
-            progress(item.map_err(|error| error.to_string())?);
+        while let Some(file) = installation.next().await {
+            events(InstallEvent::File(file.map_err(|error| error.to_string())?.into()));
         }
         let artifact = installation
             .finish()
@@ -174,6 +225,37 @@ impl StorageManager {
         self.repository(platform)?
             .fork_profile(kind, source, destination, label.as_deref())?;
         self.open(kind, platform, destination).await
+    }
+
+    /// The platform's oldest volume of `kind`, created on first use.
+    async fn default_volume(&self, kind: StorageKind, platform: &str) -> Result<Uuid, Error> {
+        if let Some(id) = self.repository(platform)?.ids(kind)?.into_iter().min() {
+            return Ok(id);
+        }
+        let label = match kind {
+            StorageKind::Nand => consolespec::MachineSpec::try_from(platform)
+                .map(|machine| format!("{} NAND", machine.name()))
+                .unwrap_or_else(|_| "Default".to_owned()),
+            _ => "Default".to_owned(),
+        };
+        Ok(self.create(kind, platform, Some(label)).await?.metadata().await?.id)
+    }
+
+    /// A launch storage selection for the platform's default device, creating its NAND,
+    /// save repository or memory card on the first launch that needs one.
+    pub async fn default_selection(
+        &self,
+        kind: StorageKind,
+        platform: &str,
+    ) -> Result<serde_json::Value, Error> {
+        let volume = self.default_volume(kind, platform).await?.to_string();
+        Ok(match kind {
+            StorageKind::Nand => {
+                let saves = self.default_volume(StorageKind::SaveRepo, platform).await?;
+                serde_json::json!([saves.to_string(), volume])
+            }
+            _ => serde_json::json!(volume),
+        })
     }
 
     pub async fn list(&self) -> Result<Vec<(StorageKind, VolumeInfo)>, Error> {
