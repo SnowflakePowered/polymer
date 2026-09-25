@@ -1,4 +1,5 @@
 use super::DepotType;
+use std::fmt;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -22,15 +23,68 @@ pub enum InstallEvent {
     /// The title being installed, published first when the depot can describe it.
     Title(InstallPreview),
     /// A phase over `total` bytes began; a zero total is indeterminate.
-    Phase { name: String, total: u64 },
+    Phase { phase: InstallPhase, total: u64 },
     /// Bytes completed in the current phase.
     Advance(u64),
     /// A file was extracted into the NAND.
     File(PathBuf),
 }
 
-/// Receives an installation's progress, including from extraction workers.
-pub type InstallEvents = Arc<dyn Fn(InstallEvent) + Send + Sync>;
+/// A stage of an installation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum InstallPhase {
+    #[default]
+    Preparing,
+    Verifying,
+    Installing,
+    Finalizing,
+}
+
+impl fmt::Display for InstallPhase {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Preparing => "Preparing",
+            Self::Verifying => "Verifying",
+            Self::Installing => "Installing",
+            Self::Finalizing => "Finalizing",
+        })
+    }
+}
+
+/// Publishes an installation's progress, including from extraction workers.
+/// The default publisher discards every event.
+#[derive(Clone)]
+pub struct InstallEvents(Arc<dyn Fn(InstallEvent) + Send + Sync>);
+
+impl Default for InstallEvents {
+    fn default() -> Self {
+        Self::new(|_| {})
+    }
+}
+
+impl InstallEvents {
+    pub fn new(publish: impl Fn(InstallEvent) + Send + Sync + 'static) -> Self {
+        Self(Arc::new(publish))
+    }
+
+    pub fn title(&self, title: InstallPreview) {
+        (self.0)(InstallEvent::Title(title));
+    }
+
+    /// Begin `phase` over `total` bytes; a zero total is indeterminate.
+    pub fn phase(&self, phase: InstallPhase, total: u64) {
+        (self.0)(InstallEvent::Phase { phase, total });
+    }
+
+    pub fn advance(&self, bytes: u64) {
+        (self.0)(InstallEvent::Advance(bytes));
+    }
+
+    pub fn file(&self, path: PathBuf) {
+        (self.0)(InstallEvent::File(path));
+    }
+}
 
 /// Passes reads and writes through to `inner`, publishing each transfer as completed bytes.
 pub(crate) struct Reporting<T> {
@@ -41,7 +95,7 @@ pub(crate) struct Reporting<T> {
 impl<R: Read> Read for Reporting<R> {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
         let count = self.inner.read(bytes)?;
-        (self.events)(InstallEvent::Advance(count as u64));
+        self.events.advance(count as u64);
         Ok(count)
     }
 }
@@ -49,7 +103,7 @@ impl<R: Read> Read for Reporting<R> {
 impl<W: Write> Write for Reporting<W> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let count = self.inner.write(bytes)?;
-        (self.events)(InstallEvent::Advance(count as u64));
+        self.events.advance(count as u64);
         Ok(count)
     }
 
@@ -67,9 +121,7 @@ impl<R: AsyncRead + Unpin> AsyncRead for Reporting<R> {
         let before = buffer.filled().len();
         let poll = Pin::new(&mut self.inner).poll_read(cx, buffer);
         if let Poll::Ready(Ok(())) = poll {
-            (self.events)(InstallEvent::Advance(
-                (buffer.filled().len() - before) as u64,
-            ));
+            self.events.advance((buffer.filled().len() - before) as u64);
         }
         poll
     }

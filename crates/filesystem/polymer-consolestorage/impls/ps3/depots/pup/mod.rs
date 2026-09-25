@@ -55,8 +55,7 @@ impl Depot for Ps3PupDepot {
         Ok(())
     }
     fn validate_contents(&self) -> Vec<String> {
-        match self.verified_pup(&(std::sync::Arc::new(|_| {}) as crate::installable::InstallEvents))
-        {
+        match self.verified_pup(&crate::installable::InstallEvents::default()) {
             Ok(_) => Vec::new(),
             Err(_) => vec![self.path.display().to_string()],
         }

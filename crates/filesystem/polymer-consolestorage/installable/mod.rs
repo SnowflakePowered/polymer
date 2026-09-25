@@ -11,7 +11,7 @@ pub(crate) use writer::StorageWriter;
 pub use directory::DirectoryInstall;
 pub use installation::{Installable, Installation};
 pub(crate) use progress::Reporting;
-pub use progress::{InstallEvent, InstallEvents, InstallPreview};
+pub use progress::{InstallEvent, InstallEvents, InstallPhase, InstallPreview};
 
 /// Discriminants are persisted in the artifact database, so they are fixed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

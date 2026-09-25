@@ -4,7 +4,7 @@ mod metadata;
 use crate::impls::ctr::{CtrNand, layout::Layout};
 use crate::{
     Error,
-    installable::{Depot, DepotType, IconHint, InstallEvent, InstallEvents, InstallPreview},
+    installable::{Depot, DepotType, IconHint, InstallEvents, InstallPreview},
     nand::VirtualNand,
 };
 use csis::{CiaArchive, CiaSection};
@@ -48,19 +48,19 @@ impl CiaDepot {
         format!("{}/{content_id:08x}.app", self.content_root)
     }
 
-    fn verify(&self, report: &dyn Fn(InstallEvent)) -> Vec<String> {
+    fn verify(&self, events: &InstallEvents) -> Vec<String> {
         let mut archive = match CiaArchive::open(&self.path) {
             Ok(archive) => archive,
             Err(_) => return vec![self.path.display().to_string()],
         };
-        report(InstallEvent::Phase {
-            name: "Verifying".to_owned(),
-            total: archive.items().iter().map(|item| item.size).sum(),
-        });
+        events.phase(
+            crate::installable::InstallPhase::Verifying,
+            archive.items().iter().map(|item| item.size).sum(),
+        );
         let mut failures = Vec::new();
         for index in 0..archive.items().len() {
             let verified = archive.stream_item_with_progress(index, &mut io::sink(), |bytes| {
-                report(InstallEvent::Advance(bytes));
+                events.advance(bytes);
                 Ok(())
             });
             if verified.is_err() {
@@ -169,7 +169,7 @@ impl Depot for CiaDepot {
     }
 
     fn validate_contents(&self) -> Vec<String> {
-        self.verify(&|_| {})
+        self.verify(&InstallEvents::default())
     }
     fn depot_type(&self) -> DepotType {
         self.kind
@@ -187,7 +187,7 @@ impl Depot for CiaDepot {
             source.validate_target(nand)?;
             let verifying = source.clone();
             let verified = events.clone();
-            let missing = tokio::task::spawn_blocking(move || verifying.verify(&*verified))
+            let missing = tokio::task::spawn_blocking(move || verifying.verify(&verified))
                 .await
                 .map_err(|e| Error::Unsupported(format!("CIA worker failed: {e}")))?;
             if !missing.is_empty() {

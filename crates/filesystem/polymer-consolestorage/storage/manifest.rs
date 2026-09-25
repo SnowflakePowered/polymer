@@ -55,7 +55,7 @@ pub struct VolumeInfo {
 pub trait ArtifactRegistry: Send + Sync {
     fn revision(&self) -> Result<String, Error>;
     fn affected<'a>(&'a self, ids: &'a [&'a str]) -> BoxFuture<'a, Result<Vec<String>, Error>>;
-    /// Commit the artifact and pending files, publishing a saving phase while blobs are written.
+    /// Commit the artifact and pending files, publishing a finalizing phase while blobs are written.
     fn record<'a>(
         &'a self,
         artifact: &'a Artifact,

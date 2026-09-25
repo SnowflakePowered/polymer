@@ -99,7 +99,7 @@ pub trait VirtualNand: Send + Sync {
     async fn record(&self, artifact: &Artifact) -> Result<(), Error> {
         self.root()
             .artifacts()
-            .record(artifact, Arc::new(|_| {}))
+            .record(artifact, Default::default())
             .await
     }
 

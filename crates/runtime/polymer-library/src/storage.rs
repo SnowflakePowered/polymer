@@ -4,7 +4,7 @@ use futures_util::StreamExt;
 use polymer_consolestorage::{
     ArtifactSummary, ConsoleStorage, Error, PlatformRepository, StorageKind, VolumeInfo,
     VolumeStorage,
-    installable::{InstallEvent, InstallEvents},
+    installable::{InstallEvent, InstallEvents, InstallPhase},
     keys::KeyWriter,
     nand::NandCompletion,
 };
@@ -24,7 +24,9 @@ pub struct StorageInspection {
 #[serde(rename_all = "camelCase")]
 pub struct InstallStatus {
     pub title: Option<polymer_consolestorage::installable::InstallPreview>,
-    pub message: String,
+    pub phase: InstallPhase,
+    /// The most recently extracted file.
+    pub file: Option<String>,
     pub completed: u64,
     pub total: u64,
     #[serde(skip)]
@@ -36,8 +38,8 @@ impl InstallStatus {
     fn apply(&mut self, event: InstallEvent) -> bool {
         match event {
             InstallEvent::Title(title) => self.title = Some(title),
-            InstallEvent::Phase { name, total } => {
-                (self.message, self.completed, self.total, self.percent) = (name, 0, total, 0);
+            InstallEvent::Phase { phase, total } => {
+                (self.phase, self.completed, self.total, self.percent) = (phase, 0, total, 0);
             }
             InstallEvent::Advance(bytes) => {
                 self.completed += bytes;
@@ -47,8 +49,10 @@ impl InstallStatus {
                 }
                 self.percent = percent;
             }
-            InstallEvent::File(_) if self.total > 0 => return false,
-            InstallEvent::File(file) => self.message = file.display().to_string(),
+            InstallEvent::File(file) => {
+                self.file = Some(file.display().to_string());
+                return self.total == 0;
+            }
         }
         true
     }
@@ -173,16 +177,15 @@ impl StorageManager {
             .as_nand()
             .ok_or("device is not a NAND")?;
         let status = std::sync::Mutex::new(InstallStatus::default());
-        let events: InstallEvents = std::sync::Arc::new(move |event| {
-            let mut status = status.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let events = InstallEvents::new(move |event| {
+            let mut status = status
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if status.apply(event) {
                 report(&status);
             }
         });
-        events(InstallEvent::Phase {
-            name: "Preparing".to_owned(),
-            total: 0,
-        });
+        events.phase(InstallPhase::Preparing, 0);
         let mut installation = nand
             .try_install(path, events.clone())
             .map_err(|error| error.to_string())?;
@@ -199,7 +202,7 @@ impl StorageManager {
                 .map_err(|error| error.to_string())?;
         }
         while let Some(file) = installation.next().await {
-            events(InstallEvent::File(file.map_err(|error| error.to_string())?.into()));
+            events.file(file.map_err(|error| error.to_string())?.into());
         }
         let artifact = installation
             .finish()
@@ -238,7 +241,12 @@ impl StorageManager {
                 .unwrap_or_else(|_| "Default".to_owned()),
             _ => "Default".to_owned(),
         };
-        Ok(self.create(kind, platform, Some(label)).await?.metadata().await?.id)
+        Ok(self
+            .create(kind, platform, Some(label))
+            .await?
+            .metadata()
+            .await?
+            .id)
     }
 
     /// A launch storage selection for the platform's default device, creating its NAND,

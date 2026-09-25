@@ -1,5 +1,5 @@
 use crate::Error;
-use crate::installable::{DepotFile, InstallEvent, InstallEvents, Reporting};
+use crate::installable::{DepotFile, InstallEvents, InstallPhase, Reporting};
 use crate::storage::Storage;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -33,10 +33,7 @@ impl DirectoryInstall {
             .filter_map(|entry| entry.metadata().ok())
             .map(|metadata| metadata.len())
             .sum();
-        events(InstallEvent::Phase {
-            name: "Installing".to_owned(),
-            total,
-        });
+        events.phase(InstallPhase::Installing, total);
         let entries = WalkDir::new(&root).into_iter();
         Self {
             root,
