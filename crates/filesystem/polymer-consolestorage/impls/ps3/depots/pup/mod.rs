@@ -18,9 +18,12 @@ impl Ps3PupDepot {
     pub fn version(&self) -> &str {
         &self.version
     }
-    fn verified_pup(&self) -> Result<reader::Pup, Error> {
+    fn verified_pup(
+        &self,
+        events: &crate::installable::InstallEvents,
+    ) -> Result<reader::Pup, Error> {
         let mut pup = reader::Pup::open(&self.path).map_err(|e| Error::io(&self.path, e))?;
-        pup.verify()
+        pup.verify(events)
             .map_err(|e| Error::malformed("PUP", e.to_string()))?;
         if pup.version().map_err(|e| Error::io(&self.path, e))? != self.version {
             return Err(Error::malformed(
@@ -52,7 +55,8 @@ impl Depot for Ps3PupDepot {
         Ok(())
     }
     fn validate_contents(&self) -> Vec<String> {
-        match self.verified_pup() {
+        match self.verified_pup(&(std::sync::Arc::new(|_| {}) as crate::installable::InstallEvents))
+        {
             Ok(_) => Vec::new(),
             Err(_) => vec![self.path.display().to_string()],
         }
@@ -71,7 +75,7 @@ impl Depot for Ps3PupDepot {
         let source = self;
 
         crate::installable::Installation::prepare(async move {
-            source.validate(nand, &source.path)?;
+            source.validate_target(nand)?;
             install::PupInstall::new(&source, nand.root(), events).await
         })
     }

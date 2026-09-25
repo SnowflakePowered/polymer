@@ -24,6 +24,7 @@ struct PupExtraction {
     paths: std::collections::BTreeSet<String>,
     index: usize,
     storage: Arc<dyn VolumeStorage>,
+    events: crate::installable::InstallEvents,
 }
 impl PupInstall {
     pub async fn new(
@@ -33,7 +34,7 @@ impl PupInstall {
     ) -> Result<Self, Error> {
         let depot = depot.clone();
         tokio::task::spawn_blocking(move || {
-            let mut pup = depot.verified_pup()?;
+            let mut pup = depot.verified_pup(&events)?;
             let (offset, size) = pup.entry(0x300).map_err(|e| Error::io(&depot.path, e))?;
             let mut archive = tar::Archive::new((&mut pup.file).take(size));
             let mut packages = Vec::new();
@@ -62,8 +63,11 @@ impl PupInstall {
             if packages.is_empty() {
                 return Err(Error::malformed("PUP", "no flash packages"));
             }
+            events(crate::installable::InstallEvent::Phase {
+                name: "Installing".to_owned(),
+                total: packages.iter().map(|(_, _, size)| size).sum(),
+            });
             Ok(Self {
-                events,
                 extraction: Arc::new(Mutex::new(PupExtraction {
                     file: pup.file,
                     packages,
@@ -71,7 +75,9 @@ impl PupInstall {
                     paths: std::collections::BTreeSet::new(),
                     index: 0,
                     storage: storage.clone(),
+                    events: events.clone(),
                 })),
+                events,
                 version: depot.version,
                 storage,
             })
@@ -145,7 +151,8 @@ impl PupExtraction {
             .map_err(|e| Error::io(&path, e))?;
         let bytes = Sce::flash_tar(&bytes).map_err(|e| Error::io(&path, e))?;
         self.extract(&bytes)?;
-        let name = self.packages[self.index].0.clone();
+        let (name, _, size) = self.packages[self.index].clone();
+        (self.events)(crate::installable::InstallEvent::Advance(size));
         self.index += 1;
         Ok(name)
     }
@@ -221,7 +228,10 @@ impl Installable for PupInstall {
                 }
             }
         }
-        self.storage.artifacts().record(&artifact, self.events).await?;
+        self.storage
+            .artifacts()
+            .record(&artifact, self.events)
+            .await?;
         Ok(artifact)
     }
 }

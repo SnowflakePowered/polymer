@@ -10,7 +10,7 @@ pub(crate) use writer::StorageWriter;
 
 pub use directory::DirectoryInstall;
 pub use installation::{Installable, Installation};
-pub(crate) use progress::ReportingReader;
+pub(crate) use progress::Reporting;
 pub use progress::{InstallEvent, InstallEvents, InstallPreview};
 
 /// Discriminants are persisted in the artifact database, so they are fixed.

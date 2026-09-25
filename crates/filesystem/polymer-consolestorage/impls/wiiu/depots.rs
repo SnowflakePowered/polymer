@@ -140,11 +140,12 @@ impl Depot for WiiUMetaXmlDepot {
             source.validate(nand, &source.root)?;
             let storage = nand.root();
             Ok(WiiUInstall {
-                events,
+                events: events.clone(),
                 copy: DirectoryInstall::new(
                     source.root.clone(),
                     source.install_path(),
                     storage.clone(),
+                    events.clone(),
                 )
                 .excluding("code/title.tik"),
                 depot: source,
@@ -195,7 +196,10 @@ impl Installable for WiiUInstall {
             version,
             icon,
         );
-        self.storage.artifacts().record(&artifact, self.events).await?;
+        self.storage
+            .artifacts()
+            .record(&artifact, self.events)
+            .await?;
         Ok(artifact)
     }
 }

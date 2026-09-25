@@ -9,7 +9,7 @@ use super::tmd::{Content, Tmd, align};
 use crate::Error;
 use crate::impls::wii::nand::WiiNand;
 use crate::impls::wii::ticket::Ticket;
-use crate::installable::{Depot, DepotType};
+use crate::installable::{Depot, DepotType, InstallEvent, InstallEvents};
 use crate::keys::{KeyIdentity, KeyRecord};
 use crate::nand::VirtualNand;
 
@@ -29,6 +29,7 @@ struct WadHeader {
 
 const _: () = assert!(size_of::<WadHeader>() == 0x20);
 
+#[derive(Clone)]
 pub struct WiiWadDepot {
     pub(super) path: PathBuf,
     pub(super) ticket: Ticket,
@@ -38,6 +39,27 @@ pub struct WiiWadDepot {
 }
 
 impl WiiWadDepot {
+    /// Decrypt and hash every content, publishing progress as a verifying phase.
+    /// Returns the names of the contents that don't validate.
+    fn verify(&self, events: &InstallEvents) -> Vec<String> {
+        let Ok(key) = self.select_title_key() else {
+            return vec!["ticket".to_owned()];
+        };
+        events(InstallEvent::Phase {
+            name: "Verifying".to_owned(),
+            total: self.tmd.contents.iter().map(|content| content.size).sum(),
+        });
+        self.tmd
+            .contents
+            .iter()
+            .filter_map(|content| {
+                let verified = self.decrypt_content(content, &key);
+                events(InstallEvent::Advance(content.size));
+                verified.err().map(|_| format!("{:08x}.app", content.id))
+            })
+            .collect()
+    }
+
     pub fn title_id(&self) -> u64 {
         self.tmd.title_id
     }
@@ -165,18 +187,7 @@ impl Depot for WiiWadDepot {
         Ok(())
     }
     fn validate_contents(&self) -> Vec<String> {
-        let Ok(key) = self.select_title_key() else {
-            return vec!["ticket".to_owned()];
-        };
-        self.tmd
-            .contents
-            .iter()
-            .filter_map(|content| {
-                self.decrypt_content(content, &key)
-                    .err()
-                    .map(|_| format!("{:08x}.app", content.id))
-            })
-            .collect()
+        self.verify(&(std::sync::Arc::new(|_| {}) as InstallEvents))
     }
 
     fn depot_type(&self) -> DepotType {
@@ -198,7 +209,18 @@ impl Depot for WiiWadDepot {
         let source = self;
 
         crate::installable::Installation::prepare(async move {
-            source.validate(nand, &source.path)?;
+            source.validate_target(nand)?;
+            let verifying = source.clone();
+            let verified = events.clone();
+            let missing = tokio::task::spawn_blocking(move || verifying.verify(&verified))
+                .await
+                .map_err(|e| Error::Unsupported(format!("WAD worker failed: {e}")))?;
+            if !missing.is_empty() {
+                return Err(Error::InvalidDepot {
+                    root: source.path.display().to_string(),
+                    missing,
+                });
+            }
             super::install::WadInstall::new(source, nand.root(), events).await
         })
     }
