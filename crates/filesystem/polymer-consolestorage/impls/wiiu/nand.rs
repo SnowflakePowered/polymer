@@ -102,7 +102,7 @@ impl VirtualNand for WiiUNand {
             ));
         }
         let mut layers: Vec<Arc<dyn MountableStorage>> =
-            vec![Arc::new(crate::MemoryStorage::new(files)?)];
+            vec![Arc::new(crate::MemoryStorage::writable(files)?)];
         if let Some(saves) = saves {
             layers.push(saves);
         }

@@ -103,7 +103,11 @@ impl Ticket {
         Ok(Self {
             encrypted_title_key: body.encrypted_title_key,
             title_id: body.title_id.get(),
-            common_key_index: body.common_key_index,
+            common_key_index: if body.common_key_index > 2 {
+                0
+            } else {
+                body.common_key_index
+            },
             fakesigned: signature_bytes.iter().all(|byte| *byte == 0),
         })
     }
