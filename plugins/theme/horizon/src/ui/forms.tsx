@@ -72,11 +72,11 @@ export function RadioGroup(props: FieldProps & { value: string | null; items: re
   } }));
   return <Field {...props} id={field.id}><ArkRadio.RootProvider {...field.attributes()} ref={root} value={api} class="hz-radio"><For each={props.items}>{item => <ArkRadio.Item value={item.value} disabled={item.disabled}><ArkRadio.ItemControl /><ArkRadio.ItemText>{item.label}</ArkRadio.ItemText><ArkRadio.ItemHiddenInput class="hz-hidden-input" /></ArkRadio.Item>}</For></ArkRadio.RootProvider></Field>;
 }
-export function Slider(props: FieldProps & { value: number; min?: number; max?: number; step?: number; onValueChange(value: number): void }) {
+export function Slider(props: FieldProps & { value: number; min?: number; max?: number; step?: number; format?: (value: number) => string; onValueChange(value: number): void }) {
   const field = fieldAccessibility(props);
   const navigation = useNavigation();
   let root!: HTMLDivElement;
-  const api = useSlider(() => ({ ids: { thumb: () => `${field.id}-control` }, value: [props.value], min: props.min ?? 0, max: props.max ?? 100, step: props.step ?? 1, disabled: props.disabled, readOnly: props.readOnly, required: props.required, invalid: !!props.error, name: props.name, onValueChange: details => props.onValueChange(details.value[0]) }));
+  const api = useSlider(() => ({ ids: { thumb: () => `${field.id}-control` }, thumbAlignment: "center", value: [props.value], min: props.min ?? 0, max: props.max ?? 100, step: props.step ?? 1, disabled: props.disabled, readOnly: props.readOnly, required: props.required, invalid: !!props.error, name: props.name, onValueChange: details => props.onValueChange(details.value[0]) }));
   useInputScope(() => ({ root, handle: action => {
     if (action.type !== "move" || props.disabled || props.readOnly) return false;
     if (action.direction === "left") { api().decrement(0); return true; }
@@ -98,5 +98,5 @@ export function Slider(props: FieldProps & { value: number; min?: number; max?: 
     root.addEventListener("focusin", focusin, true);
     onCleanup(() => { root.removeEventListener("keydown", keydown, true); root.removeEventListener("focusin", focusin, true); });
   });
-  return <Field {...props} id={field.id}><ArkSlider.RootProvider ref={root} value={api} class="hz-slider"><ArkSlider.Control><ArkSlider.Track><ArkSlider.Range /></ArkSlider.Track><ArkSlider.Thumb index={0} data-select-ring {...field.attributes()}><ArkSlider.HiddenInput class="hz-hidden-input" /></ArkSlider.Thumb></ArkSlider.Control><ArkSlider.ValueText /></ArkSlider.RootProvider></Field>;
+  return <Field {...props} id={field.id}><ArkSlider.RootProvider ref={root} value={api} class="hz-slider"><ArkSlider.Control><ArkSlider.Track><ArkSlider.Range /></ArkSlider.Track><ArkSlider.Thumb index={0} data-select-ring {...field.attributes()}><ArkSlider.HiddenInput class="hz-hidden-input" /></ArkSlider.Thumb></ArkSlider.Control><ArkSlider.ValueText>{props.format ? props.format(props.value) : props.value}</ArkSlider.ValueText></ArkSlider.RootProvider></Field>;
 }

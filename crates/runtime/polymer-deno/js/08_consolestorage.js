@@ -19,7 +19,7 @@ import {
   op_consolestorage_save_delete,
 } from "ext:core/ops";
 
-export function createConsoleStorage() {
+export function createConsoleStorage(library) {
   const storageData = new WeakMap();
   const storages = new Set();
   const deleted = new WeakSet();
@@ -79,7 +79,18 @@ export function createConsoleStorage() {
       return Object.freeze({
         list: async () => (await this.inspect()).artifacts,
         planRemoval: (ids) => op_consolestorage_plan_removal(this.platform, this.id, ids),
-        uninstall: (plan) => op_consolestorage_uninstall(this.platform, this.id, plan.requested, plan.revision),
+        uninstall: async (plan) => {
+          const artifacts = await op_consolestorage_uninstall(this.platform, this.id, plan.requested, plan.revision);
+          const removed = new Set(plan.requested.map((id) => id.toLowerCase()));
+          const games = await library.Library.games.list({ platform: this.platform });
+          await Promise.all(games
+            .filter((game) => game.launchables.some((item) => item.titleId && removed.has(item.titleId.replace(/^0x/i, "").toLowerCase())))
+            .map(async (game) => {
+              await library.Library.games.delete(game.id);
+              library.contentChanged({ rootBinaryId: game.id });
+            }));
+          return artifacts;
+        },
       });
     }
 

@@ -18,8 +18,8 @@ const input = createInput();
 const controllers = createControllers(initialControllerApi.controllers);
 const webrtc = createWebRtc();
 const emulator = createEmulator(webrtc);
-const consolestorage = createConsoleStorage();
 const library = createLibrary();
+const consolestorage = createConsoleStorage(library);
 
 const Polymer = Object.freeze({
   meta: { debug: false },

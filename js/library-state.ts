@@ -7,6 +7,7 @@ export type LibraryEntry = {
   emulator: string;
   playedAt: number;
   artwork?: string;
+  icon?: string;
   scraping?: { completed: number; total: number };
 };
 
@@ -122,7 +123,8 @@ export class LibraryState {
         const launchable = game.launchables.find(item => !item.parentBinaryId) ?? game.launchables[0];
         if (!launchable) return [];
         return [[game.id, { path: launchable.path, name: this.title(game), platform: game.platform,
-          emulator: "", playedAt: 0, artwork: await this.artwork(game) }] as const];
+          emulator: "", playedAt: 0, artwork: await this.media(game, ["media.boxart.front", "media.banner", "media.logo", "media.boxart.full"]),
+          icon: await this.media(game, ["media.icon", "banner.icon", "banner.banner"]) }] as const];
       }));
       if (this.disposed || revision !== this.revision) return;
       this.games = games;
@@ -160,8 +162,7 @@ export class LibraryState {
     return game.launchables[0]?.path.split(/[\\/]/).pop() || game.id;
   }
 
-  private async artwork(game: LibraryGame): Promise<string | undefined> {
-    const keys = ["media.boxart.front", "media.banner", "media.logo", "media.boxart.full"];
+  private async media(game: LibraryGame, keys: readonly string[]): Promise<string | undefined> {
     const candidates = game.metadata.filter(item =>
       keys.includes(item.key) && item.data.kind === "media" && item.data.mediaType.startsWith("image/")
     ).sort((a, b) => keys.indexOf(a.key) - keys.indexOf(b.key) || a.ordinal - b.ordinal);

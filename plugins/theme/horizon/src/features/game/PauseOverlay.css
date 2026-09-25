@@ -1,8 +1,14 @@
 @layer horizon {
-.horizon-quick-menu.hz-side-panel { position: fixed; top: 0; right: 0; bottom: 0; width: min(32rem, 40vw); min-width: 22rem; height: auto; max-height: none; padding: 1.5rem 1.5rem 0; border-radius: 0; }
+.horizon-quick-menu.hz-side-panel { position: fixed; top: 0; right: 0; bottom: 0; width: min(32rem, 40vw); min-width: 22rem; height: auto; max-height: none; padding: 1.5rem 1.5rem 0; border-radius: 0; background: color-mix(in srgb, var(--hz-overlay) 80%, transparent); }
 .horizon-quick-menu .hz-dialog-title { border-bottom: 0; }
-.horizon-quick-menu .hz-action-row, .horizon-quick-menu .hz-setting-row { min-height: 3.75rem; padding: .75rem 1rem; border: 0; border-top: 1px solid var(--hz-divider); }
+.horizon-quick-menu-title { display: flex; align-items: center; gap: 1rem; min-width: 0; }
+.horizon-quick-menu-title img { width: auto; height: 2.5rem; max-width: 8rem; flex: none; object-fit: contain; border-radius: var(--hz-radius); }
+.horizon-quick-menu-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.horizon-quick-menu .hz-action-row, .horizon-quick-menu .hz-setting-row { min-height: 3.75rem; padding: .75rem 1rem; border: 0; border-top: 1px solid var(--hz-divider); border-radius: var(--hz-radius); }
+.horizon-quick-menu .hz-action-row > span { display: flex; align-items: center; gap: .75rem; }
+.horizon-quick-menu .hz-action-row svg { flex: none; }
 .horizon-quick-menu .hz-dialog-body > :last-child { border-bottom: 1px solid var(--hz-divider); }
+.horizon-quick-menu .hz-setting-row[data-focus-ring] { background: color-mix(in srgb, var(--hz-panel) 60%, transparent); }
 .horizon-quick-menu .hz-actions { margin-top: auto; padding-top: 0; }
 .horizon-quick-menu .hz-hints { flex: 1; border-top: 1px solid var(--hz-divider); }
 }
