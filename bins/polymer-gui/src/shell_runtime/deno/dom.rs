@@ -443,7 +443,7 @@ pub(super) struct LayoutSnapshot {
     images: Vec<f64>,
 }
 
-pub(super) type LayoutCache = HashMap<NodeId, ([f32; 4], ScrollSnapshot)>;
+pub(super) type LayoutCache = HashMap<NodeId, ([f32; 4], u64, ScrollSnapshot)>;
 
 impl LayoutSnapshot {
     fn image_size(node: &Node) -> [f32; 2] {
@@ -457,6 +457,15 @@ impl LayoutSnapshot {
             return [image.size().width(), image.size().height()];
         }
         [0.0; 2]
+    }
+
+    fn image_identity(node: &Node) -> u64 {
+        match &node.data {
+            NodeData::Element(element) => element
+                .raster_image_data()
+                .map_or(0, |image| image.data.id()),
+            _ => 0,
+        }
     }
 
     pub(super) fn has_changes(&self) -> bool {
@@ -494,7 +503,9 @@ impl LayoutSnapshot {
             let image = Self::image_size(node);
             let geometry = [size[0], size[1], image[0], image[1]];
             let scroll = ScrollSnapshot::from_node(document, node);
-            let (old_geometry, old_scroll) = previous.get(&id).copied().unwrap_or_default();
+            let identity = Self::image_identity(node);
+            let (old_geometry, old_identity, old_scroll) =
+                previous.get(&id).copied().unwrap_or_default();
             let script_id = id.to_script();
             if old_geometry[..2] != geometry[..2] {
                 snapshot.resized.push(script_id);
@@ -502,10 +513,10 @@ impl LayoutSnapshot {
             if (old_scroll.left, old_scroll.top) != (scroll.left, scroll.top) {
                 snapshot.scrolled.push(script_id);
             }
-            if old_geometry[2..] != geometry[2..] {
+            if old_geometry[2..] != geometry[2..] || old_identity != identity {
                 snapshot.images.push(script_id);
             }
-            current.insert(id, (geometry, scroll));
+            current.insert(id, (geometry, identity, scroll));
         }
         *previous = current;
         snapshot
