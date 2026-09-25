@@ -1,5 +1,5 @@
 use crate::Error;
-use crate::installable::DepotFile;
+use crate::installable::{DepotFile, InstallEvent, InstallEvents, Reporting};
 use crate::storage::Storage;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -15,10 +15,28 @@ pub struct DirectoryInstall {
     pub storage: Arc<dyn Storage>,
     entries: walkdir::IntoIter,
     excluded: BTreeSet<String>,
+    events: InstallEvents,
 }
 
 impl DirectoryInstall {
-    pub fn new(root: PathBuf, base: String, storage: Arc<dyn Storage>) -> Self {
+    /// Publishes the depot's total size as the installing phase.
+    pub fn new(
+        root: PathBuf,
+        base: String,
+        storage: Arc<dyn Storage>,
+        events: InstallEvents,
+    ) -> Self {
+        let total = WalkDir::new(&root)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+            .filter_map(|entry| entry.metadata().ok())
+            .map(|metadata| metadata.len())
+            .sum();
+        events(InstallEvent::Phase {
+            name: "Installing".to_owned(),
+            total,
+        });
         let entries = WalkDir::new(&root).into_iter();
         Self {
             root,
@@ -26,6 +44,7 @@ impl DirectoryInstall {
             storage,
             entries,
             excluded: BTreeSet::new(),
+            events,
         }
     }
 
@@ -73,7 +92,13 @@ impl DirectoryInstall {
                 .map_err(|error| Error::io(entry.path(), error))?;
             let copied = self
                 .storage
-                .install_file(Box::new(source), &destination)
+                .install_file(
+                    Box::new(Reporting {
+                        inner: source,
+                        events: self.events.clone(),
+                    }),
+                    &destination,
+                )
                 .await?;
             let file = DepotFile::new(
                 PathBuf::from(destination),

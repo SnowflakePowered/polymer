@@ -27,6 +27,7 @@ struct PkgExtraction {
     manifest: Vec<DepotFile>,
     index: usize,
     storage: Arc<dyn VolumeStorage>,
+    events: crate::installable::InstallEvents,
 }
 
 impl Ps3PkgInstall {
@@ -37,22 +38,32 @@ impl Ps3PkgInstall {
     ) -> Result<Self, Error> {
         let depot = depot.clone();
         let mut install = tokio::task::spawn_blocking(move || {
-            let file = depot.verified_file()?;
+            let file = depot.verified_file(&events)?;
             let size = file
                 .metadata()
                 .map_err(|error| Error::io(&depot.path, error))?
                 .len();
             let archive = PkgArchive::from_reader(file, size)
                 .map_err(|error| Error::io(&depot.path, error))?;
+            events(crate::installable::InstallEvent::Phase {
+                name: "Installing".to_owned(),
+                total: archive
+                    .items()
+                    .iter()
+                    .filter(|item| item.is_file)
+                    .map(|item| item.file_size)
+                    .sum(),
+            });
             Ok::<_, Error>(Self {
-                events,
                 extraction: Arc::new(Mutex::new(PkgExtraction {
                     archive,
                     root: depot.install_path.clone(),
                     manifest: Vec::new(),
                     index: 0,
                     storage: storage.clone(),
+                    events: events.clone(),
                 })),
+                events,
                 depot,
                 retained: Vec::new(),
                 storage,
@@ -95,8 +106,11 @@ impl PkgExtraction {
                 position: 0,
                 hash: blake3::Hasher::new(),
             };
+            let events = &self.events;
             self.archive
-                .stream_item(self.index, &mut writer)
+                .stream_item_with_progress(self.index, &mut writer, |bytes| {
+                    events(crate::installable::InstallEvent::Advance(bytes))
+                })
                 .map_err(|error| Error::io(&PathBuf::from(&path), error))?;
             self.record_file(path.clone(), writer)?;
         } else {
@@ -153,7 +167,10 @@ impl Installable for Ps3PkgInstall {
                 .or(self.depot.version),
             icon,
         );
-        self.storage.artifacts().record(&artifact, self.events).await?;
+        self.storage
+            .artifacts()
+            .record(&artifact, self.events)
+            .await?;
         Ok(artifact)
     }
 }

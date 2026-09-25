@@ -1,7 +1,10 @@
 use super::DepotType;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
+use tokio::io::{AsyncRead, ReadBuf};
 
 /// What an installation will produce, known before any contents are extracted.
 #[derive(Clone, Debug, serde::Serialize)]
@@ -29,16 +32,45 @@ pub enum InstallEvent {
 /// Receives an installation's progress, including from extraction workers.
 pub type InstallEvents = Arc<dyn Fn(InstallEvent) + Send + Sync>;
 
-/// Reads through `inner`, reporting each read as completed bytes.
-pub(crate) struct ReportingReader<'a, R> {
-    pub inner: R,
-    pub report: &'a dyn Fn(InstallEvent),
+/// Passes reads and writes through to `inner`, publishing each transfer as completed bytes.
+pub(crate) struct Reporting<T> {
+    pub inner: T,
+    pub events: InstallEvents,
 }
 
-impl<R: Read> Read for ReportingReader<'_, R> {
+impl<R: Read> Read for Reporting<R> {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
         let count = self.inner.read(bytes)?;
-        (self.report)(InstallEvent::Advance(count as u64));
+        (self.events)(InstallEvent::Advance(count as u64));
         Ok(count)
+    }
+}
+
+impl<W: Write> Write for Reporting<W> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let count = self.inner.write(bytes)?;
+        (self.events)(InstallEvent::Advance(count as u64));
+        Ok(count)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+impl<R: AsyncRead + Unpin> AsyncRead for Reporting<R> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let before = buffer.filled().len();
+        let poll = Pin::new(&mut self.inner).poll_read(cx, buffer);
+        if let Poll::Ready(Ok(())) = poll {
+            (self.events)(InstallEvent::Advance(
+                (buffer.filled().len() - before) as u64,
+            ));
+        }
+        poll
     }
 }

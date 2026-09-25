@@ -24,6 +24,7 @@ struct TicketBody {
 
 const _: () = assert!(size_of::<TicketBody>() == COMMON_KEY_INDEX + 1);
 
+#[derive(Clone)]
 pub struct Ticket {
     pub(crate) encrypted_title_key: [u8; 16],
     pub(crate) title_id: u64,

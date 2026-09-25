@@ -1,3 +1,4 @@
+use crate::installable::{InstallEvent, InstallEvents, Reporting};
 use hmac::{Hmac, Mac};
 use sha1::Sha1;
 use std::fs::File;
@@ -102,11 +103,19 @@ impl Pup {
         }
         Ok(version.to_owned())
     }
-    pub fn verify(&mut self) -> io::Result<()> {
+    /// Authenticate every entry, publishing the bytes read as a verifying phase.
+    pub fn verify(&mut self, events: &InstallEvents) -> io::Result<()> {
+        events(InstallEvent::Phase {
+            name: "Verifying".to_owned(),
+            total: self.entries.iter().map(|entry| entry.size.get()).sum(),
+        });
         let mut buffer = [0; 64 * 1024];
         for (entry, expected) in self.entries.iter().zip(&self.hashes) {
             self.file.seek(SeekFrom::Start(entry.offset.get()))?;
-            let mut reader = (&mut self.file).take(entry.size.get());
+            let mut reader = Reporting {
+                inner: (&mut self.file).take(entry.size.get()),
+                events: events.clone(),
+            };
             let mut mac = Hmac::<Sha1>::new_from_slice(&PUP_KEY).unwrap();
             loop {
                 let n = reader.read(&mut buffer)?;
@@ -115,7 +124,7 @@ impl Pup {
                 }
                 mac.update(&buffer[..n]);
             }
-            if reader.limit() != 0 || mac.verify_slice(expected).is_err() {
+            if reader.inner.limit() != 0 || mac.verify_slice(expected).is_err() {
                 return Err(io::Error::other(format!(
                     "PUP entry {:#x} failed authentication",
                     entry.id.get()

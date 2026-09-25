@@ -1,6 +1,7 @@
 mod install;
 mod metadata;
 
+use crate::installable::{InstallEvent, InstallEvents, Reporting};
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -106,7 +107,7 @@ impl Ps3PkgDepot {
     }
 
     /// Check the package footer digest, also detecting replacement after open().
-    fn verified_file(&self) -> Result<File, Error> {
+    fn verified_file(&self, events: &InstallEvents) -> Result<File, Error> {
         let mut file = File::open(&self.path).map_err(|error| Error::io(&self.path, error))?;
         let size = file
             .metadata()
@@ -115,8 +116,15 @@ impl Ps3PkgDepot {
         let body_size = size
             .checked_sub(32)
             .ok_or_else(|| Error::malformed("PKG", "missing package digest"))?;
+        events(InstallEvent::Phase {
+            name: "Verifying".to_owned(),
+            total: body_size,
+        });
         let mut hash = Sha1::new();
-        let mut reader = (&mut file).take(body_size);
+        let mut reader = Reporting {
+            inner: (&mut file).take(body_size),
+            events: events.clone(),
+        };
         let mut buffer = [0; 64 * 1024];
         loop {
             let len = reader
@@ -206,7 +214,7 @@ impl Depot for Ps3PkgDepot {
         Ok(())
     }
     fn validate_contents(&self) -> Vec<String> {
-        match self.verified_file() {
+        match self.verified_file(&(std::sync::Arc::new(|_| {}) as InstallEvents)) {
             Ok(_) => Vec::new(),
             Err(_) => vec![self.path.display().to_string()],
         }
@@ -227,7 +235,7 @@ impl Depot for Ps3PkgDepot {
         let source = self;
 
         crate::installable::Installation::prepare(async move {
-            source.validate(nand, &source.path)?;
+            source.validate_target(nand)?;
             install::Ps3PkgInstall::new(&source, nand.root(), events).await
         })
     }

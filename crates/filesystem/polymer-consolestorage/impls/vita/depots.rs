@@ -146,11 +146,12 @@ impl Depot for VitaDirectoryDepot {
             source.validate(nand, &source.root)?;
             let storage = nand.root();
             Ok(VitaInstall {
-                events,
+                events: events.clone(),
                 copy: DirectoryInstall::new(
                     source.root.clone(),
                     source.destination.clone(),
                     storage.clone(),
+                    events.clone(),
                 ),
                 depot: source,
                 storage,
@@ -206,7 +207,10 @@ impl Installable for VitaInstall {
                 .map(str::to_owned),
             icon,
         );
-        self.storage.artifacts().record(&artifact, self.events).await?;
+        self.storage
+            .artifacts()
+            .record(&artifact, self.events)
+            .await?;
         Ok(artifact)
     }
 }

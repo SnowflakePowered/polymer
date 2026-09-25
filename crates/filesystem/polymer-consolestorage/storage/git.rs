@@ -17,7 +17,7 @@ use tokio::sync::Notify;
 use uuid::Uuid;
 
 use crate::installable::artifacts::Artifact;
-use crate::installable::{DepotFile, DepotType, IconHint, InstallEvent, InstallEvents, ReportingReader};
+use crate::installable::{DepotFile, DepotType, IconHint, InstallEvent, InstallEvents, Reporting};
 use crate::storage::manifest::{ArtifactRegistry, ArtifactSummary, VolumeInfo};
 use crate::{
     BoxFuture, ChangeSignal, DirectoryStorage, EntryKind, Error, InstallResult, Metadata,
@@ -986,14 +986,14 @@ impl GitVolumeStorage {
         message: &str,
         extra_parent: Option<gix::ObjectId>,
     ) -> Result<Option<gix::ObjectId>, Error> {
-        self.commit_pending_reporting(message, extra_parent, &|_| {})
+        self.commit_pending_reporting(message, extra_parent, &(Arc::new(|_| {}) as InstallEvents))
     }
 
     /// Write blobs for pending files outside the operation lock, so large commits do not
     /// block readers. A file changed after staging is written again under the lock.
     fn stage_blobs(
         &self,
-        report: &dyn Fn(InstallEvent),
+        events: &InstallEvents,
     ) -> Result<BTreeMap<String, (gix::ObjectId, fs::Metadata)>, Error> {
         let files = self
             .inner
@@ -1008,7 +1008,7 @@ impl GitVolumeStorage {
                 Ok((path.clone(), source, metadata))
             })
             .collect::<Result<Vec<_>, Error>>()?;
-        report(InstallEvent::Phase {
+        events(InstallEvent::Phase {
             name: "Saving".to_owned(),
             total: files.iter().map(|(_, _, metadata)| metadata.len()).sum(),
         });
@@ -1021,7 +1021,10 @@ impl GitVolumeStorage {
                 .write_stream(
                     gix::objs::Kind::Blob,
                     metadata.len(),
-                    &mut ReportingReader { inner: file, report },
+                    &mut Reporting {
+                        inner: file,
+                        events: events.clone(),
+                    },
                 )
                 .map_err(|error| Error::git("write volume blob", error))?;
             staged.insert(path, (id, metadata));
@@ -1040,9 +1043,9 @@ impl GitVolumeStorage {
         &self,
         message: &str,
         extra_parent: Option<gix::ObjectId>,
-        report: &dyn Fn(InstallEvent),
+        events: &InstallEvents,
     ) -> Result<Option<gix::ObjectId>, Error> {
-        let staged = self.stage_blobs(report)?;
+        let staged = self.stage_blobs(events)?;
         let _guard = self.inner.platform.0.operation.lock();
         let reference = self.ref_name();
         let repo = self.inner.platform.repository().to_thread_local();
@@ -2215,7 +2218,7 @@ impl ArtifactRegistry for GitArtifactRegistry {
             let storage = self.storage();
             let message = format!("Polymer install {}", artifact.id());
             tokio::task::spawn_blocking(move || {
-                storage.commit_pending_reporting(&message, None, &*events)
+                storage.commit_pending_reporting(&message, None, &events)
             })
             .await
             .map_err(|error| Error::Unsupported(format!("commit worker failed: {error}")))??;
