@@ -45,15 +45,15 @@ impl Ps3PkgInstall {
                 .len();
             let archive = PkgArchive::from_reader(file, size)
                 .map_err(|error| Error::io(&depot.path, error))?;
-            events(crate::installable::InstallEvent::Phase {
-                name: "Installing".to_owned(),
-                total: archive
+            events.phase(
+                crate::installable::InstallPhase::Installing,
+                archive
                     .items()
                     .iter()
                     .filter(|item| item.is_file)
                     .map(|item| item.file_size)
                     .sum(),
-            });
+            );
             Ok::<_, Error>(Self {
                 extraction: Arc::new(Mutex::new(PkgExtraction {
                     archive,
@@ -108,9 +108,7 @@ impl PkgExtraction {
             };
             let events = &self.events;
             self.archive
-                .stream_item_with_progress(self.index, &mut writer, |bytes| {
-                    events(crate::installable::InstallEvent::Advance(bytes))
-                })
+                .stream_item_with_progress(self.index, &mut writer, |bytes| events.advance(bytes))
                 .map_err(|error| Error::io(&PathBuf::from(&path), error))?;
             self.record_file(path.clone(), writer)?;
         } else {

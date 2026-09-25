@@ -17,7 +17,7 @@ use tokio::sync::Notify;
 use uuid::Uuid;
 
 use crate::installable::artifacts::Artifact;
-use crate::installable::{DepotFile, DepotType, IconHint, InstallEvent, InstallEvents, Reporting};
+use crate::installable::{DepotFile, DepotType, IconHint, InstallEvents, Reporting};
 use crate::storage::manifest::{ArtifactRegistry, ArtifactSummary, VolumeInfo};
 use crate::{
     BoxFuture, ChangeSignal, DirectoryStorage, EntryKind, Error, InstallResult, Metadata,
@@ -986,7 +986,7 @@ impl GitVolumeStorage {
         message: &str,
         extra_parent: Option<gix::ObjectId>,
     ) -> Result<Option<gix::ObjectId>, Error> {
-        self.commit_pending_reporting(message, extra_parent, &(Arc::new(|_| {}) as InstallEvents))
+        self.commit_pending_reporting(message, extra_parent, &InstallEvents::default())
     }
 
     /// Write blobs for pending files outside the operation lock, so large commits do not
@@ -1008,10 +1008,7 @@ impl GitVolumeStorage {
                 Ok((path.clone(), source, metadata))
             })
             .collect::<Result<Vec<_>, Error>>()?;
-        events(InstallEvent::Phase {
-            name: "Saving".to_owned(),
-            total: files.iter().map(|(_, _, metadata)| metadata.len()).sum(),
-        });
+        events.phase(crate::installable::InstallPhase::Finalizing, files.iter().map(|(_, _, metadata)| metadata.len()).sum());
         let repo = self.inner.platform.repository().to_thread_local();
         let mut staged = BTreeMap::new();
         for (path, source, metadata) in files {

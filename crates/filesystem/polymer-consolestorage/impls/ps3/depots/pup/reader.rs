@@ -1,4 +1,4 @@
-use crate::installable::{InstallEvent, InstallEvents, Reporting};
+use crate::installable::{InstallEvents, Reporting};
 use hmac::{Hmac, Mac};
 use sha1::Sha1;
 use std::fs::File;
@@ -105,10 +105,10 @@ impl Pup {
     }
     /// Authenticate every entry, publishing the bytes read as a verifying phase.
     pub fn verify(&mut self, events: &InstallEvents) -> io::Result<()> {
-        events(InstallEvent::Phase {
-            name: "Verifying".to_owned(),
-            total: self.entries.iter().map(|entry| entry.size.get()).sum(),
-        });
+        events.phase(
+            crate::installable::InstallPhase::Verifying,
+            self.entries.iter().map(|entry| entry.size.get()).sum(),
+        );
         let mut buffer = [0; 64 * 1024];
         for (entry, expected) in self.entries.iter().zip(&self.hashes) {
             self.file.seek(SeekFrom::Start(entry.offset.get()))?;

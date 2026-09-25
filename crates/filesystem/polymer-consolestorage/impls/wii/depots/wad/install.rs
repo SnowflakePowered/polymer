@@ -26,10 +26,10 @@ impl WadInstall {
             .artifacts()
             .artifact(&format!("{:016x}", source.title_id()))
             .await?;
-        events(crate::installable::InstallEvent::Phase {
-            name: "Installing".to_owned(),
-            total: source.tmd.contents.iter().map(|content| content.size).sum(),
-        });
+        events.phase(
+            crate::installable::InstallPhase::Installing,
+            source.tmd.contents.iter().map(|content| content.size).sum(),
+        );
         Ok(Self {
             events,
             key: source.select_title_key()?,
@@ -78,7 +78,7 @@ impl WadInstall {
         if changed {
             self.shared.write(&*self.storage).await?;
         }
-        (self.events)(crate::installable::InstallEvent::Advance(content.size));
+        self.events.advance(content.size);
         Ok(DepotFile::new(
             PathBuf::from(path),
             copied.blake3,

@@ -63,10 +63,10 @@ impl PupInstall {
             if packages.is_empty() {
                 return Err(Error::malformed("PUP", "no flash packages"));
             }
-            events(crate::installable::InstallEvent::Phase {
-                name: "Installing".to_owned(),
-                total: packages.iter().map(|(_, _, size)| size).sum(),
-            });
+            events.phase(
+                crate::installable::InstallPhase::Installing,
+                packages.iter().map(|(_, _, size)| size).sum(),
+            );
             Ok(Self {
                 extraction: Arc::new(Mutex::new(PupExtraction {
                     file: pup.file,
@@ -152,7 +152,7 @@ impl PupExtraction {
         let bytes = Sce::flash_tar(&bytes).map_err(|e| Error::io(&path, e))?;
         self.extract(&bytes)?;
         let (name, _, size) = self.packages[self.index].clone();
-        (self.events)(crate::installable::InstallEvent::Advance(size));
+        self.events.advance(size);
         self.index += 1;
         Ok(name)
     }

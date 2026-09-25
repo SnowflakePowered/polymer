@@ -1,4 +1,4 @@
-use super::{Depot, DepotFile, InstallEvent, InstallEvents, artifacts::Artifact};
+use super::{Depot, DepotFile, InstallEvents, artifacts::Artifact};
 use crate::Error;
 use crate::nand::VirtualNand;
 use futures::channel::oneshot;
@@ -30,7 +30,7 @@ impl<'a> Installation<'a> {
     ) -> Result<Self, Error> {
         let keys = depot.embedded_keys()?;
         if let Some(title) = depot.preview() {
-            events(InstallEvent::Title(title));
+            events.title(title);
         }
         let mut installation = depot.install(nand, events);
         installation.keys = keys;

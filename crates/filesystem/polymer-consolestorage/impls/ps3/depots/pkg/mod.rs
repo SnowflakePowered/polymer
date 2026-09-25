@@ -1,7 +1,7 @@
 mod install;
 mod metadata;
 
-use crate::installable::{InstallEvent, InstallEvents, Reporting};
+use crate::installable::{InstallEvents, Reporting};
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -116,10 +116,7 @@ impl Ps3PkgDepot {
         let body_size = size
             .checked_sub(32)
             .ok_or_else(|| Error::malformed("PKG", "missing package digest"))?;
-        events(InstallEvent::Phase {
-            name: "Verifying".to_owned(),
-            total: body_size,
-        });
+        events.phase(crate::installable::InstallPhase::Verifying, body_size);
         let mut hash = Sha1::new();
         let mut reader = Reporting {
             inner: (&mut file).take(body_size),
@@ -214,7 +211,7 @@ impl Depot for Ps3PkgDepot {
         Ok(())
     }
     fn validate_contents(&self) -> Vec<String> {
-        match self.verified_file(&(std::sync::Arc::new(|_| {}) as InstallEvents)) {
+        match self.verified_file(&InstallEvents::default()) {
             Ok(_) => Vec::new(),
             Err(_) => vec![self.path.display().to_string()],
         }

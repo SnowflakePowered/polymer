@@ -1,9 +1,7 @@
 use super::CiaDepot;
 use crate::{
     Error, VolumeStorage,
-    installable::{
-        DepotFile, InstallEvent, InstallEvents, Installable, StorageWriter, artifacts::Artifact,
-    },
+    installable::{DepotFile, InstallEvents, Installable, StorageWriter, artifacts::Artifact},
 };
 use csis::{CiaArchive, CiaSection};
 use parking_lot::Mutex;
@@ -50,10 +48,10 @@ impl CiaInstall {
             let archive = CiaArchive::open(&depot.path)
                 .map_err(|e| Error::malformed("CIA", e.to_string()))?;
             let entries = depot.jobs(&archive);
-            events(InstallEvent::Phase {
-                name: "Installing".to_owned(),
-                total: archive.items().iter().map(|item| item.size).sum(),
-            });
+            events.phase(
+                crate::installable::InstallPhase::Installing,
+                archive.items().iter().map(|item| item.size).sum(),
+            );
             let retained = Self::retain_contents(&depot, &archive, &*storage, old.as_ref())?;
             let old_paths = old
                 .as_ref()
@@ -145,7 +143,7 @@ impl CiaInstall {
         archive: &mut CiaArchive<File>,
         storage: &dyn VolumeStorage,
         entry: Entry,
-        report: &dyn Fn(InstallEvent),
+        events: &InstallEvents,
     ) -> Result<DepotFile, Error> {
         let mut writer = StorageWriter {
             file: storage.create(&entry.path)?,
@@ -155,7 +153,7 @@ impl CiaInstall {
         match entry.content {
             Content::Item(index) => {
                 archive.stream_item_with_progress(index, &mut writer, |bytes| {
-                    report(InstallEvent::Advance(bytes));
+                    events.advance(bytes);
                     Ok(())
                 })
             }
@@ -182,7 +180,7 @@ impl Installable for CiaInstall {
         let events = self.events.clone();
         tokio::task::spawn_blocking(move || {
             let mut archive = archive.lock();
-            let file = Self::write_entry(&mut archive, &*storage, entry, &*events)?;
+            let file = Self::write_entry(&mut archive, &*storage, entry, &events)?;
             Ok(Some(vec![file]))
         })
         .await
@@ -203,7 +201,10 @@ impl Installable for CiaInstall {
                 self.storage.remove(&path)?;
             }
         }
-        self.storage.artifacts().record(&artifact, self.events).await?;
+        self.storage
+            .artifacts()
+            .record(&artifact, self.events)
+            .await?;
         Ok(artifact)
     }
 }

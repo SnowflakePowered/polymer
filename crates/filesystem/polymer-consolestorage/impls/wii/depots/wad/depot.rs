@@ -9,7 +9,7 @@ use super::tmd::{Content, Tmd, align};
 use crate::Error;
 use crate::impls::wii::nand::WiiNand;
 use crate::impls::wii::ticket::Ticket;
-use crate::installable::{Depot, DepotType, InstallEvent, InstallEvents};
+use crate::installable::{Depot, DepotType, InstallEvents};
 use crate::keys::{KeyIdentity, KeyRecord};
 use crate::nand::VirtualNand;
 
@@ -45,16 +45,16 @@ impl WiiWadDepot {
         let Ok(key) = self.select_title_key() else {
             return vec!["ticket".to_owned()];
         };
-        events(InstallEvent::Phase {
-            name: "Verifying".to_owned(),
-            total: self.tmd.contents.iter().map(|content| content.size).sum(),
-        });
+        events.phase(
+            crate::installable::InstallPhase::Verifying,
+            self.tmd.contents.iter().map(|content| content.size).sum(),
+        );
         self.tmd
             .contents
             .iter()
             .filter_map(|content| {
                 let verified = self.decrypt_content(content, &key);
-                events(InstallEvent::Advance(content.size));
+                events.advance(content.size);
                 verified.err().map(|_| format!("{:08x}.app", content.id))
             })
             .collect()
@@ -187,7 +187,7 @@ impl Depot for WiiWadDepot {
         Ok(())
     }
     fn validate_contents(&self) -> Vec<String> {
-        self.verify(&(std::sync::Arc::new(|_| {}) as InstallEvents))
+        self.verify(&InstallEvents::default())
     }
 
     fn depot_type(&self) -> DepotType {

@@ -84,7 +84,7 @@ async fn op_platform_install(
                 "loadprogress",
                 json!({
                     "state": "loading",
-                    "message": status.message,
+                    "message": status.file.clone().unwrap_or_else(|| status.phase.to_string()),
                     "completed": status.completed,
                     "total": status.total,
                 }),
