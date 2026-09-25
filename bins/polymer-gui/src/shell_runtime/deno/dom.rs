@@ -99,7 +99,12 @@ pub(super) fn op_dom_children(state: &OpState, node: f64) -> Vec<f64> {
     shell
         .base()
         .get_node(NodeId::from_script(node))
-        .map(|node| node.children.iter().map(|child| child.to_script()).collect())
+        .map(|node| {
+            node.children
+                .iter()
+                .map(|child| child.to_script())
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -107,7 +112,11 @@ pub(super) fn op_dom_children(state: &OpState, node: f64) -> Vec<f64> {
 #[string]
 pub(super) fn op_dom_text(state: &OpState, node: f64) -> String {
     let shell = state.borrow::<SharedShellDocument>().0.borrow();
-    match shell.base().get_node(NodeId::from_script(node)).map(|node| &node.data) {
+    match shell
+        .base()
+        .get_node(NodeId::from_script(node))
+        .map(|node| &node.data)
+    {
         Some(NodeData::Text(text)) => text.content.clone(),
         Some(NodeData::Comment { contents }) => contents.clone(),
         _ => String::new(),
@@ -146,7 +155,12 @@ pub(super) fn op_dom_attributes(state: &OpState, node: f64) -> Vec<(String, Stri
             element
                 .attrs()
                 .iter()
-                .map(|attribute| (attribute.name.local.to_string(), attribute.value.to_string()))
+                .map(|attribute| {
+                    (
+                        attribute.name.local.to_string(),
+                        attribute.value.to_string(),
+                    )
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -254,7 +268,9 @@ pub(super) fn op_dom_rect(state: &OpState, node: f64) -> Vec<f32> {
         .get_node(NodeId::from_script(node))
         .filter(|node| node.is_element())
         .and_then(|node| RectSnapshot::from_layout(document, node))
-        .map_or(vec![0.0; 4], |rect| vec![rect.x, rect.y, rect.width, rect.height])
+        .map_or(vec![0.0; 4], |rect| {
+            vec![rect.x, rect.y, rect.width, rect.height]
+        })
 }
 
 #[op2]
@@ -275,7 +291,9 @@ pub(super) fn op_dom_image_size(state: &OpState, node: f64) -> Vec<f32> {
     shell
         .base()
         .get_node(NodeId::from_script(node))
-        .map_or(vec![0.0; 2], |node| LayoutSnapshot::image_size(node).to_vec())
+        .map_or(vec![0.0; 2], |node| {
+            LayoutSnapshot::image_size(node).to_vec()
+        })
 }
 
 #[op2(fast)]
@@ -314,14 +332,18 @@ pub(super) fn op_dom_create_fragment(state: &OpState) -> f64 {
 pub(super) fn op_dom_template_content(state: &OpState, node: f64) -> f64 {
     let shared = state.borrow::<SharedShellDocument>();
     let mut shell = shared.0.borrow_mut();
-    shell.template_content(NodeId::from_script(node)).to_script()
+    shell
+        .template_content(NodeId::from_script(node))
+        .to_script()
 }
 
 #[op2(fast)]
 pub(super) fn op_dom_clone(state: &OpState, node: f64, deep: bool) -> f64 {
     let shared = state.borrow::<SharedShellDocument>();
     let mut shell = shared.0.borrow_mut();
-    shell.clone_node(NodeId::from_script(node), deep).to_script()
+    shell
+        .clone_node(NodeId::from_script(node), deep)
+        .to_script()
 }
 
 #[op2(fast)]

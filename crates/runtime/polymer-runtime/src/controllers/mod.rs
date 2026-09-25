@@ -352,7 +352,6 @@ impl ControllerManager {
                 "discovery": { "active": false },
                 "candidates": [],
             })),
-            "layouts": polymer_controllers::layout::InputLayout::all(),
         })
     }
 

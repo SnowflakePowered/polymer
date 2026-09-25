@@ -31,11 +31,13 @@ impl EventHandler for DenoEventHandler<'_> {
         document: &mut dyn blitz_dom::Document,
         event_state: &mut EventState,
     ) {
-        if matches!(event.data, DomEventData::Focus(_) | DomEventData::FocusIn(_))
-            && document
-                .inner()
-                .try_root_element()
-                .is_some_and(|root| root.id == event.target)
+        if matches!(
+            event.data,
+            DomEventData::Focus(_) | DomEventData::FocusIn(_)
+        ) && document
+            .inner()
+            .try_root_element()
+            .is_some_and(|root| root.id == event.target)
         {
             return;
         }

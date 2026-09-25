@@ -7,12 +7,12 @@ use serde_json::Value;
 use super::dom::{
     LayoutCache, LayoutSnapshot, ScriptNodeId, op_dom_append_child, op_dom_attributes,
     op_dom_children, op_dom_clone, op_dom_closest, op_dom_create_comment, op_dom_create_element,
-    op_dom_create_fragment, op_dom_create_text, op_dom_element_by_id, op_dom_focus,
-    op_dom_focused, op_dom_get_attribute, op_dom_image_size, op_dom_insert_before,
-    op_dom_is_connected, op_dom_matches, op_dom_node_info, op_dom_query, op_dom_rect,
-    op_dom_relative, op_dom_remove_attribute, op_dom_remove_child, op_dom_scroll_metrics,
-    op_dom_set_attribute, op_dom_set_inner_html, op_dom_set_text, op_dom_take_layout,
-    op_dom_template_content, op_dom_text, op_dom_text_content,
+    op_dom_create_fragment, op_dom_create_text, op_dom_element_by_id, op_dom_focus, op_dom_focused,
+    op_dom_get_attribute, op_dom_image_size, op_dom_insert_before, op_dom_is_connected,
+    op_dom_matches, op_dom_node_info, op_dom_query, op_dom_rect, op_dom_relative,
+    op_dom_remove_attribute, op_dom_remove_child, op_dom_scroll_metrics, op_dom_set_attribute,
+    op_dom_set_inner_html, op_dom_set_text, op_dom_take_layout, op_dom_template_content,
+    op_dom_text, op_dom_text_content,
 };
 use super::input::{EventResult, op_event_result};
 use super::modules::{BrowserModuleLoader, document_scripts, execute_document_script};
@@ -186,7 +186,11 @@ impl Runtime {
                     local_storage,
                     inspect: true,
                 });
-                worker.js_runtime_mut().op_state().borrow_mut().put(document);
+                worker
+                    .js_runtime_mut()
+                    .op_state()
+                    .borrow_mut()
+                    .put(document);
                 worker.js_runtime_mut().execute_script(
                     "polymer:shell/meta.js",
                     format!("Polymer.meta.debug = {debug}; Object.freeze(Polymer.meta);"),

@@ -364,7 +364,7 @@ pub fn keyboard_code(code: &str) -> Option<(u32, u16, bool)> {
             .map(|number| 0x6f + number)?,
         value if value.starts_with("VK_") => u32::from_str_radix(&value[3..], 16)
             .ok()
-            .filter(|key| *key <= u16::MAX.into())?,
+            .filter(|key| *key <= u32::from(u16::MAX))?,
         _ => return None,
     };
     let mapped = unsafe { MapVirtualKeyW(virtual_key, MAPVK_VK_TO_VSC_EX) };

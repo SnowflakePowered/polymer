@@ -493,7 +493,10 @@ pub struct SurfaceOffer {
 impl SurfaceOffer {
     #[cfg(target_os = "macos")]
     pub fn metal_resources(&self) -> Option<polymer_ipc::xpc::MetalResources> {
-        self.manager.upgrade()?.router()?.metal_resources(self.connection)
+        self.manager
+            .upgrade()?
+            .router()?
+            .metal_resources(self.connection)
     }
 
     pub fn buffer_release_sender(&self) -> Option<crate::capture::BufferReleaseSender> {

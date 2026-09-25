@@ -54,7 +54,10 @@ struct CaptureWorkers {
 
 impl FrameRouter {
     #[cfg(target_os = "macos")]
-    pub(crate) fn metal_resources(&self, connection: u64) -> Option<polymer_ipc::xpc::MetalResources> {
+    pub(crate) fn metal_resources(
+        &self,
+        connection: u64,
+    ) -> Option<polymer_ipc::xpc::MetalResources> {
         self.shared.resources.get(&connection).map(|v| v.clone())
     }
 
@@ -264,7 +267,12 @@ fn receive_connection(
                 }
                 Message::StreamReady(stream) => {
                     #[cfg(target_os = "macos")]
-                    shared.resources.insert(connection, socket.take_stream_resources().ok_or_else(|| std::io::Error::other("missing Metal resources"))?);
+                    shared.resources.insert(
+                        connection,
+                        socket
+                            .take_stream_resources()
+                            .ok_or_else(|| std::io::Error::other("missing Metal resources"))?,
+                    );
                     let (accepted, mut response) = oneshot::oneshot();
                     (callbacks.offer)(connection, stream, accepted);
                     accepted_stream = loop {

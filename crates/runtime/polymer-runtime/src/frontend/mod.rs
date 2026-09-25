@@ -88,11 +88,28 @@ impl ControllerApiState {
         self.controller_assignments.read().clone()
     }
 
-    pub fn publish(&self, controllers: Value, assignments: crate::ControllerAssignmentSnapshot) {
+    pub fn revision(&self) -> u64 {
+        self.state.read()["revision"].as_u64().unwrap_or_default()
+    }
+
+    pub fn controllers(&self) -> Value {
+        self.state.read()["controllers"].clone()
+    }
+
+    pub fn publish(&self, controllers: &Value, assignments: crate::ControllerAssignmentSnapshot) {
         let mut state = self.state.write();
-        if state["controllers"] == controllers {
+        let published = &state["controllers"];
+        let unchanged = controllers.as_object().is_some_and(|next| {
+            next.iter()
+                .all(|(key, value)| published.get(key) == Some(value))
+        });
+        if unchanged {
             return;
         }
+        let mut controllers = controllers.clone();
+        controllers["layouts"] =
+            serde_json::to_value(polymer_controllers::layout::InputLayout::all())
+                .unwrap_or_default();
         *self.controller_assignments.write() = assignments;
         let revision = state["revision"]
             .as_u64()

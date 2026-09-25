@@ -1,10 +1,7 @@
 use deno_core::{OpState, op2};
 use serde_json::Value;
 
-use super::{
-    dom::LayoutSnapshot,
-    input::EventResult,
-};
+use super::{dom::LayoutSnapshot, input::EventResult};
 
 #[derive(Default)]
 pub(super) struct BridgeState {
