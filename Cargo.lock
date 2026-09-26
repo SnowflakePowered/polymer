@@ -16430,7 +16430,7 @@ dependencies = [
 
 [[package]]
 name = "xa11y-core"
-version = "0.13.0"
+version = "0.15.0"
 dependencies = [
  "png 0.18.1",
  "serde",
@@ -16441,7 +16441,7 @@ dependencies = [
 
 [[package]]
 name = "xa11y-macos"
-version = "0.13.0"
+version = "0.15.0"
 dependencies = [
  "cc",
  "core-foundation 0.10.1",
@@ -16452,7 +16452,7 @@ dependencies = [
 
 [[package]]
 name = "xa11y-windows"
-version = "0.13.0"
+version = "0.15.0"
 dependencies = [
  "serde_json",
  "windows 0.62.2",
