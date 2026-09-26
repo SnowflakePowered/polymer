@@ -145,6 +145,7 @@ pub struct InputDefinition {
     pub driver: Box<str>,
     pub device: Box<str>,
     pub mapping: IndexMap<BindingKey, Box<str>>,
+    pub mouse: IndexMap<BindingKey, Box<str>>,
     pub options: Box<[Handle<OptionDefinition>]>,
     pub layouts: BTreeMap<Box<str>, LayoutDefinition>,
     pub platforms: BTreeMap<Box<str>, PlatformDefinition>,

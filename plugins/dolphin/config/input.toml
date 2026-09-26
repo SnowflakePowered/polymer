@@ -82,6 +82,12 @@ device = "SDL/{index}/{name}"
 "analog.accelerometer.right.z-" = "`Accel R Down`"
 "analog.accelerometer.right.z+" = "`Accel R Up`"
 
+[input.mouse]
+"pointer.x-" = "`Axis 6-`"
+"pointer.x+" = "`Axis 6+`"
+"pointer.y-" = "`Axis 7-`"
+"pointer.y+" = "`Axis 7+`"
+
 [input.layouts.GAMECUBE_CONTROLLER]
 "analog.stick.left.x-" = "Main Stick/Left"
 "analog.stick.left.y-" = "Main Stick/Down"

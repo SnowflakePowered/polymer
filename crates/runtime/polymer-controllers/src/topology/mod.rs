@@ -484,12 +484,19 @@ impl ControllerTopology {
 
     pub fn port_assignments(&self) -> Result<polymer_config::ast::PortAssignments, String> {
         self.validate()?;
-        let mut assignments = BTreeMap::<String, BTreeMap<usize, String>>::new();
+        let mut assignments =
+            BTreeMap::<String, BTreeMap<usize, polymer_config::ast::PortAssignment>>::new();
         for mapping in &self.mappings {
             assignments
                 .entry(mapping.target.group.clone())
                 .or_default()
-                .insert(mapping.target.port, mapping.layout.clone());
+                .insert(
+                    mapping.target.port,
+                    polymer_config::ast::PortAssignment {
+                        layout: mapping.layout.clone().into_boxed_str(),
+                        mouse: matches!(mapping.source, Some(SourceSelector::KeyboardMouse)),
+                    },
+                );
         }
         assignments
             .into_iter()
@@ -497,12 +504,10 @@ impl ControllerTopology {
                 let layouts = layouts
                     .into_iter()
                     .enumerate()
-                    .map(|(expected, (port, layout))| {
-                        (port == expected)
-                            .then(|| layout.into_boxed_str())
-                            .ok_or_else(|| {
-                                format!("controller topology omits target {group}:{expected}")
-                            })
+                    .map(|(expected, (port, assignment))| {
+                        (port == expected).then_some(assignment).ok_or_else(|| {
+                            format!("controller topology omits target {group}:{expected}")
+                        })
                     })
                     .collect::<Result<Vec<_>, String>>()?
                     .into_boxed_slice();

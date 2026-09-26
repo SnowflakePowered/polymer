@@ -2,7 +2,7 @@ use super::plugin::{PackageError, PluginClass, PluginPackage, confined_path};
 use crate::emulator::{EmulatorPluginInstance, EmulatorPort};
 use polymer_config::{
     ConfigurationToml,
-    ast::{ConfigurationDefinition, ConfigurationInstance, PortAssignments},
+    ast::{ConfigurationDefinition, ConfigurationInstance, PortAssignment, PortAssignments},
 };
 use serde::Deserialize;
 use std::{fs, path::PathBuf, sync::Arc};
@@ -158,7 +158,10 @@ impl PluginPackage<EmulatorBlock> {
                 .remove(group.as_ref())
                 .map(Vec::from)
                 .unwrap_or_default();
-            values.push(layout.into());
+            values.push(PortAssignment {
+                layout: layout.into(),
+                mouse: false,
+            });
             assignments.insert(group.clone(), values.into_boxed_slice());
         }
         Ok(assignments)

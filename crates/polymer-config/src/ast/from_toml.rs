@@ -249,10 +249,21 @@ fn lower_input<'de>(
     platforms: BTreeMap<&'de str, PortTable<'de>>,
 ) -> InputDefinition {
     let (mapping, options) = lower_layout_mapping(definition, input.mapping);
+    let mouse = input
+        .mouse
+        .map(|table| {
+            table
+                .mapping
+                .into_iter()
+                .map(|(key, value)| (key, value.into()))
+                .collect()
+        })
+        .unwrap_or_default();
     InputDefinition {
         driver: input.driver.into(),
         device: input.device.into(),
         mapping,
+        mouse,
         options,
         layouts: input
             .layouts

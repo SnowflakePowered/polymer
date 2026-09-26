@@ -1318,6 +1318,11 @@ def build_input(root: Path, spec_root: Path, systems: dict[str, str],
 
     lines += ['[input]', 'driver = "sdl3"', 'device = "SDL/{index}/{name}"', ""]
     lines += build_sdl_mapping(root, report) + [""]
+    lines.append("[input.mouse]")
+    lines += [f"{toml_key(key)} = {toml_string(f'`{value}`')}"
+              for key, value in SDL_POINTER_AND_MOTION_MAPPING.items()
+              if key.startswith("pointer.")]
+    lines.append("")
 
     bound = 0
     exposed = 0

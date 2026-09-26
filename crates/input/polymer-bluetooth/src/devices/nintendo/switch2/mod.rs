@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::devices::{
     ConnectOptions, ConnectionPolicy, ControllerDevice, ControllerSession, DeviceIdentity,
-    HostIdentity, MatchConfidence, PairingPolicy, ProfileId, ReconnectPolicy,
+    HostIdentity, MatchConfidence, PairingPolicy, ProfileId, ReconnectPolicy, VendorProductId,
 };
 use crate::transport::ble::{BleDevice, GattProfile};
 use crate::{DeviceAddr, Error, Result, Transport, TransportKind};
@@ -248,6 +248,18 @@ where
 
     fn matches(&self, identity: &DeviceIdentity) -> Option<MatchConfidence> {
         M::matches_switch2(identity)
+    }
+
+    fn vendor_product(&self, identity: &DeviceIdentity) -> Option<VendorProductId> {
+        identity.vendor_product().or_else(|| {
+            let product = identity
+                .manufacturer_data(NINTENDO_MANUFACTURER_ID)
+                .filter(|data| data.starts_with(&ADVERTISEMENT_PREFIX))
+                .and_then(|data| data.get(5..7))
+                .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+                .or_else(|| M::PRODUCT_IDS.first().copied())?;
+            Some(VendorProductId::new(super::NINTENDO_VENDOR_ID, product))
+        })
     }
 
     fn supports_transport(&self, _transport: TransportKind) -> bool {

@@ -25,8 +25,8 @@ export function InputProvider(props: ParentProps) {
   const repeat = new ControllerRepeat(emit);
   createEffect(() => { navigation.version(); repeat.clear(); });
   onMount(() => {
-    const axes = new Map<string, number>(), buttons = new Map<number, number>();
-    const reset = () => { repeat.clear(); axes.clear(); buttons.clear(); };
+    const axes = new Map<string, number>(), buttons = new Map<number, number>(), released = new Map<string, number>();
+    const reset = () => { repeat.clear(); };
     const input = (event: Event) => {
       const index = (event as CustomEvent<{ index: number }>).detail.index;
       const state = window.Polymer.input.get(index);
@@ -40,8 +40,9 @@ export function InputProvider(props: ParentProps) {
       ] as const;
       for (const [bit, name] of mapping) {
         const key = `${index}:button:${bit}`, pressed = !!(state.buttons & (1 << bit));
-        if (!pressed) { repeat.stop(key); continue; }
+        if (!pressed) { repeat.stop(key); if (previous & (1 << bit)) released.set(key, performance.now()); continue; }
         if (previous & (1 << bit)) continue;
+        if (performance.now() - (released.get(key) ?? -Infinity) < 50) continue;
         const moving = bit >= 11;
         const action: InputAction = { type: moving ? "move" : name as InputAction["type"], direction: moving ? name as Direction : undefined, origin: "controller", sourceId, event: new Event("controller-action", { cancelable: true }) };
         const scopeVersion = navigation.version();

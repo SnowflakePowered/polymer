@@ -1,7 +1,7 @@
 //! Native configuration and launch-selection services.
 
 use crate::{ControllerAssignmentSnapshot, ControllerManager, ControllerProfiles};
-use polymer_config::ast::PortAssignments;
+use polymer_config::ast::{PortAssignment, PortAssignments};
 use polymer_config::input::{ControllerBindings, ProjectionMode, SourceSelector, VirtualPort};
 use polymer_controllers::{ControllerMapping, ControllerTarget, ControllerTopology};
 use polymer_input::InputHub;
@@ -515,10 +515,10 @@ fn default_groups(
                 .map(|port| {
                     let selected_layout = assigned
                         .and_then(|layouts| layouts.get(port.index))
-                        .and_then(|layout| {
+                        .and_then(|assignment| {
                             port.layouts
                                 .iter()
-                                .find(|candidate| candidate.as_str() == layout.as_ref())
+                                .find(|candidate| candidate.as_str() == &*assignment.layout)
                         })
                         .cloned()
                         .unwrap_or_else(|| port.layouts[0].clone());
@@ -583,7 +583,10 @@ fn validate_assignments(
                     port.layout
                 ));
             }
-            layouts.push(port.layout.clone().into_boxed_str());
+            layouts.push(PortAssignment {
+                layout: port.layout.clone().into_boxed_str(),
+                mouse: false,
+            });
             gamepads.push(DefaultGamepad {
                 force_mouse: false,
                 source: None,

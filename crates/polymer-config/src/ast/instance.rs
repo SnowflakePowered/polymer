@@ -12,7 +12,13 @@ use super::{
     SettingPath, Value, ValueKind, family,
 };
 
-pub type PortAssignments = BTreeMap<Box<str>, Box<[Box<str>]>>;
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PortAssignment {
+    pub layout: Box<str>,
+    pub mouse: bool,
+}
+
+pub type PortAssignments = BTreeMap<Box<str>, Box<[PortAssignment]>>;
 
 /// A launch-specific, flat collection of configuration values.
 #[derive(Clone)]
@@ -143,7 +149,8 @@ impl InstanceBuilder {
                 });
             }
 
-            for (index, layout_name) in assignments.iter().enumerate() {
+            for (index, assignment) in assignments.iter().enumerate() {
+                let layout_name = &assignment.layout;
                 let port = group
                     .iter()
                     .find(|port| port.index == index)
