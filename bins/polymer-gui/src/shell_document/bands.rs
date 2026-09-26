@@ -36,6 +36,10 @@ use style::{
 /// below a pixel, so a replayed clip is indistinguishable from the original.
 const CLIP_TOLERANCE: f64 = 0.05;
 
+/// Compositing group ids for isolated layers, disjoint from tracked-surface
+/// source ids.
+const ISOLATED_GROUP: u64 = 1 << 63;
+
 /// Computed CSS properties the GPU compositor needs for a game view.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GameViewStyle {
@@ -130,6 +134,9 @@ pub struct BandedScene<'a, S> {
     /// are stable for the lifetime of an emulator layout even when unrelated
     /// paint commands are inserted earlier in the document.
     promoted_layers: HashMap<u64, u64>,
+    /// Paint-order ordinal of the next isolated layer. A layer is isolated by
+    /// the identity filter `filter: opacity(1)`.
+    next_isolated_group: u64,
 }
 
 impl<'a, S: PaintScene + Default> BandedScene<'a, S> {
@@ -146,6 +153,7 @@ impl<'a, S: PaintScene + Default> BandedScene<'a, S> {
             next_layer_id: 1,
             command_meta: (0..band_count).map(|_| Vec::new()).collect(),
             promoted_layers: HashMap::new(),
+            next_isolated_group: 0,
         }
     }
 
@@ -376,6 +384,7 @@ impl<S: PaintScene + Default> PaintScene for BandedScene<'_, S> {
         self.stack.clear();
         self.current = 0;
         self.next_layer_id = 1;
+        self.next_isolated_group = 0;
         self.promoted_layers.clear();
         for metadata in &mut self.command_meta {
             metadata.clear();
@@ -396,6 +405,23 @@ impl<S: PaintScene + Default> PaintScene for BandedScene<'_, S> {
     ) {
         let blend = blend.into();
         let clip = clip.into_path(CLIP_TOLERANCE);
+        if filter.as_ref().is_some_and(|filter| {
+            !filter.nodes().is_empty()
+                && filter
+                    .nodes()
+                    .iter()
+                    .all(|node| node.effect == anyrender::filters::FilterEffect::opacity(1.0))
+        }) && backdrop_filter.is_none()
+            && alpha == 1.0
+        {
+            self.promoted_layers.insert(
+                self.next_layer_id,
+                ISOLATED_GROUP | self.next_isolated_group,
+            );
+            self.next_isolated_group += 1;
+            self.push_clip_layer(transform, &clip);
+            return;
+        }
         let id = self.next_layer_id;
         self.next_layer_id += 1;
         self.band().push_layer(

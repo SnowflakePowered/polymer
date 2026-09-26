@@ -223,6 +223,102 @@ opt-level = 3
 [profile.dev.package.gix-hashtable]
 opt-level = 3
 
+[profile.dev.package.stylo]
+opt-level = 3
+
+[profile.dev.package.stylo_atoms]
+opt-level = 3
+
+[profile.dev.package.stylo_dom]
+opt-level = 3
+
+[profile.dev.package.stylo_traits]
+opt-level = 3
+
+[profile.dev.package.stylo_taffy]
+opt-level = 3
+
+[profile.dev.package.selectors]
+opt-level = 3
+
+[profile.dev.package.servo_arc]
+opt-level = 3
+
+[profile.dev.package.taffy]
+opt-level = 3
+
+[profile.dev.package."blitz-dom"]
+opt-level = 3
+
+[profile.dev.package."blitz-paint"]
+opt-level = 3
+
+[profile.dev.package."blitz-traits"]
+opt-level = 3
+
+[profile.dev.package.parley]
+opt-level = 3
+
+[profile.dev.package.parley_engine]
+opt-level = 3
+
+[profile.dev.package.fontique]
+opt-level = 3
+
+[profile.dev.package.skrifa]
+opt-level = 3
+
+[profile.dev.package."read-fonts"]
+opt-level = 3
+
+[profile.dev.package.harfrust]
+opt-level = 3
+
+[profile.dev.package.kurbo]
+opt-level = 3
+
+[profile.dev.package.peniko]
+opt-level = 3
+
+[profile.dev.package.anyrender]
+opt-level = 3
+
+[profile.dev.package.anyrender_vello]
+opt-level = 3
+
+[profile.dev.package.vello]
+opt-level = 3
+
+[profile.dev.package.vello_encoding]
+opt-level = 3
+
+[profile.dev.package.wgpu]
+opt-level = 3
+
+[profile.dev.package."wgpu-core"]
+opt-level = 3
+
+[profile.dev.package."wgpu-hal"]
+opt-level = 3
+
+[profile.dev.package."wgpu-types"]
+opt-level = 3
+
+[profile.dev.package.naga]
+opt-level = 3
+
+[profile.dev.package."gpu-allocator"]
+opt-level = 3
+
+[profile.dev.package.guillotiere]
+opt-level = 3
+
+[profile.dev.package.egui]
+opt-level = 3
+
+[profile.dev.package.epaint]
+opt-level = 3
+
 [patch.crates-io]
 consolespec = { path = "../consolespec/consolespec" }
 gumshoe = { path = "../gumshoe/gumshoe" }

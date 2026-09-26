@@ -191,11 +191,12 @@ fn pointer_hit_node(
         && local_y >= overflow.y0 as f32
         && local_y <= overflow.y1 as f32;
     let matches_hoisted = node.stacking_context.as_ref().is_some_and(|context| {
-        let area = context.content_area;
-        local_x >= area.left + node.scroll_offset().x as f32
-            && local_x <= area.right + node.scroll_offset().x as f32
-            && local_y >= area.top + node.scroll_offset().y as f32
-            && local_y <= area.bottom + node.scroll_offset().y as f32
+        let area =
+            context.hoisted_content_bbox(document.tree(), node.id, document.viewport().scale_f64());
+        local_x >= area.left
+            && local_x <= area.right
+            && local_y >= area.top
+            && local_y <= area.bottom
     });
     if !matches_self && !matches_overflow && !matches_hoisted {
         return None;
@@ -211,13 +212,9 @@ fn pointer_hit_node(
 
     if let Some(context) = &node.stacking_context {
         for child in context.pos_z_hoisted_children().rev() {
+            let position = child.position(document.tree(), node.id);
             if let Some(hit) = document.get_node(child.node_id).and_then(|node| {
-                pointer_hit_node(
-                    document,
-                    node,
-                    local_x - child.position.x,
-                    local_y - child.position.y,
-                )
+                pointer_hit_node(document, node, local_x - position.x, local_y - position.y)
             }) {
                 return Some(hit);
             }
@@ -236,13 +233,9 @@ fn pointer_hit_node(
 
     if let Some(context) = &node.stacking_context {
         for child in context.neg_z_hoisted_children().rev() {
+            let position = child.position(document.tree(), node.id);
             if let Some(hit) = document.get_node(child.node_id).and_then(|node| {
-                pointer_hit_node(
-                    document,
-                    node,
-                    local_x - child.position.x,
-                    local_y - child.position.y,
-                )
+                pointer_hit_node(document, node, local_x - position.x, local_y - position.y)
             }) {
                 return Some(hit);
             }
