@@ -27,18 +27,11 @@ pub(crate) struct ShellRasterizer {
     queue: wgpu::Queue,
     adapter_luid: AdapterLuid,
     targets: HashMap<RasterChunkId, ChromeTexture>,
-    /// The complete scene currently represented by each retained band texture.
-    /// Comparing encodings is cheap relative to another Vello dispatch and
-    /// avoids unsafe partial updates across alpha and effect boundaries.
     rendered_scenes: HashMap<RasterChunkId, vello::Scene>,
-    /// Backend-neutral, layer-local scene represented by each retained texture.
-    /// Compositor-only property changes therefore compare equal without Vello.
     recorded_scenes: HashMap<RasterChunkId, anyrender::Scene>,
-    /// Rendered banner placeholders, substituted into Vello's image atlas.
     banners: BannerTextures,
-    /// Chunks showing a banner; their pixels change every frame
-    /// even though their recorded scene does not.
     animated_chunks: HashSet<RasterChunkId>,
+    atlas_images: HashSet<u64>,
 }
 
 fn same_scene(left: &vello::Scene, right: &vello::Scene) -> bool {
@@ -157,6 +150,9 @@ fn scene_images(scene: &vello::Scene) -> impl Iterator<Item = &vello::peniko::Im
 fn shell_instance_options() -> wgpu::InstanceDescriptor {
     let mut options = wgpu::InstanceDescriptor::new_without_display_handle();
     options.backends = wgpu::Backends::DX12;
+    // The D3D12 debug layer costs several percent of a core per shell frame.
+    // Opt back in with `WGPU_DEBUG=1` / `WGPU_VALIDATION=1`.
+    options.flags = wgpu::InstanceFlags::empty().with_env();
     // `Auto` may select a dxcompiler.dll without its matching DXIL.dll. The
     // Shell chrome does not need Shader Model 6, so use the in-box FXC.
     options.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::Fxc;
@@ -223,6 +219,7 @@ impl ShellRasterizer {
             recorded_scenes: HashMap::new(),
             banners: BannerTextures::default(),
             animated_chunks: HashSet::new(),
+            atlas_images: HashSet::new(),
         })
     }
     /// Prepares the initial adapter before the shell document starts. A later foreign
@@ -362,12 +359,11 @@ impl ShellRasterizer {
                 .get_mut(&id)
                 .expect("chunk target was inserted");
             // One Vello renderer rasterizes several independent retained
-            // chunks. Its resolver keys image-atlas residency by blob identity,
-            // so intervening chunk renders can replace atlas storage while a
-            // later scene still appears to reference an already-resident PNG.
-            // Reassert only the images in a chunk that is actually being
-            // rasterized. This is independent of guest presentation and keeps
-            // retained/reused chrome frames free.
+            // chunks. Reassert an image only when it is animated or has not
+            // been written since the atlas texture was last replaced.
+            if scene.encoding().resources.patches.is_empty() {
+                self.atlas_images.clear();
+            }
             let mut animated = false;
             for image in scene_images(&scene) {
                 if let Some(texture) = self.banners.prepare(&self.device, &self.queue, image) {
@@ -381,8 +377,11 @@ impl ShellRasterizer {
                         }),
                     );
                 }
-                animated |= self.banners.is_animated(image);
-                self.renderer.mark_override_image_dirty(image);
+                let banner = self.banners.is_animated(image);
+                animated |= banner;
+                if self.atlas_images.insert(image.data.id()) || banner {
+                    self.renderer.mark_override_image_dirty(image);
+                }
             }
             if animated {
                 self.animated_chunks.insert(id);
