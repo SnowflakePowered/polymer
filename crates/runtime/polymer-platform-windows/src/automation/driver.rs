@@ -21,9 +21,11 @@ impl WindowsAutomationBackend {
         &mut self,
         id: &WindowId,
     ) -> Result<(isize, WindowSnapshot, ElementData), AutomationError> {
+        self.ensure_provider()?;
+        let provider = self.provider.as_ref().expect("provider was attached");
         let record = self
             .catalog
-            .enumerate()?
+            .enumerate(provider)?
             .into_iter()
             .find(|record| record.snapshot.id == *id)
             .ok_or_else(|| {
@@ -32,12 +34,7 @@ impl WindowsAutomationBackend {
                     format!("window '{}' is no longer available", id.0),
                 )
             })?;
-        self.ensure_provider()?;
-        let provider = self.provider.as_ref().expect("provider was attached");
-        let root = provider
-            .element_from_native_window(record.hwnd)
-            .map_err(WindowsAutomationDriver::map_error)?;
-        Ok((record.hwnd, record.snapshot, root))
+        Ok((record.hwnd, record.snapshot, record.element))
     }
 
     fn ensure_provider(&mut self) -> Result<(), AutomationError> {
@@ -73,10 +70,11 @@ impl AutomationBackend for WindowsAutomationBackend {
         Ok(self.provider.as_ref().unwrap().clone())
     }
     fn windows(&mut self) -> Result<Vec<WindowSnapshot>, AutomationError> {
-        self.ensure_desktop()?;
+        self.ensure_provider()?;
+        let provider = self.provider.as_ref().expect("provider was attached");
         Ok(self
             .catalog
-            .enumerate()?
+            .enumerate(provider)?
             .into_iter()
             .map(|r| r.snapshot)
             .collect())
@@ -112,7 +110,7 @@ impl WindowsAutomationDriver {
             catalog: WindowCatalog::new(ProcessId(root_process_id)),
         })))
     }
-    fn map_error(error: xa11y_core::Error) -> AutomationError {
+    pub(super) fn map_error(error: xa11y_core::Error) -> AutomationError {
         Xa11yDriver::<WindowsAutomationBackend>::map_error(error)
     }
 }
