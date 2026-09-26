@@ -35,5 +35,8 @@ windows = { workspace = true, features = [
 ] }
 windows-sys.workspace = true
 
+[dev-dependencies]
+tokio = { version = "1.53.0", features = ["rt", "time"] }
+
 [lints]
 workspace = true

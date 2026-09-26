@@ -161,25 +161,4 @@ impl LocalSocket {
         self.frame = Some(publisher);
         Ok(())
     }
-    pub(crate) fn write_packet(&mut self, data: &[u8]) -> io::Result<()> {
-        self.connection.send(
-            Packet {
-                data: data.to_vec(),
-                ..Default::default()
-            },
-            self.write_timeout,
-        )
-    }
-    pub(crate) fn read_packet(&mut self, maximum: usize) -> io::Result<Vec<u8>> {
-        let packet = self.connection.receive(self.read_timeout)?;
-        if packet.data.len() > maximum
-            || packet.file.is_some()
-            || !packet.surfaces.is_empty()
-            || packet.event.is_some()
-            || packet.consumer_event.is_some()
-        {
-            return Err(invalid_data("unexpected packet contents"));
-        }
-        Ok(packet.data)
-    }
 }

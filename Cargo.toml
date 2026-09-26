@@ -116,7 +116,6 @@ zerocopy = { version = "0.8.55", features = ["derive"] }
 polymer-protocol = { path = "crates/runtime/polymer-protocol" }
 polymer-ipc = { path = "crates/runtime/polymer-ipc" }
 polymer-statistics = { path = "crates/runtime/polymer-statistics" }
-polymer-ui = { path = "crates/runtime/polymer-ui" }
 polymer-platform = { path = "crates/runtime/polymer-platform" }
 polymer-platform-windows = { path = "crates/runtime/polymer-platform-windows" }
 polymer-platform-macos = { path = "crates/runtime/polymer-platform-macos" }

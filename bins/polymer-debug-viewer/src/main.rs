@@ -12,7 +12,7 @@ use polymer_protocol::ExternalSyncKind;
 use polymer_protocol::{ExternalImageKind, FrameReady, input::PointerPhase};
 use polymer_renderer::Extent;
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet},
     env,
     error::Error,
     path::Path,
@@ -66,7 +66,6 @@ use polymer_renderer_d3d12::D3d12Compositor;
 use polymer_renderer_vulkan::VulkanCompositor;
 #[cfg(windows)]
 mod video;
-use polymer_runtime::UiRequest;
 use polymer_statistics::{
     FrameMetrics, LiveStatistics, PresentationMetrics, RecorderHandle, StatisticsSnapshot,
 };
@@ -695,7 +694,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         let mut active_backend = "Waiting";
         let mut active_consumer = "Waiting";
         let mut pressed_keys = HashSet::<KeyCode>::new();
-        let mut pending_ui = VecDeque::<UiRequest>::new();
         let mut last_resize_windows = Vec::new();
 
         Ok(Box::new(move |event, target| match event {
@@ -768,9 +766,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
                 WindowEvent::KeyboardInput { event, .. } => {
-                    if !pending_ui.is_empty() {
-                        return;
-                    }
                     if let PhysicalKey::Code(code) = event.physical_key {
                         #[cfg(target_os = "macos")]
                         if let Some(provider) = &gamepad_provider {
@@ -811,9 +806,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
                 WindowEvent::CursorMoved { position, .. } => {
-                    if !pending_ui.is_empty() {
-                        return;
-                    }
                     pointer_routing.set_cursor(position.x, position.y);
                     let size = window.inner_size();
                     let presentation =
@@ -830,9 +822,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                     );
                 }
                 WindowEvent::MouseInput { state, button, .. } => {
-                    if !pending_ui.is_empty() {
-                        return;
-                    }
                     if let Some(button) = mouse_button(button) {
                         let phase = if state == ElementState::Pressed {
                             PointerPhase::ButtonDown
@@ -855,9 +844,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
                 WindowEvent::MouseWheel { delta, .. } => {
-                    if !pending_ui.is_empty() {
-                        return;
-                    }
                     let (horizontal, vertical) = match delta {
                         MouseScrollDelta::LineDelta(horizontal, vertical) => {
                             ((horizontal * 120.0) as i32, (vertical * 120.0) as i32)
@@ -879,11 +865,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                     );
                 }
                 WindowEvent::RedrawRequested => {
-                    if let Some(active) = &active_target {
-                        while let Ok(request) = active.ui.try_recv() {
-                            pending_ui.push_back(request);
-                        }
-                    }
                     let size = window.inner_size();
                     if size.width == 0 || size.height == 0 {
                         return;
@@ -1251,61 +1232,6 @@ let webrtc_stats = webrtc.as_ref().map(|publisher| publisher.stats());
                                     }
                                 });
                         }
-                        if let Some(forwarded) = pending_ui.front() {
-                            let request = &forwarded.request;
-                            let title = if request.caption.is_empty() {
-                                "Guest message"
-                            } else {
-                                &request.caption
-                            };
-                            let dialog_position =
-                                context.screen_rect().center() - egui::vec2(360.0, 120.0);
-                            let mut selected = None;
-                            if context.input(|input| input.key_pressed(egui::Key::Escape)) {
-                                selected =
-                                    request.escape_result.or(request.default_result).or_else(
-                                        || request.buttons.first().map(|button| button.result),
-                                    );
-                            }
-                            egui::Window::new(title)
-                                .id(egui::Id::new("polymer-forwarded-message-box"))
-                                .order(egui::Order::Foreground)
-                                .fixed_pos(dialog_position)
-                                .collapsible(false)
-                                .resizable(true)
-                                .show(context, |ui| {
-                                    ui.set_max_width(720.0);
-                                    ui.label(&request.text);
-                                    ui.add_space(12.0);
-                                    ui.horizontal(|ui| {
-                                        let dismiss = ui.button("Dismiss");
-                                        dismiss.request_focus();
-                                        if dismiss.clicked() {
-                                            selected = request
-                                                .escape_result
-                                                .or(request.default_result)
-                                                .or_else(|| {
-                                                    request
-                                                        .buttons
-                                                        .first()
-                                                        .map(|button| button.result)
-                                                });
-                                        }
-                                        if ui.button("Close program").clicked() {
-                                            close_requested = true;
-                                        }
-                                    });
-                                });
-                            if close_requested {
-                                pending_ui.pop_front();
-                            } else if let Some(result) = selected
-                                && let Some(forwarded) = pending_ui.pop_front()
-                            {
-                                let _ = forwarded.respond(
-                                    polymer_ipc::ui::MessageBoxResponse { result },
-                                );
-                            }
-                        }
                         let statistics_frame = egui::Frame::window(&context.style())
                             .fill(egui::Color32::TRANSPARENT)
                             .stroke(egui::Stroke::new(
@@ -1489,7 +1415,6 @@ if let (Some(publisher), Some(video_compositor)) =
 
 struct ActiveTarget {
     instance: polymer_runtime::EmulatorInstance,
-    ui: polymer_runtime::UiRequestReceiver,
     // Declared after instance so the guest stops before the mount is released.
     _filesystem: polymer_vfs::MountedFilesystem,
 }
@@ -1616,11 +1541,9 @@ fn start_target_session(
         raw_hid: Vec::new(),
     };
     let _ = instance.input().publish_topology(&topology);
-    let ui = instance.subscribe_ui_requests();
     Ok(StartedTarget {
         target: ActiveTarget {
             instance,
-            ui,
             _filesystem: filesystem,
         },
         provider,

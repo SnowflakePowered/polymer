@@ -80,8 +80,7 @@ impl GuestPlatform {
             ));
         }
 
-        let libraries =
-            Self::hook_libraries(&config.hooks.graphics, &config.hooks.input, config.isolate);
+        let libraries = Self::hook_libraries(&config.hooks.graphics, &config.hooks.input);
         let mut process = TargetProcess::launch(
             &command_line,
             &config.artifact_root,
@@ -227,11 +226,7 @@ impl GuestPlatform {
         Ok(directory)
     }
 
-    fn hook_libraries(
-        hooks: &[GraphicsHook],
-        input_hooks: &[InputHook],
-        isolate: bool,
-    ) -> Vec<InjectionLibrary> {
+    fn hook_libraries(hooks: &[GraphicsHook], input_hooks: &[InputHook]) -> Vec<InjectionLibrary> {
         let mut libraries = Vec::new();
         if hooks
             .iter()
@@ -286,13 +281,6 @@ impl GuestPlatform {
                 "SDL3",
                 "polymer_hook_sdl3.dll",
                 c"PolymerInstallSdl3Hook",
-            ));
-        }
-        if isolate {
-            libraries.push(InjectionLibrary::new(
-                "UI",
-                "polymer_hook_ui.dll",
-                c"PolymerInstallUiHook",
             ));
         }
         if input_hooks.contains(&InputHook::Sdl2) {

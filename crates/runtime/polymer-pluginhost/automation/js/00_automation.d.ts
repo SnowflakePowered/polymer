@@ -109,6 +109,8 @@ export interface UiWindow {
 export interface UiAutomation {
   windows(query?: WindowQuery): Promise<readonly UiWindow[]>;
   waitForWindow(query: WindowQuery, options?: { timeoutMs?: number }): Promise<UiWindow>;
+  /** Yields each dialog window the emulator opens. Requires an emulator window to exist. */
+  messageBoxes(): AsyncGenerator<UiNodeSnapshot, void, undefined>;
 }
 
 export class UiAutomationError extends Error {

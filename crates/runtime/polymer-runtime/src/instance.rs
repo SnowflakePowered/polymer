@@ -1,7 +1,6 @@
 use crate::{
     GraphicsHook, Hooks,
     capture::{self, ConsumerPreference, FrameRouter},
-    ui::{UiRequestReceiver, UiTransport},
 };
 use crossfire::{MRx, MTx, mpmc, oneshot::TxOneshot};
 use dashmap::{DashMap, DashSet};
@@ -560,7 +559,6 @@ pub struct EmulatorInstance {
     process_id: u32,
     lifecycle: Arc<InstanceLifecycle>,
     events: SurfaceEventReceiver,
-    ui_requests: UiRequestReceiver,
 }
 
 impl EmulatorInstance {
@@ -594,13 +592,6 @@ impl EmulatorInstance {
             input.shutdown();
             return Err(LaunchError::InvalidConfig(error));
         }
-        let (ui, ui_requests) = match UiTransport::bind(&config.session, wake.clone()) {
-            Ok(ui) => ui,
-            Err(error) => {
-                input.shutdown();
-                return Err(error.into());
-            }
-        };
         let (event_sender, event_receiver) = mpmc::unbounded_blocking();
         let surfaces = Arc::new(SurfaceManager::new(
             &config,
@@ -627,7 +618,6 @@ impl EmulatorInstance {
             Ok(router) => router,
             Err(error) => {
                 input.shutdown();
-                ui.shutdown();
                 return Err(error.into());
             }
         };
@@ -638,7 +628,6 @@ impl EmulatorInstance {
                 Err(error) => {
                     surfaces.shutdown();
                     input.shutdown();
-                    ui.shutdown();
                     return Err(error.into());
                 }
             };
@@ -649,7 +638,6 @@ impl EmulatorInstance {
                 let _ = process.terminate_tree_and_wait();
                 surfaces.shutdown();
                 input.shutdown();
-                ui.shutdown();
                 return Err(error.into());
             }
         };
@@ -658,7 +646,6 @@ impl EmulatorInstance {
         let lifecycle = Arc::new(InstanceLifecycle {
             guest,
             input: input.clone(),
-            ui,
             state: state.clone(),
             surfaces: surfaces.clone(),
             finishing: AtomicBool::new(false),
@@ -673,7 +660,6 @@ impl EmulatorInstance {
             process_id,
             lifecycle,
             events: event_receiver,
-            ui_requests,
         })
     }
 
@@ -717,10 +703,6 @@ impl EmulatorInstance {
 
     pub fn subscribe_surfaces(&self) -> SurfaceEventReceiver {
         self.events.clone()
-    }
-
-    pub fn subscribe_ui_requests(&self) -> UiRequestReceiver {
-        self.ui_requests.clone()
     }
 
     pub fn audio_state(&self) -> AudioState {
@@ -1129,7 +1111,6 @@ impl SurfaceManager {
 struct InstanceLifecycle {
     guest: Arc<Mutex<Option<Box<dyn Guest>>>>,
     input: InputIpcListener,
-    ui: UiTransport,
     state: Watchable<InstanceState>,
     surfaces: Arc<SurfaceManager>,
     finishing: AtomicBool,
@@ -1172,7 +1153,6 @@ impl InstanceLifecycle {
         }
         self.surfaces.shutdown();
         self.input.shutdown();
-        self.ui.shutdown();
         self.state.replace(InstanceState::Exited(exit));
         self.state.shutdown();
     }
