@@ -2,7 +2,7 @@ mod input;
 
 use polymer_automation::{
     AutomationBackend, AutomationDriver, AutomationError, AutomationRequest, AutomationResponse,
-    InputCommand, WindowId, WindowSnapshot, Xa11yDriver,
+    InputCommand, MessageBoxes, WindowId, WindowSnapshot, Xa11yDriver,
 };
 use std::{collections::HashMap, sync::Arc};
 use xa11y_core::{ElementData, Provider, Role};
@@ -125,6 +125,9 @@ impl AutomationDriver for MacAutomationDriver {
         request: AutomationRequest,
     ) -> Result<AutomationResponse, AutomationError> {
         self.0.execute(request)
+    }
+    fn message_boxes(&mut self) -> Result<MessageBoxes, AutomationError> {
+        self.0.message_boxes()
     }
     fn shutdown(&mut self) {
         self.0.shutdown();

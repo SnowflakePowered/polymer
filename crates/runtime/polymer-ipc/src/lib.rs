@@ -3,7 +3,6 @@
 pub mod control;
 pub mod frame;
 pub mod input;
-pub mod ui;
 
 pub mod shared;
 

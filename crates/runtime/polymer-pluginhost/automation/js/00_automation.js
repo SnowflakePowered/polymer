@@ -1,4 +1,4 @@
-import { op_ui_automation_request } from "ext:core/ops";
+import { op_ui_automation_next_message_box, op_ui_automation_request } from "ext:core/ops";
 
 const DEFAULT_TIMEOUT = 5_000;
 
@@ -339,6 +339,14 @@ export const uiAutomation = Object.freeze({
     const window = value(await request({ type: "waitForWindow", query,
       timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT }), "window");
     return Object.freeze(new UiWindow(window));
+  },
+  async *messageBoxes() {
+    for (;;) {
+      const response = await op_ui_automation_next_message_box();
+      if (!response.ok) throw new UiAutomationError(response.error);
+      if (response.value == null) return;
+      yield response.value;
+    }
   },
 });
 

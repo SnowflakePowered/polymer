@@ -9788,7 +9788,6 @@ dependencies = [
  "polymer-renderer-vulkan",
  "polymer-runtime",
  "polymer-statistics",
- "polymer-ui",
  "polymer-vfs",
  "polymer-vfs-fskit",
  "polymer-vfs-winfsp",
@@ -10129,19 +10128,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "polymer-hook-ui"
-version = "0.1.0"
-dependencies = [
- "parking_lot",
- "polymer-hook",
- "polymer-ipc",
- "polymer-platform-windows",
- "polymer-ui",
- "windows-strings 0.5.1",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "polymer-hook-vulkan-layer"
 version = "0.1.0"
 dependencies = [
@@ -10320,6 +10306,7 @@ dependencies = [
  "polymer-vfs",
  "serde_json",
  "tempfile",
+ "tokio",
  "tracing",
  "windows 0.61.3",
  "windows-sys 0.61.2",
@@ -10637,14 +10624,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
-]
-
-[[package]]
-name = "polymer-ui"
-version = "0.1.0"
-dependencies = [
- "polymer-ipc",
- "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -670,9 +670,9 @@ before and after a guest was `SIGKILL`ed with its destructor never running. **[v
 * **`DesktopThreadAttachment` has no analogue.** Automation works because Accessibility reaches
   across Spaces, not because Polymer can attach a thread to one — and it still costs an Accessibility
   grant that Windows does not require, revoked whenever a staged bundle is re-signed.
-* **Modal dialogs land on the private Space too**, where the user will never see them — an argument
-  for porting `polymer-hook-ui`'s modal interception early, so a guest that would have shown a dialog
-  surfaces it through Polymer instead of hanging invisibly.
+* **Modal dialogs land on the private Space too**, where the user will never see them. The
+  `uiAutomation.messageBoxes()` watch in `polymer-automation` is shared xa11y code, so it reports them
+  here as well once Accessibility window-open events are verified across Spaces.
 
 ### Needs a permission Windows does not: guest UI automation and input forwarding
 
@@ -706,7 +706,6 @@ no OS-level input injection is involved. Accessibility is only required for driv
 | `resume_initial_thread` (suspended launch) | `posix_spawn` + `POSIX_SPAWN_START_SUSPENDED` | Direct equivalent, and required anyway for `DYLD_INSERT_LIBRARIES` |
 | `QueryPerformanceCounter` (`timing.rs`) | `mach_absolute_time` / `clock_gettime_nsec_np` | Trivial |
 | `windows-registry` (emulator discovery) | bundle scanning, `Info.plist`, LaunchServices | Different shape, no real difficulty |
-| `polymer-hook-ui` (modal `MessageBox` interception) | swizzle `NSAlert` / `runModal` | Same ObjC interposition as the Metal hooks |
 | `polymer-vfs-winfsp` | FSKit | Userspace, no kext; macFUSE works but is kext-bound |
 | DInput hooks | n/a | Already slated for deprecation; no macOS analogue needed |
 

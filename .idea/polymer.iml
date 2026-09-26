@@ -15,7 +15,6 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/hooks/polymer-hook-opengl32/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/hooks/polymer-hook-sdl2/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/hooks/polymer-hook-sdl3/src" isTestSource="false" />
-      <sourceFolder url="file://$MODULE_DIR$/crates/hooks/polymer-hook-ui/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/hooks/polymer-hook-vulkan-layer/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/hooks/polymer-hook-win32/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/hooks/polymer-hook/src" isTestSource="false" />
@@ -33,7 +32,6 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/runtime/polymer-protocol/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/runtime/polymer-runtime/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/runtime/polymer-statistics/src" isTestSource="false" />
-      <sourceFolder url="file://$MODULE_DIR$/crates/runtime/polymer-ui/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/polymer-api/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/polymer-config/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/polymer-config/tests" isTestSource="true" />

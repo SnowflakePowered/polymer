@@ -14,7 +14,6 @@ mod library;
 mod savestates;
 mod session;
 mod storage;
-mod ui;
 
 pub use capture::{BufferReleaseSender, ConsumerPreference};
 pub use configuration::{
@@ -41,7 +40,6 @@ pub use polymer_platform::{GraphicsHook, GuestWindowId, Hooks, InputHook};
 pub use savestates::{RgbaScreenshot, SaveStateManager, SaveStateMetadata};
 pub use session::{SessionController, mount_prepared_filesystem};
 pub use storage::launch_storage;
-pub use ui::{UiRequest, UiRequestReceiver};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimeState {

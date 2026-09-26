@@ -421,12 +421,10 @@ Flatpak app ID plus runtime is a different launch shape; preserve the filesystem
 designing that mapping, rather than treating `flatpak` as just an emulator executable.
 **[verified tree; reasoned integration]** `crates/runtime/polymer-platform/src/lib.rs`.
 
-### `polymer-hook-ui` already has a GTK path
+### Modal dialogs come from accessibility events
 
-`crates/hooks/polymer-hook-ui/src/gtk/` hooks `gtk_dialog_run` for modal interception. It currently
-builds as part of a Windows-only crate (the package depends on `polymer-platform-windows` and
-`windows-sys`) **[verified]**, so this is GTK-on-Windows, not Linux support — but the interception
-logic is a starting point.
+Guest message boxes are detected by `polymer-automation` from xa11y window-open events rather than
+by hooking toolkit dialog APIs, so Linux support follows from an AT-SPI xa11y backend.
 
 ## Input: compositor routing plus gamepad policy
 

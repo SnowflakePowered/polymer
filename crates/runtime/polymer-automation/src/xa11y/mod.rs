@@ -1,6 +1,6 @@
 mod snapshot;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -11,11 +11,11 @@ use std::{
 
 use crate::{
     AutomationDriver, AutomationError, AutomationRequest, AutomationResponse, Bounds, Diagnosis,
-    InputCommand, LocatorAction, NodeSnapshot, TreeOptions, UiEvent, WaitCondition, WindowId,
-    WindowMatcher, WindowQuery, WindowSnapshot,
+    InputCommand, LocatorAction, MessageBoxes, NodeSnapshot, TreeOptions, UiEvent, WaitCondition,
+    WindowId, WindowMatcher, WindowQuery, WindowSnapshot,
 };
 use xa11y_core::{
-    ElementData, Error, EventKind, Locator, Provider, RecvStatus, SelectorGroup, StateFlag,
+    ElementData, Error, EventKind, Locator, Provider, RecvStatus, Role, SelectorGroup, StateFlag,
 };
 /// Native window discovery and input; selectors and actions remain shared.
 pub trait AutomationBackend: Send + 'static {
@@ -46,6 +46,7 @@ pub struct Xa11yDriver<B: AutomationBackend> {
     provider: Option<Arc<dyn Provider>>,
     subscriptions: HashMap<u64, EventStream>,
     next_subscription: u64,
+    message_box_cancel: Arc<AtomicBool>,
 }
 
 impl<B: AutomationBackend> Xa11yDriver<B> {
@@ -55,6 +56,7 @@ impl<B: AutomationBackend> Xa11yDriver<B> {
             provider: None,
             subscriptions: HashMap::new(),
             next_subscription: 1,
+            message_box_cancel: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -390,7 +392,56 @@ impl<B: AutomationBackend> AutomationDriver for Xa11yDriver<B> {
         }
     }
 
+    fn message_boxes(&mut self) -> Result<MessageBoxes, AutomationError> {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut processes = HashSet::new();
+        for window in self.backend.windows()? {
+            if !processes.insert(window.process_id) {
+                continue;
+            }
+            let (_, root) = self.window(&window.id)?;
+            let subscription = self
+                .provider
+                .as_ref()
+                .expect("window resolution attached the provider")
+                .subscribe(&root)
+                .map_err(Self::map_error)?;
+            let sender = sender.clone();
+            let cancel = self.message_box_cancel.clone();
+            std::thread::Builder::new()
+                .name("polymer-ui-message-boxes".to_owned())
+                .spawn(move || {
+                    while !cancel.load(Ordering::Acquire) && !sender.is_closed() {
+                        match subscription.recv_status(Duration::from_secs(1)) {
+                            RecvStatus::Event(event) => {
+                                let Some(target) = event.target.filter(|target| {
+                                    matches!(event.kind, EventKind::WindowOpened)
+                                        && (target.role == Role::Dialog || target.states.modal)
+                                }) else {
+                                    continue;
+                                };
+                                if sender.send(Self::node(&target)).is_err() {
+                                    break;
+                                }
+                            }
+                            RecvStatus::Timeout => {}
+                            RecvStatus::Disconnected => break,
+                        }
+                    }
+                })
+                .map_err(|error| AutomationError::platform(error.to_string()))?;
+        }
+        if processes.is_empty() {
+            return Err(AutomationError::new(
+                "windowNotFound",
+                "the emulator has no windows to watch for message boxes",
+            ));
+        }
+        Ok(MessageBoxes(receiver))
+    }
+
     fn shutdown(&mut self) {
+        self.message_box_cancel.store(true, Ordering::Release);
         self.subscriptions.clear();
         self.provider = None;
         self.backend.shutdown();

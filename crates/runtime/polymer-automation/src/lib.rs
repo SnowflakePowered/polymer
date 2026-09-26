@@ -3,10 +3,12 @@
 #![forbid(unsafe_code)]
 
 mod driver;
+mod message_box;
 mod protocol;
 mod session;
 
 pub use driver::AutomationDriver;
+pub use message_box::{MessageBoxes, WatchMessageBoxes};
 pub use protocol::{
     AutomationError, AutomationRequest, AutomationResponse, Bounds, Diagnosis, EventFilter,
     InputCommand, LocatorAction, NodeSnapshot, TreeOptions, UiEvent, WaitCondition, WindowId,
