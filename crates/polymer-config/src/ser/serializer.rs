@@ -9,8 +9,8 @@ use crate::{
     Handle,
     ast::{
         BoolStyleDefinition, ConfigurationDefinition, ConfigurationInstance, EmitDefinition,
-        OptionDefinition, OwnedTargetPath, SettingPath, TargetDefinition, TargetGraph,
-        TargetOutputDefinition, Value,
+        InputDefinition, LayoutDefinition, OptionDefinition, OwnedTargetPath, SettingPath,
+        TargetDefinition, TargetGraph, TargetOutputDefinition, Value,
     },
     error::{Error, Result},
 };
@@ -327,9 +327,9 @@ impl<'a> Serializer<'a> {
         for (group_name, group) in platform {
             let assignments = self.instance.port_assignments().get(group_name.as_ref());
             for port in group {
-                let layout_name = assignments
-                    .and_then(|assignments| assignments.get(port.index))
-                    .map_or("unplugged", AsRef::as_ref);
+                let assignment = assignments.and_then(|assignments| assignments.get(port.index));
+                let layout_name = assignment.map_or("unplugged", |assignment| &*assignment.layout);
+                let mouse = assignment.is_some_and(|assignment| assignment.mouse);
 
                 let layout = input.layouts.get(layout_name);
                 let device = layout
@@ -364,33 +364,14 @@ impl<'a> Serializer<'a> {
                     continue;
                 };
                 let device = device.expect("a known layout has a virtual device");
-                for (logical_key, emulator_key) in &layout.mapping {
-                    let projected = match Projection::shared().target(layout_name, *logical_key) {
-                        Some(ProjectionTarget::Key(key)) => key,
-                        Some(ProjectionTarget::Transport(_) | ProjectionTarget::None) => continue,
-                        Some(ProjectionTarget::Both(_, _)) => {
-                            return Err(Error::CompositeProjection {
-                                layout: layout_name.into(),
-                                key: *logical_key,
-                            });
-                        }
-                        None => {
-                            return Err(Error::MissingProjection {
-                                layout: layout_name.into(),
-                                key: *logical_key,
-                            });
-                        }
-                    };
-                    let mapping = input
-                        .mapping
-                        .get(&projected)
-                        .ok_or(Error::MissingInputMapping(projected))?;
-                    self.add_binding(
-                        &port.target,
-                        emulator_key,
-                        &expand_template(mapping, &device)?,
-                    )?;
-                }
+                self.plan_layout_bindings(
+                    input,
+                    &port.target,
+                    layout_name,
+                    layout,
+                    mouse,
+                    &device,
+                )?;
                 for option_handle in layout.options.iter().copied() {
                     let option = &self.definition.options[option_handle];
                     let setting_path = SettingPath::from_key(Arc::from(format!(
@@ -435,6 +416,45 @@ impl<'a> Serializer<'a> {
         }
         for action in actions.map.values() {
             self.add_binding(&actions.target, &action.name, &action.expression)?;
+        }
+        Ok(())
+    }
+
+    fn plan_layout_bindings(
+        &mut self,
+        input: &InputDefinition,
+        target: &'a OwnedTargetPath,
+        layout_name: &str,
+        layout: &LayoutDefinition,
+        mouse: bool,
+        device: &str,
+    ) -> Result<()> {
+        for (logical_key, emulator_key) in &layout.mapping {
+            if let Some(mapping) = input.mouse.get(logical_key).filter(|_| mouse) {
+                self.add_binding(target, emulator_key, &expand_template(mapping, device)?)?;
+                continue;
+            }
+            let projected = match Projection::shared().target(layout_name, *logical_key) {
+                Some(ProjectionTarget::Key(key)) => key,
+                Some(ProjectionTarget::Transport(_) | ProjectionTarget::None) => continue,
+                Some(ProjectionTarget::Both(_, _)) => {
+                    return Err(Error::CompositeProjection {
+                        layout: layout_name.into(),
+                        key: *logical_key,
+                    });
+                }
+                None => {
+                    return Err(Error::MissingProjection {
+                        layout: layout_name.into(),
+                        key: *logical_key,
+                    });
+                }
+            };
+            let mapping = input
+                .mapping
+                .get(&projected)
+                .ok_or(Error::MissingInputMapping(projected))?;
+            self.add_binding(target, emulator_key, &expand_template(mapping, device)?)?;
         }
         Ok(())
     }

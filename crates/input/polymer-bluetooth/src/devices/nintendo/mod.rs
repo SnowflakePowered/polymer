@@ -15,6 +15,8 @@ macro_rules! controller_model {
     };
 }
 
+const NINTENDO_VENDOR_ID: u16 = 0x057e;
+
 pub mod switch;
 pub mod switch2;
 pub mod wiimote;

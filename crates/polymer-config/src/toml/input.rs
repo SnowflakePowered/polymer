@@ -22,6 +22,7 @@ pub struct InputBlock<'de> {
     /// The mapping **values** from the SDL virtual gamepad to the emulator's
     /// configuration dialect.
     pub mapping: LayoutMapping<'de>,
+    pub mouse: Option<MouseMapping<'de>>,
     /// The mapping **keys** from the layout inputspec to the emulator's
     /// emulated controller keys.
     pub layouts: BTreeMap<&'de str, LayoutMapping<'de>>,
@@ -38,6 +39,13 @@ pub struct LayoutMapping<'de> {
     pub mapping: IndexMap<BindingKey, &'de str>,
     #[toml(default)]
     pub options: Vec<OptionDefinition<'de>>,
+}
+
+#[derive(Debug, Toml)]
+#[toml(FromToml)]
+pub struct MouseMapping<'de> {
+    #[toml(flatten, with = super::with::binding_map)]
+    pub mapping: IndexMap<BindingKey, &'de str>,
 }
 
 pub type PortGroup<'de> = BTreeMap<&'de str, PortAssignment<'de>>;

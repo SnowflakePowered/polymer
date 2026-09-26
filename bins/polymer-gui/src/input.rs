@@ -207,7 +207,9 @@ impl InputRouter {
             let _ = listener.publish_topology(topology);
         }
         self.listener = Some(listener);
-        let _ = self.rebuild_input_hooks();
+        if let Some(topology) = self.controllers.applied().cloned() {
+            let _ = self.rebuild_input_hooks(&topology);
+        }
     }
 
     pub fn detach(&mut self) {
@@ -475,7 +477,7 @@ impl InputRouter {
         self.topology = Some(wire);
         self.controllers.initialize(topology.clone())?;
         self.keyboard.configure(topology);
-        self.rebuild_input_hooks()
+        self.rebuild_input_hooks(topology)
     }
 
     pub fn configure_input_hooks(
@@ -485,7 +487,10 @@ impl InputRouter {
     ) -> Result<(), String> {
         self.input_hooks = hooks.to_vec();
         self.input_namespace = namespace.to_owned();
-        self.rebuild_input_hooks()
+        match self.controllers.applied().cloned() {
+            Some(topology) => self.rebuild_input_hooks(&topology),
+            None => Ok(()),
+        }
     }
 
     pub fn clear_input_hooks(&mut self) {
@@ -516,7 +521,7 @@ impl InputRouter {
         }
         self.topology = Some(input_topology);
         self.keyboard.configure(topology);
-        self.rebuild_input_hooks()
+        self.rebuild_input_hooks(topology)
     }
 
     fn apply_controller_topology(
@@ -741,13 +746,13 @@ impl InputRouter {
             .publish(&controllers, self.controllers.assignment_snapshot());
     }
 
-    fn rebuild_input_hooks(&mut self) -> Result<(), String> {
+    fn rebuild_input_hooks(
+        &mut self,
+        controller_topology: &ControllerTopology,
+    ) -> Result<(), String> {
         let enabled = self
             .input_hooks
             .contains(&polymer_runtime::InputHook::BluetoothApiWin32);
-        let Some(controller_topology) = self.controllers.applied() else {
-            return Ok(());
-        };
         let devices = self.hub.devices();
         let bindings = if enabled {
             controller_topology

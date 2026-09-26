@@ -31,7 +31,6 @@ const CAMERA_ENABLE_ADDRESS: u16 = 0x0030;
 const CAMERA_SENSITIVITY_BLOCK_1_ADDRESS: u16 = 0x0000;
 const CAMERA_SENSITIVITY_BLOCK_2_ADDRESS: u16 = 0x001a;
 const CAMERA_MODE_ADDRESS: u16 = 0x0033;
-const NINTENDO_VENDOR_ID: u16 = 0x057e;
 
 impl IrCameraSetup {
     fn sensitivity_blocks(self) -> (&'static [u8; 9], &'static [u8; 2]) {
@@ -326,7 +325,7 @@ where
     fn vendor_product(&self, identity: &DeviceIdentity) -> Option<VendorProductId> {
         identity.vendor_product().or_else(|| {
             Some(VendorProductId::new(
-                NINTENDO_VENDOR_ID,
+                super::NINTENDO_VENDOR_ID,
                 M::product_id(identity),
             ))
         })
