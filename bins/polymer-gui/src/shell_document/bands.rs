@@ -511,7 +511,18 @@ impl<S: PaintScene + Default> PaintScene for BandedScene<'_, S> {
                 })
                 .reduce(|current, next| current.intersect(next));
             let source_id = resource.image.into_ffi();
-            let group = self.stack.last().map(|_| source_id);
+            let group = self.stack.last().map(|_| {
+                if self
+                    .placements
+                    .iter()
+                    .any(|placement| placement.group == Some(source_id))
+                {
+                    self.next_isolated_group += 1;
+                    ISOLATED_GROUP | (self.next_isolated_group - 1)
+                } else {
+                    source_id
+                }
+            });
             self.placements.push(GamePlacement {
                 node_id: None,
                 source_id,

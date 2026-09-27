@@ -267,15 +267,13 @@ fn pointer_destination(
         .iter()
         .zip(presentation_mappings)
         .enumerate()
-        .filter_map(|(surface_index, (surface, presentation_mapping))| {
-            Some((
-                surface_index,
-                *plan.placements().find(|placement| {
+        .flat_map(|(surface_index, (surface, presentation_mapping))| {
+            plan.placements()
+                .filter(move |placement| {
                     placement.connection == surface.connection
                         && placement.surface_id == surface.surface_id
-                })?,
-                presentation_mapping,
-            ))
+                })
+                .map(move |placement| (surface_index, *placement, presentation_mapping))
         });
     placements
         .into_iter()

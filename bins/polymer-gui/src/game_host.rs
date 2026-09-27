@@ -41,6 +41,25 @@ struct CapturedSurface {
     corner_radius: f32,
     game_view_style: Option<GameViewStyle>,
     opacity: f32,
+    mirrors: Vec<SurfaceGeometry>,
+}
+
+impl CapturedSurface {
+    fn geometries(&self) -> impl Iterator<Item = SurfaceGeometry> + '_ {
+        std::iter::once(SurfaceGeometry {
+            x: self.viewport_x,
+            y: self.viewport_y,
+            width: self.viewport_width,
+            height: self.viewport_height,
+            pointer_events: self.pointer_events,
+            z_index: self.z_index,
+            group: self.group,
+            corner_radius: self.corner_radius,
+            style: self.game_view_style.clone(),
+            opacity: self.opacity,
+        })
+        .chain(self.mirrors.iter().cloned())
+    }
 }
 
 struct ActivePresentation {
@@ -133,28 +152,25 @@ impl GameHost {
     pub(crate) fn captured_surface_snapshots(&self) -> Vec<CapturedSurfaceSnapshot> {
         let mut snapshots = Vec::new();
         for (&connection, surface) in &self.surfaces {
-            let rectangle = Rect::new(
-                surface.viewport_x,
-                surface.viewport_y,
-                surface.viewport_width,
-                surface.viewport_height,
-            );
             let source = Extent::new(
                 surface.preferred_width.max(1),
                 surface.preferred_height.max(1),
             );
-            let fitted = fit_surface_content(
-                rectangle,
-                source,
-                surface.game_view_style.as_ref(),
-                surface.opacity,
-            );
-            snapshots.push(CapturedSurfaceSnapshot {
-                connection,
-                parent: surface.group,
-                z_order: surface.z_index,
-                placement: fitted,
-            });
+            for (instance, geometry) in surface.geometries().enumerate() {
+                let rectangle = Rect::new(geometry.x, geometry.y, geometry.width, geometry.height);
+                snapshots.push(CapturedSurfaceSnapshot {
+                    connection,
+                    instance: instance as u32,
+                    parent: geometry.group,
+                    z_order: geometry.z_index,
+                    placement: fit_surface_content(
+                        rectangle,
+                        source,
+                        geometry.style.as_ref(),
+                        geometry.opacity,
+                    ),
+                });
+            }
         }
         snapshots.sort_by_key(|surface| surface.z_order);
         snapshots
@@ -434,25 +450,23 @@ impl GameHost {
                     received_surface.frame.presentation_width,
                     received_surface.frame.presentation_height,
                 );
-                let rectangle = Rect::new(
-                    surface.viewport_x,
-                    surface.viewport_y,
-                    surface.viewport_width,
-                    surface.viewport_height,
-                );
-                let mut placement = SurfacePlacement::new(
-                    connection,
-                    received_surface.surface_id,
-                    rectangle,
-                    surface.corner_radius,
-                );
-                placement.content = fit_surface_content(
-                    rectangle,
-                    received_surface.image_extent,
-                    surface.game_view_style.as_ref(),
-                    surface.opacity,
-                );
-                placements.push(placement);
+                for geometry in surface.geometries() {
+                    let rectangle =
+                        Rect::new(geometry.x, geometry.y, geometry.width, geometry.height);
+                    let mut placement = SurfacePlacement::new(
+                        connection,
+                        received_surface.surface_id,
+                        rectangle,
+                        geometry.corner_radius,
+                    );
+                    placement.content = fit_surface_content(
+                        rectangle,
+                        received_surface.image_extent,
+                        geometry.style.as_ref(),
+                        geometry.opacity,
+                    );
+                    placements.push(placement);
+                }
                 received.push(received_surface);
             }
         }
@@ -830,6 +844,7 @@ impl GameHost {
                     corner_radius: 0.0,
                     game_view_style: None,
                     opacity: 1.0,
+                    mirrors: Vec::new(),
                 },
                 target_index,
                 quarter_turns,
@@ -1004,12 +1019,11 @@ impl GameHost {
     }
 
     pub fn apply_tracked_layout(&mut self, placements: &[TrackedSurfaceLayout]) -> bool {
-        let mut placed = HashSet::new();
-        let mut changed = false;
+        let mut placed = HashMap::<u64, Vec<SurfaceGeometry>>::new();
         for placement in placements {
-            let Some((&connection, surface)) = self
+            let Some((&connection, _)) = self
                 .surfaces
-                .iter_mut()
+                .iter()
                 .find(|(_, surface)| u64::from(surface.index) == placement.source_id)
             else {
                 continue;
@@ -1022,7 +1036,7 @@ impl GameHost {
             // visuals at the window boundary; finer clips belong on the WUC
             // visual itself, not in its layout geometry.
             let rect = placement.bounds;
-            let next = SurfaceGeometry {
+            placed.entry(connection).or_default().push(SurfaceGeometry {
                 x: rect.x0.round() as i32,
                 y: rect.y0.round() as i32,
                 width: rect.width().round().max(0.0) as u32,
@@ -1033,9 +1047,7 @@ impl GameHost {
                 corner_radius: placement.corner_radius,
                 style: placement.style.clone(),
                 opacity: placement.opacity,
-            };
-            changed |= apply_geometry(surface, next);
-            placed.insert(connection);
+            });
         }
 
         let requested = self
@@ -1050,25 +1062,20 @@ impl GameHost {
                     .collect::<HashSet<_>>()
             })
             .unwrap_or_default();
-        for (&connection, surface) in &mut self.surfaces {
-            if placed.contains(&connection) || !requested.contains(&surface.index) {
-                continue;
+        let mut changed = false;
+        for (connection, surface) in &mut self.surfaces {
+            let mut geometries = placed.remove(connection).unwrap_or_default().into_iter();
+            let primary = match geometries.next() {
+                Some(primary) => primary,
+                None if requested.contains(&surface.index) => SurfaceGeometry::hidden(),
+                None => continue,
+            };
+            changed |= apply_geometry(surface, primary);
+            let mirrors = geometries.collect::<Vec<_>>();
+            if surface.mirrors != mirrors {
+                surface.mirrors = mirrors;
+                changed = true;
             }
-            changed |= apply_geometry(
-                surface,
-                SurfaceGeometry {
-                    x: 0,
-                    y: 0,
-                    width: 0,
-                    height: 0,
-                    pointer_events: false,
-                    z_index: 1,
-                    group: None,
-                    corner_radius: 0.0,
-                    style: None,
-                    opacity: 1.0,
-                },
-            );
         }
         if changed {
             self.mark_composition_dirty();
@@ -1077,6 +1084,7 @@ impl GameHost {
     }
 }
 
+#[derive(Clone, PartialEq)]
 struct SurfaceGeometry {
     x: i32,
     y: i32,
@@ -1088,6 +1096,23 @@ struct SurfaceGeometry {
     corner_radius: f32,
     style: Option<GameViewStyle>,
     opacity: f32,
+}
+
+impl SurfaceGeometry {
+    const fn hidden() -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+            pointer_events: false,
+            z_index: 1,
+            group: None,
+            corner_radius: 0.0,
+            style: None,
+            opacity: 1.0,
+        }
+    }
 }
 
 fn apply_geometry(surface: &mut CapturedSurface, next: SurfaceGeometry) -> bool {

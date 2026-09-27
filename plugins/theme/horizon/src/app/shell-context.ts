@@ -6,6 +6,7 @@ export type ShellContextValue = {
   model: ShellModel;
   setModel: (...path: any[]) => void;
   navigate(path: string, replace?: boolean): void;
+  gamePath(page: "launching" | "play" | "reorder"): string;
   launchRecent(game: RecentGame): void;
   showDetails(game: RecentGame): void;
   launchDraft(draft?: PackageConfiguration): void;

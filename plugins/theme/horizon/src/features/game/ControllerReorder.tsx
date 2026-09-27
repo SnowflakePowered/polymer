@@ -55,7 +55,7 @@ export function ControllerReorder(props: { onClose?: () => void }) {
     if (props.onClose) props.onClose();
     else {
       shell.setModel("pauseOpen", false);
-      shell.navigate("/game/play", true);
+      shell.navigate(shell.gamePath("play"), true);
     }
   };
 
