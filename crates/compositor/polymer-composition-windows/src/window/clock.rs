@@ -1,14 +1,19 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
 };
 use windows::Win32::{
-    Foundation::{CloseHandle, HANDLE, WAIT_FAILED, WAIT_OBJECT_0},
+    Foundation::{CloseHandle, HANDLE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT},
     Graphics::DirectComposition::DCompositionWaitForCompositorClock,
-    System::Threading::{CreateEventW, INFINITE, SetEvent},
+    System::Threading::{CreateEventW, SetEvent},
 };
 
 use polymer_composition::WindowCommand;
+
+const TICK_TIMEOUT: Duration = Duration::from_millis(33);
 /// Wakes the event loop once per DirectComposition frame while captured
 /// surfaces are visible.
 pub(crate) struct CompositorClock {
@@ -50,7 +55,10 @@ impl CompositorClock {
                         return;
                     }
                     let status = unsafe {
-                        DCompositionWaitForCompositorClock(Some(&[thread_stop_event]), INFINITE)
+                        DCompositionWaitForCompositorClock(
+                            Some(&[thread_stop_event]),
+                            TICK_TIMEOUT.as_millis() as u32,
+                        )
                     };
                     if status == WAIT_FAILED.0 {
                         thread_healthy.store(false, Ordering::Release);
@@ -59,7 +67,8 @@ impl CompositorClock {
                     if thread_stopping.load(Ordering::Acquire) {
                         return;
                     }
-                    if status != WAIT_OBJECT_0.0 + 1 {
+                    if status != WAIT_OBJECT_0.0 + 1 && status != WAIT_TIMEOUT.0 {
+                        std::thread::sleep(TICK_TIMEOUT);
                         continue;
                     }
                     if !thread_tick_pending.swap(true, Ordering::AcqRel)
