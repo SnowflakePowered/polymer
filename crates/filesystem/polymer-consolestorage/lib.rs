@@ -28,6 +28,6 @@ pub use storage::memorycard::{MemoryCard, MemoryCardView, Reconcile};
 pub use storage::{
     BoxFuture, ChangeSignal, ComposedStorage, DirEntry, DirectoryStorage, EntryKind,
     GitVolumeStorage, InstallResult, MemoryFile, MemoryStorage, Metadata, MountableStorage,
-    PlatformRepository, ReadDir, ReconcileStorage, ReconciliableStorage, Storage, StorageFile,
-    StorageReader, VolumeStorage, permissions::*,
+    PlatformRepository, ReadDir, ReconcileStorage, ReconciliableStorage, ScratchStorage, Storage,
+    StorageFile, StorageReader, VolumeStorage, permissions::*,
 };
