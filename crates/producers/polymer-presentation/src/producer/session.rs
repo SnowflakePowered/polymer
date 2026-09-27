@@ -14,7 +14,7 @@ use std::{
     time::Duration,
 };
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct AvailabilityWaiter {
     shared: Arc<Availability>,
 }

@@ -241,6 +241,25 @@ impl SourceRegistration {
     pub fn reserve(&self, extent: Extent2D) -> Option<ProvisionalBinding> {
         self.registry.reserve(self.source, extent)
     }
+    /// Backs a swapchain created before this source is assigned. It never enters
+    /// a request, and the registry never issues generation zero.
+    pub fn detached(&self, extent: Extent2D) -> Option<Arc<FixedSurfaceBinding>> {
+        let state = self.registry.state.lock().unwrap();
+        let candidate = state
+            .candidates
+            .iter()
+            .find(|candidate| candidate.source == self.source)?;
+        Some(Arc::new(FixedSurfaceBinding {
+            ordinal: 0,
+            configured_index: 0,
+            logical_id: 0,
+            extent,
+            rotation: 0,
+            source: self.source,
+            window: candidate.window,
+            generation: 0,
+        }))
+    }
     /// A WSI surface outlives its swapchain generations. Old bindings retain
     /// their immutable identity while allocation of a replacement begins.
     pub fn next_generation(&self, extent: Extent2D) -> Option<ProvisionalBinding> {
