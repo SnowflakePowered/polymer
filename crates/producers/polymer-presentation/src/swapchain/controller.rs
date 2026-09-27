@@ -3,7 +3,7 @@ use crate::{
     CapturedFrame, FramePlacement,
     producer::{AvailabilityWaiter, ProducerSession},
 };
-use polymer_protocol::StreamId;
+use polymer_protocol::{ConsumerApi, StreamId};
 use std::{io, sync::Arc};
 
 #[derive(Debug)]
@@ -29,7 +29,7 @@ pub struct SwapchainController<B: SwapchainBackend> {
     backend: Option<B>,
     permit: Option<super::budget::GenerationPermit>,
     identity: Arc<()>,
-    publisher: ProducerSession,
+    publisher: Option<ProducerSession>,
     binding: Arc<FixedSurfaceBinding>,
     profile: BackendProfile,
     slots: Vec<SlotState<B>>,
@@ -45,7 +45,26 @@ impl<B: SwapchainBackend> SwapchainController<B> {
     pub fn create(
         info: B::CreateInfo,
         binding: Arc<FixedSurfaceBinding>,
-        mut publisher: ProducerSession,
+        publisher: ProducerSession,
+    ) -> Result<Self, CreationFailure<B>> {
+        let consumer = publisher.preferred_consumer();
+        Self::build(info, binding, consumer, Some(publisher))
+    }
+
+    /// A generation with no viewer connection. Presents complete without being published.
+    pub fn detached(
+        info: B::CreateInfo,
+        binding: Arc<FixedSurfaceBinding>,
+        consumer: ConsumerApi,
+    ) -> Result<Self, CreationFailure<B>> {
+        Self::build(info, binding, consumer, None)
+    }
+
+    fn build(
+        info: B::CreateInfo,
+        binding: Arc<FixedSurfaceBinding>,
+        consumer: ConsumerApi,
+        mut publisher: Option<ProducerSession>,
     ) -> Result<Self, CreationFailure<B>> {
         let permit = super::budget::GenerationPermit::acquire().ok_or(CreationFailure {
             error: ControllerError::Contract(
@@ -53,13 +72,10 @@ impl<B: SwapchainBackend> SwapchainController<B> {
             ),
             retirement: None,
         })?;
-        let profile =
-            B::probe(&info, &binding, publisher.preferred_consumer()).map_err(|error| {
-                CreationFailure {
-                    error: ControllerError::Backend(error),
-                    retirement: None,
-                }
-            })?;
+        let profile = B::probe(&info, &binding, consumer).map_err(|error| CreationFailure {
+            error: ControllerError::Backend(error),
+            retirement: None,
+        })?;
         profile.validate().map_err(|error| CreationFailure {
             error: ControllerError::Contract(error),
             retirement: None,
@@ -68,10 +84,11 @@ impl<B: SwapchainBackend> SwapchainController<B> {
             error: ControllerError::Backend(error),
             retirement: None,
         })?;
-        if let Err(error) = publisher
-            .request_buffer_availability()
-            .and_then(|()| publisher.publish(backend.export_descriptor()))
-        {
+        if let Some(Err(error)) = publisher.as_mut().map(|publisher| {
+            publisher
+                .request_buffer_availability()
+                .and_then(|()| publisher.publish(backend.export_descriptor()))
+        }) {
             return Err(CreationFailure {
                 error: ControllerError::Transport(error),
                 retirement: Some(
@@ -113,7 +130,9 @@ impl<B: SwapchainBackend> SwapchainController<B> {
         &self.profile
     }
     pub fn availability(&self) -> AvailabilityWaiter {
-        self.publisher.availability()
+        self.publisher
+            .as_ref()
+            .map_or_else(AvailabilityWaiter::default, ProducerSession::availability)
     }
     pub fn api_access(&self, slot: ImageSlot) -> Result<B::ApiAccess, ControllerError<B::Error>> {
         if slot.index() >= self.profile.image_count {
@@ -132,7 +151,11 @@ impl<B: SwapchainBackend> SwapchainController<B> {
         if let Some(reason) = self.retiring {
             return Err(ControllerError::Retiring(reason));
         }
-        if !self.publisher.connected() {
+        if self
+            .publisher
+            .as_ref()
+            .is_some_and(|publisher| !publisher.connected())
+        {
             self.retiring = Some(RetireReason::ConnectionLost);
             return Err(ControllerError::Retiring(RetireReason::ConnectionLost));
         }
@@ -141,10 +164,12 @@ impl<B: SwapchainBackend> SwapchainController<B> {
 
     pub fn poll(&mut self) -> Result<(), ControllerError<B::Error>> {
         self.available()?;
-        self.consumer_release = self.publisher.poll_buffer_availability().map_err(|error| {
-            self.retiring = Some(RetireReason::ConnectionLost);
-            ControllerError::Transport(error)
-        })?;
+        if let Some(publisher) = self.publisher.as_mut() {
+            self.consumer_release = publisher.poll_buffer_availability().map_err(|error| {
+                self.retiring = Some(RetireReason::ConnectionLost);
+                ControllerError::Transport(error)
+            })?;
+        }
         let submissions = self
             .slots
             .iter()
@@ -379,7 +404,8 @@ impl<B: SwapchainBackend> SwapchainController<B> {
         timestamp_qpc: u64,
     ) -> Result<PublicationSignal, ControllerError<B::Error>> {
         self.available()?;
-        self.submit(lease, info, Some(timestamp_qpc))
+        let timestamp_qpc = self.publisher.is_some().then_some(timestamp_qpc);
+        self.submit(lease, info, timestamp_qpc)
     }
 
     /// A replaced WSI generation can finish its outstanding application leases
@@ -469,7 +495,12 @@ impl<B: SwapchainBackend> SwapchainController<B> {
             Some(extent.rect()),
             (false, false),
         ));
-        if let Err(error) = self.publisher.send(frame) {
+        if let Err(error) = self
+            .publisher
+            .as_mut()
+            .expect("only connected generations publish")
+            .send(frame)
+        {
             self.retiring = Some(RetireReason::ConnectionLost);
             return Err(ControllerError::Transport(error));
         }

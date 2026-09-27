@@ -106,6 +106,10 @@ impl PresentBatch {
                 }
                 _ => vk::Result::ERROR_OUT_OF_DATE_KHR,
             };
+            let result = match result {
+                vk::Result::SUCCESS if entry.swapchain.superseded() => vk::Result::SUBOPTIMAL_KHR,
+                result => result,
+            };
             state.next_present = Instant::now() + entry.swapchain.period;
             results[entry.ordinal] = if matches!(
                 result,

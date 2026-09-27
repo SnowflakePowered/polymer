@@ -112,6 +112,17 @@ impl Surface {
     pub(super) fn commit(&self, binding: Arc<FixedSurfaceBinding>) {
         self.binding.lock().1 = Some(binding);
     }
+    pub(super) fn extent(&self) -> Option<polymer_presentation::Extent2D> {
+        ProducerWindows::client_extent(self.window)
+            .ok()
+            .or_else(|| self.binding().map(|binding| binding.extent()))
+    }
+    pub(super) fn detached(
+        &self,
+        extent: polymer_presentation::Extent2D,
+    ) -> Option<Arc<FixedSurfaceBinding>> {
+        self.registration.detached(extent)
+    }
     pub(super) unsafe fn proc<T: Copy>(physical: vk::PhysicalDevice, name: &CStr) -> Option<T> {
         let state = crate::layer::physical_device_state(physical)?;
         unsafe { crate::terminal::instance_proc(state.next_gipa, state.instance, name) }
@@ -172,7 +183,7 @@ pub unsafe extern "system" fn vkGetPhysicalDeviceSurfaceSupportKHR(
     surface: vk::SurfaceKHR,
     output: *mut vk::Bool32,
 ) -> vk::Result {
-    if Surface::get(surface).and_then(|s| s.binding()).is_some() {
+    if Surface::get(surface).is_some() {
         let supported = crate::layer::physical_device_state(physical)
             .and_then(|state| Surface::queue_properties(physical, &state).ok())
             .and_then(|p| p.get(family as usize).copied())
@@ -199,10 +210,12 @@ pub unsafe extern "system" fn vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
     surface: vk::SurfaceKHR,
     output: *mut vk::SurfaceCapabilitiesKHR,
 ) -> vk::Result {
-    if let Some((surface, binding)) =
-        Surface::get(surface).and_then(|s| s.binding().map(|b| (s, b)))
-    {
-        return match surface.capabilities(physical, &binding) {
+    if let Some(surface) = Surface::get(surface) {
+        return match surface
+            .extent()
+            .ok_or(vk::Result::ERROR_SURFACE_LOST_KHR)
+            .and_then(|extent| surface.capabilities(physical, extent))
+        {
             Ok(value) => {
                 unsafe {
                     *output = value;
@@ -225,10 +238,7 @@ pub unsafe extern "system" fn vkGetPhysicalDeviceSurfaceCapabilities2KHR(
     info: *const vk::PhysicalDeviceSurfaceInfo2KHR<'_>,
     output: *mut vk::SurfaceCapabilities2KHR<'_>,
 ) -> vk::Result {
-    if Surface::get(unsafe { (*info).surface })
-        .and_then(|s| s.binding())
-        .is_some()
-    {
+    if Surface::get(unsafe { (*info).surface }).is_some() {
         return unsafe { capabilities::Capabilities::query(physical, &*info, &mut *output) };
     }
     let Some(next): Option<vk::PFN_vkGetPhysicalDeviceSurfaceCapabilities2KHR> =
@@ -245,7 +255,7 @@ pub unsafe extern "system" fn vkGetPhysicalDeviceSurfaceFormatsKHR(
     count: *mut u32,
     output: *mut vk::SurfaceFormatKHR,
 ) -> vk::Result {
-    if Surface::get(surface).and_then(|s| s.binding()).is_some() {
+    if Surface::get(surface).is_some() {
         return match Surface::profile(physical) {
             Ok(profile) => unsafe { WsiResult::enumerate(&profile.formats, count, output) },
             Err(e) => e,
@@ -265,10 +275,7 @@ pub unsafe extern "system" fn vkGetPhysicalDeviceSurfaceFormats2KHR(
     count: *mut u32,
     output: *mut vk::SurfaceFormat2KHR<'_>,
 ) -> vk::Result {
-    if Surface::get(unsafe { (*info).surface })
-        .and_then(|s| s.binding())
-        .is_some()
-    {
+    if Surface::get(unsafe { (*info).surface }).is_some() {
         if unsafe { !(*info).p_next.is_null() } {
             return vk::Result::ERROR_EXTENSION_NOT_PRESENT;
         }
@@ -314,7 +321,7 @@ pub unsafe extern "system" fn vkGetPhysicalDeviceSurfacePresentModesKHR(
     count: *mut u32,
     output: *mut vk::PresentModeKHR,
 ) -> vk::Result {
-    if Surface::get(surface).and_then(|s| s.binding()).is_some() {
+    if Surface::get(surface).is_some() {
         return unsafe {
             WsiResult::enumerate(
                 &[vk::PresentModeKHR::FIFO, vk::PresentModeKHR::IMMEDIATE],

@@ -62,12 +62,12 @@ impl Surface {
     pub(super) fn capabilities(
         &self,
         physical: vk::PhysicalDevice,
-        binding: &FixedSurfaceBinding,
+        extent: polymer_presentation::Extent2D,
     ) -> Result<vk::SurfaceCapabilitiesKHR, vk::Result> {
         let profile = Self::profile(physical)?;
         let extent = vk::Extent2D {
-            width: binding.extent().width,
-            height: binding.extent().height,
+            width: extent.width,
+            height: extent.height,
         };
         if extent.width > profile.max_extent.width || extent.height > profile.max_extent.height {
             return Err(vk::Result::ERROR_SURFACE_LOST_KHR);
