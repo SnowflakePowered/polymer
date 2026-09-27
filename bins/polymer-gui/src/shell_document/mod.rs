@@ -13,6 +13,7 @@ mod bands;
 mod banner;
 mod events;
 mod hit_test;
+mod image_levels;
 mod mutations;
 mod providers;
 mod scrolling;
@@ -32,6 +33,7 @@ use blitz_dom::local_name;
 use blitz_traits::net::{NetProvider, NetWaker};
 pub use events::{DomKeyboardEvent, DomMouseEvent, DomWheelEvent};
 use hit_test::{node_is_within_tracked_surface, pointer_hit};
+use image_levels::ImageLevels;
 use providers::NativeShellProvider;
 use std::{
     cell::{Ref, RefCell, RefMut},
@@ -101,6 +103,7 @@ pub struct ShellDocument {
     /// surface presentation never wait for framebuffer-sized scene encoding.
     bands: Vec<anyrender::Scene>,
     placements: Vec<GamePlacement>,
+    images: ImageLevels,
     width: u32,
     height: u32,
     scale_factor: f32,
@@ -182,6 +185,12 @@ impl ShellDocumentFactory {
             ));
         });
         let net: Arc<dyn NetProvider> = Arc::new(providers::ShellNetProvider::new(waker));
+        let level_proxy = self.event_proxy.clone();
+        let images = ImageLevels::new(move || {
+            let _ = level_proxy.send_event(crate::commands::UserEvent::Window(
+                crate::window_manager::WindowCommand::RedrawShell,
+            ));
+        });
         let shell_provider: Arc<dyn blitz_traits::shell::ShellProvider> =
             Arc::new(NativeShellProvider::new(self.event_proxy.clone()));
         let mut document = blitz_html::HtmlDocument::from_html(
@@ -204,6 +213,7 @@ impl ShellDocumentFactory {
             arrivals,
             bands: vec![anyrender::Scene::new()],
             placements: Vec::new(),
+            images,
             width: 0,
             height: 0,
             scale_factor: 1.0,
@@ -395,9 +405,10 @@ impl ShellDocument {
     /// Re-lays out and publishes paint scenes when the shell changed.
     pub fn produce_frame(&mut self, runtime: &mut ShellRuntime) -> Option<ShellFrame> {
         let assets_arrived = self.take_arrivals();
+        let levels_arrived = self.images.begin_frame(f64::from(self.scale_factor));
         let animating = self.document.as_ref().is_animating();
         self.scroll_animating &= animating;
-        if !assets_arrived && !self.dirty && !self.animation_frame_due() {
+        if !assets_arrived && !levels_arrived && !self.dirty && !self.animation_frame_due() {
             return None;
         }
         self.last_animation_frame = std::time::Instant::now();
@@ -455,7 +466,8 @@ impl ShellDocument {
         let started = std::time::Instant::now();
         let (logical_width, logical_height) = self.logical_size();
         let (used, output) = {
-            let mut scene = BandedScene::new(&mut self.bands, &mut self.placements);
+            let mut scene =
+                BandedScene::new(&mut self.bands, &mut self.placements, &mut self.images);
             // blitz-paint 0.3 deliberately leaves scene lifetime to its
             // caller. Reusing our retained Vello scenes without resetting
             // them accumulates every prior drawer position, border and shadow
