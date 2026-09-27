@@ -25,8 +25,10 @@ use anyrender::{
     recording::RenderCommand,
 };
 use kurbo::{Affine, BezPath, Rect, Shape, Stroke, Vec2};
-use peniko::{BlendMode, Color, Fill, FontData, StyleRef};
+use peniko::{BlendMode, Color, Fill, FontData, ImageBrush, ImageQuality, StyleRef};
 use std::{collections::HashMap, sync::Arc};
+
+use super::image_levels::ImageLevels;
 use style::{
     properties::generated::longhands::object_fit::computed_value::T as ObjectFit,
     values::computed::position::Position,
@@ -126,6 +128,7 @@ struct OpenLayer {
 pub struct BandedScene<'a, S> {
     bands: &'a mut Vec<S>,
     placements: &'a mut Vec<GamePlacement>,
+    images: &'a mut ImageLevels,
     current: usize,
     stack: Vec<OpenLayer>,
     next_layer_id: u64,
@@ -140,7 +143,11 @@ pub struct BandedScene<'a, S> {
 }
 
 impl<'a, S: PaintScene + Default> BandedScene<'a, S> {
-    pub fn new(bands: &'a mut Vec<S>, placements: &'a mut Vec<GamePlacement>) -> Self {
+    pub fn new(
+        bands: &'a mut Vec<S>,
+        placements: &'a mut Vec<GamePlacement>,
+        images: &'a mut ImageLevels,
+    ) -> Self {
         if bands.is_empty() {
             bands.push(S::default());
         }
@@ -148,6 +155,7 @@ impl<'a, S: PaintScene + Default> BandedScene<'a, S> {
         Self {
             bands,
             placements,
+            images,
             current: 0,
             stack: Vec::new(),
             next_layer_id: 1,
@@ -515,10 +523,30 @@ impl<S: PaintScene + Default> PaintScene for BandedScene<'_, S> {
                 band: self.current,
                 group,
             });
-            if let Some(layer) = self.stack.last() {
-                self.promoted_layers.insert(layer.id, source_id);
+            if let (Some(layer), Some(group)) = (self.stack.last(), group) {
+                self.promoted_layers.insert(layer.id, group);
             }
             self.advance_band();
+            return;
+        }
+        if let Paint::Image(image) = &brush
+            && image.sampler.quality != ImageQuality::Low
+            && let Some((reduced, stretch)) = self
+                .images
+                .reduce(image.image, transform * brush_transform.unwrap_or_default())
+        {
+            let reduced = ImageBrush {
+                image: &reduced,
+                sampler: image.sampler.with_quality(ImageQuality::High),
+            };
+            self.band().fill(
+                style,
+                transform,
+                reduced,
+                Some(brush_transform.unwrap_or_default() * stretch),
+                shape,
+            );
+            self.record(CommandMeta::Draw);
             return;
         }
         self.band()
