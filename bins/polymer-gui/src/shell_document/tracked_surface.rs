@@ -68,6 +68,7 @@ pub(super) fn apply_tracked_surface_styles(
                 .unwrap_or_default()
                 .max(0.0);
             let styles = node.primary_styles()?;
+            let origin = node.absolute_position(0.0, 0.0);
             Some((
                 source,
                 (
@@ -77,23 +78,32 @@ pub(super) fn apply_tracked_surface_styles(
                         object_fit: styles.clone_object_fit(),
                         object_position: styles.clone_object_position(),
                     },
+                    kurbo::Point::new(f64::from(origin.x), f64::from(origin.y)),
                 ),
             ))
         })
-        .collect::<HashMap<_, _>>();
+        .fold(
+            HashMap::<u64, Vec<_>>::new(),
+            |mut styles, (source, entry)| {
+                styles.entry(source).or_default().push(entry);
+                styles
+            },
+        );
     for placement in placements {
         let maximum = (placement.rect.width().min(placement.rect.height()) * 0.5) as f32;
-        placement.corner_radius = styles
-            .get(&placement.source_id)
-            .map(|(_, radius, _)| *radius)
+        let entry = styles.get(&placement.source_id).and_then(|entries| {
+            entries.iter().min_by(|left, right| {
+                let distance =
+                    |entry: &&(_, _, _, kurbo::Point)| entry.3.distance(placement.rect.origin());
+                distance(left).total_cmp(&distance(right))
+            })
+        });
+        placement.corner_radius = entry
+            .map(|(_, radius, _, _)| *radius)
             .unwrap_or_default()
             .min(maximum);
-        placement.style = styles
-            .get(&placement.source_id)
-            .map(|(_, _, style)| style.clone());
-        placement.node_id = styles
-            .get(&placement.source_id)
-            .map(|(node_id, _, _)| *node_id);
+        placement.style = entry.map(|(_, _, style, _)| style.clone());
+        placement.node_id = entry.map(|(node_id, _, _, _)| *node_id);
         placement.opacity = placement.opacity.clamp(0.0, 1.0);
     }
 }

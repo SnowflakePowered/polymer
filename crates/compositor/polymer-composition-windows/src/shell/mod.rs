@@ -32,7 +32,7 @@ use windows_numerics::{Vector2, Vector3};
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum CompositionLayerId {
     Raster(RasterChunkId),
-    Surface(u64),
+    Surface(u64, u32),
 }
 
 #[derive(Clone, Copy)]
@@ -154,6 +154,7 @@ pub(crate) struct ShellCompositor {
     compositor: Compositor,
     root: ContainerVisual,
     visuals: HashMap<CompositionLayerId, CompositionVisual>,
+    swapchain_surfaces: HashMap<usize, windows::UI::Composition::ICompositionSurface>,
     group_visuals: HashMap<u64, CompositionGroupVisual>,
     child_orders: HashMap<Option<u64>, Vec<CompositionNodeId>>,
     raster: RasterDomain,
@@ -176,6 +177,7 @@ impl ShellCompositor {
             compositor: compositor.clone(),
             root,
             visuals: HashMap::new(),
+            swapchain_surfaces: HashMap::new(),
             group_visuals: HashMap::new(),
             child_orders: HashMap::new(),
             raster,
@@ -404,7 +406,7 @@ impl ShellCompositor {
                 .and_then(|group| group_bounds.get(&group))
                 .map_or((0.0, 0.0), |bounds| (bounds.x0, bounds.y0));
             layers.push(CompositionLayer {
-                id: CompositionLayerId::Surface(surface.connection),
+                id: CompositionLayerId::Surface(surface.connection, surface.instance),
                 parent: surface.parent,
                 z_order: surface.z_order,
                 content: CompositionLayerContent::Swapchain(content),
@@ -642,6 +644,13 @@ impl ShellCompositor {
             .collect::<HashSet<_>>();
         self.group_visuals.retain(|id, _| live_groups.contains(id));
         self.visuals.retain(|id, _| live_layers.contains(id));
+        let live_contents = content
+            .layers
+            .iter()
+            .map(|layer| layer.content.identity())
+            .collect::<HashSet<_>>();
+        self.swapchain_surfaces
+            .retain(|identity, _| live_contents.contains(identity));
         Ok(())
     }
 
@@ -653,20 +662,28 @@ impl ShellCompositor {
     }
 
     fn surface_brush(
-        &self,
+        &mut self,
         swapchain: &IUnknown,
     ) -> windows::core::Result<CompositionSurfaceBrush> {
-        let interop: ICompositorInterop = self.compositor.cast()?;
-        // SAFETY: captured swapchains are retained by GameHost while their
-        // corresponding visual is installed in this tree.
-        let surface = unsafe { interop.CreateCompositionSurfaceForSwapChain(swapchain)? };
+        let identity = swapchain.as_raw() as usize;
+        let surface = match self.swapchain_surfaces.get(&identity) {
+            Some(surface) => surface.clone(),
+            None => {
+                let interop: ICompositorInterop = self.compositor.cast()?;
+                // SAFETY: captured swapchains are retained by GameHost while their
+                // corresponding visual is installed in this tree.
+                let surface = unsafe { interop.CreateCompositionSurfaceForSwapChain(swapchain)? };
+                self.swapchain_surfaces.insert(identity, surface.clone());
+                surface
+            }
+        };
         let brush = self.compositor.CreateSurfaceBrushWithSurface(&surface)?;
         brush.SetStretch(CompositionStretch::Fill)?;
         Ok(brush)
     }
 
     fn layer_brush(
-        &self,
+        &mut self,
         content: &CompositionLayerContent,
     ) -> windows::core::Result<CompositionSurfaceBrush> {
         match content {

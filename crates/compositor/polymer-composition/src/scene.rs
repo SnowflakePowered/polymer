@@ -18,6 +18,7 @@ pub struct CompositionShadowStyle {
 /// Logical captured content; its native resource is owned by the backend.
 pub struct SurfaceLayer {
     pub connection: u64,
+    pub instance: u32,
     pub parent: Option<u64>,
     pub z_order: i32,
     pub placement: SurfaceContent,

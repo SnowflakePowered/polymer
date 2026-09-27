@@ -1,7 +1,9 @@
-import { batch, createEffect, createMemo, createSignal, onCleanup, type ParentProps } from "solid-js";
+import { Show, batch, createEffect, createMemo, createSignal, onCleanup, type ParentProps } from "solid-js";
 import { unwrap } from "solid-js/store";
+import { useMatch } from "@solidjs/router";
 import type { LaunchInstance, LaunchOptions } from "../../../../../../js/polymer";
 import { useShell } from "../../app/shell-context";
+import { DUAL_SCREEN_LAYOUTS, DUAL_SCREEN_PLATFORMS, DualScreenStage, type DualScreenLayout } from "./DualScreenStage";
 import { SurfaceStage } from "./SurfaceStage";
 import "./GameLayout.css";
 
@@ -10,6 +12,9 @@ export function GameLayout(props: ParentProps) {
   const [revision, setRevision] = createSignal(0);
   const elements = new Map<number, HTMLElement>();
   const surfaces = createMemo(() => shell.model.surfaces.length ? shell.model.surfaces : [{ index: 0, rotation: 0, webrtc: false }]);
+  const dualScreen = useMatch(() => "/game/:platform/*", { platform: DUAL_SCREEN_PLATFORMS });
+  const layoutRoute = useMatch(() => "/game/:platform/:game/play/:layout", { layout: [...DUAL_SCREEN_LAYOUTS] });
+  const layout = () => (layoutRoute()?.params.layout ?? "stacked") as DualScreenLayout;
   const register = (index: number, element: HTMLElement) => {
     element.setAttribute("src", String(index));
     element.setAttribute("data-index", String(index));
@@ -26,7 +31,7 @@ export function GameLayout(props: ParentProps) {
     unbind();
     boundId = instance.id;
     void instance.ready.catch(() => {});
-    const ready = () => { shell.setModel("launcher", { kind: "idle" }); shell.setModel("error", ""); shell.rememberGame(); shell.navigate("/game/play", true); };
+    const ready = () => { shell.setModel("launcher", { kind: "idle" }); shell.setModel("error", ""); shell.rememberGame(); shell.navigate(shell.gamePath("play"), true); };
     const audio = (event: Event) => shell.setModel("audio", (event as CustomEvent<{ available: boolean; volume: number; muted: boolean }>).detail);
     const surfacesChanged = () => setRevision((value) => value + 1);
     const finish = (message?: string) => {
@@ -93,5 +98,10 @@ export function GameLayout(props: ParentProps) {
     wait(180);
   });
 
-  return <main class="horizon-game-layout"><SurfaceStage surfaces={surfaces()} revision={revision()} register={register} find={(index) => elements.get(index)} />{props.children}</main>;
+  return <main class="horizon-game-layout">
+    <Show when={dualScreen()} fallback={<SurfaceStage surfaces={surfaces()} revision={revision()} register={register} find={(index) => elements.get(index)} />}>
+      <DualScreenStage layout={layout()} register={register} />
+    </Show>
+    {props.children}
+  </main>;
 }

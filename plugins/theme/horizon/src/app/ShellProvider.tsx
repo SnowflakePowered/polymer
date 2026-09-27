@@ -83,7 +83,7 @@ export function ShellProvider(props: ParentProps) {
       colorModeLoaded = true;
       setModel("colorMode", mode);
     });
-    if (model.launch) navigate("/game/play", { replace: true });
+    if (model.launch) navigate(gamePath("play"), { replace: true });
     void readRecent().then((recent) => {
       recentLoaded = true;
       setModel("recent", recent);
@@ -93,6 +93,12 @@ export function ShellProvider(props: ParentProps) {
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
   const go = (path: string, replace = false) => navigate(path, { replace });
+  const gamePath = (page: "launching" | "play" | "reorder") => {
+    const request = model.request ?? model.launch?.request;
+    const platform = request?.machine ?? model.draft?.platform ?? "";
+    const game = (request ? request.launchSet?.[request.initialDiscIndex ?? 0]?.id : model.launchableId) ?? "external";
+    return `/game/${encodeURIComponent(platform)}/${encodeURIComponent(game)}/${page}`;
+  };
   const fail = (error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     setModel("error", message);
@@ -158,7 +164,7 @@ export function ShellProvider(props: ParentProps) {
   const beginLaunch = async (launchableId: NonNullable<ShellModel["launchableId"]>, draft: PackageConfiguration, signal?: AbortSignal) => {
     setModel("request", null);
     setModel("launcher", { kind: "launching", name: draft.name });
-    go("/game/launching", true);
+    go(gamePath("launching"), true);
     try {
       const request = await onLaunch(launchableId, draft);
       if (signal?.aborted) return;
@@ -220,7 +226,7 @@ export function ShellProvider(props: ParentProps) {
     setModel("request", request.options);
     setModel("surfaces", structuredClone(request.options.surfaces));
     setModel("launcher", { kind: "launching", name: request.options.command });
-    go("/game/launching", true);
+    go(gamePath("launching"), true);
   };
   startupHandler = acceptStartup;
   for (const request of startupQueue.splice(0)) acceptStartup(request);
@@ -250,6 +256,7 @@ export function ShellProvider(props: ParentProps) {
       model,
       setModel,
       navigate: go,
+      gamePath,
       launchRecent,
       showDetails,
       launchDraft,

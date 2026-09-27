@@ -38,8 +38,11 @@ export function ShellRouter() {
     <Route path="/settings" component={SettingsPage} />
     <Route path="/game" component={GameLayout}>
       <Route path="/launching" component={LaunchingPage} />
-      <Route path="/play" component={PlayPage} />
-      <Route path="/reorder" component={() => <ControllerReorder />} />
+      <Route path="/:platform/:game">
+        <Route path="/launching" component={LaunchingPage} />
+        <Route path="/play/:layout?" component={PlayPage} />
+        <Route path="/reorder" component={() => <ControllerReorder />} />
+      </Route>
     </Route>
     <Route path="*404" component={NotFound} />
   </MemoryRouter>;
