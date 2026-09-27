@@ -21,11 +21,13 @@ pub(crate) mod memory;
 pub mod memorycard;
 pub(crate) mod permissions;
 mod reconcile;
+mod scratch;
 
 pub use composed::ComposedStorage;
 pub use git::{GitVolumeStorage, PlatformRepository};
 pub use memory::{MemoryFile, MemoryStorage};
 pub use reconcile::{ReconcileStorage, ReconciliableStorage};
+pub use scratch::ScratchStorage;
 
 use crate::storage::manifest::VolumeInfo;
 use manifest::ArtifactRegistry;

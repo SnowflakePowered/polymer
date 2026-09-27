@@ -106,7 +106,7 @@ impl VirtualNand for Ps3Nand {
         if let Some(saves) = saves {
             layers.push(saves);
         }
-        layers.push(self.root());
+        layers.push(Arc::new(crate::ScratchStorage::new(self.root())));
         Ok(Arc::new(crate::ComposedStorage::new(layers)?))
     }
 

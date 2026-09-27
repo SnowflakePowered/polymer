@@ -66,7 +66,6 @@ impl VirtualNand for WiiUNand {
         saves: Option<Arc<dyn SaveRepo>>,
         keys: &dyn crate::keys::KeyReader,
     ) -> Result<Arc<dyn MountableStorage>, Error> {
-        let immutable: Arc<dyn MountableStorage> = self.root();
         let mut files = Vec::new();
         for description in keys
             .list(&crate::keys::KeyQuery {
@@ -106,7 +105,7 @@ impl VirtualNand for WiiUNand {
         if let Some(saves) = saves {
             layers.push(saves);
         }
-        layers.push(immutable);
+        layers.push(Arc::new(crate::ScratchStorage::new(self.root())));
         Ok(Arc::new(ComposedStorage::new(layers)?))
     }
 
