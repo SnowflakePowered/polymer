@@ -824,8 +824,8 @@ impl GameHost {
             (surface, target_index, quarter_turns)
         } else {
             let (target_index, quarter_turns) = self
-                .next_target_configuration()
-                .ok_or("the game host already has every requested render target")?;
+                .target_configuration(offer.id().0)
+                .ok_or("the game host already has this render target")?;
             let stream = offer.stream();
             let (width, height) = rotated_extent(stream.width, stream.height, quarter_turns);
             (
@@ -983,17 +983,18 @@ impl GameHost {
         })
     }
 
-    fn next_target_configuration(&self) -> Option<(u32, u8)> {
+    fn target_configuration(&self, index: u32) -> Option<(u32, u8)> {
         let active = self.active.as_ref()?;
         active
             .options
             .surfaces
             .iter()
             .find(|target| {
-                !self
-                    .surfaces
-                    .values()
-                    .any(|surface| surface.index == target.index)
+                target.index == index
+                    && !self
+                        .surfaces
+                        .values()
+                        .any(|surface| surface.index == target.index)
             })
             .map(|target| (target.index, normalized_quarter_turns(target.rotation)))
     }

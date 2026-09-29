@@ -154,7 +154,7 @@ pub(crate) struct ShellCompositor {
     compositor: Compositor,
     root: ContainerVisual,
     visuals: HashMap<CompositionLayerId, CompositionVisual>,
-    swapchain_surfaces: HashMap<usize, windows::UI::Composition::ICompositionSurface>,
+    swapchain_surfaces: HashMap<usize, (IUnknown, windows::UI::Composition::ICompositionSurface)>,
     group_visuals: HashMap<u64, CompositionGroupVisual>,
     child_orders: HashMap<Option<u64>, Vec<CompositionNodeId>>,
     raster: RasterDomain,
@@ -667,13 +667,14 @@ impl ShellCompositor {
     ) -> windows::core::Result<CompositionSurfaceBrush> {
         let identity = swapchain.as_raw() as usize;
         let surface = match self.swapchain_surfaces.get(&identity) {
-            Some(surface) => surface.clone(),
+            Some((_, surface)) => surface.clone(),
             None => {
                 let interop: ICompositorInterop = self.compositor.cast()?;
                 // SAFETY: captured swapchains are retained by GameHost while their
                 // corresponding visual is installed in this tree.
                 let surface = unsafe { interop.CreateCompositionSurfaceForSwapChain(swapchain)? };
-                self.swapchain_surfaces.insert(identity, surface.clone());
+                self.swapchain_surfaces
+                    .insert(identity, (swapchain.clone(), surface.clone()));
                 surface
             }
         };
