@@ -48,6 +48,12 @@ impl Read for VfsReader {
     }
 }
 
+impl Digestible for polymer_library::LaunchableUri {
+    fn digest(&self, algorithm: DigestAlgorithm) -> io::Result<String> {
+        self.binary_path()?.as_path().digest(algorithm)
+    }
+}
+
 /// The first normalized executable in a package, as used for library identity.
 pub struct PackageBinary<'a>(pub &'a Path);
 

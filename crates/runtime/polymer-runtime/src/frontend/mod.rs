@@ -631,7 +631,7 @@ impl PolymerHost for FrontendServices {
 
     fn digest(
         &self,
-        path: String,
+        uri: String,
         binary: bool,
         algorithm: String,
     ) -> ApiFuture<Result<String, String>> {
@@ -639,8 +639,12 @@ impl PolymerHost for FrontendServices {
         Box::pin(async move {
             let algorithm: DigestAlgorithm = serde_json::from_value(Value::String(algorithm))
                 .map_err(|error| error.to_string())?;
+            let uri: polymer_library::LaunchableUri = uri
+                .parse()
+                .map_err(|error: polymer_library::GameCatalogError| error.to_string())?;
             tokio::task::spawn_blocking(move || {
-                let path = std::path::Path::new(&path);
+                let path = uri.binary_path()?;
+                let path = path.as_path();
                 if binary {
                     PackageBinary(path).digest(algorithm)
                 } else {
@@ -740,7 +744,7 @@ impl PolymerHost for FrontendServices {
                     .iter()
                     .map(|(_, package)| {
                         serde_json::json!({
-                            "launchPath": package.path.to_string_lossy(), "package": package,
+                            "launchPath": package.launch_path(), "package": package,
                         })
                     })
                     .collect(),

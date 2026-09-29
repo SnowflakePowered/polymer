@@ -5,8 +5,8 @@ use std::{cell::RefCell, future::Future, pin::Pin, rc::Rc};
 #[derive(serde::Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum DigestSource {
-    Path {
-        path: String,
+    Uri {
+        uri: String,
         binary: bool,
     },
     Handle {

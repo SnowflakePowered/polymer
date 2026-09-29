@@ -13,7 +13,7 @@ pub(crate) struct DigestState {
 impl DigestState {
     /// Register only package/file descriptors supplied at host API boundaries.
     pub(crate) fn package(&mut self, value: &mut Value) {
-        if value.get("__digestPath").is_none() {
+        if value.get("uri").is_none() {
             return;
         }
         if let Some(files) = value.get_mut("files").and_then(Value::as_array_mut) {
@@ -28,12 +28,16 @@ impl DigestState {
         let Some(values) = value.as_object_mut() else {
             return;
         };
-        let Some(Value::String(path)) = values.remove("__digestPath") else {
+        let Some(path) = values
+            .get("uri")
+            .and_then(Value::as_str)
+            .and_then(|uri| uri.parse::<polymer_library::LaunchableUri>().ok())
+            .and_then(|uri| uri.binary_path().ok())
+        else {
             return;
         };
         let token = self.sources.len().to_string();
-        self.sources
-            .insert(token.clone(), (PathBuf::from(path), package));
+        self.sources.insert(token.clone(), (path, package));
         values.insert("__digestToken".into(), token.into());
         values.remove("binaryDigest");
         values.remove("__manifest");
@@ -101,7 +105,7 @@ impl DigestState {
                     .resource_file(&kind, &token, &components)
                     .map_err(|error| JsErrorBox::generic(error.to_string()))?,
             ),
-            DigestSource::Path { .. } => {
+            DigestSource::Uri { .. } => {
                 return Err(JsErrorBox::type_error(
                     "plugins cannot digest arbitrary host paths",
                 ));

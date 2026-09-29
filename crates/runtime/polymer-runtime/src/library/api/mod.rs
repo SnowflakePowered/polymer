@@ -40,8 +40,7 @@ pub(crate) trait LibraryApi {
         json!({
             "id": launchable.id.simple().to_string(),
             "binaryId": launchable.binary_id.simple().to_string(),
-            "path": launchable.path,
-            "__digestPath": launchable.path,
+            "uri": launchable.path,
             "serial": launchable.serial,
             "titleId": launchable.title_id,
             "parentBinaryId": launchable.parent_binary_id.map(|id| id.simple().to_string()),

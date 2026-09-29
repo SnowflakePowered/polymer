@@ -19,9 +19,22 @@ pub(super) enum MountSource {
         contents: ByteBuf,
     },
     Package {
-        source: PathBuf,
-        name: Option<String>,
+        uri: polymer_library::LaunchableUri,
+        bundle: Option<PackageBundle>,
     },
+}
+
+#[derive(serde::Deserialize)]
+pub(super) struct PackageBundle {
+    pub(super) entrypoint: String,
+    pub(super) files: Vec<PackageBundleFile>,
+}
+
+#[derive(serde::Deserialize)]
+pub(super) struct PackageBundleFile {
+    pub(super) name: String,
+    pub(super) uri: Option<polymer_library::LaunchableUri>,
+    pub(super) text: Option<String>,
 }
 
 impl FilesystemState {
@@ -76,8 +89,8 @@ impl FilesystemState {
                 self.plan
                     .mount_file(target.clone(), self.file(handle)?, permissions);
             }
-            MountSource::Package { source, name } => {
-                return self.mount_package_source(target, source, name, permissions);
+            MountSource::Package { uri, bundle } => {
+                return self.mount_package(target, uri, bundle, permissions);
             }
         }
         self.used = true;

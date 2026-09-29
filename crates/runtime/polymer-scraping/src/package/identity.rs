@@ -4,7 +4,7 @@ use polymer_pluginhost::digest::{DigestAlgorithm, Digestible, PackageBinary};
 
 impl Digestible for Package {
     fn digest(&self, algorithm: DigestAlgorithm) -> std::io::Result<String> {
-        self.path.as_path().digest(algorithm)
+        self.uri.digest(algorithm)
     }
 }
 
@@ -13,7 +13,7 @@ impl Package {
     /// or exposing a package to JS does not compute it.
     pub(super) fn ensure_binary_identity(&mut self) -> Result<[u8; 32], std::io::Error> {
         if self.binary_digest.is_empty() {
-            let digest = PackageBinary(&self.path).digest(DigestAlgorithm::Blake3)?;
+            let digest = PackageBinary(&self.uri.binary_path()?).digest(DigestAlgorithm::Blake3)?;
             if let Some(manifest) = &self.manifest {
                 crate::ingest::CuePreparation::validate_files(manifest)
                     .map_err(std::io::Error::other)?;
@@ -44,7 +44,7 @@ impl Package {
         catalog
             .import_package(
                 IdentifiedLaunchable {
-                    path: package.path,
+                    path: package.uri,
                     binary_blake3,
                     serial: package.serial,
                     title_id: package.title_id,

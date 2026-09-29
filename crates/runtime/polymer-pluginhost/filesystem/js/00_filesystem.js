@@ -129,7 +129,8 @@ const filesystem = Object.freeze({
       throw new TypeError("mount format is only supported for storage");
     }
     if (packages.has(source)) {
-      return mountPackage(target, packages.get(source), permissions);
+      const { uri, bundle } = packages.get(source);
+      return op_vfs_mount(target, { type: "package", uri, bundle }, permissions);
     }
     if (typeof source?.render === "function") {
       const root = target.replace(/\/+$/, "");
@@ -162,36 +163,6 @@ const filesystem = Object.freeze({
   path(path) { return op_vfs_path(String(path)); },
 });
 
-function mountPackage(target, launchable, permissions) {
-  if (!/^r?x?$/.test(permissions)) {
-    throw new TypeError("packages only support read and execute permissions");
-  }
-  target = target.replace(/\/+$/, "");
-  const bundle = launchable.bundle;
-  if (bundle == null) {
-    return op_vfs_mount(target || "/", { type: "package", source: launchable.launchPath, name: null }, permissions);
-  }
-  const validName = name => typeof name === "string" && name.length > 0
-    && name !== "." && name !== ".." && !/[\\/:]/.test(name);
-  if (!validName(bundle.entrypoint) || !Array.isArray(bundle.files)
-    || !bundle.files.some(file => file.name === bundle.entrypoint)) {
-    throw new TypeError("invalid package entrypoint");
-  }
-  const names = new Set();
-  for (const file of bundle.files) {
-    if (!validName(file.name) || names.has(file.name)
-      || (typeof file.path === "string") === (typeof file.text === "string")) {
-      throw new TypeError("invalid package file binding");
-    }
-    names.add(file.name);
-  }
-  for (const file of bundle.files) {
-    if (file.path != null) op_vfs_mount(target || "/", { type: "package", source: file.path, name: file.name }, permissions);
-    else filesystem.mount(`${target}/${file.name}`, new TextEncoder().encode(file.text), { mode: permissions });
-  }
-  return filesystem.path(`${target}/${bundle.entrypoint}`);
-}
-
 function refreshConfigurations() {
   for (const mount of configurationMounts) {
     const rendered = mount.configuration.render();
@@ -209,8 +180,8 @@ Object.defineProperty(globalThis, "__polymerFilesystem", {
   value: Object.freeze({
     filesystem,
     fileResource: readableResource,
-    bindPackage(value, launchPath) {
-      if (value != null) packages.set(value, { launchPath, bundle: structuredClone(value.bundle) });
+    bindPackage(value) {
+      if (value != null) packages.set(value, { uri: value.uri, bundle: structuredClone(value.bundle ?? null) });
       return value;
     },
     cacheResource(cacheKey, methods) {

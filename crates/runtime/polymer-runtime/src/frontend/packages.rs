@@ -45,23 +45,24 @@ impl FrontendServices {
     fn prepare_launch_entry(entry: &mut Value) -> Result<(), String> {
         let Some(value) = entry
             .get("package")
-            .filter(|value| value.get("__digestPath").is_some())
+            .filter(|value| value.get("uri").is_some())
         else {
             return Ok(());
         };
         let mut package: Package =
             serde_json::from_value(value.clone()).map_err(|error| error.to_string())?;
         if package.binary_digest.is_empty() {
-            package.path = entry
+            let path = entry
                 .get("launchPath")
                 .and_then(Value::as_str)
-                .ok_or("an unprepared launch package requires a launchPath")?
-                .into();
+                .ok_or("an unprepared launch package requires a launchPath")?;
+            package.uri =
+                polymer_library::LaunchableUri::file(path).map_err(|error| error.to_string())?;
         }
         package
             .prepare_launch()
             .map_err(|error| error.to_string())?;
-        entry["launchPath"] = package.path.to_string_lossy().into_owned().into();
+        entry["launchPath"] = package.launch_path().into();
         entry["package"] = serde_json::to_value(package).map_err(|error| error.to_string())?;
         Ok(())
     }

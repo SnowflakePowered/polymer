@@ -1,21 +1,22 @@
 use super::Package;
-use std::path::Path;
+use polymer_library::LaunchableUri;
+use std::path::{Path, PathBuf};
 
 impl Package {
     /// Scraper file objects retain their own identity and size. No content is
     /// read until the plugin asks for a digest.
     pub(crate) fn scrape_value(&self) -> serde_json::Value {
         let mut value = serde_json::to_value(self).expect("package serialization");
-        let paths: Vec<_> = match &self.manifest {
+        let paths: Vec<PathBuf> = match &self.manifest {
             Some(manifest) => manifest
                 .files
                 .iter()
-                .map(|file| file.path.as_path())
+                .map(|file| file.path.clone())
                 .collect(),
-            None => vec![self.path.as_path()],
+            None => self.uri.host_path().into_iter().collect(),
         };
         let files: Vec<_> = paths
-            .into_iter()
+            .iter()
             .filter_map(|path| {
                 if Self::is_container(path) {
                     return None;
@@ -25,7 +26,7 @@ impl Package {
                     return None;
                 }
                 Some(serde_json::json!({
-                    "__digestPath": path,
+                    "uri": LaunchableUri::file(path).ok()?,
                     "name": path.file_name().unwrap_or_default().to_string_lossy(),
                     "size": metadata.len(),
                 }))

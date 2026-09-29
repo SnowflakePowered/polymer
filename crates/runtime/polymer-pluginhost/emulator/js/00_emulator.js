@@ -25,7 +25,7 @@ async function launch(entrypoint, args, configurationId, explicitDefault) {
   }
   const discs = Object.freeze(launchSet.map(disc => Object.freeze({
     ...disc,
-    package: disc.package == null ? disc.package : __polymerFilesystem.bindPackage(createPackage(disc.package), disc.launchPath),
+    package: disc.package == null ? disc.package : __polymerFilesystem.bindPackage(createPackage(disc.package)),
   })));
   args.launchSet = discs;
   args.initialDiscIndex = initialDiscIndex;

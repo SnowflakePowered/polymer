@@ -122,7 +122,7 @@ export class LibraryState {
       const entries = await Promise.all(games.map(async game => {
         const launchable = game.launchables.find(item => !item.parentBinaryId) ?? game.launchables[0];
         if (!launchable) return [];
-        return [[game.id, { path: launchable.path, name: this.title(game), platform: game.platform,
+        return [[game.id, { path: launchable.uri, name: this.title(game), platform: game.platform,
           emulator: "", playedAt: 0, artwork: await this.media(game, ["media.boxart.front", "media.banner", "media.logo", "media.boxart.full"]),
           icon: await this.media(game, ["media.icon", "banner.icon", "banner.banner"]) }] as const];
       }));
@@ -159,7 +159,7 @@ export class LibraryState {
     if (title?.data.kind === "scalar" && typeof title.data.value === "string") return title.data.value;
     const internal = game.metadata.find(item => item.key === "package.internalname");
     if (internal?.data.kind === "scalar" && typeof internal.data.value === "string") return internal.data.value;
-    return game.launchables[0]?.path.split(/[\\/]/).pop() || game.id;
+    return game.launchables[0]?.uri.split("/").pop() || game.id;
   }
 
   private async media(game: LibraryGame, keys: readonly string[]): Promise<string | undefined> {
