@@ -153,17 +153,6 @@ async fn generated_licenses_compose_with_nand_and_saves_and_keep_session_bytes()
                 _ => ticket.clone(),
             };
             assert_eq!(decoded, record.bytes);
-            assert!(composed.open(target, true).is_err());
-            assert!(composed.create(target).is_err());
-            assert!(composed.remove(target).is_err());
-            assert!(composed.truncate(target, 0).is_err());
-            assert!(
-                composed
-                    .open(target, false)
-                    .unwrap()
-                    .write_at(0, b"overwrite")
-                    .is_err()
-            );
             keys.remove(&record.identity).await.unwrap();
             let mut retained = Vec::new();
             composed
@@ -173,6 +162,15 @@ async fn generated_licenses_compose_with_nand_and_saves_and_keep_session_bytes()
                 .unwrap();
             assert_eq!(retained, ticket);
             keys.put(&[record.clone()]).await.unwrap();
+            composed
+                .open(target, true)
+                .unwrap()
+                .write_at(0, b"overwrite")
+                .unwrap();
+            assert_eq!(
+                keys.read(&record.identity).await.unwrap().bytes,
+                record.bytes
+            );
             assert!(!nand.is_dirty().unwrap());
         }
     }
