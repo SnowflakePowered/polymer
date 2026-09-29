@@ -70,7 +70,7 @@ struct ShellCoordinator {
     input: InputRouter,
     inspector: Option<InspectorWindow>,
     notifications: Option<PolymerNotificationSender>,
-    _theme: crate::theme::SelectedTheme,
+    theme: crate::theme::SelectedTheme,
     quitting: bool,
 }
 
@@ -146,7 +146,7 @@ impl ShellCoordinator {
             input,
             inspector: None,
             notifications: None,
-            _theme: theme,
+            theme,
             quitting: false,
         };
         Ok(state)
@@ -174,7 +174,7 @@ impl ShellCoordinator {
             let base_url = shell_source.base_url.clone();
             let notifications = match self
                 .shell_dom
-                .activate(shell_source.base_url.clone(), |factory| async move {
+                .activate(|factory| async move {
                     factory
                         .create(
                             &html,
@@ -213,14 +213,10 @@ impl ShellCoordinator {
     }
 
     async fn reload_shell(&mut self, commands: FrontendCommands) {
-        let Some(base_url) = self.shell_dom.take_reload() else {
+        if !self.shell_dom.take_reload() {
             return;
-        };
-        let source = match deno_core::ModuleSpecifier::parse(&base_url) {
-            Ok(url) => crate::theme::load_document(&url).await,
-            Err(error) => Err(error.into()),
-        };
-        let (source, error) = match source {
+        }
+        let (source, error) = match self.theme.reload_document().await {
             Ok(source) => (Some(source), None),
             Err(error) => (None, Some(error.to_string())),
         };

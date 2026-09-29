@@ -287,7 +287,11 @@ pub(super) async fn op_consolestorage_save_restore(
 ) -> Result<StorageSaveCommit, JsErrorBox> {
     ConsoleStorage::from_state(&state)?
         .restore_save
-        .send(RestoreSave { volume, save, commit })
+        .send(RestoreSave {
+            volume,
+            save,
+            commit,
+        })
         .await
         .map_err(|error| format!("storage actor unavailable: {error}"))
         .and_then(|result| result.map_err(|error| error.to_string()))
@@ -304,7 +308,11 @@ pub(super) async fn op_consolestorage_save_copy(
 ) -> Result<StorageSaveCommit, JsErrorBox> {
     ConsoleStorage::from_state(&state)?
         .copy_save
-        .send(CopySave { volume, save, destination })
+        .send(CopySave {
+            volume,
+            save,
+            destination,
+        })
         .await
         .map_err(|error| format!("storage actor unavailable: {error}"))
         .and_then(|result| result.map_err(|error| error.to_string()))

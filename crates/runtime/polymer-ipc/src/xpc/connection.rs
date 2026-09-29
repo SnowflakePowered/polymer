@@ -104,7 +104,10 @@ impl Receiver {
 impl Connection {
     pub fn connect(name: &str) -> io::Result<Self> {
         let endpoint = Directory::resolve(name)?;
-        let connection = Self::attach(NSXPCConnection::initWithListenerEndpoint(NSXPCConnection::alloc(), &endpoint));
+        let connection = Self::attach(NSXPCConnection::initWithListenerEndpoint(
+            NSXPCConnection::alloc(),
+            &endpoint,
+        ));
         connection.activate()?;
         Ok(connection)
     }
@@ -114,9 +117,13 @@ impl Connection {
         let error = RcBlock::new(move |error: NonNull<NSError>| {
             let _ = failure.try_send(Err(io::Error::other(unsafe { error.as_ref() }.to_string())));
         });
-        let reply = RcBlock::with_encoding::<_, _, _, StatusReply>(move |status: i32| { let _ = sender.try_send(Interface::status(status)); });
+        let reply = RcBlock::with_encoding::<_, _, _, StatusReply>(move |status: i32| {
+            let _ = sender.try_send(Interface::status(status));
+        });
         let proxy = self.0.native.remoteObjectProxyWithErrorHandler(&error);
-        unsafe { polymer_ping(&proxy, &reply); }
+        unsafe {
+            polymer_ping(&proxy, &reply);
+        }
         receiver.recv_timeout(TIMEOUT).map_err(io::Error::other)?
     }
     pub(super) fn attach(native: Retained<NSXPCConnection>) -> Self {

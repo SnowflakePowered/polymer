@@ -1,10 +1,6 @@
 use std::collections::HashMap;
 
 use polymer_automation::{AutomationError, WindowId, WindowSnapshot};
-use windows::Win32::{
-    Foundation::HWND,
-    UI::WindowsAndMessaging::{GW_OWNER, GetWindow},
-};
 use xa11y_core::{ElementData, Provider};
 use xa11y_windows::WindowsProvider;
 
@@ -49,35 +45,22 @@ impl WindowCatalog {
                 Err(xa11y_core::Error::SelectorNotMatched { .. }) => continue,
                 Err(error) => return Err(WindowsAutomationDriver::map_error(error)),
             };
-            let mut pending = provider
-                .get_children(Some(&app))
+            let children = provider
+                .app_windows(&app)
                 .map_err(WindowsAutomationDriver::map_error)?;
-            while let Some(element) = pending.pop() {
-                pending.extend(
-                    provider
-                        .get_children(Some(&element))
-                        .map_err(WindowsAutomationDriver::map_error)?
-                        .into_iter()
-                        .filter(|child| {
-                            child
-                                .raw
-                                .get("native_window_handle")
-                                .and_then(|value| value.as_u64())
-                                .is_some_and(|hwnd| unsafe {
-                                    GetWindow(HWND(hwnd as isize as *mut _), GW_OWNER).is_ok()
-                                })
-                        }),
-                );
-                if let Some(record) = self.record(element) {
-                    windows.push(record);
-                }
-            }
+            windows.extend(
+                children
+                    .into_iter()
+                    .filter_map(|element| self.record(element)),
+            );
         }
         Ok(windows)
     }
 
     fn record(&mut self, element: ElementData) -> Option<WindowRecord> {
-        let hwnd = element.raw.get("native_window_handle")?.as_u64()? as isize;
+        let hwnd =
+            isize::from_str_radix(element.stable_id.as_deref()?.strip_prefix("hwnd:0x")?, 16)
+                .ok()?;
         let id = self.ids.entry(hwnd).or_insert_with(|| {
             let id = WindowId(format!("window-{}", self.next_id));
             self.next_id += 1;

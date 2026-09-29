@@ -55,26 +55,23 @@ impl InstalledTitle {
                 }
             }
         }
-        let artifact = Artifact::new(
+        let boot = tmd
+            .contents
+            .iter()
+            .find(|content| content.index == tmd.boot_index && !content.is_shared())
+            .filter(|_| kind == DepotType::App);
+        Artifact::new(
             format!("{title:016x}"),
             kind,
             manifest,
             label,
             Some(tmd.title_version.to_string()),
             vec![icon.map_or(IconHint::Builtin(kind), IconHint::Embedded)],
-        );
-        let boot = tmd
-            .contents
-            .iter()
-            .find(|content| content.index == tmd.boot_index && !content.is_shared())
-            .filter(|_| kind == DepotType::App);
-        match boot {
-            Some(boot) => artifact.with_entrypoint(ArtifactEntrypoint {
+            boot.map(|boot| ArtifactEntrypoint {
                 root: root.to_owned(),
                 path: format!("{:08x}.app", boot.id),
             }),
-            None => Ok(artifact),
-        }
+        )
     }
 
     fn name(storage: &dyn VolumeStorage, path: &str) -> Result<Option<String>, Error> {

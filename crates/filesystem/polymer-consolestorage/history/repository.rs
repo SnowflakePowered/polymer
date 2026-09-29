@@ -10,7 +10,8 @@ use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
 use tokio::sync::Mutex;
 
 use super::{
-    AttachmentTips, HistoryInner, SaveCommitId, SaveDepotId, SaveRefState, SaveRefs, SaveVersioning,
+    AttachmentTips, HistoryInner, SaveAttachmentKind, SaveCommitId, SaveDepotId, SaveRefState,
+    SaveRefs, SaveVersioning,
 };
 use crate::Error;
 use crate::savegame::SaveBlob;
@@ -44,10 +45,8 @@ impl SaveVersioning {
         );
         SaveRefs {
             head: save,
-            screenshot: format!("{attachments}/screenshot"),
-            icon: format!("{attachments}/icon"),
-            note: format!("{attachments}/note"),
-            title: format!("{attachments}/title"),
+            attachments: SaveAttachmentKind::ALL
+                .map(|kind| format!("{attachments}/{}", kind.as_str())),
         }
     }
 
@@ -105,12 +104,7 @@ impl SaveVersioning {
         };
         Ok(Some(SaveRefState {
             tip,
-            attachments: AttachmentTips {
-                screenshot: Self::tip_in(repo, &refs.screenshot)?,
-                icon: Self::tip_in(repo, &refs.icon)?,
-                note: Self::tip_in(repo, &refs.note)?,
-                title: Self::tip_in(repo, &refs.title)?,
-            },
+            attachments: AttachmentTips::collect(|kind| Self::tip_in(repo, refs.attachment(kind)))?,
         }))
     }
 

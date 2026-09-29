@@ -44,6 +44,7 @@ impl Package {
         catalog
             .import_package(
                 IdentifiedLaunchable {
+                    manifest: package.manifest,
                     path: package.uri,
                     entrypoint: seed.entrypoint,
                     binary_blake3,
@@ -58,7 +59,6 @@ impl Package {
                     // Clear legacy eager hashes when reimporting an existing game.
                     ("host:raw-file".to_owned(), Vec::new()),
                 ],
-                package.manifest,
             )
             .await
     }

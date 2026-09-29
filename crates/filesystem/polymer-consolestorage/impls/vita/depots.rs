@@ -206,7 +206,8 @@ impl Installable for VitaInstall {
                 .filter(|s| !s.trim().is_empty())
                 .map(str::to_owned),
             vec![icon],
-        );
+            None,
+        )?;
         self.storage
             .artifacts()
             .record(&artifact, self.events)

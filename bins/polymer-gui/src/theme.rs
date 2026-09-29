@@ -18,6 +18,7 @@ pub(crate) struct SelectedTheme {
     plugin: Arc<dyn ThemePluginInstance>,
     debug: bool,
     server: Option<ThemeServer>,
+    url: Option<ModuleSpecifier>,
 }
 
 impl SelectedTheme {
@@ -26,6 +27,7 @@ impl SelectedTheme {
             plugin,
             debug,
             server: None,
+            url: None,
         }
     }
 
@@ -39,6 +41,7 @@ impl SelectedTheme {
             })?;
             ensure_debug_address_available(&debug.url).await?;
             self.server = Some(ThemeServer::spawn(self.plugin.root(), &debug.serve)?);
+            self.url = Some(debug.url.clone());
             return self.load_debug_document(&debug.url).await;
         }
 
@@ -60,7 +63,16 @@ impl SelectedTheme {
         }
         let url = ModuleSpecifier::from_file_path(&main)
             .map_err(|_| format!("could not convert {} to a file URL", main.display()))?;
+        self.url = Some(url.clone());
         load_document(&url).await
+    }
+
+    pub(crate) async fn reload_document(&self) -> Result<ShellDocumentSource, Box<dyn Error>> {
+        let url = self
+            .url
+            .as_ref()
+            .ok_or("the theme document was never loaded")?;
+        load_document(url).await
     }
 
     async fn load_debug_document(
@@ -139,7 +151,7 @@ async fn ensure_debug_address_available(url: &ModuleSpecifier) -> Result<(), Box
     Ok(())
 }
 
-pub(crate) async fn load_document(url: &ModuleSpecifier) -> Result<ShellDocumentSource, Box<dyn Error>> {
+async fn load_document(url: &ModuleSpecifier) -> Result<ShellDocumentSource, Box<dyn Error>> {
     let html = if url.scheme() == "file" {
         let path = url
             .to_file_path()

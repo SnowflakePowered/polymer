@@ -5,7 +5,7 @@ mod model;
 pub use manifest::{CuePart, CueTemplate, PackageFile, PackageManifest};
 mod schema;
 mod uri;
-pub use uri::{LaunchableUri, ResolvedLaunchable};
+pub use uri::{InstalledArtifact, LaunchableUri, ResolvedLaunchable};
 
 pub use catalog::{GameCatalog, GameCatalogError};
 pub use jobs::{ScrapeAttempt, ScrapeAttemptState, ScrapeJob, ScrapeJobState};

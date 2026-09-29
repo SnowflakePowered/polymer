@@ -54,7 +54,10 @@ impl Ingestor {
         let mut imported = Vec::new();
         for package in packages {
             let (launchable, created) = package.import(engine.catalog()).await?;
-            let root = launchable.parent_binary_id.unwrap_or(launchable.binary_id);
+            let root = launchable
+                .identified
+                .parent_binary_id
+                .unwrap_or(launchable.binary_id);
             engine.publish_library_content(root);
             let job = if created {
                 Some(engine.enqueue(root, launchable.binary_id).await?)

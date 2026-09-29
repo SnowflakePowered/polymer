@@ -2,21 +2,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Cursor;
 use std::path::Path;
 
-use gix::refs::transaction::{Change, PreviousValue, RefEdit, RefLog};
-use serde::{Deserialize, Serialize};
-
-use super::{AttachmentTips, SaveDepotId, SaveRefState, SaveTransition, SaveVersioning};
+use super::{
+    AttachmentTips, SaveAttachmentKind, SaveDepotId, SaveRefState, SaveTransition, SaveVersioning,
+};
 use crate::{Error, SaveRepo};
+use gix::refs::transaction::{Change, PreviousValue, RefEdit, RefLog};
 
-#[derive(Serialize, Deserialize)]
 struct MaterializationJournal {
     depot: u64,
     old: Option<String>,
     target: Option<String>,
-    screenshot: Option<String>,
-    icon: Option<String>,
-    note: Option<String>,
-    title: Option<String>,
+    attachments: AttachmentTips,
 }
 
 enum MaterializationFailure {
@@ -47,18 +43,7 @@ impl SaveVersioning {
             depot: transition.depot.0,
             old: transition.before.map(|state| state.tip.to_string()),
             target: after.map(|state| state.tip.to_string()),
-            screenshot: after
-                .and_then(|state| state.attachments.screenshot)
-                .map(|id| id.to_string()),
-            icon: after
-                .and_then(|state| state.attachments.icon)
-                .map(|id| id.to_string()),
-            note: after
-                .and_then(|state| state.attachments.note)
-                .map(|id| id.to_string()),
-            title: after
-                .and_then(|state| state.attachments.title)
-                .map(|id| id.to_string()),
+            attachments: after.map(|state| state.attachments).unwrap_or_default(),
         };
         self.write_journal_ref(&journal)
     }
@@ -89,10 +74,9 @@ impl SaveVersioning {
                 .map_err(|error| Error::git("parse profile transaction depot", error))?,
             old: optional(&mut values, "old")?,
             target: optional(&mut values, "target")?,
-            screenshot: optional(&mut values, "screenshot")?,
-            icon: optional(&mut values, "icon")?,
-            note: optional(&mut values, "note")?,
-            title: optional(&mut values, "title")?,
+            attachments: AttachmentTips::collect(|kind| {
+                Self::parse_journal_id(optional(&mut values, kind.as_str())?)
+            })?,
         }))
     }
 
@@ -104,16 +88,18 @@ impl SaveVersioning {
             .empty_tree()
             .edit()
             .map_err(|error| Error::git("edit profile transaction", error))?;
-        let depot = journal.depot.to_string();
         let values = [
-            ("depot", Some(depot.as_str())),
-            ("old", journal.old.as_deref()),
-            ("target", journal.target.as_deref()),
-            ("screenshot", journal.screenshot.as_deref()),
-            ("icon", journal.icon.as_deref()),
-            ("note", journal.note.as_deref()),
-            ("title", journal.title.as_deref()),
-        ];
+            ("depot", Some(journal.depot.to_string())),
+            ("old", journal.old.clone()),
+            ("target", journal.target.clone()),
+        ]
+        .into_iter()
+        .chain(SaveAttachmentKind::ALL.into_iter().map(|kind| {
+            (
+                kind.as_str(),
+                journal.attachments.get(kind).map(|id| id.to_string()),
+            )
+        }));
         for (name, value) in values {
             let Some(value) = value else { continue };
             let blob = repo
@@ -185,12 +171,7 @@ impl SaveVersioning {
                 .map(|tip| -> Result<_, Error> {
                     Ok(SaveRefState {
                         tip,
-                        attachments: AttachmentTips {
-                            screenshot: Self::parse_journal_id(journal.screenshot)?,
-                            icon: Self::parse_journal_id(journal.icon)?,
-                            note: Self::parse_journal_id(journal.note)?,
-                            title: Self::parse_journal_id(journal.title)?,
-                        },
+                        attachments: journal.attachments,
                     })
                 })
                 .transpose()?,

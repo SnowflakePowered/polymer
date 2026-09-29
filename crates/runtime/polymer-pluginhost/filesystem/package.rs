@@ -78,7 +78,9 @@ impl FilesystemState {
         if !valid || !names.contains(bundle.entrypoint.as_str()) {
             return Err(VfsError::Unsupported("invalid package bundle".into()));
         }
-        let entrypoint = target.as_path().join(&VfsComponent::new(&bundle.entrypoint)?);
+        let entrypoint = target
+            .as_path()
+            .join(&VfsComponent::new(&bundle.entrypoint)?);
         for file in bundle.files {
             let path = target.as_path().join(&VfsComponent::new(&file.name)?);
             match (file.uri, file.text) {
@@ -111,7 +113,8 @@ impl FilesystemState {
             authority,
             ResourceOrigin::HostFile,
         ));
-        self.plan.mount_file(target, self.file(handle)?, permissions);
+        self.plan
+            .mount_file(target, self.file(handle)?, permissions);
         Ok(())
     }
 }

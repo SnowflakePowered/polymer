@@ -418,14 +418,11 @@ impl ScrapingEngine {
         let packages = tokio::task::spawn_blocking(move || {
             launchables
                 .into_iter()
-                .map(|launchable| {
-                    crate::Package::from_launchable(launchable)
-                        .map(|package| package.scrape_value())
-                })
-                .collect::<Result<Vec<_>, GameCatalogError>>()
+                .map(|launchable| crate::Package::from_launchable(launchable).scrape_value())
+                .collect::<Vec<_>>()
         })
         .await
-        .map_err(|error| ScrapingError::Io(std::io::Error::other(error)))??;
+        .map_err(|error| ScrapingError::Io(std::io::Error::other(error)))?;
         Ok(ScrapeInput {
             metadata: input,
             packages,

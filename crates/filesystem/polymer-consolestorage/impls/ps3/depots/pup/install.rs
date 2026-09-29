@@ -213,7 +213,8 @@ impl Installable for PupInstall {
             vec![crate::installable::IconHint::Builtin(
                 crate::installable::DepotType::System,
             )],
-        );
+            None,
+        )?;
         // A firmware image replaces the previous image. Remove only files owned
         // by its previous artifact, preserving unrelated NAND contents.
         if let Some(previous) = self.storage.artifacts().artifact(artifact.id()).await? {

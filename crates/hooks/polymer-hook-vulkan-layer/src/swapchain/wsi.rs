@@ -20,15 +20,15 @@ pub(super) struct Swapchain {
     pub mode: vk::PresentModeKHR,
     pub period: Duration,
     pub availability: AvailabilityWaiter,
-    pending: Option<Arc<Surface>>,
-    _window: Option<polymer_platform_windows::FixedWindowBinding>,
+    attachment: Attachment,
 }
 
-type Generation = (
-    SwapchainController<VulkanVirtualBackend>,
-    Option<polymer_platform_windows::FixedWindowBinding>,
-    Option<ProvisionalBinding>,
-);
+enum Attachment {
+    Bound {
+        _window: polymer_platform_windows::FixedWindowBinding,
+    },
+    Detached(Arc<Surface>),
+}
 
 impl Swapchain {
     unsafe fn create(
@@ -44,9 +44,13 @@ impl Swapchain {
             }
             old.closed.store(true, Ordering::Release);
         }
-        let (controller, window, reservation) = match surface.binding() {
-            Some(_) => unsafe { Self::bound(&device, info, &surface)? },
-            None => unsafe { Self::detached(&device, info, &surface)? },
+        let extent = polymer_presentation::Extent2D {
+            width: info.image_extent.width,
+            height: info.image_extent.height,
+        };
+        let (controller, attachment) = match surface.binding() {
+            Some(_) => unsafe { Self::bound(&device, info, &surface, extent)? },
+            None => unsafe { Self::detached(&device, info, &surface, extent)? },
         };
         let images = (0..controller.profile().image_count)
             .map(|i| {
@@ -60,16 +64,6 @@ impl Swapchain {
             device.images.insert(image, ());
         }
         let count = images.len();
-        let pending = match reservation {
-            Some(reservation) => {
-                let committed = reservation
-                    .commit()
-                    .map_err(|_| vk::Result::ERROR_SURFACE_LOST_KHR)?;
-                surface.commit(committed);
-                None
-            }
-            None => Some(surface.clone()),
-        };
         Ok(Arc::new(Self {
             device,
             surface: info.surface,
@@ -83,20 +77,17 @@ impl Swapchain {
             mode: info.present_mode,
             period: surface.refresh_period(),
             availability,
-            pending,
-            _window: window,
+            attachment,
         }))
     }
     unsafe fn bound(
         device: &Arc<Device>,
         info: &vk::SwapchainCreateInfoKHR<'_>,
         surface: &Surface,
-    ) -> Result<Generation, vk::Result> {
+        extent: polymer_presentation::Extent2D,
+    ) -> Result<(SwapchainController<VulkanVirtualBackend>, Attachment), vk::Result> {
         let reservation = surface
-            .generation(polymer_presentation::Extent2D {
-                width: info.image_extent.width,
-                height: info.image_extent.height,
-            })
+            .generation(extent)
             .ok_or(vk::Result::ERROR_NATIVE_WINDOW_IN_USE_KHR)?;
         let binding = reservation.shared_binding();
         unsafe {
@@ -112,17 +103,18 @@ impl Swapchain {
         let controller =
             SwapchainController::create(Self::create_info(device, info), binding, session)
                 .map_err(|failure| Self::failed(device, failure))?;
-        Ok((controller, Some(window), Some(reservation)))
+        let committed = reservation
+            .commit()
+            .map_err(|_| vk::Result::ERROR_SURFACE_LOST_KHR)?;
+        surface.commit(committed);
+        Ok((controller, Attachment::Bound { _window: window }))
     }
     unsafe fn detached(
         device: &Arc<Device>,
         info: &vk::SwapchainCreateInfoKHR<'_>,
-        surface: &Surface,
-    ) -> Result<Generation, vk::Result> {
-        let extent = polymer_presentation::Extent2D {
-            width: info.image_extent.width,
-            height: info.image_extent.height,
-        };
+        surface: &Arc<Surface>,
+        extent: polymer_presentation::Extent2D,
+    ) -> Result<(SwapchainController<VulkanVirtualBackend>, Attachment), vk::Result> {
         unsafe {
             Self::validate(device, info, extent)?;
         }
@@ -135,7 +127,7 @@ impl Swapchain {
             polymer_protocol::ConsumerApi::D3d12,
         )
         .map_err(|failure| Self::failed(device, failure))?;
-        Ok((controller, None, None))
+        Ok((controller, Attachment::Detached(surface.clone())))
     }
     fn create_info(device: &Device, info: &vk::SwapchainCreateInfoKHR<'_>) -> CreateInfo {
         CreateInfo {
@@ -155,9 +147,7 @@ impl Swapchain {
     }
     /// A detached generation is out of date once its surface is assigned.
     pub(super) fn superseded(&self) -> bool {
-        self.pending
-            .as_ref()
-            .is_some_and(|surface| surface.binding().is_some())
+        matches!(&self.attachment, Attachment::Detached(surface) if surface.binding().is_some())
     }
     unsafe fn validate(
         device: &Device,
@@ -279,7 +269,7 @@ impl Swapchain {
                         return Ok(index);
                     }
                     Err(ControllerError::WouldBlock) => {
-                        if self.pending.is_some() {
+                        if matches!(self.attachment, Attachment::Detached(_)) {
                             in_flight = controller.oldest_in_flight().cloned();
                         }
                     }

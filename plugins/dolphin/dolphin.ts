@@ -584,7 +584,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
             ["TMP", args.filesystem.path("/User/Temp")],
         ],
         argv,
-        isolate: false,
+        isolate: true,
         hooks: {
             graphics: isMacos ? ["metal"] : ["d3d11"],
             input: isMacos ? ["sdl3"] : ["sdl3", "bluetooth-api-win32"],

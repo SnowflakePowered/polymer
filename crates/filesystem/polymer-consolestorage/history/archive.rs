@@ -7,8 +7,8 @@ use jiff::Timestamp;
 use uuid::Uuid;
 
 use super::{
-    AttachmentTips, DeletedSaveInfo, SaveAttachmentKind, SaveCommitId, SaveCommitInfo,
-    SaveCommitOperation, SaveDepotId, SaveRefState, SaveTransition, SaveVersioning,
+    AttachmentTips, DeletedSaveInfo, SaveCommitId, SaveCommitInfo, SaveCommitOperation,
+    SaveDepotId, SaveRefState, SaveTransition, SaveVersioning,
 };
 use crate::{Error, SaveRepo};
 
@@ -164,14 +164,12 @@ impl SaveVersioning {
         let tip = parents
             .next()
             .ok_or_else(|| Error::HistoryConflict("archive record has no save tip".to_owned()))?;
-        let screenshot = Self::parse_trailer(&message, "Polymer-Screenshot: ")
-            .and_then(|value| gix::ObjectId::from_hex(value.as_bytes()).ok());
-        let icon = Self::parse_trailer(&message, "Polymer-Icon: ")
-            .and_then(|value| gix::ObjectId::from_hex(value.as_bytes()).ok());
-        let note = Self::parse_trailer(&message, "Polymer-Note: ")
-            .and_then(|value| gix::ObjectId::from_hex(value.as_bytes()).ok());
-        let title = Self::parse_trailer(&message, "Polymer-Title: ")
-            .and_then(|value| gix::ObjectId::from_hex(value.as_bytes()).ok());
+        let attachments = AttachmentTips::collect(|kind| {
+            Ok(
+                Self::parse_trailer(&message, &format!("{}: ", kind.trailer()))
+                    .and_then(|value| gix::ObjectId::from_hex(value.as_bytes()).ok()),
+            )
+        })?;
         let deleted_at = Timestamp::from_second(
             commit
                 .time()
@@ -185,15 +183,7 @@ impl SaveVersioning {
                 deleted_at,
                 tip: SaveCommitId(tip),
             },
-            state: SaveRefState {
-                tip,
-                attachments: AttachmentTips {
-                    screenshot,
-                    icon,
-                    note,
-                    title,
-                },
-            },
+            state: SaveRefState { tip, attachments },
         }))
     }
 
@@ -287,16 +277,8 @@ impl SaveVersioning {
             );
             let mut parents = vec![state.tip];
             for (kind, id) in state.attachments.entries() {
-                if let Some(id) = id {
-                    let trailer = match kind {
-                        SaveAttachmentKind::Screenshot => "Polymer-Screenshot",
-                        SaveAttachmentKind::Icon => "Polymer-Icon",
-                        SaveAttachmentKind::Note => "Polymer-Note",
-                        SaveAttachmentKind::Title => "Polymer-Title",
-                    };
-                    message.push_str(&format!("{trailer}: {id}\n"));
-                    parents.push(id);
-                }
+                message.push_str(&format!("{}: {id}\n", kind.trailer()));
+                parents.push(id);
             }
             self.pulse_archive(&repo, message, parents)?;
             Some(state)

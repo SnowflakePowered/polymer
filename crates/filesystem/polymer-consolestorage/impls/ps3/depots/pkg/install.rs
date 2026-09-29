@@ -165,14 +165,11 @@ impl Installable for Ps3PkgInstall {
                 .map(str::to_owned)
                 .or(self.depot.version),
             vec![icon],
-        );
-        let artifact = match self.depot.kind {
-            DepotType::App => artifact.with_entrypoint(ArtifactEntrypoint {
+            (self.depot.kind == DepotType::App).then(|| ArtifactEntrypoint {
                 root: root.clone(),
                 path: "USRDIR/EBOOT.BIN".to_owned(),
-            })?,
-            _ => artifact,
-        };
+            }),
+        )?;
         self.storage
             .artifacts()
             .record(&artifact, self.events)

@@ -188,6 +188,20 @@ impl Installable for WiiUInstall {
             .name()
             .unwrap_or_else(|| format!("{:016x}", app.title_id.0));
         let version = Some(meta.title_version.text.trim().to_owned()).filter(|s| !s.is_empty());
+        let entrypoint = match kind {
+            DepotType::App => {
+                let path = format!("{root}/code/cos.xml");
+                let cos: xml::CosXml = xml::read_from(
+                    std::io::BufReader::new(self.storage.open_read(&path)?),
+                    &path,
+                )?;
+                Some(ArtifactEntrypoint {
+                    root: root.clone(),
+                    path: format!("code/{}", cos.argstr.text.trim()),
+                })
+            }
+            _ => None,
+        };
         let artifact = Artifact::new(
             format!("{:016x}", app.title_id.0),
             kind,
@@ -195,21 +209,8 @@ impl Installable for WiiUInstall {
             label,
             version,
             vec![icon],
-        );
-        let artifact = match kind {
-            DepotType::App => {
-                let path = format!("{root}/code/cos.xml");
-                let cos: xml::CosXml = xml::read_from(
-                    std::io::BufReader::new(self.storage.open_read(&path)?),
-                    &path,
-                )?;
-                artifact.with_entrypoint(ArtifactEntrypoint {
-                    root: root.clone(),
-                    path: format!("code/{}", cos.argstr.text.trim()),
-                })?
-            }
-            _ => artifact,
-        };
+            entrypoint,
+        )?;
         self.storage
             .artifacts()
             .record(&artifact, self.events)

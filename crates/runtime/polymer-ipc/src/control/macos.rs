@@ -109,17 +109,29 @@ impl LocalSocket {
             .map_err(|_| invalid_data("invalid control packet"))?;
         let mut message = decode(wire, data.to_vec())?;
         if let Message::StreamReady(ready) = &message {
-            if ready.image_kind != ExternalImageKind::IOSurface || ready.sync_kind != ExternalSyncKind::MetalSharedEvent
-                || packet.surfaces.len() != ready.slot_count as usize || packet.surfaces.is_empty() {
+            if ready.image_kind != ExternalImageKind::IOSurface
+                || ready.sync_kind != ExternalSyncKind::MetalSharedEvent
+                || packet.surfaces.len() != ready.slot_count as usize
+                || packet.surfaces.is_empty()
+            {
                 return Err(invalid_data("invalid Metal stream resources"));
             }
             self.resources = Some(crate::xpc::MetalResources {
                 surfaces: packet.surfaces,
-                ready: packet.event.ok_or_else(|| invalid_data("missing producer event"))?,
-                released: packet.consumer_event.ok_or_else(|| invalid_data("missing consumer event"))?,
+                ready: packet
+                    .event
+                    .ok_or_else(|| invalid_data("missing producer event"))?,
+                released: packet
+                    .consumer_event
+                    .ok_or_else(|| invalid_data("missing consumer event"))?,
             });
-        } else if !packet.surfaces.is_empty() || packet.event.is_some() || packet.consumer_event.is_some() {
-            return Err(invalid_data("unexpected native resources in control packet"));
+        } else if !packet.surfaces.is_empty()
+            || packet.event.is_some()
+            || packet.consumer_event.is_some()
+        {
+            return Err(invalid_data(
+                "unexpected native resources in control packet",
+            ));
         }
         match (&mut message, packet.file) {
             (Message::MapOffer(offer), Some(file)) => offer.handle = i64::from(file.into_raw_fd()),
@@ -130,13 +142,25 @@ impl LocalSocket {
         }
         Ok(message)
     }
-    pub fn send_stream(&mut self, ready: StreamReady, resources: crate::xpc::MetalResources) -> io::Result<()> {
-        self.connection.send(Packet {
-            data: encode(&Message::StreamReady(ready))?.as_bytes().to_vec(), surfaces: resources.surfaces,
-            event: Some(resources.ready), consumer_event: Some(resources.released), ..Default::default()
-        }, self.write_timeout)
+    pub fn send_stream(
+        &mut self,
+        ready: StreamReady,
+        resources: crate::xpc::MetalResources,
+    ) -> io::Result<()> {
+        self.connection.send(
+            Packet {
+                data: encode(&Message::StreamReady(ready))?.as_bytes().to_vec(),
+                surfaces: resources.surfaces,
+                event: Some(resources.ready),
+                consumer_event: Some(resources.released),
+                ..Default::default()
+            },
+            self.write_timeout,
+        )
     }
-    pub fn take_stream_resources(&mut self) -> Option<crate::xpc::MetalResources> { self.resources.take() }
+    pub fn take_stream_resources(&mut self) -> Option<crate::xpc::MetalResources> {
+        self.resources.take()
+    }
     pub fn receive(&mut self) -> io::Result<Message> {
         self.decode(self.connection.receive(self.read_timeout)?)
     }

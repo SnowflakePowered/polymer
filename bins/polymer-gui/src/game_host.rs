@@ -30,35 +30,13 @@ struct CapturedSurface {
     index: u32,
     preferred_width: u32,
     preferred_height: u32,
-    viewport_width: u32,
-    viewport_height: u32,
-    viewport_x: i32,
-    viewport_y: i32,
     quarter_turns: u8,
-    pointer_events: bool,
-    z_index: i32,
-    group: Option<u64>,
-    corner_radius: f32,
-    game_view_style: Option<GameViewStyle>,
-    opacity: f32,
-    mirrors: Vec<SurfaceGeometry>,
+    geometries: Vec<SurfaceGeometry>,
 }
 
 impl CapturedSurface {
-    fn geometries(&self) -> impl Iterator<Item = SurfaceGeometry> + '_ {
-        std::iter::once(SurfaceGeometry {
-            x: self.viewport_x,
-            y: self.viewport_y,
-            width: self.viewport_width,
-            height: self.viewport_height,
-            pointer_events: self.pointer_events,
-            z_index: self.z_index,
-            group: self.group,
-            corner_radius: self.corner_radius,
-            style: self.game_view_style.clone(),
-            opacity: self.opacity,
-        })
-        .chain(self.mirrors.iter().cloned())
+    fn primary(&self) -> &SurfaceGeometry {
+        &self.geometries[0]
     }
 }
 
@@ -156,7 +134,7 @@ impl GameHost {
                 surface.preferred_width.max(1),
                 surface.preferred_height.max(1),
             );
-            for (instance, geometry) in surface.geometries().enumerate() {
+            for (instance, geometry) in surface.geometries.iter().enumerate() {
                 let rectangle = Rect::new(geometry.x, geometry.y, geometry.width, geometry.height);
                 snapshots.push(CapturedSurfaceSnapshot {
                     connection,
@@ -439,9 +417,9 @@ impl GameHost {
         let mut surfaces = self
             .surfaces
             .iter()
-            .filter(|(_, surface)| surface.pointer_events)
+            .filter(|(_, surface)| surface.primary().pointer_events)
             .collect::<Vec<_>>();
-        surfaces.sort_by_key(|(_, surface)| std::cmp::Reverse(surface.z_index));
+        surfaces.sort_by_key(|(_, surface)| std::cmp::Reverse(surface.primary().z_index));
         for (&connection, surface) in surfaces {
             let received_surfaces = self.compositor.borrow().received_surfaces(connection);
             for mut received_surface in received_surfaces {
@@ -450,7 +428,7 @@ impl GameHost {
                     received_surface.frame.presentation_width,
                     received_surface.frame.presentation_height,
                 );
-                for geometry in surface.geometries() {
+                for geometry in &surface.geometries {
                     let rectangle =
                         Rect::new(geometry.x, geometry.y, geometry.width, geometry.height);
                     let mut placement = SurfacePlacement::new(
@@ -833,18 +811,19 @@ impl GameHost {
                     index: target_index,
                     preferred_width: width,
                     preferred_height: height,
-                    viewport_width: width.max(1),
-                    viewport_height: height.max(1),
-                    viewport_x: 0,
-                    viewport_y: 0,
                     quarter_turns,
-                    pointer_events: true,
-                    z_index: target_index as i32,
-                    group: None,
-                    corner_radius: 0.0,
-                    game_view_style: None,
-                    opacity: 1.0,
-                    mirrors: Vec::new(),
+                    geometries: vec![SurfaceGeometry {
+                        x: 0,
+                        y: 0,
+                        width: width.max(1),
+                        height: height.max(1),
+                        pointer_events: true,
+                        z_index: target_index as i32,
+                        group: None,
+                        corner_radius: 0.0,
+                        style: None,
+                        opacity: 1.0,
+                    }],
                 },
                 target_index,
                 quarter_turns,
@@ -1012,7 +991,7 @@ impl GameHost {
         let corners = self
             .surfaces
             .iter()
-            .map(|(&connection, surface)| (connection, surface.corner_radius))
+            .map(|(&connection, surface)| (connection, surface.primary().corner_radius))
             .collect::<Vec<_>>();
         self.compositor
             .borrow_mut()
@@ -1065,16 +1044,13 @@ impl GameHost {
             .unwrap_or_default();
         let mut changed = false;
         for (connection, surface) in &mut self.surfaces {
-            let mut geometries = placed.remove(connection).unwrap_or_default().into_iter();
-            let primary = match geometries.next() {
-                Some(primary) => primary,
-                None if requested.contains(&surface.index) => SurfaceGeometry::hidden(),
+            let geometries = match placed.remove(connection) {
+                Some(geometries) => geometries,
+                None if requested.contains(&surface.index) => vec![SurfaceGeometry::hidden()],
                 None => continue,
             };
-            changed |= apply_geometry(surface, primary);
-            let mirrors = geometries.collect::<Vec<_>>();
-            if surface.mirrors != mirrors {
-                surface.mirrors = mirrors;
+            if surface.geometries != geometries {
+                surface.geometries = geometries;
                 changed = true;
             }
         }
@@ -1114,32 +1090,6 @@ impl SurfaceGeometry {
             opacity: 1.0,
         }
     }
-}
-
-fn apply_geometry(surface: &mut CapturedSurface, next: SurfaceGeometry) -> bool {
-    let changed = surface.viewport_x != next.x
-        || surface.viewport_y != next.y
-        || surface.viewport_width != next.width
-        || surface.viewport_height != next.height
-        || surface.pointer_events != next.pointer_events
-        || surface.z_index != next.z_index
-        || surface.group != next.group
-        || surface.corner_radius != next.corner_radius
-        || surface.game_view_style != next.style
-        || surface.opacity != next.opacity;
-    if changed {
-        surface.viewport_x = next.x;
-        surface.viewport_y = next.y;
-        surface.viewport_width = next.width;
-        surface.viewport_height = next.height;
-        surface.pointer_events = next.pointer_events;
-        surface.z_index = next.z_index;
-        surface.group = next.group;
-        surface.corner_radius = next.corner_radius;
-        surface.game_view_style = next.style;
-        surface.opacity = next.opacity;
-    }
-    changed
 }
 
 impl Drop for GameHost {

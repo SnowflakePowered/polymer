@@ -9,8 +9,8 @@ use turso::{Value, transaction::Transaction};
 use uuid::Uuid;
 
 use super::{
-    Game, IdentifiedLaunchable, Launchable, MediaData, MediaResource, Metadata, MetadataData,
-    MetadataInput, MetadataInputData, MetadataValue, schema::SCHEMA,
+    Game, IdentifiedLaunchable, Launchable, LaunchableUri, MediaData, MediaResource, Metadata,
+    MetadataData, MetadataInput, MetadataInputData, MetadataValue, schema::SCHEMA,
 };
 use crate::Directories;
 
@@ -149,16 +149,20 @@ impl GameCatalog {
             let binary_id = Self::uuid(row.get_value(3)?)?;
             binary_roots.insert(binary_id, root_id);
             game.launchables.push(Launchable {
-                manifest: Self::decode_manifest(row.get_value(9)?)?,
                 id: Self::uuid(row.get_value(2)?)?,
                 binary_id,
-                path: row.get::<String>(4)?.parse()?,
-                entrypoint: Self::optional_text(row.get_value(10)?)?,
-                binary_blake3: Self::blob(row.get_value(5)?)?.into_boxed_slice(),
-                serial: Self::optional_text(row.get_value(6)?)?,
-                title_id: Self::optional_text(row.get_value(7)?)?,
-                parent_binary_id: Self::optional_uuid(row.get_value(8)?)?,
-                platform: root_platform,
+                identified: IdentifiedLaunchable {
+                    manifest: Self::decode_manifest(row.get_value(9)?)?,
+                    path: row.get::<String>(4)?.parse()?,
+                    entrypoint: Self::optional_text(row.get_value(10)?)?,
+                    binary_blake3: Self::blob(row.get_value(5)?)?.try_into().map_err(|_| {
+                        GameCatalogError::InvalidData("invalid binary digest".to_owned())
+                    })?,
+                    serial: Self::optional_text(row.get_value(6)?)?,
+                    title_id: Self::optional_text(row.get_value(7)?)?,
+                    parent_binary_id: Self::optional_uuid(row.get_value(8)?)?,
+                    platform: root_platform,
+                },
             });
         }
         drop(rows);
@@ -199,37 +203,19 @@ impl GameCatalog {
             .find(|game| game.id == id))
     }
 
-    pub async fn import_launchable(
-        &self,
-        input: IdentifiedLaunchable,
-    ) -> Result<Launchable, GameCatalogError> {
-        self.import_launchable_seeded(input, Vec::new())
-            .await
-            .map(|(launchable, _)| launchable)
-    }
-
     /// Imports a launchable and replaces its host-produced seed metadata in one transaction.
     /// The boolean is true when this created a new binary, including a child disc.
-    pub async fn import_launchable_seeded(
-        &self,
-        input: IdentifiedLaunchable,
-        seeds: Vec<(String, Vec<MetadataInput>)>,
-    ) -> Result<(Launchable, bool), GameCatalogError> {
-        self.import_package(input, seeds, None).await
-    }
-
     pub async fn import_package(
         &self,
         input: IdentifiedLaunchable,
         seeds: Vec<(String, Vec<MetadataInput>)>,
-        manifest: Option<super::PackageManifest>,
     ) -> Result<(Launchable, bool), GameCatalogError> {
         if input.platform.is_empty() {
             return Err(GameCatalogError::InvalidData(
                 "a launchable requires a platform".to_owned(),
             ));
         }
-        let path = input.path.to_string();
+        let path = input.path.url()?.to_string();
         let mut prepared_seeds = Vec::with_capacity(seeds.len());
         for (producer, inputs) in seeds {
             let mut prepared = Vec::with_capacity(inputs.len());
@@ -300,7 +286,7 @@ impl GameCatalog {
                 )
                 .await?;
         }
-        Self::write_manifest(&transaction, id, manifest.as_ref()).await?;
+        Self::write_manifest(&transaction, id, input.manifest.as_ref()).await?;
         let mut replaced_objects = Vec::new();
         for (producer, values) in prepared_seeds {
             replaced_objects
@@ -321,16 +307,9 @@ impl GameCatalog {
         self.collect_objects(replaced_objects).await;
         Ok((
             Launchable {
-                manifest,
                 id,
                 binary_id,
-                path: input.path,
-                entrypoint: input.entrypoint,
-                binary_blake3: Box::new(input.binary_blake3),
-                serial: input.serial,
-                title_id: input.title_id,
-                parent_binary_id: input.parent_binary_id,
-                platform: input.platform,
+                identified: input,
             },
             !binary_existed,
         ))

@@ -40,12 +40,12 @@ pub(crate) trait LibraryApi {
         json!({
             "id": launchable.id.simple().to_string(),
             "binaryId": launchable.binary_id.simple().to_string(),
-            "uri": launchable.path,
-            "serial": launchable.serial,
-            "titleId": launchable.title_id,
-            "parentBinaryId": launchable.parent_binary_id.map(|id| id.simple().to_string()),
-            "platform": launchable.platform,
-            "preparation": launchable.manifest.as_ref().map(|manifest| json!({
+            "uri": launchable.identified.path,
+            "serial": launchable.identified.serial,
+            "titleId": launchable.identified.title_id,
+            "parentBinaryId": launchable.identified.parent_binary_id.map(|id| id.simple().to_string()),
+            "platform": launchable.identified.platform,
+            "preparation": launchable.identified.manifest.as_ref().map(|manifest| json!({
                 "state": if manifest.template.is_some() { "ready" } else if manifest.error.is_some() { "failed" } else { "pending" },
                 "error": manifest.error,
             })),

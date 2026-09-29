@@ -211,28 +211,24 @@ impl StorageManager {
         Ok(ArtifactSummary::from(&artifact))
     }
 
-    pub fn artifact_location(
+    pub fn artifact_entrypoint(
         &self,
         platform: &str,
         storage: Uuid,
         artifact: &str,
-    ) -> Result<(PathBuf, Option<String>), Error> {
+    ) -> Result<(PathBuf, String), Error> {
         let volume = self
             .repository(platform)?
             .volume(StorageKind::Nand, storage);
-        let summary = volume
+        let entrypoint = volume
             .artifact_summary(artifact)?
-            .filter(|summary| summary.root.is_some())
+            .and_then(|summary| summary.entrypoint)
             .ok_or_else(|| {
                 Error::Unsupported(format!("{artifact} is not installed with a launch root"))
             })?;
-        let root = summary.root.unwrap_or_default();
         Ok((
-            root.split('/')
-                .fold(volume.checkout_path().to_owned(), |path, component| {
-                    path.join(component)
-                }),
-            summary.entrypoint,
+            volume.checkout_path().join(entrypoint.root),
+            entrypoint.path,
         ))
     }
 

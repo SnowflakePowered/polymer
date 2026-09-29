@@ -71,19 +71,19 @@ pub(super) fn apply_tracked_surface_styles(
             let origin = node.absolute_position(0.0, 0.0);
             Some((
                 source,
-                (
+                TrackedNode {
                     node_id,
                     radius,
-                    GameViewStyle {
+                    style: GameViewStyle {
                         object_fit: styles.clone_object_fit(),
                         object_position: styles.clone_object_position(),
                     },
-                    kurbo::Point::new(f64::from(origin.x), f64::from(origin.y)),
-                ),
+                    origin: kurbo::Point::new(f64::from(origin.x), f64::from(origin.y)),
+                },
             ))
         })
         .fold(
-            HashMap::<u64, Vec<_>>::new(),
+            HashMap::<u64, Vec<TrackedNode>>::new(),
             |mut styles, (source, entry)| {
                 styles.entry(source).or_default().push(entry);
                 styles
@@ -91,21 +91,29 @@ pub(super) fn apply_tracked_surface_styles(
         );
     for placement in placements {
         let maximum = (placement.rect.width().min(placement.rect.height()) * 0.5) as f32;
+        let origin = placement.rect.origin();
         let entry = styles.get(&placement.source_id).and_then(|entries| {
             entries.iter().min_by(|left, right| {
-                let distance =
-                    |entry: &&(_, _, _, kurbo::Point)| entry.3.distance(placement.rect.origin());
-                distance(left).total_cmp(&distance(right))
+                left.origin
+                    .distance(origin)
+                    .total_cmp(&right.origin.distance(origin))
             })
         });
         placement.corner_radius = entry
-            .map(|(_, radius, _, _)| *radius)
+            .map(|entry| entry.radius)
             .unwrap_or_default()
             .min(maximum);
-        placement.style = entry.map(|(_, _, style, _)| style.clone());
-        placement.node_id = entry.map(|(node_id, _, _, _)| *node_id);
+        placement.style = entry.map(|entry| entry.style.clone());
+        placement.node_id = entry.map(|entry| entry.node_id);
         placement.opacity = placement.opacity.clamp(0.0, 1.0);
     }
+}
+
+struct TrackedNode {
+    node_id: blitz_dom::NodeId,
+    radius: f32,
+    style: GameViewStyle,
+    origin: kurbo::Point,
 }
 
 pub(super) fn initialise_tracked_surfaces(document: &mut blitz_html::HtmlDocument) {
