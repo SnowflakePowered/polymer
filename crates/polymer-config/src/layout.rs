@@ -1,6 +1,6 @@
 use crate::ast::{
     ConfigurationDefinition, DefaultDefinition, DomainDefinition, OptionDefinition, OptionRange,
-    ValueKind,
+    SettingPath, ValueKind,
 };
 use serde_json::{Map, Value};
 use std::collections::HashSet;
@@ -211,7 +211,7 @@ impl ConfigurationDefinition {
             .or_else(|| {
                 self.input.as_ref()?.options.iter().find_map(|handle| {
                     let option = self.option(*handle);
-                    (format!("input.{}", option.key) == path).then_some((option, false))
+                    (SettingPath::input(&option.key).as_str() == path).then_some((option, false))
                 })
             })
             .ok_or_else(|| ConfigurationLayoutError::UnknownSource {

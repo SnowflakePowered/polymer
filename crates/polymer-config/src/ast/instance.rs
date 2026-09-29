@@ -44,80 +44,55 @@ impl ConfigurationDefinition {
         console: impl Into<Box<str>>,
         port_assignments: PortAssignments,
     ) -> Result<ConfigurationInstance> {
-        let console = console.into();
-        let mut builder = InstanceBuilder::new(self.clone(), console, port_assignments);
-        builder.instantiate_sections()?;
-        builder.instantiate_input_options()?;
-        builder.instantiate_ports()?;
-        Ok(builder.finish())
-    }
-}
-
-struct InstanceBuilder {
-    definition: Arc<ConfigurationDefinition>,
-    console: Box<str>,
-    port_assignments: PortAssignments,
-    settings: Arena<Setting>,
-    setting_by_path: HashMap<SettingPath, Handle<Setting>>,
-}
-
-impl InstanceBuilder {
-    fn new(
-        definition: Arc<ConfigurationDefinition>,
-        console: Box<str>,
-        port_assignments: PortAssignments,
-    ) -> Self {
-        Self {
-            definition,
-            console,
+        let mut instance = ConfigurationInstance {
+            definition: self.clone(),
+            console: console.into(),
             port_assignments,
             settings: Arena::new(),
             setting_by_path: HashMap::new(),
-        }
+            repeated_instances: IndexMap::new(),
+        };
+        instance.instantiate_sections()?;
+        instance.instantiate_input_options()?;
+        instance.instantiate_ports()?;
+        Ok(instance)
     }
+}
 
+impl ConfigurationInstance {
     fn instantiate_sections(&mut self) -> Result<()> {
-        let mut placements = Vec::new();
-        for section in self.definition.root_sections() {
-            self.collect_section_placements(section, &mut placements);
-        }
-
-        for (path, option) in placements {
-            ConfigurationInstance::append_setting(
-                &self.definition,
-                &mut self.settings,
-                &mut self.setting_by_path,
-                path,
-                option,
-            )?;
+        let definition = self.definition.clone();
+        for section in definition.root_sections() {
+            self.instantiate_section(&definition, section)?;
         }
         Ok(())
     }
 
-    fn collect_section_placements(
-        &self,
+    fn instantiate_section(
+        &mut self,
+        definition: &ConfigurationDefinition,
         handle: Handle<super::SectionDefinition>,
-        placements: &mut Vec<(SettingPath, Handle<OptionDefinition>)>,
-    ) {
-        let section = &self.definition.sections[handle];
+    ) -> Result<()> {
+        let section = &definition.sections[handle];
         if section.repeat {
-            return;
+            return Ok(());
         }
-        placements.extend(section.options.iter().copied().map(|option| {
-            (
+        for option in section.options.iter().copied() {
+            self.append_setting(
                 section
                     .path
-                    .join::<family::Setting>(&self.definition.options[option].key),
+                    .join::<family::Setting>(&definition.options[option].key),
                 option,
-            )
-        }));
-        for child in section.children.iter().copied() {
-            self.collect_section_placements(child, placements);
+            )?;
         }
+        for child in section.children.iter().copied() {
+            self.instantiate_section(definition, child)?;
+        }
+        Ok(())
     }
 
     fn instantiate_ports(&mut self) -> Result<()> {
-        let definition = &self.definition;
+        let definition = self.definition.clone();
         let Some(input) = definition.input.as_ref() else {
             return if self.port_assignments.is_empty() {
                 Ok(())
@@ -171,12 +146,13 @@ impl InstanceBuilder {
                     .ok_or_else(|| Error::UnknownLayout(layout_name.clone()))?;
 
                 for option in layout.options.iter().copied() {
-                    let option_definition = &definition.options[option];
                     placements.push((
-                        SettingPath::from_key(Arc::from(format!(
-                            "ports.{}.{}.{index}.{}",
-                            self.console, group_name, option_definition.key
-                        ))),
+                        SettingPath::port(
+                            &self.console,
+                            group_name,
+                            index,
+                            &definition.options[option].key,
+                        ),
                         option,
                     ));
                 }
@@ -184,54 +160,20 @@ impl InstanceBuilder {
         }
 
         for (path, option) in placements {
-            ConfigurationInstance::append_setting(
-                &self.definition,
-                &mut self.settings,
-                &mut self.setting_by_path,
-                path,
-                option,
-            )?;
+            self.append_setting(path, option)?;
         }
         Ok(())
     }
 
     fn instantiate_input_options(&mut self) -> Result<()> {
-        let Some(input) = self.definition.input.as_ref() else {
+        let definition = self.definition.clone();
+        let Some(input) = definition.input.as_ref() else {
             return Ok(());
         };
-        let placements = input
-            .options
-            .iter()
-            .copied()
-            .map(|option| {
-                let key = &self.definition.options[option].key;
-                (
-                    SettingPath::from_key(Arc::from(format!("input.{key}"))),
-                    option,
-                )
-            })
-            .collect::<Vec<_>>();
-        for (path, option) in placements {
-            ConfigurationInstance::append_setting(
-                &self.definition,
-                &mut self.settings,
-                &mut self.setting_by_path,
-                path,
-                option,
-            )?;
+        for option in input.options.iter().copied() {
+            self.append_setting(SettingPath::input(&definition.options[option].key), option)?;
         }
         Ok(())
-    }
-
-    fn finish(self) -> ConfigurationInstance {
-        ConfigurationInstance {
-            definition: self.definition,
-            console: self.console,
-            port_assignments: self.port_assignments,
-            settings: self.settings,
-            setting_by_path: self.setting_by_path,
-            repeated_instances: IndexMap::new(),
-        }
     }
 }
 
@@ -281,17 +223,8 @@ impl ConfigurationInstance {
         let prefix: Box<str> = format!("{path}.{index}").into();
         let options = self.definition.sections[section].options.clone();
         for option in options.iter().copied() {
-            let setting = SettingPath::from_key(Arc::from(format!(
-                "{prefix}.{}",
-                self.definition.options[option].key
-            )));
-            Self::append_setting(
-                &self.definition,
-                &mut self.settings,
-                &mut self.setting_by_path,
-                setting,
-                option,
-            )?;
+            let setting = SettingPath::child(&prefix, &self.definition.options[option].key);
+            self.append_setting(setting, option)?;
         }
         self.repeated_instances.insert(path.into(), index + 1);
         Ok(prefix)
@@ -401,26 +334,20 @@ impl ConfigurationInstance {
         }
     }
 
-    fn append_setting(
-        definition: &ConfigurationDefinition,
-        settings: &mut Arena<Setting>,
-        setting_by_path: &mut HashMap<SettingPath, Handle<Setting>>,
-        path: SettingPath,
-        option: Handle<OptionDefinition>,
-    ) -> Result<()> {
-        if setting_by_path.contains_key(path.as_str()) {
+    fn append_setting(&mut self, path: SettingPath, option: Handle<OptionDefinition>) -> Result<()> {
+        if self.setting_by_path.contains_key(path.as_str()) {
             return Err(Error::DuplicateSetting(path));
         }
-        let value = match &definition.options[option].value.default {
+        let value = match &self.definition.options[option].value.default {
             DefaultDefinition::Literal(value) => value.clone(),
             DefaultDefinition::None => Value::Null,
         };
-        let handle = settings.append(Setting {
+        let handle = self.settings.append(Setting {
             path: path.clone(),
             option,
             value,
         });
-        setting_by_path.insert(path, handle);
+        self.setting_by_path.insert(path, handle);
         Ok(())
     }
 

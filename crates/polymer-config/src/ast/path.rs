@@ -106,6 +106,20 @@ impl<F> ConfigurationPath<Arc<str>, F> {
     }
 }
 
+impl ConfigurationPath<Arc<str>, family::Setting> {
+    pub(crate) fn child(prefix: &str, key: &str) -> Self {
+        Self::from_key(Arc::from(format!("{prefix}.{key}")))
+    }
+
+    pub(crate) fn input(key: &str) -> Self {
+        Self::child("input", key)
+    }
+
+    pub(crate) fn port(console: &str, group: &str, index: usize, key: &str) -> Self {
+        Self::from_key(Arc::from(format!("ports.{console}.{group}.{index}.{key}")))
+    }
+}
+
 impl<S: AsRef<str>, T: AsRef<str>, F> PartialEq<ConfigurationPath<T, F>>
     for ConfigurationPath<S, F>
 {
