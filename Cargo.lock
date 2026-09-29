@@ -10636,6 +10636,7 @@ dependencies = [
  "bitflags 2.13.1",
  "bstr",
  "cap-std",
+ "dashmap",
  "memmap2",
  "parking_lot",
  "polymer-consolestorage",

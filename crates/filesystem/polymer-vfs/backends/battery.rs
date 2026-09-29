@@ -4,8 +4,8 @@ use polymer_consolestorage::{BatterySaveRepo, BatterySaveView};
 use uuid::Uuid;
 
 use crate::{
-    CompositeResourceLease, DirectoryNode, ExclusiveResourceKey, FinalizationReason, Materialized,
-    Node, NoopResourceLease, ResourceFactory, ResourceLease, VfsError, VfsPath, VfsResult, Volume,
+    CompositeResourceLease, DirectoryNode, FinalizationReason, Materialized, Node,
+    NoopResourceLease, ResourceFactory, ResourceLease, VfsError, VfsPath, VfsResult, Volume,
 };
 
 use super::storage::{materialize_file, unrestricted};
@@ -36,18 +36,12 @@ impl BatteryStorageFactory {
 
 impl ResourceFactory<dyn Volume> for BatteryStorageFactory {
     fn materialize(&self) -> VfsResult<Materialized<dyn Volume>> {
-        let ownership = self
-            .resource_id
-            .map(|id| ExclusiveResourceKey::Resource(id).acquire())
-            .transpose()?;
+        let ownership = CompositeResourceLease::exclusive(self.resource_id)?;
         let view = self.repository.mount()?;
         let volume = Arc::new(BatteryStorageVolume { view });
-        let mut leases = ownership.into_iter().collect::<Vec<_>>();
-        leases.push(volume.clone());
-        let lease = CompositeResourceLease::new(leases);
         Ok(Materialized {
-            backend: volume,
-            lease,
+            backend: volume.clone(),
+            lease: Arc::new(ownership.with(volume)),
         })
     }
 }

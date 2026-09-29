@@ -6,9 +6,9 @@ use polymer_consolestorage::{EntryKind, MemoryCard, MemoryCardView};
 use uuid::Uuid;
 
 use crate::{
-    CompositeResourceLease, ExclusiveResourceKey, FileNode, FinalizationReason, Materialized, Node,
-    NoopResourceLease, PathStr, ResourceFactory, ResourceLease, VfsComponent, VfsError, VfsPath,
-    VfsPathBuf, VfsResult, Volume,
+    CompositeResourceLease, FileNode, FinalizationReason, Materialized, Node, NoopResourceLease,
+    PathStr, ResourceFactory, ResourceLease, VfsComponent, VfsError, VfsPath, VfsPathBuf,
+    VfsResult, Volume,
 };
 
 use super::storage::{materialize_file, materialize_volume, unrestricted};
@@ -30,18 +30,16 @@ impl MemoryCardFileFactory {
 
 impl ResourceFactory<dyn FileNode> for MemoryCardFileFactory {
     fn materialize(&self) -> VfsResult<Materialized<dyn FileNode>> {
-        let ownership = ExclusiveResourceKey::Resource(self.resource_id).acquire()?;
-        let lease = CompositeResourceLease::new(vec![
-            ownership,
-            Arc::new(MemoryCardLease {
+        let lease = CompositeResourceLease::exclusive([self.resource_id])?.with(Arc::new(
+            MemoryCardLease {
                 view: self.view.clone(),
-            }),
-        ]);
+            },
+        ));
         Ok(materialize_file(
             self.view.storage().clone(),
             self.view.entry().to_owned(),
             unrestricted(),
-            lease,
+            Arc::new(lease),
         ))
     }
 }
@@ -63,18 +61,16 @@ impl MemoryCardVolumeFactory {
 
 impl ResourceFactory<dyn Volume> for MemoryCardVolumeFactory {
     fn materialize(&self) -> VfsResult<Materialized<dyn Volume>> {
-        let ownership = ExclusiveResourceKey::Resource(self.resource_id).acquire()?;
-        let lease = CompositeResourceLease::new(vec![
-            ownership,
-            Arc::new(MemoryCardLease {
+        let lease = CompositeResourceLease::exclusive([self.resource_id])?.with(Arc::new(
+            MemoryCardLease {
                 view: self.view.clone(),
-            }),
-        ]);
+            },
+        ));
         Ok(materialize_volume(
             self.view.storage().clone(),
             self.view.entry().to_owned(),
             unrestricted(),
-            lease,
+            Arc::new(lease),
         ))
     }
 }
@@ -120,11 +116,10 @@ where
             primary: self.primary.clone(),
             views: Mutex::new(HashMap::new()),
         });
-        let ownership = ExclusiveResourceKey::Resource(self.resource_id).acquire()?;
-        let lease = CompositeResourceLease::new(vec![ownership, volume.clone()]);
+        let lease = CompositeResourceLease::exclusive([self.resource_id])?.with(volume.clone());
         Ok(Materialized {
-            backend: volume.clone(),
-            lease,
+            backend: volume,
+            lease: Arc::new(lease),
         })
     }
 }

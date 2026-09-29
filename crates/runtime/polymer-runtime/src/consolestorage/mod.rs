@@ -4,7 +4,6 @@ mod saves;
 mod volumes;
 
 use actix::{Actor, Addr, Context, ResponseActFuture, System, WrapFuture};
-use dashmap::DashSet;
 use polymer_deno::polymer::consolestorage::StorageError;
 use polymer_library::{Directories, StorageManager};
 use polymer_pluginhost::runtime::PluginRuntimeHandle;
@@ -19,7 +18,6 @@ struct StorageActor {
     manager: Option<Arc<StorageManager>>,
     plugins: PluginRuntimeHandle,
     installs: Arc<tokio::sync::Mutex<()>>,
-    installing: Arc<DashSet<uuid::Uuid>>,
 }
 
 impl Actor for StorageActor {
@@ -70,7 +68,6 @@ impl StorageService {
                         manager,
                         plugins,
                         installs: Default::default(),
-                        installing: Default::default(),
                     }
                     .start()
                 });
