@@ -9,7 +9,8 @@ use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
 use super::CiaDepot;
 use crate::impls::ctr::smdh::ExtdataIcon;
-use crate::installable::{DepotFile, EmbeddedIcon, IconHint, artifacts::Artifact};
+use crate::installable::artifacts::{Artifact, ArtifactEntrypoint};
+use crate::installable::{DepotFile, DepotType, EmbeddedIcon, IconHint};
 use polymer_banner::ctr::CtrBanner;
 use crate::{Error, VolumeStorage};
 
@@ -148,14 +149,28 @@ impl InstalledTitle {
                 );
             }
         }
-        Ok(Artifact::new(
+        let artifact = Artifact::new(
             id,
             kind,
             manifest,
             label,
             Some(tmd.version.get().to_string()),
             icons,
-        ))
+        );
+        let boot = contents
+            .iter()
+            .find(|content| content.index.get() == 0)
+            .filter(|_| kind == DepotType::App);
+        match boot {
+            Some(boot) => artifact.with_entrypoint(ArtifactEntrypoint {
+                root: depot.title_root.clone(),
+                path: depot
+                    .content_path(boot.id.get())
+                    .trim_start_matches(&format!("{}/", depot.title_root))
+                    .to_owned(),
+            }),
+            None => Ok(artifact),
+        }
     }
 
     /// A decrypted ExeFS file of an installed NCCH content.

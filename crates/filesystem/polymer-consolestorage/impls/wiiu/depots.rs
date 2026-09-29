@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::error::Error;
 use crate::impls::wiiu::xml;
-use crate::installable::artifacts::Artifact;
+use crate::installable::artifacts::{Artifact, ArtifactEntrypoint};
 use crate::installable::{Depot, DepotFile, DepotType, DirectoryInstall, IconHint, Installable};
 use crate::nand::VirtualNand;
 use crate::requires_structure;
@@ -196,6 +196,20 @@ impl Installable for WiiUInstall {
             version,
             vec![icon],
         );
+        let artifact = match kind {
+            DepotType::App => {
+                let path = format!("{root}/code/cos.xml");
+                let cos: xml::CosXml = xml::read_from(
+                    std::io::BufReader::new(self.storage.open_read(&path)?),
+                    &path,
+                )?;
+                artifact.with_entrypoint(ArtifactEntrypoint {
+                    root: root.clone(),
+                    path: format!("code/{}", cos.argstr.text.trim()),
+                })?
+            }
+            _ => artifact,
+        };
         self.storage
             .artifacts()
             .record(&artifact, self.events)

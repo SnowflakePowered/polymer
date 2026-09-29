@@ -3,7 +3,8 @@ use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned, byteorder::big_endi
 
 use super::tmd::Tmd;
 use crate::impls::wii::index::SharedContentMap;
-use crate::installable::{DepotFile, DepotType, EmbeddedIcon, IconHint, artifacts::Artifact};
+use crate::installable::artifacts::{Artifact, ArtifactEntrypoint};
+use crate::installable::{DepotFile, DepotType, EmbeddedIcon, IconHint};
 use crate::{Error, VolumeStorage};
 
 #[derive(FromBytes, Immutable, KnownLayout, Unaligned)]
@@ -54,14 +55,26 @@ impl InstalledTitle {
                 }
             }
         }
-        Ok(Artifact::new(
+        let artifact = Artifact::new(
             format!("{title:016x}"),
             kind,
             manifest,
             label,
             Some(tmd.title_version.to_string()),
             vec![icon.map_or(IconHint::Builtin(kind), IconHint::Embedded)],
-        ))
+        );
+        let boot = tmd
+            .contents
+            .iter()
+            .find(|content| content.index == tmd.boot_index && !content.is_shared())
+            .filter(|_| kind == DepotType::App);
+        match boot {
+            Some(boot) => artifact.with_entrypoint(ArtifactEntrypoint {
+                root: root.to_owned(),
+                path: format!("{:08x}.app", boot.id),
+            }),
+            None => Ok(artifact),
+        }
     }
 
     fn name(storage: &dyn VolumeStorage, path: &str) -> Result<Option<String>, Error> {

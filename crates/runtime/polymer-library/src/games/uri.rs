@@ -9,6 +9,7 @@ use url::Url;
 use uuid::Uuid;
 
 use super::GameCatalogError;
+use crate::{Directories, StorageManager};
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum LaunchableUri {
@@ -46,10 +47,16 @@ impl LaunchableUri {
     fn location(&self) -> io::Result<(PathBuf, Option<String>)> {
         match self {
             Self::File(path) => Ok((path.clone(), None)),
-            Self::Artifact { .. } => Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "artifact launchables have no host path",
-            )),
+            Self::Artifact {
+                platform,
+                storage,
+                artifact,
+            } => Directories::discover()
+                .and_then(|directories| {
+                    StorageManager::new(directories.consolestorage())
+                        .artifact_location(platform, *storage, artifact)
+                })
+                .map_err(io::Error::other),
         }
     }
 
