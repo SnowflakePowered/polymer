@@ -47,6 +47,7 @@ impl SaveVersioning {
             screenshot: format!("{attachments}/screenshot"),
             icon: format!("{attachments}/icon"),
             note: format!("{attachments}/note"),
+            title: format!("{attachments}/title"),
         }
     }
 
@@ -108,6 +109,7 @@ impl SaveVersioning {
                 screenshot: Self::tip_in(repo, &refs.screenshot)?,
                 icon: Self::tip_in(repo, &refs.icon)?,
                 note: Self::tip_in(repo, &refs.note)?,
+                title: Self::tip_in(repo, &refs.title)?,
             },
         }))
     }

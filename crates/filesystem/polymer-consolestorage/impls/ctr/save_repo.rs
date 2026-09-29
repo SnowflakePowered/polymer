@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::io::{Cursor, Read};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,7 +19,8 @@ use crate::savegame::{
 };
 use crate::storage::VolumeOverlay;
 use crate::{
-    BoxFuture, EntryKind, Error, SaveRepo, SaveVersioning, Storage, VersionedStorage, VolumeStorage,
+    AttachmentScope, BoxFuture, EntryKind, Error, SaveAttachmentKind, SaveRepo, SaveVersioning,
+    Storage, VersionedStorage, VolumeStorage,
 };
 
 /// Regular saves and SD extdata have independent histories; shared NAND data is
@@ -125,13 +126,18 @@ impl CtrSaveRepo {
             .then(|| ExtdataIcon::read(self.root.as_ref(), &root))
             .flatten();
         let (title, description) = metadata.map(|icon| icon.description()).unwrap_or_default();
+        let title = match title.is_empty() {
+            true => self
+                .root
+                .versioning()
+                .attachment(id, AttachmentScope::History, SaveAttachmentKind::Title)?
+                .and_then(|title| String::from_utf8(title).ok())
+                .unwrap_or_else(|| format!("{:016x}", id.0)),
+            false => title,
+        };
         Ok(SaveDescriptor {
             id,
-            title: if title.is_empty() {
-                format!("{:016x}", id.0)
-            } else {
-                title
-            },
+            title,
             description,
             timestamp,
             root_path: root,
@@ -165,6 +171,42 @@ impl SaveRepo for CtrSaveRepo {
             return Ok(None);
         }
         Ok(ExtdataIcon::read(self.root.as_ref(), &self.archive_root(id)?).map(|icon| icon.image()))
+    }
+
+    /// Game saves carry no SMDH; the 3DS data manager shows the title's own.
+    async fn describe_launch(&self, package: &Package, path: &Path) -> Result<(), Error> {
+        let titled = package
+            .title_id()
+            .and_then(|raw| u64::from_str_radix(raw.trim_start_matches("0x"), 16).ok())
+            .and_then(|id| Archive::from_id(SaveDepotId(id)))
+            .is_some_and(|archive| matches!(archive, Archive::Title(_)));
+        let Some(smdh) = titled.then(|| ExtdataIcon::from_game(path)).flatten() else {
+            return Ok(());
+        };
+        let id = self.infer_save_depot(package);
+        let versioning = self.root.versioning();
+        for (kind, bytes) in [
+            (SaveAttachmentKind::Icon, smdh.image().encode()?),
+            (SaveAttachmentKind::Title, smdh.description().0.into_bytes()),
+        ] {
+            if bytes.is_empty()
+                || versioning
+                    .attachment(id, AttachmentScope::History, kind)?
+                    .as_ref()
+                    == Some(&bytes)
+            {
+                continue;
+            }
+            versioning
+                .attach(
+                    id,
+                    AttachmentScope::History,
+                    kind,
+                    Box::new(Cursor::new(bytes)),
+                )
+                .await?;
+        }
+        Ok(())
     }
 
     /// Wii and 3DS data management count 128 KiB blocks.

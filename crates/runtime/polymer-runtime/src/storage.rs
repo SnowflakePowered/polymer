@@ -395,6 +395,15 @@ pub async fn launch_storage(
             let (ConsoleStorage::SaveRepo(save), ConsoleStorage::Nand(nand)) = (save, nand) else {
                 return Err(format!("storage device '{name}' requires [save, nand]"));
             };
+            if let (Some(package), Some(path)) = (
+                package.as_ref(),
+                arguments.get("launchPath").and_then(Value::as_str),
+            ) && let Err(error) = save
+                .describe_launch(package, std::path::Path::new(path))
+                .await
+            {
+                tracing::warn!(%error, "could not describe saves from the launched game");
+            }
             let composed = nand
                 .compose(Some(save.clone()), &keys)
                 .await

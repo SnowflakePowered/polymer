@@ -170,6 +170,8 @@ impl SaveVersioning {
             .and_then(|value| gix::ObjectId::from_hex(value.as_bytes()).ok());
         let note = Self::parse_trailer(&message, "Polymer-Note: ")
             .and_then(|value| gix::ObjectId::from_hex(value.as_bytes()).ok());
+        let title = Self::parse_trailer(&message, "Polymer-Title: ")
+            .and_then(|value| gix::ObjectId::from_hex(value.as_bytes()).ok());
         let deleted_at = Timestamp::from_second(
             commit
                 .time()
@@ -189,6 +191,7 @@ impl SaveVersioning {
                     screenshot,
                     icon,
                     note,
+                    title,
                 },
             },
         }))
@@ -289,6 +292,7 @@ impl SaveVersioning {
                         SaveAttachmentKind::Screenshot => "Polymer-Screenshot",
                         SaveAttachmentKind::Icon => "Polymer-Icon",
                         SaveAttachmentKind::Note => "Polymer-Note",
+                        SaveAttachmentKind::Title => "Polymer-Title",
                     };
                     message.push_str(&format!("{trailer}: {id}\n"));
                     parents.push(id);

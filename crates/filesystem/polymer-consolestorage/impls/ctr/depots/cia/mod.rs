@@ -142,13 +142,7 @@ impl Depot for CiaDepot {
         Ok(())
     }
     fn preview(&self) -> Option<InstallPreview> {
-        let mut archive = CiaArchive::open(&self.path).ok()?;
-        let mut meta = Vec::new();
-        let smdh = archive
-            .stream_section(CiaSection::Meta, &mut meta)
-            .ok()
-            .and_then(|_| meta.get(0x400..0x400 + 0x36c0))
-            .and_then(crate::impls::ctr::smdh::ExtdataIcon::parse);
+        let smdh = crate::impls::ctr::smdh::ExtdataIcon::from_game(&self.path);
         let id = format!("{:016X}", self.title_id);
         let label = smdh
             .as_ref()

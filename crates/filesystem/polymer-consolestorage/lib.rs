@@ -15,8 +15,8 @@ mod storage;
 pub use console::{ConsoleStorage, StorageKind};
 pub use error::Error;
 pub use history::{
-    AttachmentInfo, DeletedSaveInfo, Save, SaveAttachmentKind, SaveCommit, SaveCommitId,
-    SaveCommitInfo, SaveCommitOperation, SaveVersioning, VersionedStorage,
+    AttachmentInfo, AttachmentScope, DeletedSaveInfo, Save, SaveAttachmentKind, SaveCommit,
+    SaveCommitId, SaveCommitInfo, SaveCommitOperation, SaveVersioning, VersionedStorage,
 };
 pub use impls::battery::{
     BatteryIdentity, BatteryIdentitySource, BatterySaveRepo, BatterySaveView,

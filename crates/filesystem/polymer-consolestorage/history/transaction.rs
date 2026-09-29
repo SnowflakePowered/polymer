@@ -16,6 +16,7 @@ struct MaterializationJournal {
     screenshot: Option<String>,
     icon: Option<String>,
     note: Option<String>,
+    title: Option<String>,
 }
 
 enum MaterializationFailure {
@@ -55,6 +56,9 @@ impl SaveVersioning {
             note: after
                 .and_then(|state| state.attachments.note)
                 .map(|id| id.to_string()),
+            title: after
+                .and_then(|state| state.attachments.title)
+                .map(|id| id.to_string()),
         };
         self.write_journal_ref(&journal)
     }
@@ -88,6 +92,7 @@ impl SaveVersioning {
             screenshot: optional(&mut values, "screenshot")?,
             icon: optional(&mut values, "icon")?,
             note: optional(&mut values, "note")?,
+            title: optional(&mut values, "title")?,
         }))
     }
 
@@ -107,6 +112,7 @@ impl SaveVersioning {
             ("screenshot", journal.screenshot.as_deref()),
             ("icon", journal.icon.as_deref()),
             ("note", journal.note.as_deref()),
+            ("title", journal.title.as_deref()),
         ];
         for (name, value) in values {
             let Some(value) = value else { continue };
@@ -183,6 +189,7 @@ impl SaveVersioning {
                             screenshot: Self::parse_journal_id(journal.screenshot)?,
                             icon: Self::parse_journal_id(journal.icon)?,
                             note: Self::parse_journal_id(journal.note)?,
+                            title: Self::parse_journal_id(journal.title)?,
                         },
                     })
                 })
