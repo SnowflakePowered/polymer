@@ -285,7 +285,11 @@ impl ConfigurationInstance {
         }
     }
 
-    fn append_setting(&mut self, path: SettingPath, option: Handle<OptionDefinition>) -> Result<()> {
+    fn append_setting(
+        &mut self,
+        path: SettingPath,
+        option: Handle<OptionDefinition>,
+    ) -> Result<()> {
         if self.setting_by_path.contains_key(path.as_str()) {
             return Err(Error::DuplicateSetting(path));
         }

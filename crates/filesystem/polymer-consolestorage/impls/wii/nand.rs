@@ -21,7 +21,10 @@ const LAYOUT: PermissionsTable = PermissionsTable::new(&[
     ("shared2", Permissions::READ_WRITE_EXECUTE),
     ("sys/uid.sys", Permissions::READ_WRITE_EXECUTE),
     ("title/00000001", Permissions::READ_EXECUTE),
-    ("title/00000001/00000002/data", Permissions::READ_WRITE_EXECUTE),
+    (
+        "title/00000001/00000002/data",
+        Permissions::READ_WRITE_EXECUTE,
+    ),
 ]);
 
 pub struct WiiNand {

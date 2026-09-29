@@ -88,5 +88,4 @@ impl<T> Handle<T> {
             .expect("Failed to insert into arena. Handle overflows");
         Handle::new(handle_index)
     }
-
 }

@@ -5,8 +5,8 @@ use crate::{
     arena::Handle,
     toml::{
         config::{
-            Emit, OptionDefinition as TomlOptionDefinition, OptionValue, SelectDefinition,
-            Section, Target,
+            Emit, OptionDefinition as TomlOptionDefinition, OptionValue, Section, SelectDefinition,
+            Target,
         },
         input::{InputBlock, LayoutMapping, Port, PortTable},
     },
