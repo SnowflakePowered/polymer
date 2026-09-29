@@ -1,34 +1,42 @@
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-use super::{AttachmentInfo, SaveAttachmentKind, SaveCommitId, SaveDepotId, SaveVersioning};
+use super::{
+    AttachmentInfo, AttachmentScope, SaveAttachmentKind, SaveCommitId, SaveDepotId, SaveVersioning,
+};
 use crate::Error;
 
 impl SaveVersioning {
-    fn note_path(commit: SaveCommitId) -> String {
-        let id = commit.to_string();
-        format!("{}/{}", &id[..2], &id[2..])
+    fn note_path(&self, depot: SaveDepotId, scope: AttachmentScope) -> Result<String, Error> {
+        match scope {
+            AttachmentScope::Commit(commit) => {
+                self.ensure_member(depot, commit)?;
+                let id = commit.to_string();
+                Ok(format!("{}/{}", &id[..2], &id[2..]))
+            }
+            AttachmentScope::History => Ok("history".to_owned()),
+        }
     }
 
     pub(crate) fn attachment(
         &self,
         depot: SaveDepotId,
-        commit: SaveCommitId,
+        scope: AttachmentScope,
         kind: SaveAttachmentKind,
     ) -> Result<Option<Vec<u8>>, Error> {
-        self.ensure_member(depot, commit)?;
+        let path = self.note_path(depot, scope)?;
         let repo = self.inner.repository().to_thread_local();
         let refs = self.refs(depot);
         let Some(notes_tip) = Self::tip_in(&repo, refs.attachment(kind))? else {
             return Ok(None);
         };
         let tree = Self::commit_tree(&repo, notes_tip)?;
-        Ok(Self::tree_files(&repo, tree)?.remove(&Self::note_path(commit)))
+        Ok(Self::tree_files(&repo, tree)?.remove(&path))
     }
 
     pub(crate) async fn attach(
         &self,
         depot: SaveDepotId,
-        commit: SaveCommitId,
+        scope: AttachmentScope,
         kind: SaveAttachmentKind,
         mut source: Box<dyn AsyncRead + Send + Unpin>,
     ) -> Result<AttachmentInfo, Error> {
@@ -40,13 +48,13 @@ impl SaveVersioning {
                 path: format!("{} attachment", kind.as_str()),
                 source: error,
             })?;
-        if kind == SaveAttachmentKind::Note {
+        if matches!(kind, SaveAttachmentKind::Note | SaveAttachmentKind::Title) {
             std::str::from_utf8(&bytes).map_err(|error| {
-                Error::HistoryConflict(format!("commit note is not UTF-8: {error}"))
+                Error::HistoryConflict(format!("{} is not UTF-8: {error}", kind.as_str()))
             })?;
         }
         let _guard = self.inner.operation.lock().await;
-        self.ensure_member(depot, commit)?;
+        let path = self.note_path(depot, scope)?;
         let repo = self.inner.repository().to_thread_local();
         let reference = self.refs(depot).attachment(kind).to_owned();
         let parent = Self::tip_in(&repo, &reference)?;
@@ -64,11 +72,7 @@ impl SaveVersioning {
             .edit()
             .map_err(|error| Error::git("edit notes tree", error))?;
         editor
-            .upsert(
-                Self::note_path(commit),
-                gix::objs::tree::EntryKind::Blob,
-                blob,
-            )
+            .upsert(path, gix::objs::tree::EntryKind::Blob, blob)
             .map_err(|error| Error::git("add note", error))?;
         let tree = editor
             .write()
@@ -81,7 +85,7 @@ impl SaveVersioning {
             signature,
             signature,
             reference,
-            format!("Polymer {} for {commit}", kind.as_str()),
+            format!("Polymer {} for {scope}", kind.as_str()),
             tree,
             parent,
         )
@@ -89,7 +93,7 @@ impl SaveVersioning {
         Ok(AttachmentInfo {
             object_id: SaveCommitId(blob),
             byte_length: bytes.len() as u64,
-            media_type: if kind == SaveAttachmentKind::Note {
+            media_type: if matches!(kind, SaveAttachmentKind::Note | SaveAttachmentKind::Title) {
                 Some("text/plain; charset=utf-8")
             } else {
                 detect_media_type(&bytes)
@@ -100,11 +104,11 @@ impl SaveVersioning {
     pub(super) async fn remove_attachment(
         &self,
         depot: SaveDepotId,
-        commit: SaveCommitId,
+        scope: AttachmentScope,
         kind: SaveAttachmentKind,
     ) -> Result<bool, Error> {
         let _guard = self.inner.operation.lock().await;
-        self.ensure_member(depot, commit)?;
+        let path = self.note_path(depot, scope)?;
         let repo = self.inner.repository().to_thread_local();
         let reference = self.refs(depot).attachment(kind).to_owned();
         let Some(parent) = Self::tip_in(&repo, &reference)? else {
@@ -113,7 +117,6 @@ impl SaveVersioning {
         let root = repo
             .find_tree(Self::commit_tree(&repo, parent)?)
             .map_err(|error| Error::git("read notes tree", error))?;
-        let path = Self::note_path(commit);
         if !Self::tree_files(&repo, root.id)?.contains_key(&path) {
             return Ok(false);
         }
@@ -134,7 +137,7 @@ impl SaveVersioning {
             signature,
             signature,
             reference,
-            format!("Remove Polymer {} for {commit}", kind.as_str()),
+            format!("Remove Polymer {} for {scope}", kind.as_str()),
             tree,
             [parent],
         )

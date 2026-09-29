@@ -1,11 +1,12 @@
 use std::any::Any;
 use std::io::Cursor;
+use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::savegame::{SaveGameSink, icons::SaveIcon};
-use crate::{Error, Save, SaveAttachmentKind, SaveVersioning, VolumeStorage};
+use crate::savegame::{Package, SaveGameSink, icons::SaveIcon};
+use crate::{AttachmentScope, Error, Save, SaveAttachmentKind, SaveVersioning, VolumeStorage};
 
 #[doc(hidden)]
 pub trait DowncastSaveRepo: Any + Send + Sync {
@@ -32,15 +33,27 @@ pub trait SaveRepo: VolumeStorage + SaveGameSink + DowncastSaveRepo {
         Ok(None)
     }
 
+    /// Record what the launched game says about its saves, for consoles whose
+    /// saves do not describe themselves.
+    async fn describe_launch(&self, package: &Package, path: &Path) -> Result<(), Error> {
+        let _ = (package, path);
+        Ok(())
+    }
+
     async fn save_icon(&self, id: crate::savegame::SaveDepotId) -> Result<Option<SaveIcon>, Error> {
         let tip = self.versioning().tip_id(id)?;
-        if let Some(tip) = tip
-            && let Some(bytes) = self
-                .versioning()
-                .attachment(id, tip, SaveAttachmentKind::Icon)?
-            && let Ok(icon) = SaveIcon::decode(&bytes)
+        for scope in tip
+            .map(AttachmentScope::Commit)
+            .into_iter()
+            .chain([AttachmentScope::History])
         {
-            return Ok(Some(icon));
+            if let Some(bytes) =
+                self.versioning()
+                    .attachment(id, scope, SaveAttachmentKind::Icon)?
+                && let Ok(icon) = SaveIcon::decode(&bytes)
+            {
+                return Ok(Some(icon));
+            }
         }
 
         let Some(icon) = self.read_save_icon(id)? else {
@@ -51,7 +64,7 @@ pub trait SaveRepo: VolumeStorage + SaveGameSink + DowncastSaveRepo {
             self.versioning()
                 .attach(
                     id,
-                    tip,
+                    AttachmentScope::Commit(tip),
                     SaveAttachmentKind::Icon,
                     Box::new(Cursor::new(bytes)),
                 )

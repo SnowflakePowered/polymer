@@ -60,6 +60,22 @@ pub enum SaveAttachmentKind {
     Note,
     Screenshot,
     Icon,
+    Title,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AttachmentScope {
+    Commit(SaveCommitId),
+    History,
+}
+
+impl fmt::Display for AttachmentScope {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Commit(commit) => fmt::Display::fmt(commit, formatter),
+            Self::History => formatter.write_str("history"),
+        }
+    }
 }
 
 impl SaveAttachmentKind {
@@ -68,6 +84,7 @@ impl SaveAttachmentKind {
             Self::Note => "note",
             Self::Screenshot => "screenshot",
             Self::Icon => "icon",
+            Self::Title => "title",
         }
     }
 }
@@ -108,6 +125,7 @@ struct AttachmentTips {
     screenshot: Option<gix::ObjectId>,
     icon: Option<gix::ObjectId>,
     note: Option<gix::ObjectId>,
+    title: Option<gix::ObjectId>,
 }
 
 impl AttachmentTips {
@@ -116,14 +134,16 @@ impl AttachmentTips {
             SaveAttachmentKind::Screenshot => self.screenshot,
             SaveAttachmentKind::Icon => self.icon,
             SaveAttachmentKind::Note => self.note,
+            SaveAttachmentKind::Title => self.title,
         }
     }
 
-    fn entries(self) -> [(SaveAttachmentKind, Option<gix::ObjectId>); 3] {
+    fn entries(self) -> [(SaveAttachmentKind, Option<gix::ObjectId>); 4] {
         [
             (SaveAttachmentKind::Screenshot, self.screenshot),
             (SaveAttachmentKind::Icon, self.icon),
             (SaveAttachmentKind::Note, self.note),
+            (SaveAttachmentKind::Title, self.title),
         ]
     }
 }
@@ -141,6 +161,7 @@ impl SaveRefState {
             self.attachments.screenshot,
             self.attachments.icon,
             self.attachments.note,
+            self.attachments.title,
         ]
         .into_iter()
         .flatten()
@@ -160,6 +181,7 @@ struct SaveRefs {
     screenshot: String,
     icon: String,
     note: String,
+    title: String,
 }
 
 impl SaveRefs {
@@ -168,15 +190,17 @@ impl SaveRefs {
             SaveAttachmentKind::Screenshot => &self.screenshot,
             SaveAttachmentKind::Icon => &self.icon,
             SaveAttachmentKind::Note => &self.note,
+            SaveAttachmentKind::Title => &self.title,
         }
     }
 
-    fn entries(&self) -> [(&str, Option<SaveAttachmentKind>); 4] {
+    fn entries(&self) -> [(&str, Option<SaveAttachmentKind>); 5] {
         [
             (&self.head, None),
             (&self.screenshot, Some(SaveAttachmentKind::Screenshot)),
             (&self.icon, Some(SaveAttachmentKind::Icon)),
             (&self.note, Some(SaveAttachmentKind::Note)),
+            (&self.title, Some(SaveAttachmentKind::Title)),
         ]
     }
 }
@@ -506,7 +530,7 @@ impl SaveCommit<'_> {
     ) -> Result<Option<Box<dyn Read + Send>>, Error> {
         self.repo
             .versioning()
-            .attachment(self.depot, self.id, kind)
+            .attachment(self.depot, AttachmentScope::Commit(self.id), kind)
             .map(|bytes| bytes.map(|bytes| Box::new(Cursor::new(bytes)) as Box<dyn Read + Send>))
     }
 
@@ -517,22 +541,23 @@ impl SaveCommit<'_> {
     ) -> Result<AttachmentInfo, Error> {
         self.repo
             .versioning()
-            .attach(self.depot, self.id, kind, source)
+            .attach(self.depot, AttachmentScope::Commit(self.id), kind, source)
             .await
     }
 
     pub async fn remove_attachment(&self, kind: SaveAttachmentKind) -> Result<bool, Error> {
         self.repo
             .versioning()
-            .remove_attachment(self.depot, self.id, kind)
+            .remove_attachment(self.depot, AttachmentScope::Commit(self.id), kind)
             .await
     }
 
     pub fn note(&self) -> Result<Option<String>, Error> {
-        let Some(bytes) =
-            self.repo
-                .versioning()
-                .attachment(self.depot, self.id, SaveAttachmentKind::Note)?
+        let Some(bytes) = self.repo.versioning().attachment(
+            self.depot,
+            AttachmentScope::Commit(self.id),
+            SaveAttachmentKind::Note,
+        )?
         else {
             return Ok(None);
         };
