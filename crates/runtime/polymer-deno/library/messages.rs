@@ -2,6 +2,26 @@ use actix::Recipient;
 use serde::Serialize;
 use serde_json::Value;
 
+#[derive(Debug, thiserror::Error)]
+pub enum LibraryError {
+    #[error("{0}")]
+    Type(String),
+    #[error("{0}")]
+    Generic(String),
+}
+
+impl From<String> for LibraryError {
+    fn from(error: String) -> Self {
+        Self::Generic(error)
+    }
+}
+
+impl From<&str> for LibraryError {
+    fn from(error: &str) -> Self {
+        Self::Generic(error.to_owned())
+    }
+}
+
 /// Actix recipients exposed to Deno without depending on the runtime backend.
 #[derive(Clone, Debug)]
 pub struct Library {
@@ -28,13 +48,13 @@ pub struct Library {
 }
 
 #[derive(Debug, actix::Message)]
-#[rtype(result = "Result<Value, String>")]
+#[rtype(result = "Result<Value, LibraryError>")]
 pub struct LibraryImport {
     pub path: String,
 }
 
 #[derive(Debug, actix::Message)]
-#[rtype(result = "Result<ImportedKey, String>")]
+#[rtype(result = "Result<ImportedKey, LibraryError>")]
 pub struct LibraryImportKey {
     pub platform: String,
     pub namespace: String,
@@ -53,25 +73,25 @@ pub struct ImportedKey {
 }
 
 #[derive(Debug, actix::Message)]
-#[rtype(result = "Result<Value, String>")]
+#[rtype(result = "Result<Value, LibraryError>")]
 pub struct GamesList {
     pub platform: Option<String>,
 }
 
 #[derive(Debug, actix::Message)]
-#[rtype(result = "Result<Value, String>")]
+#[rtype(result = "Result<Value, LibraryError>")]
 pub struct GamesGet {
     pub id: String,
 }
 
 #[derive(Debug, actix::Message)]
-#[rtype(result = "Result<(), String>")]
+#[rtype(result = "Result<(), LibraryError>")]
 pub struct GamesDelete {
     pub id: String,
 }
 
 #[derive(Debug, actix::Message)]
-#[rtype(result = "Result<Value, String>")]
+#[rtype(result = "Result<Value, LibraryError>")]
 pub struct LaunchablesAdd {
     pub path: String,
     pub platform: Option<String>,
@@ -87,39 +107,39 @@ pub struct InstalledArtifact {
 }
 
 #[derive(Debug, actix::Message)]
-#[rtype(result = "Result<Value, String>")]
+#[rtype(result = "Result<Value, LibraryError>")]
 pub struct LaunchablesFind {
     pub uri: String,
 }
 
 #[derive(Debug, actix::Message)]
-#[rtype(result = "Result<(), String>")]
+#[rtype(result = "Result<(), LibraryError>")]
 pub struct LaunchablesDelete {
     pub id: String,
 }
 
 #[derive(Debug, actix::Message)]
-#[rtype(result = "Result<Value, String>")]
+#[rtype(result = "Result<Value, LibraryError>")]
 pub struct MetadataAdd {
     pub parent_binary_id: String,
     pub input: Value,
 }
 
 #[derive(Debug, actix::Message)]
-#[rtype(result = "Result<Value, String>")]
+#[rtype(result = "Result<Value, LibraryError>")]
 pub struct MetadataUpdate {
     pub id: String,
     pub input: Value,
 }
 
 #[derive(Debug, actix::Message)]
-#[rtype(result = "Result<(), String>")]
+#[rtype(result = "Result<(), LibraryError>")]
 pub struct MetadataDelete {
     pub id: String,
 }
 
 #[derive(Debug, actix::Message)]
-#[rtype(result = "Result<Value, String>")]
+#[rtype(result = "Result<Value, LibraryError>")]
 pub struct MetadataReplace {
     pub parent_binary_id: String,
     pub source: String,
@@ -127,46 +147,46 @@ pub struct MetadataReplace {
 }
 
 #[derive(Debug, actix::Message)]
-#[rtype(result = "Result<String, String>")]
+#[rtype(result = "Result<String, LibraryError>")]
 pub struct MetadataText {
     pub id: String,
 }
 
 #[derive(Debug, actix::Message)]
-#[rtype(result = "Result<String, String>")]
+#[rtype(result = "Result<String, LibraryError>")]
 pub struct MetadataUrl {
     pub id: String,
 }
 
 #[derive(Debug, actix::Message)]
-#[rtype(result = "Result<Value, String>")]
+#[rtype(result = "Result<Value, LibraryError>")]
 pub struct ScrapingJobs;
 
 #[derive(Debug, actix::Message)]
-#[rtype(result = "Result<Value, String>")]
+#[rtype(result = "Result<Value, LibraryError>")]
 pub struct ScrapingStart {
     pub root_binary_id: String,
     pub trigger_binary_id: String,
 }
 
 #[derive(Debug, actix::Message)]
-#[rtype(result = "Result<Value, String>")]
+#[rtype(result = "Result<Value, LibraryError>")]
 pub struct ScrapingJob {
     pub id: String,
 }
 
 #[derive(Debug, actix::Message)]
-#[rtype(result = "Result<Value, String>")]
+#[rtype(result = "Result<Value, LibraryError>")]
 pub struct ScrapingRetry {
     pub id: String,
 }
 
 #[derive(Debug, actix::Message)]
-#[rtype(result = "Result<Value, String>")]
+#[rtype(result = "Result<Value, LibraryError>")]
 pub struct ScrapingScrapers;
 
 #[derive(Debug, actix::Message)]
-#[rtype(result = "Result<(), String>")]
+#[rtype(result = "Result<(), LibraryError>")]
 pub struct ScrapingRefresh {
     pub plugin: String,
 }

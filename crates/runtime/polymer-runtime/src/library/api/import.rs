@@ -2,13 +2,13 @@ use super::LibraryBackend;
 use actix::{AtomicResponse, Context, Handler};
 use polymer_consolestorage::impls::ctr::{CtrNand, seeddb::CtrSeedDb};
 use polymer_consolestorage::keys::{KeyIdentity, KeyRecord, KeyWriter};
-use polymer_deno::polymer::library::{ImportedKey, LibraryImport, LibraryImportKey};
+use polymer_deno::polymer::library::{ImportedKey, LibraryError, LibraryImport, LibraryImportKey};
 use polymer_scraping::Ingestor;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
 impl Handler<LibraryImport> for LibraryBackend {
-    type Result = AtomicResponse<Self, Result<Value, String>>;
+    type Result = AtomicResponse<Self, Result<Value, LibraryError>>;
 
     fn handle(
         &mut self,
@@ -62,7 +62,7 @@ impl Handler<LibraryImport> for LibraryBackend {
 }
 
 impl Handler<LibraryImportKey> for LibraryBackend {
-    type Result = AtomicResponse<Self, Result<ImportedKey, String>>;
+    type Result = AtomicResponse<Self, Result<ImportedKey, LibraryError>>;
 
     fn handle(&mut self, message: LibraryImportKey, _: &mut Context<Self>) -> Self::Result {
         let root = self.key_root.clone();
@@ -74,14 +74,18 @@ impl Handler<LibraryImportKey> for LibraryBackend {
                 title_id,
             } = message;
             if key.is_empty() {
-                return Err("TypeError: key must not be empty".into());
+                return Err(LibraryError::Type("key must not be empty".into()));
             }
             let supplied_id = title_id.as_deref().filter(|id| !id.is_empty());
             if title_id.is_some() && supplied_id.is_none() {
-                return Err("TypeError: titleid must be a non-empty string".into());
+                return Err(LibraryError::Type(
+                    "titleid must be a non-empty string".into(),
+                ));
             }
             if !matches!(namespace.as_str(), "system" | "content") {
-                return Err("TypeError: namespace must be system or content".into());
+                return Err(LibraryError::Type(
+                    "namespace must be system or content".into(),
+                ));
             }
             let id = supplied_id
                 .map(str::to_owned)

@@ -865,8 +865,11 @@ impl PolymerHost for FrontendServices {
             .map_err(Clone::clone)
     }
 
-    fn library(&self) -> Option<Library> {
-        self.library.as_ref().map(LibraryService::client)
+    fn library(&self) -> Result<Library, String> {
+        self.library
+            .as_ref()
+            .map(LibraryService::client)
+            .ok_or_else(|| "library service is unavailable".to_owned())
     }
 
     fn emulator_launch(

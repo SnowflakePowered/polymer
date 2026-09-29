@@ -46,6 +46,35 @@ use library::{
 
 pub type ApiFuture<T> = Pin<Box<dyn Future<Output = T> + 'static>>;
 
+pub(crate) trait ServiceError: std::fmt::Display {
+    fn unavailable(error: actix::MailboxError) -> JsErrorBox;
+
+    fn into_js(self) -> JsErrorBox
+    where
+        Self: Sized,
+    {
+        JsErrorBox::generic(self.to_string())
+    }
+}
+
+pub(crate) trait ServiceCall<M, T> {
+    async fn call(&self, message: M) -> Result<T, JsErrorBox>;
+}
+
+impl<M, T, E> ServiceCall<M, T> for actix::Recipient<M>
+where
+    M: actix::Message<Result = Result<T, E>> + Send + 'static,
+    T: Send + 'static,
+    E: ServiceError + Send + 'static,
+{
+    async fn call(&self, message: M) -> Result<T, JsErrorBox> {
+        self.send(message)
+            .await
+            .map_err(E::unavailable)?
+            .map_err(ServiceError::into_js)
+    }
+}
+
 /// Native capabilities exposed to the application-facing Polymer realm.
 ///
 /// This is the only native interface understood by the frontend extension.
@@ -84,7 +113,7 @@ pub trait PolymerHost: Send + Sync {
     ) -> ApiFuture<Value>;
     fn release_prepared_filesystem(&self, token: String) -> bool;
     fn consolestorage(&self) -> Result<ConsoleStorage, String>;
-    fn library(&self) -> Option<Library>;
+    fn library(&self) -> Result<Library, String>;
     fn emulator_launch(
         &self,
         token: InstanceToken,
