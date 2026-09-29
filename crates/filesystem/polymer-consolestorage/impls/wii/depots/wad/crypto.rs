@@ -5,6 +5,7 @@ use sha1::{Digest, Sha1};
 use super::depot::WiiWadDepot;
 use super::tmd::Content;
 use crate::Error;
+use crate::impls::es::TitleKey;
 
 pub(crate) const COMMON_KEYS: [[u8; 16]; 2] = [
     [
@@ -40,7 +41,12 @@ impl WiiWadDepot {
             .ok_or_else(|| Error::malformed("TMD", "title has no contents"))?;
         let mut specified_key = None;
         for index in candidates {
-            let key = self.decrypt_title_key(&COMMON_KEYS[index])?;
+            let key = TitleKey::decrypt(
+                &COMMON_KEYS[index],
+                self.ticket.title_id,
+                &self.ticket.encrypted_title_key,
+            )
+            .0;
             if index == specified {
                 specified_key = Some(key);
             }
@@ -54,15 +60,6 @@ impl WiiWadDepot {
         Err(Error::IntegrityMatchFailed {
             failed: "WAD title key".to_owned(),
         })
-    }
-
-    fn decrypt_title_key(&self, common_key: &[u8; 16]) -> Result<[u8; 16], Error> {
-        let mut iv = [0; 16];
-        iv[..8].copy_from_slice(&self.ticket.title_id.to_be_bytes());
-        let decrypted = decrypt_cbc(common_key, &iv, &self.ticket.encrypted_title_key)?;
-        let mut title_key = [0; 16];
-        title_key.copy_from_slice(&decrypted);
-        Ok(title_key)
     }
 
     pub(super) fn decrypt_content(

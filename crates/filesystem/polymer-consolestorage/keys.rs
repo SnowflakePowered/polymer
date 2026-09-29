@@ -28,6 +28,19 @@ pub struct KeyRecord {
     pub bytes: Vec<u8>,
 }
 
+impl KeyRecord {
+    pub(crate) fn content(title_id: String, bytes: Vec<u8>) -> Self {
+        Self {
+            identity: KeyIdentity {
+                namespace: "content".into(),
+                id: title_id.clone(),
+            },
+            title_id: Some(title_id),
+            bytes,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KeyDescription {

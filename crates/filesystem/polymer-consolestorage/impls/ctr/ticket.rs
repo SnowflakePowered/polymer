@@ -1,11 +1,9 @@
-use crate::{
-    Error,
-    keys::{KeyIdentity, KeyRecord},
-};
-use aes::Aes128;
-use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit, generic_array::GenericArray};
+use crate::Error;
+use crate::impls::es::{RightsHeader, TicketBody, TitleKey};
+use crate::keys::KeyRecord;
 use csis::{CiaArchive, CiaSection};
 use std::path::Path;
+use zerocopy::{FromBytes, IntoBytes};
 
 const RETAIL_COMMON_KEYS: [[u8; 16]; 6] = [
     [
@@ -62,95 +60,54 @@ impl CtrTicket {
             0x10002 | 0x10005 => 0x80,
             _ => return Err(Error::malformed("3DS ticket", "invalid signature layout")),
         };
-        let body = bytes
-            .get(offset..offset + 0x164)
+        let (body, index) = bytes
+            .get(offset..)
+            .and_then(|bytes| TicketBody::ref_from_prefix(bytes).ok())
             .ok_or_else(|| Error::malformed("3DS ticket", "truncated body"))?;
-        let index = bytes
-            .get(offset + 0x164..)
-            .ok_or_else(|| Error::malformed("3DS ticket", "missing content index"))?;
-        if body[0x7c] != 1 || index.len() < 0x14 {
-            return Err(Error::malformed(
-                "3DS ticket",
-                "invalid version or truncated content index",
-            ));
-        }
-        let index_size = u32::from_be_bytes(index[4..8].try_into().unwrap()) as usize;
-        if index_size < 0x14 || index_size > index.len() {
+        let (rights, _) = RightsHeader::ref_from_prefix(index)
+            .ok()
+            .filter(|_| body.version == 1)
+            .ok_or_else(|| {
+                Error::malformed("3DS ticket", "invalid version or truncated content index")
+            })?;
+        let index_size = rights.size.get() as usize;
+        if index_size < size_of::<RightsHeader>() || index_size > index.len() {
             return Err(Error::malformed(
                 "3DS ticket",
                 "content index exceeds ticket",
             ));
         }
-        let issuer = body[..0x40]
-            .split(|byte| *byte == 0)
-            .next()
-            .unwrap_or_default();
-        let common = match (issuer, body[0xb1]) {
+        let common = match (body.issuer_name(), body.common_key_index) {
             (b"Root-CA00000003-XS0000000c", index) => RETAIL_COMMON_KEYS.get(usize::from(index)),
             (b"Root-CA00000004-XS00000009", 0) => Some(&DEV_COMMON_KEY),
             _ => None,
         }
         .ok_or_else(|| Error::Unsupported("3DS ticket common key is unavailable".into()))?;
-        if u32::from_be_bytes(body[0x98..0x9c].try_into().unwrap()) != 0 {
+        if body.device_id.get() != 0 {
             return Err(Error::Unsupported(
                 "personalized 3DS ticket requires depersonalization".into(),
             ));
         }
-        let title_id = u64::from_be_bytes(body[0x9c..0xa4].try_into().unwrap());
-        let mut key = GenericArray::clone_from_slice(&body[0x7f..0x8f]);
-        Aes128::new(GenericArray::from_slice(common)).decrypt_block(&mut key);
-        for (plain, iv) in key[..8].iter_mut().zip(title_id.to_be_bytes()) {
-            *plain ^= iv;
-        }
-        let id = format!("{title_id:016X}");
-        Ok(KeyRecord {
-            identity: KeyIdentity {
-                namespace: "content".into(),
-                id: id.clone(),
-            },
-            title_id: Some(id),
-            bytes: key.to_vec(),
-        })
+        let title_id = body.title_id.get();
+        let key = TitleKey::decrypt(common, title_id, &body.encrypted_title_key);
+        Ok(KeyRecord::content(
+            format!("{title_id:016X}"),
+            key.0.to_vec(),
+        ))
     }
 
     pub fn synthesize(title_id: u64, key: &[u8]) -> Result<Vec<u8>, Error> {
-        let key: [u8; 16] = key
-            .try_into()
-            .map_err(|_| Error::malformed("3DS title key", "expected 16 bytes"))?;
-        const RIGHTS_COUNT: usize = 64;
-        const RIGHTS_SIZE: usize = 0x28 + 0x84 * RIGHTS_COUNT;
-        let mut bytes = vec![0u8; 0x140 + 0x164 + RIGHTS_SIZE];
+        let key = TitleKey::new(key, "3DS title key")?;
+        let mut body = TicketBody::issued(
+            b"Root-CA00000003-XS0000000c",
+            title_id,
+            key.encrypt(&RETAIL_COMMON_KEYS[0], title_id),
+        );
+        body.version = 1;
+        let mut bytes = vec![0u8; 0x140];
         bytes[..4].copy_from_slice(&0x10001u32.to_be_bytes());
-        let body = &mut bytes[0x140..];
-        let issuer = b"Root-CA00000003-XS0000000c";
-        body[..issuer.len()].copy_from_slice(issuer);
-        body[0x7c] = 1;
-        body[0x90..0x98].copy_from_slice(&title_id.to_be_bytes());
-        body[0x9c..0xa4].copy_from_slice(&title_id.to_be_bytes());
-        body[0xb1] = 0;
-        let mut block = GenericArray::clone_from_slice(&key);
-        for (plain, iv) in block[..8].iter_mut().zip(title_id.to_be_bytes()) {
-            *plain ^= iv;
-        }
-        Aes128::new(GenericArray::from_slice(&RETAIL_COMMON_KEYS[0])).encrypt_block(&mut block);
-        body[0x7f..0x8f].copy_from_slice(&block);
-        let rights = &mut body[0x164..];
-        rights[..2].copy_from_slice(&1u16.to_be_bytes());
-        rights[2..4].copy_from_slice(&0x14u16.to_be_bytes());
-        rights[4..8].copy_from_slice(&(RIGHTS_SIZE as u32).to_be_bytes());
-        rights[8..12].copy_from_slice(&0x14u32.to_be_bytes());
-        rights[12..14].copy_from_slice(&1u16.to_be_bytes());
-        rights[14..16].copy_from_slice(&0x14u16.to_be_bytes());
-        rights[20..24].copy_from_slice(&0x28u32.to_be_bytes());
-        rights[24..28].copy_from_slice(&(RIGHTS_COUNT as u32).to_be_bytes());
-        rights[28..32].copy_from_slice(&0x84u32.to_be_bytes());
-        rights[32..36].copy_from_slice(&((RIGHTS_COUNT * 0x84) as u32).to_be_bytes());
-        rights[36..38].copy_from_slice(&3u16.to_be_bytes());
-        for index in 0..RIGHTS_COUNT {
-            let start = 0x28 + 0x84 * index;
-            rights[start + 2..start + 4].copy_from_slice(&((index * 1024) as u16).to_be_bytes());
-            rights[start + 4..start + 0x84].fill(0xff);
-        }
+        bytes.extend_from_slice(body.as_bytes());
+        bytes.extend_from_slice(&RightsHeader::synthesize(64));
         Ok(bytes)
     }
 }
