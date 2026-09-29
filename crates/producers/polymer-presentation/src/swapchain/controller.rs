@@ -276,6 +276,14 @@ impl<B: SwapchainBackend> SwapchainController<B> {
                 .count()
                 <= maximum as usize
     }
+    pub fn oldest_in_flight(&self) -> Option<&B::Submission> {
+        self.slots
+            .iter()
+            .filter(|slot| slot.token.is_none() && !slot.producer_complete)
+            .filter(|slot| slot.submission.is_some())
+            .min_by_key(|slot| slot.serial)
+            .and_then(|slot| slot.submission.as_ref())
+    }
     pub fn wait_for_pacing(
         &mut self,
         maximum: u32,

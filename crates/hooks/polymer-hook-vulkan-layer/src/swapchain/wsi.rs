@@ -109,8 +109,9 @@ impl Swapchain {
                 .map_err(|_| vk::Result::ERROR_INITIALIZATION_FAILED)?,
         )
         .map_err(|_| vk::Result::ERROR_INITIALIZATION_FAILED)?;
-        let controller = SwapchainController::create(Self::create_info(device, info), binding, session)
-            .map_err(|failure| Self::failed(device, failure))?;
+        let controller =
+            SwapchainController::create(Self::create_info(device, info), binding, session)
+                .map_err(|failure| Self::failed(device, failure))?;
         Ok((controller, Some(window), Some(reservation)))
     }
     unsafe fn detached(
@@ -264,6 +265,7 @@ impl Swapchain {
             if self.closed.load(Ordering::Acquire) || self.superseded() {
                 return Err(vk::Result::ERROR_OUT_OF_DATE_KHR);
             }
+            let mut in_flight = None;
             if let Some(mut state) = self.live.enter() {
                 let controller = state
                     .controller
@@ -276,7 +278,11 @@ impl Swapchain {
                         state.leases[index as usize] = Some(lease);
                         return Ok(index);
                     }
-                    Err(ControllerError::WouldBlock) => {}
+                    Err(ControllerError::WouldBlock) => {
+                        if self.pending.is_some() {
+                            in_flight = controller.oldest_in_flight().cloned();
+                        }
+                    }
                     Err(error) => {
                         let error = WsiResult::controller(error);
                         if error == vk::Result::ERROR_DEVICE_LOST {
@@ -292,10 +298,21 @@ impl Swapchain {
             if until.is_some_and(|until| Instant::now() >= until) {
                 return Err(vk::Result::TIMEOUT);
             }
-            self.availability.wait(
-                observed,
-                until.map(|until| until.saturating_duration_since(Instant::now())),
-            );
+            let remaining = until.map(|until| until.saturating_duration_since(Instant::now()));
+            match in_flight {
+                Some(submission) => match submission.wait(remaining.map_or(u64::MAX, |r| {
+                    u64::try_from(r.as_nanos()).unwrap_or(u64::MAX)
+                })) {
+                    Ok(()) | Err(vk::Result::TIMEOUT) => {}
+                    Err(error) => {
+                        if error == vk::Result::ERROR_DEVICE_LOST {
+                            self.device.lost.store(true, Ordering::Release);
+                        }
+                        return Err(error);
+                    }
+                },
+                None => self.availability.wait(observed, remaining),
+            }
         }
     }
     pub(super) fn retire(&self) {
