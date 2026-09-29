@@ -10,7 +10,7 @@ use polymer_consolestorage::savegame::{Package, SaveGameSink};
 use polymer_consolestorage::{BatteryIdentity, BatterySaveRepo, SaveRepo};
 use polymer_deno::polymer::{PolymerNotification, PolymerNotificationSender};
 use polymer_library::keys::KeyStore;
-use polymer_library::{ConsoleStorage, StorageKind, StorageManager};
+use polymer_library::{ConsoleStorage, LaunchableUri, StorageKind, StorageManager};
 use polymer_pluginhost::filesystem::StorageFactories;
 use polymer_vfs::{
     BatteryStorageFactory, CompositeResourceLease, ExclusiveResourceKey, FinalizationReason,
@@ -242,6 +242,43 @@ fn is_emulator_launch(export_path: &[String]) -> bool {
         || matches!(export_path, [default, name] if default == "default" && name == "onLaunch")
 }
 
+async fn select_artifact(
+    manager: &StorageManager,
+    console: &str,
+    requested: &mut serde_json::Map<String, Value>,
+    arguments: &Value,
+) -> Result<(), String> {
+    let Some(LaunchableUri::Artifact {
+        platform, storage, ..
+    }) = arguments
+        .pointer("/package/uri")
+        .and_then(Value::as_str)
+        .and_then(|uri| uri.parse::<LaunchableUri>().ok())
+    else {
+        return Ok(());
+    };
+    let Some((device, StorageKind::Nand)) = ConsoleStorage::default_device(&platform) else {
+        return Err(format!("{platform} has no NAND for installed titles"));
+    };
+    let saves = match requested
+        .get(device)
+        .and_then(Value::as_array)
+        .and_then(|selection| selection.first())
+    {
+        Some(saves) => saves.clone(),
+        None => manager
+            .default_selection(StorageKind::Nand, console)
+            .await
+            .map_err(|error| error.to_string())?[0]
+            .clone(),
+    };
+    requested.insert(
+        device.to_owned(),
+        serde_json::json!([saves, storage.to_string()]),
+    );
+    Ok(())
+}
+
 pub async fn launch_storage(
     manager: Option<Arc<StorageManager>>,
     export_path: &[String],
@@ -284,6 +321,7 @@ pub async fn launch_storage(
         .collect::<std::collections::BTreeSet<_>>();
     let manager = manager.ok_or_else(|| "console storage is unavailable".to_owned())?;
     let mut requested = requested.cloned().unwrap_or_default();
+    select_artifact(&manager, console, &mut requested, arguments).await?;
     if let Some((device, kind)) = default_device
         && !requested.contains_key(device)
     {

@@ -81,14 +81,14 @@ export function createConsoleStorage(library) {
         planRemoval: (ids) => op_consolestorage_plan_removal(this.platform, this.id, ids),
         uninstall: async (plan) => {
           const artifacts = await op_consolestorage_uninstall(this.platform, this.id, plan.requested, plan.revision);
-          const removed = new Set(plan.requested.map((id) => id.toLowerCase()));
+          const removed = new Set(plan.requested.map((id) => `artifact://${this.platform}/${this.id}/${id}`));
           const games = await library.Library.games.list({ platform: this.platform });
-          await Promise.all(games
-            .filter((game) => game.launchables.some((item) => item.titleId && removed.has(item.titleId.replace(/^0x/i, "").toLowerCase())))
-            .map(async (game) => {
-              await library.Library.games.delete(game.id);
+          await Promise.all(games.flatMap((game) => game.launchables
+            .filter((item) => removed.has(item.uri))
+            .map(async (item) => {
+              await library.Library.launchables.delete(item.id);
               library.contentChanged({ rootBinaryId: game.id });
-            }));
+            })));
           return artifacts;
         },
       });

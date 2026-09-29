@@ -57,13 +57,30 @@ impl Handler<LaunchablesAdd> for LibraryBackend {
             path,
             platform,
             parent_binary_id,
+            artifact,
         }: LaunchablesAdd,
         _: &mut Context<Self>,
     ) -> Self::Result {
         let scraping = self.scraping.clone();
+        let catalog = self.catalog.clone();
         self.mutate(async move {
             let parent = parent_binary_id.as_deref().map(Self::uuid).transpose()?;
-            let packages = tokio::task::spawn_blocking(move || {
+            let installed = artifact
+                .map(|artifact| {
+                    let platform = platform
+                        .clone()
+                        .ok_or("an installed artifact requires its platform")?;
+                    Ok::<_, String>((
+                        polymer_library::LaunchableUri::Artifact {
+                            platform,
+                            storage: Self::uuid(&artifact.storage)?,
+                            artifact: artifact.id,
+                        },
+                        artifact.entrypoint,
+                    ))
+                })
+                .transpose()?;
+            let mut packages = tokio::task::spawn_blocking(move || {
                 polymer_scraping::Ingestor::identify(
                     std::path::Path::new(&path),
                     platform.as_deref(),
@@ -73,7 +90,28 @@ impl Handler<LaunchablesAdd> for LibraryBackend {
             .await
             .map_err(|error| format!("package detection task failed: {error}"))?
             .map_err(|error| error.to_string())?;
+            let depot = match (installed, packages.as_mut_slice()) {
+                (None, _) => None,
+                (Some((uri, entrypoint)), [package]) => Some(package.install(uri, entrypoint)),
+                (Some(_), _) => {
+                    return Err("an installed artifact must identify as one package".into());
+                }
+            };
             let imports = Self::import_games(&scraping, packages).await?;
+            if let Some(depot) = depot {
+                let games = catalog
+                    .games(None)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                for launchable in games.into_iter().flat_map(|game| game.launchables) {
+                    if launchable.path == depot {
+                        catalog
+                            .remove_launchable(launchable.id)
+                            .await
+                            .map_err(|error| error.to_string())?;
+                    }
+                }
+            }
             // Preserve the single-import response while exposing every collection entry.
             let mut response = imports.first().cloned().ok_or("no packages found")?;
             response["imports"] = json!(imports);

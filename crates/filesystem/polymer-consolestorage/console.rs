@@ -69,6 +69,7 @@ impl ConsoleStorage {
             WiiNand::PLATFORM => ("nand", StorageKind::Nand),
             CtrNand::PLATFORM | CtrNand::NEW_PLATFORM => ("ctrnand", StorageKind::Nand),
             WiiUNand::PLATFORM => ("mlc", StorageKind::Nand),
+            Ps3Nand::PLATFORM => ("hdd", StorageKind::Nand),
             VitaNand::PLATFORM => ("emmc", StorageKind::Nand),
             GameCubeMemoryCard::PLATFORM => ("slotA", StorageKind::MemoryCard),
             DreamcastMemoryCard::PLATFORM => ("vmu", StorageKind::MemoryCard),

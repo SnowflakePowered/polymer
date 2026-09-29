@@ -515,7 +515,7 @@ export interface LibraryApi extends EventTarget {
     delete(rootBinaryId: string): Promise<void>;
   }>;
   readonly launchables: Readonly<{
-    add(input: { path: string; platform?: string; parentBinaryId?: string }): Promise<Readonly<{ launchable: LibraryLaunchable; scrapeJob: ScrapeJob | null; imports?: readonly Readonly<{ launchable: LibraryLaunchable; scrapeJob: ScrapeJob | null }>[] }>>;
+    add(input: { path: string; platform?: string; parentBinaryId?: string; artifact?: { storage: string; id: string; entrypoint: string | null } }): Promise<Readonly<{ launchable: LibraryLaunchable; scrapeJob: ScrapeJob | null; imports?: readonly Readonly<{ launchable: LibraryLaunchable; scrapeJob: ScrapeJob | null }>[] }>>;
     delete(id: string): Promise<void>;
   }>;
   readonly metadata: Readonly<{

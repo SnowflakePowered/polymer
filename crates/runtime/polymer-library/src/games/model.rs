@@ -17,6 +17,7 @@ pub struct Launchable {
     pub id: Uuid,
     pub binary_id: Uuid,
     pub path: super::LaunchableUri,
+    pub entrypoint: Option<String>,
     pub binary_blake3: Box<[u8]>,
     pub serial: Option<String>,
     pub title_id: Option<String>,
@@ -27,6 +28,7 @@ pub struct Launchable {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IdentifiedLaunchable {
     pub path: super::LaunchableUri,
+    pub entrypoint: Option<String>,
     pub binary_blake3: [u8; 32],
     pub serial: Option<String>,
     pub title_id: Option<String>,

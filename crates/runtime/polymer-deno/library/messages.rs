@@ -75,6 +75,14 @@ pub struct LaunchablesAdd {
     pub path: String,
     pub platform: Option<String>,
     pub parent_binary_id: Option<String>,
+    pub artifact: Option<InstalledArtifact>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct InstalledArtifact {
+    pub storage: String,
+    pub id: String,
+    pub entrypoint: Option<String>,
 }
 
 #[derive(Debug, actix::Message)]

@@ -5,7 +5,7 @@ import { css } from "../../../styled-system/css";
 import { Screen, ScreenHeader, MasterDetail, CategoryNavigation, TileGrid, Tile, Icon, DetailList, Section, Button, ActionGroup, Dialog, ConfirmDialog, ActionHints, EmptyState, ErrorState, Progress, Spinner, BannerImage } from "../../ui";
 import { AppSidebar } from "../../components/AppSidebar";
 import { useShell } from "../../app/shell-context";
-import { selectedNand, installPhases } from "./selection";
+import { installPhases } from "./selection";
 import "./StoragePage.css";
 
 const depotTypes: Record<DepotType, string> = { system: "System title", app: "Application", appcontent: "Downloadable content", appupdate: "Update" };
@@ -31,8 +31,7 @@ export function StoragePage() {
   const [platform, setPlatform] = createSignal(query.platform || shell.model.draft?.platform || "");
   const [systems, setSystems] = createSignal<string[]>();
   const [volumes, setVolumes] = createSignal<ConsoleStorageVolume[]>([]);
-  const [currentId, setCurrentId] = createSignal("");
-  const current = () => volumes().find(volume => volume.id === currentId() && volume.platform === platform()) ?? volumes().find(volume => volume.platform === platform());
+  const current = () => volumes().find(volume => volume.platform === platform());
   const [plan, setPlan] = createSignal<StorageRemovalPlan>();
   const [confirmRecover, setConfirmRecover] = createSignal(false);
   const [error, setError] = createSignal("");
@@ -64,8 +63,7 @@ export function StoragePage() {
   };
   const changePlatform = (value: string) => {
     setPlatform(value);
-    setCurrentId(""); setPlan(undefined); setConfirmRecover(false);
-    void selectedNand(value).then(id => { if (platform() === value) setCurrentId(id || ""); });
+    setPlan(undefined); setConfirmRecover(false);
   };
   const remove = async () => {
     const volume = current(), removal = plan();
@@ -83,8 +81,6 @@ export function StoragePage() {
     api.addEventListener("installchange", listener);
     onCleanup(() => api.removeEventListener("installchange", listener));
     void api.platforms().then(items => setPlatforms(items.map(item => item.platform))).catch(reason => setError(String(reason)));
-    const initial = platform();
-    if (initial) void selectedNand(initial).then(id => { if (platform() === initial && !currentId()) setCurrentId(id || ""); });
     void loadVolumes().catch(reason => setError(String(reason)));
   });
 
@@ -120,7 +116,7 @@ export function StoragePage() {
           </Show></Section>
       </>}</Show>
     </MasterDetail></Show></Show><ActionHints />
-    <ConfirmDialog open={confirmRecover()} pending={busy()} title="Recover NAND?" description={`Discard uncommitted changes to ${current()?.label || currentId()}? Successfully installed contents and separate save profiles are kept.`} confirmLabel="Discard changes and recover" onClose={() => setConfirmRecover(false)} onConfirm={() => void run(async () => { await current()!.recover(); setConfirmRecover(false); setPlan(undefined); })} />
+    <ConfirmDialog open={confirmRecover()} pending={busy()} title="Recover NAND?" description={`Discard uncommitted changes to ${current()?.label ?? ""}? Successfully installed contents and separate save profiles are kept.`} confirmLabel="Discard changes and recover" onClose={() => setConfirmRecover(false)} onConfirm={() => void run(async () => { await current()!.recover(); setConfirmRecover(false); setPlan(undefined); })} />
     <Dialog open={!!plan()} onOpenChange={open => { if (!open && !busy()) setPlan(undefined); }} pending={busy()} title="Remove installed titles" actions={<><Button disabled={busy()} onClick={() => setPlan(undefined)}>Cancel</Button><Button appearance="danger" pending={busy()} disabled={checked()?.dirty || !!plan()?.affected.length} onClick={() => void run(remove)}>Remove selected artifacts</Button></>}>
       <Show when={plan()}>{removal => <><p>Remove {removal().requested.join(", ")}?</p><Show when={removal().affected.length}><p>Also affects: {removal().affected.join(", ")}. Review these artifacts before including them.</p><Button disabled={busy()} onClick={() => void run(async () => setPlan(await current()!.artifacts.planRemoval([...removal().requested, ...removal().affected])))}>Include affected artifacts</Button></Show></>}</Show><Show when={error()}><ErrorState message={error()} /></Show>
     </Dialog>
