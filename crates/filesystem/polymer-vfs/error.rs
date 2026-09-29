@@ -53,12 +53,9 @@ impl VfsError {
         }
     }
 
-    pub(crate) fn invalid_path<S: crate::PathSemantics>(
-        units: &[S::Unit],
-        reason: impl Into<String>,
-    ) -> Self {
+    pub(crate) fn invalid_path(units: &[crate::VfsPathUnit], reason: impl Into<String>) -> Self {
         Self::InvalidPath {
-            path: S::units_to_string_lossy(units),
+            path: crate::Native::units_to_string_lossy(units),
             reason: reason.into(),
         }
     }

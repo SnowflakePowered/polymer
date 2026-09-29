@@ -48,7 +48,7 @@ fn validate_header(header: &Header) -> VfsResult<()> {
         Header::Link { .. } => Err(VfsError::Asar("symbolic links are not supported".into())),
         Header::Directory { files } => {
             for (name, child) in files {
-                VfsComponent::<crate::NativePathSemantics>::new(name)?;
+                VfsComponent::new(name)?;
                 validate_header(child)?;
             }
             Ok(())

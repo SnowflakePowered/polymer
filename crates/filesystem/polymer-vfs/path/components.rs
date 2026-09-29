@@ -101,10 +101,6 @@ impl<'a, P: Path + ?Sized> Components<'a, P> {
             }
         }
     }
-
-    pub fn as_path(&self) -> &'a P {
-        P::from_str(self.path)
-    }
 }
 
 impl<'a, P: Path + ?Sized> Iterator for Components<'a, P> {

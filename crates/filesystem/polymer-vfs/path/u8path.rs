@@ -108,9 +108,6 @@ impl Path for U8Path {
     fn root() -> &'static Self {
         Self::from_str(BStr::new(b"/"))
     }
-    fn empty() -> &'static Self {
-        Self::from_str(BStr::new(b""))
-    }
     fn has_root(&self) -> bool {
         self.0.first().is_some_and(|unit| Self::is_separator(*unit))
     }
@@ -133,9 +130,6 @@ impl Path for U8Path {
 
 impl PathOwned for U8PathBuf {
     type Borrowed = U8Path;
-    fn new() -> Self {
-        Self::default()
-    }
     fn push(&mut self, component: &BStr) {
         if component.is_empty() {
             return;

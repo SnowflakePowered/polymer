@@ -5,20 +5,24 @@
 //! representation.
 
 mod components;
+#[cfg(windows)]
 mod u16path;
+#[cfg(unix)]
 mod u8path;
 mod vfs;
 
 pub use components::{Component, Components};
-pub use u8path::{U8Path, U8PathBuf};
-pub use u16path::{U16Path, U16PathBuf};
-pub use vfs::{
-    NativePathSemantics, PathSemantics, PosixPathSemantics, VfsComponent, VfsPath, VfsPathBuf,
-    VfsPathUnit, WindowsPathSemantics,
-};
+#[cfg(unix)]
+use u8path::{U8Path, U8PathBuf};
+#[cfg(windows)]
+use u16path::{U16Path, U16PathBuf};
+pub(crate) use vfs::Native;
+pub use vfs::{VfsComponent, VfsPath, VfsPathBuf, VfsPathUnit, VfsStr};
 
+#[cfg(unix)]
 use bstr::{BStr, ByteSlice};
 use std::{borrow::Borrow, hash::Hash};
+#[cfg(windows)]
 use widestring::U16Str;
 
 pub trait PathStr: 'static + Eq + Hash {
@@ -36,6 +40,7 @@ pub trait PathStr: 'static + Eq + Hash {
     }
 }
 
+#[cfg(windows)]
 impl PathStr for U16Str {
     type Unit = u16;
 
@@ -48,6 +53,7 @@ impl PathStr for U16Str {
     }
 }
 
+#[cfg(unix)]
 impl PathStr for BStr {
     type Unit = u8;
 
@@ -69,7 +75,6 @@ pub trait Path: Eq {
 
     fn is_separator(unit: <Self::Str as PathStr>::Unit) -> bool;
     fn root() -> &'static Self;
-    fn empty() -> &'static Self;
     fn has_root(&self) -> bool;
     fn components(&self) -> Components<'_, Self>;
     fn from_str(value: &Self::Str) -> &Self;
@@ -79,7 +84,6 @@ pub trait Path: Eq {
 pub trait PathOwned: Clone + Eq + Borrow<Self::Borrowed> {
     type Borrowed: Path + ?Sized;
 
-    fn new() -> Self;
     fn push(&mut self, component: &<Self::Borrowed as Path>::Str);
     fn pop(&mut self) -> bool;
 }
