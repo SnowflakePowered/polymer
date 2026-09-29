@@ -244,6 +244,7 @@ impl Depot for WiiWadDepot {
     fn install<'a, N: VirtualNand + ?Sized>(
         self,
         nand: &'a N,
+        _keys: &'a dyn crate::keys::KeyReader,
         events: crate::installable::InstallEvents,
     ) -> crate::installable::Installation<'a>
     where

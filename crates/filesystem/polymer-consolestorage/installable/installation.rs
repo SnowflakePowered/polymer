@@ -26,13 +26,14 @@ impl<'a> Installation<'a> {
     pub fn new<D: Depot + 'a, N: VirtualNand + ?Sized>(
         depot: D,
         nand: &'a N,
+        store: &'a dyn crate::keys::KeyReader,
         events: InstallEvents,
     ) -> Result<Self, Error> {
         let keys = depot.embedded_keys()?;
         if let Some(title) = depot.preview() {
             events.title(title);
         }
-        let mut installation = depot.install(nand, events);
+        let mut installation = depot.install(nand, store, events);
         installation.keys = keys;
         Ok(installation)
     }

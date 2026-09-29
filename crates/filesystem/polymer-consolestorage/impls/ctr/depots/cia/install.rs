@@ -26,6 +26,7 @@ pub(in crate::impls::ctr) struct CiaInstall {
     old_paths: Vec<String>,
     root: String,
     storage: Arc<dyn VolumeStorage>,
+    seed: Option<[u8; 16]>,
     events: InstallEvents,
 }
 
@@ -33,6 +34,7 @@ impl CiaInstall {
     pub async fn new(
         depot: &CiaDepot,
         storage: Arc<dyn VolumeStorage>,
+        seed: Option<[u8; 16]>,
         events: InstallEvents,
     ) -> Result<Self, Error> {
         let depot = depot.clone();
@@ -66,6 +68,7 @@ impl CiaInstall {
                 old_paths,
                 root: depot.root.clone(),
                 storage,
+                seed,
                 events,
             })
         })
@@ -124,6 +127,7 @@ impl CiaInstall {
         archive: &mut CiaArchive<File>,
         storage: &dyn VolumeStorage,
         entry: Entry,
+        seed: Option<[u8; 16]>,
         events: &InstallEvents,
     ) -> Result<DepotFile, Error> {
         let mut writer = StorageWriter {
@@ -133,7 +137,7 @@ impl CiaInstall {
         };
         match entry.content {
             Content::Item(index) => {
-                let mut ncch = NcchDecryptor::new(&mut writer);
+                let mut ncch = NcchDecryptor::new(&mut writer, seed);
                 archive
                     .stream_item_with_progress(index, &mut ncch, |bytes| {
                         events.advance(bytes);
@@ -167,9 +171,10 @@ impl Installable for CiaInstall {
         let archive = self.archive.clone();
         let storage = self.storage.clone();
         let events = self.events.clone();
+        let seed = self.seed;
         tokio::task::spawn_blocking(move || {
             let mut archive = archive.lock();
-            let file = Self::write_entry(&mut archive, &*storage, entry, &events)?;
+            let file = Self::write_entry(&mut archive, &*storage, entry, seed, &events)?;
             Ok(Some(vec![file]))
         })
         .await

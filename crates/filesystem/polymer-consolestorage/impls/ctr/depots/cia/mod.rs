@@ -1,3 +1,4 @@
+pub(in crate::impls::ctr) mod content;
 mod install;
 mod metadata;
 pub(in crate::impls::ctr) mod ncch;
@@ -172,6 +173,7 @@ impl Depot for CiaDepot {
     fn install<'a, N: VirtualNand + ?Sized>(
         self,
         nand: &'a N,
+        keys: &'a dyn crate::keys::KeyReader,
         events: InstallEvents,
     ) -> crate::installable::Installation<'a>
     where
@@ -191,7 +193,23 @@ impl Depot for CiaDepot {
                     missing,
                 });
             }
-            install::CiaInstall::new(&source, nand.root(), events).await
+            let seed = match keys
+                .read(&crate::keys::KeyIdentity {
+                    namespace: "system".into(),
+                    id: format!("{:016X}", source.title_id),
+                })
+                .await
+            {
+                Ok(record) => Some(
+                    record
+                        .bytes
+                        .try_into()
+                        .map_err(|_| Error::malformed("3DS seed", "expected 16 bytes"))?,
+                ),
+                Err(crate::keys::KeyError::NotFound(_)) => None,
+                Err(error) => return Err(Error::Unsupported(error.to_string())),
+            };
+            install::CiaInstall::new(&source, nand.root(), seed, events).await
         })
     }
 }

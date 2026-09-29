@@ -103,6 +103,7 @@ pub trait Depot: Sized {
     fn install<'a, N: VirtualNand + ?Sized>(
         self,
         nand: &'a N,
+        keys: &'a dyn crate::keys::KeyReader,
         events: InstallEvents,
     ) -> Installation<'a>
     where

@@ -500,7 +500,8 @@ export type GameImport = Readonly<{ launchable: LibraryLaunchable; scrapeJob: Sc
 export type LibraryImportResult =
   | Readonly<{ kind: "games"; imports: readonly GameImport[] }>
   | Readonly<{ kind: "firmware"; firmware: FirmwareDescription }>
-  | Readonly<{ kind: "installables"; installables: readonly InstallablePackage[] }>;
+  | Readonly<{ kind: "installables"; installables: readonly InstallablePackage[] }>
+  | Readonly<{ kind: "keys"; platform: string; count: number }>;
 
 export type InstallablePackage = Readonly<{ path: string; filename: string; platform: string; titleId: string | null }>;
 
