@@ -15,7 +15,7 @@ pub(crate) struct Runtime {
 
 impl Default for Runtime {
     fn default() -> Self {
-        polymer_hook::telemetry::init_file_tracing(config::win32_log_file());
+        polymer_hook::telemetry::init_file_tracing(config::log_file(config::WIN32_LOG_FILE));
         Self {
             logged_cursor_poll: AtomicBool::new(false),
             input: Arc::new(InputRuntime::new()),

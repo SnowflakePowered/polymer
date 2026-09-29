@@ -38,7 +38,7 @@ pub(crate) struct Runtime {
 
 impl Default for Runtime {
     fn default() -> Self {
-        polymer_hook::telemetry::init_file_tracing(config::dinput_log_file());
+        polymer_hook::telemetry::init_file_tracing(config::log_file(config::DINPUT_LOG_FILE));
         Self {
             logged_delivery: AtomicBool::new(false),
             logged_keyboard_poll: AtomicBool::new(false),

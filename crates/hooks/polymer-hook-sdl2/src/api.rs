@@ -1,6 +1,7 @@
 //! SDL2-only ABI and virtual joystick adapter.
 
 use polymer_controllers::layout::OutputLayout;
+pub(crate) use polymer_hook::module::symbol;
 use polymer_hook_input_sdl::{BackendError, Runtime, SdlBackend};
 use polymer_hook_input_sdl::{
     ConnectionState, GAMEPAD_AXIS_COUNT, GAMEPAD_BUTTON_COUNT, GamepadFeedback, GamepadFrame,
@@ -8,10 +9,9 @@ use polymer_hook_input_sdl::{
 };
 use std::{
     ffi::{c_char, c_void},
-    mem,
     sync::Arc,
 };
-use windows_sys::Win32::{Foundation::HMODULE, System::LibraryLoader::GetProcAddress};
+use windows_sys::Win32::Foundation::HMODULE;
 
 pub(crate) type DynapiEntryFn = unsafe extern "C" fn(u32, *mut c_void, u32) -> i32;
 type AttachVirtualExFn = unsafe extern "C" fn(*const VirtualJoystickDesc) -> i32;
@@ -214,10 +214,4 @@ impl SdlBackend for Api {
         }
         Ok(())
     }
-}
-
-pub(crate) unsafe fn symbol<T: Copy>(module: HMODULE, name: &std::ffi::CStr) -> Option<T> {
-    let address = unsafe { GetProcAddress(module, name.as_ptr().cast()) }?;
-    debug_assert_eq!(mem::size_of::<T>(), mem::size_of_val(&address));
-    Some(unsafe { mem::transmute_copy(&address) })
 }

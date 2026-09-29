@@ -3,6 +3,8 @@
 pub mod config;
 #[cfg(target_os = "macos")]
 pub mod macos;
+#[cfg(windows)]
+pub mod module;
 pub mod telemetry;
 mod vtable;
 

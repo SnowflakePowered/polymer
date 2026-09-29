@@ -1,9 +1,7 @@
 use super::*;
+use polymer_hook::module;
 use std::os::windows::ffi::OsStrExt;
-use windows_sys::Win32::{
-    Foundation::HMODULE,
-    System::LibraryLoader::{GetModuleHandleW, LoadLibraryW},
-};
+use windows_sys::Win32::{Foundation::HMODULE, System::LibraryLoader::LoadLibraryW};
 
 pub(crate) struct Sdl3ExportState {
     table: Sdl3TableState,
@@ -39,7 +37,7 @@ const SDL3_DLL: &[u16] = &[
 /// The caller must invoke this only after the DLL has been loaded into a
 /// Windows process whose module list and dynamic API table are valid.
 pub unsafe extern "system" fn PolymerInstallSdl3Hook() -> i32 {
-    polymer_hook::telemetry::init_file_tracing(config::sdl_log_file());
+    polymer_hook::telemetry::init_file_tracing(config::log_file(config::SDL_LOG_FILE));
     discover_loaded_module();
     0
 }
@@ -58,21 +56,16 @@ fn dynamic_api_module() -> Option<HMODULE> {
 }
 
 fn discover_loaded_module() {
-    if let Some(module) = dynamic_api_module().or_else(|| loaded_module(SDL3_DLL))
+    if let Some(module) = dynamic_api_module().or_else(|| module::loaded(SDL3_DLL))
         && (unsafe { api::symbol::<api::DynapiEntryFn>(module, c"SDL_DYNAPI_entry") }).is_some()
     {
         install();
     }
 }
 
-fn loaded_module(name: &[u16]) -> Option<HMODULE> {
-    let module = unsafe { GetModuleHandleW(name.as_ptr()) };
-    (!module.is_null()).then_some(module)
-}
-
 fn install() {
-    let dynamic_module = dynamic_api_module().or_else(|| loaded_module(SDL3_DLL));
-    let frontend_module = loaded_module(SDL3_DLL);
+    let dynamic_module = dynamic_api_module().or_else(|| module::loaded(SDL3_DLL));
+    let frontend_module = module::loaded(SDL3_DLL);
     if dynamic_module.is_some() && frontend_module.is_some() && dynamic_module != frontend_module {
         if Sdl3ExportInstallation::install().is_err() {
             tracing::debug!("failed to enable SDL3 frontend export detours");
@@ -105,7 +98,7 @@ type GetJoystickButtonFn = unsafe extern "C" fn(*mut c_void, i32) -> bool;
 type PollEventFn = unsafe extern "C" fn(*mut c_void) -> bool;
 
 fn frontend_symbol<T: Copy>(name: &std::ffi::CStr) -> T {
-    let module = loaded_module(SDL3_DLL).expect("the SDL3 frontend module is loaded");
+    let module = module::loaded(SDL3_DLL).expect("the SDL3 frontend module is loaded");
     unsafe { api::symbol(module, name) }.expect("the SDL3 frontend export is available")
 }
 
@@ -190,5 +183,5 @@ polymer_hook::chain_hooks! {
 }
 
 pub(super) fn backend_module() -> Option<HMODULE> {
-    dynamic_api_module().or_else(|| loaded_module(SDL3_DLL))
+    dynamic_api_module().or_else(|| module::loaded(SDL3_DLL))
 }

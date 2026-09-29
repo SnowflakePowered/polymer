@@ -15,6 +15,18 @@ pub const OPENGL_LOG_FILE: &str = "POLYMER_OPENGL_LOG_FILE";
 pub const BLUETOOTH_API_LOG_FILE: &str = "POLYMER_BLUETOOTH_API_LOG_FILE";
 pub const RENDER_CONFIGURATION: &str = "POLYMER_RENDER_CONFIGURATION";
 
+pub const LOG_FILES: [(&str, &str); 9] = [
+    (LAYER_LOG_FILE, "polymer-layer.log"),
+    (DINPUT_LOG_FILE, "polymer-dinput.log"),
+    (WIN32_LOG_FILE, "polymer-win32.log"),
+    (SDL_LOG_FILE, "polymer-sdl.log"),
+    (DXGI_LOG_FILE, "polymer-dxgi.log"),
+    (D3D11_LOG_FILE, "polymer-d3d11.log"),
+    (D3D12_LOG_FILE, "polymer-d3d12.log"),
+    (OPENGL_LOG_FILE, "polymer-opengl.log"),
+    (BLUETOOTH_API_LOG_FILE, "polymer-bluetooth-api.log"),
+];
+
 static RENDER: LazyLock<Result<RenderConfiguration, String>> = LazyLock::new(|| {
     let payload = std::env::var(RENDER_CONFIGURATION)
         .map_err(|error| format!("{RENDER_CONFIGURATION} is required: {error}"))?;
@@ -37,42 +49,6 @@ pub fn session() -> Result<String, std::env::VarError> {
     std::env::var(SESSION)
 }
 
-pub fn layer_log_file() -> Option<PathBuf> {
-    path(LAYER_LOG_FILE)
-}
-
-pub fn dinput_log_file() -> Option<PathBuf> {
-    path(DINPUT_LOG_FILE)
-}
-
-pub fn win32_log_file() -> Option<PathBuf> {
-    path(WIN32_LOG_FILE)
-}
-
-pub fn sdl_log_file() -> Option<PathBuf> {
-    path(SDL_LOG_FILE)
-}
-
-pub fn dxgi_log_file() -> Option<PathBuf> {
-    path(DXGI_LOG_FILE)
-}
-
-pub fn d3d11_log_file() -> Option<PathBuf> {
-    path(D3D11_LOG_FILE)
-}
-
-pub fn d3d12_log_file() -> Option<PathBuf> {
-    path(D3D12_LOG_FILE)
-}
-
-pub fn opengl_log_file() -> Option<PathBuf> {
-    path(OPENGL_LOG_FILE)
-}
-
-pub fn bluetooth_api_log_file() -> Option<PathBuf> {
-    path(BLUETOOTH_API_LOG_FILE)
-}
-
-fn path(variable: &str) -> Option<PathBuf> {
+pub fn log_file(variable: &str) -> Option<PathBuf> {
     std::env::var_os(variable).map(PathBuf::from)
 }

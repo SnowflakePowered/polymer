@@ -1,6 +1,8 @@
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn PolymerInstallD3d12Hook() -> i32 {
-    polymer_hook::telemetry::init_file_tracing(polymer_hook::config::d3d12_log_file());
+    polymer_hook::telemetry::init_file_tracing(polymer_hook::config::log_file(
+        polymer_hook::config::D3D12_LOG_FILE,
+    ));
     if let Err(error) = polymer_hook::config::require_swapchain() {
         tracing::error!(%error, "D3D12 presentation configuration rejected");
         return windows::Win32::Foundation::E_INVALIDARG.0;

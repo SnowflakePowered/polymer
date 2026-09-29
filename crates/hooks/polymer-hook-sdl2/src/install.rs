@@ -2,7 +2,7 @@
 
 use crate::api;
 use parking_lot::Mutex;
-use polymer_hook::config;
+use polymer_hook::{config, module};
 use polymer_hook_input_sdl::Runtime;
 use std::{
     ffi::c_void,
@@ -12,10 +12,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-use windows_sys::Win32::{
-    Foundation::HMODULE,
-    System::LibraryLoader::{GetModuleHandleW, LoadLibraryW},
-};
+use windows_sys::Win32::{Foundation::HMODULE, System::LibraryLoader::LoadLibraryW};
 
 pub(crate) struct Sdl2TableState {
     backend: Mutex<api::Api>,
@@ -189,7 +186,7 @@ polymer_hook::function_table_hook! {
 /// The caller must invoke this only after the DLL has been loaded into a
 /// Windows process whose module list and dynamic API table are valid.
 pub unsafe extern "system" fn PolymerInstallSdl2Hook() -> i32 {
-    polymer_hook::telemetry::init_file_tracing(config::sdl_log_file());
+    polymer_hook::telemetry::init_file_tracing(config::log_file(config::SDL_LOG_FILE));
     preload_dynamic_api();
     discover_loaded_module();
     0
@@ -215,12 +212,7 @@ fn discover_loaded_module() {
 }
 
 fn loaded_sdl2_module() -> Option<HMODULE> {
-    loaded_module(SDL2_DLL).or_else(|| loaded_module(SDL2_COMPAT_DLL))
-}
-
-fn loaded_module(name: &[u16]) -> Option<HMODULE> {
-    let module = unsafe { GetModuleHandleW(name.as_ptr()) };
-    (!module.is_null()).then_some(module)
+    module::loaded(SDL2_DLL).or_else(|| module::loaded(SDL2_COMPAT_DLL))
 }
 
 fn install() {

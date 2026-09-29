@@ -8,7 +8,9 @@
 /// concurrently unload the D3D11 module while installation is in progress.
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn PolymerInstallD3d11Hook() -> i32 {
-    polymer_hook::telemetry::init_file_tracing(polymer_hook::config::d3d11_log_file());
+    polymer_hook::telemetry::init_file_tracing(polymer_hook::config::log_file(
+        polymer_hook::config::D3D11_LOG_FILE,
+    ));
     unsafe { crate::install::install() }
 }
 
