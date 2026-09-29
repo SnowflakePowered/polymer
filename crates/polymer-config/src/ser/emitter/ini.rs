@@ -67,7 +67,11 @@ impl Emitter for IniEmitter {
                 "INI section `{section}` was not exited"
             )));
         }
-        writer.write_all(self.document.pretty_writes(&WriteOptions::default()).as_bytes())?;
+        writer.write_all(
+            self.document
+                .pretty_writes(&WriteOptions::default())
+                .as_bytes(),
+        )?;
         Ok(())
     }
 }

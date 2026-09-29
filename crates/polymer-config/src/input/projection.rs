@@ -162,7 +162,6 @@ impl Projection {
             None => Target::Key(target),
         }
     }
-
 }
 
 fn resolve(layout_id: &str, key: BindingKey) -> Option<BindingKey> {
