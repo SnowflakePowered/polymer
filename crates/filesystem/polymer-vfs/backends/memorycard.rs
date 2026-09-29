@@ -22,7 +22,7 @@ pub struct MemoryCardFileFactory {
 impl MemoryCardFileFactory {
     pub fn new(view: MemoryCardView, resource_id: Uuid) -> VfsResult<Self> {
         if view.kind() != EntryKind::File {
-            return Err(VfsError::IsDirectory(vfs_path(view.entry())));
+            return Err(VfsError::IsDirectory(VfsPathBuf::storage(view.entry())));
         }
         Ok(Self { view, resource_id })
     }
@@ -55,7 +55,7 @@ pub struct MemoryCardVolumeFactory {
 impl MemoryCardVolumeFactory {
     pub fn new(view: MemoryCardView, resource_id: Uuid) -> VfsResult<Self> {
         if view.kind() != EntryKind::Directory {
-            return Err(VfsError::NotDirectory(vfs_path(view.entry())));
+            return Err(VfsError::NotDirectory(VfsPathBuf::storage(view.entry())));
         }
         Ok(Self { view, resource_id })
     }
@@ -86,17 +86,10 @@ struct MemoryCardLease {
 impl ResourceLease for MemoryCardLease {
     fn finalize(&self, reason: FinalizationReason) -> VfsResult<()> {
         if reason != FinalizationReason::LaunchFailed {
-            self.view
-                .storage()
-                .finish(self.view.entry())
-                .map_err(console_storage_error)?;
+            self.view.storage().finish(self.view.entry())?;
         }
         Ok(())
     }
-}
-
-fn vfs_path(path: &str) -> VfsPathBuf {
-    VfsPathBuf::new(format!("/{path}")).unwrap_or_else(|_| VfsPathBuf::root())
 }
 
 /// Exposes the formatted views of a memory card through the ordinary storage
@@ -164,10 +157,7 @@ where
         if let Some(mounted) = views.get(format) {
             return Ok(mounted.node.clone());
         }
-        let view = self
-            .card
-            .view(&self.primary, format)
-            .map_err(|error| VfsError::Unsupported(error.to_string()))?;
+        let view = self.card.view(&self.primary, format)?;
         let (node, volume) = match view.kind() {
             EntryKind::File => (
                 Node::File(
@@ -267,17 +257,8 @@ where
             .map(|mounted| mounted.view.clone())
             .collect::<Vec<_>>();
         for view in views {
-            view.storage()
-                .finish(view.entry())
-                .map_err(console_storage_error)?;
+            view.storage().finish(view.entry())?;
         }
         Ok(())
-    }
-}
-
-fn console_storage_error(error: polymer_consolestorage::Error) -> VfsError {
-    match error {
-        polymer_consolestorage::Error::Io { source, .. } => VfsError::Io(source),
-        error => VfsError::Unsupported(error.to_string()),
     }
 }

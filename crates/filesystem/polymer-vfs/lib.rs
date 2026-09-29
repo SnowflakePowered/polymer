@@ -8,7 +8,6 @@ mod backends;
 mod error;
 mod host;
 mod path;
-mod permissions;
 mod plan;
 mod resource;
 mod traits;
@@ -28,7 +27,7 @@ pub use path::{
     PosixPathSemantics, U8Path, U8PathBuf, U16Path, U16PathBuf, VfsComponent, VfsPath, VfsPathBuf,
     VfsPathUnit, WindowsPathSemantics,
 };
-pub use permissions::Permissions;
+pub use polymer_consolestorage::Permissions;
 pub use plan::{Binding, BindingKind, BindingSpec, CompiledFilesystem, FilesystemPlan};
 pub(crate) use resource::NoopResourceLease;
 pub use resource::{

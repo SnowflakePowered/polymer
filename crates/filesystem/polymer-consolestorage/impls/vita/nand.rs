@@ -33,11 +33,11 @@ const DIRECTORIES: &[&str] = &[
 
 const PERMISSIONS: PermissionsTable = PermissionsTable::new(&[
     ("", Permissions::READ_EXECUTE),
-    (super::GUEST_USER_ROOT, Permissions::all()),
-    ("ux0/data", Permissions::all()),
-    ("uma0/data", Permissions::all()),
-    ("vd0", Permissions::all()),
-    ("tm0", Permissions::all()),
+    (super::GUEST_USER_ROOT, Permissions::READ_WRITE_EXECUTE),
+    ("ux0/data", Permissions::READ_WRITE_EXECUTE),
+    ("uma0/data", Permissions::READ_WRITE_EXECUTE),
+    ("vd0", Permissions::READ_WRITE_EXECUTE),
+    ("tm0", Permissions::READ_WRITE_EXECUTE),
 ]);
 
 pub struct VitaNand {

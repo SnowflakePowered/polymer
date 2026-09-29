@@ -12,11 +12,11 @@ use crate::{
 
 const LAYOUT: PermissionsTable = PermissionsTable::new(&[
     ("", Permissions::READ_EXECUTE),
-    ("dev_hdd1", Permissions::all()),
-    ("dev_hdd0/tmp", Permissions::all()),
-    ("dev_hdd0/cache", Permissions::all()),
-    (super::GUEST_USER_ROOT, Permissions::all()),
-    (super::GUEST_SAVE_ROOT, Permissions::all()),
+    ("dev_hdd1", Permissions::READ_WRITE_EXECUTE),
+    ("dev_hdd0/tmp", Permissions::READ_WRITE_EXECUTE),
+    ("dev_hdd0/cache", Permissions::READ_WRITE_EXECUTE),
+    (super::GUEST_USER_ROOT, Permissions::READ_WRITE_EXECUTE),
+    (super::GUEST_SAVE_ROOT, Permissions::READ_WRITE_EXECUTE),
     ("dev_hdd0/home/00000001/exdata", Permissions::READ_EXECUTE),
 ]);
 

@@ -15,13 +15,13 @@ use crate::{
 use super::index;
 
 const LAYOUT: PermissionsTable = PermissionsTable::new(&[
-    ("", Permissions::all()),
-    ("import", Permissions::all()),
-    ("tmp", Permissions::all()),
-    ("shared2", Permissions::all()),
-    ("sys/uid.sys", Permissions::all()),
+    ("", Permissions::READ_WRITE_EXECUTE),
+    ("import", Permissions::READ_WRITE_EXECUTE),
+    ("tmp", Permissions::READ_WRITE_EXECUTE),
+    ("shared2", Permissions::READ_WRITE_EXECUTE),
+    ("sys/uid.sys", Permissions::READ_WRITE_EXECUTE),
     ("title/00000001", Permissions::READ_EXECUTE),
-    ("title/00000001/00000002/data", Permissions::all()),
+    ("title/00000001/00000002/data", Permissions::READ_WRITE_EXECUTE),
 ]);
 
 pub struct WiiNand {
@@ -147,7 +147,7 @@ impl VirtualNand for WiiNand {
 
     fn permissions(&self, path: &str) -> Permissions {
         if is_user_data_path(path) {
-            Permissions::all()
+            Permissions::READ_WRITE_EXECUTE
         } else {
             LAYOUT.get(path)
         }

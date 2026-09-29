@@ -74,7 +74,7 @@ impl ResourceFactory<dyn Volume> for SaveWatchFactory {
             .transpose()?;
         // Register before the emulator can access the mount so no save write
         // can race watcher creation.
-        let watcher = self.saves.watch_saves(&[]).map_err(console_storage_error)?;
+        let watcher = self.saves.watch_saves(&[])?;
         let baseline_runtime = tokio::runtime::Builder::new_current_thread()
             .enable_time()
             .build()?;
@@ -104,7 +104,7 @@ impl ResourceFactory<dyn Volume> for SaveWatchFactory {
                 materialized
                     .lease
                     .finalize(FinalizationReason::LaunchFailed)?;
-                return Err(console_storage_error(error));
+                return Err(error.into());
             }
             Err(_) => {
                 materialized
@@ -192,7 +192,7 @@ impl SaveWatchingLease {
         thread
             .join()
             .map_err(|_| VfsError::Unsupported("save history watcher panicked".to_owned()))?
-            .map_err(console_storage_error)
+            .map_err(VfsError::from)
     }
 }
 
@@ -215,13 +215,6 @@ async fn checkpoint_saves_logged(saves: &dyn SaveRepo) -> bool {
             tracing::error!(%error, "failed to checkpoint console save history");
             false
         }
-    }
-}
-
-fn console_storage_error(error: polymer_consolestorage::Error) -> VfsError {
-    match error {
-        polymer_consolestorage::Error::Io { source, .. } => VfsError::Io(source),
-        error => VfsError::Unsupported(error.to_string()),
     }
 }
 
