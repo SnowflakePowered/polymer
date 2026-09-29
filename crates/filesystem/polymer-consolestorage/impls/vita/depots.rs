@@ -135,6 +135,7 @@ impl Depot for VitaDirectoryDepot {
     fn install<'a, N: VirtualNand + ?Sized>(
         self,
         nand: &'a N,
+        _keys: &'a dyn crate::keys::KeyReader,
         events: crate::installable::InstallEvents,
     ) -> Installation<'a>
     where

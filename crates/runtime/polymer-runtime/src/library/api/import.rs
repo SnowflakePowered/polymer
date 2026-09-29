@@ -1,5 +1,6 @@
 use super::LibraryBackend;
 use actix::{AtomicResponse, Context, Handler};
+use polymer_consolestorage::impls::ctr::{CtrNand, seeddb::CtrSeedDb};
 use polymer_consolestorage::keys::{KeyIdentity, KeyRecord, KeyWriter};
 use polymer_deno::polymer::library::{ImportedKey, LibraryImport, LibraryImportKey};
 use polymer_scraping::Ingestor;
@@ -16,6 +17,7 @@ impl Handler<LibraryImport> for LibraryBackend {
     ) -> Self::Result {
         let scraping = self.scraping.clone();
         let firmware_root = self.firmware_root.clone();
+        let key_root = self.key_root.clone();
         self.mutate(async move {
             let path = PathBuf::from(path);
             let identification_path = path.clone();
@@ -33,6 +35,19 @@ impl Handler<LibraryImport> for LibraryBackend {
                 })),
                 Ok(packages) => Ok(json!({ "kind": "games", "imports": Self::import_games(&scraping, packages).await? })),
                 Err(error) if error.firmware_candidate() && path.is_file() => {
+                    let seeds = match std::fs::metadata(&path) {
+                        Ok(metadata) if metadata.len() % 32 == 16 => tokio::fs::read(&path).await
+                            .ok().and_then(|bytes| CtrSeedDb::decode(&bytes).ok()),
+                        _ => None,
+                    };
+                    if let Some(seeds) = seeds {
+                        let store = polymer_library::keys::KeyStore::open(key_root).await.map_err(|error| error.to_string())?;
+                        for platform in [CtrNand::PLATFORM, CtrNand::NEW_PLATFORM] {
+                            store.for_platform(platform).map_err(|error| error.to_string())?
+                                .put(&seeds).await.map_err(|error| error.to_string())?;
+                        }
+                        return Ok(json!({ "kind": "keys", "platform": CtrNand::PLATFORM, "count": seeds.len() }));
+                    }
                     let firmware = polymer_library::firmware::FirmwareStore::open(firmware_root).await.map_err(|error| error.to_string())?;
                     match firmware.install_bios(&path).await {
                         Ok(Some(installed)) => Ok(json!({ "kind": "firmware", "firmware": installed })),

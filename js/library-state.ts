@@ -92,6 +92,14 @@ export class LibraryState {
         });
         return;
       }
+      if (result.kind === "keys") {
+        const revision = ++this.firmwareRevision;
+        this.firmwareActivities.set(`keys:${result.platform}`, {
+          id: `keys:${result.platform}:${revision}`, title: "Keys imported",
+          message: `${result.count} keys (${result.platform})`, state: "complete",
+        });
+        return;
+      }
       if (result.kind === "installables") {
         this.imports.delete(token);
         this.publish();
@@ -126,7 +134,7 @@ export class LibraryState {
         const launchable = game.launchables.find(item => !item.parentBinaryId) ?? game.launchables[0];
         if (!launchable) return [];
         return [[game.id, { path: launchable.uri, name: this.title(game), platform: game.platform,
-          emulator: "", playedAt: 0, artwork: await this.media(game, ["media.boxart.front", "media.banner", "media.logo", "media.boxart.full"]),
+          emulator: "", playedAt: 0, artwork: await this.media(game, ["media.boxart.front"]),
           icon: await this.media(game, ["media.icon", "banner.icon", "banner.banner"]) }] as const];
       }));
       if (this.disposed || revision !== this.revision) return;

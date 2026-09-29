@@ -3,6 +3,7 @@ use std::ops::Range;
 
 use aes::Aes128;
 use aes::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
+use sha2::{Digest, Sha256};
 use zerocopy::byteorder::little_endian::{U16, U32, U64};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
@@ -95,7 +96,7 @@ impl NcchHeader {
         0x200_u64.checked_shl(u32::from(self.flags[6]))
     }
 
-    fn key(&self, key_x: u128) -> u128 {
+    fn key(&self, key_x: u128, seed: Option<&[u8; 16]>) -> u128 {
         if self.flags[7] & FIXED_KEY != 0 {
             return if (self.program_id.get() >> 32) & 0x10 != 0 {
                 FIXED_SYSTEM_KEY
@@ -103,15 +104,34 @@ impl NcchHeader {
                 0
             };
         }
-        let key_y =
-            u128::from_be_bytes(self.signature[..0x10].try_into().expect("fixed signature"));
+        let mut key_y: [u8; 16] = self.signature[..0x10].try_into().expect("fixed signature");
+        if let Some(seed) = seed {
+            let digest = Sha256::new().chain_update(key_y).chain_update(seed).finalize();
+            key_y.copy_from_slice(&digest[..0x10]);
+        }
+        let key_y = u128::from_be_bytes(key_y);
         ((key_x.rotate_left(2) ^ key_y).wrapping_add(AES_GENERATOR)).rotate_left(87)
     }
 
-    fn secondary_key(&self) -> io::Result<u128> {
-        if self.flags[7] & (FIXED_KEY | SEED_CRYPTO) == SEED_CRYPTO {
-            return Err(io::Error::other("NCCH seed encryption is not supported"));
-        }
+    fn secondary_key(&self, seed: Option<&[u8; 16]>) -> io::Result<u128> {
+        let program_id = self.program_id.get();
+        let seed = if self.flags[7] & (FIXED_KEY | SEED_CRYPTO) == SEED_CRYPTO {
+            let seed = seed.ok_or_else(|| {
+                io::Error::other(format!("NCCH seed for {program_id:016X} is not in the key store"))
+            })?;
+            let check = Sha256::new()
+                .chain_update(seed)
+                .chain_update(program_id.to_le_bytes())
+                .finalize();
+            if check[..4] != self.seed_check.get().to_le_bytes() {
+                return Err(io::Error::other(format!(
+                    "NCCH seed for {program_id:016X} does not match the title"
+                )));
+            }
+            Some(seed)
+        } else {
+            None
+        };
         let key_x = match self.flags[3] {
             0x00 => NCCH_KEYX_2C,
             0x01 => NCCH_KEYX_25,
@@ -123,7 +143,7 @@ impl NcchHeader {
                 )));
             }
         };
-        Ok(self.key(key_x))
+        Ok(self.key(key_x, seed))
     }
 
     fn counter(&self, region: Region, offset: u64) -> u128 {
@@ -141,7 +161,7 @@ impl NcchHeader {
         Keystream {
             range: exefs_offset..u64::MAX,
             origin: exefs_offset,
-            key: self.key(NCCH_KEYX_2C),
+            key: self.key(NCCH_KEYX_2C, None),
             counter: self.counter(Region::ExeFs, exefs_offset),
         }
         .apply(exefs_offset + stream_offset, bytes);
@@ -232,6 +252,7 @@ struct PendingCode {
 /// only loads decrypted titles. Other contents pass through unchanged.
 pub(super) struct NcchDecryptor<W> {
     inner: W,
+    seed: Option<[u8; 16]>,
     position: u64,
     header: Vec<u8>,
     streams: Vec<Keystream>,
@@ -239,9 +260,10 @@ pub(super) struct NcchDecryptor<W> {
 }
 
 impl<W: Write> NcchDecryptor<W> {
-    pub(super) fn new(inner: W) -> Self {
+    pub(super) fn new(inner: W, seed: Option<[u8; 16]>) -> Self {
         Self {
             inner,
+            seed,
             position: 0,
             header: Vec::with_capacity(HEADER_SIZE as usize),
             streams: Vec::new(),
@@ -264,8 +286,8 @@ impl<W: Write> NcchDecryptor<W> {
         let unit = header
             .unit()
             .ok_or_else(|| io::Error::other("invalid NCCH media unit"))?;
-        let primary = header.key(NCCH_KEYX_2C);
-        let secondary = header.secondary_key()?;
+        let primary = header.key(NCCH_KEYX_2C, None);
+        let secondary = header.secondary_key(self.seed.as_ref())?;
         if header.exheader_size.get() != 0 {
             self.streams.push(Keystream {
                 range: HEADER_SIZE..HEADER_SIZE + EXHEADER_SIZE,

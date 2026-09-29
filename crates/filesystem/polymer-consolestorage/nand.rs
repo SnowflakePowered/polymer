@@ -49,6 +49,7 @@ pub trait VirtualNand: Send + Sync {
     fn try_install<'a>(
         &'a self,
         _path: &std::path::Path,
+        _keys: &'a dyn KeyReader,
         _events: crate::installable::InstallEvents,
     ) -> Result<crate::installable::Installation<'a>, Error> {
         Err(Error::Unsupported(
@@ -112,13 +113,13 @@ pub trait VirtualNand: Send + Sync {
 
 macro_rules! nand_depots {
     ($($depot:ty),+ $(,)?) => {
-        fn try_install<'a>(&'a self, path: &std::path::Path, events: crate::installable::InstallEvents) -> Result<crate::installable::Installation<'a>, crate::Error> {
+        fn try_install<'a>(&'a self, path: &std::path::Path, keys: &'a dyn crate::keys::KeyReader, events: crate::installable::InstallEvents) -> Result<crate::installable::Installation<'a>, crate::Error> {
             use crate::installable::Depot;
             let mut errors = Vec::new();
             $(
                 match <$depot>::open(path) {
                     Ok(depot) => {
-                        return crate::installable::Installation::new(depot, self, events);
+                        return crate::installable::Installation::new(depot, self, keys, events);
                     }
                     Err(error) => errors.push(error.to_string()),
                 }

@@ -3,6 +3,7 @@ mod import;
 mod layout;
 mod nand;
 mod save_repo;
+pub mod seeddb;
 mod smdh;
 pub mod ticket;
 

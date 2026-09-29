@@ -186,20 +186,17 @@ impl StorageManager {
             }
         });
         events.phase(InstallPhase::Preparing, 0);
+        let keys = crate::keys::KeyStore::open(self.root.join("keys"))
+            .await
+            .map_err(|error| error.to_string())?
+            .for_platform(platform)
+            .map_err(|error| error.to_string())?;
         let mut installation = nand
-            .try_install(path, events.clone())
+            .try_install(path, &keys, events.clone())
             .map_err(|error| error.to_string())?;
         let records = installation.embedded_keys();
         if !records.is_empty() {
-            let store = crate::keys::KeyStore::open(self.root.join("keys"))
-                .await
-                .map_err(|error| error.to_string())?;
-            store
-                .for_platform(platform)
-                .map_err(|error| error.to_string())?
-                .put(records)
-                .await
-                .map_err(|error| error.to_string())?;
+            keys.put(records).await.map_err(|error| error.to_string())?;
         }
         while let Some(file) = installation.next().await {
             events.file(file.map_err(|error| error.to_string())?.into());
