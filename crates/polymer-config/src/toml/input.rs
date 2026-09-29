@@ -48,7 +48,7 @@ pub struct MouseMapping<'de> {
     pub mapping: IndexMap<BindingKey, &'de str>,
 }
 
-pub type PortGroup<'de> = BTreeMap<&'de str, PortAssignment<'de>>;
+pub type PortGroup<'de> = BTreeMap<&'de str, Port<'de>>;
 pub type PortGroups<'de> = BTreeMap<&'de str, PortGroup<'de>>;
 
 /// The ports one machine exposes.
@@ -64,7 +64,7 @@ pub struct PortTable<'de> {
 
 #[derive(Debug, Toml)]
 #[toml(FromToml)]
-pub struct PortAssignment<'de> {
+pub struct Port<'de> {
     pub target: TargetPath<'de>,
     pub layouts: Vec<&'de str>,
     pub emit: BTreeMap<&'de str, Vec<Emit<'de>>>,

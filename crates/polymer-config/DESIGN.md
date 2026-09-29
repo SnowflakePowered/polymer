@@ -1409,7 +1409,7 @@ for the difference — DuckStation exposes eight pad slots on a two-port
 PlayStation. Exceeding the count is a warning, never silent.
 
 A port declaration is a `[platforms.<MACHINE>.ports.<group>.<index>]` table.
-This is now normative (§6.4); `PortAssignment` in `toml/input.rs` is its type,
+This is now normative (§6.4); `Port` in `toml/input.rs` is its type,
 and the path spells the *(machine, group, index)* key directly:
 
 ```toml
@@ -1460,7 +1460,7 @@ Dolphin generator. Two reasons:
   derived from the port's group and chosen mode rather than copied out of each
   plugin that happens to mention it.
 
-So `PortAssignment` carries `target`, `layouts`, and `emit`, and its `emit` map
+So `Port` carries `target`, `layouts`, and `emit`, and its `emit` map
 is keyed by choice — a layout id, `unplugged`, or `passthrough`. Lowering checks
 that every key is one of those three (a test in `toml/document.rs` asserts it
 across all four packages today).
@@ -1482,7 +1482,7 @@ also declares, and lowering checks both.
 machinespec id. `PortTable` is a struct with the single field `ports` rather
 than a third map level, so a misspelled `ports` is rejected where it is written
 instead of parsing as a platform whose only input group is named after the typo.
-Below it the nesting is two anonymous maps, `group → index → PortAssignment`,
+Below it the nesting is two anonymous maps, `group → index → Port`,
 which types the index as `&str`: lowering must parse it as an integer and reject
 a non-numeric key, since `ports.controller.x` would otherwise merge cleanly and
 mean nothing.

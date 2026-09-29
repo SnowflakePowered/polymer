@@ -1,7 +1,4 @@
-use std::{
-    collections::{BTreeMap, HashSet},
-    sync::Arc,
-};
+use std::collections::{BTreeMap, HashSet};
 
 use indexmap::IndexMap;
 
@@ -276,28 +273,36 @@ impl<'a> Serializer<'a> {
                 .or_default();
         }
         for option_handle in section.options.iter().copied() {
-            let option = &self.definition.options[option_handle];
-            let setting_path =
-                SettingPath::from_key(Arc::from(format!("{concrete}.{}", option.key)));
-            let Some(value) = self.instance.get(setting_path.as_str()) else {
-                continue;
-            };
-            let source = option.emit.value.as_ref().map_or(
-                WriteSource::Setting {
-                    path: setting_path.as_str().into(),
-                    value,
-                    option: option_handle,
-                },
-                WriteSource::Literal,
-            );
-            self.add_emit(
+            self.plan_option(
+                SettingPath::child(concrete, &self.definition.options[option_handle].key),
+                option_handle,
                 section.target.as_ref(),
-                &option.emit,
                 instance_prefix.map(Into::into),
-                source,
             )?;
         }
         Ok(())
+    }
+
+    fn plan_option(
+        &mut self,
+        path: SettingPath,
+        option_handle: Handle<OptionDefinition>,
+        inherited_target: Option<&'a OwnedTargetPath>,
+        instance_prefix: Option<Box<str>>,
+    ) -> Result<()> {
+        let option = &self.definition.options[option_handle];
+        let Some(value) = self.instance.get(path.as_str()) else {
+            return Ok(());
+        };
+        let source = option.emit.value.as_ref().map_or(
+            WriteSource::Setting {
+                path: path.as_str().into(),
+                value,
+                option: option_handle,
+            },
+            WriteSource::Literal,
+        );
+        self.add_emit(inherited_target, &option.emit, instance_prefix, source)
     }
 
     fn plan_input_writes(&mut self) -> Result<()> {
@@ -305,20 +310,12 @@ impl<'a> Serializer<'a> {
             return Ok(());
         };
         for option_handle in input.options.iter().copied() {
-            let option = &self.definition.options[option_handle];
-            let setting_path = SettingPath::from_key(Arc::from(format!("input.{}", option.key)));
-            let Some(value) = self.instance.get(setting_path.as_str()) else {
-                continue;
-            };
-            let source = option.emit.value.as_ref().map_or(
-                WriteSource::Setting {
-                    path: setting_path.as_str().into(),
-                    value,
-                    option: option_handle,
-                },
-                WriteSource::Literal,
-            );
-            self.add_emit(None, &option.emit, None, source)?;
+            self.plan_option(
+                SettingPath::input(&self.definition.options[option_handle].key),
+                option_handle,
+                None,
+                None,
+            )?;
         }
         Ok(())
     }
@@ -380,26 +377,17 @@ impl<'a> Serializer<'a> {
                     &device,
                 )?;
                 for option_handle in layout.options.iter().copied() {
-                    let option = &self.definition.options[option_handle];
-                    let setting_path = SettingPath::from_key(Arc::from(format!(
-                        "ports.{}.{}.{port_index}.{}",
-                        self.instance.console(),
-                        group_name,
-                        option.key,
-                        port_index = port.index,
-                    )));
-                    let Some(value) = self.instance.get(setting_path.as_str()) else {
-                        continue;
-                    };
-                    let source = option.emit.value.as_ref().map_or(
-                        WriteSource::Setting {
-                            path: setting_path.as_str().into(),
-                            value,
-                            option: option_handle,
-                        },
-                        WriteSource::Literal,
-                    );
-                    self.add_emit(Some(&port.target), &option.emit, None, source)?;
+                    self.plan_option(
+                        SettingPath::port(
+                            self.instance.console(),
+                            group_name,
+                            port.index,
+                            &self.definition.options[option_handle].key,
+                        ),
+                        option_handle,
+                        Some(&port.target),
+                        None,
+                    )?;
                 }
             }
         }
