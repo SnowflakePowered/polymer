@@ -49,49 +49,49 @@ key = "first_start"
 title = "first_start"
 type = "bool"
 default = false
-emit = { key = "first_start", bool_style = "lower" }
+emit = { key = "firstStart", bool_style = "lower" }
 
 [[sections.ui.options]]
 key = "single_window_mode"
 title = "single_window_mode"
 type = "bool"
-default = false
-emit = { key = "single_window_mode", bool_style = "lower" }
+default = true
+emit = { key = "singleWindowMode", bool_style = "lower" }
 
 [[sections.ui.options]]
 key = "confirm_before_closing"
 title = "confirm_before_closing"
 type = "bool"
 default = false
-emit = { key = "confirm_before_closing", bool_style = "lower" }
+emit = { key = "confirmClose", bool_style = "lower" }
 
 [[sections.ui.options]]
 key = "pause_when_in_background"
 title = "pause_when_in_background"
 type = "bool"
 default = false
-emit = { key = "pause_when_in_background", bool_style = "lower" }
+emit = { key = "pauseWhenInBackground", bool_style = "lower" }
 
 [[sections.ui.options]]
 key = "mute_when_in_background"
 title = "mute_when_in_background"
 type = "bool"
 default = false
-emit = { key = "mute_when_in_background", bool_style = "lower" }
+emit = { key = "muteWhenInBackground", bool_style = "lower" }
 
 [[sections.ui.options]]
 key = "show_status_bar"
 title = "show_status_bar"
 type = "bool"
 default = false
-emit = { key = "show_status_bar", bool_style = "lower" }
+emit = { key = "showStatusBar", bool_style = "lower" }
 
 [[sections.ui.options]]
 key = "callout_flags"
 title = "callout_flags"
 type = "int"
 default = 2147483647
-emit = { key = "callout_flags" }
+emit = { key = "calloutFlags" }
 
 [targets.settings."Data Storage"]
 
