@@ -26,4 +26,5 @@
 * Make only the smallest change needed for a request or feature. 
 * Follow existing conventions for Actors and JS <-> Rust messaging.
 * Do not leave explanatory comments in your code. 
+* Launching an emulator with `isolate: true` or `isolate: false` only affects whether its launched in a private desktop. Filesystem access is always virtualized.
 Read ARCHITECTURE.md for a high level overview of the architecture.
