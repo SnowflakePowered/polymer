@@ -19,7 +19,7 @@ pub use capture::{BufferReleaseSender, ConsumerPreference};
 pub use configuration::{
     ConfigurationDefaults, ConfigurationRequest, DefaultGamepad, DetectedGame, EmulatorDescriptor,
     GameDescriptor, LaunchGroupRequest, LaunchPortRequest, PortDescriptor, PortGroupDescriptor,
-    PreparedGame, describe_api as describe_configuration, prepare_api as prepare_configuration,
+    PreparedGame, describe_api as describe_configuration,
 };
 pub use consolestorage::{StorageService, manager as console_storage_manager};
 pub use controllers::{

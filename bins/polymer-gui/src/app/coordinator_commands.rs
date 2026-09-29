@@ -125,7 +125,7 @@ impl ShellCoordinator {
     ) -> Result<ControllerChange, String> {
         let transaction = serde_json::from_value::<InputTransaction>(transaction)
             .map_err(|error| format!("invalid input transaction: {error}"))
-            .and_then(|transaction| self.input.prepare_controller_transaction(transaction));
+            .and_then(|transaction| self.input.controllers.transaction(transaction));
         match transaction {
             Ok(transaction) => self.dispatch_controller_transaction(
                 transaction,
@@ -152,7 +152,7 @@ impl ShellCoordinator {
                 expected_revision: self.input.configuration_snapshot().revision,
                 operations: Vec::new(),
             };
-            let transaction = self.input.prepare_controller_transaction(transaction)?;
+            let transaction = self.input.controllers.transaction(transaction)?;
             return self.dispatch_controller_transaction(
                 transaction,
                 InputChangeCompletion::ControllerApi {
@@ -162,7 +162,8 @@ impl ShellCoordinator {
         };
         let transaction = self
             .input
-            .prepare_controller_session_transaction(&commit)
+            .controllers
+            .connection_transaction(&commit)
             .map_err(|error| self.settle_controller_session_failure(&commit.session_id, error))?;
         self.dispatch_controller_transaction(
             transaction,
