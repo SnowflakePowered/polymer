@@ -76,6 +76,7 @@ const SDL2_COMPAT_DLL: &[u16] = &[
 // dependent. These are the Windows-preprocessed slots from
 // SDL_dynapi_procs.h in the runtime staged with this hook.
 const DYNAPI_NUM_JOYSTICKS: usize = 158;
+const DYNAPI_PUMP_EVENTS: usize = 79;
 const DYNAPI_POLL_EVENT: usize = 85;
 const DYNAPI_GAME_CONTROLLER_GET_AXIS: usize = 112;
 const DYNAPI_GAME_CONTROLLER_GET_BUTTON: usize = 116;
@@ -125,6 +126,12 @@ polymer_hook::function_table_hook! {
     #[state: Sdl2TableState = create_table_state()?]
     pub(crate) struct Sdl2DynapiHook {
         const MINIMUM_SLOTS: usize = DYNAPI_JOYSTICK_UPDATE + 1;
+
+        #[slot = DYNAPI_PUMP_EVENTS]
+        #[prefix(|next| poll_events(
+            next.state,
+        ))]
+        unsafe extern "C" fn pump_events_dispatch();
 
         #[slot = DYNAPI_POLL_EVENT]
         #[prefix(|next| poll_events(
