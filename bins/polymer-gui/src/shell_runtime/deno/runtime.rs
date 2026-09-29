@@ -17,7 +17,7 @@ use super::dom::{
 use super::input::{EventResult, op_event_result};
 use super::modules::{BrowserModuleLoader, document_scripts, execute_document_script};
 use super::scroll::op_dom_scroll;
-use super::state::{BridgeState, op_post_message};
+use super::state::{BridgeState, op_post_message, op_shell_reload};
 use crate::shell_document::SharedShellDocument;
 use polymer_deno::polymer::PolymerNotificationSender;
 
@@ -60,6 +60,7 @@ deno_core::extension!(
         op_dom_scroll,
         op_dom_take_layout,
         op_post_message,
+        op_shell_reload,
         op_event_result,
     ],
     esm_entry_point = "ext:polymer_shell_runtime/bootstrap.js",
@@ -344,6 +345,16 @@ impl Runtime {
     /// tasks progress without blocking the window thread.
     pub async fn poll_event_loop(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         self.realm.poll_event_loop().await
+    }
+
+    pub fn reload_requested(&mut self) -> bool {
+        let (worker, _) = self.realm.parts();
+        worker
+            .js_runtime()
+            .op_state()
+            .borrow()
+            .borrow::<BridgeState>()
+            .reload
     }
 
     pub(crate) const fn inspector_address(&self) -> std::net::SocketAddr {

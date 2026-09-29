@@ -122,6 +122,10 @@ impl ShellRuntime {
         }
     }
 
+    pub fn reload_requested(&mut self) -> bool {
+        self.runtime.reload_requested()
+    }
+
     pub(crate) fn inspector_address(&self) -> std::net::SocketAddr {
         self.runtime.inspector_address()
     }

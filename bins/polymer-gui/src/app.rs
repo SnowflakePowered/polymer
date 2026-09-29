@@ -174,7 +174,7 @@ impl ShellCoordinator {
             let base_url = shell_source.base_url.clone();
             let notifications = match self
                 .shell_dom
-                .activate(|factory| async move {
+                .activate(shell_source.base_url.clone(), |factory| async move {
                     factory
                         .create(
                             &html,
@@ -210,6 +210,23 @@ impl ShellCoordinator {
         }
         self.publish_input_configuration();
         Ok(())
+    }
+
+    async fn reload_shell(&mut self, commands: FrontendCommands) {
+        let Some(base_url) = self.shell_dom.take_reload() else {
+            return;
+        };
+        let source = match deno_core::ModuleSpecifier::parse(&base_url) {
+            Ok(url) => crate::theme::load_document(&url).await,
+            Err(error) => Err(error.into()),
+        };
+        let (source, error) = match source {
+            Ok(source) => (Some(source), None),
+            Err(error) => (None, Some(error.to_string())),
+        };
+        if let Err(error) = self.activate_shell(source, error, commands).await {
+            tracing::error!("polymer: reloading the shell document failed: {error}");
+        }
     }
 }
 

@@ -1104,6 +1104,14 @@
     pageXOffset: { get: () => documentNode?.documentElement?.scrollLeft ?? 0 },
     pageYOffset: { get: () => documentNode?.documentElement?.scrollTop ?? 0 },
   });
+  const shellLocation = Object.create(globalThis.location, {
+    reload: { value: function reload() { ops.op_shell_reload(); }, enumerable: true },
+  });
+  Object.defineProperty(globalThis, "location", {
+    ...Object.getOwnPropertyDescriptor(globalThis, "location"),
+    get: () => shellLocation,
+    configurable: false,
+  });
   Object.defineProperty(globalThis, "CSS", { value: Object.freeze({
     escape(value) { return String(value).replace(/[^a-zA-Z0-9_-]/g, (character) => `\\${character}`); },
   }) });

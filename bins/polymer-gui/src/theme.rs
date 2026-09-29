@@ -139,7 +139,7 @@ async fn ensure_debug_address_available(url: &ModuleSpecifier) -> Result<(), Box
     Ok(())
 }
 
-async fn load_document(url: &ModuleSpecifier) -> Result<ShellDocumentSource, Box<dyn Error>> {
+pub(crate) async fn load_document(url: &ModuleSpecifier) -> Result<ShellDocumentSource, Box<dyn Error>> {
     let html = if url.scheme() == "file" {
         let path = url
             .to_file_path()
