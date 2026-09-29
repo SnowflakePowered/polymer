@@ -61,6 +61,8 @@ enum ShellDocumentSlot {
 struct ActiveShellDocument {
     document: SharedShellDocument,
     runtime: ShellRuntime,
+    factory: ShellSessionFactory,
+    base_url: String,
 }
 
 impl ShellSession {
@@ -127,6 +129,7 @@ impl ShellSession {
 
     pub async fn activate<F, Fut>(
         &mut self,
+        base_url: String,
         create: F,
     ) -> Result<Option<crate::shell_runtime::PolymerNotificationSender>, Box<dyn std::error::Error>>
     where
@@ -145,9 +148,13 @@ impl ShellSession {
         let slot = std::mem::replace(&mut self.slot, ShellDocumentSlot::Disabled);
         match slot {
             ShellDocumentSlot::Awaiting(factory) => {
-                let (document, runtime, notifications) = create(factory).await?;
-                self.slot =
-                    ShellDocumentSlot::Active(Box::new(ActiveShellDocument { document, runtime }));
+                let (document, runtime, notifications) = create(factory.clone()).await?;
+                self.slot = ShellDocumentSlot::Active(Box::new(ActiveShellDocument {
+                    document,
+                    runtime,
+                    factory,
+                    base_url,
+                }));
                 Ok(Some(notifications))
             }
             slot => {
@@ -155,6 +162,22 @@ impl ShellSession {
                 Ok(None)
             }
         }
+    }
+
+    pub fn take_reload(&mut self) -> Option<String> {
+        let ShellDocumentSlot::Active(active) = &mut self.slot else {
+            return None;
+        };
+        if !active.runtime.reload_requested() {
+            return None;
+        }
+        let ShellDocumentSlot::Active(active) =
+            std::mem::replace(&mut self.slot, ShellDocumentSlot::Disabled)
+        else {
+            unreachable!();
+        };
+        self.slot = ShellDocumentSlot::Awaiting(active.factory);
+        Some(active.base_url)
     }
 
     pub fn disable(&mut self) {
@@ -234,6 +257,7 @@ impl ShellSession {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct ShellSessionFactory {
     debug: bool,
     document: ShellDocumentFactory,

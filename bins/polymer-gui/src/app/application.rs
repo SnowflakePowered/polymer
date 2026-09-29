@@ -105,6 +105,7 @@ impl ShellApplication {
                 if state.shell_dom.poll_runtime().await && state.shell_dom.needs_paint() {
                     state.refresh_shell();
                 }
+                state.reload_shell(self.commands.clone()).await;
                 *self.state.borrow_mut() = Some(state);
             }
         }

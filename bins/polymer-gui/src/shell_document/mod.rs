@@ -159,6 +159,7 @@ impl SharedShellDocument {
 }
 
 /// Factory for a shell document and its native network/window providers.
+#[derive(Clone)]
 pub struct ShellDocumentFactory {
     event_proxy: crate::window_manager::EventLoopProxy<crate::app::UserEvent>,
 }

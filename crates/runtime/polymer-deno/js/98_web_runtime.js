@@ -128,7 +128,7 @@ Object.defineProperties(globalThis, {
     set() {},
   },
   Location: locationModule.locationConstructorDescriptor,
-  location: locationModule.locationDescriptor,
+  location: { ...locationModule.locationDescriptor, configurable: true },
   navigator: { value: navigator, configurable: true },
   reportError: { value: event.reportError, configurable: true, writable: true },
   removeEventListener: { value: event.EventTarget.prototype.removeEventListener, configurable: true, writable: true },
