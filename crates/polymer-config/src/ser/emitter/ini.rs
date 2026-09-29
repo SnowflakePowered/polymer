@@ -9,15 +9,10 @@ use super::{EmitResult, EmittedValue, Emitter, SectionRef};
 pub struct IniEmitter {
     document: Ini,
     sections: Vec<Box<str>>,
-    write_options: WriteOptions,
 }
 
 impl IniEmitter {
     pub fn new() -> Self {
-        Self::with_write_options(WriteOptions::default())
-    }
-
-    pub fn with_write_options(write_options: WriteOptions) -> Self {
         let mut document = Ini::new_cs();
         // An empty target component is invalid, so this cannot collide with a
         // named target section. configparser omits this section's header.
@@ -25,12 +20,7 @@ impl IniEmitter {
         Self {
             document,
             sections: Vec::new(),
-            write_options,
         }
-    }
-
-    pub fn document(&self) -> &Ini {
-        &self.document
     }
 
     fn current_section(&self) -> &str {
@@ -77,7 +67,7 @@ impl Emitter for IniEmitter {
                 "INI section `{section}` was not exited"
             )));
         }
-        writer.write_all(self.document.pretty_writes(&self.write_options).as_bytes())?;
+        writer.write_all(self.document.pretty_writes(&WriteOptions::default()).as_bytes())?;
         Ok(())
     }
 }

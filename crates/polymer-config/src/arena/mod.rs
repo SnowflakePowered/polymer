@@ -5,8 +5,6 @@ pub use handle::*;
 
 use core::{fmt, ops, slice};
 
-use crate::error::{Error, Result};
-
 /// An arena holding values that can be referenced by strongly typed handles.
 #[derive(Clone)]
 pub struct Arena<T> {
@@ -86,34 +84,6 @@ impl<T> Arena<T> {
         self.data.iter().position(predicate).map(Handle::from_usize)
     }
 
-    /// Finds an equivalent value or appends `value` when none exists.
-    pub fn fetch_if_or_append(
-        &mut self,
-        value: T,
-        equivalent: impl Fn(&T, &T) -> bool,
-    ) -> Handle<T> {
-        self.data
-            .iter()
-            .position(|existing| equivalent(existing, &value))
-            .map(Handle::from_usize)
-            .unwrap_or_else(|| self.append(value))
-    }
-
-    /// Finds an equal value or appends `value` when none exists.
-    pub fn fetch_or_append(&mut self, value: T) -> Handle<T>
-    where
-        T: PartialEq,
-    {
-        self.fetch_if_or_append(value, T::eq)
-    }
-
-    /// Returns a value when `handle` belongs to this arena.
-    pub fn try_get(&self, handle: Handle<T>) -> Result<&T> {
-        self.data
-            .get(handle.index())
-            .ok_or_else(|| Error::bad_handle::<T, ()>(handle.index()))
-    }
-
     /// Returns a mutable reference to the value at `handle`.
     pub fn get_mut(&mut self, handle: Handle<T>) -> &mut T {
         &mut self.data[handle.index()]
@@ -122,15 +92,6 @@ impl<T> Arena<T> {
     /// Removes all values while retaining the allocation.
     pub fn clear(&mut self) {
         self.data.clear();
-    }
-
-    /// Checks that `handle` belongs to this arena.
-    pub fn check_contains_handle(&self, handle: Handle<T>) -> Result<()> {
-        if handle.index() < self.data.len() {
-            Ok(())
-        } else {
-            Err(Error::bad_handle::<T, ()>(handle.index()))
-        }
     }
 }
 

@@ -163,21 +163,6 @@ impl Projection {
         }
     }
 
-    /// Every control of `layout` that reaches neither the pad nor a declared
-    /// transport. A binding for one of these could never fire.
-    pub fn unprojected(&self, layout_id: &str) -> Result<Vec<BindingKey>> {
-        let layout =
-            InputSpec::try_from(layout_id).map_err(|error| Error::projection(error.to_string()))?;
-        Ok(layout
-            .elements()
-            .map(|element| element.binding())
-            .filter(|key| self.target(layout_id, *key).is_none())
-            .collect())
-    }
-
-    pub fn layout_names(&self) -> impl Iterator<Item = &str> {
-        self.layouts.keys().map(String::as_str)
-    }
 }
 
 fn resolve(layout_id: &str, key: BindingKey) -> Option<BindingKey> {

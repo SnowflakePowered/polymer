@@ -18,19 +18,11 @@ pub struct XmlEmitter {
 
 impl XmlEmitter {
     pub fn new() -> Self {
-        Self::with_indent(b' ', 2)
-    }
-
-    pub fn with_indent(indent: u8, indent_size: usize) -> Self {
         Self {
-            document: Writer::new_with_indent(Vec::new(), indent, indent_size),
+            document: Writer::new_with_indent(Vec::new(), b' ', 2),
             sections: Vec::new(),
             roots: 0,
         }
-    }
-
-    pub fn document(&self) -> &Writer<Vec<u8>> {
-        &self.document
     }
 }
 

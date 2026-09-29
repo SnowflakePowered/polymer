@@ -16,7 +16,8 @@ use crate::{
 };
 
 use super::{
-    DocumentRef, EmittedAttribute, EmittedBinding, EmittedValue, Emitter, ScalarValue, SectionRef,
+    BmlEmitter, DocumentRef, EmittedAttribute, EmittedBinding, EmittedValue, Emitter, IniEmitter,
+    ScalarValue, SectionRef, XmlEmitter,
 };
 use crate::input::{
     gamepad::SdlGamepadIdentity,
@@ -184,10 +185,7 @@ impl<'a> Serializer<'a> {
     }
 
     /// Serializes every output-bearing root into a path-to-bytes map.
-    pub fn serialize(
-        &self,
-        mut emitter_for: impl FnMut(&str) -> Option<Box<dyn Emitter>>,
-    ) -> Result<BTreeMap<Box<str>, Vec<u8>>> {
+    pub fn serialize(&self) -> Result<BTreeMap<Box<str>, Vec<u8>>> {
         let mut outputs = BTreeMap::new();
         for document in self.documents() {
             if !self.is_active(document.target, None) {
@@ -196,12 +194,21 @@ impl<'a> Serializer<'a> {
             if outputs.contains_key(document.output.path.as_ref()) {
                 return Err(Error::DuplicateOutputPath(document.output.path.clone()));
             }
-            let emitter = emitter_for(&document.output.format)
+            let emitter = Self::emitter(&document.output.format)
                 .ok_or_else(|| Error::UnsupportedFormat(document.output.format.clone()))?;
             let bytes = self.serialize_document(document, emitter)?;
             outputs.insert(document.output.path.clone(), bytes);
         }
         Ok(outputs)
+    }
+
+    fn emitter(format: &str) -> Option<Box<dyn Emitter>> {
+        match format {
+            "bml" => Some(Box::new(BmlEmitter::new())),
+            "ini" => Some(Box::new(IniEmitter::new())),
+            "xml" => Some(Box::new(XmlEmitter::new())),
+            _ => None,
+        }
     }
 
     fn plan_section_writes(&mut self) -> Result<()> {

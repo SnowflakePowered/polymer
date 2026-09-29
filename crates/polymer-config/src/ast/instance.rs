@@ -463,22 +463,6 @@ impl ops::IndexMut<Handle<Setting>> for ConfigurationInstance {
     }
 }
 
-impl ops::Index<&str> for ConfigurationInstance {
-    type Output = Value;
-
-    fn index(&self, path: &str) -> &Self::Output {
-        let handle = self.setting_by_path[path];
-        &self[handle]
-    }
-}
-
-impl ops::IndexMut<&str> for ConfigurationInstance {
-    fn index_mut(&mut self, path: &str) -> &mut Self::Output {
-        let handle = self.setting_by_path[path];
-        &mut self[handle]
-    }
-}
-
 impl<'a> IntoIterator for &'a ConfigurationInstance {
     type Item = &'a Setting;
     type IntoIter = slice::Iter<'a, Setting>;

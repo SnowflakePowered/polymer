@@ -21,12 +21,6 @@ pub enum Error {
     ProjectionError(Box<str>),
     #[error("a configuration path cannot contain an empty component")]
     InvalidConfigurationPath,
-    #[error("handle {index} of {kind} is either not present, or inaccessible yet")]
-    BadHandle {
-        kind: &'static str,
-        source_kind: &'static str,
-        index: usize,
-    },
     #[error("unknown serialization target `{0}`")]
     UnknownTarget(Box<str>),
     #[error("target graph contains a cycle at `{0}`")]
@@ -122,14 +116,6 @@ impl Error {
 
     pub fn projection(message: impl Into<Box<str>>) -> Self {
         Self::ProjectionError(message.into())
-    }
-
-    pub fn bad_handle<T, H>(index: usize) -> Self {
-        Self::BadHandle {
-            kind: core::any::type_name::<T>(),
-            source_kind: core::any::type_name::<H>(),
-            index,
-        }
     }
 
     pub fn emitter(error: impl StdError + Send + Sync + 'static) -> Self {
