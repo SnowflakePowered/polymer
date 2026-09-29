@@ -1,5 +1,6 @@
 mod install;
 mod metadata;
+pub(in crate::impls::ctr) mod ncch;
 
 use crate::impls::ctr::{CtrNand, layout::Layout};
 use crate::{

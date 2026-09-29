@@ -1,17 +1,13 @@
 use super::CiaDepot;
+use super::metadata::{InstalledTitle, TmdHeader};
+use super::ncch::NcchDecryptor;
 use crate::{
     Error, VolumeStorage,
     installable::{DepotFile, InstallEvents, Installable, StorageWriter, artifacts::Artifact},
 };
 use csis::{CiaArchive, CiaSection};
 use parking_lot::Mutex;
-use sha2::{Digest, Sha256};
-use std::{
-    fs::File,
-    io::{Read, Write},
-    path::PathBuf,
-    sync::Arc,
-};
+use std::{fs::File, io::Write, path::PathBuf, sync::Arc};
 
 pub(in crate::impls::ctr) enum Content {
     Item(usize),
@@ -78,7 +74,8 @@ impl CiaInstall {
     }
 
     /// Retain already installed DLC omitted by a partial CIA only if its new TMD
-    /// still describes the same bytes. Never retain an obsolete version blindly.
+    /// still describes the same content. Installed contents are decrypted, so they
+    /// are matched against the installed TMD rather than hashed.
     fn retain_contents(
         depot: &CiaDepot,
         archive: &CiaArchive<File>,
@@ -89,6 +86,8 @@ impl CiaInstall {
         let Some(old) = old else {
             return Ok(retained);
         };
+        let tmd = InstalledTitle::tmd(depot, storage)?;
+        let (_, installed) = TmdHeader::parse(&tmd)?;
         for record in archive.tmd().contents() {
             if archive
                 .items()
@@ -105,7 +104,12 @@ impl CiaInstall {
             else {
                 continue;
             };
-            if Self::matches_content(storage, &path, record)? {
+            let unchanged = installed.iter().any(|content| {
+                content.id.get() == record.content_id
+                    && content.size.get() == record.size
+                    && content.hash == record.sha256
+            });
+            if unchanged && storage.exists(&path) && storage.metadata(&path)?.len == record.size {
                 retained.push(DepotFile::new(
                     file.path().to_owned(),
                     *file.blake3(),
@@ -114,29 +118,6 @@ impl CiaInstall {
             }
         }
         Ok(retained)
-    }
-
-    fn matches_content(
-        storage: &dyn VolumeStorage,
-        path: &str,
-        record: &csis::ContentRecord,
-    ) -> Result<bool, Error> {
-        if !storage.exists(path) || storage.metadata(path)?.len != record.size {
-            return Ok(false);
-        }
-        let mut reader = storage.open_read(path)?;
-        let mut hash = Sha256::new();
-        let mut buffer = [0; 64 * 1024];
-        loop {
-            let count = reader
-                .read(&mut buffer)
-                .map_err(|e| Error::io(&PathBuf::from(path), e))?;
-            if count == 0 {
-                break;
-            }
-            hash.update(&buffer[..count]);
-        }
-        Ok(hash.finalize().as_slice() == record.sha256)
     }
 
     fn write_entry(
@@ -152,14 +133,22 @@ impl CiaInstall {
         };
         match entry.content {
             Content::Item(index) => {
-                archive.stream_item_with_progress(index, &mut writer, |bytes| {
-                    events.advance(bytes);
-                    Ok(())
-                })
+                let mut ncch = NcchDecryptor::new(&mut writer);
+                archive
+                    .stream_item_with_progress(index, &mut ncch, |bytes| {
+                        events.advance(bytes);
+                        Ok(())
+                    })
+                    .map_err(|e| Error::malformed("CIA", e.to_string()))?;
+                ncch.finish()
+                    .map_err(|e| Error::io(&PathBuf::from(&entry.path), e))?;
             }
-            Content::Section(section) => archive.stream_section(section, &mut writer),
+            Content::Section(section) => {
+                archive
+                    .stream_section(section, &mut writer)
+                    .map_err(|e| Error::malformed("CIA", e.to_string()))?;
+            }
         }
-        .map_err(|e| Error::malformed("CIA", e.to_string()))?;
         writer
             .flush()
             .map_err(|e| Error::io(&PathBuf::from(&entry.path), e))?;
@@ -189,8 +178,7 @@ impl Installable for CiaInstall {
 
     async fn finish(self, manifest: Vec<DepotFile>) -> Result<Artifact, Error> {
         let manifest = DepotFile::merge(self.retained, manifest);
-        let artifact =
-            super::metadata::InstalledTitle::read(&self.depot, &*self.storage, manifest)?;
+        let artifact = InstalledTitle::read(&self.depot, &*self.storage, manifest)?;
         for path in self.old_paths {
             if path.starts_with(&format!("{}/", self.root))
                 && !artifact
