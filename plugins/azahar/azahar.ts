@@ -33,9 +33,9 @@ export const onLaunch = (args: LaunchArgs) => {
         env: [["USERPROFILE", fs.path("/User")], ["APPDATA", fs.path("/User/AppData/Roaming")],
             ["LOCALAPPDATA", fs.path("/User/AppData/Local")], ["TEMP", fs.path("/User/Temp")],
             ["TMP", fs.path("/User/Temp")]],
-        isolate: true,
+        isolate: false,
         hooks: { graphics: ["vulkan"], input: ["sdl2"] },
-        surfaces: [{ index: 0, pattern: "Primary Window" }, { index: 1, pattern: "Secondary Window" }],
+        surfaces: [{ index: 0, pattern: "^Azahar [^|]*\\| [^|]*$" }, { index: 1, pattern: "\\| Secondary Window$" }],
     };
 };
 
