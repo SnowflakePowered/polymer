@@ -13,6 +13,7 @@ pub use dualsense::DualSense;
 
 pub mod dualshock4;
 pub use dualshock4::DualShock4;
+pub mod motion;
 pub mod protocol;
 
 #[derive(Default)]

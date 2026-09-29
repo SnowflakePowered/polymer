@@ -1,4 +1,5 @@
-use super::{BluetoothControllerDevice, DecodedInput, GamepadState, PointerSource};
+use super::sony::{SonySensorFormat, SonySensors};
+use super::{BluetoothControllerDevice, DecodedInput, PointerSource};
 use polymer_bluetooth::devices::sony::dualsense::protocol::InputReport;
 use polymer_input::{Calibration, Capabilities, DeviceRole};
 use std::time::Instant;
@@ -6,20 +7,23 @@ use std::time::Instant;
 #[derive(Default)]
 pub struct DualSenseDecoder {
     calibration: Calibration,
-    sensors: Option<polymer_bluetooth::devices::SensorCalibration>,
-    last_timestamp: Option<u32>,
-    elapsed_ticks: u64,
-    touch: super::sony::SonyTouchState,
+    sensors: SonySensors,
 }
 
-mod sensors;
+impl DualSenseDecoder {
+    const SENSORS: SonySensorFormat = SonySensorFormat {
+        timestamp_mask: u32::MAX,
+        tick_ns: [1000, 3],
+        touch_extent: [1920.0, 1080.0],
+    };
+}
 
 impl BluetoothControllerDevice for DualSenseDecoder {
     fn set_sensor_calibration(
         &mut self,
         calibration: Option<polymer_bluetooth::devices::SensorCalibration>,
     ) {
-        self.sensors = calibration;
+        self.sensors.calibration = calibration;
     }
     fn additional_capabilities(&self) -> Capabilities {
         Capabilities::ACCELEROMETER
@@ -37,7 +41,13 @@ impl BluetoothControllerDevice for DualSenseDecoder {
             report.triggers,
             u32::from_le_bytes(report.buttons),
         );
-        self.read_sensors(report, &mut state);
+        self.sensors.read(
+            &Self::SENSORS,
+            [report.accelerometer, report.gyroscope].map(|axes| axes.map(|v| v.get())),
+            u32::from_le_bytes(report.timestamp),
+            Some(&report.touch),
+            &mut state,
+        );
         let charge = report.status[0] >> 4;
         let battery_level = match charge {
             0 | 1 => Some(((report.status[0] & 15) * 10 + 5).min(100)),

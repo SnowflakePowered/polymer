@@ -8,8 +8,8 @@ use crate::{
 use async_trait::async_trait;
 use std::{sync::Arc, time::Duration};
 
-pub mod motion;
 pub mod protocol;
+use super::motion::{FactoryCalibration, GyroLayout};
 use protocol::{InputReport, Output};
 
 #[derive(Default)]
@@ -112,7 +112,7 @@ impl ControllerSession for Session {
             .get_report(crate::transport::HidReportType::Feature, 5, 41)
             .await
         {
-            Ok(data) => motion::FactoryCalibration::parse(&data),
+            Ok(data) => FactoryCalibration::parse(&data, GyroLayout::Split),
             Err(error) => {
                 tracing::warn!(%error, "DualShock4 factory calibration read failed");
                 None

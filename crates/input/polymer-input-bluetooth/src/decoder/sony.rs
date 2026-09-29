@@ -1,4 +1,5 @@
 use super::GamepadState;
+use polymer_bluetooth::devices::{SensorCalibration, sony::motion::FactoryCalibration};
 use polymer_input::GamepadButton;
 
 pub(super) struct SonyControls;
@@ -49,8 +50,45 @@ impl SonyControls {
     }
 }
 
+pub(super) struct SonySensorFormat {
+    pub timestamp_mask: u32,
+    pub tick_ns: [u64; 2],
+    pub touch_extent: [f32; 2],
+}
+
 #[derive(Default)]
-pub(super) struct SonyTouchState {
+pub(super) struct SonySensors {
+    pub calibration: Option<SensorCalibration>,
+    last_timestamp: Option<u32>,
+    elapsed_ticks: u64,
+    touch: SonyTouchState,
+}
+
+impl SonySensors {
+    pub fn read(
+        &mut self,
+        format: &SonySensorFormat,
+        motion: [[i16; 3]; 2],
+        timestamp: u32,
+        touch: Option<&[polymer_bluetooth::devices::sony::protocol::TouchContact; 2]>,
+        state: &mut GamepadState,
+    ) {
+        let calibration = self.calibration.unwrap_or_else(FactoryCalibration::nominal);
+        state.accelerometer = calibration.acceleration(motion[0]);
+        state.gyroscope = calibration.rotation(motion[1]);
+        if let Some(previous) = self.last_timestamp {
+            self.elapsed_ticks +=
+                u64::from(timestamp.wrapping_sub(previous) & format.timestamp_mask);
+        }
+        self.last_timestamp = Some(timestamp);
+        state.sensor_timestamp_ns =
+            Some(self.elapsed_ticks * format.tick_ns[0] / format.tick_ns[1]);
+        self.touch.apply(touch, format.touch_extent, state);
+    }
+}
+
+#[derive(Default)]
+struct SonyTouchState {
     primary: Option<u8>,
     last_pointer: [i16; 2],
     contacts: [super::TouchContact; 2],
