@@ -8,8 +8,8 @@ use crate::{
 };
 
 use super::{
-    ConfigurationDefinition, DefaultDefinition, DomainDefinition, OptionDefinition, OptionRange,
-    SettingPath, Value, ValueKind, family,
+    ConfigurationDefinition, DefaultDefinition, OptionDefinition, SettingPath, Value,
+    ValueMismatch, family,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -239,76 +239,27 @@ impl ConfigurationInstance {
             .handle(path)
             .ok_or_else(|| Error::UnknownSetting(path.into()))?;
         let option = self.definition.option(self.settings[handle].option);
-        let invalid = |expected| Error::InvalidSettingValue {
-            path: path.into(),
-            expected,
-            actual: Self::json_kind(&value),
-        };
-        let parsed = if value.is_null() {
-            Value::Null
-        } else {
-            match &option.value.kind {
-                ValueKind::Boolean => value
-                    .as_bool()
-                    .map(Value::Boolean)
-                    .ok_or_else(|| invalid("a boolean"))?,
-                ValueKind::Integer { range } => {
-                    let number = value.as_i64().ok_or_else(|| invalid("an integer"))?;
-                    if let Some(OptionRange::Integer { min, max }) = range
-                        && (number < *min || number > *max)
-                    {
-                        return Err(Error::OutOfRange {
-                            path: path.into(),
-                            value: number.to_string(),
-                            min: min.to_string(),
-                            max: max.to_string(),
-                        });
-                    }
-                    Value::Integer(number)
-                }
-                ValueKind::Float { range } => {
-                    let number = value
-                        .as_f64()
-                        .filter(|value| value.is_finite())
-                        .ok_or_else(|| invalid("a finite number"))?;
-                    if let Some(OptionRange::Float { min, max }) = range
-                        && (number < *min || number > *max)
-                    {
-                        return Err(Error::OutOfRange {
-                            path: path.into(),
-                            value: number.to_string(),
-                            min: min.to_string(),
-                            max: max.to_string(),
-                        });
-                    }
-                    Value::Float(number)
-                }
-                ValueKind::String => value
-                    .as_str()
-                    .map(|value| Value::String(value.into()))
-                    .ok_or_else(|| invalid("a string"))?,
-                ValueKind::Path => value
-                    .as_str()
-                    .map(|value| Value::Path(value.into()))
-                    .ok_or_else(|| invalid("a path string"))?,
-                ValueKind::Select { domain } => {
-                    let choice = value.as_str().ok_or_else(|| invalid("a choice key"))?;
-                    let known = match domain {
-                        DomainDefinition::Static(choices) => choices
-                            .iter()
-                            .any(|candidate| candidate.key.as_str() == choice),
-                        DomainDefinition::None => false,
-                    };
-                    if !known {
-                        return Err(Error::UnknownChoice {
-                            path: path.into(),
-                            choice: choice.into(),
-                        });
-                    }
-                    Value::Choice(choice.into())
-                }
-            }
-        };
+        let parsed = option
+            .value
+            .kind
+            .parse_json(&value)
+            .map_err(|mismatch| match mismatch {
+                ValueMismatch::Kind(expected) => Error::InvalidSettingValue {
+                    path: path.into(),
+                    expected,
+                    actual: Self::json_kind(&value),
+                },
+                ValueMismatch::Range { value, min, max } => Error::OutOfRange {
+                    path: path.into(),
+                    value,
+                    min,
+                    max,
+                },
+                ValueMismatch::Choice(choice) => Error::UnknownChoice {
+                    path: path.into(),
+                    choice,
+                },
+            })?;
         self[handle] = parsed;
         Ok(())
     }
