@@ -19,7 +19,7 @@ use windows::{
 };
 
 use super::super::D3d12Frame;
-use polymer_renderer::webrtc::Codec;
+use polymer_renderer::webrtc::{Codec, NativeEncoder};
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
@@ -64,7 +64,7 @@ struct CodecResourceRequirements1 {
     subregions_psnr_resolved_metadata_buffer_size: u32,
 }
 
-pub(super) struct Encoder {
+pub(crate) struct Encoder {
     codec: Codec,
     _device: ID3D12Device,
     _video_device: ID3D12VideoDevice3,
@@ -103,8 +103,11 @@ pub(super) struct Encoder {
     bitstream_offset: u64,
 }
 
-impl Encoder {
-    pub(super) fn new_for_frame(
+impl NativeEncoder for Encoder {
+    type Frame = D3d12Frame;
+    const BACKEND: &'static str = "D3D12 Video Encode";
+
+    fn new_for_frame(
         frame: &D3d12Frame,
         width: u32,
         height: u32,
@@ -124,6 +127,37 @@ impl Encoder {
         }
     }
 
+    fn codec(&self) -> Codec {
+        self.codec
+    }
+
+    fn encode_frame(
+        &mut self,
+        frame: &mut D3d12Frame,
+        width: u32,
+        height: u32,
+    ) -> Result<Vec<u8>, Error> {
+        if width != self.width || height != self.height {
+            return Err("D3D12 encoder resolution changed".into());
+        }
+        unsafe {
+            self.submit_bitstream_clear()
+                .map_err(|error| format!("D3D12 bitstream clear failed: {error}"))?;
+            self.submit_crop(frame)
+                .map_err(|error| format!("D3D12 GPU crop failed: {error}"))?;
+            self.submit_conversion(frame)
+                .map_err(|error| format!("D3D12 video conversion failed: {error}"))?;
+            self.submit_encode()
+                .map_err(|error| format!("D3D12 video encode submission failed: {error}"))?;
+            self.submit_readback()
+                .map_err(|error| format!("D3D12 compressed readback submission failed: {error}"))?;
+            self.read_bitstream()
+                .map_err(|error| format!("D3D12 compressed readback failed: {error}").into())
+        }
+    }
+}
+
+impl Encoder {
     fn new_with_codec(
         frame: &D3d12Frame,
         width: u32,
@@ -315,35 +349,6 @@ impl Encoder {
                 parameter_sets,
                 bitstream_offset,
             })
-        }
-    }
-
-    pub(super) fn codec(&self) -> Codec {
-        self.codec
-    }
-
-    pub(super) fn encode_frame(
-        &mut self,
-        frame: &mut D3d12Frame,
-        width: u32,
-        height: u32,
-    ) -> Result<Vec<u8>, Error> {
-        if width != self.width || height != self.height {
-            return Err("D3D12 encoder resolution changed".into());
-        }
-        unsafe {
-            self.submit_bitstream_clear()
-                .map_err(|error| format!("D3D12 bitstream clear failed: {error}"))?;
-            self.submit_crop(frame)
-                .map_err(|error| format!("D3D12 GPU crop failed: {error}"))?;
-            self.submit_conversion(frame)
-                .map_err(|error| format!("D3D12 video conversion failed: {error}"))?;
-            self.submit_encode()
-                .map_err(|error| format!("D3D12 video encode submission failed: {error}"))?;
-            self.submit_readback()
-                .map_err(|error| format!("D3D12 compressed readback submission failed: {error}"))?;
-            self.read_bitstream()
-                .map_err(|error| format!("D3D12 compressed readback failed: {error}").into())
         }
     }
 
@@ -1209,12 +1214,12 @@ unsafe fn query_hevc_support(
             return Err("adapter rejected the extended D3D12 HEVC resource requirements".into());
         }
         Ok(CodecSupport {
-            metadata_size: align_up(
-                requirements1.max_encoder_output_metadata_buffer_size as u64,
-                requirements1
-                    .encoder_metadata_buffer_access_alignment
-                    .max(1) as u64,
-            ),
+            metadata_size: (requirements1.max_encoder_output_metadata_buffer_size as u64)
+                .next_multiple_of(
+                    requirements1
+                        .encoder_metadata_buffer_access_alignment
+                        .max(1) as u64,
+                ),
             hevc: Some(HevcSupport {
                 configuration,
                 subregion_block_size: resolution_limits.SubregionBlockPixelsSize.max(8),
@@ -1470,12 +1475,12 @@ unsafe fn query_h264_support(
         }
 
         Ok(CodecSupport {
-            metadata_size: align_up(
-                requirements1.max_encoder_output_metadata_buffer_size as u64,
-                requirements1
-                    .encoder_metadata_buffer_access_alignment
-                    .max(1) as u64,
-            ),
+            metadata_size: (requirements1.max_encoder_output_metadata_buffer_size as u64)
+                .next_multiple_of(
+                    requirements1
+                        .encoder_metadata_buffer_access_alignment
+                        .max(1) as u64,
+                ),
             hevc: None,
         })
     }
@@ -1727,8 +1732,8 @@ fn hevc_parameter_sets(width: u32, height: u32, support: &HevcSupport) -> Vec<u8
         & D3D12_VIDEO_ENCODER_CODEC_CONFIGURATION_HEVC_FLAG_USE_ASYMETRIC_MOTION_PARTITION.0
         != 0;
     let alignment = support.subregion_block_size.max(1 << min_cu_log2) as u64;
-    let coded_width = align_up(width as u64, alignment) as u32;
-    let coded_height = align_up(height as u64, alignment) as u32;
+    let coded_width = (width as u64).next_multiple_of(alignment) as u32;
+    let coded_height = (height as u64).next_multiple_of(alignment) as u32;
     let mut output = Vec::new();
 
     let mut vps = BitWriter::default();
@@ -1964,10 +1969,6 @@ impl BitWriter {
         }
         self.bytes
     }
-}
-
-fn align_up(value: u64, alignment: u64) -> u64 {
-    value.div_ceil(alignment) * alignment
 }
 
 macro_rules! transition_fn {

@@ -7,7 +7,7 @@ use ash::vk::native;
 use ash::{util::read_spv, vk};
 
 use super::super::VulkanFrame;
-use polymer_renderer::webrtc::Codec;
+use polymer_renderer::webrtc::{Codec, NativeEncoder};
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
@@ -56,7 +56,7 @@ struct VideoState {
     initialized: bool,
 }
 
-pub(super) struct Encoder {
+pub(crate) struct Encoder {
     codec: Codec,
     device: ash::Device,
     conversion_queue: vk::Queue,
@@ -83,8 +83,11 @@ pub(super) struct Encoder {
     synchronization_announced: bool,
 }
 
-impl Encoder {
-    pub(super) fn new_for_frame(
+impl NativeEncoder for Encoder {
+    type Frame = VulkanFrame;
+    const BACKEND: &'static str = "VULKAN Video Encode";
+
+    fn new_for_frame(
         frame: &VulkanFrame,
         width: u32,
         height: u32,
@@ -104,6 +107,34 @@ impl Encoder {
         }
     }
 
+    fn codec(&self) -> Codec {
+        self.codec
+    }
+
+    fn encode_frame(
+        &mut self,
+        frame: &mut VulkanFrame,
+        width: u32,
+        height: u32,
+    ) -> Result<Vec<u8>, Error> {
+        if width != self.width || height != self.height {
+            return Err("Vulkan encoder resolution changed".into());
+        }
+        self.convert(frame)?;
+        self.video.encode_frame(
+            &self.device,
+            frame,
+            self.conversion_done,
+            self.conversion_value,
+        )
+    }
+
+    fn has_in_flight_work(&self) -> bool {
+        self.conversion_fence_in_flight || self.video.fence_in_flight
+    }
+}
+
+impl Encoder {
     fn new_with_codec(
         frame: &VulkanFrame,
         width: u32,
@@ -301,32 +332,6 @@ impl Encoder {
                 synchronization_announced: false,
             })
         }
-    }
-
-    pub(super) fn codec(&self) -> Codec {
-        self.codec
-    }
-
-    pub(super) fn encode_frame(
-        &mut self,
-        frame: &mut VulkanFrame,
-        width: u32,
-        height: u32,
-    ) -> Result<Vec<u8>, Error> {
-        if width != self.width || height != self.height {
-            return Err("Vulkan encoder resolution changed".into());
-        }
-        self.convert(frame)?;
-        self.video.encode_frame(
-            &self.device,
-            frame,
-            self.conversion_done,
-            self.conversion_value,
-        )
-    }
-
-    pub(super) fn has_in_flight_work(&self) -> bool {
-        self.conversion_fence_in_flight || self.video.fence_in_flight
     }
 
     fn convert(&mut self, frame: &VulkanFrame) -> Result<(), Error> {
@@ -780,11 +785,9 @@ impl VideoState {
             )
             .map_err(|error| format!("create H.264 input image: {error}"))?;
             let bitstream_offset =
-                align_up(parameter_sets.len() as u64, bitstream_offset_alignment);
-            let bitstream_size = align_up(
-                bitstream_offset + width as u64 * height as u64 * 3 + 64 * 1024,
-                bitstream_alignment,
-            );
+                (parameter_sets.len() as u64).next_multiple_of(bitstream_offset_alignment);
+            let bitstream_size = (bitstream_offset + width as u64 * height as u64 * 3 + 64 * 1024)
+                .next_multiple_of(bitstream_alignment);
             let bitstream = create_video_buffer(frame, bitstream_size, &profiles)
                 .map_err(|error| format!("create H.264 bitstream buffer: {error}"))?;
             let mut feedback = vk::QueryPoolVideoEncodeFeedbackCreateInfoKHR::default()
@@ -1010,11 +1013,9 @@ impl VideoState {
             )
             .map_err(|error| format!("create HEVC reconstructed image: {error}"))?;
             let bitstream_offset =
-                align_up(parameter_sets.len() as u64, bitstream_offset_alignment);
-            let bitstream_size = align_up(
-                bitstream_offset + width as u64 * height as u64 * 3 + 64 * 1024,
-                bitstream_alignment,
-            );
+                (parameter_sets.len() as u64).next_multiple_of(bitstream_offset_alignment);
+            let bitstream_size = (bitstream_offset + width as u64 * height as u64 * 3 + 64 * 1024)
+                .next_multiple_of(bitstream_alignment);
             let bitstream = create_video_buffer(frame, bitstream_size, &profiles)
                 .map_err(|error| format!("create HEVC bitstream buffer: {error}"))?;
             let mut feedback = vk::QueryPoolVideoEncodeFeedbackCreateInfoKHR::default()
@@ -1920,10 +1921,6 @@ fn wait_for_fence(device: &ash::Device, fence: vk::Fence, operation: &str) -> Re
         Err(vk::Result::TIMEOUT) => Err(format!("timed out waiting for {operation}").into()),
         Err(error) => Err(format!("{operation} failed: {error}").into()),
     }
-}
-
-fn align_up(value: u64, alignment: u64) -> u64 {
-    value.div_ceil(alignment) * alignment
 }
 
 impl Drop for Encoder {

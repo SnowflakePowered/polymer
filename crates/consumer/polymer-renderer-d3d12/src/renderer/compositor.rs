@@ -446,63 +446,9 @@ impl D3d12Compositor {
         Ok((compositor, webrtc))
     }
 
-    /// Creates a swapchain compositor dedicated to one received connection.
-    pub fn new_default_for_stream(
-        window: &impl RenderWindow,
-        connection: u64,
-    ) -> Result<Self, Box<dyn Error>> {
-        Self::with_consumer(
-            window,
-            D3d12ConsumerDevice::new_default()?,
-            swapchain_target(window)?,
-            SwapchainMode::Dedicated(connection),
-        )
-    }
-
-    /// Creates an adapter-specific swapchain dedicated to one connection.
-    pub fn new_for_stream(
-        window: &impl RenderWindow,
-        adapter: AdapterLuid,
-        connection: u64,
-    ) -> Result<Self, Box<dyn Error>> {
-        Self::with_consumer(
-            window,
-            D3d12ConsumerDevice::new(adapter)?,
-            swapchain_target(window)?,
-            SwapchainMode::Dedicated(connection),
-        )
-    }
-
-    /// Creates a composition compositor on a retained device and queue owned
-    /// by the caller's graphics context. The references passed here transfer
-    /// into the compositor, so all local rendering and presentation use one
-    /// D3D12 device domain.
-    ///
-    /// # Safety
-    ///
-    /// See [`D3d12ConsumerDevice::from_external`].
-    pub unsafe fn new_for_shared_composition_from_external(
-        window: &impl RenderWindow,
-        adapter: AdapterLuid,
-        device: *mut c_void,
-        queue: *mut c_void,
-    ) -> Result<Self, Box<dyn Error>> {
-        let consumer = unsafe { D3d12ConsumerDevice::from_external(adapter, device, queue)? };
-        Self::with_consumer(
-            window,
-            consumer,
-            SwapchainTarget::Composition {
-                transparent: false,
-                sync_interval: 1,
-            },
-            SwapchainMode::Shared,
-        )
-    }
-
     /// Creates an adapter-specific composition swapchain dedicated to one
-    /// connection. Unlike the external-device constructor, this owns a
-    /// separate D3D12 queue so unrelated UI raster and presents cannot
-    /// serialize ahead of the guest frame.
+    /// connection. It owns a separate D3D12 queue so unrelated UI raster and
+    /// presents cannot serialize ahead of the guest frame.
     pub fn new_for_stream_composition(
         window: &impl RenderWindow,
         adapter: AdapterLuid,
@@ -511,32 +457,6 @@ impl D3d12Compositor {
         Self::with_consumer(
             window,
             D3d12ConsumerDevice::new(adapter)?,
-            SwapchainTarget::Composition {
-                transparent: false,
-                sync_interval: 0,
-            },
-            SwapchainMode::Dedicated(connection),
-        )
-    }
-
-    /// Creates an opaque composition swapchain dedicated to one captured
-    /// connection on a caller-owned D3D12 device and queue. The swapchain can
-    /// be attached directly to a Windows.UI.Composition visual.
-    ///
-    /// # Safety
-    ///
-    /// See [`D3d12ConsumerDevice::from_external`].
-    pub unsafe fn new_for_stream_composition_from_external(
-        window: &impl RenderWindow,
-        adapter: AdapterLuid,
-        device: *mut c_void,
-        queue: *mut c_void,
-        connection: u64,
-    ) -> Result<Self, Box<dyn Error>> {
-        let consumer = unsafe { D3d12ConsumerDevice::from_external(adapter, device, queue)? };
-        Self::with_consumer(
-            window,
-            consumer,
             SwapchainTarget::Composition {
                 transparent: false,
                 sync_interval: 0,

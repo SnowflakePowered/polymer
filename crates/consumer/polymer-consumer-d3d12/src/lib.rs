@@ -4,21 +4,18 @@
 use polymer_ipc::StreamReady;
 use polymer_protocol::{AdapterLuid, ExternalImageKind, ExternalSyncKind, MAX_IMAGE_SLOTS};
 use std::{ffi::c_void, time::Duration};
-use windows::{
-    Win32::{
-        Foundation::{CloseHandle, E_INVALIDARG, E_POINTER, HANDLE, LUID, WAIT_OBJECT_0},
-        Graphics::{
-            Direct3D::D3D_FEATURE_LEVEL_11_0,
-            Direct3D12::{
-                D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC,
-                D3D12_COMMAND_QUEUE_FLAG_NONE, D3D12CreateDevice, ID3D12CommandQueue, ID3D12Device,
-                ID3D12Fence, ID3D12Resource,
-            },
-            Dxgi::{CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, IDXGIAdapter1, IDXGIFactory4},
+use windows::Win32::{
+    Foundation::{CloseHandle, E_INVALIDARG, E_POINTER, HANDLE, LUID, WAIT_OBJECT_0},
+    Graphics::{
+        Direct3D::D3D_FEATURE_LEVEL_11_0,
+        Direct3D12::{
+            D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC,
+            D3D12_COMMAND_QUEUE_FLAG_NONE, D3D12CreateDevice, ID3D12CommandQueue, ID3D12Device,
+            ID3D12Fence, ID3D12Resource,
         },
-        System::Threading::{CreateEventW, ResetEvent, WaitForSingleObject},
+        Dxgi::{CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, IDXGIAdapter1, IDXGIFactory4},
     },
-    core::Interface,
+    System::Threading::{CreateEventW, ResetEvent, WaitForSingleObject},
 };
 
 pub struct D3d12ConsumerDevice {
@@ -50,49 +47,6 @@ impl D3d12ConsumerDevice {
             })?;
             Self::from_adapter(factory, adapter)
         }
-    }
-
-    /// Adopts retained COM references to a D3D12 device and direct queue that
-    /// were created by another graphics frontend on `adapter_luid`.
-    ///
-    /// # Safety
-    ///
-    /// `device` and `queue` must each carry one owned COM reference, must be
-    /// ABI-compatible `ID3D12Device` and `ID3D12CommandQueue` pointers, and the
-    /// queue must belong to the device on `adapter_luid`. Ownership of both
-    /// references transfers to the returned consumer.
-    pub unsafe fn from_external(
-        adapter_luid: AdapterLuid,
-        device: *mut c_void,
-        queue: *mut c_void,
-    ) -> windows::core::Result<Self> {
-        if device.is_null() || queue.is_null() {
-            return Err(windows::core::Error::from_hresult(E_POINTER));
-        }
-        // Adopt the transferred references immediately so every later error
-        // path releases them normally.
-        let device = unsafe { ID3D12Device::from_raw(device) };
-        let queue = unsafe { ID3D12CommandQueue::from_raw(queue) };
-        let factory = unsafe { CreateDXGIFactory2::<IDXGIFactory4>(DXGI_CREATE_FACTORY_FLAGS(0))? };
-        let adapter = unsafe {
-            factory.EnumAdapterByLuid::<IDXGIAdapter1>(LUID {
-                LowPart: adapter_luid.low_part,
-                HighPart: adapter_luid.high_part,
-            })?
-        };
-        let description = unsafe { adapter.GetDesc1()? };
-        if description.AdapterLuid.LowPart != adapter_luid.low_part
-            || description.AdapterLuid.HighPart != adapter_luid.high_part
-        {
-            return Err(windows::core::Error::from_hresult(E_INVALIDARG));
-        }
-        Ok(Self {
-            factory,
-            adapter,
-            device,
-            queue,
-            adapter_luid,
-        })
     }
 
     unsafe fn from_adapter(

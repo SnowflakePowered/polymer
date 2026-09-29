@@ -68,7 +68,9 @@ const ICE_GATHERING_TIMEOUT: Duration = Duration::from_secs(1);
 static NEXT_WHEP_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 
 mod frame;
-pub use frame::{Codec, EncodedFrame, VideoFrame, VideoSwapchain};
+mod session;
+pub use frame::{Codec, EncodeError, EncodedFrame, VideoFrame, VideoSwapchain};
+pub use session::{EncoderSession, NativeEncoder};
 
 /// Publish targets and their capture connections. Tracks are created for
 /// every configured target index before signaling starts: a WHEP session can
