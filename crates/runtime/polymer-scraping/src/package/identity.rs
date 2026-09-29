@@ -45,6 +45,7 @@ impl Package {
             .import_package(
                 IdentifiedLaunchable {
                     path: package.uri,
+                    entrypoint: seed.entrypoint,
                     binary_blake3,
                     serial: package.serial,
                     title_id: package.title_id,

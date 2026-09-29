@@ -111,6 +111,7 @@ pub(super) async fn op_library_launchables_add(
     #[string] path: String,
     #[string] platform: Option<String>,
     #[string] parent_binary_id: Option<String>,
+    #[serde] artifact: Option<InstalledArtifact>,
 ) -> Result<serde_json::Value, JsErrorBox> {
     library(&state)?
         .launchables_add
@@ -118,6 +119,7 @@ pub(super) async fn op_library_launchables_add(
             path,
             platform,
             parent_binary_id,
+            artifact,
         })
         .await
         .map_err(|_| "library service is unavailable".to_owned())

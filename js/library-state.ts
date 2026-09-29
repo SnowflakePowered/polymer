@@ -34,7 +34,7 @@ export class LibraryState {
     private scraping: ScrapingApi,
     private changed: (snapshot: LibrarySnapshot) => void,
     private failed: (error: unknown) => void,
-    private install: (installable: InstallablePackage) => Promise<StorageArtifact>,
+    private install: (installable: InstallablePackage) => Promise<{ storage: string; artifact: StorageArtifact }>,
   ) {}
 
   start() {
@@ -96,8 +96,11 @@ export class LibraryState {
         this.imports.delete(token);
         this.publish();
         await Promise.all(result.installables.map(async item => {
-          await this.install(item);
-          const { scrapeJob: job } = await this.library.launchables.add({ path: item.path, platform: item.platform });
+          const { storage, artifact } = await this.install(item);
+          const { scrapeJob: job } = await this.library.launchables.add({
+            path: item.path, platform: item.platform,
+            artifact: { storage, id: artifact.id, entrypoint: artifact.entrypoint },
+          });
           if (job && !this.jobs.has(job.id)) this.updateJob(job, true);
         }));
         this.refresh();

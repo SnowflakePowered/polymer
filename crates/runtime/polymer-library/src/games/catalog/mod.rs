@@ -120,7 +120,8 @@ impl GameCatalog {
                 r#"
                 SELECT COALESCE(binary.parent_binary_id, binary.id), root.platform,
                        launchable.id, binary.id, launchable.path, binary.blake3,
-                       binary.serial, binary.title_id, binary.parent_binary_id, manifest.manifest_json
+                       binary.serial, binary.title_id, binary.parent_binary_id, manifest.manifest_json,
+                       launchable.entrypoint
                 FROM launchables AS launchable
                 LEFT JOIN launchable_manifests AS manifest ON manifest.launchable_id = launchable.id
                 JOIN binaries AS binary ON binary.id = launchable.binary_id
@@ -152,6 +153,7 @@ impl GameCatalog {
                 id: Self::uuid(row.get_value(2)?)?,
                 binary_id,
                 path: row.get::<String>(4)?.parse()?,
+                entrypoint: Self::optional_text(row.get_value(10)?)?,
                 binary_blake3: Self::blob(row.get_value(5)?)?.into_boxed_slice(),
                 serial: Self::optional_text(row.get_value(6)?)?,
                 title_id: Self::optional_text(row.get_value(7)?)?,
@@ -276,10 +278,15 @@ impl GameCatalog {
         transaction
             .execute(
                 r#"
-                INSERT INTO launchables (id, binary_id, path) VALUES (?1, ?2, ?3)
-                ON CONFLICT(path) DO UPDATE SET binary_id = excluded.binary_id
+                INSERT INTO launchables (id, binary_id, path, entrypoint) VALUES (?1, ?2, ?3, ?4)
+                ON CONFLICT(path) DO UPDATE SET binary_id = excluded.binary_id, entrypoint = excluded.entrypoint
                 "#,
-                vec![Self::id(id), Self::id(binary_id), Value::from(path)],
+                vec![
+                    Self::id(id),
+                    Self::id(binary_id),
+                    Value::from(path),
+                    input.entrypoint.clone().map_or(Value::Null, Value::from),
+                ],
             )
             .await?;
         if let Some(previous) = previous_binary.filter(|previous| *previous != binary_id) {
@@ -318,6 +325,7 @@ impl GameCatalog {
                 id,
                 binary_id,
                 path: input.path,
+                entrypoint: input.entrypoint,
                 binary_blake3: Box::new(input.binary_blake3),
                 serial: input.serial,
                 title_id: input.title_id,

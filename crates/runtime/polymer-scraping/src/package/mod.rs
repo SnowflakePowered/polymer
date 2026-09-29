@@ -49,6 +49,7 @@ pub struct Package {
 
 #[derive(Clone, Debug)]
 struct PackageImport {
+    entrypoint: Option<String>,
     parent_binary_id: Option<uuid::Uuid>,
     gumshoe: Vec<MetadataInput>,
     filename: Vec<MetadataInput>,
@@ -93,6 +94,13 @@ impl Package {
             self.bundle = Some(crate::ingest::CuePreparation::bundle(manifest)?);
         }
         Ok(())
+    }
+
+    pub fn install(&mut self, uri: LaunchableUri, entrypoint: Option<String>) -> LaunchableUri {
+        if let Some(import) = &mut self.import {
+            import.entrypoint = entrypoint;
+        }
+        std::mem::replace(&mut self.uri, uri)
     }
 
     pub fn launch_path(&self) -> String {
@@ -182,6 +190,7 @@ impl Package {
             binary_digest: String::new(),
             installable: package.installable(),
             import: Some(PackageImport {
+                entrypoint: None,
                 parent_binary_id,
                 gumshoe,
                 filename,

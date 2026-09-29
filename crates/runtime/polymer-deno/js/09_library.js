@@ -70,7 +70,12 @@ export function createLibrary() {
       if (input === null || typeof input !== "object") throw new TypeError("launchable input must be an object");
       const path = optionalString(input.path, "path");
       if (path === null) throw new TypeError("path is required");
-      const result = await op_library_launchables_add(path, optionalString(input.platform, "platform"), input.parentBinaryId == null ? null : uuid(input.parentBinaryId, "parentBinaryId"));
+      const artifact = input.artifact == null ? null : {
+        storage: uuid(input.artifact.storage, "artifact.storage"),
+        id: String(input.artifact.id),
+        entrypoint: optionalString(input.artifact.entrypoint, "artifact.entrypoint"),
+      };
+      const result = await op_library_launchables_add(path, optionalString(input.platform, "platform"), input.parentBinaryId == null ? null : uuid(input.parentBinaryId, "parentBinaryId"), artifact);
       return {
         ...result,
         launchable: new Package(result.launchable),
