@@ -30,14 +30,14 @@ impl Handler<Inspect> for StorageActor {
     type Result = ResponseActFuture<Self, Result<StorageInspection, StorageError>>;
 
     fn handle(&mut self, Inspect { platform, id }: Inspect, _: &mut Context<Self>) -> Self::Result {
-        let installing = self.installing.clone();
         self.execute(move |manager, _| async move {
             let id = Self::parse(&id)?;
-            let busy = installing.contains(&id);
+            let key = ExclusiveResourceKey::Resource(id);
+            let busy = key.is_held();
             let _lease = (!busy)
-                .then(|| ExclusiveResourceKey::Resource(id).acquire())
+                .then(|| key.acquire())
                 .transpose()
-                .map_err(|error| error.to_string())?;
+                .map_err(StorageError::from_display)?;
             let mut inspection = manager
                 .inspect(&platform, id)
                 .await
@@ -56,7 +56,7 @@ impl Handler<Recover> for StorageActor {
             let id = Self::parse(&id)?;
             let _lease = ExclusiveResourceKey::Resource(id)
                 .acquire()
-                .map_err(|error| error.to_string())?;
+                .map_err(StorageError::from_display)?;
             manager
                 .open(StorageKind::Nand, &platform, id)
                 .await
@@ -64,7 +64,7 @@ impl Handler<Recover> for StorageActor {
                 .as_nand()
                 .ok_or("device is not a NAND")?
                 .recover()
-                .map_err(|error| error.to_string())?;
+                .map_err(StorageError::from_display)?;
             manager
                 .inspect(&platform, id)
                 .await
@@ -82,7 +82,6 @@ impl Handler<Install> for StorageActor {
         _: &mut Context<Self>,
     ) -> Self::Result {
         let installs = self.installs.clone();
-        let installing = self.installing.clone();
         self.execute(move |manager, _| async move {
             let id = Self::parse(&id)?;
             let filename = path
@@ -106,10 +105,9 @@ impl Handler<Install> for StorageActor {
             publish("queued", Value::Null);
             let result = async {
                 let _queue = installs.lock().await;
-                installing.insert(id);
                 let _lease = ExclusiveResourceKey::Resource(id)
                     .acquire()
-                    .map_err(|error| error.to_string())?;
+                    .map_err(StorageError::from_display)?;
                 let running = publish.clone();
                 manager
                     .install(&platform, id, &path, move |status| {
@@ -119,7 +117,6 @@ impl Handler<Install> for StorageActor {
                     .map_err(StorageError::from)
             }
             .await;
-            installing.remove(&id);
             match &result {
                 Ok(artifact) => publish("complete", json!(artifact)),
                 Err(error) => publish("failed", json!(error.to_string())),
@@ -145,7 +142,7 @@ impl Handler<Bootstrap> for StorageActor {
             let id = Self::parse(&id)?;
             let _lease = ExclusiveResourceKey::Resource(id)
                 .acquire()
-                .map_err(|error| error.to_string())?;
+                .map_err(StorageError::from_display)?;
             plugins
                 .bootstrap(
                     manager,
@@ -177,14 +174,14 @@ impl Handler<Uninstall> for StorageActor {
             let id = Self::parse(&id)?;
             let _lease = ExclusiveResourceKey::Resource(id)
                 .acquire()
-                .map_err(|error| error.to_string())?;
+                .map_err(StorageError::from_display)?;
             let nand = manager
                 .open(StorageKind::Nand, &platform, id)
                 .await
                 .map_err(StorageError::from_display)?
                 .as_nand()
                 .ok_or("device is not a NAND")?;
-            if nand.is_dirty().map_err(|error| error.to_string())? {
+            if nand.is_dirty().map_err(StorageError::from_display)? {
                 return Err(
                     "Recover the NAND's uncommitted changes before removing artifacts.".into(),
                 );
@@ -193,14 +190,14 @@ impl Handler<Uninstall> for StorageActor {
                 .root()
                 .artifacts()
                 .revision()
-                .map_err(|error| error.to_string())?
+                .map_err(StorageError::from_display)?
                 != revision
             {
                 return Err("NAND contents changed. Review the removal again.".into());
             }
             nand.uninstall(&ids.iter().map(String::as_str).collect::<Vec<_>>())
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(StorageError::from_display)?;
             nand.artifacts().await.map_err(StorageError::from_display)
         })
     }
@@ -218,7 +215,7 @@ impl Handler<PlanRemoval> for StorageActor {
             let id = Self::parse(&id)?;
             let _lease = ExclusiveResourceKey::Resource(id)
                 .acquire()
-                .map_err(|error| error.to_string())?;
+                .map_err(StorageError::from_display)?;
             let nand = manager
                 .open(StorageKind::Nand, &platform, id)
                 .await
@@ -230,7 +227,7 @@ impl Handler<PlanRemoval> for StorageActor {
                 .artifacts()
                 .affected(&ids.iter().map(String::as_str).collect::<Vec<_>>())
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(StorageError::from_display)?;
             Ok(StorageRemovalPlan {
                 requested: ids,
                 affected,

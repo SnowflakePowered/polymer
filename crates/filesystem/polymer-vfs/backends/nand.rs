@@ -5,8 +5,8 @@ use polymer_consolestorage::nand::VirtualNand;
 use uuid::Uuid;
 
 use crate::{
-    CompositeResourceLease, ExclusiveResourceKey, FinalizationReason, Materialized,
-    ResourceFactory, ResourceLease, VfsResult, Volume,
+    CompositeResourceLease, FinalizationReason, Materialized, ResourceFactory, ResourceLease,
+    VfsResult, Volume,
 };
 
 use super::storage::{StoragePermissions, materialize_volume};
@@ -36,20 +36,16 @@ where
         let nand = self.nand.clone();
         let permissions: StoragePermissions = Arc::new(move |path| nand.permissions(path));
 
-        let mut leases = self
-            .resource_ids
-            .iter()
-            .map(|id| ExclusiveResourceKey::Resource(*id).acquire())
-            .collect::<VfsResult<Vec<_>>>()?;
-        leases.push(Arc::new(NandStorageLease {
-            storage: storage.clone(),
-        }));
-        let lease = CompositeResourceLease::new(leases);
+        let lease = CompositeResourceLease::exclusive(self.resource_ids.iter().copied())?.with(
+            Arc::new(NandStorageLease {
+                storage: storage.clone(),
+            }),
+        );
         Ok(materialize_volume(
             storage,
             String::new(),
             permissions,
-            lease,
+            Arc::new(lease),
         ))
     }
 }

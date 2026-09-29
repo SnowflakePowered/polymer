@@ -15,9 +15,9 @@ use polymer_library::{
 };
 use polymer_pluginhost::filesystem::StorageFactories;
 use polymer_vfs::{
-    BatteryStorageFactory, CompositeResourceLease, ExclusiveResourceKey, FinalizationReason,
-    Materialized, MemoryCardStorageFactory, NandVolumeFactory, ResourceFactory, ResourceLease,
-    VfsError, VfsResult, Volume,
+    BatteryStorageFactory, CompositeResourceLease, FinalizationReason, Materialized,
+    MemoryCardStorageFactory, NandVolumeFactory, ResourceFactory, ResourceLease, VfsError,
+    VfsResult, Volume,
 };
 use serde_json::Value;
 use uuid::Uuid;
@@ -68,10 +68,7 @@ impl GameSavedNotification {
 
 impl ResourceFactory<dyn Volume> for SaveWatchFactory {
     fn materialize(&self) -> VfsResult<Materialized<dyn Volume>> {
-        let ownership = self
-            .exclusive
-            .map(|id| ExclusiveResourceKey::Resource(id).acquire())
-            .transpose()?;
+        let ownership = CompositeResourceLease::exclusive(self.exclusive)?;
         // Register before the emulator can access the mount so no save write
         // can race watcher creation.
         let watcher = self.saves.watch_saves(&[])?;
@@ -155,15 +152,12 @@ impl ResourceFactory<dyn Volume> for SaveWatchFactory {
             }),
         });
 
-        let mut leases = ownership.into_iter().collect::<Vec<_>>();
-        leases.push(history_lease);
-        leases.push(materialized.lease);
         Ok(Materialized {
             backend: materialized.backend,
             // Composite leases finalize in reverse: flush the mounted storage,
             // stop the watcher after one final synchronous checkpoint, then
             // release any outer profile lock.
-            lease: CompositeResourceLease::new(leases),
+            lease: Arc::new(ownership.with(history_lease).with(materialized.lease)),
         })
     }
 }
