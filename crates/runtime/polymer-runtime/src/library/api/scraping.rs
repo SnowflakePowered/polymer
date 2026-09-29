@@ -5,7 +5,7 @@ use polymer_deno::polymer::library::*;
 use serde_json::{Value, json};
 
 impl Handler<ScrapingJobs> for LibraryReader {
-    type Result = ResponseActFuture<Self, Result<Value, String>>;
+    type Result = ResponseActFuture<Self, Result<Value, LibraryError>>;
 
     fn handle(&mut self, _message: ScrapingJobs, _: &mut Context<Self>) -> Self::Result {
         let catalog = self.catalog.clone();
@@ -20,7 +20,7 @@ impl Handler<ScrapingJobs> for LibraryReader {
 }
 
 impl Handler<ScrapingStart> for LibraryBackend {
-    type Result = AtomicResponse<Self, Result<Value, String>>;
+    type Result = AtomicResponse<Self, Result<Value, LibraryError>>;
 
     fn handle(
         &mut self,
@@ -45,7 +45,7 @@ impl Handler<ScrapingStart> for LibraryBackend {
 }
 
 impl Handler<ScrapingJob> for LibraryReader {
-    type Result = ResponseActFuture<Self, Result<Value, String>>;
+    type Result = ResponseActFuture<Self, Result<Value, LibraryError>>;
 
     fn handle(&mut self, ScrapingJob { id }: ScrapingJob, _: &mut Context<Self>) -> Self::Result {
         let catalog = self.catalog.clone();
@@ -60,7 +60,7 @@ impl Handler<ScrapingJob> for LibraryReader {
 }
 
 impl Handler<ScrapingRetry> for LibraryBackend {
-    type Result = AtomicResponse<Self, Result<Value, String>>;
+    type Result = AtomicResponse<Self, Result<Value, LibraryError>>;
 
     fn handle(
         &mut self,
@@ -79,7 +79,7 @@ impl Handler<ScrapingRetry> for LibraryBackend {
 }
 
 impl Handler<ScrapingScrapers> for LibraryReader {
-    type Result = Result<Value, String>;
+    type Result = Result<Value, LibraryError>;
 
     fn handle(&mut self, _: ScrapingScrapers, _: &mut Context<Self>) -> Self::Result {
         Ok(Value::Array(self.scraping.scrapers().iter().map(|plugin| json!({
@@ -92,7 +92,7 @@ impl Handler<ScrapingScrapers> for LibraryReader {
 }
 
 impl Handler<ScrapingRefresh> for LibraryBackend {
-    type Result = AtomicResponse<Self, Result<(), String>>;
+    type Result = AtomicResponse<Self, Result<(), LibraryError>>;
 
     fn handle(
         &mut self,

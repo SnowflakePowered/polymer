@@ -3,7 +3,7 @@ use deno_error::JsErrorBox;
 use serde_json::Value;
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
-use super::PolymerHost;
+use super::{PolymerHost, ServiceCall, ServiceError};
 
 mod messages;
 pub use messages::*;
@@ -14,13 +14,10 @@ pub(super) async fn op_library_import(
     state: Rc<RefCell<OpState>>,
     #[string] path: String,
 ) -> Result<serde_json::Value, JsErrorBox> {
-    library(&state)?
+    Library::from_state(&state)?
         .import
-        .send(LibraryImport { path })
+        .call(LibraryImport { path })
         .await
-        .map_err(|_| "library service is unavailable".to_owned())
-        .and_then(|result| result)
-        .map_err(error)
 }
 
 #[op2]
@@ -32,31 +29,34 @@ pub(super) async fn op_library_import_key(
     #[serde] key: Vec<u8>,
     #[string] title_id: Option<String>,
 ) -> Result<ImportedKey, JsErrorBox> {
-    library(&state)?
+    Library::from_state(&state)?
         .import_key
-        .send(LibraryImportKey {
+        .call(LibraryImportKey {
             platform,
             namespace,
             key,
             title_id,
         })
         .await
-        .map_err(|_| "library service is unavailable".to_owned())
-        .and_then(|result| result)
-        .map_err(error)
 }
 
-fn library(state: &Rc<RefCell<OpState>>) -> Result<Library, JsErrorBox> {
-    let host = state.borrow().borrow::<Arc<dyn PolymerHost>>().clone();
-    host.library()
-        .ok_or_else(|| JsErrorBox::generic("library service is unavailable"))
+impl ServiceError for LibraryError {
+    fn unavailable(_: actix::MailboxError) -> JsErrorBox {
+        JsErrorBox::generic("library service is unavailable")
+    }
+
+    fn into_js(self) -> JsErrorBox {
+        match self {
+            Self::Type(message) => JsErrorBox::type_error(message),
+            Self::Generic(message) => JsErrorBox::generic(message),
+        }
+    }
 }
 
-fn error(error: String) -> JsErrorBox {
-    if let Some(message) = error.strip_prefix("TypeError: ") {
-        JsErrorBox::type_error(message.to_owned())
-    } else {
-        JsErrorBox::generic(error)
+impl Library {
+    fn from_state(state: &Rc<RefCell<OpState>>) -> Result<Self, JsErrorBox> {
+        let host = state.borrow().borrow::<Arc<dyn PolymerHost>>().clone();
+        host.library().map_err(JsErrorBox::generic)
     }
 }
 
@@ -66,13 +66,10 @@ pub(super) async fn op_library_games_list(
     state: Rc<RefCell<OpState>>,
     #[string] platform: Option<String>,
 ) -> Result<serde_json::Value, JsErrorBox> {
-    library(&state)?
+    Library::from_state(&state)?
         .games_list
-        .send(GamesList { platform })
+        .call(GamesList { platform })
         .await
-        .map_err(|_| "library service is unavailable".to_owned())
-        .and_then(|result| result)
-        .map_err(error)
 }
 
 #[op2]
@@ -81,13 +78,10 @@ pub(super) async fn op_library_games_get(
     state: Rc<RefCell<OpState>>,
     #[string] id: String,
 ) -> Result<serde_json::Value, JsErrorBox> {
-    library(&state)?
+    Library::from_state(&state)?
         .games_get
-        .send(GamesGet { id })
+        .call(GamesGet { id })
         .await
-        .map_err(|_| "library service is unavailable".to_owned())
-        .and_then(|result| result)
-        .map_err(error)
 }
 
 #[op2]
@@ -95,13 +89,10 @@ pub(super) async fn op_library_games_delete(
     state: Rc<RefCell<OpState>>,
     #[string] id: String,
 ) -> Result<(), JsErrorBox> {
-    library(&state)?
+    Library::from_state(&state)?
         .games_delete
-        .send(GamesDelete { id })
+        .call(GamesDelete { id })
         .await
-        .map_err(|_| "library service is unavailable".to_owned())
-        .and_then(|result| result)
-        .map_err(error)
 }
 
 #[op2]
@@ -113,18 +104,15 @@ pub(super) async fn op_library_launchables_add(
     #[string] parent_binary_id: Option<String>,
     #[serde] artifact: Option<InstalledArtifact>,
 ) -> Result<serde_json::Value, JsErrorBox> {
-    library(&state)?
+    Library::from_state(&state)?
         .launchables_add
-        .send(LaunchablesAdd {
+        .call(LaunchablesAdd {
             path,
             platform,
             parent_binary_id,
             artifact,
         })
         .await
-        .map_err(|_| "library service is unavailable".to_owned())
-        .and_then(|result| result)
-        .map_err(error)
 }
 
 #[op2]
@@ -133,13 +121,10 @@ pub(super) async fn op_library_launchables_find(
     state: Rc<RefCell<OpState>>,
     #[string] uri: String,
 ) -> Result<serde_json::Value, JsErrorBox> {
-    library(&state)?
+    Library::from_state(&state)?
         .launchables_find
-        .send(LaunchablesFind { uri })
+        .call(LaunchablesFind { uri })
         .await
-        .map_err(|_| "library service is unavailable".to_owned())
-        .and_then(|result| result)
-        .map_err(error)
 }
 
 #[op2]
@@ -147,13 +132,10 @@ pub(super) async fn op_library_launchables_delete(
     state: Rc<RefCell<OpState>>,
     #[string] id: String,
 ) -> Result<(), JsErrorBox> {
-    library(&state)?
+    Library::from_state(&state)?
         .launchables_delete
-        .send(LaunchablesDelete { id })
+        .call(LaunchablesDelete { id })
         .await
-        .map_err(|_| "library service is unavailable".to_owned())
-        .and_then(|result| result)
-        .map_err(error)
 }
 
 #[op2]
@@ -163,16 +145,13 @@ pub(super) async fn op_library_metadata_add(
     #[string] parent_binary_id: String,
     #[serde] input: serde_json::Value,
 ) -> Result<serde_json::Value, JsErrorBox> {
-    library(&state)?
+    Library::from_state(&state)?
         .metadata_add
-        .send(MetadataAdd {
+        .call(MetadataAdd {
             parent_binary_id,
             input,
         })
         .await
-        .map_err(|_| "library service is unavailable".to_owned())
-        .and_then(|result| result)
-        .map_err(error)
 }
 
 #[op2]
@@ -182,13 +161,10 @@ pub(super) async fn op_library_metadata_update(
     #[string] id: String,
     #[serde] input: serde_json::Value,
 ) -> Result<serde_json::Value, JsErrorBox> {
-    library(&state)?
+    Library::from_state(&state)?
         .metadata_update
-        .send(MetadataUpdate { id, input })
+        .call(MetadataUpdate { id, input })
         .await
-        .map_err(|_| "library service is unavailable".to_owned())
-        .and_then(|result| result)
-        .map_err(error)
 }
 
 #[op2]
@@ -196,13 +172,10 @@ pub(super) async fn op_library_metadata_delete(
     state: Rc<RefCell<OpState>>,
     #[string] id: String,
 ) -> Result<(), JsErrorBox> {
-    library(&state)?
+    Library::from_state(&state)?
         .metadata_delete
-        .send(MetadataDelete { id })
+        .call(MetadataDelete { id })
         .await
-        .map_err(|_| "library service is unavailable".to_owned())
-        .and_then(|result| result)
-        .map_err(error)
 }
 
 #[op2]
@@ -213,17 +186,14 @@ pub(super) async fn op_library_metadata_replace(
     #[string] source: String,
     #[serde] inputs: Vec<Value>,
 ) -> Result<serde_json::Value, JsErrorBox> {
-    library(&state)?
+    Library::from_state(&state)?
         .metadata_replace
-        .send(MetadataReplace {
+        .call(MetadataReplace {
             parent_binary_id,
             source,
             inputs,
         })
         .await
-        .map_err(|_| "library service is unavailable".to_owned())
-        .and_then(|result| result)
-        .map_err(error)
 }
 
 #[op2]
@@ -232,13 +202,10 @@ pub(super) async fn op_library_metadata_text(
     state: Rc<RefCell<OpState>>,
     #[string] id: String,
 ) -> Result<String, JsErrorBox> {
-    library(&state)?
+    Library::from_state(&state)?
         .metadata_text
-        .send(MetadataText { id })
+        .call(MetadataText { id })
         .await
-        .map_err(|_| "library service is unavailable".to_owned())
-        .and_then(|result| result)
-        .map_err(error)
 }
 
 #[op2]
@@ -247,13 +214,10 @@ pub(super) async fn op_library_metadata_url(
     state: Rc<RefCell<OpState>>,
     #[string] id: String,
 ) -> Result<String, JsErrorBox> {
-    library(&state)?
+    Library::from_state(&state)?
         .metadata_url
-        .send(MetadataUrl { id })
+        .call(MetadataUrl { id })
         .await
-        .map_err(|_| "library service is unavailable".to_owned())
-        .and_then(|result| result)
-        .map_err(error)
 }
 
 #[op2]
@@ -261,13 +225,10 @@ pub(super) async fn op_library_metadata_url(
 pub(super) async fn op_scraping_jobs(
     state: Rc<RefCell<OpState>>,
 ) -> Result<serde_json::Value, JsErrorBox> {
-    library(&state)?
+    Library::from_state(&state)?
         .scraping_jobs
-        .send(ScrapingJobs)
+        .call(ScrapingJobs)
         .await
-        .map_err(|_| "library service is unavailable".to_owned())
-        .and_then(|result| result)
-        .map_err(error)
 }
 
 #[op2]
@@ -277,16 +238,13 @@ pub(super) async fn op_scraping_start(
     #[string] root: String,
     #[string] trigger: String,
 ) -> Result<serde_json::Value, JsErrorBox> {
-    library(&state)?
+    Library::from_state(&state)?
         .scraping_start
-        .send(ScrapingStart {
+        .call(ScrapingStart {
             root_binary_id: root,
             trigger_binary_id: trigger,
         })
         .await
-        .map_err(|_| "library service is unavailable".to_owned())
-        .and_then(|result| result)
-        .map_err(error)
 }
 
 #[op2]
@@ -295,13 +253,10 @@ pub(super) async fn op_scraping_job(
     state: Rc<RefCell<OpState>>,
     #[string] id: String,
 ) -> Result<serde_json::Value, JsErrorBox> {
-    library(&state)?
+    Library::from_state(&state)?
         .scraping_job
-        .send(ScrapingJob { id })
+        .call(ScrapingJob { id })
         .await
-        .map_err(|_| "library service is unavailable".to_owned())
-        .and_then(|result| result)
-        .map_err(error)
 }
 
 #[op2]
@@ -310,13 +265,10 @@ pub(super) async fn op_scraping_retry(
     state: Rc<RefCell<OpState>>,
     #[string] id: String,
 ) -> Result<serde_json::Value, JsErrorBox> {
-    library(&state)?
+    Library::from_state(&state)?
         .scraping_retry
-        .send(ScrapingRetry { id })
+        .call(ScrapingRetry { id })
         .await
-        .map_err(|_| "library service is unavailable".to_owned())
-        .and_then(|result| result)
-        .map_err(error)
 }
 
 #[op2]
@@ -324,13 +276,10 @@ pub(super) async fn op_scraping_retry(
 pub(super) async fn op_scraping_scrapers(
     state: Rc<RefCell<OpState>>,
 ) -> Result<serde_json::Value, JsErrorBox> {
-    library(&state)?
+    Library::from_state(&state)?
         .scraping_scrapers
-        .send(ScrapingScrapers)
+        .call(ScrapingScrapers)
         .await
-        .map_err(|_| "library service is unavailable".to_owned())
-        .and_then(|result| result)
-        .map_err(error)
 }
 
 #[op2]
@@ -338,11 +287,8 @@ pub(super) async fn op_scraping_refresh(
     state: Rc<RefCell<OpState>>,
     #[string] plugin: String,
 ) -> Result<(), JsErrorBox> {
-    library(&state)?
+    Library::from_state(&state)?
         .scraping_refresh
-        .send(ScrapingRefresh { plugin })
+        .call(ScrapingRefresh { plugin })
         .await
-        .map_err(|_| "library service is unavailable".to_owned())
-        .and_then(|result| result)
-        .map_err(error)
 }

@@ -1,10 +1,16 @@
 mod messages;
 pub use messages::*;
 
-use super::PolymerHost;
+use super::{PolymerHost, ServiceCall, ServiceError};
 use deno_core::{OpState, op2};
 use deno_error::JsErrorBox;
 use std::{cell::RefCell, rc::Rc, sync::Arc};
+
+impl ServiceError for StorageError {
+    fn unavailable(error: actix::MailboxError) -> JsErrorBox {
+        JsErrorBox::generic(format!("storage actor unavailable: {error}"))
+    }
+}
 
 impl ConsoleStorage {
     fn from_state(state: &Rc<RefCell<OpState>>) -> Result<Self, JsErrorBox> {
@@ -22,11 +28,8 @@ pub(super) async fn op_consolestorage_recover(
 ) -> Result<StorageInspection, JsErrorBox> {
     ConsoleStorage::from_state(&state)?
         .recover
-        .send(Recover { platform, id })
+        .call(Recover { platform, id })
         .await
-        .map_err(|error| format!("storage actor unavailable: {error}"))
-        .and_then(|result| result.map_err(|error| error.to_string()))
-        .map_err(JsErrorBox::generic)
 }
 
 #[op2]
@@ -36,11 +39,8 @@ pub(super) async fn op_consolestorage_platforms(
 ) -> Result<Vec<StoragePlatform>, JsErrorBox> {
     ConsoleStorage::from_state(&state)?
         .platforms
-        .send(Platforms)
+        .call(Platforms)
         .await
-        .map_err(|error| format!("storage actor unavailable: {error}"))
-        .and_then(|result| result.map_err(|error| error.to_string()))
-        .map_err(JsErrorBox::generic)
 }
 
 #[op2]
@@ -52,11 +52,8 @@ pub(super) async fn op_consolestorage_inspect(
 ) -> Result<StorageInspection, JsErrorBox> {
     ConsoleStorage::from_state(&state)?
         .inspect
-        .send(Inspect { platform, id })
+        .call(Inspect { platform, id })
         .await
-        .map_err(|error| format!("storage actor unavailable: {error}"))
-        .and_then(|result| result.map_err(|error| error.to_string()))
-        .map_err(JsErrorBox::generic)
 }
 
 #[op2]
@@ -69,15 +66,12 @@ pub(super) async fn op_consolestorage_install(
 ) -> Result<StorageArtifact, JsErrorBox> {
     ConsoleStorage::from_state(&state)?
         .install
-        .send(Install {
+        .call(Install {
             platform,
             id,
             path: path.into(),
         })
         .await
-        .map_err(|error| format!("storage actor unavailable: {error}"))
-        .and_then(|result| result.map_err(|error| error.to_string()))
-        .map_err(JsErrorBox::generic)
 }
 
 #[op2]
@@ -90,15 +84,12 @@ pub(super) async fn op_consolestorage_bootstrap(
 ) -> Result<StorageInspection, JsErrorBox> {
     ConsoleStorage::from_state(&state)?
         .bootstrap
-        .send(Bootstrap {
+        .call(Bootstrap {
             platform,
             id,
             settings,
         })
         .await
-        .map_err(|error| format!("storage actor unavailable: {error}"))
-        .and_then(|result| result.map_err(|error| error.to_string()))
-        .map_err(JsErrorBox::generic)
 }
 
 #[op2]
@@ -112,16 +103,13 @@ pub(super) async fn op_consolestorage_uninstall(
 ) -> Result<Vec<StorageArtifact>, JsErrorBox> {
     ConsoleStorage::from_state(&state)?
         .uninstall
-        .send(Uninstall {
+        .call(Uninstall {
             platform,
             id,
             ids,
             revision,
         })
         .await
-        .map_err(|error| format!("storage actor unavailable: {error}"))
-        .and_then(|result| result.map_err(|error| error.to_string()))
-        .map_err(JsErrorBox::generic)
 }
 
 #[op2]
@@ -134,11 +122,8 @@ pub(super) async fn op_consolestorage_plan_removal(
 ) -> Result<StorageRemovalPlan, JsErrorBox> {
     ConsoleStorage::from_state(&state)?
         .plan_removal
-        .send(PlanRemoval { platform, id, ids })
+        .call(PlanRemoval { platform, id, ids })
         .await
-        .map_err(|error| format!("storage actor unavailable: {error}"))
-        .and_then(|result| result.map_err(|error| error.to_string()))
-        .map_err(JsErrorBox::generic)
 }
 
 #[op2]
@@ -146,13 +131,7 @@ pub(super) async fn op_consolestorage_plan_removal(
 pub(super) async fn op_consolestorage_list(
     state: Rc<RefCell<OpState>>,
 ) -> Result<Vec<StorageVolume>, JsErrorBox> {
-    ConsoleStorage::from_state(&state)?
-        .list
-        .send(List)
-        .await
-        .map_err(|error| format!("storage actor unavailable: {error}"))
-        .and_then(|result| result.map_err(|error| error.to_string()))
-        .map_err(JsErrorBox::generic)
+    ConsoleStorage::from_state(&state)?.list.call(List).await
 }
 
 #[op2]
@@ -163,11 +142,8 @@ pub(super) async fn op_consolestorage_supports(
 ) -> Result<bool, JsErrorBox> {
     ConsoleStorage::from_state(&state)?
         .supports
-        .send(Supports { kind, platform })
+        .call(Supports { kind, platform })
         .await
-        .map_err(|error| format!("storage actor unavailable: {error}"))
-        .and_then(|result| result.map_err(|error| error.to_string()))
-        .map_err(JsErrorBox::generic)
 }
 
 #[op2]
@@ -180,15 +156,12 @@ pub(super) async fn op_consolestorage_create(
 ) -> Result<StorageVolume, JsErrorBox> {
     ConsoleStorage::from_state(&state)?
         .create
-        .send(Create {
+        .call(Create {
             kind,
             platform,
             label,
         })
         .await
-        .map_err(|error| format!("storage actor unavailable: {error}"))
-        .and_then(|result| result.map_err(|error| error.to_string()))
-        .map_err(JsErrorBox::generic)
 }
 
 #[op2]
@@ -200,11 +173,8 @@ pub(super) async fn op_consolestorage_delete(
 ) -> Result<(), JsErrorBox> {
     ConsoleStorage::from_state(&state)?
         .delete
-        .send(Delete { kind, platform, id })
+        .call(Delete { kind, platform, id })
         .await
-        .map_err(|error| format!("storage actor unavailable: {error}"))
-        .and_then(|result| result.map_err(|error| error.to_string()))
-        .map_err(JsErrorBox::generic)
 }
 
 #[op2]
@@ -218,16 +188,13 @@ pub(super) async fn op_consolestorage_set_label(
 ) -> Result<StorageVolume, JsErrorBox> {
     ConsoleStorage::from_state(&state)?
         .set_label
-        .send(SetLabel {
+        .call(SetLabel {
             kind,
             platform,
             id,
             label,
         })
         .await
-        .map_err(|error| format!("storage actor unavailable: {error}"))
-        .and_then(|result| result.map_err(|error| error.to_string()))
-        .map_err(JsErrorBox::generic)
 }
 
 #[op2]
@@ -239,11 +206,8 @@ pub(super) async fn op_consolestorage_fork(
 ) -> Result<StorageVolume, JsErrorBox> {
     ConsoleStorage::from_state(&state)?
         .fork
-        .send(Fork { volume, label })
+        .call(Fork { volume, label })
         .await
-        .map_err(|error| format!("storage actor unavailable: {error}"))
-        .and_then(|result| result.map_err(|error| error.to_string()))
-        .map_err(JsErrorBox::generic)
 }
 
 #[op2]
@@ -254,11 +218,8 @@ pub(super) async fn op_consolestorage_saves(
 ) -> Result<Vec<StorageSave>, JsErrorBox> {
     ConsoleStorage::from_state(&state)?
         .saves
-        .send(ListSaves { volume })
+        .call(ListSaves { volume })
         .await
-        .map_err(|error| format!("storage actor unavailable: {error}"))
-        .and_then(|result| result.map_err(|error| error.to_string()))
-        .map_err(JsErrorBox::generic)
 }
 
 #[op2]
@@ -270,11 +231,8 @@ pub(super) async fn op_consolestorage_save_history(
 ) -> Result<Vec<StorageSaveCommit>, JsErrorBox> {
     ConsoleStorage::from_state(&state)?
         .save_history
-        .send(SaveHistory { volume, save })
+        .call(SaveHistory { volume, save })
         .await
-        .map_err(|error| format!("storage actor unavailable: {error}"))
-        .and_then(|result| result.map_err(|error| error.to_string()))
-        .map_err(JsErrorBox::generic)
 }
 
 #[op2]
@@ -287,15 +245,12 @@ pub(super) async fn op_consolestorage_save_restore(
 ) -> Result<StorageSaveCommit, JsErrorBox> {
     ConsoleStorage::from_state(&state)?
         .restore_save
-        .send(RestoreSave {
+        .call(RestoreSave {
             volume,
             save,
             commit,
         })
         .await
-        .map_err(|error| format!("storage actor unavailable: {error}"))
-        .and_then(|result| result.map_err(|error| error.to_string()))
-        .map_err(JsErrorBox::generic)
 }
 
 #[op2]
@@ -308,15 +263,12 @@ pub(super) async fn op_consolestorage_save_copy(
 ) -> Result<StorageSaveCommit, JsErrorBox> {
     ConsoleStorage::from_state(&state)?
         .copy_save
-        .send(CopySave {
+        .call(CopySave {
             volume,
             save,
             destination,
         })
         .await
-        .map_err(|error| format!("storage actor unavailable: {error}"))
-        .and_then(|result| result.map_err(|error| error.to_string()))
-        .map_err(JsErrorBox::generic)
 }
 
 #[op2]
@@ -327,9 +279,6 @@ pub(super) async fn op_consolestorage_save_delete(
 ) -> Result<(), JsErrorBox> {
     ConsoleStorage::from_state(&state)?
         .delete_save
-        .send(DeleteSave { volume, save })
+        .call(DeleteSave { volume, save })
         .await
-        .map_err(|error| format!("storage actor unavailable: {error}"))
-        .and_then(|result| result.map_err(|error| error.to_string()))
-        .map_err(JsErrorBox::generic)
 }

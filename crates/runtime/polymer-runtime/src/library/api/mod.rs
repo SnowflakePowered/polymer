@@ -3,6 +3,7 @@ mod import;
 mod metadata;
 mod scraping;
 
+use polymer_deno::polymer::library::LibraryError;
 use polymer_library::{Game, Launchable, MediaData, Metadata, MetadataData, MetadataInput};
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -85,19 +86,21 @@ impl LibraryApi for LibraryBackend {}
 impl LibraryApi for LibraryReader {}
 
 impl LibraryReader {
-    fn read<T: 'static>(
+    fn read<T: 'static, E: Into<LibraryError>>(
         &self,
-        future: impl Future<Output = Result<T, String>> + 'static,
-    ) -> ResponseActFuture<Self, Result<T, String>> {
-        Box::pin(future.into_actor(self))
+        future: impl Future<Output = Result<T, E>> + 'static,
+    ) -> ResponseActFuture<Self, Result<T, LibraryError>> {
+        Box::pin(async move { future.await.map_err(Into::into) }.into_actor(self))
     }
 }
 
 impl LibraryBackend {
-    fn mutate<T: 'static>(
+    fn mutate<T: 'static, E: Into<LibraryError>>(
         &self,
-        future: impl Future<Output = Result<T, String>> + 'static,
-    ) -> AtomicResponse<Self, Result<T, String>> {
-        AtomicResponse::new(Box::pin(future.into_actor(self)))
+        future: impl Future<Output = Result<T, E>> + 'static,
+    ) -> AtomicResponse<Self, Result<T, LibraryError>> {
+        AtomicResponse::new(Box::pin(
+            async move { future.await.map_err(Into::into) }.into_actor(self),
+        ))
     }
 }

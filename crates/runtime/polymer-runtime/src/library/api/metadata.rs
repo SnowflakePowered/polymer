@@ -7,7 +7,7 @@ use polymer_library::MediaData;
 use serde_json::Value;
 
 impl Handler<MetadataAdd> for LibraryBackend {
-    type Result = AtomicResponse<Self, Result<Value, String>>;
+    type Result = AtomicResponse<Self, Result<Value, LibraryError>>;
 
     fn handle(
         &mut self,
@@ -29,7 +29,7 @@ impl Handler<MetadataAdd> for LibraryBackend {
 }
 
 impl Handler<MetadataUpdate> for LibraryBackend {
-    type Result = AtomicResponse<Self, Result<Value, String>>;
+    type Result = AtomicResponse<Self, Result<Value, LibraryError>>;
 
     fn handle(
         &mut self,
@@ -48,7 +48,7 @@ impl Handler<MetadataUpdate> for LibraryBackend {
 }
 
 impl Handler<MetadataDelete> for LibraryBackend {
-    type Result = AtomicResponse<Self, Result<(), String>>;
+    type Result = AtomicResponse<Self, Result<(), LibraryError>>;
 
     fn handle(
         &mut self,
@@ -66,7 +66,7 @@ impl Handler<MetadataDelete> for LibraryBackend {
 }
 
 impl Handler<MetadataReplace> for LibraryBackend {
-    type Result = AtomicResponse<Self, Result<Value, String>>;
+    type Result = AtomicResponse<Self, Result<Value, LibraryError>>;
 
     fn handle(
         &mut self,
@@ -97,7 +97,7 @@ impl Handler<MetadataReplace> for LibraryBackend {
 }
 
 impl Handler<MetadataText> for LibraryReader {
-    type Result = ResponseActFuture<Self, Result<String, String>>;
+    type Result = ResponseActFuture<Self, Result<String, LibraryError>>;
 
     fn handle(&mut self, MetadataText { id }: MetadataText, _: &mut Context<Self>) -> Self::Result {
         let catalog = self.catalog.clone();
@@ -108,9 +108,9 @@ impl Handler<MetadataText> for LibraryReader {
                 .map_err(|error| {
                     let error = error.to_string();
                     if error.contains("media metadata does not have text") {
-                        format!("TypeError: {error}")
+                        LibraryError::Type(error)
                     } else {
-                        error
+                        LibraryError::Generic(error)
                     }
                 })
         })
@@ -118,7 +118,7 @@ impl Handler<MetadataText> for LibraryReader {
 }
 
 impl Handler<MetadataUrl> for LibraryReader {
-    type Result = ResponseActFuture<Self, Result<String, String>>;
+    type Result = ResponseActFuture<Self, Result<String, LibraryError>>;
 
     fn handle(&mut self, MetadataUrl { id }: MetadataUrl, _: &mut Context<Self>) -> Self::Result {
         let catalog = self.catalog.clone();
@@ -128,13 +128,13 @@ impl Handler<MetadataUrl> for LibraryReader {
             let media = catalog.media(id).await.map_err(|error| {
                 let error = error.to_string();
                 if error.contains("text metadata does not have a URL") {
-                    format!("TypeError: {error}")
+                    LibraryError::Type(error)
                 } else {
-                    error
+                    LibraryError::Generic(error)
                 }
             })?;
             match media.data {
-                MediaData::Inline(bytes) => Ok(format!(
+                MediaData::Inline(bytes) => Ok::<_, LibraryError>(format!(
                     "data:{};base64,{}",
                     media.media_type,
                     STANDARD.encode(bytes)

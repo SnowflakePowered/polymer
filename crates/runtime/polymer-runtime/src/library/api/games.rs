@@ -5,7 +5,7 @@ use polymer_deno::polymer::library::*;
 use serde_json::{Value, json};
 
 impl Handler<GamesList> for LibraryReader {
-    type Result = ResponseActFuture<Self, Result<Value, String>>;
+    type Result = ResponseActFuture<Self, Result<Value, LibraryError>>;
 
     fn handle(&mut self, GamesList { platform }: GamesList, _: &mut Context<Self>) -> Self::Result {
         let catalog = self.catalog.clone();
@@ -20,7 +20,7 @@ impl Handler<GamesList> for LibraryReader {
 }
 
 impl Handler<GamesGet> for LibraryReader {
-    type Result = ResponseActFuture<Self, Result<Value, String>>;
+    type Result = ResponseActFuture<Self, Result<Value, LibraryError>>;
 
     fn handle(&mut self, GamesGet { id }: GamesGet, _: &mut Context<Self>) -> Self::Result {
         let catalog = self.catalog.clone();
@@ -35,7 +35,7 @@ impl Handler<GamesGet> for LibraryReader {
 }
 
 impl Handler<LaunchablesFind> for LibraryReader {
-    type Result = ResponseActFuture<Self, Result<Value, String>>;
+    type Result = ResponseActFuture<Self, Result<Value, LibraryError>>;
 
     fn handle(
         &mut self,
@@ -61,7 +61,7 @@ impl Handler<LaunchablesFind> for LibraryReader {
 }
 
 impl Handler<GamesDelete> for LibraryBackend {
-    type Result = AtomicResponse<Self, Result<(), String>>;
+    type Result = AtomicResponse<Self, Result<(), LibraryError>>;
 
     fn handle(&mut self, GamesDelete { id }: GamesDelete, _: &mut Context<Self>) -> Self::Result {
         let catalog = self.catalog.clone();
@@ -75,7 +75,7 @@ impl Handler<GamesDelete> for LibraryBackend {
 }
 
 impl Handler<LaunchablesAdd> for LibraryBackend {
-    type Result = AtomicResponse<Self, Result<Value, String>>;
+    type Result = AtomicResponse<Self, Result<Value, LibraryError>>;
 
     fn handle(
         &mut self,
@@ -120,7 +120,7 @@ impl Handler<LaunchablesAdd> for LibraryBackend {
                 (None, _) => None,
                 (Some((uri, entrypoint)), [package]) => Some(package.install(uri, entrypoint)),
                 (Some(_), _) => {
-                    return Err("an installed artifact must identify as one package".into());
+                    return Err("an installed artifact must identify as one package".to_owned());
                 }
             };
             let imports = Self::import_games(&scraping, packages).await?;
@@ -144,7 +144,7 @@ impl Handler<LaunchablesAdd> for LibraryBackend {
 }
 
 impl Handler<LaunchablesDelete> for LibraryBackend {
-    type Result = AtomicResponse<Self, Result<(), String>>;
+    type Result = AtomicResponse<Self, Result<(), LibraryError>>;
 
     fn handle(
         &mut self,
