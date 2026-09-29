@@ -104,14 +104,7 @@ impl VirtualNand for VitaNand {
         saves: Option<Arc<dyn SaveRepo>>,
         _keys: &dyn crate::keys::KeyReader,
     ) -> Result<Arc<dyn MountableStorage>, Error> {
-        if saves
-            .as_ref()
-            .is_some_and(|saves| !saves.clone().into_any().is::<VitaSaveRepo>())
-        {
-            return Err(Error::Unsupported(
-                "Vita NAND requires a Vita save repository".to_owned(),
-            ));
-        }
+        <dyn SaveRepo>::require::<VitaSaveRepo>(saves.as_ref(), "Vita")?;
         let mut layers: Vec<Arc<dyn MountableStorage>> = Vec::new();
         if let Some(saves) = saves {
             layers.push(saves);

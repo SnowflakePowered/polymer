@@ -222,14 +222,6 @@ impl<'a> RawMemoryCardImage<'a> for VmuMemory<'a> {
         })
     }
 
-    fn new_mut(bytes: &'a mut [u8], blocks: u32) -> Result<Self, Self::Error> {
-        let capacity_blocks = Self::validate(bytes, blocks)?;
-        Ok(Self {
-            bytes: CardBytes::BorrowedMut(bytes),
-            capacity_blocks,
-        })
-    }
-
     fn into_owned(self) -> Vec<u8> {
         self.bytes.into_owned()
     }

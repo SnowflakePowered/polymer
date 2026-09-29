@@ -16,7 +16,7 @@ use uuid::Uuid;
 use self::dolphin::DolphinMemoryStorage;
 use self::gci::{Region, Save};
 use crate::impls::GameCubeDiscId;
-use crate::impls::memorycard::{MemoryCardStorage, RawMemoryCardImage};
+use crate::impls::memorycard::RawMemoryCardImage;
 use crate::savegame::{
     Package, SaveBlob, SaveBlobStream, SaveDepot, SaveDepotId, SaveDescriptor, SaveDescriptors,
     SaveGameSink, SaveWatcher, icons::IconSave,
@@ -24,8 +24,8 @@ use crate::savegame::{
 use crate::savegroups::TARGET_CAPACITY_PERCENT;
 use crate::storage::VolumeOverlay;
 use crate::{
-    BoxFuture, EntryKind, Error, MemoryCard, MemoryCardView, MountableStorage, SaveRepo,
-    SaveVersioning, Storage, VersionedStorage, VolumeStorage,
+    BoxFuture, EntryKind, Error, MemoryCard, MemoryCardView, SaveRepo, SaveVersioning, Storage,
+    VersionedStorage, VolumeStorage,
 };
 
 const SAVE_ROOT: &str = "card";
@@ -323,6 +323,8 @@ impl fmt::Debug for GameCubeMemoryCard {
 }
 
 impl MemoryCard for GameCubeMemoryCard {
+    const RAW_RECONCILE_NAME: &'static str = "gamecube-memory-card";
+
     fn storage(&self) -> &dyn Storage {
         self.storage.as_ref()
     }
@@ -343,31 +345,33 @@ impl MemoryCard for GameCubeMemoryCard {
     }
 
     fn view(&self, primary: &[SaveDepotId], format: &str) -> Result<MemoryCardView, Error> {
+        match format {
+            "dolphin" => {
+                let (region, projected) = self.project(primary)?;
+                MemoryCardView::new(
+                    Arc::new(crate::ReconcileStorage::new(
+                        DolphinMemoryStorage::new(self.clone(), region, &projected)?,
+                        "polymer-gci-writeback",
+                    )?),
+                    "",
+                )
+            }
+            "raw" => self.raw_view(primary),
+            _ => Err(Error::Unsupported(format!(
+                "GameCube memory cards do not support the '{format}' format"
+            ))),
+        }
+    }
+
+    fn raw_image(&self, primary: &[SaveDepotId]) -> Result<Vec<u8>, Error> {
         let (region, projected) = self.project(primary)?;
-        let storage: Arc<dyn MountableStorage> = match format {
-            "dolphin" => Arc::new(crate::ReconcileStorage::new(
-                DolphinMemoryStorage::new(self.clone(), region, &projected)?,
-                "polymer-gci-writeback",
-            )?),
-            "raw" => {
-                let blocks = u32::from(raw::card::MC251_BLOCKS);
-                let mut image = raw::card::MemoryCard::empty(blocks)?;
-                image.initialize_header(self.id, region)?;
-                for save in &projected {
-                    image.append_save(Save::new(save.as_bytes())?)?;
-                }
-                Arc::new(crate::ReconcileStorage::new(
-                    MemoryCardStorage::<Self>::new(self.clone(), primary, image.into_owned())?,
-                    "gamecube-memory-card",
-                )?)
-            }
-            _ => {
-                return Err(Error::Unsupported(format!(
-                    "GameCube memory cards do not support the '{format}' format"
-                )));
-            }
-        };
-        MemoryCardView::new(storage, "")
+        let mut image = raw::card::MemoryCard::empty(u32::from(raw::card::MC251_BLOCKS))?;
+        image.initialize_header(self.id, region)?;
+        let saves = projected
+            .iter()
+            .map(|save| Save::new(save.as_bytes()))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(image.with_saves(saves)?)
     }
 }
 

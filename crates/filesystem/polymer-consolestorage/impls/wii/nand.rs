@@ -88,6 +88,7 @@ impl VirtualNand for WiiNand {
         saves: Option<Arc<dyn SaveRepo>>,
         keys: &dyn crate::keys::KeyReader,
     ) -> Result<Arc<dyn MountableStorage>, Error> {
+        <dyn SaveRepo>::require::<WiiSaveRepo>(saves.as_ref(), "Wii")?;
         let mut files = Vec::new();
         for description in keys
             .list(&crate::keys::KeyQuery {
