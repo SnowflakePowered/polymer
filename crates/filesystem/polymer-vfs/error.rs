@@ -69,3 +69,22 @@ impl From<asar::Error> for VfsError {
         Self::Asar(value.to_string())
     }
 }
+
+impl From<polymer_consolestorage::InvalidPermissions> for VfsError {
+    fn from(value: polymer_consolestorage::InvalidPermissions) -> Self {
+        Self::InvalidPermissions(value.0)
+    }
+}
+
+impl From<polymer_consolestorage::Error> for VfsError {
+    fn from(error: polymer_consolestorage::Error) -> Self {
+        match error {
+            polymer_consolestorage::Error::InvalidPath(path) => Self::InvalidPath {
+                path,
+                reason: "outside the mounted storage".to_owned(),
+            },
+            polymer_consolestorage::Error::Io { source, .. } => Self::Io(source),
+            other => Self::Unsupported(other.to_string()),
+        }
+    }
+}

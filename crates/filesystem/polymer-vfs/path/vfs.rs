@@ -387,6 +387,10 @@ impl<S: PathSemantics> VfsPathBuf<S> {
         Self::from_units(S::encode(value.as_ref()))
     }
 
+    pub(crate) fn storage(path: &str) -> Self {
+        Self::new(format!("/{path}")).unwrap_or_else(|_| Self::root())
+    }
+
     pub fn from_units(units: Vec<S::Unit>) -> VfsResult<Self> {
         VfsPath::<S>::validate_path(&units)?;
         Ok(Self {

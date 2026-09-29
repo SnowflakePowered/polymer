@@ -24,10 +24,10 @@ const COUNTRY_FILE: &str = include_str!("./static/country.txt");
 const LANGUAGE_FILE: &str = include_str!("./static/language.txt");
 
 const LAYOUT: PermissionsTable = PermissionsTable::new(&[
-    ("", Permissions::all()),
+    ("", Permissions::READ_WRITE_EXECUTE),
     ("sys", Permissions::READ_EXECUTE),
     ("usr/title", Permissions::READ_EXECUTE),
-    ("usr/save", Permissions::all()),
+    ("usr/save", Permissions::READ_WRITE_EXECUTE),
 ]);
 
 pub struct WiiUNand {

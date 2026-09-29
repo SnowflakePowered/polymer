@@ -12,7 +12,7 @@ use crate::{
 
 const LAYOUT: PermissionsTable = PermissionsTable::new(&[
     ("", Permissions::READ_EXECUTE),
-    ("PSP/SAVEDATA", Permissions::all()),
+    ("PSP/SAVEDATA", Permissions::READ_WRITE_EXECUTE),
 ]);
 
 pub struct PspMemoryStick {

@@ -40,7 +40,7 @@ impl ResourceFactory<dyn Volume> for BatteryStorageFactory {
             .resource_id
             .map(|id| ExclusiveResourceKey::Resource(id).acquire())
             .transpose()?;
-        let view = self.repository.mount().map_err(console_storage_error)?;
+        let view = self.repository.mount()?;
         let volume = Arc::new(BatteryStorageVolume { view });
         let mut leases = ownership.into_iter().collect::<Vec<_>>();
         leases.push(volume.clone());
@@ -90,18 +90,8 @@ impl Volume for BatteryStorageVolume {
 impl ResourceLease for BatteryStorageVolume {
     fn finalize(&self, reason: FinalizationReason) -> VfsResult<()> {
         if reason != FinalizationReason::LaunchFailed {
-            self.view
-                .storage()
-                .finish(self.view.entry())
-                .map_err(console_storage_error)?;
+            self.view.storage().finish(self.view.entry())?;
         }
         Ok(())
-    }
-}
-
-fn console_storage_error(error: polymer_consolestorage::Error) -> VfsError {
-    match error {
-        polymer_consolestorage::Error::Io { source, .. } => VfsError::Io(source),
-        error => VfsError::Unsupported(error.to_string()),
     }
 }

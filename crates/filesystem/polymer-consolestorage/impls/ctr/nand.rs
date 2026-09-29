@@ -134,13 +134,13 @@ impl VirtualNand for CtrNand {
 
     fn permissions(&self, path: &str) -> Permissions {
         if path.is_empty() {
-            return Permissions::all();
+            return Permissions::READ_WRITE_EXECUTE;
         }
         if !Layout::valid_path(path) {
             return Permissions::empty();
         }
         if Layout::profile_path(path) || Archive::from_path(path).is_some() {
-            return Permissions::all();
+            return Permissions::READ_WRITE_EXECUTE;
         }
         // Parent directories must permit first-save creation. Content remains read-only.
         if path.starts_with(&format!("{}/title/", Layout::SD))
@@ -149,7 +149,7 @@ impl VirtualNand for CtrNand {
             return Permissions::READ_EXECUTE;
         }
         if path == "sdmc" || path.starts_with("sdmc/") {
-            return Permissions::all();
+            return Permissions::READ_WRITE_EXECUTE;
         }
         Permissions::READ_EXECUTE
     }

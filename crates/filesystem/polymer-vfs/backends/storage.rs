@@ -95,7 +95,7 @@ impl DirectoryNode for StorageDirectoryNode {
     fn set_metadata(&self, changes: MetadataChanges) -> VfsResult<()> {
         require_write(&self.permissions, &self.path)?;
         if changes.len.is_some() {
-            return Err(VfsError::IsDirectory(vfs_path(&self.path)));
+            return Err(VfsError::IsDirectory(VfsPathBuf::storage(&self.path)));
         }
         Ok(())
     }
@@ -157,7 +157,7 @@ impl DirectoryNode for StorageDirectoryNode {
         require_write(&self.permissions, &path)?;
         let exists = self.storage.exists(&path);
         if options.exclusive && exists {
-            return Err(VfsError::AlreadyExists(vfs_path(&path)));
+            return Err(VfsError::AlreadyExists(VfsPathBuf::storage(&path)));
         }
         if !exists {
             self.storage
@@ -175,7 +175,7 @@ impl DirectoryNode for StorageDirectoryNode {
         let path = child(&self.path, &name.to_string_lossy());
         require_write(&self.permissions, &path)?;
         if self.storage.exists(&path) {
-            return Err(VfsError::AlreadyExists(vfs_path(&path)));
+            return Err(VfsError::AlreadyExists(VfsPathBuf::storage(&path)));
         }
         self.storage
             .create_dir_all(&path)
@@ -195,9 +195,11 @@ impl DirectoryNode for StorageDirectoryNode {
             .metadata(&path)
             .map_err(|error| storage_error(error, &path))?;
         match (kind, metadata.kind) {
-            (RemoveKind::File, EntryKind::Directory) => Err(VfsError::IsDirectory(vfs_path(&path))),
+            (RemoveKind::File, EntryKind::Directory) => {
+                Err(VfsError::IsDirectory(VfsPathBuf::storage(&path)))
+            }
             (RemoveKind::Directory, EntryKind::File) => {
-                Err(VfsError::NotDirectory(vfs_path(&path)))
+                Err(VfsError::NotDirectory(VfsPathBuf::storage(&path)))
             }
             _ => self
                 .storage
@@ -400,7 +402,7 @@ impl OpenFile for StorageOpenFile {
 
     fn write(&self, offset: u64, buffer: &[u8]) -> VfsResult<usize> {
         if !can_write(&self.permissions, &self.path) {
-            return Err(VfsError::PermissionDenied(vfs_path(&self.path)));
+            return Err(VfsError::PermissionDenied(VfsPathBuf::storage(&self.path)));
         }
         self.handle
             .write_at(offset, buffer)
@@ -438,14 +440,14 @@ fn can_write(permissions: &StoragePermissions, path: &str) -> bool {
 fn require_read(permissions: &StoragePermissions, path: &str) -> VfsResult<()> {
     match can_read(permissions, path) {
         true => Ok(()),
-        false => Err(VfsError::PermissionDenied(vfs_path(path))),
+        false => Err(VfsError::PermissionDenied(VfsPathBuf::storage(path))),
     }
 }
 
 fn require_write(permissions: &StoragePermissions, path: &str) -> VfsResult<()> {
     match can_write(permissions, path) {
         true => Ok(()),
-        false => Err(VfsError::PermissionDenied(vfs_path(path))),
+        false => Err(VfsError::PermissionDenied(VfsPathBuf::storage(path))),
     }
 }
 
@@ -466,23 +468,19 @@ fn rebase(root: &str, path: &VfsPath) -> String {
     }
 }
 
-fn vfs_path(path: &str) -> VfsPathBuf {
-    VfsPathBuf::new(format!("/{path}")).unwrap_or_else(|_| VfsPathBuf::root())
-}
-
 pub(super) fn storage_error(error: StorageError, path: &str) -> VfsError {
-    match error {
-        StorageError::InvalidPath(path) => VfsError::InvalidPath {
-            path,
-            reason: "outside the mounted storage".to_owned(),
-        },
-        StorageError::Io { source, .. } => match source.kind() {
-            std::io::ErrorKind::NotFound => VfsError::NotFound(vfs_path(path)),
-            std::io::ErrorKind::PermissionDenied => VfsError::PermissionDenied(vfs_path(path)),
-            std::io::ErrorKind::AlreadyExists => VfsError::AlreadyExists(vfs_path(path)),
-            std::io::ErrorKind::DirectoryNotEmpty => VfsError::DirectoryNotEmpty(vfs_path(path)),
+    match VfsError::from(error) {
+        VfsError::Io(source) => match source.kind() {
+            std::io::ErrorKind::NotFound => VfsError::NotFound(VfsPathBuf::storage(path)),
+            std::io::ErrorKind::PermissionDenied => {
+                VfsError::PermissionDenied(VfsPathBuf::storage(path))
+            }
+            std::io::ErrorKind::AlreadyExists => VfsError::AlreadyExists(VfsPathBuf::storage(path)),
+            std::io::ErrorKind::DirectoryNotEmpty => {
+                VfsError::DirectoryNotEmpty(VfsPathBuf::storage(path))
+            }
             _ => VfsError::Io(source),
         },
-        other => VfsError::Unsupported(other.to_string()),
+        other => other,
     }
 }

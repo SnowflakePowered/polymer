@@ -1,22 +1,15 @@
 use std::sync::Arc;
 
 use polymer_consolestorage::MountableStorage;
-use polymer_consolestorage::Permissions as NandPermissions;
 use polymer_consolestorage::nand::VirtualNand;
 use uuid::Uuid;
 
 use crate::{
-    CompositeResourceLease, ExclusiveResourceKey, FinalizationReason, Materialized, Permissions,
-    ResourceFactory, ResourceLease, VfsError, VfsResult, Volume,
+    CompositeResourceLease, ExclusiveResourceKey, FinalizationReason, Materialized,
+    ResourceFactory, ResourceLease, VfsResult, Volume,
 };
 
 use super::storage::{StoragePermissions, materialize_volume};
-
-impl From<NandPermissions> for Permissions {
-    fn from(grants: NandPermissions) -> Self {
-        Self::from_bits_truncate(grants.bits())
-    }
-}
 
 pub struct NandVolumeFactory<N: ?Sized> {
     nand: Arc<N>,
@@ -41,7 +34,7 @@ where
     fn materialize(&self) -> VfsResult<Materialized<dyn Volume>> {
         let storage = self.storage.clone();
         let nand = self.nand.clone();
-        let permissions: StoragePermissions = Arc::new(move |path| nand.permissions(path).into());
+        let permissions: StoragePermissions = Arc::new(move |path| nand.permissions(path));
 
         let mut leases = self
             .resource_ids
@@ -67,9 +60,6 @@ struct NandStorageLease {
 
 impl ResourceLease for NandStorageLease {
     fn finalize(&self, _reason: FinalizationReason) -> VfsResult<()> {
-        self.storage.finish("").map_err(|error| match error {
-            polymer_consolestorage::Error::Io { source, .. } => VfsError::Io(source),
-            error => VfsError::Unsupported(error.to_string()),
-        })
+        Ok(self.storage.finish("")?)
     }
 }
