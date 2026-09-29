@@ -103,6 +103,13 @@ export const onLaunch = async (args: EmulatorLaunchArgs<Options, Readonly<{ card
     return {
         command: path("/DuckStation/duckstation-qt-x64-ReleaseLTCG.exe"),
         workingDirectory: args.filesystem.path("/DuckStation"),
+        env: [
+            ["USERPROFILE", args.filesystem.path("/User")],
+            ["APPDATA", args.filesystem.path("/User/AppData/Roaming")],
+            ["LOCALAPPDATA", args.filesystem.path("/User/AppData/Local")],
+            ["TEMP", args.filesystem.path("/User/Temp")],
+            ["TMP", args.filesystem.path("/User/Temp")],
+        ],
         argv: ["-batch", "-fastboot", "--", gamePath],
         isolate: true,
         hooks: { graphics: ["d3d11"], input: ["sdl3"] },

@@ -229,9 +229,6 @@ impl<'runtime> EmulatorWorker<'runtime> {
             filesystem
                 .validate_command(&launch.command)
                 .map_err(|error| DenoPluginError::Adapter(error.to_string()))?;
-            launch
-                .apply_profile_environment(filesystem.endpoint())
-                .map_err(|error| DenoPluginError::Adapter(error.to_string()))?;
         }
         launch.filesystem = filesystem;
         launch.quick_resume_accepted = quick_resume_accepted;

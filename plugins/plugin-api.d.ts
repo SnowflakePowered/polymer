@@ -280,7 +280,6 @@ declare module "polymer:api" {
         quickResume: Readonly<{ state: FileEntry, screenshot: FileEntry | null }> | null,
     }>;
 
-    /** onLaunch arguments. On Windows, USERPROFILE, APPDATA, LOCALAPPDATA, TEMP, and TMP default to /User unless the returned env overrides them. */
     export type EmulatorLaunchArgs<Options = unknown, Storages = Readonly<Record<string, Storage | undefined>>> =
         EmulatorLaunchSet & FirmwareContext & KeyReaderContext & Readonly<{
             launchPath: string,

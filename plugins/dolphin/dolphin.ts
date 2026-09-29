@@ -560,6 +560,13 @@ export const onLaunch = (args: EmulatorLaunchArgs<Options, Readonly<{ nand?: Sto
     return {
         command: args.filesystem.path(isMacos ? "/Dolphin/Contents/MacOS/Dolphin" : "/Dolphin/Dolphin.exe"),
         workingDirectory: args.filesystem.path(isMacos ? "/Dolphin/Contents/MacOS" : "/Dolphin"),
+        env: isMacos ? [] : [
+            ["USERPROFILE", args.filesystem.path("/User")],
+            ["APPDATA", args.filesystem.path("/User/AppData/Roaming")],
+            ["LOCALAPPDATA", args.filesystem.path("/User/AppData/Local")],
+            ["TEMP", args.filesystem.path("/User/Temp")],
+            ["TMP", args.filesystem.path("/User/Temp")],
+        ],
         argv,
         isolate: true,
         hooks: {

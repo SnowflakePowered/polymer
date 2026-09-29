@@ -62,34 +62,6 @@ impl EmulatorLaunchArguments {
         }
         .validate()
     }
-
-    pub(crate) fn apply_profile_environment(
-        &mut self,
-        endpoint: &polymer_vfs::FilesystemEndpoint,
-    ) -> Result<(), polymer_vfs::VfsError> {
-        if !cfg!(windows) {
-            return Ok(());
-        }
-        for (name, path) in [
-            ("USERPROFILE", "/User"),
-            ("APPDATA", "/User/AppData/Roaming"),
-            ("LOCALAPPDATA", "/User/AppData/Local"),
-            ("TEMP", "/User/Temp"),
-            ("TMP", "/User/Temp"),
-        ] {
-            if self
-                .env
-                .iter()
-                .any(|(existing, _)| existing.eq_ignore_ascii_case(name))
-            {
-                continue;
-            }
-            let path = polymer_vfs::VfsPathBuf::new(path)?;
-            self.env
-                .push((name.to_owned(), endpoint.project(path.as_path())));
-        }
-        Ok(())
-    }
 }
 
 pub use polymer_protocol::{GraphicsHook, Hooks, InputHook};

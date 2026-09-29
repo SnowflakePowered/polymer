@@ -94,6 +94,13 @@ export const onLaunch = async (args: EmulatorLaunchArgs<Options, Readonly<{ mem1
     return {
         command: args.filesystem.path("/PCSX2/pcsx2-qt.exe"),
         workingDirectory: args.filesystem.path("/PCSX2"),
+        env: [
+            ["USERPROFILE", args.filesystem.path("/User")],
+            ["APPDATA", args.filesystem.path("/User/AppData/Roaming")],
+            ["LOCALAPPDATA", args.filesystem.path("/User/AppData/Local")],
+            ["TEMP", args.filesystem.path("/User/Temp")],
+            ["TMP", args.filesystem.path("/User/Temp")],
+        ],
         argv: ["-portable", "-batch", "--", gamePath],
         isolate: false,
         hooks: { graphics: ["d3d11"], input: ["sdl3"] },
