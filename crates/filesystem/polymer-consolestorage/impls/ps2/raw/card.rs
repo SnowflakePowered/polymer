@@ -665,17 +665,6 @@ impl<'a> RawMemoryCardImage<'a> for MemoryCard<'a> {
         Ok(card)
     }
 
-    fn new_mut(bytes: &'a mut [u8], blocks: u32) -> Result<Self, Self::Error> {
-        let page_stride = Self::validate(bytes, blocks)?;
-        let mut card = Self {
-            bytes: CardBytes::BorrowedMut(bytes),
-            page_stride,
-            free_clusters: Vec::new(),
-        };
-        card.free_clusters = card.scan_free_clusters()?;
-        Ok(card)
-    }
-
     fn into_owned(self) -> Vec<u8> {
         self.bytes.into_owned()
     }

@@ -101,14 +101,7 @@ impl VirtualNand for CtrNand {
         saves: Option<Arc<dyn SaveRepo>>,
         keys: &dyn crate::keys::KeyReader,
     ) -> Result<Arc<dyn MountableStorage>, Error> {
-        if saves
-            .as_ref()
-            .is_some_and(|saves| !saves.clone().into_any().is::<CtrSaveRepo>())
-        {
-            return Err(Error::Unsupported(
-                "3DS NAND requires a 3DS save repository".to_owned(),
-            ));
-        }
+        <dyn SaveRepo>::require::<CtrSaveRepo>(saves.as_ref(), "3DS")?;
         let mut files = Vec::new();
         for description in keys
             .list(&crate::keys::KeyQuery {

@@ -58,6 +58,7 @@ impl VirtualNand for PspMemoryStick {
         saves: Option<Arc<dyn SaveRepo>>,
         _keys: &dyn crate::keys::KeyReader,
     ) -> Result<Arc<dyn MountableStorage>, Error> {
+        <dyn SaveRepo>::require::<PspSaveRepo>(saves.as_ref(), "PSP")?;
         let mut layers: Vec<Arc<dyn MountableStorage>> = Vec::new();
         if let Some(saves) = saves {
             layers.push(saves);

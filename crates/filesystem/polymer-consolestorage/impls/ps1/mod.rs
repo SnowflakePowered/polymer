@@ -13,10 +13,7 @@ use uuid::Uuid;
 
 pub(crate) use self::raw::Save as IconSaveContainer;
 use self::raw::{BLOCK_SIZE, NATIVE_ID_SIZE};
-use crate::impls::{
-    SonyProductCode,
-    memorycard::{MemoryCardStorage, RawMemoryCardImage},
-};
+use crate::impls::{SonyProductCode, memorycard::RawMemoryCardImage};
 use crate::savegame::{
     Package, SaveBlob, SaveBlobStream, SaveDepot, SaveDepotId, SaveDescriptor, SaveDescriptors,
     SaveGameSink, SaveWatcher, icons::IconSave,
@@ -24,8 +21,7 @@ use crate::savegame::{
 use crate::savegroups::{PS1_SAVE_GROUPS, TARGET_CAPACITY_PERCENT};
 use crate::storage::VolumeOverlay;
 use crate::{
-    BoxFuture, EntryKind, Error, MemoryCard, MemoryCardView, MountableStorage, SaveRepo, Storage,
-    VolumeStorage,
+    BoxFuture, EntryKind, Error, MemoryCard, MemoryCardView, SaveRepo, Storage, VolumeStorage,
 };
 
 const SAVE_HEADER_SIZE: usize = 12;
@@ -370,6 +366,8 @@ impl fmt::Debug for PlaystationMemoryCard {
 }
 
 impl MemoryCard for PlaystationMemoryCard {
+    const RAW_RECONCILE_NAME: &'static str = "ps1-memory-card";
+
     fn storage(&self) -> &dyn Storage {
         self.storage.as_ref()
     }
@@ -386,12 +384,11 @@ impl MemoryCard for PlaystationMemoryCard {
                 "PlayStation memory cards do not support the '{format}' format"
             )));
         }
-        let (image, _) = self.project(primary)?;
-        let storage: Arc<dyn MountableStorage> = Arc::new(crate::ReconcileStorage::new(
-            MemoryCardStorage::<Self>::new(self.clone(), primary, image)?,
-            "ps1-memory-card",
-        )?);
-        MemoryCardView::new(storage, "")
+        self.raw_view(primary)
+    }
+
+    fn raw_image(&self, primary: &[SaveDepotId]) -> Result<Vec<u8>, Error> {
+        Ok(self.project(primary)?.0)
     }
 }
 

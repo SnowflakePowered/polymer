@@ -397,16 +397,6 @@ impl<'a> RawMemoryCardImage<'a> for MemoryCard<'a> {
         })
     }
 
-    fn new_mut(bytes: &'a mut [u8], blocks: u32) -> Result<Self, Self::Error> {
-        let capacity_blocks = Self::validate_capacity(blocks)?;
-        let next_block = Self::find_next_block(bytes, capacity_blocks)?;
-        Ok(Self {
-            bytes: CardBytes::BorrowedMut(bytes),
-            next_block,
-            capacity_blocks,
-        })
-    }
-
     fn into_owned(self) -> Vec<u8> {
         self.bytes.into_owned()
     }

@@ -62,9 +62,29 @@ impl fmt::Debug for MemoryCardView {
 }
 
 pub trait MemoryCard: fmt::Debug + Send + Sync {
+    const RAW_RECONCILE_NAME: &'static str;
+
     fn storage(&self) -> &dyn Storage;
 
     fn view(&self, primary: &[SaveDepotId], format: &str) -> Result<MemoryCardView, Error>;
 
     fn reconcile(&self, primary: &[SaveDepotId]) -> Result<Reconcile, Error>;
+
+    fn raw_image(&self, primary: &[SaveDepotId]) -> Result<Vec<u8>, Error>;
+
+    fn raw_view(&self, primary: &[SaveDepotId]) -> Result<MemoryCardView, Error>
+    where
+        Self: Clone + Sized + 'static,
+    {
+        let image = self.raw_image(primary)?;
+        let storage =
+            crate::impls::memorycard::MemoryCardStorage::new(self.clone(), primary, image)?;
+        MemoryCardView::new(
+            Arc::new(crate::ReconcileStorage::new(
+                storage,
+                Self::RAW_RECONCILE_NAME,
+            )?),
+            "",
+        )
+    }
 }

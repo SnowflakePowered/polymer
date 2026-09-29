@@ -19,6 +19,20 @@ impl<T: Any + Send + Sync> DowncastSaveRepo for T {
     }
 }
 
+impl dyn SaveRepo {
+    pub(crate) fn require<R: SaveRepo>(
+        saves: Option<&Arc<Self>>,
+        console: &str,
+    ) -> Result<(), Error> {
+        if saves.is_some_and(|saves| !saves.clone().into_any().is::<R>()) {
+            return Err(Error::Unsupported(format!(
+                "{console} NAND requires a {console} save repository"
+            )));
+        }
+        Ok(())
+    }
+}
+
 #[async_trait]
 pub trait SaveRepo: VolumeStorage + SaveGameSink + DowncastSaveRepo {
     fn versioning(&self) -> &SaveVersioning;

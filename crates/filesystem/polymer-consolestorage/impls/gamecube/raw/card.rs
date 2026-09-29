@@ -222,19 +222,6 @@ impl<'a> RawMemoryCardImage<'a> for MemoryCard<'a> {
         Ok(card)
     }
 
-    fn new_mut(bytes: &'a mut [u8], blocks: u32) -> Result<Self, Self::Error> {
-        let (capacity_blocks, header_encoding) = Self::validate(bytes, blocks)?;
-        let mut card = Self {
-            bytes: CardBytes::BorrowedMut(bytes),
-            capacity_blocks,
-            encoding: Some(header_encoding),
-        };
-        if !card.has_saves()? {
-            card.encoding = None;
-        }
-        Ok(card)
-    }
-
     fn into_owned(self) -> Vec<u8> {
         self.bytes.into_owned()
     }

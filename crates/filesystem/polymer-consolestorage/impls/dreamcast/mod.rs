@@ -15,10 +15,7 @@ use uuid::Uuid;
 
 use self::vmi::Vmi;
 use self::vms::Save;
-use crate::impls::{
-    DreamcastProductId,
-    memorycard::{MemoryCardStorage, RawMemoryCardImage},
-};
+use crate::impls::{DreamcastProductId, memorycard::RawMemoryCardImage};
 use crate::savegame::{
     Package, SaveBlob, SaveBlobStream, SaveDepot, SaveDepotId, SaveDescriptor, SaveDescriptors,
     SaveGameSink, SaveWatcher, icons::IconSave,
@@ -398,6 +395,8 @@ impl fmt::Debug for DreamcastMemoryCard {
 }
 
 impl MemoryCard for DreamcastMemoryCard {
+    const RAW_RECONCILE_NAME: &'static str = "dreamcast-vmu";
+
     fn storage(&self) -> &dyn Storage {
         self.storage.as_ref()
     }
@@ -422,22 +421,16 @@ impl MemoryCard for DreamcastMemoryCard {
                 "Dreamcast memory cards do not support the '{format}' format"
             )));
         }
+        self.raw_view(primary)
+    }
+
+    fn raw_image(&self, primary: &[SaveDepotId]) -> Result<Vec<u8>, Error> {
         let (_, projected) = self.project(primary)?;
         let saves = projected
             .iter()
-            .map(|(_, save)| save.clone())
-            .collect::<Vec<_>>();
-        let mut image = raw::card::VmuMemory::empty(raw::card::USER_BLOCKS)?;
-        for save in &saves {
-            image.append_save(Save::new(save.vmi().as_bytes(), save.vms())?)?;
-        }
-        MemoryCardView::new(
-            Arc::new(crate::ReconcileStorage::new(
-                MemoryCardStorage::<Self>::new(self.clone(), primary, image.into_owned())?,
-                "dreamcast-vmu",
-            )?),
-            "",
-        )
+            .map(|(_, save)| Save::new(save.vmi().as_bytes(), save.vms()))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(raw::card::VmuMemory::empty(raw::card::USER_BLOCKS)?.with_saves(saves)?)
     }
 }
 

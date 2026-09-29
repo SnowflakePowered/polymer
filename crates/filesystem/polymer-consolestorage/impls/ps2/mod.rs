@@ -20,7 +20,7 @@ use self::pcsx2::Pcsx2MemoryStorage;
 pub(crate) use self::psu::Save as IconSaveContainer;
 use self::psu::Save;
 use crate::impls::SonyProductCode;
-use crate::impls::memorycard::{MemoryCardStorage, RawMemoryCardImage};
+use crate::impls::memorycard::RawMemoryCardImage;
 use crate::savegame::{
     Package, SaveBlob, SaveBlobStream, SaveDepot, SaveDepotId, SaveDescriptor, SaveDescriptors,
     SaveGameSink, SaveWatcher, icons::IconSave,
@@ -28,8 +28,7 @@ use crate::savegame::{
 use crate::savegroups::{PS2_SAVE_GROUPS, TARGET_CAPACITY_PERCENT};
 use crate::storage::VolumeOverlay;
 use crate::{
-    BoxFuture, EntryKind, Error, MemoryCard, MemoryCardView, MountableStorage, SaveRepo, Storage,
-    VolumeStorage,
+    BoxFuture, EntryKind, Error, MemoryCard, MemoryCardView, SaveRepo, Storage, VolumeStorage,
 };
 
 const SAVE_ROOT: &str = "card";
@@ -396,6 +395,8 @@ impl fmt::Debug for Playstation2MemoryCard {
 }
 
 impl MemoryCard for Playstation2MemoryCard {
+    const RAW_RECONCILE_NAME: &'static str = "ps2-memory-card";
+
     fn storage(&self) -> &dyn Storage {
         self.storage.as_ref()
     }
@@ -431,26 +432,32 @@ impl MemoryCard for Playstation2MemoryCard {
 
     fn view(&self, primary: &[SaveDepotId], format: &str) -> Result<MemoryCardView, Error> {
         Self::validate_capacity(CAPACITY_BLOCKS)?;
-        let saves = self.project_saves(primary, CAPACITY_BLOCKS)?;
-        let storage: Arc<dyn MountableStorage> = match format {
-            "raw" => {
-                let bytes = raw::card::MemoryCard::format(CAPACITY_BLOCKS, &saves, true)?;
+        match format {
+            "raw" => self.raw_view(primary),
+            "pcsx2" => MemoryCardView::new(
                 Arc::new(crate::ReconcileStorage::new(
-                    MemoryCardStorage::<Self>::new(self.clone(), primary, bytes)?,
-                    "ps2-memory-card",
-                )?)
-            }
-            "pcsx2" => Arc::new(crate::ReconcileStorage::new(
-                Pcsx2MemoryStorage::new(self.clone(), CAPACITY_BLOCKS, saves)?,
-                "polymer-pcsx2-writeback",
-            )?),
-            _ => {
-                return Err(Error::Unsupported(format!(
-                    "PlayStation 2 memory cards do not support the '{format}' format"
-                )));
-            }
-        };
-        MemoryCardView::new(storage, "")
+                    Pcsx2MemoryStorage::new(
+                        self.clone(),
+                        CAPACITY_BLOCKS,
+                        self.project_saves(primary, CAPACITY_BLOCKS)?,
+                    )?,
+                    "polymer-pcsx2-writeback",
+                )?),
+                "",
+            ),
+            _ => Err(Error::Unsupported(format!(
+                "PlayStation 2 memory cards do not support the '{format}' format"
+            ))),
+        }
+    }
+
+    fn raw_image(&self, primary: &[SaveDepotId]) -> Result<Vec<u8>, Error> {
+        let saves = self.project_saves(primary, CAPACITY_BLOCKS)?;
+        Ok(raw::card::MemoryCard::format(
+            CAPACITY_BLOCKS,
+            &saves,
+            true,
+        )?)
     }
 }
 
