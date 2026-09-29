@@ -338,14 +338,14 @@ pub(super) fn create_root_signature(
 
 pub(super) fn compositor_shader() -> &'static [u8] {
     br#"
-pub(super) struct VIn {
+struct VIn {
     float2 pos : POSITION;
     float2 uv : TEXCOORD0;
     float4 color : COLOR0;
     float2 local : TEXCOORD1;
     float4 clip : TEXCOORD2;
 };
-pub(super) struct VOut {
+struct VOut {
     float4 pos : SV_POSITION;
     float2 uv : TEXCOORD0;
     float4 color : COLOR0;
