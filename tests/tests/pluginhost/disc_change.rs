@@ -1,3 +1,4 @@
+use polymer_library::LaunchableUri;
 use polymer_pluginhost::{
     actions::ParsedHotkey,
     controller::{AttachActions, DiscChange, PauseResume, PauseState, Quit, StateAction},
@@ -113,9 +114,9 @@ async fn disc_changes_keep_quit_on_the_last_successful_disc() {
                 vec![serde_json::json!({
                     "console": "TEST", "controllerTopology": { "mappings": [] },
                     "launchSet": [
-                        { "launchPath": "disc0", "package": { "serial": "0", "bundle": { "entrypoint": "disc0.iso", "files": [{ "name": "disc0.iso", "text": "disc", "path": null }] } } },
-                        { "launchPath": "disc1", "package": { "serial": "1", "bundle": { "entrypoint": "disc1.iso", "files": [{ "name": "disc1.iso", "text": "disc", "path": null }] } } },
-                        { "launchPath": "disc2", "package": { "serial": "2", "bundle": { "entrypoint": "disc2.iso", "files": [{ "name": "disc2.iso", "text": "disc", "path": null }] } } },
+                        { "launchPath": "disc0", "package": { "serial": "0", "uri": LaunchableUri::file(root.path().join("disc0.iso")).unwrap(), "bundle": { "entrypoint": "disc0.iso", "files": [{ "name": "disc0.iso", "text": "disc", "uri": null }] } } },
+                        { "launchPath": "disc1", "package": { "serial": "1", "uri": LaunchableUri::file(root.path().join("disc1.iso")).unwrap(), "bundle": { "entrypoint": "disc1.iso", "files": [{ "name": "disc1.iso", "text": "disc", "uri": null }] } } },
+                        { "launchPath": "disc2", "package": { "serial": "2", "uri": LaunchableUri::file(root.path().join("disc2.iso")).unwrap(), "bundle": { "entrypoint": "disc2.iso", "files": [{ "name": "disc2.iso", "text": "disc", "uri": null }] } } },
                     ],
                     "initialDiscIndex": 1,
                 })],

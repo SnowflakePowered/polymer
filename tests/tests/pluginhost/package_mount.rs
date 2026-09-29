@@ -1,4 +1,5 @@
 use polymer_consolestorage::{StorageKind, impls::ps1::PlaystationMemoryCard};
+use polymer_library::LaunchableUri;
 use polymer_pluginhost::{
     loading::PluginRegistry,
     runtime::{PluginRuntime, PluginRuntimeOptions},
@@ -301,7 +302,7 @@ async fn package_mounts_images_directories_and_cues_read_only() {
                 &["onLaunch".to_owned()],
                 vec![serde_json::json!({
                     "launchPath": root.path().join(source), "console": "TEST",
-                    "package": {}, "controllerTopology": { "mappings": [] },
+                    "package": { "uri": LaunchableUri::file(root.path().join(source)).unwrap() }, "controllerTopology": { "mappings": [] },
                 })],
                 BTreeMap::new(),
             )
