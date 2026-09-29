@@ -1,4 +1,5 @@
 use ash::{Entry, vk};
+use polymer_consumer_vulkan::physical_device_matches_luid;
 use polymer_ipc::StreamReady;
 use polymer_protocol::{AdapterLuid, FrameReady};
 use polymer_renderer::renderer::frame_ownership::Retention;
@@ -121,38 +122,6 @@ impl VulkanCompositor {
     ) -> Result<(Self, WebRtcCompositor), Box<dyn Error>> {
         let (compositor, webrtc) =
             Self::with_mode(window, preferred_adapter, true, SwapchainMode::Shared)?;
-        Ok((
-            compositor,
-            webrtc.expect("WebRTC was requested during Vulkan device creation"),
-        ))
-    }
-
-    /// Creates a swapchain compositor dedicated to one received connection.
-    pub fn new_for_stream(
-        window: &impl RenderWindow,
-        preferred_adapter: Option<AdapterLuid>,
-        connection: u64,
-    ) -> Result<Self, Box<dyn Error>> {
-        Self::with_mode(
-            window,
-            preferred_adapter,
-            false,
-            SwapchainMode::Dedicated(connection),
-        )
-        .map(|(compositor, _)| compositor)
-    }
-
-    pub fn new_for_stream_with_webrtc(
-        window: &impl RenderWindow,
-        preferred_adapter: Option<AdapterLuid>,
-        connection: u64,
-    ) -> Result<(Self, WebRtcCompositor), Box<dyn Error>> {
-        let (compositor, webrtc) = Self::with_mode(
-            window,
-            preferred_adapter,
-            true,
-            SwapchainMode::Dedicated(connection),
-        )?;
         Ok((
             compositor,
             webrtc.expect("WebRTC was requested during Vulkan device creation"),
@@ -1348,18 +1317,6 @@ impl Drop for VulkanCompositor {
             self.instance.destroy_instance(None);
         }
     }
-}
-
-fn physical_device_matches_luid(
-    instance: &ash::Instance,
-    physical_device: vk::PhysicalDevice,
-    luid: AdapterLuid,
-) -> bool {
-    let mut id = vk::PhysicalDeviceIDProperties::default();
-    let mut properties = vk::PhysicalDeviceProperties2::default().push_next(&mut id);
-    unsafe { instance.get_physical_device_properties2(physical_device, &mut properties) };
-    let expected = [luid.low_part.to_le_bytes(), luid.high_part.to_le_bytes()].concat();
-    id.device_luid_valid == vk::TRUE && id.device_luid[..8] == expected
 }
 
 pub(super) fn color_range() -> vk::ImageSubresourceRange {
