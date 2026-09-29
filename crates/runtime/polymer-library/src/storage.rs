@@ -211,6 +211,31 @@ impl StorageManager {
         Ok(ArtifactSummary::from(&artifact))
     }
 
+    pub fn artifact_location(
+        &self,
+        platform: &str,
+        storage: Uuid,
+        artifact: &str,
+    ) -> Result<(PathBuf, Option<String>), Error> {
+        let volume = self
+            .repository(platform)?
+            .volume(StorageKind::Nand, storage);
+        let summary = volume
+            .artifact_summary(artifact)?
+            .filter(|summary| summary.root.is_some())
+            .ok_or_else(|| {
+                Error::Unsupported(format!("{artifact} is not installed with a launch root"))
+            })?;
+        let root = summary.root.unwrap_or_default();
+        Ok((
+            root.split('/')
+                .fold(volume.checkout_path().to_owned(), |path, component| {
+                    path.join(component)
+                }),
+            summary.entrypoint,
+        ))
+    }
+
     pub async fn fork(
         &self,
         kind: StorageKind,

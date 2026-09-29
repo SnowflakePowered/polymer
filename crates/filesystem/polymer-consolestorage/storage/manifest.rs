@@ -17,6 +17,8 @@ pub struct ArtifactSummary {
     pub installed: Timestamp,
     pub file_count: usize,
     pub icons: Vec<String>,
+    pub root: Option<String>,
+    pub entrypoint: Option<String>,
 }
 
 impl From<&Artifact> for ArtifactSummary {
@@ -37,6 +39,12 @@ impl From<&Artifact> for ArtifactSummary {
                     _ => None,
                 })
                 .collect(),
+            root: artifact
+                .entrypoint()
+                .map(|entrypoint| entrypoint.root.clone()),
+            entrypoint: artifact
+                .entrypoint()
+                .map(|entrypoint| entrypoint.path.clone()),
         }
     }
 }

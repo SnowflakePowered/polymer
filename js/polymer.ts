@@ -381,6 +381,10 @@ export interface StorageArtifact {
   installed: string; fileCount: number;
   /** Data URLs from the plainest image to the richest animated banner. */
   icons: string[];
+  /** Install root within the NAND, present when the artifact is launchable. */
+  root: string | null;
+  /** Launch file relative to `root`. */
+  entrypoint: string | null;
 }
 export interface StorageInspection { id: string; platform: string; minimal: boolean; dirty: boolean; artifacts: StorageArtifact[] }
 export interface StorageRemovalPlan { requested: string[]; affected: string[]; revision: string }

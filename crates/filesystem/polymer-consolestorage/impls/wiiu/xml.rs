@@ -31,6 +31,12 @@ pub struct AppXml {
     pub title_id: HexBinary,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CosXml {
+    #[serde(default)]
+    pub argstr: Text,
+}
+
 /// Element text as a display string, with the line breaks Nintendo puts in
 /// long names folded into single spaces.
 #[derive(Debug, Default, Clone)]

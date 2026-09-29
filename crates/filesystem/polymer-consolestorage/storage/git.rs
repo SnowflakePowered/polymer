@@ -16,7 +16,7 @@ use tokio::io::AsyncRead;
 use tokio::sync::Notify;
 use uuid::Uuid;
 
-use crate::installable::artifacts::Artifact;
+use crate::installable::artifacts::{Artifact, ArtifactEntrypoint};
 use crate::installable::{DepotFile, DepotType, EmbeddedIcon, IconHint, InstallEvents, Reporting};
 use crate::storage::manifest::{ArtifactRegistry, ArtifactSummary, VolumeInfo};
 use crate::{
@@ -497,6 +497,21 @@ impl GitVolumeStorage {
 
     pub fn checkout_path(&self) -> &Path {
         self.inner.checkout.root()
+    }
+
+    pub fn artifact_summary(&self, id: &str) -> Result<Option<ArtifactSummary>, Error> {
+        let repo = self.inner.platform.repository().to_thread_local();
+        let tip = Self::tip_in(&repo, &self.ref_name())?;
+        let Some(entry) = Self::root_tree(&repo, tip)?
+            .lookup_entry_by_path(format!("meta/artifacts/{}", artifact_key(id)))
+            .map_err(|error| Error::git("lookup artifact", error))?
+        else {
+            return Ok(None);
+        };
+        let tree = repo
+            .find_tree(entry.oid())
+            .map_err(|error| Error::git("read artifact tree", error))?;
+        read_artifact_summary(&repo, &tree).map(Some)
     }
 
     pub fn index_path(&self) -> &Path {
@@ -1662,6 +1677,7 @@ struct ArtifactRecord {
     icons: Vec<EmbeddedIcon>,
     byte_length: u64,
     installed: Timestamp,
+    entrypoint: Option<ArtifactEntrypoint>,
 }
 
 #[derive(Clone)]
@@ -1714,6 +1730,7 @@ impl From<&Artifact> for ArtifactRecord {
                 .collect(),
             byte_length: artifact.byte_length(),
             installed: artifact.installed(),
+            entrypoint: artifact.entrypoint().cloned(),
         }
     }
 }
@@ -1736,6 +1753,7 @@ impl ArtifactRecord {
             },
         )
         .with_installed(self.installed)
+        .with_recorded_entrypoint(self.entrypoint.clone())
     }
 
     fn write(
@@ -1767,6 +1785,15 @@ impl ArtifactRecord {
             &format!("{root}/installed"),
             &self.installed.to_string(),
         )?;
+        if let Some(entrypoint) = &self.entrypoint {
+            write_text(repo, editor, &format!("{root}/root"), &entrypoint.root)?;
+            write_text(
+                repo,
+                editor,
+                &format!("{root}/entrypoint"),
+                &entrypoint.path,
+            )?;
+        }
         if let Some(path) = &self.icon_path {
             write_text(
                 repo,
@@ -2489,6 +2516,14 @@ fn read_artifact_summary(
             .iter()
             .map(EmbeddedIcon::data_url)
             .collect(),
+        root: artifact_value(repo, tree, "root")?
+            .map(String::from_utf8)
+            .transpose()
+            .map_err(|error| Error::git("decode artifact root", error))?,
+        entrypoint: artifact_value(repo, tree, "entrypoint")?
+            .map(String::from_utf8)
+            .transpose()
+            .map_err(|error| Error::git("decode artifact entrypoint", error))?,
     })
 }
 
@@ -2501,6 +2536,8 @@ fn read_artifact(repo: &gix::Repository, tree: &gix::Tree<'_>) -> Result<Artifac
         version,
         byte_length,
         installed,
+        root,
+        entrypoint,
         ..
     } = read_artifact_summary(repo, tree)?;
     let icon_path = value("icon-path")?
@@ -2560,6 +2597,9 @@ fn read_artifact(repo: &gix::Repository, tree: &gix::Tree<'_>) -> Result<Artifac
         icons: read_icons(repo, tree)?,
         byte_length,
         installed,
+        entrypoint: root
+            .zip(entrypoint)
+            .map(|(root, path)| ArtifactEntrypoint { root, path }),
     })
 }
 

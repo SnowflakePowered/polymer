@@ -1,5 +1,13 @@
+use crate::Error;
 use crate::installable::{DepotFile, DepotType, IconHint};
 use jiff::Timestamp;
+
+/// The file an emulator launches, relative to the artifact's install root.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArtifactEntrypoint {
+    pub root: String,
+    pub path: String,
+}
 
 #[derive(Clone)]
 pub struct Artifact {
@@ -11,6 +19,7 @@ pub struct Artifact {
     icons: Vec<IconHint>,
     byte_length: u64,
     installed: Timestamp,
+    entrypoint: Option<ArtifactEntrypoint>,
 }
 
 impl Artifact {
@@ -32,11 +41,37 @@ impl Artifact {
             icons,
             byte_length,
             installed: Timestamp::now(),
+            entrypoint: None,
         }
+    }
+
+    /// Records the launch file, which must be one of this artifact's installed files.
+    pub fn with_entrypoint(mut self, entrypoint: ArtifactEntrypoint) -> Result<Self, Error> {
+        let installed = format!("{}/{}", entrypoint.root, entrypoint.path);
+        if !self
+            .manifest
+            .iter()
+            .any(|file| file.path().to_string_lossy().replace('\\', "/") == installed)
+        {
+            return Err(Error::malformed(
+                "artifact",
+                format!("entrypoint `{installed}` is not an installed file"),
+            ));
+        }
+        self.entrypoint = Some(entrypoint);
+        Ok(self)
     }
 
     pub(crate) fn with_installed(mut self, installed: Timestamp) -> Self {
         self.installed = installed;
+        self
+    }
+
+    pub(crate) fn with_recorded_entrypoint(
+        mut self,
+        entrypoint: Option<ArtifactEntrypoint>,
+    ) -> Self {
+        self.entrypoint = entrypoint;
         self
     }
 
@@ -70,5 +105,9 @@ impl Artifact {
 
     pub fn installed(&self) -> Timestamp {
         self.installed
+    }
+
+    pub fn entrypoint(&self) -> Option<&ArtifactEntrypoint> {
+        self.entrypoint.as_ref()
     }
 }

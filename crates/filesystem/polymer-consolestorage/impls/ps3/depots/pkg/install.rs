@@ -10,7 +10,8 @@ use pkgrip::PkgArchive;
 use super::super::writer::StorageWriter;
 use super::Ps3PkgDepot;
 use crate::installable::DepotFile;
-use crate::installable::artifacts::Artifact;
+use crate::installable::DepotType;
+use crate::installable::artifacts::{Artifact, ArtifactEntrypoint};
 use crate::{Error, VolumeStorage};
 
 pub(super) struct Ps3PkgInstall {
@@ -165,6 +166,13 @@ impl Installable for Ps3PkgInstall {
                 .or(self.depot.version),
             vec![icon],
         );
+        let artifact = match self.depot.kind {
+            DepotType::App => artifact.with_entrypoint(ArtifactEntrypoint {
+                root: root.clone(),
+                path: "USRDIR/EBOOT.BIN".to_owned(),
+            })?,
+            _ => artifact,
+        };
         self.storage
             .artifacts()
             .record(&artifact, self.events)

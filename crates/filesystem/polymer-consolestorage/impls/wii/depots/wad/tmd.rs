@@ -50,6 +50,7 @@ impl Content {
 pub(super) struct Tmd {
     pub(super) title_id: u64,
     pub(super) title_version: u16,
+    pub(super) boot_index: u16,
     pub(super) contents: Vec<Content>,
 }
 
@@ -92,6 +93,7 @@ impl Tmd {
         Ok(Self {
             title_id: header.title_id.get(),
             title_version: header.title_version.get(),
+            boot_index: header.boot_index.get(),
             contents,
         })
     }
