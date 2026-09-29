@@ -1,4 +1,4 @@
-use crate::{NativePathSemantics, PathSemantics, VfsComponent, VfsPath, VfsResult};
+use crate::{VfsComponent, VfsPath, VfsResult};
 use std::{fmt, sync::Arc};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -39,13 +39,13 @@ pub enum RemoveKind {
 }
 
 #[derive(Clone)]
-pub enum Node<S: PathSemantics = NativePathSemantics> {
+pub enum Node {
     File(Arc<dyn FileNode>),
-    Directory(Arc<dyn DirectoryNode<S>>),
+    Directory(Arc<dyn DirectoryNode>),
     SyntheticDirectory,
 }
 
-impl<S: PathSemantics> Node<S> {
+impl Node {
     pub const fn kind(&self) -> FileKind {
         match self {
             Self::File(_) => FileKind::File,
@@ -66,26 +66,25 @@ impl<S: PathSemantics> Node<S> {
     }
 }
 
-impl<S: PathSemantics> fmt::Debug for Node<S> {
+impl fmt::Debug for Node {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.debug_tuple("Node").field(&self.kind()).finish()
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct DirectoryEntry<S: PathSemantics = NativePathSemantics> {
-    pub name: VfsComponent<S>,
+pub struct DirectoryEntry {
+    pub name: VfsComponent,
     pub metadata: Metadata,
 }
 
-impl<S: PathSemantics> DirectoryEntry<S> {
+impl DirectoryEntry {
     pub const fn kind(&self) -> FileKind {
         self.metadata.kind
     }
 }
 
-pub type DirectoryIterator<S = NativePathSemantics> =
-    dyn Iterator<Item = VfsResult<DirectoryEntry<S>>> + Send;
+pub type DirectoryIterator = dyn Iterator<Item = VfsResult<DirectoryEntry>> + Send;
 
 pub trait OpenFile: Send + Sync {
     fn metadata(&self) -> VfsResult<Metadata>;
@@ -115,24 +114,24 @@ pub trait FileNode: Send + Sync {
     }
 }
 
-pub trait DirectoryNode<S: PathSemantics = NativePathSemantics>: Send + Sync {
+pub trait DirectoryNode: Send + Sync {
     fn metadata(&self) -> VfsResult<Metadata>;
     fn set_metadata(&self, changes: MetadataChanges) -> VfsResult<()>;
-    fn lookup(&self, name: &VfsComponent<S>) -> VfsResult<Option<Node<S>>>;
-    fn read_dir(&self) -> VfsResult<Box<DirectoryIterator<S>>>;
+    fn lookup(&self, name: &VfsComponent) -> VfsResult<Option<Node>>;
+    fn read_dir(&self) -> VfsResult<Box<DirectoryIterator>>;
     fn create_file(
         &self,
-        name: &VfsComponent<S>,
+        name: &VfsComponent,
         options: CreateOptions,
     ) -> VfsResult<Arc<dyn FileNode>>;
-    fn create_dir(&self, name: &VfsComponent<S>) -> VfsResult<Arc<dyn DirectoryNode<S>>>;
-    fn remove(&self, name: &VfsComponent<S>, kind: RemoveKind) -> VfsResult<()>;
+    fn create_dir(&self, name: &VfsComponent) -> VfsResult<Arc<dyn DirectoryNode>>;
+    fn remove(&self, name: &VfsComponent, kind: RemoveKind) -> VfsResult<()>;
 }
 
-pub trait Volume<S: PathSemantics = NativePathSemantics>: Send + Sync {
-    fn root(&self) -> VfsResult<Arc<dyn DirectoryNode<S>>>;
+pub trait Volume: Send + Sync {
+    fn root(&self) -> VfsResult<Arc<dyn DirectoryNode>>;
 
-    fn mount(&self, format: Option<&str>) -> VfsResult<Node<S>> {
+    fn mount(&self, format: Option<&str>) -> VfsResult<Node> {
         if let Some(format) = format {
             return Err(crate::VfsError::Unsupported(format!(
                 "this storage does not support the '{format}' format"
@@ -142,20 +141,20 @@ pub trait Volume<S: PathSemantics = NativePathSemantics>: Send + Sync {
     }
 
     /// Atomically renames two mount-relative paths within this volume.
-    fn rename(&self, source: &VfsPath<S>, target: &VfsPath<S>) -> VfsResult<()>;
+    fn rename(&self, source: &VfsPath, target: &VfsPath) -> VfsResult<()>;
 
     /// Atomically renames `source` over `target` within this volume.
     ///
     /// Backends which cannot replace an existing target retain their normal
     /// rename behavior and should return `AlreadyExists`.
-    fn replace(&self, source: &VfsPath<S>, target: &VfsPath<S>) -> VfsResult<()> {
+    fn replace(&self, source: &VfsPath, target: &VfsPath) -> VfsResult<()> {
         self.rename(source, target)
     }
 
     /// Removes a file from this volume's namespace while preserving the file
     /// object already returned by [`DirectoryNode::lookup`] or
     /// [`DirectoryNode::create_file`].
-    fn detach(&self, _source: &VfsPath<S>) -> VfsResult<()> {
+    fn detach(&self, _source: &VfsPath) -> VfsResult<()> {
         Err(crate::VfsError::Unsupported(
             "the source volume cannot detach file nodes".into(),
         ))

@@ -129,9 +129,6 @@ impl Path for U16Path {
     fn root() -> &'static Self {
         Self::from_str(u16str!("/"))
     }
-    fn empty() -> &'static Self {
-        Self::from_str(u16str!(""))
-    }
     fn has_root(&self) -> bool {
         self.0
             .as_slice()
@@ -157,9 +154,6 @@ impl Path for U16Path {
 
 impl PathOwned for U16PathBuf {
     type Borrowed = U16Path;
-    fn new() -> Self {
-        Self::default()
-    }
     fn push(&mut self, component: &U16Str) {
         if component.is_empty() {
             return;

@@ -22,13 +22,10 @@ pub use host::{
     FilesystemEndpoint, FilesystemHost, MountedFilesystem, PreparedFilesystemLaunch,
     UnsupportedFilesystemHost,
 };
-pub use path::{
-    Component, Components, NativePathSemantics, Path, PathOwned, PathSemantics, PathStr,
-    PosixPathSemantics, U8Path, U8PathBuf, U16Path, U16PathBuf, VfsComponent, VfsPath, VfsPathBuf,
-    VfsPathUnit, WindowsPathSemantics,
-};
-pub use polymer_consolestorage::Permissions;
+pub(crate) use path::Native;
+pub use path::{PathStr, VfsComponent, VfsPath, VfsPathBuf, VfsPathUnit, VfsStr};
 pub use plan::{Binding, BindingKind, BindingSpec, CompiledFilesystem, FilesystemPlan};
+pub use polymer_consolestorage::Permissions;
 pub(crate) use resource::NoopResourceLease;
 pub use resource::{
     CompositeResourceLease, ExclusiveResourceKey, FinalizationReason, Materialized,
