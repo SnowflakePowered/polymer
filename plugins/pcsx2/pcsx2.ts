@@ -1,17 +1,9 @@
 import runtime from "pkg:bin/win-x64";
 import config from "pkg:plugin.toml";
-import type {
-    Package,
-    Configuration as HostConfiguration,
-    ControllerChangeContext as HostControllerChangeContext,
-    Filesystem,
-    FirmwareContext,
-    Storage,
-    PauseResumeContext,
-} from "polymer:api";
+import type { EmulatorLaunchArgs, PauseResumeContext, Storage } from "polymer:api";
 import { HotkeyParser } from "pkg:hotkeys.ts";
 
-type Configuration = HostConfiguration<{
+type Options = {
         ui: {
             settings_version: number,
             setup_wizard_incomplete: boolean,
@@ -43,18 +35,9 @@ type Configuration = HostConfiguration<{
         },
         input_sources: { sdl: boolean },
         "emucore-gs": { renderer: number },
-}>;
-
-type EmulatorLaunchArgs = FirmwareContext & {
-    launchPath: string,
-    package: Package,
-    console: string,
-    configuration: Configuration,
-    filesystem: Filesystem,
-    storage: Readonly<{ mem1?: Storage, mem2?: Storage }>,
 };
 
-export const onLaunch = async (args: EmulatorLaunchArgs) => {
+export const onLaunch = async (args: EmulatorLaunchArgs<Options, Readonly<{ mem1?: Storage, mem2?: Storage }>>) => {
     const bios = (await args.firmwareStore.list()).find(entry =>
         entry.platform === "SONY_PS2" && entry.byteLength === 4 * 1024 * 1024
     );
@@ -106,20 +89,11 @@ export const onLaunch = async (args: EmulatorLaunchArgs) => {
     options.memory_cards.slot2_filename = "Mcd002.ps2";
     options.input_sources.sdl = true;
     options["emucore-gs"].renderer = 3;
-    for (const [name, bytes] of Object.entries(args.configuration.render())) {
-        args.filesystem.mount(`/PCSX2/${name}`, bytes, { mode: "rw" });
-    }
+    args.filesystem.mount("/PCSX2", args.configuration, { mode: "rw" });
 
     return {
         command: args.filesystem.path("/PCSX2/pcsx2-qt.exe"),
         workingDirectory: args.filesystem.path("/PCSX2"),
-        env: [
-            ["USERPROFILE", args.filesystem.path("/User")],
-            ["APPDATA", args.filesystem.path("/User/AppData/Roaming")],
-            ["LOCALAPPDATA", args.filesystem.path("/User/AppData/Local")],
-            ["TEMP", args.filesystem.path("/User/Temp")],
-            ["TMP", args.filesystem.path("/User/Temp")],
-        ],
         argv: ["-portable", "-batch", "--", gamePath],
         isolate: false,
         hooks: { graphics: ["d3d11"], input: ["sdl3"] },
@@ -130,18 +104,10 @@ export const onLaunch = async (args: EmulatorLaunchArgs) => {
     };
 };
 
-type ControllerChangeContext = HostControllerChangeContext<ReturnType<Configuration["options"]>>;
-
-export const onControllerChanged = (context: ControllerChangeContext) => {
-    for (const [name, bytes] of Object.entries(context.configuration.render())) {
-        context.filesystem.mount(`/PCSX2/${name}`, bytes, { mode: "rw" });
-    }
-};
-
-export const onParseHotkey = (expression: string) => HotkeyParser.pcsx2(expression);
+export const onParseHotkey = (expression: string) => HotkeyParser.parse(expression);
 
 export const onPauseResume = (context: PauseResumeContext) => {
     context.actions.pause?.activate();
 };
 
-export default { onLaunch, onControllerChanged, onParseHotkey, onPauseResume };
+export default { onLaunch, onParseHotkey, onPauseResume };
