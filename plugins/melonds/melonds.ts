@@ -1,14 +1,10 @@
 import runtime from "pkg:bin/win-x64";
-import type { BatteryStorage, Configuration, Filesystem, Package } from "polymer:api";
+import type { BatteryStorage, EmulatorLaunchArgs } from "polymer:api";
 
-type LaunchArgs = {
-    package: Package,
-    filesystem: Filesystem,
-    storage: BatteryStorage,
-    configuration: Configuration<{ runtime: { SaveFilePath: string, SavestatePath: string } }>,
-};
-
-export const onLaunch = (args: LaunchArgs) => {
+export const onLaunch = (args: EmulatorLaunchArgs<
+    { runtime: { SaveFilePath: string, SavestatePath: string } },
+    BatteryStorage
+>) => {
     const fs = args.filesystem;
     fs.mount("/melonDS", runtime, { mode: "rx" });
     fs.mount("/melonDS/portable");
@@ -32,9 +28,6 @@ export const onLaunch = (args: LaunchArgs) => {
         command: fs.path("/melonDS/melonDS.exe"),
         workingDirectory: fs.path("/melonDS"),
         argv: ["--boot", "always", game],
-        env: [["USERPROFILE", fs.path("/User")], ["APPDATA", fs.path("/User/AppData/Roaming")],
-            ["LOCALAPPDATA", fs.path("/User/AppData/Local")], ["TEMP", fs.path("/User/Temp")],
-            ["TMP", fs.path("/User/Temp")]],
         isolate: true,
         hooks: { graphics: ["opengl"], input: ["sdl2"] },
         surfaces: [{ index: 0, pattern: "melonDS" }],

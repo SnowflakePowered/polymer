@@ -1,16 +1,9 @@
 import runtime from "pkg:bin/win-x64";
 import { caches } from "polymer:cache";
 import { Rpcs3Configuration } from "pkg:configuration.ts";
-import type { Configuration, Filesystem, Package, Storage } from "polymer:api";
+import type { EmulatorLaunchArgs, Storage } from "polymer:api";
 
-type LaunchArgs = {
-    package: Package,
-    filesystem: Filesystem,
-    configuration: Configuration,
-    storage: Readonly<{ hdd?: Storage, flash?: Storage }>,
-};
-
-export const onLaunch = (args: LaunchArgs) => {
+export const onLaunch = (args: EmulatorLaunchArgs<unknown, Readonly<{ hdd?: Storage, flash?: Storage }>>) => {
     if (!args.storage.hdd) {
         throw new Error("Select a PlayStation 3 NAND and save repository for the HDD, and install system software before launching RPCS3.");
     }
@@ -44,9 +37,6 @@ export const onLaunch = (args: LaunchArgs) => {
         command: fs.path("/RPCS3/rpcs3.exe"),
         workingDirectory: fs.path("/RPCS3"),
         argv: ["--no-gui", "--user-id", "00000001", "--config", fs.path("/RPCS3/config.yml"), game],
-        env: [["USERPROFILE", fs.path("/User")], ["APPDATA", fs.path("/User/AppData/Roaming")],
-            ["LOCALAPPDATA", fs.path("/User/AppData/Local")], ["TEMP", fs.path("/User/Temp")],
-            ["TMP", fs.path("/User/Temp")]],
         isolate: true,
         hooks: { graphics: ["vulkan"], input: ["sdl3"] },
         surfaces: [{ index: 0, pattern: "RPCS3|FPS.*Vulkan" }],

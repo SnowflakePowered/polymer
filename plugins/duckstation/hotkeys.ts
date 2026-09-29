@@ -1,14 +1,7 @@
 import type { ParsedHotkey } from "polymer:api";
 
 export class HotkeyParser {
-    static dolphin(expression: string): ParsedHotkey {
-        const text = expression.startsWith("@(") && expression.endsWith(")")
-            ? expression.slice(2, -1)
-            : expression;
-        return this.keyboard(text.split("+"));
-    }
-
-    static pcsx2(expression: string): ParsedHotkey {
+    static parse(expression: string): ParsedHotkey {
         return this.keyboard(expression.split("&").map(part => {
             const value = part.trim();
             return value.startsWith("Keyboard/") ? value.slice("Keyboard/".length) : value;
@@ -47,4 +40,3 @@ export class HotkeyParser {
         return { kind: "keyboard", code, modifiers: codes.slice(0, -1) };
     }
 }
-

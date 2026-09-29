@@ -1,12 +1,5 @@
 import runtime from "pkg:bin/win-x64";
-import type { Package, BatteryStorage, Filesystem } from "polymer:api";
-
-type EmulatorLaunchArgs = {
-    launchPath: string,
-    package: Package,
-    filesystem: Filesystem,
-    storage: BatteryStorage,
-};
+import type { BatteryStorage, EmulatorLaunchArgs } from "polymer:api";
 
 function basename(path: string): string {
     const name = path.replaceAll("\\", "/").split("/").at(-1);
@@ -19,7 +12,7 @@ function saveName(romName: string): string {
     return `${extension > 0 ? romName.slice(0, extension) : romName}.sav`;
 }
 
-export const onLaunch = (args: EmulatorLaunchArgs) => {
+export const onLaunch = (args: EmulatorLaunchArgs<unknown, BatteryStorage>) => {
     const gameName = basename(args.launchPath);
     const path = (virtualPath: string) => args.filesystem.path(virtualPath);
 
@@ -35,13 +28,6 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     return {
         command: path("/mGBA/mGBA.exe"),
         workingDirectory: args.filesystem.path("/mGBA"),
-        env: [
-            ["USERPROFILE", args.filesystem.path("/User")],
-            ["APPDATA", args.filesystem.path("/User/AppData/Roaming")],
-            ["LOCALAPPDATA", args.filesystem.path("/User/AppData/Local")],
-            ["TEMP", args.filesystem.path("/User/Temp")],
-            ["TMP", args.filesystem.path("/User/Temp")],
-        ],
         argv: [gamePath],
         isolate: true,
         hooks: { graphics: ["opengl"], input: ["sdl3"] },

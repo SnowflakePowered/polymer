@@ -1,8 +1,8 @@
 import runtime from "pkg:bin/win-x64";
-import type { Package, Configuration as HostConfiguration, FirmwareContext, Filesystem, PauseResumeContext, Storage } from "polymer:api";
+import type { EmulatorLaunchArgs, PauseResumeContext, Storage } from "polymer:api";
 import { HotkeyParser } from "pkg:hotkeys.ts";
 
-type Configuration = HostConfiguration<{
+type Options = {
         main: {
             settings_version: number,
             setup_wizard_incomplete: boolean,
@@ -41,17 +41,9 @@ type Configuration = HostConfiguration<{
             system: boolean,
         },
         input_sources: { sdl: boolean },
-}>;
-type EmulatorLaunchArgs = FirmwareContext & {
-    launchPath: string,
-    package: Package,
-    console: string,
-    configuration: Configuration,
-    filesystem: Filesystem,
-    storage: Readonly<{ card1?: Storage, card2?: Storage }>,
 };
 
-export const onLaunch = async (args: EmulatorLaunchArgs) => {
+export const onLaunch = async (args: EmulatorLaunchArgs<Options, Readonly<{ card1?: Storage, card2?: Storage }>>) => {
     const biosFiles = (await args.firmwareStore.list()).filter(entry => entry.platform === "SONY_PSX");
     if (biosFiles.length === 0) {
         throw new Error("DuckStation requires a PlayStation BIOS. Drag and drop a PlayStation BIOS file into Polymer, then launch again.");
@@ -111,21 +103,14 @@ export const onLaunch = async (args: EmulatorLaunchArgs) => {
     return {
         command: path("/DuckStation/duckstation-qt-x64-ReleaseLTCG.exe"),
         workingDirectory: args.filesystem.path("/DuckStation"),
-        env: [
-            ["USERPROFILE", args.filesystem.path("/User")],
-            ["APPDATA", args.filesystem.path("/User/AppData/Roaming")],
-            ["LOCALAPPDATA", args.filesystem.path("/User/AppData/Local")],
-            ["TEMP", args.filesystem.path("/User/Temp")],
-            ["TMP", args.filesystem.path("/User/Temp")],
-        ],
         argv: ["-batch", "-fastboot", "--", gamePath],
         isolate: true,
         hooks: { graphics: ["d3d11"], input: ["sdl3"] },
-        surfaces: [{ index: 0, pattern: "DuckStation|Crash Bandicoot" }],
+        surfaces: [{ index: 0 }],
     };
 };
 
-export const onParseHotkey = (expression: string) => HotkeyParser.pcsx2(expression);
+export const onParseHotkey = (expression: string) => HotkeyParser.parse(expression);
 
 export const onPauseResume = (context: PauseResumeContext) => {
     context.actions.pause?.activate();

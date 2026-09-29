@@ -4,15 +4,14 @@ const runtime = (await import(`pkg:bin/${osIdentifier}${isMacos ? "/Dolphin.app"
 import { uiAutomation, UiAutomationError, type UiLocator, type WindowQuery } from "polymer:uiautomation";
 import type {
     Actions,
-    Configuration as HostConfiguration,
     ControllerChangeContext as HostControllerChangeContext,
     ControllerMapping,
     ControllerTopology,
     ConfigurationResult,
+    EmulatorLaunchArgs,
     Package,
     DirectoryResource,
     FileEntry,
-    Filesystem,
     QuitContext,
     Storage,
     PauseResumeContext,
@@ -22,7 +21,7 @@ import type {
 } from "polymer:api";
 import { HotkeyParser } from "pkg:hotkeys.ts";
 
-type Configuration = HostConfiguration<{
+type Options = {
         main: {
             analytics: {
                 enabled: boolean,
@@ -66,22 +65,7 @@ type Configuration = HostConfiguration<{
                 }>,
             },
         },
-}>;
-
-type EmulatorLaunchArgs = {
-    launchPath: string,
-    console: string,
-    package: Package,
-    controllerTopology: ControllerTopology,
-    configuration: Configuration,
-    filesystem: Filesystem,
-    storage: Readonly<{ nand?: Storage, slotA?: Storage, slotB?: Storage }>,
-    userConfiguration?: UserConfiguration,
-    saveStates: Readonly<{
-        directory: DirectoryResource,
-        quickResume: Readonly<{ state: FileEntry, screenshot: FileEntry | null }> | null,
-    }>,
-}
+};
 
 function basename(path: string): string {
     const name = path.replaceAll("\\", "/").split("/").at(-1);
@@ -435,7 +419,7 @@ async function applyWiiConnectionChanges(
     }
 }
 
-export const onLaunch = (args: EmulatorLaunchArgs) => {
+export const onLaunch = (args: EmulatorLaunchArgs<Options, Readonly<{ nand?: Storage, slotA?: Storage, slotB?: Storage }>>) => {
     const gameName = basename(args.launchPath);
     const isWii = args.console === "NINTENDO_WII";
     const controllerTopology = pointerTopology(args.controllerTopology);
@@ -576,13 +560,6 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     return {
         command: args.filesystem.path(isMacos ? "/Dolphin/Contents/MacOS/Dolphin" : "/Dolphin/Dolphin.exe"),
         workingDirectory: args.filesystem.path(isMacos ? "/Dolphin/Contents/MacOS" : "/Dolphin"),
-        env: isMacos ? [] : [
-            ["USERPROFILE", args.filesystem.path("/User")],
-            ["APPDATA", args.filesystem.path("/User/AppData/Roaming")],
-            ["LOCALAPPDATA", args.filesystem.path("/User/AppData/Local")],
-            ["TEMP", args.filesystem.path("/User/Temp")],
-            ["TMP", args.filesystem.path("/User/Temp")],
-        ],
         argv,
         isolate: true,
         hooks: {
@@ -600,7 +577,7 @@ export const onLaunch = (args: EmulatorLaunchArgs) => {
     }
 }
 
-type ControllerChangeContext = HostControllerChangeContext<ReturnType<Configuration["options"]>>;
+type ControllerChangeContext = HostControllerChangeContext<Options>;
 
 export const onControllerChanged = async (context: ControllerChangeContext) => {
     const started = Date.now();
@@ -623,7 +600,7 @@ export const onControllerChanged = async (context: ControllerChangeContext) => {
     return { controllerTopology: topology };
 };
 
-export const onParseHotkey = (expression: string) => HotkeyParser.dolphin(expression);
+export const onParseHotkey = (expression: string) => HotkeyParser.parse(expression);
 
 export const onPauseResume = (context: PauseResumeContext) => {
     context.actions.pause?.activate();

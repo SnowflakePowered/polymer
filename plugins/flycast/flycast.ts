@@ -1,18 +1,7 @@
 import runtime from "pkg:bin/win-x64";
-import type { Package, Configuration as HostConfiguration, FirmwareContext, Filesystem, Storage } from "polymer:api";
+import type { EmulatorLaunchArgs, Storage } from "polymer:api";
 
-type Configuration = HostConfiguration;
-
-type EmulatorLaunchArgs = FirmwareContext & {
-    launchPath: string,
-    package: Package,
-    console: string,
-    configuration: Configuration,
-    filesystem: Filesystem,
-    storage: Readonly<{ vmu?: Storage }>,
-};
-
-export const onLaunch = async (args: EmulatorLaunchArgs) => {
+export const onLaunch = async (args: EmulatorLaunchArgs<unknown, Readonly<{ vmu?: Storage }>>) => {
     const path = (virtualPath: string) => args.filesystem.path(virtualPath);
 
     args.filesystem.mount("/Flycast", runtime, { mode: "rx" });
@@ -36,13 +25,6 @@ export const onLaunch = async (args: EmulatorLaunchArgs) => {
     return {
         command: path("/Flycast/flycast.exe"),
         workingDirectory: args.filesystem.path("/Flycast"),
-        env: [
-            ["USERPROFILE", args.filesystem.path("/User")],
-            ["APPDATA", args.filesystem.path("/User/AppData/Roaming")],
-            ["LOCALAPPDATA", args.filesystem.path("/User/AppData/Local")],
-            ["TEMP", args.filesystem.path("/User/Temp")],
-            ["TMP", args.filesystem.path("/User/Temp")],
-        ],
         argv: [gamePath],
         isolate: false,
         hooks: { graphics: ["vulkan"], input: ["sdl3"] },

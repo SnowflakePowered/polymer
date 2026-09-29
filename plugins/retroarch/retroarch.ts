@@ -1,21 +1,11 @@
 import runtime from "pkg:bin/win-x64";
-import type { Package, Configuration as HostConfiguration, Filesystem, FirmwareContext } from "polymer:api";
-
-type Configuration = HostConfiguration<{ core: { placeholder: boolean } }>;
-
-type EmulatorLaunchArgs = FirmwareContext & {
-    launchPath: string,
-    package: Package,
-    console: string,
-    configuration: Configuration,
-    filesystem: Filesystem,
-};
+import type { EmulatorLaunchArgs } from "polymer:api";
 
 function quoted(value: string): string {
     return `"${value.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")}"`;
 }
 
-export const onLaunch = async (args: EmulatorLaunchArgs) => {
+export const onLaunch = async (args: EmulatorLaunchArgs<{ core: { placeholder: boolean } }>) => {
     const bios = (await args.firmwareStore.list()).find(entry =>
         entry.platform === "SONY_PS2" && entry.byteLength === 4 * 1024 * 1024
     );
@@ -77,13 +67,6 @@ export const onLaunch = async (args: EmulatorLaunchArgs) => {
     return {
         command: args.filesystem.path("/RetroArch/retroarch.exe"),
         workingDirectory: args.filesystem.path("/RetroArch"),
-        env: [
-            ["USERPROFILE", args.filesystem.path("/User")],
-            ["APPDATA", args.filesystem.path("/User/AppData/Roaming")],
-            ["LOCALAPPDATA", args.filesystem.path("/User/AppData/Local")],
-            ["TEMP", args.filesystem.path("/User/Temp")],
-            ["TMP", args.filesystem.path("/User/Temp")],
-        ],
         argv: [
             "-c", args.filesystem.path("/User/retroarch.cfg"),
             "-L", args.filesystem.path("/RetroArch/cores/pcsx2_libretro.dll"),

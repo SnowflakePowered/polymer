@@ -274,10 +274,26 @@ declare module "polymer:api" {
         configuration: Configuration<Options>,
         filesystem: Filesystem,
     }>;
-}
 
+    export type SaveStates = Readonly<{
+        directory: DirectoryResource,
+        quickResume: Readonly<{ state: FileEntry, screenshot: FileEntry | null }> | null,
+    }>;
 
-declare module "polymer:api" {
+    /** onLaunch arguments. On Windows, USERPROFILE, APPDATA, LOCALAPPDATA, TEMP, and TMP default to /User unless the returned env overrides them. */
+    export type EmulatorLaunchArgs<Options = unknown, Storages = Readonly<Record<string, Storage | undefined>>> =
+        EmulatorLaunchSet & FirmwareContext & KeyReaderContext & Readonly<{
+            launchPath: string,
+            package: Package,
+            console: string,
+            controllerTopology: ControllerTopology,
+            configuration: Configuration<Options>,
+            filesystem: Filesystem,
+            storage: Storages,
+            userConfiguration?: UserConfiguration,
+            saveStates: SaveStates,
+        }>;
+
     export type DepotType = "system" | "app" | "appcontent" | "appupdate";
     export interface PlatformArtifact { id: string; label: string; version: string | null; depotType: DepotType; byteLength: number }
     export interface BootstrapDevice {
@@ -287,15 +303,8 @@ declare module "polymer:api" {
         install(source: string | PluginCacheFile): Promise<PlatformArtifact>;
     }
     export interface BootstrapContext extends PluginProgressContext, FirmwareContext, KeyWriterContext { readonly settings: Record<string, unknown> }
-}
 
-declare module "polymer:consolestorage" {
-    /** Read-only inspection of configured disk paths or pkg: resources. */
-    export const resources: { inspect(path: string): { exists: boolean; size?: number; directory?: boolean } };
-}
-
-/** User-supplied BIOS files recognized by consolespec, separate from system software and keys. */
-declare module "polymer:api" {
+    /** User-supplied BIOS files recognized by consolespec, separate from system software and keys. */
     export type FirmwareLookup = { readonly name: string } | {
         readonly md5?: string;
         readonly sha1?: string;
@@ -330,4 +339,9 @@ declare module "polymer:api" {
     }
     export interface KeyReaderContext { readonly keyStore: KeyReader }
     export interface KeyWriterContext { readonly keyStore: KeyWriter }
+}
+
+declare module "polymer:consolestorage" {
+    /** Read-only inspection of configured disk paths or pkg: resources. */
+    export const resources: { inspect(path: string): { exists: boolean; size?: number; directory?: boolean } };
 }

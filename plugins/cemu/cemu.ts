@@ -5,14 +5,12 @@ import gameProfiles from "pkg:bin/win-x64/gameProfiles";
 import { caches } from "polymer:cache";
 import { pluginStorage } from "polymer:pluginStorage";
 import type {
-    Configuration as HostConfiguration,
     ConfigurationResult,
+    EmulatorLaunchArgs,
     Package,
-    Filesystem,
     Storage,
     RepeatedSection,
     UserConfiguration,
-    KeyReader,
 } from "polymer:api";
 import {
     loadGraphicsPacks,
@@ -22,7 +20,7 @@ import {
     type GraphicsPack,
 } from "pkg:graphics-packs.ts";
 
-type Configuration = HostConfiguration<{
+type Options = {
     content: {
         open_pad: boolean,
         graphics_packs: RepeatedSection<{
@@ -35,23 +33,14 @@ type Configuration = HostConfiguration<{
         }>,
     },
     "content-graphic": { api: number },
-}>;
-
-type EmulatorLaunchArgs = {
-    launchPath: string,
-    console: string,
-    package: import("polymer:api").Package,
-    configuration: Configuration,
-    userConfiguration?: UserConfiguration,
-    filesystem: Filesystem,
-    keyStore: KeyReader,
-    storage: Readonly<{
-        slc?: Storage,
-        slccmpt?: Storage,
-        mlc?: Storage,
-        sd?: Storage,
-    }>,
 };
+
+type Storages = Readonly<{
+    slc?: Storage,
+    slccmpt?: Storage,
+    mlc?: Storage,
+    sd?: Storage,
+}>;
 
 const GRAPHICS_GROUP = "graphics";
 const GRAPHICS_PACKS_STORAGE_KEY = "graphicsPacks";
@@ -99,7 +88,7 @@ export function onConfigure(
     };
 }
 
-export async function onLaunch(args: EmulatorLaunchArgs) {
+export async function onLaunch(args: EmulatorLaunchArgs<Options, Storages>) {
     const userConfiguration = validUserConfiguration(args.userConfiguration);
     const api = selectedApi(userConfiguration);
     args.configuration.options().content.open_pad = true;
@@ -152,13 +141,6 @@ export async function onLaunch(args: EmulatorLaunchArgs) {
     return {
         command: executable,
         workingDirectory: args.filesystem.path("/Cemu"),
-        env: [
-            ["USERPROFILE", args.filesystem.path("/User")],
-            ["APPDATA", args.filesystem.path("/User/AppData/Roaming")],
-            ["LOCALAPPDATA", args.filesystem.path("/User/AppData/Local")],
-            ["TEMP", args.filesystem.path("/User/Temp")],
-            ["TMP", args.filesystem.path("/User/Temp")],
-        ],
         argv: ["-g", game, "--mlc", mlc],
         isolate: true,
         hooks: { graphics: [api], input: ["sdl3"] },

@@ -1,14 +1,10 @@
 import runtime from "pkg:bin/win-x64";
-import type { Configuration, Filesystem, Package, Storage } from "polymer:api";
+import type { EmulatorLaunchArgs, Storage } from "polymer:api";
 
-type LaunchArgs = {
-    package: Package,
-    filesystem: Filesystem,
-    storage: Readonly<{ ctrnand?: Storage }>,
-    configuration: Configuration<{ storage: { nand_directory: string, sdmc_directory: string } }>,
-};
-
-export const onLaunch = (args: LaunchArgs) => {
+export const onLaunch = (args: EmulatorLaunchArgs<
+    { storage: { nand_directory: string, sdmc_directory: string } },
+    Readonly<{ ctrnand?: Storage }>
+>) => {
     if (!args.storage.ctrnand) {
         throw new Error("Select a Nintendo 3DS NAND and save repository before launching Azahar.");
     }
@@ -30,9 +26,6 @@ export const onLaunch = (args: LaunchArgs) => {
         command: fs.path("/Azahar/azahar.exe"),
         workingDirectory: fs.path("/Azahar"),
         argv: [game],
-        env: [["USERPROFILE", fs.path("/User")], ["APPDATA", fs.path("/User/AppData/Roaming")],
-            ["LOCALAPPDATA", fs.path("/User/AppData/Local")], ["TEMP", fs.path("/User/Temp")],
-            ["TMP", fs.path("/User/Temp")]],
         isolate: false,
         hooks: { graphics: ["vulkan"], input: ["sdl2"] },
         surfaces: [{ index: 0, pattern: "^Azahar [^|]*\\| [^|]*$" }, { index: 1, pattern: "\\| Secondary Window$" }],

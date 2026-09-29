@@ -1,20 +1,14 @@
 import runtime from "pkg:bin/win-x64";
 import { caches } from "polymer:cache";
 import { systems } from "pkg:systems.ts";
-import type { BatteryStorage, Configuration, Filesystem, FirmwareContext, Package, Storage } from "polymer:api";
+import type { BatteryStorage, EmulatorLaunchArgs, Storage } from "polymer:api";
 
-type LaunchArgs = FirmwareContext & {
-    console: string,
-    package: Package,
-    filesystem: Filesystem,
-    storage: BatteryStorage & Readonly<{ card1?: Storage }>,
-    configuration: Configuration<{
-        video: { driver: string },
-        input: { defocus: string, driver: string },
-        general: { auto_save_memory: boolean, no_file_prompt: boolean, show_status_bar: boolean },
-        paths: { home: string, saves: string, firmware: string, screenshots: string },
-    }>,
-};
+type LaunchArgs = EmulatorLaunchArgs<{
+    video: { driver: string },
+    input: { defocus: string, driver: string },
+    general: { auto_save_memory: boolean, no_file_prompt: boolean, show_status_bar: boolean },
+    paths: { home: string, saves: string, firmware: string, screenshots: string },
+}, BatteryStorage & Readonly<{ card1?: Storage }>>;
 
 export const onLaunch = async (args: LaunchArgs) => {
     const system = systems[args.console];
@@ -52,9 +46,6 @@ export const onLaunch = async (args: LaunchArgs) => {
         command: fs.path("/ares/ares.exe"),
         workingDirectory: fs.path("/ares"),
         argv: ["--kiosk", "--settings-file", fs.path("/User/settings.bml"), "--system", system.name, game],
-        env: [["USERPROFILE", fs.path("/User")], ["APPDATA", fs.path("/User/AppData/Roaming")],
-            ["LOCALAPPDATA", fs.path("/User/AppData/Local")], ["TEMP", fs.path("/User/Temp")],
-            ["TMP", fs.path("/User/Temp")]],
         isolate: true,
         hooks: { graphics: ["opengl"], input: ["sdl3"] },
         surfaces: [{ index: 0, pattern: "ares" }],
