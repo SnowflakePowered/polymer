@@ -79,6 +79,8 @@ impl fmt::Display for AttachmentScope {
 }
 
 impl SaveAttachmentKind {
+    const ALL: [Self; 4] = [Self::Note, Self::Screenshot, Self::Icon, Self::Title];
+
     fn as_str(self) -> &'static str {
         match self {
             Self::Note => "note",
@@ -86,6 +88,19 @@ impl SaveAttachmentKind {
             Self::Icon => "icon",
             Self::Title => "title",
         }
+    }
+
+    fn trailer(self) -> &'static str {
+        match self {
+            Self::Note => "Polymer-Note",
+            Self::Screenshot => "Polymer-Screenshot",
+            Self::Icon => "Polymer-Icon",
+            Self::Title => "Polymer-Title",
+        }
+    }
+
+    fn is_text(self) -> bool {
+        matches!(self, Self::Note | Self::Title)
     }
 }
 
@@ -121,30 +136,27 @@ pub struct DeletedSaveInfo {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct AttachmentTips {
-    screenshot: Option<gix::ObjectId>,
-    icon: Option<gix::ObjectId>,
-    note: Option<gix::ObjectId>,
-    title: Option<gix::ObjectId>,
-}
+struct AttachmentTips([Option<gix::ObjectId>; SaveAttachmentKind::ALL.len()]);
 
 impl AttachmentTips {
-    fn get(self, kind: SaveAttachmentKind) -> Option<gix::ObjectId> {
-        match kind {
-            SaveAttachmentKind::Screenshot => self.screenshot,
-            SaveAttachmentKind::Icon => self.icon,
-            SaveAttachmentKind::Note => self.note,
-            SaveAttachmentKind::Title => self.title,
+    fn collect(
+        mut tip: impl FnMut(SaveAttachmentKind) -> Result<Option<gix::ObjectId>, Error>,
+    ) -> Result<Self, Error> {
+        let mut tips = Self::default();
+        for kind in SaveAttachmentKind::ALL {
+            tips.0[kind as usize] = tip(kind)?;
         }
+        Ok(tips)
     }
 
-    fn entries(self) -> [(SaveAttachmentKind, Option<gix::ObjectId>); 4] {
-        [
-            (SaveAttachmentKind::Screenshot, self.screenshot),
-            (SaveAttachmentKind::Icon, self.icon),
-            (SaveAttachmentKind::Note, self.note),
-            (SaveAttachmentKind::Title, self.title),
-        ]
+    fn get(self, kind: SaveAttachmentKind) -> Option<gix::ObjectId> {
+        self.0[kind as usize]
+    }
+
+    fn entries(self) -> impl Iterator<Item = (SaveAttachmentKind, gix::ObjectId)> {
+        SaveAttachmentKind::ALL
+            .into_iter()
+            .filter_map(move |kind| Some((kind, self.get(kind)?)))
     }
 }
 
@@ -156,15 +168,7 @@ struct SaveRefState {
 
 impl SaveRefState {
     fn reachable_roots(self) -> impl Iterator<Item = gix::ObjectId> {
-        [
-            Some(self.tip),
-            self.attachments.screenshot,
-            self.attachments.icon,
-            self.attachments.note,
-            self.attachments.title,
-        ]
-        .into_iter()
-        .flatten()
+        std::iter::once(self.tip).chain(self.attachments.0.into_iter().flatten())
     }
 }
 
@@ -178,30 +182,20 @@ struct SaveTransition {
 #[derive(Clone, Debug)]
 struct SaveRefs {
     head: String,
-    screenshot: String,
-    icon: String,
-    note: String,
-    title: String,
+    attachments: [String; SaveAttachmentKind::ALL.len()],
 }
 
 impl SaveRefs {
     fn attachment(&self, kind: SaveAttachmentKind) -> &str {
-        match kind {
-            SaveAttachmentKind::Screenshot => &self.screenshot,
-            SaveAttachmentKind::Icon => &self.icon,
-            SaveAttachmentKind::Note => &self.note,
-            SaveAttachmentKind::Title => &self.title,
-        }
+        &self.attachments[kind as usize]
     }
 
-    fn entries(&self) -> [(&str, Option<SaveAttachmentKind>); 5] {
-        [
-            (&self.head, None),
-            (&self.screenshot, Some(SaveAttachmentKind::Screenshot)),
-            (&self.icon, Some(SaveAttachmentKind::Icon)),
-            (&self.note, Some(SaveAttachmentKind::Note)),
-            (&self.title, Some(SaveAttachmentKind::Title)),
-        ]
+    fn entries(&self) -> impl Iterator<Item = (&str, Option<SaveAttachmentKind>)> {
+        std::iter::once((self.head.as_str(), None)).chain(
+            SaveAttachmentKind::ALL
+                .into_iter()
+                .map(|kind| (self.attachment(kind), Some(kind))),
+        )
     }
 }
 

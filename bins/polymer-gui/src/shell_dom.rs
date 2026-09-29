@@ -62,7 +62,6 @@ struct ActiveShellDocument {
     document: SharedShellDocument,
     runtime: ShellRuntime,
     factory: ShellSessionFactory,
-    base_url: String,
 }
 
 impl ShellSession {
@@ -129,7 +128,6 @@ impl ShellSession {
 
     pub async fn activate<F, Fut>(
         &mut self,
-        base_url: String,
         create: F,
     ) -> Result<Option<crate::shell_runtime::PolymerNotificationSender>, Box<dyn std::error::Error>>
     where
@@ -153,7 +151,6 @@ impl ShellSession {
                     document,
                     runtime,
                     factory,
-                    base_url,
                 }));
                 Ok(Some(notifications))
             }
@@ -164,12 +161,12 @@ impl ShellSession {
         }
     }
 
-    pub fn take_reload(&mut self) -> Option<String> {
+    pub fn take_reload(&mut self) -> bool {
         let ShellDocumentSlot::Active(active) = &mut self.slot else {
-            return None;
+            return false;
         };
         if !active.runtime.reload_requested() {
-            return None;
+            return false;
         }
         let ShellDocumentSlot::Active(active) =
             std::mem::replace(&mut self.slot, ShellDocumentSlot::Disabled)
@@ -177,7 +174,7 @@ impl ShellSession {
             unreachable!();
         };
         self.slot = ShellDocumentSlot::Awaiting(active.factory);
-        Some(active.base_url)
+        true
     }
 
     pub fn disable(&mut self) {

@@ -7,9 +7,7 @@ use gumshoe::{
     binary::NormalizationOptions,
 };
 use image::{DynamicImage, ImageFormat, codecs::gif::GifEncoder};
-use polymer_library::{
-    GameCatalogError, Launchable, LaunchableUri, MetadataInput, MetadataInputData, MetadataValue,
-};
+use polymer_library::{Launchable, LaunchableUri, MetadataInput, MetadataInputData, MetadataValue};
 use shiratsu_naming::naming::{
     TokenizedName,
     goodtools::{GoodToolsName, GoodToolsToken},
@@ -58,19 +56,15 @@ struct PackageImport {
 impl Package {
     /// Builds a runtime package from registered metadata without reading the game.
     /// Import-time identification and media extraction are deliberately omitted.
-    pub fn from_launchable(launchable: Launchable) -> Result<Self, GameCatalogError> {
-        let digest = launchable.binary_blake3.as_ref().try_into().map_err(|_| {
-            GameCatalogError::InvalidData("invalid library binary digest".to_owned())
-        })?;
-        let filename = match &launchable.path {
-            LaunchableUri::File(path) => path
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .filter(|name| !name.is_empty())
-                .unwrap_or_else(|| path.display().to_string()),
-            LaunchableUri::Artifact { artifact, .. } => artifact.clone(),
-        };
-        Ok(Self {
+    pub fn from_launchable(launchable: Launchable) -> Self {
+        let launchable = launchable.identified;
+        let display = launchable.path.to_string();
+        let filename = Path::new(&display)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .filter(|name| !name.is_empty())
+            .unwrap_or(display);
+        Self {
             bundle: None,
             manifest: launchable.manifest,
             uri: launchable.path,
@@ -78,10 +72,12 @@ impl Package {
             platform: launchable.platform,
             serial: launchable.serial,
             title_id: launchable.title_id,
-            binary_digest: blake3::Hash::from_bytes(digest).to_hex().to_string(),
+            binary_digest: blake3::Hash::from_bytes(launchable.binary_blake3)
+                .to_hex()
+                .to_string(),
             installable: false,
             import: None,
-        })
+        }
     }
 
     /// Prepare launch data, computing identity only for an unregistered package.
@@ -103,11 +99,8 @@ impl Package {
         std::mem::replace(&mut self.uri, uri)
     }
 
-    pub fn launch_path(&self) -> String {
-        match &self.uri {
-            LaunchableUri::File(path) => path.to_string_lossy().into_owned(),
-            LaunchableUri::Artifact { .. } => self.uri.to_string(),
-        }
+    pub fn launch_entry(&self) -> serde_json::Value {
+        serde_json::json!({ "launchPath": self.uri.to_string(), "package": self })
     }
 
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, crate::ScrapingError> {

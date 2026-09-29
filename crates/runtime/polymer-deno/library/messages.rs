@@ -11,6 +11,7 @@ pub struct Library {
     pub games_get: Recipient<GamesGet>,
     pub games_delete: Recipient<GamesDelete>,
     pub launchables_add: Recipient<LaunchablesAdd>,
+    pub launchables_find: Recipient<LaunchablesFind>,
     pub launchables_delete: Recipient<LaunchablesDelete>,
     pub metadata_add: Recipient<MetadataAdd>,
     pub metadata_update: Recipient<MetadataUpdate>,
@@ -83,6 +84,12 @@ pub struct InstalledArtifact {
     pub storage: String,
     pub id: String,
     pub entrypoint: Option<String>,
+}
+
+#[derive(Debug, actix::Message)]
+#[rtype(result = "Result<Value, String>")]
+pub struct LaunchablesFind {
+    pub uri: String,
 }
 
 #[derive(Debug, actix::Message)]

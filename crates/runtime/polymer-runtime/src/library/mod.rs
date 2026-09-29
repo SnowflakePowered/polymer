@@ -130,6 +130,7 @@ impl LibraryService {
             games_get: self.reader.clone().recipient(),
             games_delete: self.actor.clone().recipient(),
             launchables_add: self.actor.clone().recipient(),
+            launchables_find: self.reader.clone().recipient(),
             launchables_delete: self.actor.clone().recipient(),
             metadata_add: self.actor.clone().recipient(),
             metadata_update: self.actor.clone().recipient(),

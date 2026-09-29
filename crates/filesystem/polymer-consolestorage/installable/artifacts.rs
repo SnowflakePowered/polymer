@@ -3,9 +3,10 @@ use crate::installable::{DepotFile, DepotType, IconHint};
 use jiff::Timestamp;
 
 /// The file an emulator launches, relative to the artifact's install root.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ArtifactEntrypoint {
     pub root: String,
+    #[serde(rename = "entrypoint")]
     pub path: String,
 }
 
@@ -30,9 +31,22 @@ impl Artifact {
         label: String,
         version: Option<String>,
         icons: Vec<IconHint>,
-    ) -> Self {
+        entrypoint: Option<ArtifactEntrypoint>,
+    ) -> Result<Self, Error> {
+        if let Some(entrypoint) = &entrypoint {
+            let installed = format!("{}/{}", entrypoint.root, entrypoint.path);
+            if !manifest
+                .iter()
+                .any(|file| file.path().to_string_lossy().replace('\\', "/") == installed)
+            {
+                return Err(Error::malformed(
+                    "artifact",
+                    format!("entrypoint `{installed}` is not an installed file"),
+                ));
+            }
+        }
         let byte_length = manifest.iter().map(DepotFile::byte_length).sum();
-        Self {
+        Ok(Self {
             id,
             depot_type,
             manifest,
@@ -41,37 +55,12 @@ impl Artifact {
             icons,
             byte_length,
             installed: Timestamp::now(),
-            entrypoint: None,
-        }
-    }
-
-    /// Records the launch file, which must be one of this artifact's installed files.
-    pub fn with_entrypoint(mut self, entrypoint: ArtifactEntrypoint) -> Result<Self, Error> {
-        let installed = format!("{}/{}", entrypoint.root, entrypoint.path);
-        if !self
-            .manifest
-            .iter()
-            .any(|file| file.path().to_string_lossy().replace('\\', "/") == installed)
-        {
-            return Err(Error::malformed(
-                "artifact",
-                format!("entrypoint `{installed}` is not an installed file"),
-            ));
-        }
-        self.entrypoint = Some(entrypoint);
-        Ok(self)
+            entrypoint,
+        })
     }
 
     pub(crate) fn with_installed(mut self, installed: Timestamp) -> Self {
         self.installed = installed;
-        self
-    }
-
-    pub(crate) fn with_recorded_entrypoint(
-        mut self,
-        entrypoint: Option<ArtifactEntrypoint>,
-    ) -> Self {
-        self.entrypoint = entrypoint;
         self
     }
 

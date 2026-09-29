@@ -180,6 +180,12 @@ impl<'a, S: PaintScene + Default> BandedScene<'a, S> {
 
     /// Closes the open layer stack on the band being left and reopens it on the
     /// next one, so clipping carries across the seam.
+    fn isolated_group(&mut self) -> u64 {
+        let group = ISOLATED_GROUP | self.next_isolated_group;
+        self.next_isolated_group += 1;
+        group
+    }
+
     fn advance_band(&mut self) {
         if self.current + 1 >= self.bands.len() {
             self.bands.push(S::default());
@@ -422,11 +428,8 @@ impl<S: PaintScene + Default> PaintScene for BandedScene<'_, S> {
         }) && backdrop_filter.is_none()
             && alpha == 1.0
         {
-            self.promoted_layers.insert(
-                self.next_layer_id,
-                ISOLATED_GROUP | self.next_isolated_group,
-            );
-            self.next_isolated_group += 1;
+            let group = self.isolated_group();
+            self.promoted_layers.insert(self.next_layer_id, group);
             self.push_clip_layer(transform, &clip);
             return;
         }
@@ -511,18 +514,15 @@ impl<S: PaintScene + Default> PaintScene for BandedScene<'_, S> {
                 })
                 .reduce(|current, next| current.intersect(next));
             let source_id = resource.image.into_ffi();
-            let group = self.stack.last().map(|_| {
-                if self
-                    .placements
-                    .iter()
-                    .any(|placement| placement.group == Some(source_id))
-                {
-                    self.next_isolated_group += 1;
-                    ISOLATED_GROUP | (self.next_isolated_group - 1)
-                } else {
-                    source_id
-                }
-            });
+            let shared = self
+                .placements
+                .iter()
+                .any(|placement| placement.group == Some(source_id));
+            let group = match (self.stack.is_empty(), shared) {
+                (true, _) => None,
+                (false, true) => Some(self.isolated_group()),
+                (false, false) => Some(source_id),
+            };
             self.placements.push(GamePlacement {
                 node_id: None,
                 source_id,

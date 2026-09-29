@@ -77,21 +77,12 @@ impl InstalledTitle {
         let kind = CiaDepot::title_kind(tmd.title_id.get());
         let mut label = id.clone();
         let mut icons = vec![IconHint::Builtin(kind)];
-        if let Some(content) = contents
-            .iter()
-            .find(|content| content.index.get() == tmd.boot_index.get())
-        {
-            let root = if contents
-                .get(1)
-                .is_some_and(|content| content.kind.get() & 0x4000 != 0)
-            {
-                format!("{}/00000000", depot.title_root)
-            } else {
-                depot.title_root.clone()
-            };
-            let path = format!("{root}/{:08x}.app", content.id.get());
-            if manifest.iter().any(|file| file.path() == Path::new(&path)) {
-                let smdh = Self::exefs_file(storage, &path, *b"icon\0\0\0\0")?
+        let boot = contents
+            .first()
+            .map(|content| depot.content_path(content.id.get()));
+        if let Some(path) = &boot {
+            if manifest.iter().any(|file| file.path() == Path::new(path)) {
+                let smdh = Self::exefs_file(storage, path, *b"icon\0\0\0\0")?
                     .and_then(|icon| ExtdataIcon::parse(icon.get(..size_of::<ExtdataIcon>())?));
                 if let Some(smdh) = smdh {
                     let name = smdh.description().0;
@@ -101,35 +92,31 @@ impl InstalledTitle {
                     icons = vec![IconHint::image(smdh.rgba())?];
                 }
                 icons.extend(
-                    Self::exefs_file(storage, &path, *b"banner\0\0")?
+                    Self::exefs_file(storage, path, *b"banner\0\0")?
                         .and_then(|banner| Some(CtrBanner::strip_sound(&banner)?.to_vec()))
                         .filter(|banner| CtrBanner::parse(banner).is_some())
                         .map(|banner| IconHint::Embedded(EmbeddedIcon::CtrBanner(banner.into()))),
                 );
             }
         }
-        let artifact = Artifact::new(
+        let entrypoint = boot.filter(|_| kind == DepotType::App).and_then(|path| {
+            Some(ArtifactEntrypoint {
+                path: path
+                    .strip_prefix(&depot.title_root)?
+                    .strip_prefix('/')?
+                    .to_owned(),
+                root: depot.title_root.clone(),
+            })
+        });
+        Artifact::new(
             id,
             kind,
             manifest,
             label,
             Some(tmd.version.get().to_string()),
             icons,
-        );
-        let boot = contents
-            .iter()
-            .find(|content| content.index.get() == 0)
-            .filter(|_| kind == DepotType::App);
-        match boot {
-            Some(boot) => artifact.with_entrypoint(ArtifactEntrypoint {
-                root: depot.title_root.clone(),
-                path: depot
-                    .content_path(boot.id.get())
-                    .trim_start_matches(&format!("{}/", depot.title_root))
-                    .to_owned(),
-            }),
-            None => Ok(artifact),
-        }
+            entrypoint,
+        )
     }
 
     pub(super) fn tmd(depot: &CiaDepot, storage: &dyn VolumeStorage) -> Result<Vec<u8>, Error> {

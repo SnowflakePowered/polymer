@@ -742,11 +742,7 @@ impl PolymerHost for FrontendServices {
             prepared["arguments"]["launchSet"] = Value::Array(
                 discs
                     .iter()
-                    .map(|(_, package)| {
-                        serde_json::json!({
-                            "launchPath": package.launch_path(), "package": package,
-                        })
-                    })
+                    .map(|(_, package)| package.launch_entry())
                     .collect(),
             );
             prepared["arguments"]["initialDiscIndex"] = initial_index.into();

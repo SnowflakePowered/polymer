@@ -10,7 +10,9 @@ use polymer_consolestorage::savegame::{Package, SaveGameSink};
 use polymer_consolestorage::{BatteryIdentity, BatterySaveRepo, SaveRepo};
 use polymer_deno::polymer::{PolymerNotification, PolymerNotificationSender};
 use polymer_library::keys::KeyStore;
-use polymer_library::{ConsoleStorage, LaunchableUri, StorageKind, StorageManager};
+use polymer_library::{
+    ConsoleStorage, InstalledArtifact, LaunchableUri, StorageKind, StorageManager,
+};
 use polymer_pluginhost::filesystem::StorageFactories;
 use polymer_vfs::{
     BatteryStorageFactory, CompositeResourceLease, ExclusiveResourceKey, FinalizationReason,
@@ -246,18 +248,15 @@ async fn select_artifact(
     manager: &StorageManager,
     console: &str,
     requested: &mut serde_json::Map<String, Value>,
-    arguments: &Value,
+    uri: Option<&LaunchableUri>,
 ) -> Result<(), String> {
-    let Some(LaunchableUri::Artifact {
+    let Some(LaunchableUri::Artifact(InstalledArtifact {
         platform, storage, ..
-    }) = arguments
-        .pointer("/package/uri")
-        .and_then(Value::as_str)
-        .and_then(|uri| uri.parse::<LaunchableUri>().ok())
+    })) = uri
     else {
         return Ok(());
     };
-    let Some((device, StorageKind::Nand)) = ConsoleStorage::default_device(&platform) else {
+    let Some((device, StorageKind::Nand)) = ConsoleStorage::default_device(platform) else {
         return Err(format!("{platform} has no NAND for installed titles"));
     };
     let saves = match requested
@@ -320,8 +319,19 @@ pub async fn launch_storage(
         .map(|device| device.id())
         .collect::<std::collections::BTreeSet<_>>();
     let manager = manager.ok_or_else(|| "console storage is unavailable".to_owned())?;
+    let metadata = arguments
+        .get("package")
+        .map(|value| serde_json::from_value::<polymer_scraping::Package>(value.clone()))
+        .transpose()
+        .map_err(|error| error.to_string())?;
     let mut requested = requested.cloned().unwrap_or_default();
-    select_artifact(&manager, console, &mut requested, arguments).await?;
+    select_artifact(
+        &manager,
+        console,
+        &mut requested,
+        metadata.as_ref().map(|package| &package.uri),
+    )
+    .await?;
     if let Some((device, kind)) = default_device
         && !requested.contains_key(device)
     {
@@ -335,11 +345,6 @@ pub async fn launch_storage(
         .await
         .map_err(|e| e.to_string())?;
     let keys = key_store.for_platform(console).map_err(|e| e.to_string())?;
-    let metadata = arguments
-        .get("package")
-        .map(|value| serde_json::from_value::<polymer_scraping::Package>(value.clone()))
-        .transpose()
-        .map_err(|error| error.to_string())?;
     let package = metadata.as_ref().map(|package| {
         Package::new(package.serial.clone(), package.title_id.clone())
             .with_binary_digest(package.binary_digest.clone())
@@ -361,19 +366,10 @@ pub async fn launch_storage(
                 let package = package
                     .as_ref()
                     .ok_or_else(|| format!("{console} battery saves require a launch package"))?;
-                let rom = arguments
-                    .get("launchPath")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| format!("{console} battery saves require a launch path"))?;
                 let title = metadata
                     .as_ref()
                     .map(|package| package.filename.as_str())
                     .filter(|title| !title.is_empty())
-                    .or_else(|| {
-                        std::path::Path::new(rom)
-                            .file_stem()
-                            .and_then(|name| name.to_str())
-                    })
                     .unwrap_or("Battery save");
                 let identity = BatteryIdentity::from_package(console, title, package)
                     .map_err(|error| error.to_string())?;
@@ -435,10 +431,10 @@ pub async fn launch_storage(
             };
             if let (Some(package), Some(path)) = (
                 package.as_ref(),
-                arguments.get("launchPath").and_then(Value::as_str),
-            ) && let Err(error) = save
-                .describe_launch(package, std::path::Path::new(path))
-                .await
+                metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.uri.binary_path().ok()),
+            ) && let Err(error) = save.describe_launch(package, &path).await
             {
                 tracing::warn!(%error, "could not describe saves from the launched game");
             }

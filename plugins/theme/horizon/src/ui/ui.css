@@ -2,6 +2,7 @@
 [hidden], [data-scope='dialog'][data-part='content'][data-state='closed'], [data-scope='dialog'][data-part='backdrop'][data-state='closed'], [data-scope='dialog'][data-part='positioner'][data-state='closed'], [data-scope='popover'][data-part='content'][data-state='closed'], [data-scope='popover'][data-part='positioner'][data-state='closed'], [data-scope='menu'][data-part='content'][data-state='closed'], [data-scope='floating-panel'][data-part='positioner'][data-state='closed'] { display: none !important; }
 .hz-screen, .hz-dialog, .hz-popup, .hz-popover, .hz-floating-panel { color: var(--hz-text); font-family: var(--hz-font); font-size: var(--hz-body); }
 .hz-screen { display: flex; flex-direction: column; min-width: 0; height: 100%; background: var(--hz-surface); padding: 0 var(--hz-space-8); }
+.hz-screen > .hz-spinner { margin: auto; }
 .hz-screen-header { display: flex; align-items: center; gap: 1rem; min-height: 5rem; padding: 1rem 0; border-bottom: 1px solid var(--hz-divider); }
 .hz-screen-header h1 { margin: 0; font-size: var(--hz-title); font-weight: 400; }
 .hz-screen-header p { color: var(--hz-muted); margin: .4rem 0 0; }
@@ -50,7 +51,7 @@ kbd.hz-button-glyph { display: inline-grid; place-content: center; border: 1px s
 .hz-progress [data-part='range'] { height: 100%; background: var(--hz-focus); transition: width var(--hz-motion); }
 .hz-progress[data-state='indeterminate'] [data-part='range'] { width: 35%; animation: hz-progress 1.2s linear infinite; }
 @keyframes hz-progress { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
-.hz-spinner { display: inline-block; width: 1.25em; height: 1.25em; border: 3px solid var(--hz-divider); border-top-color: var(--hz-action); border-radius: 50%; animation: hz-spin .8s linear infinite; }
+.hz-spinner { display: block; width: 1.25em; height: 1.25em; border: 3px solid var(--hz-divider); border-top-color: var(--hz-action); border-radius: 50%; animation: hz-spin .8s linear infinite; }
 @keyframes hz-spin { to { transform: rotate(360deg); } }
 .hz-toast { display: flex; justify-content: space-between; gap: .75rem; padding: 1rem; color: var(--hz-text); background: var(--hz-panel); font-family: var(--hz-font); border-radius: var(--hz-radius-card); box-shadow: 0 .4rem 1.2rem var(--hz-shadow); pointer-events: auto; }
 .hz-toast > div { min-width: 0; flex: 1; } .hz-toast p { color: var(--hz-muted); margin: .4rem 0; overflow-wrap: anywhere; } .hz-toast .hz-button { padding: .3rem; align-self: start; }

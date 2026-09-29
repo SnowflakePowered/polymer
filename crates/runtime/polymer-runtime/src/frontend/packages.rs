@@ -51,19 +51,14 @@ impl FrontendServices {
         };
         let mut package: Package =
             serde_json::from_value(value.clone()).map_err(|error| error.to_string())?;
-        if package.binary_digest.is_empty() {
-            let path = entry
-                .get("launchPath")
-                .and_then(Value::as_str)
-                .ok_or("an unprepared launch package requires a launchPath")?;
-            package.uri =
-                polymer_library::LaunchableUri::file(path).map_err(|error| error.to_string())?;
-        }
         package
             .prepare_launch()
             .map_err(|error| error.to_string())?;
-        entry["launchPath"] = package.launch_path().into();
-        entry["package"] = serde_json::to_value(package).map_err(|error| error.to_string())?;
+        if let (Some(entry), Value::Object(launch)) =
+            (entry.as_object_mut(), package.launch_entry())
+        {
+            entry.extend(launch);
+        }
         Ok(())
     }
 }

@@ -56,7 +56,7 @@ pub struct DetectedGame {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GameDescriptor {
-    pub path: String,
+    pub path: polymer_library::LaunchableUri,
     pub name: String,
     pub platform: String,
     pub selected_emulator: String,
@@ -271,11 +271,12 @@ pub(crate) fn prepare_api_with_sources(
         .ports(&prepared.machine)
         .map_err(|error| error.to_string())?;
     let topology = ControllerTopology::complete(ports, selected)?;
+    let entry = package.launch_entry();
     let mut arguments = serde_json::json!({
-        "launchSet": [{ "launchPath": package.launch_path(), "package": &package }],
+        "launchSet": [&entry],
         "initialDiscIndex": 0,
-        "launchPath": package.launch_path(),
-        "package": package,
+        "launchPath": entry["launchPath"],
+        "package": entry["package"],
         "console": prepared.machine,
         "controllerTopology": &topology,
         "userConfiguration": user_configuration,
@@ -416,7 +417,7 @@ impl PreparedGame {
         let selected_emulator = descriptors[0].id.clone();
         Ok(Self {
             descriptor: GameDescriptor {
-                path: detected.uri.to_string(),
+                path: detected.uri,
                 name: detected.name,
                 platform: detected.platform,
                 selected_emulator,

@@ -21,21 +21,16 @@ async fn complete_disc_identifies_imports_and_prepares_without_track_launchables
     let mut identified = Ingestor::identify(&path, None, None).unwrap();
     assert_eq!(identified.len(), 1);
     let from_directory = identified.pop().unwrap();
-    assert!(
-        from_directory
-            .path
-            .extension()
-            .unwrap()
-            .eq_ignore_ascii_case("cue")
-    );
-    let explicit = Package::from_path(&from_directory.path).unwrap();
-    assert_eq!(explicit.path, from_directory.path);
+    let host_path = from_directory.uri.host_path().unwrap();
+    assert!(host_path.extension().unwrap().eq_ignore_ascii_case("cue"));
+    let explicit = Package::from_path(&host_path).unwrap();
+    assert_eq!(explicit.uri, from_directory.uri);
     let (first, _) = from_directory.import(&catalog).await.unwrap();
     let (same, created) = explicit.import(&catalog).await.unwrap();
     assert_eq!(same.id, first.id);
     assert!(!created);
     let stored = catalog.launchable(first.id).await.unwrap();
-    let manifest = stored.manifest.as_ref().unwrap();
+    let manifest = stored.identified.manifest.as_ref().unwrap();
     assert!(
         manifest.template.is_some(),
         "import must persist a prepared descriptor"
@@ -50,7 +45,7 @@ async fn complete_disc_identifies_imports_and_prepares_without_track_launchables
         }
     }
     let expected_members = manifest.files.len();
-    let mut package = Package::from_launchable(stored).unwrap();
+    let mut package = Package::from_launchable(stored);
     package.prepare_launch().unwrap();
     let bundle = package.bundle.unwrap();
     assert_eq!(bundle.files.len(), expected_members + 1);

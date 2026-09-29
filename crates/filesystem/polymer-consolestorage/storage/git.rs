@@ -1736,7 +1736,7 @@ impl From<&Artifact> for ArtifactRecord {
 }
 
 impl ArtifactRecord {
-    fn artifact(&self) -> Artifact {
+    fn artifact(&self) -> Result<Artifact, Error> {
         Artifact::new(
             self.id.clone(),
             self.depot_type,
@@ -1751,9 +1751,9 @@ impl ArtifactRecord {
                 (None, []) => vec![IconHint::Builtin(self.depot_type)],
                 (_, icons) => icons.iter().cloned().map(IconHint::Embedded).collect(),
             },
+            self.entrypoint.clone(),
         )
-        .with_installed(self.installed)
-        .with_recorded_entrypoint(self.entrypoint.clone())
+        .map(|artifact| artifact.with_installed(self.installed))
     }
 
     fn write(
@@ -2385,7 +2385,7 @@ impl ArtifactRegistry for GitArtifactRegistry {
             let tree = repo
                 .find_tree(entry.oid())
                 .map_err(|error| Error::git("read artifact tree", error))?;
-            Ok(Some(read_artifact(&repo, &tree)?.artifact()))
+            read_artifact(&repo, &tree)?.artifact().map(Some)
         })
     }
 
@@ -2516,12 +2516,14 @@ fn read_artifact_summary(
             .iter()
             .map(EmbeddedIcon::data_url)
             .collect(),
-        root: artifact_value(repo, tree, "root")?
-            .map(String::from_utf8)
-            .transpose()
-            .map_err(|error| Error::git("decode artifact root", error))?,
-        entrypoint: artifact_value(repo, tree, "entrypoint")?
-            .map(String::from_utf8)
+        entrypoint: artifact_value(repo, tree, "root")?
+            .zip(artifact_value(repo, tree, "entrypoint")?)
+            .map(|(root, path)| {
+                Ok::<_, std::string::FromUtf8Error>(ArtifactEntrypoint {
+                    root: String::from_utf8(root)?,
+                    path: String::from_utf8(path)?,
+                })
+            })
             .transpose()
             .map_err(|error| Error::git("decode artifact entrypoint", error))?,
     })
@@ -2536,7 +2538,6 @@ fn read_artifact(repo: &gix::Repository, tree: &gix::Tree<'_>) -> Result<Artifac
         version,
         byte_length,
         installed,
-        root,
         entrypoint,
         ..
     } = read_artifact_summary(repo, tree)?;
@@ -2597,9 +2598,7 @@ fn read_artifact(repo: &gix::Repository, tree: &gix::Tree<'_>) -> Result<Artifac
         icons: read_icons(repo, tree)?,
         byte_length,
         installed,
-        entrypoint: root
-            .zip(entrypoint)
-            .map(|(root, path)| ArtifactEntrypoint { root, path }),
+        entrypoint,
     })
 }
 

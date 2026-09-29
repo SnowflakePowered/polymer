@@ -128,6 +128,21 @@ pub(super) async fn op_library_launchables_add(
 }
 
 #[op2]
+#[serde]
+pub(super) async fn op_library_launchables_find(
+    state: Rc<RefCell<OpState>>,
+    #[string] uri: String,
+) -> Result<serde_json::Value, JsErrorBox> {
+    library(&state)?
+        .launchables_find
+        .send(LaunchablesFind { uri })
+        .await
+        .map_err(|_| "library service is unavailable".to_owned())
+        .and_then(|result| result)
+        .map_err(error)
+}
+
+#[op2]
 pub(super) async fn op_library_launchables_delete(
     state: Rc<RefCell<OpState>>,
     #[string] id: String,

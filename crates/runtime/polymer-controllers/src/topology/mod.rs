@@ -494,7 +494,7 @@ impl ControllerTopology {
                     mapping.target.port,
                     polymer_config::ast::PortAssignment {
                         layout: mapping.layout.clone().into_boxed_str(),
-                        mouse: matches!(mapping.source, Some(SourceSelector::KeyboardMouse)),
+                        mouse: mapping.mouse,
                     },
                 );
         }

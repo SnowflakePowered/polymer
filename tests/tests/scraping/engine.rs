@@ -1,7 +1,7 @@
 use object_store::memory::InMemory;
 use polymer_library::{
-    GameCatalog, IdentifiedLaunchable, MetadataData, MetadataInput, MetadataInputData,
-    MetadataValue, ScrapeJobState,
+    GameCatalog, IdentifiedLaunchable, LaunchableUri, MetadataData, MetadataInput,
+    MetadataInputData, MetadataValue, ScrapeJobState,
 };
 use polymer_pluginhost::loading::PluginRegistry;
 use polymer_scraping::{Ingestor, Package, ScrapingEngine, ScrapingEvent};
@@ -59,9 +59,11 @@ async fn successful_plugins_commit_repeated_values_and_publish_events() {
     image.extend_from_slice(b"engine-fixture");
     std::fs::write(directory.path().join("game.nes"), image).unwrap();
     let (launchable, _) = catalog
-        .import_launchable_seeded(
+        .import_package(
             IdentifiedLaunchable {
-                path: directory.path().join("game.nes"),
+                manifest: None,
+                path: LaunchableUri::file(directory.path().join("game.nes")).unwrap(),
+                entrypoint: None,
                 binary_blake3: *blake3::hash(b"engine-fixture").as_bytes(),
                 serial: None,
                 title_id: None,
@@ -197,12 +199,17 @@ async fn child_packages_keep_their_own_identity_and_scrape_results() {
         let package = Package::identify(&path, None, parent).unwrap();
         let (launchable, created) = package.import(&catalog).await.unwrap();
         assert!(created, "each newly identified binary needs a scrape");
-        parent = Some(launchable.parent_binary_id.unwrap_or(launchable.binary_id));
+        parent = Some(
+            launchable
+                .identified
+                .parent_binary_id
+                .unwrap_or(launchable.binary_id),
+        );
         launchables.push(launchable);
     }
     let root = launchables[0].binary_id;
     assert_ne!(root, launchables[1].binary_id);
-    assert_eq!(launchables[1].parent_binary_id, Some(root));
+    assert_eq!(launchables[1].identified.parent_binary_id, Some(root));
 
     // Both requests are pending before workers start: a child must not be
     // coalesced into the root's job or overwrite its eventual metadata.
@@ -248,14 +255,17 @@ async fn child_packages_keep_their_own_identity_and_scrape_results() {
             .filter(|value| value.producer == "scraper:identity")
             .collect::<Vec<_>>();
         assert_eq!(descriptions.len(), 1);
-        let digest =
-            blake3::Hash::from_bytes(launchable.binary_blake3.as_ref().try_into().unwrap());
+        let digest = blake3::Hash::from_bytes(launchable.identified.binary_blake3);
         assert_eq!(
             descriptions[0].data,
             MetadataData::Scalar(MetadataValue::String(digest.to_hex().to_string()))
         );
-        let package =
-            Package::identify(&launchable.path, None, launchable.parent_binary_id).unwrap();
+        let package = Package::identify(
+            launchable.identified.path.host_path().unwrap(),
+            None,
+            launchable.identified.parent_binary_id,
+        )
+        .unwrap();
         let imported = Ingestor::import(&engine, vec![package]).await.unwrap();
         assert!(imported[0].1.is_none());
     }

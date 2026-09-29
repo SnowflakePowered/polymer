@@ -176,8 +176,12 @@ impl Volume {
         // Executable page-ins can arrive without a preceding open callback.
         // Acquire a VFS read handle for these kernel-authorized reads as well.
         self.open(item, FSVolumeOpenModes::Read)?;
-        let handle = Self::checked(item)?.ivars().handle.lock()
-            .ok_or_else(|| io::Error::from_raw_os_error(libc::EBADF))?.0;
+        let handle = Self::checked(item)?
+            .ivars()
+            .handle
+            .lock()
+            .ok_or_else(|| io::Error::from_raw_os_error(libc::EBADF))?
+            .0;
         let length = length.min(MAX_IO).min(unsafe { buffer.length() });
         let Response::Data(data) = self.call(Request::Read {
             handle,

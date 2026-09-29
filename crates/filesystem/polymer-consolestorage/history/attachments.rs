@@ -48,7 +48,7 @@ impl SaveVersioning {
                 path: format!("{} attachment", kind.as_str()),
                 source: error,
             })?;
-        if matches!(kind, SaveAttachmentKind::Note | SaveAttachmentKind::Title) {
+        if kind.is_text() {
             std::str::from_utf8(&bytes).map_err(|error| {
                 Error::HistoryConflict(format!("{} is not UTF-8: {error}", kind.as_str()))
             })?;
@@ -93,7 +93,7 @@ impl SaveVersioning {
         Ok(AttachmentInfo {
             object_id: SaveCommitId(blob),
             byte_length: bytes.len() as u64,
-            media_type: if matches!(kind, SaveAttachmentKind::Note | SaveAttachmentKind::Title) {
+            media_type: if kind.is_text() {
                 Some("text/plain; charset=utf-8")
             } else {
                 detect_media_type(&bytes)

@@ -36,8 +36,7 @@ impl LaunchableConfigurations {
                 .await
                 .map_err(|error| error.to_string())?;
             let value = Self::launchable_value(&launchable);
-            let mut package =
-                Package::from_launchable(launchable).map_err(|error| error.to_string())?;
+            let mut package = Package::from_launchable(launchable);
             package
                 .prepare_launch()
                 .map_err(|error| error.to_string())?;
@@ -71,7 +70,7 @@ impl LaunchableConfigurations {
             .launchable(id)
             .await
             .map_err(|error| error.to_string())?;
-        Package::from_launchable(launchable).map_err(|error| error.to_string())
+        Ok(Package::from_launchable(launchable))
     }
 
     pub(crate) async fn describe(

@@ -382,9 +382,9 @@ export interface StorageArtifact {
   /** Data URLs from the plainest image to the richest animated banner. */
   icons: string[];
   /** Install root within the NAND, present when the artifact is launchable. */
-  root: string | null;
+  root?: string;
   /** Launch file relative to `root`. */
-  entrypoint: string | null;
+  entrypoint?: string;
 }
 export interface StorageInspection { id: string; platform: string; minimal: boolean; dirty: boolean; artifacts: StorageArtifact[] }
 export interface StorageRemovalPlan { requested: string[]; affected: string[]; revision: string }
@@ -515,7 +515,8 @@ export interface LibraryApi extends EventTarget {
     delete(rootBinaryId: string): Promise<void>;
   }>;
   readonly launchables: Readonly<{
-    add(input: { path: string; platform?: string; parentBinaryId?: string; artifact?: { storage: string; id: string; entrypoint: string | null } }): Promise<Readonly<{ launchable: LibraryLaunchable; scrapeJob: ScrapeJob | null; imports?: readonly Readonly<{ launchable: LibraryLaunchable; scrapeJob: ScrapeJob | null }>[] }>>;
+    add(input: { path: string; platform?: string; parentBinaryId?: string; artifact?: { storage: string; id: string; entrypoint?: string } }): Promise<Readonly<{ launchable: LibraryLaunchable; scrapeJob: ScrapeJob | null; imports?: readonly Readonly<{ launchable: LibraryLaunchable; scrapeJob: ScrapeJob | null }>[] }>>;
+    find(uri: string): Promise<LibraryLaunchable | null>;
     delete(id: string): Promise<void>;
   }>;
   readonly metadata: Readonly<{

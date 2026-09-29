@@ -3,7 +3,7 @@ import {
   op_library_import,
   op_library_import_key,
   op_library_games_list, op_library_games_get, op_library_games_delete,
-  op_library_launchables_add, op_library_launchables_delete,
+  op_library_launchables_add, op_library_launchables_find, op_library_launchables_delete,
   op_library_metadata_add, op_library_metadata_update, op_library_metadata_delete,
   op_library_metadata_replace, op_library_metadata_text, op_library_metadata_url,
 } from "ext:core/ops";
@@ -81,6 +81,11 @@ export function createLibrary() {
         launchable: new Package(result.launchable),
         imports: result.imports.map(item => ({ ...item, launchable: new Package(item.launchable) })),
       };
+    },
+    async find(uri) {
+      if (typeof uri !== "string" || uri.length === 0) throw new TypeError("uri must be a non-empty string");
+      const launchable = await op_library_launchables_find(uri);
+      return launchable == null ? null : new Package(launchable);
     },
     delete(id) { return op_library_launchables_delete(uuid(id, "id")); },
   });

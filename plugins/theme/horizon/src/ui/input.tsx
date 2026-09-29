@@ -135,9 +135,10 @@ export class NavigationController {
     return scope.root?.contains(element) || scope.branches?.().some(root => root.contains(element));
   }
 
-  visible(element: HTMLElement) {
+  visible(element: HTMLElement, root: HTMLElement = document.body) {
     const rect = element.getBoundingClientRect();
-    return !element.closest("[hidden], [inert], [aria-hidden='true'], [data-part='content'][data-state='closed'], [data-part='positioner'][data-state='closed']") && rect.width > 0 && rect.height > 0;
+    const hidden = element.closest("[inert], [aria-hidden='true']");
+    return !element.closest("[hidden], [data-part='content'][data-state='closed'], [data-part='positioner'][data-state='closed']") && !(hidden && root.contains(hidden)) && rect.width > 0 && rect.height > 0;
   }
 
   items(root: HTMLElement) {
@@ -145,7 +146,7 @@ export class NavigationController {
       // The embedded DOM reports -1 for native controls without a tabindex.
       (item.hasAttribute("tabindex") ? Number(item.getAttribute("tabindex")) >= 0 : ["BUTTON", "INPUT", "TEXTAREA", "SELECT"].includes(item.tagName) || item.tagName === "A" && item.hasAttribute("href"))
       && !item.hasAttribute("disabled") && item.getAttribute("aria-disabled") !== "true" && !item.hasAttribute("data-disabled")
-      && item.getAttribute("type") !== "hidden" && this.visible(item));
+      && item.getAttribute("type") !== "hidden" && this.visible(item, root));
   }
 
   private navigate(root: HTMLElement, action: InputAction) {
