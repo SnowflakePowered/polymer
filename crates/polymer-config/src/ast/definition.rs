@@ -113,6 +113,79 @@ pub enum ValueKind {
     Select { domain: DomainDefinition },
 }
 
+pub(crate) enum ValueMismatch {
+    Kind(&'static str),
+    Range {
+        value: String,
+        min: String,
+        max: String,
+    },
+    Choice(Box<str>),
+}
+
+impl ValueKind {
+    pub(crate) fn parse_json(&self, value: &serde_json::Value) -> Result<Value, ValueMismatch> {
+        if value.is_null() {
+            return Ok(Value::Null);
+        }
+        let kind = ValueMismatch::Kind;
+        match self {
+            Self::Boolean => value.as_bool().map(Value::Boolean).ok_or(kind("a boolean")),
+            Self::Integer { range } => {
+                let number = value.as_i64().ok_or(kind("an integer"))?;
+                match range {
+                    Some(OptionRange::Integer { min, max }) if number < *min || number > *max => {
+                        Err(ValueMismatch::Range {
+                            value: number.to_string(),
+                            min: min.to_string(),
+                            max: max.to_string(),
+                        })
+                    }
+                    _ => Ok(Value::Integer(number)),
+                }
+            }
+            Self::Float { range } => {
+                let number = value
+                    .as_f64()
+                    .filter(|value| value.is_finite())
+                    .ok_or(kind("a finite number"))?;
+                match range {
+                    Some(OptionRange::Float { min, max }) if number < *min || number > *max => {
+                        Err(ValueMismatch::Range {
+                            value: number.to_string(),
+                            min: min.to_string(),
+                            max: max.to_string(),
+                        })
+                    }
+                    _ => Ok(Value::Float(number)),
+                }
+            }
+            Self::String => value
+                .as_str()
+                .map(|value| Value::String(value.into()))
+                .ok_or(kind("a string")),
+            Self::Path => value
+                .as_str()
+                .map(|value| Value::Path(value.into()))
+                .ok_or(kind("a path string")),
+            Self::Select { domain } => {
+                let choice = value.as_str().ok_or(kind("a choice key"))?;
+                let known = match domain {
+                    DomainDefinition::Static(choices) => choices
+                        .iter()
+                        .any(|candidate| candidate.key.as_str() == choice),
+                    DomainDefinition::None => false,
+                };
+                if known {
+                    Ok(Value::Choice(choice.into()))
+                } else {
+                    Err(ValueMismatch::Choice(choice.into()))
+                }
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum DefaultDefinition {
     None,

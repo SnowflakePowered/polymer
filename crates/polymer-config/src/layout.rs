@@ -1,6 +1,6 @@
 use crate::ast::{
-    ConfigurationDefinition, DefaultDefinition, DomainDefinition, OptionDefinition, OptionRange,
-    SettingPath, ValueKind,
+    Choice, ChoiceKey, ConfigurationDefinition, DefaultDefinition, DomainDefinition,
+    OptionDefinition, OptionRange, SettingPath, Value as SettingValue, ValueKind, ValueMismatch,
 };
 use serde_json::{Map, Value};
 use std::collections::HashSet;
@@ -22,6 +22,164 @@ impl ConfigurationLayoutError {
     fn invalid(message: impl Into<String>) -> Self {
         Self::Invalid(message.into())
     }
+
+    fn range(key: &str) -> Self {
+        Self::invalid(format!("option '{key}' has an invalid range"))
+    }
+}
+
+struct LayoutGroup {
+    key: String,
+    options: Vec<LayoutOption>,
+}
+
+struct LayoutOption {
+    key: String,
+    kind: ValueKind,
+}
+
+impl LayoutOption {
+    const FIELDS: &'static [&'static str] = &[
+        "key",
+        "title",
+        "description",
+        "type",
+        "default",
+        "min",
+        "max",
+        "choices",
+    ];
+
+    fn parse(option: &Value) -> Result<Self, ConfigurationLayoutError> {
+        let option = option
+            .as_object()
+            .filter(|option| {
+                option
+                    .keys()
+                    .all(|key| Self::FIELDS.contains(&key.as_str()))
+            })
+            .ok_or_else(|| ConfigurationLayoutError::invalid("invalid synthesized option"))?;
+        let key = ConfigurationDefinition::required_text(option, "key")?;
+        ConfigurationDefinition::required_text(option, "title")?;
+        if option
+            .get("description")
+            .is_some_and(|value| !value.is_string())
+        {
+            return Err(ConfigurationLayoutError::invalid(format!(
+                "option '{key}' has an invalid description"
+            )));
+        }
+        let kind = ConfigurationDefinition::required_text(option, "type")?;
+        let default = option.get("default").ok_or_else(|| {
+            ConfigurationLayoutError::invalid(format!("option '{key}' has no default"))
+        })?;
+        let choices = Self::choices(key, kind, option.get("choices"))?;
+        let range = Self::range(key, kind, option);
+        let mut option = Self {
+            key: key.to_owned(),
+            kind: match kind {
+                "bool" => ValueKind::Boolean,
+                "int" => ValueKind::Integer { range: None },
+                "float" => ValueKind::Float { range: None },
+                "string" => ValueKind::String,
+                "path" => ValueKind::Path,
+                "select" => ValueKind::Select {
+                    domain: DomainDefinition::Static(choices),
+                },
+                _ => return Err(Self::incompatible(key, "default")),
+            },
+        };
+        option.check(default, "default")?;
+        match &mut option.kind {
+            ValueKind::Integer { range: slot } | ValueKind::Float { range: slot } => {
+                *slot = range?;
+            }
+            _ => {
+                range?;
+            }
+        }
+        option.check(default, "default")?;
+        Ok(option)
+    }
+
+    fn choices(
+        key: &str,
+        kind: &str,
+        choices: Option<&Value>,
+    ) -> Result<Box<[Choice]>, ConfigurationLayoutError> {
+        let invalid =
+            || ConfigurationLayoutError::invalid(format!("option '{key}' has invalid choices"));
+        let choices = match choices {
+            Some(Value::Array(choices)) => choices.as_slice(),
+            Some(_) => return Err(invalid()),
+            None => &[],
+        };
+        let mut keys = HashSet::new();
+        let parsed = choices
+            .iter()
+            .map(|choice| {
+                let choice = choice.as_object()?;
+                let key = ConfigurationDefinition::required_text(choice, "key").ok()?;
+                let label = ConfigurationDefinition::required_text(choice, "label").ok()?;
+                keys.insert(key).then(|| Choice {
+                    key: ChoiceKey::new(key),
+                    label: label.into(),
+                    value: SettingValue::Null,
+                })
+            })
+            .collect::<Option<Box<[Choice]>>>()
+            .ok_or_else(invalid)?;
+        if (kind == "select") == parsed.is_empty() {
+            return Err(invalid());
+        }
+        Ok(parsed)
+    }
+
+    fn range(
+        key: &str,
+        kind: &str,
+        option: &Map<String, Value>,
+    ) -> Result<Option<OptionRange>, ConfigurationLayoutError> {
+        let (min, max) = (option.get("min"), option.get("max"));
+        if min.is_none() && max.is_none() {
+            return Ok(None);
+        }
+        let error = || ConfigurationLayoutError::range(key);
+        let range = match kind {
+            "int" => {
+                let bound = |bound: Option<&Value>, open| bound.map_or(Some(open), Value::as_i64);
+                let (min, max) = (bound(min, i64::MIN), bound(max, i64::MAX));
+                let (min, max) = (min.ok_or_else(error)?, max.ok_or_else(error)?);
+                (min <= max).then_some(OptionRange::Integer { min, max })
+            }
+            "float" => {
+                let bound = |bound: Option<&Value>, open| bound.map_or(Some(open), Value::as_f64);
+                let (min, max) = (bound(min, f64::NEG_INFINITY), bound(max, f64::INFINITY));
+                let (min, max) = (min.ok_or_else(error)?, max.ok_or_else(error)?);
+                (min <= max).then_some(OptionRange::Float { min, max })
+            }
+            _ => None,
+        };
+        range.map(Some).ok_or_else(error)
+    }
+
+    fn check(&self, value: &Value, role: &str) -> Result<(), ConfigurationLayoutError> {
+        self.kind
+            .parse_json(value)
+            .map(drop)
+            .map_err(|mismatch| match mismatch {
+                ValueMismatch::Range { .. } => ConfigurationLayoutError::range(&self.key),
+                ValueMismatch::Kind(_) | ValueMismatch::Choice(_) => {
+                    Self::incompatible(&self.key, role)
+                }
+            })
+    }
+
+    fn incompatible(key: &str, role: &str) -> ConfigurationLayoutError {
+        ConfigurationLayoutError::invalid(format!(
+            "option '{key}' has a {role} incompatible with its type"
+        ))
+    }
 }
 
 impl ConfigurationDefinition {
@@ -35,82 +193,83 @@ impl ConfigurationDefinition {
             .get_mut("groups")
             .and_then(Value::as_array_mut)
             .ok_or_else(|| ConfigurationLayoutError::invalid("groups must be an array"))?;
-        let mut group_keys = HashSet::new();
-
+        let mut declared = Vec::with_capacity(groups.len());
         for group in groups {
-            let group = group
-                .as_object_mut()
-                .ok_or_else(|| ConfigurationLayoutError::invalid("group must be an object"))?;
-            let group_key = Self::required_text(group, "key")?.to_owned();
-            Self::required_text(group, "title")?;
-            if !group_keys.insert(group_key.clone()) {
-                return Err(ConfigurationLayoutError::invalid(format!(
-                    "duplicate group key '{group_key}'"
-                )));
-            }
-            if group
-                .get("description")
-                .is_some_and(|value| !value.is_string())
-            {
-                return Err(ConfigurationLayoutError::invalid(
-                    "group description must be a string",
-                ));
-            }
-
-            let options = group
-                .get_mut("options")
-                .and_then(Value::as_array_mut)
-                .ok_or_else(|| ConfigurationLayoutError::invalid("options must be an array"))?;
-            let mut option_keys = HashSet::new();
-            for option in options {
-                if option.get("source").is_some() {
-                    *option = self.expand_source(option)?;
-                }
-                self.validate_option(option)?;
-                let key = option["key"].as_str().unwrap();
-                if !option_keys.insert(key.to_owned()) {
-                    return Err(ConfigurationLayoutError::invalid(format!(
-                        "duplicate option key '{key}' in group '{group_key}'"
-                    )));
-                }
-            }
+            let group = self.expand_group(group, &declared)?;
+            declared.push(group);
         }
-        self.validate_values(root)?;
+        Self::validate_values(root, &declared)?;
         Ok(layout)
     }
 
-    fn validate_values(&self, root: &Map<String, Value>) -> Result<(), ConfigurationLayoutError> {
+    fn expand_group(
+        &self,
+        group: &mut Value,
+        declared: &[LayoutGroup],
+    ) -> Result<LayoutGroup, ConfigurationLayoutError> {
+        let group = group
+            .as_object_mut()
+            .ok_or_else(|| ConfigurationLayoutError::invalid("group must be an object"))?;
+        let key = Self::required_text(group, "key")?.to_owned();
+        Self::required_text(group, "title")?;
+        if declared.iter().any(|group| group.key == key) {
+            return Err(ConfigurationLayoutError::invalid(format!(
+                "duplicate group key '{key}'"
+            )));
+        }
+        if group
+            .get("description")
+            .is_some_and(|value| !value.is_string())
+        {
+            return Err(ConfigurationLayoutError::invalid(
+                "group description must be a string",
+            ));
+        }
+        let options = group
+            .get_mut("options")
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| ConfigurationLayoutError::invalid("options must be an array"))?;
+        let mut parsed = Vec::<LayoutOption>::with_capacity(options.len());
+        for option in options {
+            let layout_option = if option.get("source").is_some() {
+                let (layout_option, expanded) = self.expand_source(option)?;
+                *option = expanded;
+                layout_option
+            } else {
+                LayoutOption::parse(option)?
+            };
+            if parsed.iter().any(|option| option.key == layout_option.key) {
+                return Err(ConfigurationLayoutError::invalid(format!(
+                    "duplicate option key '{}' in group '{key}'",
+                    layout_option.key
+                )));
+            }
+            parsed.push(layout_option);
+        }
+        Ok(LayoutGroup {
+            key,
+            options: parsed,
+        })
+    }
+
+    fn validate_values(
+        root: &Map<String, Value>,
+        declared: &[LayoutGroup],
+    ) -> Result<(), ConfigurationLayoutError> {
         let values = root
             .get("values")
             .and_then(Value::as_object)
             .ok_or_else(|| ConfigurationLayoutError::invalid("values must be an object"))?;
-        let groups = root["groups"]
-            .as_array()
-            .expect("groups were validated before values");
-        let declared = groups
-            .iter()
-            .map(|group| {
-                let key = group["key"].as_str().unwrap();
-                let options = group["options"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|option| (option["key"].as_str().unwrap(), option))
-                    .collect::<std::collections::HashMap<_, _>>();
-                (key, options)
-            })
-            .collect::<std::collections::HashMap<_, _>>();
-
-        for (group_key, options) in &declared {
-            let selected = values.get(*group_key).and_then(Value::as_object);
-            for (option_key, option) in options {
+        for group in declared {
+            let selected = values.get(&group.key).and_then(Value::as_object);
+            for option in &group.options {
                 let value = selected
-                    .and_then(|selected| selected.get(*option_key))
+                    .and_then(|selected| selected.get(&option.key))
                     .ok_or_else(|| ConfigurationLayoutError::UnsettledValue {
-                        group: (*group_key).to_owned(),
-                        option: (*option_key).to_owned(),
+                        group: group.key.clone(),
+                        option: option.key.clone(),
                     })?;
-                self.validate_selected_value(option, value)?;
+                option.check(value, "settled value")?;
             }
         }
         for (group_key, selected) in values {
@@ -119,17 +278,19 @@ impl ConfigurationDefinition {
                     "configuration values for group '{group_key}' must be an object"
                 ))
             })?;
-            let Some(options) = declared.get(group_key.as_str()) else {
+            let Some(group) = declared.iter().find(|group| &group.key == group_key) else {
                 let option = selected.keys().next().map_or("<group>", String::as_str);
                 return Err(ConfigurationLayoutError::UnknownValue {
                     group: group_key.clone(),
                     option: option.to_owned(),
                 });
             };
-            if let Some(option) = selected
-                .keys()
-                .find(|option| !options.contains_key(option.as_str()))
-            {
+            if let Some(option) = selected.keys().find(|option| {
+                !group
+                    .options
+                    .iter()
+                    .any(|declared| &declared.key == *option)
+            }) {
                 return Err(ConfigurationLayoutError::UnknownValue {
                     group: group_key.clone(),
                     option: option.clone(),
@@ -139,41 +300,10 @@ impl ConfigurationDefinition {
         Ok(())
     }
 
-    fn validate_selected_value(
+    fn expand_source(
         &self,
-        option: &Value,
-        value: &Value,
-    ) -> Result<(), ConfigurationLayoutError> {
-        let option = option.as_object().unwrap();
-        let key = option["key"].as_str().unwrap();
-        let kind = option["type"].as_str().unwrap();
-        let choices = option
-            .get("choices")
-            .and_then(Value::as_array)
-            .map_or(&[][..], Vec::as_slice);
-        let numeric = match kind {
-            "bool" if value.is_null() || value.is_boolean() => None,
-            "int" if value.is_null() || value.as_i64().is_some() => Some(true),
-            "float" if value.is_null() || value.as_f64().is_some() => Some(false),
-            "string" | "path" if value.is_null() || value.is_string() => None,
-            "select"
-                if value.is_null()
-                    || value.as_str().is_some_and(|selected| {
-                        choices.iter().any(|choice| choice["key"] == selected)
-                    }) =>
-            {
-                None
-            }
-            _ => {
-                return Err(ConfigurationLayoutError::invalid(format!(
-                    "option '{key}' has a settled value incompatible with its type"
-                )));
-            }
-        };
-        self.validate_range(key, option, value, numeric)
-    }
-
-    fn expand_source(&self, source: &Value) -> Result<Value, ConfigurationLayoutError> {
+        source: &Value,
+    ) -> Result<(LayoutOption, Value), ConfigurationLayoutError> {
         let source = source
             .as_object()
             .filter(|source| source.len() == 2)
@@ -224,7 +354,13 @@ impl ConfigurationDefinition {
                 setting: path.to_owned(),
             });
         }
-        Ok(Self::option_json(key, option.0))
+        Ok((
+            LayoutOption {
+                key: key.to_owned(),
+                kind: option.0.value.kind.clone(),
+            },
+            Self::option_json(key, option.0),
+        ))
     }
 
     fn option_json(key: &str, option: &OptionDefinition) -> Value {
@@ -278,132 +414,6 @@ impl ConfigurationDefinition {
         output.into()
     }
 
-    fn validate_option(&self, option: &Value) -> Result<(), ConfigurationLayoutError> {
-        const FIELDS: &[&str] = &[
-            "key",
-            "title",
-            "description",
-            "type",
-            "default",
-            "min",
-            "max",
-            "choices",
-        ];
-        let option = option
-            .as_object()
-            .filter(|option| option.keys().all(|key| FIELDS.contains(&key.as_str())))
-            .ok_or_else(|| ConfigurationLayoutError::invalid("invalid synthesized option"))?;
-        let key = Self::required_text(option, "key")?;
-        Self::required_text(option, "title")?;
-        if option
-            .get("description")
-            .is_some_and(|value| !value.is_string())
-        {
-            return Err(ConfigurationLayoutError::invalid(format!(
-                "option '{key}' has an invalid description"
-            )));
-        }
-        let kind = Self::required_text(option, "type")?;
-        let default = option.get("default").ok_or_else(|| {
-            ConfigurationLayoutError::invalid(format!("option '{key}' has no default"))
-        })?;
-        let choices = match option.get("choices") {
-            Some(Value::Array(choices)) => choices.as_slice(),
-            Some(_) => {
-                return Err(ConfigurationLayoutError::invalid(format!(
-                    "option '{key}' has invalid choices"
-                )));
-            }
-            None => &[],
-        };
-        self.validate_choices(key, kind, default, choices)?;
-
-        let numeric = match kind {
-            "bool" if default.is_null() || default.is_boolean() => None,
-            "int" if default.is_null() || default.as_i64().is_some() => Some(true),
-            "float" if default.is_null() || default.as_f64().is_some() => Some(false),
-            "string" | "path" if default.is_null() || default.is_string() => None,
-            "select"
-                if default.is_null()
-                    || default.as_str().is_some_and(|selected| {
-                        choices.iter().any(|choice| choice["key"] == selected)
-                    }) =>
-            {
-                None
-            }
-            _ => {
-                return Err(ConfigurationLayoutError::invalid(format!(
-                    "option '{key}' has a default incompatible with its type"
-                )));
-            }
-        };
-        self.validate_range(key, option, default, numeric)
-    }
-
-    fn validate_choices(
-        &self,
-        option: &str,
-        kind: &str,
-        default: &Value,
-        choices: &[Value],
-    ) -> Result<(), ConfigurationLayoutError> {
-        let mut keys = HashSet::new();
-        let valid = choices.iter().all(|choice| {
-            choice.as_object().is_some_and(|choice| {
-                Self::required_text(choice, "key").is_ok_and(|key| keys.insert(key))
-                    && Self::required_text(choice, "label").is_ok()
-            })
-        });
-        if !valid || (kind == "select") != !choices.is_empty() {
-            return Err(ConfigurationLayoutError::invalid(format!(
-                "option '{option}' has invalid choices"
-            )));
-        }
-        if kind == "select"
-            && !default.is_null()
-            && !default
-                .as_str()
-                .is_some_and(|selected| keys.contains(selected))
-        {
-            return Err(ConfigurationLayoutError::invalid(format!(
-                "option '{option}' has a default incompatible with its type"
-            )));
-        }
-        Ok(())
-    }
-
-    fn validate_range(
-        &self,
-        key: &str,
-        option: &Map<String, Value>,
-        default: &Value,
-        integer: Option<bool>,
-    ) -> Result<(), ConfigurationLayoutError> {
-        if integer.is_none() && (option.contains_key("min") || option.contains_key("max")) {
-            return Err(Self::range_error(key));
-        }
-        let number = |value: &Value| match integer {
-            Some(true) => value.as_i64().map(|value| value as f64),
-            Some(false) => value.as_f64(),
-            None => None,
-        };
-        let bound = |name| match option.get(name) {
-            Some(value) => number(value)
-                .ok_or_else(|| Self::range_error(key))
-                .map(Some),
-            None => Ok(None),
-        };
-        let min = bound("min")?;
-        let max = bound("max")?;
-        let outside = number(default).is_some_and(|value| {
-            min.is_some_and(|min| value < min) || max.is_some_and(|max| value > max)
-        });
-        if matches!((min, max), (Some(min), Some(max)) if min > max) || outside {
-            return Err(Self::range_error(key));
-        }
-        Ok(())
-    }
-
     fn required_text<'a>(
         object: &'a Map<String, Value>,
         field: &str,
@@ -415,9 +425,5 @@ impl ConfigurationDefinition {
             .ok_or_else(|| {
                 ConfigurationLayoutError::invalid(format!("{field} must be a non-empty string"))
             })
-    }
-
-    fn range_error(key: &str) -> ConfigurationLayoutError {
-        ConfigurationLayoutError::invalid(format!("option '{key}' has an invalid range"))
     }
 }
