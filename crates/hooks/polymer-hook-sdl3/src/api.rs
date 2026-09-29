@@ -14,7 +14,7 @@ use std::{
     sync::Arc,
 };
 #[cfg(target_os = "windows")]
-use windows_sys::Win32::{Foundation::HMODULE, System::LibraryLoader::GetProcAddress};
+use windows_sys::Win32::Foundation::HMODULE;
 
 pub(crate) type JoystickId = u32;
 pub(crate) type DynapiEntryFn = unsafe extern "C" fn(u32, *mut c_void, u32) -> i32;
@@ -393,12 +393,7 @@ impl SdlBackend for Api {
 }
 
 #[cfg(target_os = "windows")]
-pub(crate) unsafe fn symbol<T: Copy>(module: Module, name: &std::ffi::CStr) -> Option<T> {
-    let address = unsafe { GetProcAddress(module, name.as_ptr().cast()) }?;
-    debug_assert_eq!(std::mem::size_of::<T>(), std::mem::size_of_val(&address));
-    Some(unsafe { std::mem::transmute_copy(&address) })
-}
-
+pub(crate) use polymer_hook::module::symbol;
 #[cfg(target_os = "windows")]
 pub(crate) type Module = HMODULE;
 #[cfg(target_os = "macos")]

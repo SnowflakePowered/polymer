@@ -99,69 +99,6 @@ impl GuestPlatform {
                 OsString::from(config::SESSION),
                 OsString::from(&runtime.session),
             ),
-            (
-                OsString::from(config::LAYER_LOG_FILE),
-                runtime
-                    .artifact_root
-                    .join("polymer-layer.log")
-                    .into_os_string(),
-            ),
-            (
-                OsString::from(config::DINPUT_LOG_FILE),
-                runtime
-                    .artifact_root
-                    .join("polymer-dinput.log")
-                    .into_os_string(),
-            ),
-            (
-                OsString::from(config::WIN32_LOG_FILE),
-                runtime
-                    .artifact_root
-                    .join("polymer-win32.log")
-                    .into_os_string(),
-            ),
-            (
-                OsString::from(config::SDL_LOG_FILE),
-                runtime
-                    .artifact_root
-                    .join("polymer-sdl.log")
-                    .into_os_string(),
-            ),
-            (
-                OsString::from(config::DXGI_LOG_FILE),
-                runtime
-                    .artifact_root
-                    .join("polymer-dxgi.log")
-                    .into_os_string(),
-            ),
-            (
-                OsString::from(config::D3D11_LOG_FILE),
-                runtime
-                    .artifact_root
-                    .join("polymer-d3d11.log")
-                    .into_os_string(),
-            ),
-            (
-                OsString::from(config::D3D12_LOG_FILE),
-                runtime
-                    .artifact_root
-                    .join("polymer-d3d12.log")
-                    .into_os_string(),
-            ),
-            (
-                OsString::from(config::OPENGL_LOG_FILE),
-                runtime
-                    .artifact_root
-                    .join("polymer-opengl.log")
-                    .into_os_string(),
-            ),
-            (
-                OsString::from(config::BLUETOOTH_API_LOG_FILE),
-                runtime
-                    .artifact_root
-                    .join("polymer-bluetooth-api.log")
-                    .into_os_string(),
-            ),
             (OsString::from("SDL_JOYSTICK_HIDAPI"), OsString::from("0")),
             (
                 OsString::from("SDL_JOYSTICK_DIRECTINPUT"),
@@ -175,6 +112,12 @@ impl GuestPlatform {
             ),
             (OsString::from("SDL_XINPUT_ENABLED"), OsString::from("0")),
         ];
+        environment.extend(config::LOG_FILES.map(|(variable, file)| {
+            (
+                OsString::from(variable),
+                runtime.artifact_root.join(file).into_os_string(),
+            )
+        }));
         environment.push((
             OsString::from(config::RENDER_CONFIGURATION),
             OsString::from(

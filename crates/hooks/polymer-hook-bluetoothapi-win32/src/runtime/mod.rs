@@ -44,7 +44,9 @@ pub(crate) struct Runtime {
 
 impl Default for Runtime {
     fn default() -> Self {
-        polymer_hook::telemetry::init_file_tracing(polymer_hook::config::bluetooth_api_log_file());
+        polymer_hook::telemetry::init_file_tracing(polymer_hook::config::log_file(
+            polymer_hook::config::BLUETOOTH_API_LOG_FILE,
+        ));
         let session = polymer_hook::config::session().ok();
         let enumeration = SyntheticEnumeration::default();
         if let Some(session) = &session {
