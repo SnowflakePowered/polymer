@@ -1,12 +1,27 @@
 //! WebRTC signaling and one-track-per-capture-stream publishing.
 #![allow(unsafe_code)]
 
+use axum::{
+    Router,
+    body::Bytes,
+    extract::{Path, Request, State},
+    http::{
+        HeaderName, HeaderValue, Method, StatusCode,
+        header::{
+            ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS,
+            ACCESS_CONTROL_ALLOW_ORIGIN, ACCESS_CONTROL_EXPOSE_HEADERS, ACCESS_CONTROL_MAX_AGE,
+            CONTENT_TYPE, LOCATION,
+        },
+    },
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
+    routing::{delete, get, post},
+};
 use parking_lot::Mutex;
 use std::{
     collections::{HashMap, HashSet},
     error::Error,
-    io::{Read, Write},
-    net::{SocketAddr, TcpListener, TcpStream},
+    net::{SocketAddr, TcpListener},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -45,7 +60,6 @@ use webrtc_ice::{
 const FRAME_RATE: f32 = 60.0;
 const FRAME_DURATION: Duration = Duration::from_micros(16_667);
 const DEFAULT_BITRATE: u32 = 8_000_000;
-const MAX_HTTP_HEADER: usize = 64 * 1024;
 /// Bounded frame handoff to the encoder thread. GPU-backed frame producers
 /// must never have more frames outstanding than this, so an accepted frame
 /// can never resolve after a later frame that was dropped by `try_send`.
@@ -168,6 +182,7 @@ pub struct Publisher {
 impl Publisher {
     pub fn start(bind: SocketAddr, targets: &[u32]) -> Result<Self, Box<dyn Error>> {
         let listener = TcpListener::bind(bind)?;
+        listener.set_nonblocking(true)?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .thread_name("polymer-webrtc")
@@ -198,14 +213,13 @@ impl Publisher {
             stats.clone(),
             frame_rx,
         );
-        spawn_signaling(
-            listener,
-            runtime.handle().clone(),
+        Signaling {
             api,
-            tracks.clone(),
+            tracks: tracks.clone(),
             sessions,
-            stats.clone(),
-        );
+            stats: stats.clone(),
+        }
+        .spawn(&runtime, listener)?;
         tracing::info!("polymer: WebRTC signaling and ICE listening on {bind}");
         Ok(Self {
             tracks,
@@ -526,119 +540,157 @@ fn spawn_encoder(
         .expect("failed to spawn video encoder thread");
 }
 
-fn spawn_signaling(
-    listener: TcpListener,
-    handle: Handle,
+#[derive(Clone)]
+struct Signaling {
     api: Arc<API>,
     tracks: Tracks,
     sessions: Sessions,
     stats: SharedStats,
-) {
-    thread::Builder::new()
-        .name("polymer-webrtc-http".to_owned())
-        .spawn(move || {
-            for stream in listener.incoming() {
-                let Ok(stream) = stream else { continue };
-                let handle = handle.clone();
-                let api = api.clone();
-                let tracks = tracks.clone();
-                let sessions = sessions.clone();
-                let stats = stats.clone();
-                thread::spawn(move || {
-                    if let Err(error) =
-                        serve_http(stream, &handle, &api, &tracks, &sessions, &stats)
-                    {
-                        let idle_connection =
-                            error.downcast_ref::<std::io::Error>().is_some_and(|error| {
-                                matches!(
-                                    error.kind(),
-                                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
-                                )
-                            });
-                        if !idle_connection {
-                            tracing::error!("polymer: WebRTC signaling request failed: {error}");
-                        }
-                    }
-                });
-            }
-        })
-        .expect("failed to spawn WebRTC signaling thread");
 }
 
-fn serve_http(
-    mut stream: TcpStream,
-    handle: &Handle,
-    api: &API,
-    tracks: &Tracks,
-    sessions: &Sessions,
-    stats: &SharedStats,
-) -> Result<(), Box<dyn Error>> {
-    let (method, path, body) = read_request(&mut stream)?;
-    if method == "OPTIONS" {
-        return respond_with_headers(
-            &mut stream,
-            "204 No Content",
-            "text/plain; charset=utf-8",
-            &[],
-            &[("Accept-Post", "application/sdp")],
-        );
-    }
-    if method == "DELETE" && path.starts_with("/session/") {
-        let session_id = path.trim_start_matches("/session/").parse::<u64>().ok();
-        if let Some(peer) = session_id.and_then(|session_id| sessions.lock().remove(&session_id)) {
-            if let Some(session_id) = session_id {
-                stats.lock().connected_clients.remove(&session_id);
+impl Signaling {
+    fn spawn(self, runtime: &Runtime, listener: TcpListener) -> std::io::Result<()> {
+        let listener = {
+            let _context = runtime.enter();
+            tokio::net::TcpListener::from_std(listener)?
+        };
+        let router = Router::new()
+            .route("/", get(Self::viewer).post(Self::whep))
+            .route("/tracks", get(Self::tracks))
+            .route("/offer", post(Self::offer))
+            .route("/session/{id}", delete(Self::close))
+            .fallback(Self::not_found)
+            .method_not_allowed_fallback(Self::not_found)
+            .layer(middleware::from_fn(Self::cors))
+            .with_state(self);
+        runtime.spawn(async move {
+            if let Err(error) = axum::serve(listener, router).await {
+                tracing::error!("polymer: WebRTC signaling server failed: {error}");
             }
-            handle.block_on(peer.close())?;
-        }
-        return respond(
-            &mut stream,
-            "204 No Content",
-            "text/plain; charset=utf-8",
-            &[],
-        );
+        });
+        Ok(())
     }
-    match (method.as_str(), path.as_str()) {
-        ("GET", "/") => respond(
-            &mut stream,
-            "200 OK",
-            "text/html; charset=utf-8",
-            VIEWER_HTML.as_bytes(),
-        ),
-        ("GET", "/tracks") => {
-            let count = tracks.lock().tracks.len();
-            respond(
-                &mut stream,
-                "200 OK",
-                "application/json",
-                count.to_string().as_bytes(),
+
+    async fn cors(request: Request, next: Next) -> Response {
+        let mut response = if request.method() == Method::OPTIONS {
+            (
+                StatusCode::NO_CONTENT,
+                [
+                    (CONTENT_TYPE, "text/plain; charset=utf-8"),
+                    (HeaderName::from_static("accept-post"), "application/sdp"),
+                ],
             )
+                .into_response()
+        } else {
+            next.run(request).await
+        };
+        let headers = response.headers_mut();
+        for (name, value) in [
+            (ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
+            (ACCESS_CONTROL_ALLOW_METHODS, "GET, POST, DELETE, OPTIONS"),
+            (ACCESS_CONTROL_ALLOW_HEADERS, "Content-Type"),
+            (ACCESS_CONTROL_EXPOSE_HEADERS, "Location"),
+            (
+                HeaderName::from_static("access-control-allow-private-network"),
+                "true",
+            ),
+            (ACCESS_CONTROL_MAX_AGE, "86400"),
+        ] {
+            headers.insert(name, HeaderValue::from_static(value));
         }
-        ("POST", "/offer") => {
-            let offer: RTCSessionDescription = serde_json::from_slice(&body)?;
-            let session_id = NEXT_WHEP_SESSION_ID.fetch_add(1, Ordering::Relaxed);
-            let answer = handle.block_on(answer_offer(
-                api, tracks, sessions, stats, session_id, offer,
-            ))?;
-            let json = serde_json::to_vec(&answer)?;
-            respond(&mut stream, "200 OK", "application/json", &json)
+        response
+    }
+
+    async fn viewer() -> Response {
+        ([(CONTENT_TYPE, "text/html; charset=utf-8")], VIEWER_HTML).into_response()
+    }
+
+    async fn tracks(State(signaling): State<Self>) -> Response {
+        let count = signaling.tracks.lock().tracks.len();
+        ([(CONTENT_TYPE, "application/json")], count.to_string()).into_response()
+    }
+
+    async fn offer(State(signaling): State<Self>, body: Bytes) -> Response {
+        let offer = match serde_json::from_slice(&body) {
+            Ok(offer) => offer,
+            Err(error) => return Self::failed(error.into()),
+        };
+        let session_id = NEXT_WHEP_SESSION_ID.fetch_add(1, Ordering::Relaxed);
+        let answer = answer_offer(
+            &signaling.api,
+            &signaling.tracks,
+            &signaling.sessions,
+            &signaling.stats,
+            session_id,
+            offer,
+        )
+        .await;
+        match answer.and_then(|answer| Ok(serde_json::to_vec(&answer)?)) {
+            Ok(json) => ([(CONTENT_TYPE, "application/json")], json).into_response(),
+            Err(error) => Self::failed(error),
         }
-        ("POST", "/") => {
-            let offer = RTCSessionDescription::offer(String::from_utf8(body)?)?;
-            let session_id = NEXT_WHEP_SESSION_ID.fetch_add(1, Ordering::Relaxed);
-            let answer = handle.block_on(answer_offer(
-                api, tracks, sessions, stats, session_id, offer,
-            ))?;
-            let location = format!("/session/{session_id}");
-            respond_with_headers(
-                &mut stream,
-                "201 Created",
-                "application/sdp",
-                answer.sdp.as_bytes(),
-                &[("Location", location.as_str())],
+    }
+
+    async fn whep(State(signaling): State<Self>, body: Bytes) -> Response {
+        let offer = match String::from_utf8(body.to_vec())
+            .map_err(Box::<dyn Error>::from)
+            .and_then(|sdp| Ok(RTCSessionDescription::offer(sdp)?))
+        {
+            Ok(offer) => offer,
+            Err(error) => return Self::failed(error),
+        };
+        let session_id = NEXT_WHEP_SESSION_ID.fetch_add(1, Ordering::Relaxed);
+        match answer_offer(
+            &signaling.api,
+            &signaling.tracks,
+            &signaling.sessions,
+            &signaling.stats,
+            session_id,
+            offer,
+        )
+        .await
+        {
+            Ok(answer) => (
+                StatusCode::CREATED,
+                [
+                    (CONTENT_TYPE, "application/sdp".to_owned()),
+                    (LOCATION, format!("/session/{session_id}")),
+                ],
+                answer.sdp,
             )
+                .into_response(),
+            Err(error) => Self::failed(error),
         }
-        _ => respond(&mut stream, "404 Not Found", "text/plain", b"not found"),
+    }
+
+    async fn close(State(signaling): State<Self>, Path(id): Path<String>) -> Response {
+        let session_id = id.parse::<u64>().ok();
+        let peer = session_id.and_then(|session_id| signaling.sessions.lock().remove(&session_id));
+        if let (Some(session_id), Some(peer)) = (session_id, peer) {
+            signaling.stats.lock().connected_clients.remove(&session_id);
+            if let Err(error) = peer.close().await {
+                return Self::failed(error.into());
+            }
+        }
+        (
+            StatusCode::NO_CONTENT,
+            [(CONTENT_TYPE, "text/plain; charset=utf-8")],
+        )
+            .into_response()
+    }
+
+    async fn not_found() -> Response {
+        (
+            StatusCode::NOT_FOUND,
+            [(CONTENT_TYPE, "text/plain")],
+            "not found",
+        )
+            .into_response()
+    }
+
+    fn failed(error: Box<dyn Error>) -> Response {
+        tracing::error!("polymer: WebRTC signaling request failed: {error}");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
     }
 }
 
@@ -785,85 +837,6 @@ async fn answer_offer(
         .ok_or("WebRTC answer has no local description")?;
     sessions.lock().insert(session_id, peer);
     Ok(answer)
-}
-
-fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>), Box<dyn Error>> {
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    let mut request = Vec::new();
-    let header_end;
-    loop {
-        let mut chunk = [0u8; 4096];
-        let count = stream.read(&mut chunk)?;
-        if count == 0 {
-            return Err("incomplete HTTP request".into());
-        }
-        request.extend_from_slice(&chunk[..count]);
-        if request.len() > MAX_HTTP_HEADER {
-            return Err("HTTP header is too large".into());
-        }
-        if let Some(position) = request.windows(4).position(|value| value == b"\r\n\r\n") {
-            header_end = position + 4;
-            break;
-        }
-    }
-    let header = std::str::from_utf8(&request[..header_end])?;
-    let mut lines = header.split("\r\n");
-    let mut request_line = lines
-        .next()
-        .ok_or("missing HTTP request line")?
-        .split_whitespace();
-    let method = request_line.next().ok_or("missing HTTP method")?.to_owned();
-    let path = request_line.next().ok_or("missing HTTP path")?.to_owned();
-    let content_length = lines
-        .find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            name.eq_ignore_ascii_case("content-length")
-                .then(|| value.trim().parse::<usize>().ok())
-                .flatten()
-        })
-        .unwrap_or(0);
-    while request.len() < header_end + content_length {
-        let mut chunk = [0u8; 4096];
-        let count = stream.read(&mut chunk)?;
-        if count == 0 {
-            return Err("incomplete HTTP body".into());
-        }
-        request.extend_from_slice(&chunk[..count]);
-    }
-    Ok((
-        method,
-        path,
-        request[header_end..header_end + content_length].to_vec(),
-    ))
-}
-
-fn respond(
-    stream: &mut TcpStream,
-    status: &str,
-    content_type: &str,
-    body: &[u8],
-) -> Result<(), Box<dyn Error>> {
-    respond_with_headers(stream, status, content_type, body, &[])
-}
-
-fn respond_with_headers(
-    stream: &mut TcpStream,
-    status: &str,
-    content_type: &str,
-    body: &[u8],
-    headers: &[(&str, &str)],
-) -> Result<(), Box<dyn Error>> {
-    write!(
-        stream,
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nAccess-Control-Expose-Headers: Location\r\nAccess-Control-Allow-Private-Network: true\r\nAccess-Control-Max-Age: 86400\r\n",
-        body.len()
-    )?;
-    for (name, value) in headers {
-        write!(stream, "{name}: {value}\r\n")?;
-    }
-    write!(stream, "\r\n")?;
-    stream.write_all(body)?;
-    Ok(())
 }
 
 const VIEWER_HTML: &str = r#"<!doctype html>
