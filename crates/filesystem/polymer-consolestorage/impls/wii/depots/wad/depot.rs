@@ -9,7 +9,9 @@ use super::tmd::{Content, Tmd, align};
 use crate::Error;
 use crate::impls::wii::nand::WiiNand;
 use crate::impls::wii::ticket::Ticket;
-use crate::installable::{Depot, DepotType, EmbeddedIcon, InstallEvents, InstallPreview};
+use crate::installable::{
+    Depot, DepotType, EmbeddedIcon, InstallEvents, InstallPreview, Installable,
+};
 use crate::keys::{KeyIdentity, KeyRecord};
 use crate::nand::VirtualNand;
 
@@ -68,27 +70,6 @@ impl WiiWadDepot {
                     .map(|archive| EmbeddedIcon::WiiBanner(archive.into())),
             }
         })
-    }
-
-    /// Decrypt and hash every content, publishing progress as a verifying phase.
-    /// Returns the names of the contents that don't validate.
-    fn verify(&self, events: &InstallEvents) -> Vec<String> {
-        let Ok(key) = self.select_title_key() else {
-            return vec!["ticket".to_owned()];
-        };
-        events.phase(
-            crate::installable::InstallPhase::Verifying,
-            self.tmd.contents.iter().map(|content| content.size).sum(),
-        );
-        self.tmd
-            .contents
-            .iter()
-            .filter_map(|content| {
-                let verified = self.decrypt_content(content, &key);
-                events.advance(content.size);
-                verified.err().map(|_| format!("{:08x}.app", content.id))
-            })
-            .collect()
     }
 
     pub fn title_id(&self) -> u64 {
@@ -212,14 +193,28 @@ impl Depot for WiiWadDepot {
 
     fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> Result<(), Error> {
         if !(nand.platform() == WiiNand::PLATFORM && WiiNand::has_structure(&*nand.root())) {
-            return Err(Error::Unsupported(
-                "Depot requires a compatible NAND with its storage layout initialized".into(),
-            ));
+            return Err(Error::IncompatibleNand);
         }
         Ok(())
     }
-    fn validate_contents(&self) -> Vec<String> {
-        self.verify(&InstallEvents::default())
+
+    fn validate_contents(&self, events: &InstallEvents) -> Vec<String> {
+        let Ok(key) = self.select_title_key() else {
+            return vec!["ticket".to_owned()];
+        };
+        events.phase(
+            crate::installable::InstallPhase::Verifying,
+            self.tmd.contents.iter().map(|content| content.size).sum(),
+        );
+        self.tmd
+            .contents
+            .iter()
+            .filter_map(|content| {
+                let verified = self.decrypt_content(content, &key);
+                events.advance(content.size);
+                verified.err().map(|_| format!("{:08x}.app", content.id))
+            })
+            .collect()
     }
 
     fn preview(&self) -> Option<InstallPreview> {
@@ -241,31 +236,12 @@ impl Depot for WiiWadDepot {
         }
     }
 
-    fn install<'a, N: VirtualNand + ?Sized>(
+    async fn install<N: VirtualNand + ?Sized>(
         self,
-        nand: &'a N,
-        _keys: &'a dyn crate::keys::KeyReader,
-        events: crate::installable::InstallEvents,
-    ) -> crate::installable::Installation<'a>
-    where
-        Self: 'a,
-    {
-        let source = self;
-
-        crate::installable::Installation::prepare(async move {
-            source.validate_target(nand)?;
-            let verifying = source.clone();
-            let verified = events.clone();
-            let missing = tokio::task::spawn_blocking(move || verifying.verify(&verified))
-                .await
-                .map_err(|e| Error::Unsupported(format!("WAD worker failed: {e}")))?;
-            if !missing.is_empty() {
-                return Err(Error::InvalidDepot {
-                    root: source.path.display().to_string(),
-                    missing,
-                });
-            }
-            super::install::WadInstall::new(source, nand.root(), events).await
-        })
+        nand: &N,
+        _keys: &dyn crate::keys::KeyReader,
+        events: InstallEvents,
+    ) -> Result<impl Installable, Error> {
+        super::install::WadInstall::new(self, nand.root(), events).await
     }
 }

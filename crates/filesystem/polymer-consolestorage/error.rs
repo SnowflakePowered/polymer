@@ -29,6 +29,8 @@ pub enum Error {
     Unsupported(String),
     #[error("installation did not run to completion")]
     InstallIncomplete,
+    #[error("Depot requires a compatible NAND with its storage layout initialized")]
+    IncompatibleNand,
     /// The file in the depot is corrupt.
     #[error("corrupt depot")]
     IntegrityMatchFailed { failed: String },
@@ -69,6 +71,7 @@ impl Clone for Error {
             Error::UnclaimedNand => Error::UnclaimedNand,
             Error::Unsupported(what) => Error::Unsupported(what.clone()),
             Error::InstallIncomplete => Error::InstallIncomplete,
+            Error::IncompatibleNand => Error::IncompatibleNand,
             Error::IntegrityMatchFailed { failed } => Error::IntegrityMatchFailed {
                 failed: failed.clone(),
             },

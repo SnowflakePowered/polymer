@@ -1,13 +1,15 @@
 use crate::Error;
-use crate::installable::{DepotFile, InstallEvents, InstallPhase, Reporting};
+use crate::installable::artifacts::Artifact;
+use crate::installable::{DepotFile, InstallEvents, InstallPhase, Installable, Reporting};
 use crate::storage::Storage;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use walkdir::WalkDir;
 
-/// Installs a depot that is a plain host directory into a [`Storage`].
-pub struct DirectoryInstall {
+/// Installs a depot that is a plain host directory into a [`Storage`], then
+/// builds its artifact with `finish`.
+pub struct DirectoryInstall<F> {
     /// The depot root on the host.
     pub root: PathBuf,
     /// Where the depot lands in `storage`.
@@ -16,15 +18,17 @@ pub struct DirectoryInstall {
     entries: walkdir::IntoIter,
     excluded: BTreeSet<String>,
     events: InstallEvents,
+    finish: F,
 }
 
-impl DirectoryInstall {
+impl<F: FnOnce(Vec<DepotFile>) -> Result<Artifact, Error>> DirectoryInstall<F> {
     /// Publishes the depot's total size as the installing phase.
     pub fn new(
         root: PathBuf,
         base: String,
         storage: Arc<dyn Storage>,
         events: InstallEvents,
+        finish: F,
     ) -> Self {
         let total = WalkDir::new(&root)
             .into_iter()
@@ -42,6 +46,7 @@ impl DirectoryInstall {
             entries,
             excluded: BTreeSet::new(),
             events,
+            finish,
         }
     }
 
@@ -50,8 +55,9 @@ impl DirectoryInstall {
         self
     }
 }
-impl DirectoryInstall {
-    pub async fn next_batch(&mut self) -> Result<Option<Vec<DepotFile>>, Error> {
+
+impl<F: FnOnce(Vec<DepotFile>) -> Result<Artifact, Error>> Installable for DirectoryInstall<F> {
+    async fn next_batch(&mut self) -> Result<Option<Vec<DepotFile>>, Error> {
         for entry in self.entries.by_ref() {
             let entry = entry.map_err(|error| {
                 let path = error.path().unwrap_or(&self.root).to_owned();
@@ -105,5 +111,9 @@ impl DirectoryInstall {
             return Ok(Some(vec![file]));
         }
         Ok(None)
+    }
+
+    async fn finish(self, manifest: Vec<DepotFile>) -> Result<Artifact, Error> {
+        (self.finish)(manifest)
     }
 }

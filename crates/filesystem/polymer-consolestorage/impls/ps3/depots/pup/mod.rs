@@ -4,7 +4,7 @@ mod sce;
 
 use super::super::Ps3Nand;
 use crate::Error;
-use crate::installable::{Depot, DepotType};
+use crate::installable::{Depot, DepotType, Installable};
 use crate::nand::VirtualNand;
 use std::path::{Path, PathBuf};
 
@@ -48,35 +48,19 @@ impl Depot for Ps3PupDepot {
 
     fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> Result<(), Error> {
         if !(nand.platform() == Ps3Nand::PLATFORM && Ps3Nand::has_structure(&*nand.root())) {
-            return Err(Error::Unsupported(
-                "Depot requires a compatible NAND with its storage layout initialized".into(),
-            ));
+            return Err(Error::IncompatibleNand);
         }
         Ok(())
-    }
-    fn validate_contents(&self) -> Vec<String> {
-        match self.verified_pup(&crate::installable::InstallEvents::default()) {
-            Ok(_) => Vec::new(),
-            Err(_) => vec![self.path.display().to_string()],
-        }
     }
     fn depot_type(&self) -> DepotType {
         DepotType::System
     }
-    fn install<'a, N: VirtualNand + ?Sized>(
+    async fn install<N: VirtualNand + ?Sized>(
         self,
-        nand: &'a N,
-        _keys: &'a dyn crate::keys::KeyReader,
+        nand: &N,
+        _keys: &dyn crate::keys::KeyReader,
         events: crate::installable::InstallEvents,
-    ) -> crate::installable::Installation<'a>
-    where
-        Self: 'a,
-    {
-        let source = self;
-
-        crate::installable::Installation::prepare(async move {
-            source.validate_target(nand)?;
-            install::PupInstall::new(&source, nand.root(), events).await
-        })
+    ) -> Result<impl Installable, Error> {
+        install::PupInstall::new(&self, nand.root(), events).await
     }
 }

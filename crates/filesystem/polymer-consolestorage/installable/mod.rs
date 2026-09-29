@@ -49,7 +49,8 @@ impl TryFrom<u8> for DepotType {
     }
 }
 
-pub trait Depot: Sized {
+#[allow(async_fn_in_trait)]
+pub trait Depot: Sized + Send + 'static {
     /// Parse this depot type from a path. Invalid input must fail construction.
     fn open(path: &Path) -> Result<Self, crate::Error>;
 
@@ -66,48 +67,22 @@ pub trait Depot: Sized {
     /// Check whether the target NAND meets this depot's format and platform requirements.
     fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> Result<(), crate::Error>;
 
-    /// Validate the contents of the depot.
+    /// Validate the contents of the depot, publishing progress through `events`.
     ///
     /// Returns the names of the contents that don't validate.
-    fn validate_contents(&self) -> Vec<String>;
-
-    /// Check the target NAND is clean and compatible before extraction.
-    fn validate_target<N: VirtualNand + ?Sized>(&self, nand: &N) -> Result<(), crate::Error> {
-        if nand.is_dirty()? {
-            return Err(crate::Error::HistoryConflict(
-                "This NAND has uncommitted changes. Recover it in Console storage before installing.".into(),
-            ));
-        }
-        self.satisfies(nand)
-    }
-
-    /// Validate immediately before starting extraction, after the host persists keys.
-    fn validate<N: VirtualNand + ?Sized>(&self, nand: &N, path: &Path) -> Result<(), crate::Error> {
-        self.validate_target(nand)?;
-        let missing = self.validate_contents();
-        if !missing.is_empty() {
-            return Err(crate::Error::InvalidDepot {
-                root: path.display().to_string(),
-                missing,
-            });
-        }
-        Ok(())
+    fn validate_contents(&self, _events: &InstallEvents) -> Vec<String> {
+        Vec::new()
     }
 
     fn depot_type(&self) -> DepotType;
 
-    /// Install a depot, exposing extracted files through `next().await`, byte progress
-    /// through `events`, and its result through `finish().await`. Calling `finish` also
-    /// drives any remaining work.
-    #[must_use]
-    fn install<'a, N: VirtualNand + ?Sized>(
+    /// Prepare extraction into a clean, compatible NAND after the contents validate.
+    async fn install<N: VirtualNand + ?Sized>(
         self,
-        nand: &'a N,
-        keys: &'a dyn crate::keys::KeyReader,
+        nand: &N,
+        keys: &dyn crate::keys::KeyReader,
         events: InstallEvents,
-    ) -> Installation<'a>
-    where
-        Self: 'a;
+    ) -> Result<impl Installable, crate::Error>;
 }
 
 #[derive(Clone)]

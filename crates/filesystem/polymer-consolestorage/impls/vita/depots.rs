@@ -1,11 +1,10 @@
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use crate::impls::sony::{TitleId, metadata::SonyMetadata};
 use crate::installable::artifacts::Artifact;
 use crate::installable::{
-    Depot, DepotFile, DepotType, DirectoryInstall, IconHint, Installable, Installation,
+    Depot, DepotFile, DepotType, DirectoryInstall, IconHint, InstallEvents, Installable,
 };
 use crate::nand::VirtualNand;
 use crate::{Error, VolumeStorage};
@@ -46,6 +45,44 @@ impl VitaDirectoryDepot {
     pub fn install_path(&self) -> &str {
         &self.destination
     }
+
+    fn artifact(
+        self,
+        storage: &dyn VolumeStorage,
+        manifest: Vec<DepotFile>,
+    ) -> Result<Artifact, Error> {
+        let root = &self.destination;
+        let path = format!("{root}/sce_sys/param.sfo");
+        let sfo = SonyMetadata::read(storage.open_read(&path)?, &path)?;
+        if sfo.get_string("TITLE_ID") != Some(self.title_id.as_str())
+            || sfo.get_string("CONTENT_ID").unwrap_or_default() != self.content_id
+        {
+            return Err(Error::malformed(path, "installed Vita identity changed"));
+        }
+        let category = match self.kind {
+            DepotType::App => "gd",
+            DepotType::AppUpdate => "gp",
+            DepotType::AppContent => "ac",
+            _ => unreachable!("Vita directory depot category"),
+        };
+        if sfo.get_string("CATEGORY") != Some(category) {
+            return Err(Error::malformed(path, "installed Vita category changed"));
+        }
+        let icon = IconHint::read(storage, &format!("{root}/sce_sys/icon0.png"), self.kind)?;
+        Artifact::new(
+            format!("{}:{}", root, self.content_id),
+            self.kind,
+            manifest,
+            SonyMetadata::title(&sfo)
+                .unwrap_or(&self.title_id)
+                .to_owned(),
+            sfo.get_string("APP_VER")
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_owned),
+            vec![icon],
+            None,
+        )
+    }
 }
 
 impl Depot for VitaDirectoryDepot {
@@ -79,32 +116,23 @@ impl Depot for VitaDirectoryDepot {
                 )));
             }
         };
-        let depot = Self {
+        Ok(Self {
             root: root.to_owned(),
             title_id: title_id.to_owned(),
             content_id: content_id.to_owned(),
             kind,
             destination,
-        };
-        let missing = depot.validate_contents();
-        if !missing.is_empty() {
-            return Err(Error::InvalidDepot {
-                root: root.display().to_string(),
-                missing,
-            });
-        }
-        Ok(depot)
+        })
     }
 
     fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> Result<(), Error> {
-        if !(nand.platform() == super::VitaNand::PLATFORM) {
-            return Err(Error::Unsupported(
-                "Depot requires a compatible NAND with its storage layout initialized".into(),
-            ));
+        if nand.platform() != super::VitaNand::PLATFORM {
+            return Err(Error::IncompatibleNand);
         }
         Ok(())
     }
-    fn validate_contents(&self) -> Vec<String> {
+
+    fn validate_contents(&self, _events: &InstallEvents) -> Vec<String> {
         let mut invalid = Vec::new();
         if !self.root.join("sce_sys/param.sfo").is_file() {
             invalid.push("sce_sys/param.sfo".to_owned());
@@ -132,87 +160,19 @@ impl Depot for VitaDirectoryDepot {
         self.kind
     }
 
-    fn install<'a, N: VirtualNand + ?Sized>(
+    async fn install<N: VirtualNand + ?Sized>(
         self,
-        nand: &'a N,
-        _keys: &'a dyn crate::keys::KeyReader,
-        events: crate::installable::InstallEvents,
-    ) -> Installation<'a>
-    where
-        Self: 'a,
-    {
-        let source = self;
-
-        Installation::prepare(async move {
-            source.validate(nand, &source.root)?;
-            let storage = nand.root();
-            Ok(VitaInstall {
-                events: events.clone(),
-                copy: DirectoryInstall::new(
-                    source.root.clone(),
-                    source.destination.clone(),
-                    storage.clone(),
-                    events.clone(),
-                ),
-                depot: source,
-                storage,
-            })
-        })
-    }
-}
-
-struct VitaInstall {
-    depot: VitaDirectoryDepot,
-    copy: DirectoryInstall,
-    storage: Arc<dyn VolumeStorage>,
-    events: crate::installable::InstallEvents,
-}
-
-impl Installable for VitaInstall {
-    async fn next_batch(&mut self) -> Result<Option<Vec<DepotFile>>, Error> {
-        self.copy.next_batch().await
-    }
-
-    async fn finish(self, manifest: Vec<DepotFile>) -> Result<Artifact, Error> {
-        let root = &self.depot.destination;
-        let path = format!("{root}/sce_sys/param.sfo");
-        let sfo = SonyMetadata::read(self.storage.open_read(&path)?, &path)?;
-        if sfo.get_string("TITLE_ID") != Some(self.depot.title_id.as_str())
-            || sfo.get_string("CONTENT_ID").unwrap_or_default() != self.depot.content_id
-        {
-            return Err(Error::malformed(path, "installed Vita identity changed"));
-        }
-        let category = match self.depot.kind {
-            DepotType::App => "gd",
-            DepotType::AppUpdate => "gp",
-            DepotType::AppContent => "ac",
-            _ => unreachable!("Vita directory depot category"),
-        };
-        if sfo.get_string("CATEGORY") != Some(category) {
-            return Err(Error::malformed(path, "installed Vita category changed"));
-        }
-        let icon = IconHint::read(
-            &*self.storage,
-            &format!("{root}/sce_sys/icon0.png"),
-            self.depot.kind,
-        )?;
-        let artifact = Artifact::new(
-            format!("{}:{}", root, self.depot.content_id),
-            self.depot.kind,
-            manifest,
-            crate::impls::sony::metadata::SonyMetadata::title(&sfo)
-                .unwrap_or(&self.depot.title_id)
-                .to_owned(),
-            sfo.get_string("APP_VER")
-                .filter(|s| !s.trim().is_empty())
-                .map(str::to_owned),
-            vec![icon],
-            None,
-        )?;
-        self.storage
-            .artifacts()
-            .record(&artifact, self.events)
-            .await?;
-        Ok(artifact)
+        nand: &N,
+        _keys: &dyn crate::keys::KeyReader,
+        events: InstallEvents,
+    ) -> Result<impl Installable, Error> {
+        let storage = nand.root();
+        Ok(DirectoryInstall::new(
+            self.root.clone(),
+            self.destination.clone(),
+            storage.clone(),
+            events,
+            move |manifest| self.artifact(&*storage, manifest),
+        ))
     }
 }

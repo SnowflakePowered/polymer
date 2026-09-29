@@ -1,7 +1,7 @@
-use super::super::writer::StorageWriter;
 use super::{Ps3PupDepot, sce::Sce};
 use crate::installable::DepotFile;
 use crate::installable::Installable;
+use crate::installable::StorageWriter;
 use crate::installable::artifacts::Artifact;
 use crate::{Error, VolumeStorage};
 use parking_lot::Mutex;
@@ -14,7 +14,6 @@ pub(super) struct PupInstall {
     extraction: Arc<Mutex<PupExtraction>>,
     version: String,
     storage: Arc<dyn VolumeStorage>,
-    events: crate::installable::InstallEvents,
 }
 
 struct PupExtraction {
@@ -75,9 +74,8 @@ impl PupInstall {
                     paths: std::collections::BTreeSet::new(),
                     index: 0,
                     storage: storage.clone(),
-                    events: events.clone(),
+                    events,
                 })),
-                events,
                 version: depot.version,
                 storage,
             })
@@ -231,10 +229,6 @@ impl Installable for PupInstall {
                 }
             }
         }
-        self.storage
-            .artifacts()
-            .record(&artifact, self.events)
-            .await?;
         Ok(artifact)
     }
 }

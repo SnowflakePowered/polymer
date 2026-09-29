@@ -6,7 +6,7 @@ pub(in crate::impls::ctr) mod ncch;
 use crate::impls::ctr::{CtrNand, layout::Layout};
 use crate::{
     Error,
-    installable::{Depot, DepotType, IconHint, InstallEvents, InstallPreview},
+    installable::{Depot, DepotType, IconHint, InstallEvents, InstallPreview, Installable},
     nand::VirtualNand,
 };
 use csis::{CiaArchive, CiaSection};
@@ -48,28 +48,6 @@ impl CiaDepot {
 
     fn content_path(&self, content_id: u32) -> String {
         format!("{}/{content_id:08x}.app", self.content_root)
-    }
-
-    fn verify(&self, events: &InstallEvents) -> Vec<String> {
-        let mut archive = match CiaArchive::open(&self.path) {
-            Ok(archive) => archive,
-            Err(_) => return vec![self.path.display().to_string()],
-        };
-        events.phase(
-            crate::installable::InstallPhase::Verifying,
-            archive.items().iter().map(|item| item.size).sum(),
-        );
-        let mut failures = Vec::new();
-        for index in 0..archive.items().len() {
-            let verified = archive.stream_item_with_progress(index, &mut io::sink(), |bytes| {
-                events.advance(bytes);
-                Ok(())
-            });
-            if verified.is_err() {
-                failures.push(format!("{:08x}.app", archive.items()[index].content_id));
-            }
-        }
-        failures
     }
 
     fn jobs(&self, archive: &CiaArchive<File>) -> Vec<install::Entry> {
@@ -136,9 +114,7 @@ impl Depot for CiaDepot {
     fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> Result<(), Error> {
         if !(CtrNand::supports(nand.platform()) && nand.root().read_dir("nand/dbs", false).is_ok())
         {
-            return Err(Error::Unsupported(
-                "Depot requires a compatible NAND with its storage layout initialized".into(),
-            ));
+            return Err(Error::IncompatibleNand);
         }
         Ok(())
     }
@@ -164,52 +140,52 @@ impl Depot for CiaDepot {
         })
     }
 
-    fn validate_contents(&self) -> Vec<String> {
-        self.verify(&InstallEvents::default())
+    fn validate_contents(&self, events: &InstallEvents) -> Vec<String> {
+        let mut archive = match CiaArchive::open(&self.path) {
+            Ok(archive) => archive,
+            Err(_) => return vec![self.path.display().to_string()],
+        };
+        events.phase(
+            crate::installable::InstallPhase::Verifying,
+            archive.items().iter().map(|item| item.size).sum(),
+        );
+        let mut failures = Vec::new();
+        for index in 0..archive.items().len() {
+            let verified = archive.stream_item_with_progress(index, &mut io::sink(), |bytes| {
+                events.advance(bytes);
+                Ok(())
+            });
+            if verified.is_err() {
+                failures.push(format!("{:08x}.app", archive.items()[index].content_id));
+            }
+        }
+        failures
     }
     fn depot_type(&self) -> DepotType {
         self.kind
     }
-    fn install<'a, N: VirtualNand + ?Sized>(
+    async fn install<N: VirtualNand + ?Sized>(
         self,
-        nand: &'a N,
-        keys: &'a dyn crate::keys::KeyReader,
+        nand: &N,
+        keys: &dyn crate::keys::KeyReader,
         events: InstallEvents,
-    ) -> crate::installable::Installation<'a>
-    where
-        Self: 'a,
-    {
-        let source = self;
-        crate::installable::Installation::prepare(async move {
-            source.validate_target(nand)?;
-            let verifying = source.clone();
-            let verified = events.clone();
-            let missing = tokio::task::spawn_blocking(move || verifying.verify(&verified))
-                .await
-                .map_err(|e| Error::Unsupported(format!("CIA worker failed: {e}")))?;
-            if !missing.is_empty() {
-                return Err(Error::InvalidDepot {
-                    root: source.path.display().to_string(),
-                    missing,
-                });
-            }
-            let seed = match keys
-                .read(&crate::keys::KeyIdentity {
-                    namespace: "system".into(),
-                    id: format!("{:016X}", source.title_id),
-                })
-                .await
-            {
-                Ok(record) => Some(
-                    record
-                        .bytes
-                        .try_into()
-                        .map_err(|_| Error::malformed("3DS seed", "expected 16 bytes"))?,
-                ),
-                Err(crate::keys::KeyError::NotFound(_)) => None,
-                Err(error) => return Err(Error::Unsupported(error.to_string())),
-            };
-            install::CiaInstall::new(&source, nand.root(), seed, events).await
-        })
+    ) -> Result<impl Installable, Error> {
+        let seed = match keys
+            .read(&crate::keys::KeyIdentity {
+                namespace: "system".into(),
+                id: format!("{:016X}", self.title_id),
+            })
+            .await
+        {
+            Ok(record) => Some(
+                record
+                    .bytes
+                    .try_into()
+                    .map_err(|_| Error::malformed("3DS seed", "expected 16 bytes"))?,
+            ),
+            Err(crate::keys::KeyError::NotFound(_)) => None,
+            Err(error) => return Err(Error::Unsupported(error.to_string())),
+        };
+        install::CiaInstall::new(&self, nand.root(), seed, events).await
     }
 }
