@@ -28,6 +28,13 @@ export const onLaunch = (args: EmulatorLaunchArgs<unknown, BatteryStorage>) => {
     return {
         command: path("/mGBA/mGBA.exe"),
         workingDirectory: args.filesystem.path("/mGBA"),
+        env: [
+            ["USERPROFILE", args.filesystem.path("/User")],
+            ["APPDATA", args.filesystem.path("/User/AppData/Roaming")],
+            ["LOCALAPPDATA", args.filesystem.path("/User/AppData/Local")],
+            ["TEMP", args.filesystem.path("/User/Temp")],
+            ["TMP", args.filesystem.path("/User/Temp")],
+        ],
         argv: [gamePath],
         isolate: true,
         hooks: { graphics: ["opengl"], input: ["sdl3"] },

@@ -25,6 +25,13 @@ export const onLaunch = async (args: EmulatorLaunchArgs<unknown, Readonly<{ vmu?
     return {
         command: path("/Flycast/flycast.exe"),
         workingDirectory: args.filesystem.path("/Flycast"),
+        env: [
+            ["USERPROFILE", args.filesystem.path("/User")],
+            ["APPDATA", args.filesystem.path("/User/AppData/Roaming")],
+            ["LOCALAPPDATA", args.filesystem.path("/User/AppData/Local")],
+            ["TEMP", args.filesystem.path("/User/Temp")],
+            ["TMP", args.filesystem.path("/User/Temp")],
+        ],
         argv: [gamePath],
         isolate: false,
         hooks: { graphics: ["vulkan"], input: ["sdl3"] },

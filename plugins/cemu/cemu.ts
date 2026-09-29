@@ -141,6 +141,13 @@ export async function onLaunch(args: EmulatorLaunchArgs<Options, Storages>) {
     return {
         command: executable,
         workingDirectory: args.filesystem.path("/Cemu"),
+        env: [
+            ["USERPROFILE", args.filesystem.path("/User")],
+            ["APPDATA", args.filesystem.path("/User/AppData/Roaming")],
+            ["LOCALAPPDATA", args.filesystem.path("/User/AppData/Local")],
+            ["TEMP", args.filesystem.path("/User/Temp")],
+            ["TMP", args.filesystem.path("/User/Temp")],
+        ],
         argv: ["-g", game, "--mlc", mlc],
         isolate: true,
         hooks: { graphics: [api], input: ["sdl3"] },

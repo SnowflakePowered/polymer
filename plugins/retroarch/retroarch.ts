@@ -67,6 +67,13 @@ export const onLaunch = async (args: EmulatorLaunchArgs<{ core: { placeholder: b
     return {
         command: args.filesystem.path("/RetroArch/retroarch.exe"),
         workingDirectory: args.filesystem.path("/RetroArch"),
+        env: [
+            ["USERPROFILE", args.filesystem.path("/User")],
+            ["APPDATA", args.filesystem.path("/User/AppData/Roaming")],
+            ["LOCALAPPDATA", args.filesystem.path("/User/AppData/Local")],
+            ["TEMP", args.filesystem.path("/User/Temp")],
+            ["TMP", args.filesystem.path("/User/Temp")],
+        ],
         argv: [
             "-c", args.filesystem.path("/User/retroarch.cfg"),
             "-L", args.filesystem.path("/RetroArch/cores/pcsx2_libretro.dll"),
