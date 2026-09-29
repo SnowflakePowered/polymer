@@ -7,9 +7,9 @@ export function ClassicSurfaceBackdrop(props: { surface?: () => HTMLElement | un
   let frame = 0;
   const setSideInset = (sideInset: number) => {
     backdrop.style.setProperty("--surface-side-inset", `${sideInset}px`);
-    // Preserve the complete gradient on ultrawide stages, but keep its native
-    // 320 CSS-pixel scale when the fitted surface leaves narrower gutters.
-    backdrop.style.setProperty("--moire-pattern-width", `${Math.max(320, sideInset)}px`);
+    const height = Math.max(1, Math.round(16 * devicePixelRatio)) / devicePixelRatio;
+    backdrop.style.setProperty("--moire-pattern-width", `${height * 20}px`);
+    backdrop.style.setProperty("--moire-pattern-height", `${height}px`);
   };
   const update = () => {
     const surface = props.surface?.() as HTMLTrackedSurfaceElement | undefined;
