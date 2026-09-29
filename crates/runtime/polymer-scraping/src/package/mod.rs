@@ -8,7 +8,7 @@ use gumshoe::{
 };
 use image::{DynamicImage, ImageFormat, codecs::gif::GifEncoder};
 use polymer_library::{
-    GameCatalogError, Launchable, MetadataInput, MetadataInputData, MetadataValue,
+    GameCatalogError, Launchable, LaunchableUri, MetadataInput, MetadataInputData, MetadataValue,
 };
 use shiratsu_naming::naming::{
     TokenizedName,
@@ -16,11 +16,7 @@ use shiratsu_naming::naming::{
     nointro::{NoIntroName, NoIntroToken},
     tosec::{TOSECName, TOSECToken},
 };
-use std::{
-    collections::BTreeSet,
-    io::Cursor,
-    path::{Path, PathBuf},
-};
+use std::{collections::BTreeSet, io::Cursor, path::Path};
 
 /// A Gumshoe-identified game package shared by the host and frontend.
 ///
@@ -39,8 +35,7 @@ pub struct Package {
         skip_serializing_if = "Option::is_none"
     )]
     manifest: Option<polymer_library::PackageManifest>,
-    #[serde(default, rename = "__digestPath")]
-    pub path: PathBuf,
+    pub uri: LaunchableUri,
     pub filename: String,
     pub platform: String,
     pub serial: Option<String>,
@@ -66,16 +61,18 @@ impl Package {
         let digest = launchable.binary_blake3.as_ref().try_into().map_err(|_| {
             GameCatalogError::InvalidData("invalid library binary digest".to_owned())
         })?;
-        let filename = launchable
-            .path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| launchable.path.display().to_string());
+        let filename = match &launchable.path {
+            LaunchableUri::File(path) => path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| path.display().to_string()),
+            LaunchableUri::Artifact { artifact, .. } => artifact.clone(),
+        };
         Ok(Self {
             bundle: None,
             manifest: launchable.manifest,
-            path: launchable.path,
+            uri: launchable.path,
             filename,
             platform: launchable.platform,
             serial: launchable.serial,
@@ -96,6 +93,13 @@ impl Package {
             self.bundle = Some(crate::ingest::CuePreparation::bundle(manifest)?);
         }
         Ok(())
+    }
+
+    pub fn launch_path(&self) -> String {
+        match &self.uri {
+            LaunchableUri::File(path) => path.to_string_lossy().into_owned(),
+            LaunchableUri::Artifact { .. } => self.uri.to_string(),
+        }
     }
 
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, crate::ScrapingError> {
@@ -170,7 +174,7 @@ impl Package {
         Ok(Self {
             bundle: None,
             manifest,
-            path,
+            uri: LaunchableUri::file(&path)?,
             filename: name,
             platform: platform.to_owned(),
             serial,

@@ -54,7 +54,7 @@ pub trait PolymerHost: Send + Sync {
     fn scrape(&self, path: String) -> ApiFuture<Result<Value, String>>;
     fn digest(
         &self,
-        path: String,
+        uri: String,
         binary: bool,
         algorithm: String,
     ) -> ApiFuture<Result<String, String>>;
@@ -578,12 +578,14 @@ deno_core::extension!(
     },
     state = |state, options| {
         state.put(crate::digest::DigestHandler(|state, source, algorithm| {
-            let crate::digest::DigestSource::Path { path, binary } = source else {
+            let crate::digest::DigestSource::Uri { uri, binary } = source else {
                 return Err(JsErrorBox::type_error("invalid frontend digest source"));
             };
             let host = state.borrow::<Arc<dyn PolymerHost>>().clone();
             Ok(Box::pin(async move {
-                host.digest(path, binary, algorithm).await.map_err(JsErrorBox::generic)
+                host.digest(uri, binary, algorithm)
+                    .await
+                    .map_err(JsErrorBox::generic)
             }))
         }));
         state.put(options.host);

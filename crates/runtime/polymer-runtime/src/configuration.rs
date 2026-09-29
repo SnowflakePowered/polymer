@@ -14,7 +14,6 @@ use polymer_scraping::Package;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap},
-    path::PathBuf,
     sync::Arc,
 };
 
@@ -48,7 +47,8 @@ pub struct DefaultGamepad {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DetectedGame {
-    pub path: PathBuf,
+    pub name: String,
+    pub uri: polymer_library::LaunchableUri,
     pub platform: String,
     pub preferred_emulator: Option<String>,
 }
@@ -143,7 +143,8 @@ pub async fn describe_api(
 ) -> Result<serde_json::Value, String> {
     let mut prepared = PreparedGame::new(
         DetectedGame {
-            path: package.path.clone(),
+            name: package.filename.clone(),
+            uri: package.uri.clone(),
             platform: package.platform.clone(),
             preferred_emulator: preferred_emulator.clone(),
         },
@@ -242,7 +243,8 @@ pub(crate) fn prepare_api_with_sources(
     let storage = request.storage.clone();
     let mut prepared = PreparedGame::new(
         DetectedGame {
-            path: package.path.clone(),
+            name: package.filename.clone(),
+            uri: package.uri.clone(),
             platform: package.platform.clone(),
             preferred_emulator: Some(emulator.clone()),
         },
@@ -270,9 +272,9 @@ pub(crate) fn prepare_api_with_sources(
         .map_err(|error| error.to_string())?;
     let topology = ControllerTopology::complete(ports, selected)?;
     let mut arguments = serde_json::json!({
-        "launchSet": [{ "launchPath": package.path.to_string_lossy(), "package": &package }],
+        "launchSet": [{ "launchPath": package.launch_path(), "package": &package }],
         "initialDiscIndex": 0,
-        "launchPath": package.path.to_string_lossy(),
+        "launchPath": package.launch_path(),
         "package": package,
         "console": prepared.machine,
         "controllerTopology": &topology,
@@ -411,18 +413,11 @@ impl PreparedGame {
             ));
         }
 
-        let name = detected
-            .path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| detected.path.display().to_string());
-
         let selected_emulator = descriptors[0].id.clone();
         Ok(Self {
             descriptor: GameDescriptor {
-                path: detected.path.to_string_lossy().into_owned(),
-                name,
+                path: detected.uri.to_string(),
+                name: detected.name,
                 platform: detected.platform,
                 selected_emulator,
                 candidates: descriptors,

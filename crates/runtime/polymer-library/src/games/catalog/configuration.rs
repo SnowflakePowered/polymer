@@ -1,4 +1,4 @@
-use super::{GameCatalog, GameCatalogError, Launchable, PathBuf, Uuid};
+use super::{GameCatalog, GameCatalogError, Launchable, Uuid};
 use serde_json::Value;
 
 impl GameCatalog {
@@ -39,7 +39,7 @@ impl GameCatalog {
             manifest: Self::decode_manifest(row.get_value(7)?)?,
             id,
             binary_id: Self::uuid(row.get_value(0)?)?,
-            path: PathBuf::from(row.get::<String>(1)?),
+            path: row.get::<String>(1)?.parse()?,
             binary_blake3: Self::blob(row.get_value(2)?)?.into_boxed_slice(),
             serial: Self::optional_text(row.get_value(3)?)?,
             title_id: Self::optional_text(row.get_value(4)?)?,

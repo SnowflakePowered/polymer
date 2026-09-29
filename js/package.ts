@@ -6,6 +6,7 @@ export interface Digestible {
 
 /** Serializable game metadata shared by frontend and plugin APIs. */
 export type Package = Readonly<{
+  uri: string;
   filename: string;
   platform: string;
   serial: string | null;
@@ -13,6 +14,6 @@ export type Package = Readonly<{
   bundle?: Readonly<{
     revision: string;
     entrypoint: string;
-    files: readonly Readonly<{ name: string; path: string | null; text: string | null }>[];
+    files: readonly Readonly<{ name: string; uri: string | null; text: string | null }>[];
   }> | null;
 }>;

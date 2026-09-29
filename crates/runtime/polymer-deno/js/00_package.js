@@ -11,17 +11,17 @@ export class Package {
   }
 
   async digest(algorithm) {
-    return op_digest({ type: "path", path: this.#data.__digestPath, binary: false }, algorithm);
+    return op_digest({ type: "uri", uri: this.#data.uri, binary: false }, algorithm);
   }
 
   get binary() {
     return Object.freeze({
-      digest: async algorithm => op_digest({ type: "path", path: this.#data.__digestPath, binary: true }, algorithm),
+      digest: async algorithm => op_digest({ type: "uri", uri: this.#data.uri, binary: true }, algorithm),
     });
   }
 
   toJSON() {
-    const { __digestPath, __manifest, binaryDigest, ...metadata } = this.#data;
+    const { __manifest, binaryDigest, ...metadata } = this.#data;
     return metadata;
   }
 

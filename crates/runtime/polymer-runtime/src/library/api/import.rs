@@ -25,7 +25,7 @@ impl Handler<LibraryImport> for LibraryBackend {
                 Ok(packages) if packages.iter().any(|package| package.installable) => Ok(json!({
                     "kind": "installables",
                     "installables": packages.iter().map(|package| json!({
-                        "path": package.path,
+                        "path": package.uri.host_path().ok(),
                         "filename": package.filename,
                         "platform": package.platform,
                         "titleId": package.title_id,

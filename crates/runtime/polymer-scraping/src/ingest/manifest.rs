@@ -1,6 +1,6 @@
 use super::CuePreparation;
 use crate::ScrapingError;
-use polymer_library::{PackageFile, PackageManifest};
+use polymer_library::{LaunchableUri, PackageFile, PackageManifest};
 use serde::{Deserialize, Serialize};
 use std::{path::Path, time::UNIX_EPOCH};
 
@@ -16,7 +16,7 @@ pub struct LaunchBundle {
 #[serde(rename_all = "camelCase")]
 pub struct LaunchFile {
     pub name: String,
-    pub path: Option<std::path::PathBuf>,
+    pub uri: Option<LaunchableUri>,
     pub text: Option<String>,
 }
 
@@ -169,15 +169,17 @@ impl CuePreparation {
             .files
             .iter()
             .zip(names)
-            .map(|(file, name)| LaunchFile {
-                name,
-                path: Some(file.path.clone()),
-                text: None,
+            .map(|(file, name)| {
+                Ok(LaunchFile {
+                    name,
+                    uri: Some(LaunchableUri::file(&file.path)?),
+                    text: None,
+                })
             })
-            .collect();
+            .collect::<Result<_, ScrapingError>>()?;
         files.push(LaunchFile {
             name: "disc.cue".into(),
-            path: None,
+            uri: None,
             text: Some(text),
         });
         Ok(LaunchBundle {

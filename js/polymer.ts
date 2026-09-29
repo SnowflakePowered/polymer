@@ -458,7 +458,7 @@ export type LibraryLaunchable = Digestible & Readonly<{
   preparation?: Readonly<{ state: "pending" | "ready" | "failed"; error: string | null }> | null;
   id: string;
   binaryId: string;
-  path: string;
+  uri: string;
   binary: Digestible;
   serial: string | null;
   titleId: string | null;

@@ -5,7 +5,7 @@ import { ActionDialog } from "../../ui";
 export function GameContextMenu(props: { game: RecentGame; onClose(): void }) {
   const shell = useShell();
   const find = async () => (await window.Polymer.library.games.list())
-    .find(game => game.launchables.some(item => item.path === props.game.path));
+    .find(game => game.launchables.some(item => item.uri === props.game.path));
   const rescrape = async () => {
     try {
       const game = await find();
@@ -19,7 +19,7 @@ export function GameContextMenu(props: { game: RecentGame; onClose(): void }) {
     try {
       const game = await find();
       if (game) await window.Polymer.library.games.delete(game.id);
-      const paths = new Set(game?.launchables.map(item => item.path) ?? [selected.path]);
+      const paths = new Set(game?.launchables.map(item => item.uri) ?? [selected.path]);
       shell.setModel("recent", (entries: RecentGame[]) => entries.filter(entry => !paths.has(entry.path)));
       shell.setModel("libraryGames", (entries: RecentGame[]) => entries.filter(entry => !paths.has(entry.path)));
     } catch (error) {

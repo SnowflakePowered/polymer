@@ -151,7 +151,7 @@ impl GameCatalog {
                 manifest: Self::decode_manifest(row.get_value(9)?)?,
                 id: Self::uuid(row.get_value(2)?)?,
                 binary_id,
-                path: PathBuf::from(row.get::<String>(4)?),
+                path: row.get::<String>(4)?.parse()?,
                 binary_blake3: Self::blob(row.get_value(5)?)?.into_boxed_slice(),
                 serial: Self::optional_text(row.get_value(6)?)?,
                 title_id: Self::optional_text(row.get_value(7)?)?,
@@ -227,14 +227,7 @@ impl GameCatalog {
                 "a launchable requires a platform".to_owned(),
             ));
         }
-        let path = input.path.to_str().ok_or_else(|| {
-            GameCatalogError::InvalidData("launchable paths must be valid UTF-8".to_owned())
-        })?;
-        if !input.path.is_absolute() {
-            return Err(GameCatalogError::InvalidData(
-                "launchable paths must be absolute".to_owned(),
-            ));
-        }
+        let path = input.path.to_string();
         let mut prepared_seeds = Vec::with_capacity(seeds.len());
         for (producer, inputs) in seeds {
             let mut prepared = Vec::with_capacity(inputs.len());
@@ -265,7 +258,7 @@ impl GameCatalog {
         let mut existing = transaction
             .query(
                 "SELECT id, binary_id FROM launchables WHERE path = ?1",
-                [Value::from(path)],
+                [Value::from(path.clone())],
             )
             .await?;
         let (id, previous_binary) = match existing.next().await? {
