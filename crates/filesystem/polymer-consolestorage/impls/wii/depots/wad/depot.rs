@@ -52,7 +52,11 @@ impl WiiWadDepot {
     pub(super) fn channel(&self) -> &Channel {
         self.channel.get_or_init(|| {
             let opening = self.select_title_key().ok().and_then(|key| {
-                let content = self.tmd.contents.iter().find(|content| content.index == 0)?;
+                let content = self
+                    .tmd
+                    .contents
+                    .iter()
+                    .find(|content| content.index == 0)?;
                 self.decrypt_content(content, &key).ok()
             });
             let Some(opening) = opening else {
