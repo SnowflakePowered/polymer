@@ -1,3 +1,4 @@
+use super::HostOpen;
 use crate::{
     CreateOptions, DirectoryEntry, DirectoryIterator, DirectoryNode, FileKind, FileNode, Metadata,
     MetadataChanges, Node, OpenFile, OpenOptions, RemoveKind, VfsComponent, VfsError, VfsPath,
@@ -81,41 +82,6 @@ impl FileNode for HostFile {
     }
 }
 
-struct HostOpen {
-    file: File,
-    writable: bool,
-}
-
-impl OpenFile for HostOpen {
-    fn metadata(&self) -> VfsResult<Metadata> {
-        metadata_for(&self.file, self.writable)
-    }
-
-    fn read(&self, offset: u64, buffer: &mut [u8]) -> VfsResult<usize> {
-        use std::os::windows::fs::FileExt;
-        Ok(self.file.seek_read(buffer, offset)?)
-    }
-
-    fn write(&self, offset: u64, buffer: &[u8]) -> VfsResult<usize> {
-        use std::os::windows::fs::FileExt;
-        Ok(self.file.seek_write(buffer, offset)?)
-    }
-
-    fn truncate(&self, len: u64) -> VfsResult<()> {
-        self.file.set_len(len)?;
-        Ok(())
-    }
-
-    fn flush(&self) -> VfsResult<()> {
-        Ok(())
-    }
-
-    fn sync(&self) -> VfsResult<()> {
-        self.file.sync_all()?;
-        Ok(())
-    }
-}
-
 pub(super) struct HostVolume {
     inner: Arc<HostVolumeInner>,
 }
@@ -147,7 +113,7 @@ struct HostDirectoryEntry {
 }
 
 impl HostVolume {
-    pub(super) fn new(root: &Path, writable: bool) -> VfsResult<Self> {
+    pub(super) fn new(root: &Path, writable: bool, _internal_links: bool) -> VfsResult<Self> {
         let root = open_root(root, writable, true)?;
         require_directory(&root)?;
         Ok(Self {
@@ -557,7 +523,7 @@ fn open_captured(
     Ok(Box::new(HostOpen { file, writable }))
 }
 
-fn metadata_for(file: &File, writable: bool) -> VfsResult<Metadata> {
+pub(super) fn metadata_for(file: &File, writable: bool) -> VfsResult<Metadata> {
     let metadata = file.metadata()?;
     if !metadata.is_file() {
         return Err(VfsError::Unsupported(

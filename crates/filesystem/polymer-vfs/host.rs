@@ -169,28 +169,6 @@ impl Drop for MountedFilesystem {
 }
 
 #[derive(Default)]
-pub struct MockFilesystemHost;
-
-impl FilesystemHost for MockFilesystemHost {
-    fn supported(&self) -> bool {
-        true
-    }
-
-    fn allocate_endpoint(&self) -> FilesystemEndpoint {
-        FilesystemEndpoint::random()
-    }
-
-    fn mount(
-        &self,
-        endpoint: FilesystemEndpoint,
-        filesystem: Arc<PreparedFilesystem>,
-    ) -> VfsResult<MountedFilesystem> {
-        filesystem.materialize()?;
-        Ok(MountedFilesystem::new(endpoint, filesystem, ()))
-    }
-}
-
-#[derive(Default)]
 pub struct UnsupportedFilesystemHost;
 
 impl FilesystemHost for UnsupportedFilesystemHost {

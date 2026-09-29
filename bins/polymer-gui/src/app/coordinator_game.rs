@@ -8,10 +8,7 @@ impl ShellCoordinator {
         prepared_filesystem: Option<polymer_vfs::PreparedFilesystemLaunch>,
         controller_session: Option<polymer_pluginhost::controller::ControllerSession>,
     ) -> Result<(), String> {
-        #[cfg(not(target_os = "macos"))]
-        let host = polymer_vfs_winfsp::WinFspFilesystemHost::default();
-        #[cfg(target_os = "macos")]
-        let host = polymer_vfs_fskit::FsKitFilesystemHost::new("gg.polymer.filesystem");
+        let host = polymer_runtime::filesystem_host();
         let mounted_filesystem = match prepared_filesystem
             .ok_or_else(|| "guest launch requires a prepared virtual filesystem".to_owned())
             .and_then(|prepared| {

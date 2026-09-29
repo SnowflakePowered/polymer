@@ -37,10 +37,7 @@ impl DebugFilesystem {
         #[cfg(target_os = "macos")]
         let factory: Arc<dyn polymer_vfs::ResourceFactory<dyn polymer_vfs::Volume>> =
             staged.as_ref().map_or(factory, |bundle| bundle.clone());
-        #[cfg(not(target_os = "macos"))]
-        let host = polymer_vfs_winfsp::WinFspFilesystemHost::default();
-        #[cfg(target_os = "macos")]
-        let host = polymer_vfs_fskit::FsKitFilesystemHost::new("gg.polymer.filesystem");
+        let host = polymer_runtime::filesystem_host();
         let endpoint = host.allocate_endpoint();
         let mut plan = FilesystemPlan::default();
         let permissions = Permissions::READ | Permissions::WRITE | Permissions::EXECUTE;

@@ -19,8 +19,8 @@ pub use backends::{
 };
 pub use error::{VfsError, VfsResult};
 pub use host::{
-    FilesystemEndpoint, FilesystemHost, MockFilesystemHost, MountedFilesystem,
-    PreparedFilesystemLaunch, UnsupportedFilesystemHost,
+    FilesystemEndpoint, FilesystemHost, MountedFilesystem, PreparedFilesystemLaunch,
+    UnsupportedFilesystemHost,
 };
 pub use path::{
     Component, Components, NativePathSemantics, Path, PathOwned, PathSemantics, PathStr,
