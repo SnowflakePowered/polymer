@@ -1,9 +1,11 @@
 use super::{Depot, DepotFile, InstallEvents, artifacts::Artifact};
-use crate::Error;
 use crate::nand::VirtualNand;
+use crate::{Error, VolumeStorage};
 use futures::channel::oneshot;
 use futures::{Stream, StreamExt, stream};
+use std::path::Path;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 /// Archive-specific extraction and completion for an installation.
@@ -11,7 +13,7 @@ use std::task::{Context, Poll};
 pub trait Installable: Sized {
     /// Install the next batch. `None` means extraction is complete.
     async fn next_batch(&mut self) -> Result<Option<Vec<DepotFile>>, Error>;
-    /// Reconcile retained files and read installed metadata, then build and record the artifact.
+    /// Reconcile retained files and read installed metadata, then build the artifact.
     async fn finish(self, manifest: Vec<DepotFile>) -> Result<Artifact, Error>;
 }
 
@@ -23,8 +25,11 @@ pub struct Installation<'a> {
     outcome: Pin<Box<dyn Future<Output = Result<Artifact, Error>> + 'a>>,
 }
 impl<'a> Installation<'a> {
-    pub fn new<D: Depot + 'a, N: VirtualNand + ?Sized>(
+    /// Prepare `depot` lazily: the NAND and contents are validated, then extracted,
+    /// only once progress or completion is polled.
+    pub fn new<D: Depot, N: VirtualNand + ?Sized>(
         depot: D,
+        path: &Path,
         nand: &'a N,
         store: &'a dyn crate::keys::KeyReader,
         events: InstallEvents,
@@ -33,36 +38,38 @@ impl<'a> Installation<'a> {
         if let Some(title) = depot.preview() {
             events.title(title);
         }
-        let mut installation = depot.install(nand, store, events);
-        installation.keys = keys;
-        Ok(installation)
+        let root = path.display().to_string();
+        let recorded = events.clone();
+        let prepare = async move {
+            if nand.is_dirty()? {
+                return Err(Error::HistoryConflict(
+                    "This NAND has uncommitted changes. Recover it in Console storage before installing.".into(),
+                ));
+            }
+            depot.satisfies(nand)?;
+            let verified = events.clone();
+            let (depot, missing) = tokio::task::spawn_blocking(move || {
+                let missing = depot.validate_contents(&verified);
+                (depot, missing)
+            })
+            .await
+            .map_err(|error| Error::Unsupported(format!("depot worker failed: {error}")))?;
+            if !missing.is_empty() {
+                return Err(Error::InvalidDepot { root, missing });
+            }
+            depot.install(nand, store, events).await
+        };
+        let (progress, outcome) = Self::drive(prepare, nand.root(), recorded);
+        Ok(Self {
+            keys,
+            progress: Box::pin(progress.fuse()),
+            outcome: Box::pin(outcome),
+        })
     }
 
     /// Source keys for the host to persist before polling installation progress.
     pub fn embedded_keys(&self) -> &[crate::keys::KeyRecord] {
         &self.keys
-    }
-
-    /// Lazily prepare an archive when progress or completion is polled.
-    pub(crate) fn prepare<I, F>(prepare: F) -> Self
-    where
-        I: Installable + 'a,
-        F: Future<Output = Result<I, Error>> + 'a,
-    {
-        let (progress, outcome) = Self::drive(prepare);
-        Self::from_progress(progress, outcome)
-    }
-
-    pub(crate) fn from_progress<S, F>(progress: S, outcome: F) -> Self
-    where
-        S: Stream<Item = Result<String, Error>> + 'a,
-        F: Future<Output = Result<Artifact, Error>> + 'a,
-    {
-        Self {
-            keys: Vec::new(),
-            progress: Box::pin(progress.fuse()),
-            outcome: Box::pin(outcome),
-        }
     }
 
     /// Consume remaining progress and return the installation result.
@@ -74,6 +81,8 @@ impl<'a> Installation<'a> {
 
     fn drive<I, F>(
         prepare: F,
+        storage: Arc<dyn VolumeStorage>,
+        events: InstallEvents,
     ) -> (
         impl Stream<Item = Result<String, Error>> + 'a,
         impl Future<Output = Result<Artifact, Error>> + 'a,
@@ -97,21 +106,34 @@ impl<'a> Installation<'a> {
                 manifest,
                 std::collections::VecDeque::<DepotFile>::new(),
                 sender,
+                storage,
+                events,
             ));
             let progress = stream::unfold(state, |state| async move {
-                let (mut installable, mut manifest, mut pending, sender) = state?;
+                let (mut installable, mut manifest, mut pending, sender, storage, events) = state?;
                 let result = loop {
                     if let Some(file) = pending.pop_front() {
                         let path = file.path().to_string_lossy().into_owned();
                         manifest.insert(file.path().to_owned(), file);
-                        return Some((Ok(path), Some((installable, manifest, pending, sender))));
+                        return Some((
+                            Ok(path),
+                            Some((installable, manifest, pending, sender, storage, events)),
+                        ));
                     }
                     match installable.next_batch().await {
                         Ok(Some(files)) => {
                             pending.extend(files);
                         }
                         Ok(None) => {
-                            break installable.finish(manifest.into_values().collect()).await;
+                            let manifest = manifest.into_values().collect();
+                            break match installable.finish(manifest).await {
+                                Ok(artifact) => storage
+                                    .artifacts()
+                                    .record(&artifact, events)
+                                    .await
+                                    .map(|()| artifact),
+                                Err(error) => Err(error),
+                            };
                         }
                         Err(error) => break Err(error),
                     }

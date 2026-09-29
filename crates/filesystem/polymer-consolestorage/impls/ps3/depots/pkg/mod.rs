@@ -13,7 +13,7 @@ use sha1::{Digest, Sha1};
 
 use super::super::{Ps3Nand, TitleId};
 use crate::Error;
-use crate::installable::{Depot, DepotType};
+use crate::installable::{Depot, DepotType, Installable};
 use crate::nand::VirtualNand;
 
 /// A retail PS3 game, update, or additional-content PKG.
@@ -199,9 +199,7 @@ impl Depot for Ps3PkgDepot {
 
     fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> Result<(), Error> {
         if !(nand.platform() == Ps3Nand::PLATFORM && Ps3Nand::has_structure(&*nand.root())) {
-            return Err(Error::Unsupported(
-                "Depot requires a compatible NAND with its storage layout initialized".into(),
-            ));
+            return Err(Error::IncompatibleNand);
         }
         if !nand.is_complete(crate::nand::NandCompletion::Minimal) {
             return Err(Error::Unsupported(
@@ -210,32 +208,18 @@ impl Depot for Ps3PkgDepot {
         }
         Ok(())
     }
-    fn validate_contents(&self) -> Vec<String> {
-        match self.verified_file(&InstallEvents::default()) {
-            Ok(_) => Vec::new(),
-            Err(_) => vec![self.path.display().to_string()],
-        }
-    }
 
     fn depot_type(&self) -> DepotType {
         self.kind
     }
 
-    fn install<'a, N: VirtualNand + ?Sized>(
+    async fn install<N: VirtualNand + ?Sized>(
         self,
-        nand: &'a N,
-        _keys: &'a dyn crate::keys::KeyReader,
-        events: crate::installable::InstallEvents,
-    ) -> crate::installable::Installation<'a>
-    where
-        Self: 'a,
-    {
-        let source = self;
-
-        crate::installable::Installation::prepare(async move {
-            source.validate_target(nand)?;
-            install::Ps3PkgInstall::new(&source, nand.root(), events).await
-        })
+        nand: &N,
+        _keys: &dyn crate::keys::KeyReader,
+        events: InstallEvents,
+    ) -> Result<impl Installable, Error> {
+        install::Ps3PkgInstall::new(&self, nand.root(), events).await
     }
 }
 

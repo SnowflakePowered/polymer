@@ -7,10 +7,10 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use pkgrip::PkgArchive;
 
-use super::super::writer::StorageWriter;
 use super::Ps3PkgDepot;
 use crate::installable::DepotFile;
 use crate::installable::DepotType;
+use crate::installable::StorageWriter;
 use crate::installable::artifacts::{Artifact, ArtifactEntrypoint};
 use crate::{Error, VolumeStorage};
 
@@ -19,7 +19,6 @@ pub(super) struct Ps3PkgInstall {
     depot: Ps3PkgDepot,
     retained: Vec<DepotFile>,
     storage: Arc<dyn VolumeStorage>,
-    events: crate::installable::InstallEvents,
 }
 
 struct PkgExtraction {
@@ -62,9 +61,8 @@ impl Ps3PkgInstall {
                     manifest: Vec::new(),
                     index: 0,
                     storage: storage.clone(),
-                    events: events.clone(),
+                    events,
                 })),
-                events,
                 depot,
                 retained: Vec::new(),
                 storage,
@@ -153,7 +151,7 @@ impl Installable for Ps3PkgInstall {
             &format!("{root}/ICON0.PNG"),
             self.depot.kind,
         )?;
-        let artifact = Artifact::new(
+        Artifact::new(
             self.depot.artifact_id(),
             self.depot.kind,
             DepotFile::merge(self.retained, manifest),
@@ -169,11 +167,6 @@ impl Installable for Ps3PkgInstall {
                 root: root.clone(),
                 path: "USRDIR/EBOOT.BIN".to_owned(),
             }),
-        )?;
-        self.storage
-            .artifacts()
-            .record(&artifact, self.events)
-            .await?;
-        Ok(artifact)
+        )
     }
 }

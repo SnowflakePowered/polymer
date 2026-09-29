@@ -135,10 +135,6 @@ impl Installable for WadInstall {
                 }
             }
         }
-        self.storage
-            .artifacts()
-            .record(&artifact, self.events)
-            .await?;
         Ok(artifact)
     }
 }

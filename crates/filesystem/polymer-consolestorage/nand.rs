@@ -119,7 +119,7 @@ macro_rules! nand_depots {
             $(
                 match <$depot>::open(path) {
                     Ok(depot) => {
-                        return crate::installable::Installation::new(depot, self, keys, events);
+                        return crate::installable::Installation::new(depot, path, self, keys, events);
                     }
                     Err(error) => errors.push(error.to_string()),
                 }

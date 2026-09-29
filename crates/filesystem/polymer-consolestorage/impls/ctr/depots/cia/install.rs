@@ -194,10 +194,6 @@ impl Installable for CiaInstall {
                 self.storage.remove(&path)?;
             }
         }
-        self.storage
-            .artifacts()
-            .record(&artifact, self.events)
-            .await?;
         Ok(artifact)
     }
 }
