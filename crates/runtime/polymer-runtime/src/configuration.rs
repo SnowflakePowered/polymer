@@ -205,25 +205,6 @@ pub async fn configure_api(
     serde_json::to_value(layout).map_err(|error| error.to_string())
 }
 
-pub fn prepare_api(
-    plugins: PluginRegistry,
-    viewer: ConfigurationDefaults,
-    package: Package,
-    request: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let controller_profiles = ControllerProfiles::default();
-    let controller_assignments = ControllerAssignmentSnapshot::default();
-    prepare_api_with_sources(
-        plugins,
-        viewer,
-        package,
-        request,
-        &InputHub::default(),
-        &controller_profiles,
-        &controller_assignments,
-    )
-}
-
 pub(crate) fn prepare_api_with_sources(
     plugins: PluginRegistry,
     viewer: ConfigurationDefaults,

@@ -27,7 +27,7 @@ impl Handler<ControllerApi> for InputActor {
         AtomicResponse::new(Box::pin(
             async move {
                 let command =
-                    state.with(|state| state.input.begin_controller_command(message.command))?;
+                    state.with(|state| state.input.controllers.command(message.command))?;
                 let outcome = command.await?;
                 let change = state.with(|state| {
                     let outcome = state.input.finish_controller_command(outcome)?;

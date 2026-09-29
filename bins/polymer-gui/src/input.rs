@@ -1,4 +1,4 @@
-use polymer_config::input::{InputConfiguration, InputTransaction};
+use polymer_config::input::InputConfiguration;
 use polymer_controllers::ControllerTopology;
 use polymer_input::{HostInputEvent, InputHub, KeyCode, PlayerIndex, PointerFlags, PointerReport};
 use polymer_ipc::input::host::InputIpcListener;
@@ -11,7 +11,7 @@ use polymer_renderer::{
     pointer::PointerProjector,
 };
 use polymer_runtime::{
-    ControllerCommandOutcome, ControllerManager, ControllerManagerEffect, ControllerSessionCommit,
+    ControllerCommandOutcome, ControllerManager, ControllerManagerEffect,
     ControllerTopologyTransaction,
 };
 use std::{
@@ -57,7 +57,7 @@ pub(crate) struct InputConfigurationPublication {
 
 pub(crate) struct InputRouter {
     hub: InputHub,
-    controllers: ControllerManager,
+    pub(crate) controllers: ControllerManager,
     controller_api: polymer_runtime::ControllerApiState,
     listener: Option<InputIpcListener>,
     sdl: Arc<polymer_input_sdl3::Sdl3Backend>,
@@ -505,11 +505,12 @@ impl InputRouter {
         }
     }
 
-    fn apply_controller_topology_effects(
+    fn apply_controller_topology(
         &mut self,
         topology: &ControllerTopology,
         configuration: &InputConfiguration,
     ) -> Result<(), String> {
+        self.controllers.sync_configuration(configuration)?;
         let mut input_topology = topology
             .input_topology(configuration.revision as u32, configuration.machine.clone())?;
         if let Some(previous) = &self.topology {
@@ -522,29 +523,6 @@ impl InputRouter {
         self.topology = Some(input_topology);
         self.keyboard.configure(topology);
         self.rebuild_input_hooks(topology)
-    }
-
-    fn apply_controller_topology(
-        &mut self,
-        topology: &ControllerTopology,
-        configuration: &InputConfiguration,
-    ) -> Result<(), String> {
-        self.controllers.sync_configuration(configuration)?;
-        self.apply_controller_topology_effects(topology, configuration)
-    }
-
-    pub fn prepare_controller_transaction(
-        &self,
-        input: InputTransaction,
-    ) -> Result<ControllerTopologyTransaction, String> {
-        self.controllers.transaction(input)
-    }
-
-    pub fn prepare_controller_session_transaction(
-        &self,
-        commit: &ControllerSessionCommit,
-    ) -> Result<ControllerTopologyTransaction, String> {
-        self.controllers.connection_transaction(commit)
     }
 
     pub fn stage_controller_transaction(
@@ -598,14 +576,6 @@ impl InputRouter {
             Ok(()) => error,
             Err(rollback) => format!("{error}; rollback failed: {rollback}"),
         }
-    }
-
-    pub fn begin_controller_command(
-        &mut self,
-        command: serde_json::Value,
-    ) -> Result<polymer_deno::polymer::ApiFuture<Result<ControllerCommandOutcome, String>>, String>
-    {
-        self.controllers.command(command)
     }
 
     pub fn finish_controller_command(
