@@ -16,64 +16,62 @@ pub type Index = crate::arena::non_max_u32::NonMaxU32;
 /// A `Handle` value can be used as an index into an [`Arena`].
 ///
 /// [`Arena`]: super::Arena
-pub struct Handle<T, D = ()> {
+pub struct Handle<T> {
     index: Index,
     marker: PhantomData<T>,
-    _source: PhantomData<D>,
 }
 
-impl<T, D> Clone for Handle<T, D> {
+impl<T> Clone for Handle<T> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<T, D> Copy for Handle<T, D> {}
+impl<T> Copy for Handle<T> {}
 
-impl<T, D> Default for Handle<T, D> {
+impl<T> Default for Handle<T> {
     fn default() -> Self {
         Handle::from_usize(0)
     }
 }
 
-impl<T, D> PartialEq for Handle<T, D> {
+impl<T> PartialEq for Handle<T> {
     fn eq(&self, other: &Self) -> bool {
         self.index == other.index
     }
 }
 
-impl<T, D> Eq for Handle<T, D> {}
+impl<T> Eq for Handle<T> {}
 
-impl<T, D> PartialOrd for Handle<T, D> {
+impl<T> PartialOrd for Handle<T> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<T, D> Ord for Handle<T, D> {
+impl<T> Ord for Handle<T> {
     fn cmp(&self, other: &Self) -> Ordering {
         self.index.cmp(&other.index)
     }
 }
 
-impl<T, D> fmt::Debug for Handle<T, D> {
+impl<T> fmt::Debug for Handle<T> {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         write!(formatter, "[{}]", self.index)
     }
 }
 
-impl<T, D> hash::Hash for Handle<T, D> {
+impl<T> hash::Hash for Handle<T> {
     fn hash<H: hash::Hasher>(&self, hasher: &mut H) {
         self.index.hash(hasher)
     }
 }
 
-impl<T, D> Handle<T, D> {
+impl<T> Handle<T> {
     pub(crate) const fn new(index: Index) -> Self {
         Handle {
             index,
             marker: PhantomData,
-            _source: PhantomData,
         }
     }
 
@@ -91,13 +89,4 @@ impl<T, D> Handle<T, D> {
         Handle::new(handle_index)
     }
 
-    /// Write this handle's index to `formatter`, preceded by `prefix`.
-    pub fn write_prefixed(
-        &self,
-        formatter: &mut fmt::Formatter,
-        prefix: &'static str,
-    ) -> fmt::Result {
-        formatter.write_str(prefix)?;
-        <usize as fmt::Display>::fmt(&self.index(), formatter)
-    }
 }

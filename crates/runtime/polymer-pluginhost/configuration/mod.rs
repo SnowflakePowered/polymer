@@ -2,7 +2,7 @@ use deno_core::{OpState, op2};
 use deno_error::JsErrorBox;
 use polymer_config::{
     ast::{ConfigurationInstance, Value},
-    ser::{BmlEmitter, Emitter, GamepadBinding, IniEmitter, Serializer, XmlEmitter},
+    ser::{GamepadBinding, Serializer},
 };
 use serde::Serialize;
 use serde_bytes::ByteBuf;
@@ -220,20 +220,11 @@ pub(crate) fn serialize(
     bindings: Vec<GamepadBinding>,
 ) -> Result<SerializedConfiguration, ConfigurationAccessError> {
     let serializer = Serializer::new(instance, bindings)?;
-    let files = serializer.serialize(emitter_for)?;
+    let files = serializer.serialize()?;
     Ok(files
         .into_iter()
         .map(|(path, bytes)| (path.into(), bytes))
         .collect())
-}
-
-fn emitter_for(format: &str) -> Option<Box<dyn Emitter>> {
-    match format {
-        "bml" => Some(Box::new(BmlEmitter::new())),
-        "ini" => Some(Box::new(IniEmitter::new())),
-        "xml" => Some(Box::new(XmlEmitter::new())),
-        _ => None,
-    }
 }
 
 #[derive(Debug, Error)]

@@ -26,9 +26,11 @@ It does **not** own:
 
 Dependencies: `toml-spanner` (§3.0), `consolespec`, `indexmap`, `thiserror`, and —
 once lowering lands — `blake3` and `smallvec`. No `tokio`, no `deno_*`, no
-`windows`, and notably **no `serde`**: definition documents are parsed by
-`toml-spanner`'s `FromToml` derive, which yields span-carrying diagnostics and
-borrows out of an `Arena` instead of allocating.
+`windows`. Definition documents are parsed by `toml-spanner`'s `FromToml` derive,
+not `serde`, which yields span-carrying diagnostics and borrows out of an `Arena`
+instead of allocating. `serde_json` is used only at the host boundary: plugin
+layouts (`layout.rs`), `ConfigurationInstance::set_json`, and
+`input/configuration.rs`.
 `#![forbid(unsafe_code)]`.
 
 **Crate home:** stays at `crates/polymer-config` rather than moving under
@@ -57,9 +59,10 @@ from a host that never launches anything (settings UI, config preview, tests).
 
 ### 0.2 Implementation status
 
-The crate today is `error` + `toml` (the `Raw*` layer, `src/toml/`). Nothing
-downstream of parsing exists yet. This document distinguishes three states, and
-every section below is tagged:
+The crate has the `Raw*` layer (`src/toml/`), the lowered definition and
+instance (`src/ast/`), the serializer and emitters (`src/ser/`), and layout
+expansion (`layout.rs`). This document distinguishes three states, and every
+section below is tagged:
 
 - **[parsed]** — a `FromToml` struct accepts it and four plugin packages exercise it.
 - **[authored]** — the generators emit it and the documents contain it, but no
@@ -74,7 +77,7 @@ every section below is tagged:
 | multi-document merge | parsed | `toml/document.rs` |
 | `[input]`, `[input.mapping]`, `[input.layouts.*]` | parsed | `toml/input.rs` |
 | `[platforms.*.ports.*]` | parsed (§6.5) | `toml/input.rs` |
-| `[actions]` | authored; no type at all, and no manifest lists it (§7) | — |
+| `[actions]` | parsed and serialized (§7) | `toml/actions.rs`, `ser` |
 | static domains | parsed (§3.5) | `toml/config.rs` |
 | `[env]`, `[[argv]]` | designed; no plugin authors them (§3.3) | — |
 | `parent` on a target | parsed; not yet honoured by lowering (§3.1) | `toml/config/mod.rs` |
@@ -84,16 +87,8 @@ every section below is tagged:
 | lowering, instances, serialization | implemented (§4, §5, §8) | `ast`, `ser` |
 | `onLaunch` and the instance model | implemented (§5.1) | plugin host |
 
-**All four plugin packages parse completely**, and
-`toml/document.rs::every_plugin_package_parses` asserts it: it reads each
-`plugin.toml`, expands its `definitions` globs, merges the result, and checks
-that sections, targets, bool styles, the input mapping, layouts, and ports all
-came out non-empty. Asserting on substance rather than on `Ok` is the point —
-every bug in §0.3 produced a perfectly successful parse of nothing.
-
-`config/actions.toml` is not currently reachable: no manifest lists it in
-`definitions`, so wiring `[actions]` into the schema (§7.2) means changing the
-manifests too.
+The Dolphin, DuckStation, and PCSX2 manifests list `config/actions.toml` in
+their `definitions`.
 
 ### 0.3 Malformed input is an error, not a default
 
