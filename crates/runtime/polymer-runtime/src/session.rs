@@ -2,6 +2,16 @@
 
 use crate::{AudioState, EmulatorInstance, EmulatorLaunchConfig, InstanceState, NormalizedVolume};
 
+pub fn filesystem_host() -> impl polymer_vfs::FilesystemHost {
+    #[cfg(windows)]
+    let host = polymer_vfs_winfsp::WinFspFilesystemHost::default();
+    #[cfg(target_os = "macos")]
+    let host = polymer_vfs_fskit::FsKitFilesystemHost::new("gg.polymer.filesystem");
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let host = polymer_vfs::UnsupportedFilesystemHost;
+    host
+}
+
 /// Validates and mounts a plugin-prepared filesystem for an emulator launch.
 pub fn mount_prepared_filesystem(
     host: &dyn polymer_vfs::FilesystemHost,

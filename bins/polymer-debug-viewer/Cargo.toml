@@ -6,7 +6,6 @@ license.workspace = true
 
 [dependencies]
 polymer-vfs.workspace = true
-polymer-vfs-winfsp.workspace = true
 ash.workspace = true
 egui = "0.29.1"
 egui-winit = "0.29.1"
@@ -36,7 +35,6 @@ webrtc = "0.14.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 polymer-renderer-metal = { path = "../../crates/consumer/polymer-renderer-metal" }
-polymer-vfs-fskit.workspace = true
 polymer-platform-macos.workspace = true
 
 [target.'cfg(windows)'.dependencies]

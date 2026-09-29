@@ -38,7 +38,7 @@ pub use instance::{
 pub use library::LibraryService;
 pub use polymer_platform::{GraphicsHook, GuestWindowId, Hooks, InputHook};
 pub use savestates::{RgbaScreenshot, SaveStateManager, SaveStateMetadata};
-pub use session::{SessionController, mount_prepared_filesystem};
+pub use session::{SessionController, filesystem_host, mount_prepared_filesystem};
 pub use storage::launch_storage;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -1,16 +1,18 @@
 use crate::{
-    ExclusiveResourceKey, FileNode, FinalizationReason, Materialized, ResourceFactory,
-    ResourceLease, VfsResult, Volume,
+    ExclusiveResourceKey, FileNode, FinalizationReason, Materialized, Metadata, OpenFile,
+    ResourceFactory, ResourceLease, VfsResult, Volume,
 };
 use parking_lot::Mutex;
-use std::{path::PathBuf, sync::Arc};
+use std::{fs::File, path::PathBuf, sync::Arc};
 
 #[cfg(unix)]
-#[path = "host/unix.rs"]
-mod platform;
+mod unix;
+#[cfg(unix)]
+use unix as platform;
 #[cfg(windows)]
-#[path = "host/windows.rs"]
-mod platform;
+mod windows;
+#[cfg(windows)]
+use windows as platform;
 
 use platform::{HostFile, HostVolume};
 
@@ -37,7 +39,6 @@ impl ResourceFactory<dyn FileNode> for HostFileFactory {
 
 pub struct PackageDirectoryFactory {
     root: PathBuf,
-    #[cfg(unix)]
     internal_links: bool,
 }
 
@@ -45,13 +46,11 @@ impl PackageDirectoryFactory {
     pub fn new(root: PathBuf) -> Self {
         Self {
             root,
-            #[cfg(unix)]
             internal_links: false,
         }
     }
 
     /// Expose bundle aliases as ordinary nodes, confined to this read-only tree.
-    #[cfg(unix)]
     pub fn with_internal_links(mut self) -> Self {
         self.internal_links = true;
         self
@@ -62,12 +61,7 @@ impl ResourceFactory<dyn Volume> for PackageDirectoryFactory {
     fn materialize(&self) -> VfsResult<Materialized<dyn Volume>> {
         let lease = ExclusiveResourceKey::HostPath(self.root.clone()).acquire()?;
         Ok(Materialized {
-            backend: {
-                let volume = HostVolume::new(&self.root, false)?;
-                #[cfg(unix)]
-                let volume = volume.with_internal_links(self.internal_links);
-                Arc::new(volume)
-            },
+            backend: Arc::new(HostVolume::new(&self.root, false, self.internal_links)?),
             lease,
         })
     }
@@ -93,7 +87,7 @@ impl ResourceFactory<dyn Volume> for HostDirectoryFactory {
     fn materialize(&self) -> VfsResult<Materialized<dyn Volume>> {
         let lease = ExclusiveResourceKey::HostPath(self.root.clone()).acquire()?;
         Ok(Materialized {
-            backend: Arc::new(HostVolume::new(&self.root, self.writable)?),
+            backend: Arc::new(HostVolume::new(&self.root, self.writable, false)?),
             lease,
         })
     }
@@ -130,7 +124,7 @@ impl ResourceFactory<dyn Volume> for TempDirectoryFactory {
             }
             None => tempfile::tempdir()?,
         };
-        let backend = Arc::new(HostVolume::new(directory.path(), true)?);
+        let backend = Arc::new(HostVolume::new(directory.path(), true, false)?);
         Ok(Materialized {
             backend,
             lease: Arc::new(TemporaryLease(Mutex::new(Some(directory)))),
@@ -143,6 +137,55 @@ struct TemporaryLease(Mutex<Option<tempfile::TempDir>>);
 impl ResourceLease for TemporaryLease {
     fn finalize(&self, _reason: FinalizationReason) -> VfsResult<()> {
         self.0.lock().take();
+        Ok(())
+    }
+}
+
+struct HostOpen {
+    file: File,
+    writable: bool,
+}
+
+impl OpenFile for HostOpen {
+    fn metadata(&self) -> VfsResult<Metadata> {
+        platform::metadata_for(&self.file, self.writable)
+    }
+
+    fn read(&self, offset: u64, buffer: &mut [u8]) -> VfsResult<usize> {
+        #[cfg(unix)]
+        use std::os::unix::fs::FileExt;
+        #[cfg(windows)]
+        use std::os::windows::fs::FileExt;
+        #[cfg(unix)]
+        let read = self.file.read_at(buffer, offset)?;
+        #[cfg(windows)]
+        let read = self.file.seek_read(buffer, offset)?;
+        Ok(read)
+    }
+
+    fn write(&self, offset: u64, buffer: &[u8]) -> VfsResult<usize> {
+        #[cfg(unix)]
+        use std::os::unix::fs::FileExt;
+        #[cfg(windows)]
+        use std::os::windows::fs::FileExt;
+        #[cfg(unix)]
+        let written = self.file.write_at(buffer, offset)?;
+        #[cfg(windows)]
+        let written = self.file.seek_write(buffer, offset)?;
+        Ok(written)
+    }
+
+    fn truncate(&self, len: u64) -> VfsResult<()> {
+        self.file.set_len(len)?;
+        Ok(())
+    }
+
+    fn flush(&self) -> VfsResult<()> {
+        Ok(())
+    }
+
+    fn sync(&self) -> VfsResult<()> {
+        self.file.sync_all()?;
         Ok(())
     }
 }

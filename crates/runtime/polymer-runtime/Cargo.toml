@@ -44,6 +44,7 @@ watchable.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 polymer-platform-windows.workspace = true
+polymer-vfs-winfsp.workspace = true
 
 [lints]
 workspace = true
@@ -51,3 +52,4 @@ workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 polymer-platform-macos.workspace = true
+polymer-vfs-fskit.workspace = true
