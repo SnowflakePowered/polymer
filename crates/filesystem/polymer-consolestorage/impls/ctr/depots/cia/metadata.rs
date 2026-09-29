@@ -1,58 +1,22 @@
-use std::io::{Read, Seek, SeekFrom};
+use std::io::Read;
 use std::path::Path;
 
-use aes::Aes128;
-use aes::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
 use zerocopy::byteorder::big_endian as be;
-use zerocopy::byteorder::little_endian::{U16, U32, U64};
 use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
 use super::CiaDepot;
+use super::ncch::NcchHeader;
 use crate::impls::ctr::smdh::ExtdataIcon;
 use crate::installable::artifacts::{Artifact, ArtifactEntrypoint};
 use crate::installable::{DepotFile, DepotType, EmbeddedIcon, IconHint};
-use polymer_banner::ctr::CtrBanner;
 use crate::{Error, VolumeStorage};
-
-#[derive(FromBytes, Immutable, KnownLayout, Unaligned)]
-#[repr(C)]
-struct NcchHeader {
-    signature: [u8; 0x100],
-    magic: [u8; 4],
-    size: U32,
-    partition_id: U64,
-    maker_code: [u8; 2],
-    version: U16,
-    before_flags: [u8; 0x74],
-    flags: [u8; 8],
-    before_exefs: [u8; 0x10],
-    exefs_offset: U32,
-    exefs_size: U32,
-    rest: [u8; 0x58],
-}
-
-#[derive(FromBytes, Immutable, KnownLayout, Unaligned)]
-#[repr(C)]
-struct ExeFsEntry {
-    name: [u8; 8],
-    offset: U32,
-    size: U32,
-}
-
-const _: () = assert!(size_of::<NcchHeader>() == 0x200);
-
-const NCCH_KEYX_2C: u128 = 0xb98e95ceca3e4d171f76a94de934c053;
-const AES_GENERATOR: u128 = 0x1ff9e9aac5fe0408024591dc5d52768a;
-const NO_CRYPTO: u8 = 0x04;
-const FIXED_KEY: u8 = 0x01;
-const EXEFS_REGION: u8 = 2;
-const _: () = assert!(size_of::<ExeFsEntry>() == 0x10);
+use polymer_banner::ctr::CtrBanner;
 
 pub(super) struct InstalledTitle;
 
 #[derive(FromBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
-struct TmdHeader {
+pub(super) struct TmdHeader {
     before_title: [u8; 0x4c],
     title_id: be::U64,
     before_version: [u8; 0x48],
@@ -65,19 +29,19 @@ struct TmdHeader {
 
 #[derive(FromBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
-struct TmdContent {
-    id: be::U32,
+pub(super) struct TmdContent {
+    pub(super) id: be::U32,
     index: be::U16,
     kind: be::U16,
-    size: be::U64,
-    hash: [u8; 32],
+    pub(super) size: be::U64,
+    pub(super) hash: [u8; 32],
 }
 
 const _: () = assert!(size_of::<TmdHeader>() == 0xc4);
 const _: () = assert!(size_of::<TmdContent>() == 0x30);
 
 impl TmdHeader {
-    fn parse(bytes: &[u8]) -> Result<(&Self, &[TmdContent]), Error> {
+    pub(super) fn parse(bytes: &[u8]) -> Result<(&Self, &[TmdContent]), Error> {
         let invalid = || Error::malformed("installed TMD", "invalid or truncated title metadata");
         let signature = u32::from_be_bytes(*bytes.first_chunk().ok_or_else(invalid)?);
         let offset = match signature {
@@ -105,12 +69,7 @@ impl InstalledTitle {
     ) -> Result<Artifact, Error> {
         let id = format!("{:016X}", depot.title_id);
         let path = format!("{}/00000000.tmd", depot.title_root);
-        let mut bytes = Vec::new();
-        storage
-            .open_read(&path)?
-            .take(4 * 1024 * 1024)
-            .read_to_end(&mut bytes)
-            .map_err(|error| Error::io(Path::new(&path), error))?;
+        let bytes = Self::tmd(depot, storage)?;
         let (tmd, contents) = TmdHeader::parse(&bytes)?;
         if tmd.title_id.get() != depot.title_id {
             return Err(Error::malformed(&path, "installed CIA title ID changed"));
@@ -173,6 +132,17 @@ impl InstalledTitle {
         }
     }
 
+    pub(super) fn tmd(depot: &CiaDepot, storage: &dyn VolumeStorage) -> Result<Vec<u8>, Error> {
+        let path = format!("{}/00000000.tmd", depot.title_root);
+        let mut bytes = Vec::new();
+        storage
+            .open_read(&path)?
+            .take(4 * 1024 * 1024)
+            .read_to_end(&mut bytes)
+            .map_err(|error| Error::io(Path::new(&path), error))?;
+        Ok(bytes)
+    }
+
     /// A decrypted ExeFS file of an installed NCCH content.
     fn exefs_file(
         storage: &dyn VolumeStorage,
@@ -180,80 +150,7 @@ impl InstalledTitle {
         name: [u8; 8],
     ) -> Result<Option<Vec<u8>>, Error> {
         let length = storage.metadata(path)?.len;
-        if length < 0x200 {
-            return Ok(None);
-        }
-        let mut reader = storage.open_read(path)?;
-        let mut bytes = [0; 0x200];
-        reader
-            .read_exact(&mut bytes)
-            .map_err(|error| Error::io(Path::new(path), error))?;
-        let header = NcchHeader::read_from_bytes(&bytes).expect("fixed NCCH header");
-        if header.magic != *b"NCCH" {
-            return Ok(None);
-        }
-        let Some((offset, size)) = header.exefs_range(length) else {
-            return Ok(None);
-        };
-        reader
-            .seek(SeekFrom::Start(offset))
-            .and_then(|_| reader.read_exact(&mut bytes))
-            .map_err(|error| Error::io(Path::new(path), error))?;
-        header.decrypt_exefs(offset, 0, &mut bytes);
-        for bytes in bytes[..0xa0].chunks_exact(0x10) {
-            let entry = ExeFsEntry::ref_from_bytes(bytes).expect("fixed ExeFS entry");
-            if entry.name != name {
-                continue;
-            }
-            let start = 0x200 + u64::from(entry.offset.get());
-            let length = u64::from(entry.size.get());
-            if start + length > size {
-                return Ok(None);
-            }
-            let mut file = vec![0; length as usize];
-            reader
-                .seek(SeekFrom::Start(offset + start))
-                .and_then(|_| reader.read_exact(&mut file))
-                .map_err(|error| Error::io(Path::new(path), error))?;
-            header.decrypt_exefs(offset, start, &mut file);
-            return Ok(Some(file));
-        }
-        Ok(None)
-    }
-}
-
-impl NcchHeader {
-    fn decrypt_exefs(&self, exefs_offset: u64, stream_offset: u64, bytes: &mut [u8]) {
-        if self.flags[7] & NO_CRYPTO != 0 {
-            return;
-        }
-        let key = if self.flags[7] & FIXED_KEY != 0 {
-            0
-        } else {
-            let key_y =
-                u128::from_be_bytes(self.signature[..0x10].try_into().expect("fixed signature"));
-            ((NCCH_KEYX_2C.rotate_left(2) ^ key_y).wrapping_add(AES_GENERATOR)).rotate_left(87)
-        };
-        let partition = self.partition_id.get();
-        let counter = match self.version.get() {
-            1 => (u128::from(partition.swap_bytes()) << 64) | u128::from(exefs_offset as u32),
-            _ => (u128::from(partition) << 64) | (u128::from(EXEFS_REGION) << 56),
-        };
-        let mut cipher =
-            ctr::Ctr128BE::<Aes128>::new(&key.to_be_bytes().into(), &counter.to_be_bytes().into());
-        cipher.seek(stream_offset);
-        cipher.apply_keystream(bytes);
-    }
-
-    fn exefs_range(&self, length: u64) -> Option<(u64, u64)> {
-        let unit = 0x200_u64.checked_shl(u32::from(self.flags[6]))?;
-        let content_size = u64::from(self.size.get()).checked_mul(unit)?;
-        let offset = u64::from(self.exefs_offset.get()).checked_mul(unit)?;
-        let size = u64::from(self.exefs_size.get()).checked_mul(unit)?;
-        (offset >= 0x200
-            && size >= 0x200
-            && offset.checked_add(size)? <= content_size
-            && content_size <= length)
-            .then_some((offset, size))
+        NcchHeader::exefs_file(&mut storage.open_read(path)?, 0, length, name)
+            .map_err(|error| Error::io(Path::new(path), error))
     }
 }
