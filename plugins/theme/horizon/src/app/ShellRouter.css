@@ -1,6 +1,7 @@
 @layer horizon {
-:root, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; font-family: var(--hz-font); }
+:root, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; font-family: var(--hz-font); user-select: none; }
 * { box-sizing: border-box; }
+input, textarea, [contenteditable] { user-select: text; }
 [hidden],
 [data-scope="select"][data-part="positioner"][data-state="closed"],
 [data-scope="select"][data-part="content"][data-state="closed"],
