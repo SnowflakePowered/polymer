@@ -4,7 +4,7 @@ use futures_util::StreamExt;
 use polymer_consolestorage::{
     ArtifactSummary, ConsoleStorage, Error, PlatformRepository, StorageKind, VolumeInfo,
     VolumeStorage,
-    installable::{InstallEvent, InstallEvents, InstallPhase},
+    installable::{InstallEvent, InstallEvents, InstallPhase, artifacts::ArtifactEntrypoint},
     keys::KeyWriter,
     nand::NandCompletion,
 };
@@ -213,7 +213,7 @@ impl StorageManager {
         platform: &str,
         storage: Uuid,
         artifact: &str,
-    ) -> Result<(PathBuf, String), Error> {
+    ) -> Result<(PathBuf, ArtifactEntrypoint), Error> {
         let volume = self
             .repository(platform)?
             .volume(StorageKind::Nand, storage);
@@ -223,10 +223,7 @@ impl StorageManager {
             .ok_or_else(|| {
                 Error::Unsupported(format!("{artifact} is not installed with a launch root"))
             })?;
-        Ok((
-            volume.checkout_path().join(entrypoint.root),
-            entrypoint.path,
-        ))
+        Ok((volume.checkout_path().to_owned(), entrypoint))
     }
 
     pub async fn fork(

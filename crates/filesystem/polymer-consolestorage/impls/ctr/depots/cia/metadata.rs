@@ -99,13 +99,14 @@ impl InstalledTitle {
                 );
             }
         }
-        let entrypoint = boot.filter(|_| kind == DepotType::App).and_then(|path| {
+        let entrypoint = boot.filter(|_| kind == DepotType::App).and_then(|package| {
             Some(ArtifactEntrypoint {
-                path: path
+                path: package
                     .strip_prefix(&depot.title_root)?
                     .strip_prefix('/')?
                     .to_owned(),
                 root: depot.title_root.clone(),
+                package,
             })
         });
         Artifact::new(

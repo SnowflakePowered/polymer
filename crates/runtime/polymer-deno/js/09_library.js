@@ -77,6 +77,7 @@ export function createLibrary() {
         storage: uuid(input.artifact.storage, "artifact.storage"),
         id: String(input.artifact.id),
         entrypoint: optionalString(input.artifact.entrypoint, "artifact.entrypoint"),
+        package: optionalString(input.artifact.package, "artifact.package"),
       };
       const result = await op_library_launchables_add(path, optionalString(input.platform, "platform"), input.parentBinaryId == null ? null : uuid(input.parentBinaryId, "parentBinaryId"), artifact);
       return {

@@ -166,6 +166,7 @@ impl Installable for Ps3PkgInstall {
             (self.depot.kind == DepotType::App).then(|| ArtifactEntrypoint {
                 root: root.clone(),
                 path: "USRDIR/EBOOT.BIN".to_owned(),
+                package: root.clone(),
             }),
         )
     }

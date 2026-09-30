@@ -385,6 +385,8 @@ export interface StorageArtifact {
   root?: string;
   /** Launch file relative to `root`. */
   entrypoint?: string;
+  /** NAND path of the installed package used for identification and scraping. */
+  package?: string;
 }
 export interface StorageInspection { id: string; platform: string; minimal: boolean; dirty: boolean; artifacts: StorageArtifact[] }
 export interface StorageRemovalPlan { requested: string[]; affected: string[]; revision: string }
@@ -521,7 +523,7 @@ export interface LibraryApi extends EventTarget {
     delete(rootBinaryId: string): Promise<void>;
   }>;
   readonly launchables: Readonly<{
-    add(input: { path: string; platform?: string; parentBinaryId?: string; artifact?: { storage: string; id: string; entrypoint?: string } }): Promise<Readonly<{ launchable: LibraryLaunchable; scrapeJob: ScrapeJob | null; imports?: readonly Readonly<{ launchable: LibraryLaunchable; scrapeJob: ScrapeJob | null }>[] }>>;
+    add(input: { path: string; platform?: string; parentBinaryId?: string; artifact?: { storage: string; id: string; entrypoint?: string; package?: string } }): Promise<Readonly<{ launchable: LibraryLaunchable; scrapeJob: ScrapeJob | null; imports?: readonly Readonly<{ launchable: LibraryLaunchable; scrapeJob: ScrapeJob | null }>[] }>>;
     find(uri: string): Promise<LibraryLaunchable | null>;
     delete(id: string): Promise<void>;
   }>;

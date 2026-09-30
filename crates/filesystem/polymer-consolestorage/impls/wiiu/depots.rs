@@ -69,6 +69,7 @@ impl WiiUMetaXmlDepot {
                 Some(ArtifactEntrypoint {
                     root: root.clone(),
                     path: format!("code/{}", cos.argstr.text.trim()),
+                    package: root.clone(),
                 })
             }
             _ => None,

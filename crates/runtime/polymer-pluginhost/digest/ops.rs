@@ -7,7 +7,7 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 #[derive(Default)]
 pub(crate) struct DigestState {
-    sources: BTreeMap<String, (PathBuf, bool)>,
+    sources: BTreeMap<String, (polymer_library::LaunchableUri, bool)>,
 }
 
 impl DigestState {
@@ -28,16 +28,16 @@ impl DigestState {
         let Some(values) = value.as_object_mut() else {
             return;
         };
-        let Some(path) = values
+        let Some(uri) = values
             .get("uri")
             .and_then(Value::as_str)
             .and_then(|uri| uri.parse::<polymer_library::LaunchableUri>().ok())
-            .and_then(|uri| uri.binary_path().ok())
+            .filter(|uri| uri.binary_path().is_ok())
         else {
             return;
         };
         let token = self.sources.len().to_string();
-        self.sources.insert(token.clone(), (path, package));
+        self.sources.insert(token.clone(), (uri, package));
         values.insert("__digestToken".into(), token.into());
         values.remove("binaryDigest");
         values.remove("__manifest");
@@ -64,14 +64,19 @@ impl DigestState {
     }
 
     fn source(&self, token: &str, binary: bool) -> Result<PathBuf, JsErrorBox> {
-        let (path, package) = self
+        let (uri, package) = self
             .sources
             .get(token)
             .ok_or_else(|| JsErrorBox::type_error("invalid digest source"))?;
         if binary && !package {
             return Err(JsErrorBox::type_error("file has no normalized binary"));
         }
-        Ok(path.clone())
+        if binary {
+            uri.package_path()
+        } else {
+            uri.binary_path()
+        }
+        .map_err(JsErrorBox::from_err)
     }
 
     fn digest(

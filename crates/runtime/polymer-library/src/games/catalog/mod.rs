@@ -121,7 +121,7 @@ impl GameCatalog {
                 SELECT COALESCE(binary.parent_binary_id, binary.id), root.platform,
                        launchable.id, binary.id, launchable.path, binary.blake3,
                        binary.serial, binary.title_id, binary.parent_binary_id, manifest.manifest_json,
-                       launchable.entrypoint
+                       launchable.entrypoint, launchable.package
                 FROM launchables AS launchable
                 LEFT JOIN launchable_manifests AS manifest ON manifest.launchable_id = launchable.id
                 JOIN binaries AS binary ON binary.id = launchable.binary_id
@@ -155,6 +155,7 @@ impl GameCatalog {
                     manifest: Self::decode_manifest(row.get_value(9)?)?,
                     path: row.get::<String>(4)?.parse()?,
                     entrypoint: Self::optional_text(row.get_value(10)?)?,
+                    package: Self::optional_text(row.get_value(11)?)?,
                     binary_blake3: Self::blob(row.get_value(5)?)?.try_into().map_err(|_| {
                         GameCatalogError::InvalidData("invalid binary digest".to_owned())
                     })?,
@@ -264,14 +265,15 @@ impl GameCatalog {
         transaction
             .execute(
                 r#"
-                INSERT INTO launchables (id, binary_id, path, entrypoint) VALUES (?1, ?2, ?3, ?4)
-                ON CONFLICT(path) DO UPDATE SET binary_id = excluded.binary_id, entrypoint = excluded.entrypoint
+                INSERT INTO launchables (id, binary_id, path, entrypoint, package) VALUES (?1, ?2, ?3, ?4, ?5)
+                ON CONFLICT(path) DO UPDATE SET binary_id = excluded.binary_id, entrypoint = excluded.entrypoint, package = excluded.package
                 "#,
                 vec![
                     Self::id(id),
                     Self::id(binary_id),
                     Value::from(path),
                     input.entrypoint.clone().map_or(Value::Null, Value::from),
+                    input.package.clone().map_or(Value::Null, Value::from),
                 ],
             )
             .await?;
@@ -409,7 +411,12 @@ impl GameCatalog {
                 connection.execute_batch(SCHEMA).await?;
             }
             2 | 3 | 4 => connection.execute_batch(SCHEMA).await?,
-            5 => {}
+            5 => {
+                connection.execute_batch(
+                    "ALTER TABLE launchables ADD COLUMN package TEXT CHECK (package IS NULL OR length(package) > 0); PRAGMA user_version = 6;"
+                ).await?;
+            }
+            6 => {}
             version => {
                 return Err(GameCatalogError::InvalidData(format!(
                     "library database schema version {version} is not supported"

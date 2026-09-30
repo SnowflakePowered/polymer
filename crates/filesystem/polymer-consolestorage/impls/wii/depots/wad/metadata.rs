@@ -70,6 +70,7 @@ impl InstalledTitle {
             boot.map(|boot| ArtifactEntrypoint {
                 root: root.to_owned(),
                 path: format!("{:08x}.app", boot.id),
+                package: root.to_owned(),
             }),
         )
     }

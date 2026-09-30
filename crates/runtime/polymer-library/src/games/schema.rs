@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS launchables (
     id BLOB PRIMARY KEY NOT NULL CHECK (length(id) = 16),
     binary_id BLOB NOT NULL REFERENCES binaries(id) ON DELETE CASCADE,
     path TEXT NOT NULL UNIQUE CHECK (length(path) > 0),
-    entrypoint TEXT CHECK (entrypoint IS NULL OR length(entrypoint) > 0)
+    entrypoint TEXT CHECK (entrypoint IS NULL OR length(entrypoint) > 0),
+    package TEXT CHECK (package IS NULL OR length(package) > 0)
 ) STRICT;
 CREATE TABLE IF NOT EXISTS media_objects (
     blake3 BLOB PRIMARY KEY NOT NULL CHECK (length(blake3) = 32),
@@ -79,5 +80,5 @@ CREATE TABLE IF NOT EXISTS launchable_manifests (
     revision TEXT NOT NULL,
     manifest_json TEXT NOT NULL
 ) STRICT;
-PRAGMA user_version = 5;
+PRAGMA user_version = 6;
 "#;
