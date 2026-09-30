@@ -52,43 +52,6 @@ impl GitVolumeStorage {
         Ok(staged)
     }
 
-    /// Metadata roots that record one of `ids` under a key other than its current
-    /// [`artifact_key`], left behind by earlier storage layouts.
-    fn stale_artifact_roots(
-        repo: &gix::Repository,
-        tree: &gix::Tree<'_>,
-        ids: &BTreeSet<&str>,
-    ) -> Result<Vec<String>, Error> {
-        let Some(entry) = tree
-            .lookup_entry_by_path("meta/artifacts")
-            .map_err(|error| Error::git("lookup artifacts", error))?
-        else {
-            return Ok(Vec::new());
-        };
-        let artifacts = repo
-            .find_tree(entry.oid())
-            .map_err(|error| Error::git("read artifacts", error))?;
-        let mut stale = Vec::new();
-        for entry in artifacts.iter() {
-            let entry = entry.map_err(|error| Error::git("decode artifact entry", error))?;
-            if entry.kind() != gix::objs::tree::EntryKind::Tree {
-                continue;
-            }
-            let record = repo
-                .find_tree(entry.oid())
-                .map_err(|error| Error::git("read artifact tree", error))?;
-            let Some(id) = artifact_value(repo, &record, "id")? else {
-                continue;
-            };
-            let id = String::from_utf8_lossy(&id).trim().to_owned();
-            let key = entry.filename().to_string();
-            if ids.contains(id.as_str()) && key != artifact_key(&id) {
-                stale.push(format!("meta/artifacts/{key}"));
-            }
-        }
-        Ok(stale)
-    }
-
     fn checkout_file(&self, path: &str) -> PathBuf {
         self.inner
             .checkout
@@ -142,7 +105,7 @@ impl GitVolumeStorage {
                         .map_err(|error| Error::git("update volume file", error))?;
                 }
                 OverlayEntry::Directory => {
-                    let key = directory_key(path);
+                    let key = TreeKey::new(path);
                     let id = repo
                         .write_blob(path.as_bytes())
                         .map_err(|error| Error::git("write directory metadata", error))?
@@ -164,10 +127,7 @@ impl GitVolumeStorage {
                         *directory == path || directory.starts_with(&format!("{path}/"))
                     }) {
                         editor
-                            .remove_leaf(format!(
-                                "meta/fs/directories/{}",
-                                directory_key(directory)
-                            ))
+                            .remove_leaf(format!("meta/fs/directories/{}", TreeKey::new(directory)))
                             .map_err(|error| Error::git("remove directory metadata", error))?;
                     }
                 }
@@ -175,22 +135,22 @@ impl GitVolumeStorage {
         }
 
         if let Some(info) = &state.metadata.volume {
-            write_text(&repo, &mut editor, "meta/volume/id", &info.id.to_string())?;
-            write_text(
-                &repo,
+            PlatformRepository::write_text(&mut editor, "meta/volume/id", &info.id.to_string())?;
+            PlatformRepository::write_text(
                 &mut editor,
                 "meta/volume/kind",
                 self.inner.kind.metadata_name(),
             )?;
-            write_text(&repo, &mut editor, "meta/volume/platform", &info.platform)?;
-            write_text(
-                &repo,
+            PlatformRepository::write_text(&mut editor, "meta/volume/platform", &info.platform)?;
+            PlatformRepository::write_text(
                 &mut editor,
                 "meta/volume/created",
                 &info.created.as_second().to_string(),
             )?;
             match &info.label {
-                Some(label) => write_text(&repo, &mut editor, "meta/volume/label", label)?,
+                Some(label) => {
+                    PlatformRepository::write_text(&mut editor, "meta/volume/label", label)?
+                }
                 None => {
                     editor
                         .remove_leaf("meta/volume/label")
@@ -205,25 +165,25 @@ impl GitVolumeStorage {
             .keys()
             .map(String::as_str)
             .collect();
-        for stale in Self::stale_artifact_roots(&repo, &root, &replaced)? {
+        for stale in ArtifactRepository::new(&repo, &reference).stale_keys(&root, &replaced)? {
             editor
                 .remove(&stale)
                 .map_err(|error| Error::git("remove stale artifact metadata", error))?;
         }
         for (artifact_id, artifact) in &state.metadata.artifacts {
-            let root = format!("meta/artifacts/{}", artifact_key(artifact_id));
+            let root = format!("meta/artifacts/{}", TreeKey::new(artifact_id));
             editor
                 .remove(&root)
                 .map_err(|error| Error::git("replace artifact metadata", error))?;
             if let Some(artifact) = artifact {
-                artifact.write(&repo, &mut editor, &root)?;
+                artifact.write(&mut editor, &root)?;
             }
         }
 
         for (depot, tip) in &state.metadata.save_tips {
             let path = format!("meta/resources/saves/{depot:016x}/head");
             match tip {
-                Some(tip) => write_text(&repo, &mut editor, &path, &tip.to_string())?,
+                Some(tip) => PlatformRepository::write_text(&mut editor, &path, &tip.to_string())?,
                 None => {
                     editor
                         .remove(&format!("meta/resources/saves/{depot:016x}"))
@@ -242,7 +202,7 @@ impl GitVolumeStorage {
             *state = WorkingState::default();
             return Ok(None);
         }
-        let signature = signature();
+        let signature = PlatformRepository::signature();
         let mut time = gix::date::parse::TimeBuf::default();
         let signature = signature.to_ref(&mut time);
         let mut parents = parent.into_iter().collect::<Vec<_>>();

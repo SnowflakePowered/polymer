@@ -24,13 +24,14 @@ impl Storage for GitVolumeStorage {
         if path.is_empty() {
             return Ok(());
         }
-        let mut current = String::new();
         let mut working = self.inner.working.write();
-        for component in path.split('/') {
-            current = join(&current, component);
+        for directory in Utf8UnixPath::new(path).ancestors() {
+            if directory.as_str().is_empty() {
+                continue;
+            }
             working
                 .entries
-                .insert(current.clone(), OverlayEntry::Directory);
+                .insert(directory.as_str().to_owned(), OverlayEntry::Directory);
         }
         drop(working);
         Ok(())
@@ -145,11 +146,13 @@ impl MountableStorage for GitVolumeStorage {
                 .entries
                 .insert(to.to_owned(), OverlayEntry::Directory);
             for (path, kind) in descendants {
-                let relative = path
-                    .strip_prefix(from)
-                    .expect("descendant begins with its requested root")
-                    .trim_start_matches('/');
-                let target = join(to, relative);
+                let target = Utf8UnixPath::new(to)
+                    .join(
+                        Utf8UnixPath::new(&path)
+                            .strip_prefix(from)
+                            .expect("descendant begins with its requested root"),
+                    )
+                    .into_string();
                 working.entries.insert(path, OverlayEntry::Deleted);
                 working.entries.insert(
                     target,

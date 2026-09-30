@@ -95,17 +95,11 @@ impl GitVolumeStorage {
 
     pub fn artifact_summary(&self, id: &str) -> Result<Option<ArtifactSummary>, Error> {
         let repo = self.inner.platform.repository().to_thread_local();
-        let tip = Self::tip_in(&repo, &self.ref_name())?;
-        let Some(entry) = Self::root_tree(&repo, tip)?
-            .lookup_entry_by_path(format!("meta/artifacts/{}", artifact_key(id)))
-            .map_err(|error| Error::git("lookup artifact", error))?
-        else {
-            return Ok(None);
-        };
-        let tree = repo
-            .find_tree(entry.oid())
-            .map_err(|error| Error::git("read artifact tree", error))?;
-        read_artifact_summary(&repo, &tree).map(Some)
+        let reference = self.ref_name();
+        ArtifactRepository::new(&repo, &reference)
+            .get(id)?
+            .map(|tree| tree.summary())
+            .transpose()
     }
 
     pub fn index_path(&self) -> &Path {

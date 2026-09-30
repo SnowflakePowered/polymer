@@ -48,6 +48,37 @@ impl PlatformRepository {
         })))
     }
 
+    pub(super) fn write_text(
+        editor: &mut gix::object::tree::Editor<'_>,
+        path: &str,
+        value: &str,
+    ) -> Result<(), Error> {
+        let blob = editor
+            .repo
+            .write_blob(value.as_bytes())
+            .map_err(|error| Error::git("write metadata value", error))?
+            .detach();
+        editor
+            .upsert(path, gix::objs::tree::EntryKind::Blob, blob)
+            .map(|_| ())
+            .map_err(|error| Error::git("update metadata value", error))
+    }
+
+    pub(super) fn signature() -> gix::actor::Signature {
+        let seconds = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let time = format!("{seconds} +0000");
+        gix::actor::SignatureRef {
+            name: BStr::new(b"Polymer"),
+            email: BStr::new(b"storage@polymer.invalid"),
+            time: &time,
+        }
+        .to_owned()
+        .expect("Polymer generates a valid Git signature")
+    }
+
     fn configure(repository: &gix::ThreadSafeRepository, platform: &str) -> Result<(), Error> {
         let config_path = repository.git_dir().join("config");
         let mut config = std::fs::read_to_string(&config_path)
@@ -209,7 +240,7 @@ impl PlatformRepository {
                 });
             }
         }
-        let signature = signature();
+        let signature = PlatformRepository::signature();
         let mut time = gix::date::parse::TimeBuf::default();
         repo.edit_references_as(edits, Some(signature.to_ref(&mut time)))
             .map_err(|error| Error::git("delete volume reference", error))?;
@@ -250,20 +281,14 @@ impl PlatformRepository {
         let mut editor = root
             .edit()
             .map_err(|error| Error::git("edit forked profile tree", error))?;
-        write_text(
-            &repo,
-            &mut editor,
-            "meta/volume/id",
-            &destination.to_string(),
-        )?;
-        write_text(
-            &repo,
+        PlatformRepository::write_text(&mut editor, "meta/volume/id", &destination.to_string())?;
+        PlatformRepository::write_text(
             &mut editor,
             "meta/volume/created",
             &Timestamp::now().as_second().to_string(),
         )?;
         match label {
-            Some(label) => write_text(&repo, &mut editor, "meta/volume/label", label)?,
+            Some(label) => PlatformRepository::write_text(&mut editor, "meta/volume/label", label)?,
             None => {
                 editor
                     .remove_leaf("meta/volume/label")
@@ -274,7 +299,7 @@ impl PlatformRepository {
             .write()
             .map_err(|error| Error::git("write forked profile tree", error))?
             .detach();
-        let signature = signature();
+        let signature = PlatformRepository::signature();
         let mut time = gix::date::parse::TimeBuf::default();
         let signature = signature.to_ref(&mut time);
         let commit = repo

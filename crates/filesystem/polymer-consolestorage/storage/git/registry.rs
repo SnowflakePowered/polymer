@@ -3,10 +3,21 @@ use super::*;
 #[derive(Clone)]
 pub(super) struct GitArtifactRegistry(pub(super) Arc<GitVolumeInner>);
 
+impl GitArtifactRegistry {
+    pub(super) fn storage(&self) -> GitVolumeStorage {
+        GitVolumeStorage {
+            inner: self.0.clone(),
+            artifacts: self.clone(),
+        }
+    }
+}
+
 impl ArtifactRegistry for GitArtifactRegistry {
     fn revision(&self) -> Result<String, Error> {
         let repo = self.0.platform.repository().to_thread_local();
-        Ok(GitVolumeStorage::tip_in(&repo, &self.storage().ref_name())?
+        let reference = self.storage().ref_name();
+        Ok(ArtifactRepository::new(&repo, &reference)
+            .tip()?
             .map(|id| id.to_string())
             .unwrap_or_default())
     }
@@ -19,11 +30,13 @@ impl ArtifactRegistry for GitArtifactRegistry {
                 ));
             }
             let repo = self.0.platform.repository().to_thread_local();
-            let Some(tip) = GitVolumeStorage::tip_in(&repo, &self.storage().ref_name())? else {
+            let reference = self.storage().ref_name();
+            let artifacts = ArtifactRepository::new(&repo, &reference);
+            let Some(tip) = artifacts.tip()? else {
                 return Ok(Vec::new());
             };
-            let history = Self::linear_history(&repo, tip)?;
-            let records = self.records()?;
+            let history = artifacts.linear_history(tip)?;
+            let records = artifacts.records()?;
             let installed = records
                 .iter()
                 .map(|record| record.id.clone())
@@ -33,7 +46,8 @@ impl ArtifactRegistry for GitArtifactRegistry {
                 .filter(|id| installed.contains(**id))
                 .map(|id| (*id).to_owned())
                 .collect::<BTreeSet<_>>();
-            Ok(Self::affected_depots(&repo, &history, &records, &removed)?
+            Ok(artifacts
+                .affected_depots(&history, &records, &removed)?
                 .into_iter()
                 .collect())
         })
@@ -62,7 +76,9 @@ impl ArtifactRegistry for GitArtifactRegistry {
 
     fn summaries(&self) -> BoxFuture<'_, Result<Vec<ArtifactSummary>, Error>> {
         Box::pin(async move {
-            let mut summaries = self.read_artifacts(read_artifact_summary)?;
+            let repo = self.0.platform.repository().to_thread_local();
+            let reference = self.storage().ref_name();
+            let mut summaries = ArtifactRepository::new(&repo, &reference).summaries()?;
             summaries.sort_by(|left, right| left.id.cmp(&right.id));
             Ok(summaries)
         })
@@ -71,28 +87,20 @@ impl ArtifactRegistry for GitArtifactRegistry {
     fn artifact<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<Option<Artifact>, Error>> {
         Box::pin(async move {
             let repo = self.0.platform.repository().to_thread_local();
-            let tip = GitVolumeStorage::tip_in(&repo, &self.storage().ref_name())?;
-            let root = GitVolumeStorage::root_tree(&repo, tip)?;
-            let Some(entry) = root
-                .lookup_entry_by_path(format!("meta/artifacts/{}", artifact_key(id)))
-                .map_err(|error| Error::git("lookup artifact", error))?
-            else {
-                return Ok(None);
-            };
-            let tree = repo
-                .find_tree(entry.oid())
-                .map_err(|error| Error::git("read artifact tree", error))?;
-            read_artifact(&repo, &tree)?.artifact().map(Some)
+            let reference = self.storage().ref_name();
+            ArtifactRepository::new(&repo, &reference)
+                .get(id)?
+                .map(|tree| tree.record()?.artifact())
+                .transpose()
         })
     }
 
     fn contains<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<bool, Error>> {
         Box::pin(async move {
             let repo = self.0.platform.repository().to_thread_local();
-            let tip = GitVolumeStorage::tip_in(&repo, &self.storage().ref_name())?;
-            Ok(GitVolumeStorage::root_tree(&repo, tip)?
-                .lookup_entry_by_path(format!("meta/artifacts/{}", artifact_key(id)))
-                .map_err(|error| Error::git("lookup artifact", error))?
+            let reference = self.storage().ref_name();
+            Ok(ArtifactRepository::new(&repo, &reference)
+                .get(id)?
                 .is_some())
         })
     }
@@ -114,10 +122,12 @@ impl ArtifactRegistry for GitArtifactRegistry {
             }
             let repo = self.0.platform.repository().to_thread_local();
             let storage = self.storage();
-            let Some(tip) = GitVolumeStorage::tip_in(&repo, &storage.ref_name())? else {
+            let reference = storage.ref_name();
+            let artifacts = ArtifactRepository::new(&repo, &reference);
+            let Some(tip) = artifacts.tip()? else {
                 return Ok(());
             };
-            let records = self.records()?;
+            let records = artifacts.records()?;
             let installed = records
                 .iter()
                 .map(|record| record.id.clone())
@@ -129,15 +139,16 @@ impl ArtifactRegistry for GitArtifactRegistry {
             if removed.is_empty() {
                 return Ok(());
             }
-            let history = Self::linear_history(&repo, tip)?;
-            let affected = Self::affected_depots(&repo, &history, &records, &removed)?;
+            let history = artifacts.linear_history(tip)?;
+            let affected = artifacts.affected_depots(&history, &records, &removed)?;
             if !affected.is_empty() {
                 return Err(Error::AffectedDepots {
                     affected: affected.into_iter().collect(),
                 });
             }
-            let retained = Self::retained_files(&records, &removed);
-            self.rewrite_without(&repo, &history, &removed, &retained, tip)
+            let retained = ArtifactRepository::retained_files(&records, &removed);
+            let new_tip = artifacts.rewrite_without(&history, &removed, &retained, tip)?;
+            storage.refresh_checkout_locked(&repo, Some(new_tip))
         })
     }
 }
