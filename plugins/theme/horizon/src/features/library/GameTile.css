@@ -25,6 +25,8 @@
 .horizon-game-scraping .horizon-progress > span { border-radius: 0; background: white; }
 
 .horizon-game-players { position: absolute; top: .5rem; left: .5rem; display: flex; gap: .25rem; }
+.horizon-game-missing-key { position: absolute; top: .5rem; right: .5rem; display: grid; place-items: center; width: 1.6rem; height: 1.6rem; border-radius: 50%; background: rgb(0 0 0 / 72%); pointer-events: none; }
+.horizon-game-missing-key svg { width: 1rem; height: 1rem; }
 
 @media (prefers-reduced-motion: reduce) { .horizon-game-tile { transition: none; } }
 .horizon-game-tile { --hz-ring-inset: 0; --hz-ring-fill: var(--tile-color); }

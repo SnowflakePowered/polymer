@@ -126,6 +126,9 @@ impl LibraryService {
         Library {
             import: self.actor.clone().recipient(),
             import_key: self.actor.clone().recipient(),
+            keys_list: self.actor.clone().recipient(),
+            keys_platforms: self.actor.clone().recipient(),
+            keys_remove: self.actor.clone().recipient(),
             games_list: self.reader.clone().recipient(),
             games_get: self.reader.clone().recipient(),
             games_delete: self.actor.clone().recipient(),

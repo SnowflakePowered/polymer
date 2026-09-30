@@ -40,6 +40,50 @@ pub(super) async fn op_library_import_key(
         .await
 }
 
+#[op2]
+#[serde]
+pub(super) async fn op_library_keys_list(
+    state: Rc<RefCell<OpState>>,
+    #[string] platform: String,
+    #[string] namespace: Option<String>,
+) -> Result<serde_json::Value, JsErrorBox> {
+    Library::from_state(&state)?
+        .keys_list
+        .call(KeysList {
+            platform,
+            namespace,
+        })
+        .await
+}
+
+#[op2]
+#[serde]
+pub(super) async fn op_library_keys_platforms(
+    state: Rc<RefCell<OpState>>,
+) -> Result<Vec<String>, JsErrorBox> {
+    Library::from_state(&state)?
+        .keys_platforms
+        .call(KeysPlatforms)
+        .await
+}
+
+#[op2]
+pub(super) async fn op_library_keys_remove(
+    state: Rc<RefCell<OpState>>,
+    #[string] platform: String,
+    #[string] namespace: String,
+    #[string] id: String,
+) -> Result<bool, JsErrorBox> {
+    Library::from_state(&state)?
+        .keys_remove
+        .call(KeysRemove {
+            platform,
+            namespace,
+            id,
+        })
+        .await
+}
+
 impl ServiceError for LibraryError {
     fn unavailable(_: actix::MailboxError) -> JsErrorBox {
         JsErrorBox::generic("library service is unavailable")

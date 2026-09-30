@@ -1,8 +1,11 @@
 use super::LibraryBackend;
 use actix::{AtomicResponse, Context, Handler};
 use polymer_consolestorage::impls::ctr::{CtrNand, seeddb::CtrSeedDb};
-use polymer_consolestorage::keys::{KeyIdentity, KeyRecord, KeyWriter};
-use polymer_deno::polymer::library::{ImportedKey, LibraryError, LibraryImport, LibraryImportKey};
+use polymer_consolestorage::impls::ps3::{Ps3Nand, rap::Rap};
+use polymer_consolestorage::keys::{KeyIdentity, KeyQuery, KeyReader, KeyRecord, KeyWriter};
+use polymer_deno::polymer::library::{
+    ImportedKey, KeysList, KeysPlatforms, KeysRemove, LibraryError, LibraryImport, LibraryImportKey,
+};
 use polymer_scraping::Ingestor;
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -20,6 +23,13 @@ impl Handler<LibraryImport> for LibraryBackend {
         let key_root = self.key_root.clone();
         self.mutate(async move {
             let path = PathBuf::from(path);
+            if path.is_file() && path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("rap")) {
+                let record = Rap::read(&path).map_err(|error| error.to_string())?;
+                let store = polymer_library::keys::KeyStore::open(key_root).await.map_err(|error| error.to_string())?;
+                store.for_platform(Ps3Nand::PLATFORM).map_err(|error| error.to_string())?
+                    .put(&[record]).await.map_err(|error| error.to_string())?;
+                return Ok(json!({ "kind": "keys", "platform": Ps3Nand::PLATFORM, "count": 1 }));
+            }
             let identification_path = path.clone();
             let detected = tokio::task::spawn_blocking(move || Ingestor::identify(&identification_path, None, None))
                 .await.map_err(|error| format!("package detection task failed: {error}"))?;
@@ -114,6 +124,78 @@ impl Handler<LibraryImportKey> for LibraryBackend {
                 .await
                 .map_err(|error| error.to_string())?;
             Ok(description)
+        })
+    }
+}
+
+impl Handler<KeysList> for LibraryBackend {
+    type Result = AtomicResponse<Self, Result<Value, LibraryError>>;
+
+    fn handle(
+        &mut self,
+        KeysList {
+            platform,
+            namespace,
+        }: KeysList,
+        _: &mut Context<Self>,
+    ) -> Self::Result {
+        let root = self.key_root.clone();
+        self.mutate(async move {
+            let store = polymer_library::keys::KeyStore::open(root)
+                .await
+                .map_err(|error| error.to_string())?;
+            let keys = store
+                .for_platform(&platform)
+                .map_err(|error| error.to_string())?
+                .list(&KeyQuery {
+                    namespace,
+                    title_id: None,
+                })
+                .await
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(keys).map_err(|error| error.to_string())
+        })
+    }
+}
+
+impl Handler<KeysPlatforms> for LibraryBackend {
+    type Result = AtomicResponse<Self, Result<Vec<String>, LibraryError>>;
+
+    fn handle(&mut self, _: KeysPlatforms, _: &mut Context<Self>) -> Self::Result {
+        let root = self.key_root.clone();
+        self.mutate(async move {
+            polymer_library::keys::KeyStore::open(root)
+                .await
+                .map_err(|error| error.to_string())?
+                .platforms()
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+}
+
+impl Handler<KeysRemove> for LibraryBackend {
+    type Result = AtomicResponse<Self, Result<bool, LibraryError>>;
+
+    fn handle(
+        &mut self,
+        KeysRemove {
+            platform,
+            namespace,
+            id,
+        }: KeysRemove,
+        _: &mut Context<Self>,
+    ) -> Self::Result {
+        let root = self.key_root.clone();
+        self.mutate(async move {
+            polymer_library::keys::KeyStore::open(root)
+                .await
+                .map_err(|error| error.to_string())?
+                .for_platform(&platform)
+                .map_err(|error| error.to_string())?
+                .remove(&KeyIdentity { namespace, id })
+                .await
+                .map_err(|error| error.to_string())
         })
     }
 }

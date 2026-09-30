@@ -1,0 +1,9 @@
+@layer horizon {
+.horizon-key-drop { display: flex; min-height: 10rem; flex-direction: column; align-items: center; justify-content: center; gap: 0.6rem; border: 2px dashed var(--hz-divider); border-radius: var(--hz-radius-panel); color: var(--hz-muted); background: var(--hz-panel); text-align: center; transition: border-color 120ms ease, background 120ms ease; }
+.horizon-key-drop[data-active="true"] { border-color: var(--hz-focus); color: var(--hz-text); background: var(--hz-raised); }
+.horizon-key-drop-icon { width: 2.6rem; height: 2.6rem; }
+.horizon-key-drop p { margin: 0; font-size: 1rem; }
+.horizon-key-list { display: flex; flex-direction: column; gap: 0.25rem; margin: 0.75rem 0 0; padding: 0; list-style: none; }
+.horizon-key-list li { padding: 0.5rem 0.75rem; border-radius: var(--hz-radius-panel); background: var(--hz-panel); }
+.horizon-key-list .hz-list-row > span { overflow: hidden; text-overflow: ellipsis; }
+}
