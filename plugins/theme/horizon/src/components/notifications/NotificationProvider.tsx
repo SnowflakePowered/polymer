@@ -29,6 +29,7 @@ export function NotificationProvider(props: ParentProps) {
     const receive = (event: PluginEvent) => {
       if (event.name !== "loadprogress") return;
       const load = event.detail as Omit<PluginLoadProgress, "id" | "pluginId">;
+      if (load.state === "ready" && !load.message) return notifications.remove(`plugin:${event.sourceId}`);
       notifications.upsert({ id: `plugin:${event.sourceId}`, title: window.Polymer.machine(event.pluginId)?.name ?? event.pluginId, message: load.message,
         state: load.state === "ready" ? "complete" : load.state === "failed" ? "error" : "running",
         completed: load.completed ?? undefined, total: load.total ?? undefined });

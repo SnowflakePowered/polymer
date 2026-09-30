@@ -1,0 +1,5 @@
+[actions]
+target = "settings.UI"
+
+[actions.map]
+pause = { expression = "F4", name = 'Shortcuts\Main Window\Continue\Pause Emulation\KeySeq' }

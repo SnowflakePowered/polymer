@@ -16,13 +16,16 @@ export const onLaunch = (args: EmulatorLaunchArgs<unknown, Readonly<{ hdd?: Stor
     const flash = args.storage.flash ? "/Storage/flash" : "/Storage/hdd";
     fs.mount("/RPCS3/cache", caches.cache, { mode: "rwx" });
     for (const dir of ["config", "GuiConfigs", "captures", "savestates", "dev_hdd1", "log"]) fs.mount(`/RPCS3/${dir}`);
-    for (const file of ["RPCS3.log", "RPCS3.log.gz", "TTY.log"]) fs.mount(`/RPCS3/${file}`, new Uint8Array(), { mode: "rw" });
+    for (const file of ["RPCS3.buf", "RPCS3.log", "RPCS3.log.gz", "TTY.log"]) fs.mount(`/RPCS3/${file}`, new Uint8Array(), { mode: "rw" });
     fs.mount("/User");
-    let game = fs.mount("/Game", args.package, { mode: "rx" });
-    if (game.toLowerCase().endsWith(".pkg")) {
+    fs.mount("/User/Temp");
+    let game: string;
+    if (args.package.uri.startsWith("artifact://")) {
         const title = [args.package.titleId, args.package.serial].find(id => id && /^[A-Z]{4}[0-9]{5}$/.test(id));
-        if (!title) throw new Error("The PS3 package has no bootable title ID. Install it and launch its EBOOT.BIN.");
+        if (!title) throw new Error("The installed PS3 title has no bootable title ID.");
         game = fs.path(`/Storage/hdd/dev_hdd0/game/${title}/USRDIR/EBOOT.BIN`);
+    } else {
+        game = fs.mount("/Game", args.package, { mode: "rx" });
     }
     const vfs = {
         "/dev_hdd0/": `${fs.path("/Storage/hdd/dev_hdd0")}/`,
@@ -31,7 +34,7 @@ export const onLaunch = (args: EmulatorLaunchArgs<unknown, Readonly<{ hdd?: Stor
         "/dev_flash2/": `${fs.path(`${flash}/dev_flash2`)}/`,
         "/dev_flash3/": `${fs.path(`${flash}/dev_flash3`)}/`,
     };
-    fs.mount("/RPCS3/vfs.yml", new TextEncoder().encode(JSON.stringify(vfs)), { mode: "rw" });
+    fs.mount("/RPCS3/config/vfs.yml", new TextEncoder().encode(JSON.stringify(vfs)), { mode: "rw" });
     Rpcs3Configuration.mount(args.configuration, fs);
     return {
         command: fs.path("/RPCS3/rpcs3.exe"),
@@ -40,7 +43,7 @@ export const onLaunch = (args: EmulatorLaunchArgs<unknown, Readonly<{ hdd?: Stor
         env: [["USERPROFILE", fs.path("/User")], ["APPDATA", fs.path("/User/AppData/Roaming")],
             ["LOCALAPPDATA", fs.path("/User/AppData/Local")], ["TEMP", fs.path("/User/Temp")],
             ["TMP", fs.path("/User/Temp")]],
-        isolate: true,
+        isolate: false,
         hooks: { graphics: ["vulkan"], input: ["sdl3"] },
         surfaces: [{ index: 0, pattern: "RPCS3|FPS.*Vulkan" }],
     };
