@@ -209,8 +209,8 @@ export function ShellProvider(props: ParentProps) {
   const libraryState = new LibraryState(window.Polymer.library, window.Polymer.scraping, snapshot => {
     setModel("libraryGames", reconcile(snapshot.games, { key: "path" }));
     setModel("libraryActivities", reconcile(snapshot.activities, { key: "id" }));
-  }, fail, async item => {
-    const nand = await ensureNand(item.platform);
+  }, fail, async (item, bootstrap) => {
+    const nand = await ensureNand(item.platform, bootstrap);
     return { storage: nand.id, artifact: await nand.install({ path: item.path }) };
   });
   libraryState.start();

@@ -1,7 +1,8 @@
 use super::LibraryBackend;
 use actix::{AtomicResponse, Context, Handler};
 use polymer_consolestorage::impls::ctr::{CtrNand, seeddb::CtrSeedDb};
-use polymer_consolestorage::impls::ps3::{Ps3Nand, rap::Rap};
+use polymer_consolestorage::impls::ps3::{Ps3Nand, depots::Ps3PupDepot, rap::Rap};
+use polymer_consolestorage::installable::Depot;
 use polymer_consolestorage::keys::{KeyIdentity, KeyQuery, KeyReader, KeyRecord, KeyWriter};
 use polymer_deno::polymer::library::{
     ImportedKey, KeysList, KeysPlatforms, KeysRemove, LibraryError, LibraryImport, LibraryImportKey,
@@ -45,6 +46,18 @@ impl Handler<LibraryImport> for LibraryBackend {
                 })),
                 Ok(packages) => Ok(json!({ "kind": "games", "imports": Self::import_games(&scraping, packages).await? })),
                 Err(error) if error.firmware_candidate() && path.is_file() => {
+                    let probe = path.clone();
+                    let pup = tokio::task::spawn_blocking(move || Ps3PupDepot::open(&probe))
+                        .await.map_err(|error| format!("system software detection task failed: {error}"))?;
+                    if let Ok(pup) = pup {
+                        return Ok(json!({
+                            "kind": "system",
+                            "platform": Ps3Nand::PLATFORM,
+                            "path": path,
+                            "filename": path.file_name().map(|name| name.to_string_lossy()),
+                            "version": pup.version(),
+                        }));
+                    }
                     let seeds = match std::fs::metadata(&path) {
                         Ok(metadata) if metadata.len() % 32 == 16 => tokio::fs::read(&path).await
                             .ok().and_then(|bytes| CtrSeedDb::decode(&bytes).ok()),
