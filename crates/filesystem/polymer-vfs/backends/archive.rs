@@ -221,6 +221,7 @@ impl DirectoryNode for AsarDirectory {
             kind: FileKind::Directory,
             len: 0,
             readonly: true,
+            sparse: false,
         })
     }
 
@@ -295,6 +296,7 @@ impl FileNode for AsarFile {
             kind: FileKind::File,
             len: range.len() as u64,
             readonly: true,
+            sparse: false,
         })
     }
 
@@ -332,6 +334,7 @@ impl OpenFile for AsarOpen {
             kind: FileKind::File,
             len: self.range.len() as u64,
             readonly: true,
+            sparse: false,
         })
     }
 

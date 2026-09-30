@@ -29,7 +29,7 @@ use windows::{
         },
         Storage::FileSystem::{
             FILE_ATTRIBUTE_ARCHIVE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_READONLY,
-            INVALID_FILE_ATTRIBUTES,
+            FILE_ATTRIBUTE_SPARSE_FILE, INVALID_FILE_ATTRIBUTES,
         },
     },
     core::PCWSTR,
@@ -346,6 +346,9 @@ impl FileSystemContext for PolymerFileSystem {
             // Open first: setting READONLY before opening would incorrectly reject the
             // write access granted as part of the same create request.
             let context = self.open_path(path.clone(), create_options, granted_access)?;
+            if let Some(file) = &context.file {
+                let _ = file.set_sparse();
+            }
             if file_attributes & FILE_ATTRIBUTE_READONLY.0 != 0 {
                 self.filesystem
                     .set_metadata(
@@ -664,6 +667,9 @@ fn file_attributes(metadata: &Metadata) -> u32 {
     };
     if metadata.readonly {
         attributes |= FILE_ATTRIBUTE_READONLY.0;
+    }
+    if metadata.sparse {
+        attributes |= FILE_ATTRIBUTE_SPARSE_FILE.0;
     }
     attributes
 }

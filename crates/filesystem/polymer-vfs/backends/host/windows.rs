@@ -34,7 +34,7 @@ use windows::{
         Storage::FileSystem::{
             CreateFileW, DELETE, FILE_ACCESS_RIGHTS, FILE_ATTRIBUTE_DIRECTORY,
             FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_REPARSE_POINT,
-            FILE_BASIC_INFO, FILE_DISPOSITION_FLAG_DELETE,
+            FILE_ATTRIBUTE_SPARSE_FILE, FILE_BASIC_INFO, FILE_DISPOSITION_FLAG_DELETE,
             FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
             FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX, FILE_DISPOSITION_INFO_EX_FLAGS,
             FILE_END_OF_FILE_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
@@ -282,6 +282,7 @@ impl DirectoryNode for HostDirectory {
             kind: FileKind::Directory,
             len: 0,
             readonly: !self.volume.writable,
+            sparse: false,
         })
     }
 
@@ -534,6 +535,7 @@ pub(super) fn metadata_for(file: &File, writable: bool) -> VfsResult<Metadata> {
         kind: FileKind::File,
         len: metadata.len(),
         readonly: !writable || metadata.file_attributes() & FILE_ATTRIBUTE_READONLY.0 != 0,
+        sparse: metadata.file_attributes() & FILE_ATTRIBUTE_SPARSE_FILE.0 != 0,
     })
 }
 
@@ -665,6 +667,7 @@ fn directory_entries(directory: &File, writable: bool) -> VfsResult<Vec<HostDire
                         },
                         readonly: !writable
                             || entry.FileAttributes & FILE_ATTRIBUTE_READONLY.0 != 0,
+                        sparse: entry.FileAttributes & FILE_ATTRIBUTE_SPARSE_FILE.0 != 0,
                     },
                 });
             }

@@ -12,6 +12,7 @@ pub struct Metadata {
     pub kind: FileKind,
     pub len: u64,
     pub readonly: bool,
+    pub sparse: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -61,6 +62,7 @@ impl Node {
                 kind: FileKind::Directory,
                 len: 0,
                 readonly: true,
+                sparse: false,
             }),
         }
     }
@@ -93,6 +95,12 @@ pub trait OpenFile: Send + Sync {
     fn truncate(&self, len: u64) -> VfsResult<()>;
     fn flush(&self) -> VfsResult<()>;
     fn sync(&self) -> VfsResult<()>;
+
+    fn set_sparse(&self) -> VfsResult<()> {
+        Err(crate::VfsError::Unsupported(
+            "the file does not support sparse allocation".into(),
+        ))
+    }
 }
 
 pub trait AdoptHandle: Send + Sync {
