@@ -9,6 +9,7 @@ type Options = {
             setup_wizard_incomplete: boolean,
             render_to_separate_window: boolean,
             hide_main_window_when_running: boolean,
+            double_click_toggles_fullscreen: boolean,
         },
         folders: {
             bios: string,
@@ -68,6 +69,7 @@ export const onLaunch = async (args: EmulatorLaunchArgs<Options, Readonly<{ mem1
     // the main window and its menus available for UI automation.
     options.ui.render_to_separate_window = true;
     options.ui.hide_main_window_when_running = false;
+    options.ui.double_click_toggles_fullscreen = false;
     options.folders.bios = args.filesystem.path("/User/bios");
     options.folders.snapshots = args.filesystem.path("/User/snaps");
     options.folders.savestates = args.filesystem.path("/User/sstates");
