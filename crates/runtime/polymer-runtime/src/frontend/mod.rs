@@ -593,7 +593,7 @@ impl FrontendServices {
                 ),
             )
         });
-        let storage = crate::console_storage_manager();
+        let storage = polymer_library::StorageManager::shared().ok();
         let storage_service = crate::StorageService::start(storage.clone(), plugins.handle())
             .map_err(|error| format!("could not start storage actor: {error}"));
         Self {

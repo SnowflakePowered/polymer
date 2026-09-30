@@ -88,7 +88,7 @@ impl PluginLifecycle {
                 )
                 .await;
                 progress.finish(match &result {
-                    Ok(_) => serde_json::json!({"state": "ready", "message": "Plugin ready"}),
+                    Ok(_) => serde_json::json!({"state": "ready", "message": ""}),
                     Err(error) => {
                         serde_json::json!({"state": "failed", "message": error.to_string()})
                     }
