@@ -7,8 +7,9 @@ use extensions::Extensions;
 pub use extensions::vkEnumerateDeviceExtensionProperties;
 use requested::Requested;
 
-/// Only missing feature nodes are added. Application-owned chains are borrowed
-/// unchanged, including explicit false values and Vulkan 1.2/1.3 feature nodes.
+/// Only missing feature nodes are added. Explicit false values in dedicated feature
+/// nodes are respected. Vulkan 1.2/1.3 nodes cannot coexist with the dedicated nodes,
+/// so their unset fields are enabled in place for the call and restored afterwards.
 #[derive(Default)]
 pub(crate) struct Features {
     timeline: vk::PhysicalDeviceTimelineSemaphoreFeatures<'static>,
@@ -17,6 +18,8 @@ pub(crate) struct Features {
     add_timeline: bool,
     add_synchronization2: bool,
     add_maintenance: bool,
+    vulkan12: Option<ptr::NonNull<vk::PhysicalDeviceVulkan12Features<'static>>>,
+    vulkan13: Option<ptr::NonNull<vk::PhysicalDeviceVulkan13Features<'static>>>,
     pub supported: bool,
 }
 impl Features {
@@ -98,6 +101,8 @@ impl Features {
         support.add_timeline = support.supported && requested.timeline.is_none();
         support.add_synchronization2 = virtualized && requested.sync2.is_none();
         support.add_maintenance = virtualized && requested.maintenance.is_none();
+        support.vulkan12 = requested.vulkan12;
+        support.vulkan13 = requested.vulkan13;
         Ok(support)
     }
     pub(crate) fn attach(&mut self, info: &mut vk::DeviceCreateInfo<'_>) {
@@ -106,12 +111,31 @@ impl Features {
             info.p_next = ptr::from_ref(&self.maintenance).cast();
         }
         if self.add_timeline {
-            self.timeline.p_next = info.p_next.cast_mut();
-            info.p_next = ptr::from_ref(&self.timeline).cast();
+            match self.vulkan12 {
+                Some(node) => unsafe { (*node.as_ptr()).timeline_semaphore = vk::TRUE },
+                None => {
+                    self.timeline.p_next = info.p_next.cast_mut();
+                    info.p_next = ptr::from_ref(&self.timeline).cast();
+                }
+            }
         }
         if self.add_synchronization2 {
-            self.synchronization2.p_next = info.p_next.cast_mut();
-            info.p_next = ptr::from_ref(&self.synchronization2).cast();
+            match self.vulkan13 {
+                Some(node) => unsafe { (*node.as_ptr()).synchronization2 = vk::TRUE },
+                None => {
+                    self.synchronization2.p_next = info.p_next.cast_mut();
+                    info.p_next = ptr::from_ref(&self.synchronization2).cast();
+                }
+            }
+        }
+    }
+
+    pub(crate) fn restore(&self) {
+        if let (true, Some(node)) = (self.add_timeline, self.vulkan12) {
+            unsafe { (*node.as_ptr()).timeline_semaphore = vk::FALSE };
+        }
+        if let (true, Some(node)) = (self.add_synchronization2, self.vulkan13) {
+            unsafe { (*node.as_ptr()).synchronization2 = vk::FALSE };
         }
     }
 }
