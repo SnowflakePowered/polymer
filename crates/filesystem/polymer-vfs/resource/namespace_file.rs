@@ -115,4 +115,8 @@ impl OpenFile for NamespaceOpenFile {
         self.inner.sync()?;
         self.finalize_adoption()
     }
+
+    fn set_sparse(&self) -> VfsResult<()> {
+        self.inner.set_sparse()
+    }
 }

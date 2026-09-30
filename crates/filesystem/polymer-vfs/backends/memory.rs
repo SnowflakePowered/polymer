@@ -51,6 +51,7 @@ impl FileNode for MemoryFile {
             kind: FileKind::File,
             len: metadata.len,
             readonly: !self.writable,
+            sparse: false,
         })
     }
 
@@ -170,6 +171,7 @@ impl OpenFile for MemoryOpen {
             kind: FileKind::File,
             len: metadata.len,
             readonly: self.readonly,
+            sparse: false,
         })
     }
 

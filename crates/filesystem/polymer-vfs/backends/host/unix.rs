@@ -223,6 +223,7 @@ impl DirectoryNode for HostDirectory {
             kind: FileKind::Directory,
             len: 0,
             readonly: !self.volume.writable,
+            sparse: false,
         })
     }
 
@@ -267,6 +268,7 @@ impl DirectoryNode for HostDirectory {
                     },
                     len: metadata.len(),
                     readonly: !self.volume.writable,
+                    sparse: false,
                 },
             }));
         }
@@ -331,6 +333,7 @@ impl FileNode for HostTreeFile {
             kind: FileKind::File,
             len: metadata.len(),
             readonly: true,
+            sparse: false,
         })
     }
 
@@ -361,6 +364,7 @@ pub(super) fn metadata_for(file: &File, writable: bool) -> VfsResult<Metadata> {
         kind: FileKind::File,
         len: metadata.len(),
         readonly: !writable || metadata.permissions().readonly(),
+        sparse: false,
     })
 }
 

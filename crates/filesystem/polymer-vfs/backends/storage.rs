@@ -89,6 +89,7 @@ impl DirectoryNode for StorageDirectoryNode {
             kind: FileKind::Directory,
             len: metadata.len,
             readonly: !can_write(&self.permissions, &self.path),
+            sparse: false,
         })
     }
 
@@ -141,6 +142,7 @@ impl DirectoryNode for StorageDirectoryNode {
                         },
                         len: entry.metadata.len,
                         readonly: !can_write(&node_permissions, &entry.path),
+                        sparse: false,
                     },
                 })
             })
@@ -245,6 +247,7 @@ impl FileNode for StorageFileNode {
             kind: FileKind::File,
             len: metadata.len,
             readonly: !can_write(&self.permissions, &self.path),
+            sparse: false,
         })
     }
 
@@ -391,6 +394,7 @@ impl OpenFile for StorageOpenFile {
             kind: FileKind::File,
             len: metadata.len,
             readonly: !can_write(&self.permissions, &self.path),
+            sparse: false,
         })
     }
 

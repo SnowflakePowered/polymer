@@ -188,4 +188,28 @@ impl OpenFile for HostOpen {
         self.file.sync_all()?;
         Ok(())
     }
+
+    #[cfg(windows)]
+    fn set_sparse(&self) -> VfsResult<()> {
+        use ::windows::Win32::{
+            Foundation::HANDLE,
+            System::{IO::DeviceIoControl, Ioctl::FSCTL_SET_SPARSE},
+        };
+        use std::os::windows::io::AsRawHandle;
+        crate::VfsError::require_writable(self.writable)?;
+        unsafe {
+            DeviceIoControl(
+                HANDLE(self.file.as_raw_handle()),
+                FSCTL_SET_SPARSE,
+                None,
+                0,
+                None,
+                0,
+                None,
+                None,
+            )
+        }
+        .map_err(|_| std::io::Error::last_os_error())?;
+        Ok(())
+    }
 }

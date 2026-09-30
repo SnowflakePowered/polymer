@@ -166,6 +166,7 @@ impl PreparedFilesystem {
                     kind: crate::FileKind::Directory,
                     len: 0,
                     readonly: true,
+                    sparse: false,
                 },
                 None,
             )),
