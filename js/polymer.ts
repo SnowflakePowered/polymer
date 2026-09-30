@@ -510,6 +510,11 @@ export type ImportedKey = Readonly<{ namespace: "system" | "content"; id: string
 export interface LibraryApi extends EventTarget {
   import(input: { path: string }): Promise<LibraryImportResult>;
   importKey(platform: string, namespace: "system" | "content", key: Uint8Array | string, titleid?: string): Promise<ImportedKey>;
+  readonly keys: Readonly<{
+    list(platform: string, options?: { namespace?: "system" | "content" }): Promise<ImportedKey[]>;
+    platforms(): Promise<string[]>;
+    remove(platform: string, namespace: "system" | "content", id: string): Promise<boolean>;
+  }>;
   readonly games: Readonly<{
     list(options?: { platform?: string }): Promise<LibraryGame[]>;
     get(rootBinaryId: string): Promise<LibraryGame | null>;

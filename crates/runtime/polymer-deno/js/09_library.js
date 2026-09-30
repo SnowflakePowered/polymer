@@ -2,6 +2,9 @@ import { Package } from "./00_package.js";
 import {
   op_library_import,
   op_library_import_key,
+  op_library_keys_list,
+  op_library_keys_platforms,
+  op_library_keys_remove,
   op_library_games_list, op_library_games_get, op_library_games_delete,
   op_library_launchables_add, op_library_launchables_find, op_library_launchables_delete,
   op_library_metadata_add, op_library_metadata_update, op_library_metadata_delete,
@@ -108,10 +111,11 @@ export function createLibrary() {
       const path = optionalString(input.path, "path");
       if (path === null) throw new TypeError("path is required");
       const result = await op_library_import(path);
+      if (result.kind === "keys") Library.dispatchEvent(new CustomEvent("contentchange", { detail: Object.freeze({ platform: result.platform }) }));
       if (result.kind === "games") return { ...result, imports: result.imports.map(item => ({ ...item, launchable: new Package(item.launchable) })) };
       return result;
     } },
-    importKey: { value: (platform, namespace, key, titleid) => {
+    importKey: { value: async (platform, namespace, key, titleid) => {
       platform = optionalString(platform, "platform");
       if (platform === null) throw new TypeError("platform is required");
       if (namespace !== "system" && namespace !== "content") throw new TypeError("namespace must be system or content");
@@ -122,8 +126,29 @@ export function createLibrary() {
         key = bytes;
       }
       if (!(key instanceof Uint8Array) || key.length === 0) throw new TypeError("key must be a non-empty Uint8Array or hexadecimal string");
-      return op_library_import_key(platform, namespace, Array.from(key), optionalString(titleid, "titleid"));
+      const imported = await op_library_import_key(platform, namespace, Array.from(key), optionalString(titleid, "titleid"));
+      Library.dispatchEvent(new CustomEvent("contentchange", { detail: Object.freeze({ platform }) }));
+      return imported;
     } },
+    keys: { value: Object.freeze({
+      list(platform, options) {
+        platform = optionalString(platform, "platform");
+        if (platform === null) throw new TypeError("platform is required");
+        const namespace = optionalString(options?.namespace, "namespace");
+        if (namespace !== null && namespace !== "system" && namespace !== "content") throw new TypeError("namespace must be system or content");
+        return op_library_keys_list(platform, namespace);
+      },
+      platforms() { return op_library_keys_platforms(); },
+      async remove(platform, namespace, id) {
+        platform = optionalString(platform, "platform");
+        id = optionalString(id, "id");
+        if (platform === null || id === null) throw new TypeError("platform and id are required");
+        if (namespace !== "system" && namespace !== "content") throw new TypeError("namespace must be system or content");
+        const removed = await op_library_keys_remove(platform, namespace, id);
+        if (removed) Library.dispatchEvent(new CustomEvent("contentchange", { detail: Object.freeze({ platform }) }));
+        return removed;
+      },
+    }), enumerable: true },
     games: { value: games, enumerable: true },
     launchables: { value: launchables, enumerable: true },
     metadata: { value: metadata, enumerable: true },

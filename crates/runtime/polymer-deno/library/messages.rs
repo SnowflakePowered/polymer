@@ -27,6 +27,9 @@ impl From<&str> for LibraryError {
 pub struct Library {
     pub import: Recipient<LibraryImport>,
     pub import_key: Recipient<LibraryImportKey>,
+    pub keys_list: Recipient<KeysList>,
+    pub keys_platforms: Recipient<KeysPlatforms>,
+    pub keys_remove: Recipient<KeysRemove>,
     pub games_list: Recipient<GamesList>,
     pub games_get: Recipient<GamesGet>,
     pub games_delete: Recipient<GamesDelete>,
@@ -60,6 +63,25 @@ pub struct LibraryImportKey {
     pub namespace: String,
     pub key: Vec<u8>,
     pub title_id: Option<String>,
+}
+
+#[derive(Debug, actix::Message)]
+#[rtype(result = "Result<Value, LibraryError>")]
+pub struct KeysList {
+    pub platform: String,
+    pub namespace: Option<String>,
+}
+
+#[derive(Debug, actix::Message)]
+#[rtype(result = "Result<Vec<String>, LibraryError>")]
+pub struct KeysPlatforms;
+
+#[derive(Debug, actix::Message)]
+#[rtype(result = "Result<bool, LibraryError>")]
+pub struct KeysRemove {
+    pub platform: String,
+    pub namespace: String,
+    pub id: String,
 }
 
 #[derive(Debug, Serialize)]
