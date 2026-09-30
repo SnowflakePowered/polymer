@@ -308,6 +308,7 @@ pub(crate) unsafe fn create_device(
             device,
         )
     };
+    features.restore();
     if result != vk::Result::SUCCESS || device.is_null() {
         return result;
     }

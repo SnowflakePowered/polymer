@@ -5,6 +5,8 @@ pub(super) struct Requested {
     pub sync2: Option<vk::Bool32>,
     pub maintenance: Option<vk::Bool32>,
     pub devices: u32,
+    pub vulkan12: Option<ptr::NonNull<vk::PhysicalDeviceVulkan12Features<'static>>>,
+    pub vulkan13: Option<ptr::NonNull<vk::PhysicalDeviceVulkan13Features<'static>>>,
 }
 impl Requested {
     pub(super) unsafe fn new(info: &vk::DeviceCreateInfo<'_>) -> Self {
@@ -13,6 +15,8 @@ impl Requested {
             sync2: None,
             maintenance: None,
             devices: 1,
+            vulkan12: None,
+            vulkan13: None,
         };
         let mut current = info.p_next.cast::<vk::BaseInStructure<'_>>();
         while let Some(base) = unsafe { current.as_ref() } {
@@ -24,10 +28,12 @@ impl Requested {
                     })
                 }
                 vk::StructureType::PHYSICAL_DEVICE_VULKAN_1_2_FEATURES => {
-                    requested.timeline = Some(unsafe {
-                        (*current.cast::<vk::PhysicalDeviceVulkan12Features<'_>>())
-                            .timeline_semaphore
-                    })
+                    let node = current
+                        .cast_mut()
+                        .cast::<vk::PhysicalDeviceVulkan12Features<'static>>();
+                    requested.vulkan12 = ptr::NonNull::new(node);
+                    requested.timeline =
+                        (unsafe { (*node).timeline_semaphore } == vk::TRUE).then_some(vk::TRUE);
                 }
                 vk::StructureType::PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES => {
                     requested.sync2 = Some(unsafe {
@@ -36,9 +42,12 @@ impl Requested {
                     })
                 }
                 vk::StructureType::PHYSICAL_DEVICE_VULKAN_1_3_FEATURES => {
-                    requested.sync2 = Some(unsafe {
-                        (*current.cast::<vk::PhysicalDeviceVulkan13Features<'_>>()).synchronization2
-                    })
+                    let node = current
+                        .cast_mut()
+                        .cast::<vk::PhysicalDeviceVulkan13Features<'static>>();
+                    requested.vulkan13 = ptr::NonNull::new(node);
+                    requested.sync2 =
+                        (unsafe { (*node).synchronization2 } == vk::TRUE).then_some(vk::TRUE);
                 }
                 vk::StructureType::PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT => {
                     requested.maintenance = Some(unsafe {
