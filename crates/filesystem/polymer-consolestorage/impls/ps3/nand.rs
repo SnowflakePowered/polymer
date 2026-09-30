@@ -4,10 +4,11 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use super::save_repo::Ps3SaveRepo;
+use crate::keys::{KeyDescription, KeyRecord};
 use crate::nand::{NandCompletion, VirtualNand};
 use crate::{
-    Error, MountableStorage, Permissions, PermissionsTable, SaveRepo, Storage, VersionedStorage,
-    VolumeStorage, ensure_structure, requires_structure,
+    Error, KeyProjection, KeyStoreStorage, MountableStorage, Permissions, PermissionsTable,
+    SaveRepo, Storage, VersionedStorage, VolumeStorage, ensure_structure, requires_structure,
 };
 
 const LAYOUT: PermissionsTable = PermissionsTable::new(&[
@@ -19,6 +20,23 @@ const LAYOUT: PermissionsTable = PermissionsTable::new(&[
     (super::GUEST_SAVE_ROOT, Permissions::READ_WRITE_EXECUTE),
     ("dev_hdd0/home/00000001/exdata", Permissions::READ_EXECUTE),
 ]);
+
+struct Ps3Licenses;
+
+impl KeyProjection for Ps3Licenses {
+    fn path(&self, key: &KeyDescription) -> Option<String> {
+        (key.byte_length == 16 && super::rap::Rap::title_id(&key.identity.id).is_some())
+            .then(|| format!("{}/exdata/{}.rap", super::GUEST_USER_ROOT, key.identity.id))
+    }
+
+    fn len(&self, key: &KeyDescription) -> u64 {
+        key.byte_length
+    }
+
+    fn render(&self, key: &KeyRecord) -> Result<Vec<u8>, Error> {
+        Ok(key.bytes.clone())
+    }
+}
 
 pub struct Ps3Nand {
     storage: Arc<dyn VolumeStorage>,
@@ -72,38 +90,11 @@ impl VirtualNand for Ps3Nand {
     async fn compose(
         &self,
         saves: Option<Arc<dyn SaveRepo>>,
-        keys: &dyn crate::keys::KeyReader,
+        keys: Arc<dyn crate::keys::KeyReader>,
     ) -> Result<Arc<dyn MountableStorage>, Error> {
         <dyn SaveRepo>::require::<Ps3SaveRepo>(saves.as_ref(), "PlayStation 3")?;
-        let mut files = Vec::new();
-        for description in keys
-            .list(&crate::keys::KeyQuery {
-                namespace: Some("content".into()),
-                title_id: None,
-            })
-            .await
-            .map_err(|e| Error::Unsupported(e.to_string()))?
-        {
-            if super::rap::Rap::title_id(&description.identity.id).is_none() {
-                continue;
-            }
-            let record = keys
-                .read(&description.identity)
-                .await
-                .map_err(|e| Error::Unsupported(e.to_string()))?;
-            if record.bytes.len() != 16 {
-                return Err(Error::malformed("PS3 RAP", "expected 16 bytes"));
-            }
-            files.push((
-                format!(
-                    "dev_hdd0/home/00000001/exdata/{}.rap",
-                    description.identity.id
-                ),
-                record.bytes,
-            ));
-        }
         let mut layers: Vec<Arc<dyn MountableStorage>> =
-            vec![Arc::new(crate::MemoryStorage::writable(files)?)];
+            vec![Arc::new(KeyStoreStorage::new(keys, Ps3Licenses).await?)];
         if let Some(saves) = saves {
             layers.push(saves);
         }

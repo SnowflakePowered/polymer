@@ -4,11 +4,10 @@ mod read;
 mod write;
 
 use polymer_consolestorage::keys::KeyError;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[derive(Clone)]
 pub struct KeyStore {
-    root: PathBuf,
     database: turso::Database,
 }
 
@@ -39,15 +38,38 @@ impl KeyStore {
                     namespace TEXT NOT NULL CHECK(namespace IN ('system', 'content')),
                     id TEXT NOT NULL,
                     title_id TEXT,
-                    digest TEXT NOT NULL,
                     byte_length INTEGER NOT NULL CHECK(byte_length >= 0),
+                    bytes BLOB NOT NULL,
                     PRIMARY KEY(platform, namespace, id)
                 ) STRICT;
                 CREATE INDEX IF NOT EXISTS keys_title_lookup ON keys(platform, title_id);",
             )
             .await
             .map_err(|error| KeyError::Database(error.to_string()))?;
-        Ok(Self { root, database })
+        Ok(Self { database })
+    }
+
+    pub async fn platforms(&self) -> Result<Vec<String>, KeyError> {
+        let connection = self
+            .database
+            .connect()
+            .map_err(|error| KeyError::Database(error.to_string()))?;
+        let mut rows = connection
+            .query("SELECT DISTINCT platform FROM keys ORDER BY platform", ())
+            .await
+            .map_err(|error| KeyError::Database(error.to_string()))?;
+        let mut platforms = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|error| KeyError::Database(error.to_string()))?
+        {
+            platforms.push(
+                row.get::<String>(0)
+                    .map_err(|error| KeyError::Database(error.to_string()))?,
+            );
+        }
+        Ok(platforms)
     }
 
     pub fn for_platform(&self, platform: &str) -> Result<PlatformKeys, KeyError> {
@@ -68,17 +90,5 @@ impl KeyStore {
 impl PlatformKeys {
     pub fn platform(&self) -> &str {
         &self.platform
-    }
-
-    fn object_path(&self, digest: &str) -> Result<PathBuf, KeyError> {
-        if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err(KeyError::Invalid("invalid stored key digest".into()));
-        }
-        Ok(self
-            .store
-            .root
-            .join(&self.platform)
-            .join("objects")
-            .join(digest))
     }
 }

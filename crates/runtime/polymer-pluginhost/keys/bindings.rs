@@ -5,7 +5,7 @@ use deno_error::JsErrorBox;
 use polymer_consolestorage::keys::{
     KeyDescription, KeyIdentity, KeyQuery, KeyReader, KeyRecord, KeyWriter,
 };
-use polymer_vfs::HostFileFactory;
+use polymer_vfs::MemoryFileFactory;
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 #[op2]
@@ -31,20 +31,17 @@ async fn op_keys_open(
     #[serde] identity: KeyIdentity,
 ) -> Result<JsResource, JsErrorBox> {
     let binding = state.borrow().borrow::<KeyBinding>().clone();
-    let path = binding
+    let record = binding
         .platform_keys()
         .await
         .map_err(|e| JsErrorBox::generic(e.to_string()))?
-        .file(&identity)
-        .await
-        .map_err(|e| JsErrorBox::generic(e.to_string()))?;
-    tokio::fs::metadata(&path)
+        .read(&identity)
         .await
         .map_err(|e| JsErrorBox::generic(e.to_string()))?;
     Ok(JsResource::readonly_file(
         &mut state.borrow_mut(),
         identity.id,
-        Arc::new(HostFileFactory::new(path, false)),
+        Arc::new(MemoryFileFactory::immutable(record.bytes)),
         "keys",
     ))
 }

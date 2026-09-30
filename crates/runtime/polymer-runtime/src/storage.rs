@@ -331,7 +331,7 @@ pub async fn launch_storage(
     let key_store = KeyStore::open(manager.root().join("keys"))
         .await
         .map_err(|e| e.to_string())?;
-    let keys = key_store.for_platform(console).map_err(|e| e.to_string())?;
+    let keys = Arc::new(key_store.for_platform(console).map_err(|e| e.to_string())?);
     let package = metadata.as_ref().map(|package| {
         Package::new(package.serial.clone(), package.title_id.clone())
             .with_binary_digest(package.binary_digest.clone())
@@ -426,7 +426,7 @@ pub async fn launch_storage(
                 tracing::warn!(%error, "could not describe saves from the launched game");
             }
             let composed = nand
-                .compose(Some(save.clone()), &keys)
+                .compose(Some(save.clone()), keys.clone())
                 .await
                 .map_err(|error| error.to_string())?;
             storage.insert(
@@ -465,7 +465,10 @@ pub async fn launch_storage(
             .map_err(|error| error.to_string())?;
         match volume {
             ConsoleStorage::Nand(nand) => {
-                let root = nand.compose(None, &keys).await.map_err(|e| e.to_string())?;
+                let root = nand
+                    .compose(None, keys.clone())
+                    .await
+                    .map_err(|e| e.to_string())?;
                 storage.insert(
                     name.clone(),
                     Arc::new(NandVolumeFactory::new(nand, root, vec![id])),

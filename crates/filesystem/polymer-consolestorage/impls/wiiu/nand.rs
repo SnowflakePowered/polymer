@@ -1,5 +1,6 @@
 use crate::impls::NintendoTitleId;
 use crate::impls::wiiu::xml;
+use crate::keys::{KeyDescription, KeyRecord};
 use crate::nand::{NandCompletion, VirtualNand};
 use crate::savegame::{
     Package, SaveBlob, SaveBlobStream, SaveDepot, SaveDepotId, SaveDescriptor, SaveDescriptors,
@@ -7,9 +8,9 @@ use crate::savegame::{
 };
 use crate::storage::VolumeOverlay;
 use crate::{
-    BoxFuture, ComposedStorage, EntryKind, Error, MountableStorage, Permissions, PermissionsTable,
-    SaveRepo, SaveVersioning, Storage, VersionedStorage, VolumeStorage, ensure_structure,
-    requires_structure,
+    BoxFuture, ComposedStorage, EntryKind, Error, KeyProjection, KeyStoreStorage, MountableStorage,
+    Permissions, PermissionsTable, SaveRepo, SaveVersioning, Storage, VersionedStorage,
+    VolumeStorage, ensure_structure, requires_structure,
 };
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -32,6 +33,49 @@ const LAYOUT: PermissionsTable = PermissionsTable::new(&[
 
 pub struct WiiUNand {
     storage: Arc<dyn VolumeStorage>,
+}
+
+struct WiiUTickets {
+    storage: Arc<dyn VolumeStorage>,
+}
+
+impl WiiUTickets {
+    fn title_root(&self, id: &str) -> Option<(u64, String)> {
+        let title_id = u64::from_str_radix(id, 16).ok()?;
+        let root = format!("usr/title/{:08x}/{:08x}", title_id >> 32, title_id as u32);
+        self.storage.exists(&root).then_some((title_id, root))
+    }
+}
+
+impl KeyProjection for WiiUTickets {
+    fn path(&self, key: &KeyDescription) -> Option<String> {
+        self.title_root(&key.identity.id)
+            .map(|(_, root)| format!("{root}/code/title.tik"))
+    }
+
+    fn len(&self, key: &KeyDescription) -> u64 {
+        self.title_root(&key.identity.id)
+            .and_then(|(title_id, _)| {
+                super::ticket::WiiUTicket::synthesize(title_id, 0, &[0; 16]).ok()
+            })
+            .map_or(0, |ticket| ticket.len() as u64)
+    }
+
+    fn render(&self, key: &KeyRecord) -> Result<Vec<u8>, Error> {
+        let (title_id, root) = self
+            .title_root(&key.identity.id)
+            .ok_or_else(|| Error::not_found(&key.identity.id))?;
+        let path = format!("{root}/meta/meta.xml");
+        let meta: xml::MetaXml =
+            xml::read_from(BufReader::new(self.storage.open_read(&path)?), &path)?;
+        let version = match meta.title_version.text.trim() {
+            "" => 0,
+            value => value
+                .parse::<u16>()
+                .map_err(|_| Error::malformed(&path, "invalid title version"))?,
+        };
+        super::ticket::WiiUTicket::synthesize(title_id, version, &key.bytes)
+    }
 }
 
 #[derive(Debug)]
@@ -64,45 +108,14 @@ impl VirtualNand for WiiUNand {
     async fn compose(
         &self,
         saves: Option<Arc<dyn SaveRepo>>,
-        keys: &dyn crate::keys::KeyReader,
+        keys: Arc<dyn crate::keys::KeyReader>,
     ) -> Result<Arc<dyn MountableStorage>, Error> {
         <dyn SaveRepo>::require::<WiiUSaveRepo>(saves.as_ref(), "Wii U")?;
-        let mut files = Vec::new();
-        for description in keys
-            .list(&crate::keys::KeyQuery {
-                namespace: Some("content".into()),
-                title_id: None,
-            })
-            .await
-            .map_err(|e| Error::Unsupported(e.to_string()))?
-        {
-            let Ok(title_id) = u64::from_str_radix(&description.identity.id, 16) else {
-                continue;
-            };
-            let root = format!("usr/title/{:08x}/{:08x}", title_id >> 32, title_id as u32);
-            if !self.storage.exists(&root) {
-                continue;
-            }
-            let record = keys
-                .read(&description.identity)
-                .await
-                .map_err(|e| Error::Unsupported(e.to_string()))?;
-            let path = format!("{root}/meta/meta.xml");
-            let meta: xml::MetaXml =
-                xml::read_from(BufReader::new(self.storage.open_read(&path)?), &path)?;
-            let version = match meta.title_version.text.trim() {
-                "" => 0,
-                value => value
-                    .parse::<u16>()
-                    .map_err(|_| Error::malformed(&path, "invalid title version"))?,
-            };
-            files.push((
-                format!("{root}/code/title.tik"),
-                super::ticket::WiiUTicket::synthesize(title_id, version, &record.bytes)?,
-            ));
-        }
+        let tickets = WiiUTickets {
+            storage: self.storage.clone(),
+        };
         let mut layers: Vec<Arc<dyn MountableStorage>> =
-            vec![Arc::new(crate::MemoryStorage::writable(files)?)];
+            vec![Arc::new(KeyStoreStorage::new(keys, tickets).await?)];
         if let Some(saves) = saves {
             layers.push(saves);
         }
