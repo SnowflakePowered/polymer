@@ -1,7 +1,7 @@
 mod install;
 mod metadata;
 
-use crate::installable::{InstallEvents, Reporting};
+use crate::installable::{IconHint, InstallEvents, InstallPreview, Reporting};
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -27,6 +27,8 @@ pub struct Ps3PkgDepot {
     kind: DepotType,
     version: Option<String>,
     digest: [u8; 20],
+    label: Option<String>,
+    icon: Option<Vec<u8>>,
 }
 
 impl Ps3PkgDepot {
@@ -83,20 +85,27 @@ impl Ps3PkgDepot {
         Ok(())
     }
 
-    fn read_sfo(archive: &mut PkgArchive<File>) -> Result<Psf, Error> {
+    fn read_item(archive: &mut PkgArchive<File>, name: &str) -> Result<Option<Vec<u8>>, Error> {
         let Some(index) = archive
             .items()
             .iter()
-            .position(|item| item.is_file && item.name == "PARAM.SFO")
+            .position(|item| item.is_file && item.name == name)
         else {
-            return Ok(Psf::default());
+            return Ok(None);
         };
         if archive.items()[index].file_size > 1024 * 1024 {
-            return Err(Error::malformed("PARAM.SFO", "metadata exceeds 1 MiB"));
+            return Err(Error::malformed(name, "metadata exceeds 1 MiB"));
         }
-        let bytes = archive
+        archive
             .read_item_to_vec(index)
-            .map_err(|error| Error::malformed("PARAM.SFO", error.to_string()))?;
+            .map(Some)
+            .map_err(|error| Error::malformed(name, error.to_string()))
+    }
+
+    fn read_sfo(archive: &mut PkgArchive<File>) -> Result<Psf, Error> {
+        let Some(bytes) = Self::read_item(archive, "PARAM.SFO")? else {
+            return Ok(Psf::default());
+        };
         let count = bytes
             .get(16..20)
             .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()));
@@ -181,6 +190,8 @@ impl Depot for Ps3PkgDepot {
                 "TITLE_ID differs from the PKG content ID",
             ));
         }
+        let label = crate::impls::sony::metadata::SonyMetadata::title(&sfo).map(str::to_owned);
+        let icon = Self::read_item(&mut archive, "ICON0.PNG").ok().flatten();
         let directory = metadata.directory.as_deref().unwrap_or(&title_id);
         Self::validate_path(directory)?;
         if directory.contains('/') {
@@ -194,6 +205,26 @@ impl Depot for Ps3PkgDepot {
             content_id,
             kind,
             digest,
+            label,
+            icon,
+        })
+    }
+
+    fn preview(&self) -> Option<InstallPreview> {
+        let icon = self
+            .icon
+            .as_deref()
+            .and_then(|bytes| image::load_from_memory(bytes).ok())
+            .and_then(|image| IconHint::image(image.into_rgba8()).ok())
+            .and_then(|icon| match icon {
+                IconHint::Embedded(icon) => Some(icon.data_url()),
+                _ => None,
+            });
+        Some(InstallPreview {
+            id: self.artifact_id(),
+            label: self.label.clone().unwrap_or_else(|| self.title_id.clone()),
+            depot_type: self.kind,
+            icon,
         })
     }
 
