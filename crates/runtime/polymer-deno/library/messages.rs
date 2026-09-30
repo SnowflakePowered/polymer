@@ -126,6 +126,7 @@ pub struct InstalledArtifact {
     pub storage: String,
     pub id: String,
     pub entrypoint: Option<String>,
+    pub package: Option<String>,
 }
 
 #[derive(Debug, actix::Message)]

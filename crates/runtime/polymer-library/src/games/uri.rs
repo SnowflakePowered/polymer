@@ -32,6 +32,7 @@ pub struct InstalledArtifact {
 struct ArtifactLocation {
     root: PathBuf,
     entrypoint: String,
+    package: PathBuf,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -83,6 +84,25 @@ impl LaunchableUri {
 
     pub fn host_path(&self) -> io::Result<PathBuf> {
         self.location().map(|(path, _)| path.to_owned())
+    }
+
+    /// The identifiable package: the file itself, or an artifact's installed package root.
+    pub fn package_path(&self) -> io::Result<PathBuf> {
+        match self {
+            Self::File(path) => Ok(path.clone()),
+            Self::Artifact(installed) => installed
+                .location()
+                .map(|location| location.package.clone())
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!(
+                            "{} is not installed with a package root",
+                            installed.artifact
+                        ),
+                    )
+                }),
+        }
     }
 
     pub fn binary_path(&self) -> io::Result<PathBuf> {
@@ -147,7 +167,11 @@ impl InstalledArtifact {
                             &self.artifact,
                         )
                     })
-                    .map(|(root, entrypoint)| ArtifactLocation { root, entrypoint })
+                    .map(|(checkout, entrypoint)| ArtifactLocation {
+                        root: checkout.join(entrypoint.root),
+                        entrypoint: entrypoint.path,
+                        package: checkout.join(entrypoint.package),
+                    })
                     .inspect_err(|error| {
                         tracing::warn!(%error, platform = self.platform, storage = %self.storage, artifact = self.artifact, "installed artifact has no launch location");
                     })

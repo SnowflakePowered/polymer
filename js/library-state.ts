@@ -108,7 +108,7 @@ export class LibraryState {
           const { storage, artifact } = await this.install(item);
           const { scrapeJob: job } = await this.library.launchables.add({
             path: item.path, platform: item.platform,
-            artifact: { storage, id: artifact.id, entrypoint: artifact.entrypoint },
+            artifact: { storage, id: artifact.id, entrypoint: artifact.entrypoint, package: artifact.package },
           });
           if (job && !this.jobs.has(job.id)) this.updateJob(job, true);
         }));

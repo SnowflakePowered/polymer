@@ -13,7 +13,8 @@ impl Package {
     /// or exposing a package to JS does not compute it.
     pub(super) fn ensure_binary_identity(&mut self) -> Result<[u8; 32], std::io::Error> {
         if self.binary_digest.is_empty() {
-            let digest = PackageBinary(&self.uri.binary_path()?).digest(DigestAlgorithm::Blake3)?;
+            let digest =
+                PackageBinary(&self.uri.package_path()?).digest(DigestAlgorithm::Blake3)?;
             if let Some(manifest) = &self.manifest {
                 crate::ingest::CuePreparation::validate_files(manifest)
                     .map_err(std::io::Error::other)?;
@@ -47,6 +48,7 @@ impl Package {
                     manifest: package.manifest,
                     path: package.uri,
                     entrypoint: seed.entrypoint,
+                    package: seed.package,
                     binary_blake3,
                     serial: package.serial,
                     title_id: package.title_id,

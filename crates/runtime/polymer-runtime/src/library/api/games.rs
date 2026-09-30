@@ -103,22 +103,33 @@ impl Handler<LaunchablesAdd> for LibraryBackend {
                             artifact.id,
                         ),
                         artifact.entrypoint,
+                        artifact.package,
                     ))
                 })
                 .transpose()?;
+            let source = std::path::PathBuf::from(path);
+            let identified = installed.as_ref().map(|(uri, ..)| uri.clone());
+            let identify = source.clone();
             let mut packages = tokio::task::spawn_blocking(move || {
-                polymer_scraping::Ingestor::identify(
-                    std::path::Path::new(&path),
-                    platform.as_deref(),
-                    parent,
-                )
+                let path = match identified {
+                    Some(uri) => uri.package_path()?,
+                    None => identify,
+                };
+                polymer_scraping::Ingestor::identify(&path, platform.as_deref(), parent)
+                    .map_err(|error| std::io::Error::other(error.to_string()))
             })
             .await
             .map_err(|error| format!("package detection task failed: {error}"))?
             .map_err(|error| error.to_string())?;
             let depot = match (installed, packages.as_mut_slice()) {
                 (None, _) => None,
-                (Some((uri, entrypoint)), [package]) => Some(package.install(uri, entrypoint)),
+                (Some((uri, entrypoint, package_root)), [package]) => {
+                    package.install(uri, entrypoint, package_root, &source);
+                    Some(
+                        polymer_library::LaunchableUri::file(&source)
+                            .map_err(|error| error.to_string())?,
+                    )
+                }
                 (Some(_), _) => {
                     return Err("an installed artifact must identify as one package".to_owned());
                 }

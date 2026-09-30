@@ -127,6 +127,12 @@ impl ArtifactRecord {
                 &format!("{root}/entrypoint"),
                 &entrypoint.path,
             )?;
+            write_text(
+                repo,
+                editor,
+                &format!("{root}/package"),
+                &entrypoint.package,
+            )?;
         }
         if let Some(path) = &self.icon_path {
             write_text(
@@ -252,9 +258,15 @@ pub(super) fn read_artifact_summary(
         entrypoint: artifact_value(repo, tree, "root")?
             .zip(artifact_value(repo, tree, "entrypoint")?)
             .map(|(root, path)| {
+                let (root, path) = (String::from_utf8(root)?, String::from_utf8(path)?);
+                let package = match artifact_value(repo, tree, "package") {
+                    Ok(Some(package)) => String::from_utf8(package)?,
+                    _ => format!("{root}/{path}"),
+                };
                 Ok::<_, std::string::FromUtf8Error>(ArtifactEntrypoint {
-                    root: String::from_utf8(root)?,
-                    path: String::from_utf8(path)?,
+                    root,
+                    path,
+                    package,
                 })
             })
             .transpose()

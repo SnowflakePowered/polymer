@@ -23,6 +23,7 @@ pub struct IdentifiedLaunchable {
     pub manifest: Option<super::PackageManifest>,
     pub path: super::LaunchableUri,
     pub entrypoint: Option<String>,
+    pub package: Option<String>,
     pub binary_blake3: [u8; 32],
     pub serial: Option<String>,
     pub title_id: Option<String>,

@@ -64,6 +64,7 @@ async fn successful_plugins_commit_repeated_values_and_publish_events() {
                 manifest: None,
                 path: LaunchableUri::file(directory.path().join("game.nes")).unwrap(),
                 entrypoint: None,
+                package: None,
                 binary_blake3: *blake3::hash(b"engine-fixture").as_bytes(),
                 serial: None,
                 title_id: None,

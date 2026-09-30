@@ -48,6 +48,7 @@ pub struct Package {
 #[derive(Clone, Debug)]
 struct PackageImport {
     entrypoint: Option<String>,
+    package: Option<String>,
     parent_binary_id: Option<uuid::Uuid>,
     gumshoe: Vec<MetadataInput>,
     filename: Vec<MetadataInput>,
@@ -92,11 +93,24 @@ impl Package {
         Ok(())
     }
 
-    pub fn install(&mut self, uri: LaunchableUri, entrypoint: Option<String>) -> LaunchableUri {
+    /// Point an identified package at its installed artifact, keeping filename
+    /// metadata from the source the artifact was installed from.
+    pub fn install(
+        &mut self,
+        uri: LaunchableUri,
+        entrypoint: Option<String>,
+        package: Option<String>,
+        source: &Path,
+    ) {
         if let Some(import) = &mut self.import {
             import.entrypoint = entrypoint;
+            import.package = package;
+            import.filename = Self::filename_metadata(source);
         }
-        std::mem::replace(&mut self.uri, uri)
+        if let Some(name) = source.file_name() {
+            self.filename = name.to_string_lossy().into_owned();
+        }
+        self.uri = uri;
     }
 
     pub fn launch_entry(&self) -> serde_json::Value {
@@ -184,6 +198,7 @@ impl Package {
             installable: package.installable(),
             import: Some(PackageImport {
                 entrypoint: None,
+                package: None,
                 parent_binary_id,
                 gumshoe,
                 filename,

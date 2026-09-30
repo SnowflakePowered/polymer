@@ -13,7 +13,7 @@ impl Package {
                 .iter()
                 .map(|file| file.path.clone())
                 .collect(),
-            None => self.uri.host_path().into_iter().collect(),
+            None => self.uri.package_path().into_iter().collect(),
         };
         let files: Vec<_> = paths
             .iter()

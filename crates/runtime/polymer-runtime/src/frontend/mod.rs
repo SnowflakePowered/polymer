@@ -643,12 +643,10 @@ impl PolymerHost for FrontendServices {
                 .parse()
                 .map_err(|error: polymer_library::GameCatalogError| error.to_string())?;
             tokio::task::spawn_blocking(move || {
-                let path = uri.binary_path()?;
-                let path = path.as_path();
                 if binary {
-                    PackageBinary(path).digest(algorithm)
+                    PackageBinary(&uri.package_path()?).digest(algorithm)
                 } else {
-                    path.digest(algorithm)
+                    uri.binary_path()?.as_path().digest(algorithm)
                 }
             })
             .await

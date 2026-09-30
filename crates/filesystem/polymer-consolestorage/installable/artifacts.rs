@@ -2,12 +2,14 @@ use crate::Error;
 use crate::installable::{DepotFile, DepotType, IconHint};
 use jiff::Timestamp;
 
-/// The file an emulator launches, relative to the artifact's install root.
+/// The file an emulator launches, relative to the artifact's install root, and
+/// the NAND path of the installed package that identifies the title.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ArtifactEntrypoint {
     pub root: String,
     #[serde(rename = "entrypoint")]
     pub path: String,
+    pub package: String,
 }
 
 #[derive(Clone)]
@@ -35,13 +37,24 @@ impl Artifact {
     ) -> Result<Self, Error> {
         if let Some(entrypoint) = &entrypoint {
             let installed = format!("{}/{}", entrypoint.root, entrypoint.path);
-            if !manifest
+            let package = format!("{}/", entrypoint.package);
+            let paths: Vec<_> = manifest
                 .iter()
-                .any(|file| file.path().to_string_lossy().replace('\\', "/") == installed)
-            {
+                .map(|file| file.path().to_string_lossy().replace('\\', "/"))
+                .collect();
+            if !paths.contains(&installed) {
                 return Err(Error::malformed(
                     "artifact",
                     format!("entrypoint `{installed}` is not an installed file"),
+                ));
+            }
+            if !paths
+                .iter()
+                .any(|path| *path == entrypoint.package || path.starts_with(&package))
+            {
+                return Err(Error::malformed(
+                    "artifact",
+                    format!("package `{}` is not installed", entrypoint.package),
                 ));
             }
         }
