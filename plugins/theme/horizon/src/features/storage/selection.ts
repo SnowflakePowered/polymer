@@ -16,7 +16,7 @@ export async function resolveNand(platform: string) {
   throw Object.assign(new Error("Choose an existing NAND, import one, or create a new NAND."), { code: "NAND_REQUIRED" });
 }
 
-export async function ensureNand(platform: string) {
+export async function ensureNand(platform: string, bootstrap = true) {
   try {
     return await resolveNand(platform);
   } catch (error) {
@@ -27,7 +27,7 @@ export async function ensureNand(platform: string) {
     pending = (async () => {
       const api = window.Polymer.consolestorage;
       const volume = await api.Storage.create("nand", platform, { label: `${window.Polymer.machine(platform)?.name ?? platform} NAND` });
-      if ((await api.platforms()).some(item => item.platform === platform)) await volume.bootstrap();
+      if (bootstrap && (await api.platforms()).some(item => item.platform === platform)) await volume.bootstrap();
       return volume;
     })().finally(() => setups.delete(platform));
     setups.set(platform, pending);

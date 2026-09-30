@@ -35,7 +35,7 @@ export class LibraryState {
     private scraping: ScrapingApi,
     private changed: (snapshot: LibrarySnapshot) => void,
     private failed: (error: unknown) => void,
-    private install: (installable: InstallablePackage) => Promise<{ storage: string; artifact: StorageArtifact }>,
+    private install: (installable: InstallablePackage, bootstrap: boolean) => Promise<{ storage: string; artifact: StorageArtifact }>,
   ) {}
 
   start() {
@@ -101,11 +101,23 @@ export class LibraryState {
         });
         return;
       }
+      if (result.kind === "system") {
+        this.imports.delete(token);
+        this.publish();
+        const { platform, version } = result;
+        await this.install({ path: result.path, filename: result.filename, platform, titleId: null }, false);
+        const revision = ++this.firmwareRevision;
+        this.firmwareActivities.set(`system:${platform}`, {
+          id: `system:${platform}:${revision}`, title: "System software installed",
+          message: `${version} (${platform})`, state: "complete",
+        });
+        return;
+      }
       if (result.kind === "installables") {
         this.imports.delete(token);
         this.publish();
         await Promise.all(result.installables.map(async item => {
-          const { storage, artifact } = await this.install(item);
+          const { storage, artifact } = await this.install(item, true);
           const { scrapeJob: job } = await this.library.launchables.add({
             path: item.path, platform: item.platform,
             artifact: { storage, id: artifact.id, entrypoint: artifact.entrypoint, package: artifact.package },

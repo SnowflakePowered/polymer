@@ -32,6 +32,6 @@ The library allocates `<storage>/firmware/firmware.db` and immutable blobs at `<
 
 ## Frontend import
 
-`Polymer.library.import({ path })` returns `{ kind: "games", imports }` with launchable/scrape-job records or `{ kind: "firmware", firmware }` with one installed BIOS. `launchables.add` remains game-only. Horizon reports firmware imports through its activity UI.
+`Polymer.library.import({ path })` returns `{ kind: "games", imports }` with launchable/scrape-job records, `{ kind: "firmware", firmware }` with one installed BIOS, or `{ kind: "system", platform, path, filename, version }` for a system software update such as `PS3UPDAT.PUP`, which Horizon installs into the platform NAND, creating one without bootstrapping when none exists. `launchables.add` remains game-only. Horizon reports firmware imports through its activity UI.
 
 Emulator BIOS-setting conversions and a firmware management screen are separate work.
