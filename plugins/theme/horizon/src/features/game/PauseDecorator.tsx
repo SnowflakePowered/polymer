@@ -4,48 +4,61 @@ import { useShell } from "../../app/shell-context";
 
 export type PauseRelease = () => Promise<void>;
 
+type PauseEntry = {
+  leases: number;
+  paused: boolean;
+  sync?: Promise<void>;
+};
+
 class PauseRegistry {
-  readonly #leases = new Map<LaunchInstance, number>();
+  readonly #entries = new Map<LaunchInstance, PauseEntry>();
 
   acquire(launch: LaunchInstance) {
-    const isRootLease = !this.#leases.has(launch);
-    const leases = this.#leases.get(launch) ?? 0;
-    this.#leases.set(launch, leases + 1);
-    if (isRootLease) {
+    let entry = this.#entries.get(launch);
+    if (!entry) {
+      entry = { leases: 0, paused: false };
+      this.#entries.set(launch, entry);
+    }
+    entry.leases += 1;
+    if (entry.leases === 1) {
       launch.deactivateInput();
-      void launch.setPauseState("pause").catch((error) => {
+      void this.#sync(launch, entry).catch((error) => {
         console.error("Failed to pause emulator", error);
       });
     }
     let release: Promise<void> | undefined;
     return () => {
-      release ??= this.#release(launch).catch((error) => {
-        release = undefined;
-        throw error;
-      });
+      release ??= this.#release(launch, entry);
       return release;
     };
   }
 
-  #release(launch: LaunchInstance): Promise<void> {
-    const remaining = Math.max(0, (this.#leases.get(launch) ?? 1) - 1);
-    this.#leases.set(launch, remaining);
+  #release(launch: LaunchInstance, entry: PauseEntry): Promise<void> {
+    entry.leases = Math.max(0, entry.leases - 1);
     // Route changes dispose one pause surface before mounting the next. Give
     // the replacement surface a turn to acquire its lease before resuming.
-    return new Promise((resolve, reject) => setTimeout(() => {
-      if (this.#leases.get(launch) !== 0) {
-        resolve();
-        return;
-      }
-      launch.setPauseState("resume").finally(() => {
-        // Closing the last overlay must restore input even if resume fails.
-        // A new overlay may have acquired a lease while the command was pending.
-        if (this.#leases.get(launch) === 0) {
-          this.#leases.delete(launch);
-          launch.activateInput();
+    return new Promise((resolve) => setTimeout(resolve, 0))
+      .then(() => this.#sync(launch, entry));
+  }
+
+  #sync(launch: LaunchInstance, entry: PauseEntry): Promise<void> {
+    entry.sync ??= (async () => {
+      try {
+        while (entry.paused !== entry.leases > 0) {
+          const pause = entry.leases > 0;
+          await launch.setPauseState(pause ? "pause" : "resume");
+          entry.paused = pause;
         }
-      }).then(resolve, reject);
-    }, 0));
+      } finally {
+        entry.sync = undefined;
+        // Closing the last overlay must restore input even if resume fails.
+        if (entry.leases === 0) {
+          launch.activateInput();
+          if (!entry.paused) this.#entries.delete(launch);
+        }
+      }
+    })();
+    return entry.sync;
   }
 }
 
