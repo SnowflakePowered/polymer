@@ -81,7 +81,6 @@ impl Handler<Install> for StorageActor {
         Install { platform, id, path }: Install,
         _: &mut Context<Self>,
     ) -> Self::Result {
-        let installs = self.installs.clone();
         self.execute(move |manager, _| async move {
             let id = Self::parse(&id)?;
             let filename = path
@@ -104,7 +103,6 @@ impl Handler<Install> for StorageActor {
             let publish = std::sync::Arc::new(publish);
             publish("queued", Value::Null);
             let result = async {
-                let _queue = installs.lock().await;
                 let _lease = ExclusiveResourceKey::Resource(id)
                     .acquire()
                     .map_err(StorageError::from_display)?;

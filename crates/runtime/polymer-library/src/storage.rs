@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, OnceLock},
+};
 
 use futures_util::StreamExt;
 use polymer_consolestorage::{
@@ -60,11 +63,26 @@ impl InstallStatus {
 
 pub struct StorageManager {
     root: PathBuf,
+    installs: tokio::sync::Mutex<()>,
 }
 
 impl StorageManager {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            installs: Default::default(),
+        }
+    }
+
+    pub fn shared() -> Result<Arc<Self>, Error> {
+        static SHARED: OnceLock<Arc<StorageManager>> = OnceLock::new();
+        if let Some(manager) = SHARED.get() {
+            return Ok(manager.clone());
+        }
+        let directories = crate::Directories::discover()?;
+        Ok(SHARED
+            .get_or_init(|| Arc::new(Self::new(directories.consolestorage())))
+            .clone())
     }
 
     pub fn root(&self) -> &Path {
@@ -170,6 +188,7 @@ impl StorageManager {
         path: &Path,
         report: impl Fn(&InstallStatus) + Send + Sync + 'static,
     ) -> Result<ArtifactSummary, String> {
+        let _queue = self.installs.lock().await;
         let nand = self
             .open(StorageKind::Nand, platform, id)
             .await

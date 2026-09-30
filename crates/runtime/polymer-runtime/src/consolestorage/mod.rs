@@ -5,7 +5,7 @@ mod volumes;
 
 use actix::{Actor, Addr, Context, ResponseActFuture, System, WrapFuture};
 use polymer_deno::polymer::consolestorage::StorageError;
-use polymer_library::{Directories, StorageManager};
+use polymer_library::StorageManager;
 use polymer_pluginhost::runtime::PluginRuntimeHandle;
 use std::{future::Future, sync::Arc};
 
@@ -17,7 +17,6 @@ pub struct StorageService {
 struct StorageActor {
     manager: Option<Arc<StorageManager>>,
     plugins: PluginRuntimeHandle,
-    installs: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Actor for StorageActor {
@@ -64,12 +63,7 @@ impl StorageService {
             .spawn(move || {
                 let system = System::new();
                 let actor = system.block_on(async move {
-                    StorageActor {
-                        manager,
-                        plugins,
-                        installs: Default::default(),
-                    }
-                    .start()
+                    StorageActor { manager, plugins }.start()
                 });
                 if ready.send(actor).is_ok()
                     && let Err(error) = system.run()
@@ -80,10 +74,4 @@ impl StorageService {
         let actor = startup.recv().map_err(std::io::Error::other)?;
         Ok(Self { actor })
     }
-}
-
-pub fn manager() -> Option<Arc<StorageManager>> {
-    Directories::discover()
-        .ok()
-        .map(|directories| Arc::new(StorageManager::new(directories.consolestorage())))
 }

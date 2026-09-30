@@ -12,7 +12,7 @@ use url::Url;
 use uuid::Uuid;
 
 use super::GameCatalogError;
-use crate::{Directories, StorageManager};
+use crate::StorageManager;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum LaunchableUri {
@@ -159,13 +159,9 @@ impl InstalledArtifact {
     fn location(&self) -> Option<&ArtifactLocation> {
         self.location
             .get_or_init(|| {
-                Directories::discover()
-                    .and_then(|directories| {
-                        StorageManager::new(directories.consolestorage()).artifact_entrypoint(
-                            &self.platform,
-                            self.storage,
-                            &self.artifact,
-                        )
+                StorageManager::shared()
+                    .and_then(|manager| {
+                        manager.artifact_entrypoint(&self.platform, self.storage, &self.artifact)
                     })
                     .map(|(checkout, entrypoint)| ArtifactLocation {
                         root: checkout.join(entrypoint.root),
