@@ -1,54 +1,6 @@
 use super::*;
 
-impl GitArtifactRegistry {
-    pub(super) fn storage(&self) -> GitVolumeStorage {
-        GitVolumeStorage {
-            inner: self.0.clone(),
-            artifacts: self.clone(),
-        }
-    }
-
-    pub(super) fn records(&self) -> Result<Vec<ArtifactRecord>, Error> {
-        self.read_artifacts(read_artifact)
-    }
-
-    pub(super) fn read_artifacts<T>(
-        &self,
-        read: impl Fn(&gix::Repository, &gix::Tree<'_>) -> Result<T, Error>,
-    ) -> Result<Vec<T>, Error> {
-        let repo = self.0.platform.repository().to_thread_local();
-        let tip = GitVolumeStorage::tip_in(&repo, &self.storage().ref_name())?;
-        Self::artifacts_in(&repo, &GitVolumeStorage::root_tree(&repo, tip)?, read)
-    }
-
-    fn artifacts_in<T>(
-        repo: &gix::Repository,
-        tree: &gix::Tree<'_>,
-        read: impl Fn(&gix::Repository, &gix::Tree<'_>) -> Result<T, Error>,
-    ) -> Result<Vec<T>, Error> {
-        let Some(artifacts) = tree
-            .lookup_entry_by_path("meta/artifacts")
-            .map_err(|error| Error::git("lookup artifacts", error))?
-        else {
-            return Ok(Vec::new());
-        };
-        let artifacts = repo
-            .find_tree(artifacts.oid())
-            .map_err(|error| Error::git("read artifacts", error))?;
-        let mut records = Vec::new();
-        for entry in artifacts.iter() {
-            let entry = entry.map_err(|error| Error::git("decode artifact entry", error))?;
-            if entry.kind() != gix::objs::tree::EntryKind::Tree {
-                continue;
-            }
-            let tree = repo
-                .find_tree(entry.oid())
-                .map_err(|error| Error::git("read artifact tree", error))?;
-            records.push(read(repo, &tree)?);
-        }
-        Ok(records)
-    }
-
+impl ArtifactRepository<'_> {
     fn artifact_from_message(message: &[u8]) -> Option<String> {
         message
             .as_bstr()
@@ -60,14 +12,15 @@ impl GitArtifactRegistry {
             .map(str::to_owned)
     }
 
-    pub(super) fn linear_history(
-        repo: &gix::Repository,
+    pub(in crate::storage::git) fn linear_history(
+        &self,
         tip: gix::ObjectId,
     ) -> Result<Vec<NandCommit>, Error> {
         let mut current = Some(tip);
         let mut history = Vec::new();
         while let Some(id) = current {
-            let object = repo
+            let object = self
+                .repo
                 .find_commit(id)
                 .map_err(|error| Error::git("read NAND commit", error))?;
             let decoded = object
@@ -91,11 +44,9 @@ impl GitArtifactRegistry {
         Ok(history)
     }
 
-    fn tree_snapshot(
-        repo: &gix::Repository,
-        tree: gix::ObjectId,
-    ) -> Result<BTreeMap<String, TreeLeaf>, Error> {
-        let tree = repo
+    fn tree_snapshot(&self, tree: gix::ObjectId) -> Result<BTreeMap<String, TreeLeaf>, Error> {
+        let tree = self
+            .repo
             .find_tree(tree)
             .map_err(|error| Error::git("read NAND tree", error))?;
         let entries = tree
@@ -133,33 +84,31 @@ impl GitArtifactRegistry {
         BTreeMap::new()
     }
 
-    fn parent_snapshot(
-        repo: &gix::Repository,
-        commit: &NandCommit,
-    ) -> Result<BTreeMap<String, TreeLeaf>, Error> {
+    fn parent_snapshot(&self, commit: &NandCommit) -> Result<BTreeMap<String, TreeLeaf>, Error> {
         match commit.commit.parents.first() {
-            Some(parent) => repo
+            Some(parent) => self
+                .repo
                 .find_commit(*parent)
                 .map_err(|error| Error::git("read NAND parent", error))?
                 .tree_id()
                 .map_err(|error| Error::git("read NAND parent tree", error))
-                .and_then(|tree| Self::tree_snapshot(repo, tree.detach())),
+                .and_then(|tree| self.tree_snapshot(tree.detach())),
             None => Ok(Self::empty_snapshot()),
         }
     }
 
     fn apply_delta(
-        repo: &gix::Repository,
+        &self,
         commit: &NandCommit,
         current: &mut BTreeMap<String, TreeLeaf>,
         removed: &BTreeSet<String>,
     ) -> Result<Vec<String>, Error> {
         let removed_metadata = removed
             .iter()
-            .map(|id| format!("meta/artifacts/{}/", artifact_key(id)))
+            .map(|id| format!("meta/artifacts/{}/", TreeKey::new(id)))
             .collect::<Vec<_>>();
-        let before = Self::parent_snapshot(repo, commit)?;
-        let after = Self::tree_snapshot(repo, commit.commit.tree)?;
+        let before = self.parent_snapshot(commit)?;
+        let after = self.tree_snapshot(commit.commit.tree)?;
         let paths = before
             .keys()
             .chain(after.keys())
@@ -198,10 +147,11 @@ impl GitArtifactRegistry {
     }
 
     fn write_snapshot(
-        repo: &gix::Repository,
+        &self,
         snapshot: &BTreeMap<String, TreeLeaf>,
     ) -> Result<gix::ObjectId, Error> {
-        let mut editor = repo
+        let mut editor = self
+            .repo
             .empty_tree()
             .edit()
             .map_err(|error| Error::git("edit rewritten NAND tree", error))?;
@@ -244,7 +194,7 @@ impl GitArtifactRegistry {
     }
 
     /// Volume paths of every file still listed by a title that is not being removed.
-    pub(super) fn retained_files(
+    pub(in crate::storage::git) fn retained_files(
         records: &[ArtifactRecord],
         removed: &BTreeSet<String>,
     ) -> BTreeSet<String> {
@@ -258,13 +208,13 @@ impl GitArtifactRegistry {
 
     /// Keep a dropped install commit's changes to files that remaining titles still list.
     fn retain_delta(
-        repo: &gix::Repository,
+        &self,
         commit: &NandCommit,
         current: &mut BTreeMap<String, TreeLeaf>,
         retained: &BTreeSet<String>,
     ) -> Result<(), Error> {
-        let before = Self::parent_snapshot(repo, commit)?;
-        let after = Self::tree_snapshot(repo, commit.commit.tree)?;
+        let before = self.parent_snapshot(commit)?;
+        let after = self.tree_snapshot(commit.commit.tree)?;
         for path in retained {
             match (before.get(path), after.get(path)) {
                 (before, after) if before == after => {}
@@ -279,8 +229,8 @@ impl GitArtifactRegistry {
         Ok(())
     }
 
-    pub(super) fn affected_depots(
-        repo: &gix::Repository,
+    pub(in crate::storage::git) fn affected_depots(
+        &self,
         history: &[NandCommit],
         records: &[ArtifactRecord],
         requested: &BTreeSet<String>,
@@ -323,17 +273,17 @@ impl GitArtifactRegistry {
                     )));
                 }
             }
-            let mut current = Self::parent_snapshot(repo, &history[first])?;
+            let mut current = self.parent_snapshot(&history[first])?;
             for commit in &history[first..] {
                 if commit
                     .artifact
                     .as_ref()
                     .is_some_and(|id| selected.contains(id))
                 {
-                    Self::retain_delta(repo, commit, &mut current, &retained)?;
+                    self.retain_delta(commit, &mut current, &retained)?;
                     continue;
                 }
-                let conflicts = Self::apply_delta(repo, commit, &mut current, &selected)?;
+                let conflicts = self.apply_delta(commit, &mut current, &selected)?;
                 if conflicts.is_empty() {
                     continue;
                 }
@@ -356,14 +306,13 @@ impl GitArtifactRegistry {
         }
     }
 
-    pub(super) fn rewrite_without(
+    pub(in crate::storage::git) fn rewrite_without(
         &self,
-        repo: &gix::Repository,
         history: &[NandCommit],
         removed: &BTreeSet<String>,
         retained: &BTreeSet<String>,
         old_tip: gix::ObjectId,
-    ) -> Result<(), Error> {
+    ) -> Result<gix::ObjectId, Error> {
         let first = history
             .iter()
             .position(|commit| {
@@ -375,7 +324,7 @@ impl GitArtifactRegistry {
             .ok_or_else(|| {
                 Error::HistoryConflict("no installation commits were selected".to_owned())
             })?;
-        let mut current = Self::parent_snapshot(repo, &history[first])?;
+        let mut current = self.parent_snapshot(&history[first])?;
         let mut parent = history[first].commit.parents.first().copied();
         for original in &history[first..] {
             if original
@@ -383,10 +332,10 @@ impl GitArtifactRegistry {
                 .as_ref()
                 .is_some_and(|id| removed.contains(id))
             {
-                Self::retain_delta(repo, original, &mut current, retained)?;
+                self.retain_delta(original, &mut current, retained)?;
                 continue;
             }
-            let conflicts = Self::apply_delta(repo, original, &mut current, removed)?;
+            let conflicts = self.apply_delta(original, &mut current, removed)?;
             if !conflicts.is_empty() {
                 return Err(Error::HistoryConflict(format!(
                     "rewriting commit {} conflicts at {}",
@@ -395,13 +344,14 @@ impl GitArtifactRegistry {
                 )));
             }
             let mut rewritten = original.commit.clone();
-            rewritten.tree = Self::write_snapshot(repo, &current)?;
+            rewritten.tree = self.write_snapshot(&current)?;
             rewritten.parents.clear();
             if let Some(parent) = parent {
                 rewritten.parents.push(parent);
             }
             parent = Some(
-                repo.write_object(rewritten)
+                self.repo
+                    .write_object(rewritten)
                     .map_err(|error| Error::git("write rebased NAND commit", error))?
                     .detach(),
             );
@@ -409,8 +359,12 @@ impl GitArtifactRegistry {
         let new_tip = parent.ok_or_else(|| {
             Error::HistoryConflict("uninstall cannot remove the entire NAND history".to_owned())
         })?;
-        let rewritten = GitVolumeStorage::root_tree(repo, Some(new_tip))?;
-        let remaining = Self::artifacts_in(repo, &rewritten, read_artifact_summary)?;
+        let rewritten = GitVolumeStorage::root_tree(self.repo, Some(new_tip))?;
+        let remaining = self
+            .trees(&rewritten)?
+            .iter()
+            .map(|(_, tree)| tree.summary())
+            .collect::<Result<Vec<_>, _>>()?;
         if let Some(artifact) = remaining
             .iter()
             .find(|artifact| removed.contains(&artifact.id))
@@ -420,47 +374,46 @@ impl GitArtifactRegistry {
                 artifact.id
             )));
         }
-        let reference = self.storage().ref_name();
-        let name = gix::refs::FullName::try_from(reference.as_str())
+        let name = gix::refs::FullName::try_from(self.reference)
             .map_err(|error| Error::git("validate NAND reference", error))?;
-        let signature = signature();
+        let signature = PlatformRepository::signature();
         let mut time = gix::date::parse::TimeBuf::default();
         let signature = signature.to_ref(&mut time);
-        repo.edit_references_as(
-            [RefEdit {
-                change: Change::Update {
-                    log: LogChange {
-                        mode: RefLog::AndReference,
-                        force_create_reflog: true,
-                        message: format!(
-                            "Polymer uninstall {}",
-                            removed.iter().cloned().collect::<Vec<_>>().join(" ")
-                        )
-                        .into(),
+        self.repo
+            .edit_references_as(
+                [RefEdit {
+                    change: Change::Update {
+                        log: LogChange {
+                            mode: RefLog::AndReference,
+                            force_create_reflog: true,
+                            message: format!(
+                                "Polymer uninstall {}",
+                                removed.iter().cloned().collect::<Vec<_>>().join(" ")
+                            )
+                            .into(),
+                        },
+                        expected: PreviousValue::MustExistAndMatch(Target::Object(old_tip)),
+                        new: Target::Object(new_tip),
                     },
-                    expected: PreviousValue::MustExistAndMatch(Target::Object(old_tip)),
-                    new: Target::Object(new_tip),
-                },
-                name: name.clone(),
-                deref: false,
-            }],
-            Some(signature),
-        )
-        .map_err(|error| Error::git("publish rewritten NAND history", error))?;
-        repo.edit_references_as(
-            [RefEdit {
-                change: Change::Delete {
-                    expected: PreviousValue::MustExistAndMatch(Target::Object(new_tip)),
-                    log: RefLog::Only,
-                },
-                name,
-                deref: false,
-            }],
-            Some(signature),
-        )
-        .map_err(|error| Error::git("clear rewritten NAND reflog", error))?;
-        self.storage()
-            .refresh_checkout_locked(repo, Some(new_tip))?;
-        Ok(())
+                    name: name.clone(),
+                    deref: false,
+                }],
+                Some(signature),
+            )
+            .map_err(|error| Error::git("publish rewritten NAND history", error))?;
+        self.repo
+            .edit_references_as(
+                [RefEdit {
+                    change: Change::Delete {
+                        expected: PreviousValue::MustExistAndMatch(Target::Object(new_tip)),
+                        log: RefLog::Only,
+                    },
+                    name,
+                    deref: false,
+                }],
+                Some(signature),
+            )
+            .map_err(|error| Error::git("clear rewritten NAND reflog", error))?;
+        Ok(new_tip)
     }
 }

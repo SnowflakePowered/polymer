@@ -14,6 +14,7 @@ use jiff::Timestamp;
 use parking_lot::{Mutex, RwLock};
 use tokio::io::AsyncRead;
 use tokio::sync::Notify;
+use typed_path::Utf8UnixPath;
 use uuid::Uuid;
 
 use crate::installable::artifacts::{Artifact, ArtifactEntrypoint};
@@ -27,7 +28,6 @@ use crate::{
 mod artifact;
 mod checkout;
 mod commit;
-mod history;
 mod registry;
 mod repository;
 mod traits;
@@ -78,57 +78,23 @@ impl StorageKind {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct TreeKey(blake3::Hash);
+
+impl TreeKey {
+    fn new(value: &str) -> Self {
+        Self(blake3::hash(value.as_bytes()))
+    }
+}
+
+impl fmt::Display for TreeKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
 impl ChangeSignal for Arc<Notify> {
     fn changed(&self) -> BoxFuture<'_, ()> {
         Box::pin(self.notified())
     }
-}
-
-fn write_text(
-    repo: &gix::Repository,
-    editor: &mut gix::object::tree::Editor<'_>,
-    path: &str,
-    value: &str,
-) -> Result<(), Error> {
-    let blob = repo
-        .write_blob(value.as_bytes())
-        .map_err(|error| Error::git("write metadata value", error))?
-        .detach();
-    editor
-        .upsert(path, gix::objs::tree::EntryKind::Blob, blob)
-        .map(|_| ())
-        .map_err(|error| Error::git("update metadata value", error))
-}
-
-fn signature() -> gix::actor::Signature {
-    let seconds = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let time = format!("{seconds} +0000");
-    gix::actor::SignatureRef {
-        name: BStr::new(b"Polymer"),
-        email: BStr::new(b"storage@polymer.invalid"),
-        time: &time,
-    }
-    .to_owned()
-    .expect("Polymer generates a valid Git signature")
-}
-
-fn join(parent: &str, child: &str) -> String {
-    if parent.is_empty() {
-        child.to_owned()
-    } else if child.is_empty() {
-        parent.to_owned()
-    } else {
-        format!("{parent}/{child}")
-    }
-}
-
-fn directory_key(path: &str) -> String {
-    blake3::hash(path.as_bytes()).to_hex().to_string()
-}
-
-fn artifact_key(id: &str) -> String {
-    blake3::hash(id.as_bytes()).to_hex().to_string()
 }
