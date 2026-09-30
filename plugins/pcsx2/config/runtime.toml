@@ -39,6 +39,13 @@ type = "bool"
 default = false
 emit = { key = "HideMainWindowWhenRunning", bool_style = "lower" }
 
+[[sections.ui.options]]
+key = "double_click_toggles_fullscreen"
+title = "Double Click Toggles Fullscreen"
+type = "bool"
+default = false
+emit = { key = "DoubleClickTogglesFullscreen", bool_style = "lower" }
+
 [sections.folders]
 title = "Folders"
 target = "ini.Folders"

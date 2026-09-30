@@ -1,5 +1,6 @@
 import runtime from "pkg:bin/win-x64";
-import type { EmulatorLaunchArgs, Storage } from "polymer:api";
+import type { EmulatorLaunchArgs, PauseResumeContext, Storage } from "polymer:api";
+import { HotkeyParser } from "pkg:hotkeys.ts";
 
 export const onLaunch = (args: EmulatorLaunchArgs<
     { storage: { nand_directory: string, sdmc_directory: string } },
@@ -35,4 +36,10 @@ export const onLaunch = (args: EmulatorLaunchArgs<
     };
 };
 
-export default { onLaunch };
+export const onParseHotkey = (expression: string) => HotkeyParser.parse(expression);
+
+export const onPauseResume = (context: PauseResumeContext) => {
+    context.actions.pause?.activate();
+};
+
+export default { onLaunch, onParseHotkey, onPauseResume };
