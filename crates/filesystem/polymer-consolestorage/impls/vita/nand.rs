@@ -102,7 +102,7 @@ impl VirtualNand for VitaNand {
     async fn compose(
         &self,
         saves: Option<Arc<dyn SaveRepo>>,
-        _keys: &dyn crate::keys::KeyReader,
+        _keys: Arc<dyn crate::keys::KeyReader>,
     ) -> Result<Arc<dyn MountableStorage>, Error> {
         <dyn SaveRepo>::require::<VitaSaveRepo>(saves.as_ref(), "Vita")?;
         let mut layers: Vec<Arc<dyn MountableStorage>> = Vec::new();

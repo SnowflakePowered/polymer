@@ -56,7 +56,7 @@ impl VirtualNand for PspMemoryStick {
     async fn compose(
         &self,
         saves: Option<Arc<dyn SaveRepo>>,
-        _keys: &dyn crate::keys::KeyReader,
+        _keys: Arc<dyn crate::keys::KeyReader>,
     ) -> Result<Arc<dyn MountableStorage>, Error> {
         <dyn SaveRepo>::require::<PspSaveRepo>(saves.as_ref(), "PSP")?;
         let mut layers: Vec<Arc<dyn MountableStorage>> = Vec::new();

@@ -25,7 +25,7 @@ async fn emulator_writes_reach_saves_but_never_the_nand() {
     else {
         panic!("expected save repository")
     };
-    let composed = nand.compose(Some(saves.clone()), &keys).await.unwrap();
+    let composed = nand.compose(Some(saves.clone()), std::sync::Arc::new(keys.clone())).await.unwrap();
 
     let title = format!("{SD}/title/00040000/00033500");
     for directory in [

@@ -5,11 +5,12 @@ use uuid::Uuid;
 
 use super::is_user_data_path;
 use super::save_repo::WiiSaveRepo;
+use crate::keys::{KeyDescription, KeyRecord};
 use crate::nand::{NandCompletion, VirtualNand};
 use crate::storage::VolumeStorage;
 use crate::{
-    ComposedStorage, Error, MountableStorage, Permissions, PermissionsTable, SaveRepo, Storage,
-    VersionedStorage, ensure_structure, requires_structure,
+    ComposedStorage, Error, KeyProjection, KeyStoreStorage, MountableStorage, Permissions,
+    PermissionsTable, SaveRepo, Storage, VersionedStorage, ensure_structure, requires_structure,
 };
 
 use super::index;
@@ -26,6 +27,32 @@ const LAYOUT: PermissionsTable = PermissionsTable::new(&[
         Permissions::READ_WRITE_EXECUTE,
     ),
 ]);
+
+struct WiiTickets;
+
+impl KeyProjection for WiiTickets {
+    fn path(&self, key: &KeyDescription) -> Option<String> {
+        let title_id = u64::from_str_radix(&key.identity.id, 16).ok()?;
+        Some(format!(
+            "ticket/{:08x}/{:08x}.tik",
+            title_id >> 32,
+            title_id as u32
+        ))
+    }
+
+    fn len(&self, key: &KeyDescription) -> u64 {
+        u64::from_str_radix(&key.identity.id, 16)
+            .ok()
+            .and_then(|title_id| super::ticket::Ticket::synthesize(title_id, &[0; 16]).ok())
+            .map_or(0, |ticket| ticket.len() as u64)
+    }
+
+    fn render(&self, key: &KeyRecord) -> Result<Vec<u8>, Error> {
+        let title_id = u64::from_str_radix(&key.identity.id, 16)
+            .map_err(|_| Error::malformed(&key.identity.id, "not a Wii title ID"))?;
+        super::ticket::Ticket::synthesize(title_id, &key.bytes)
+    }
+}
 
 pub struct WiiNand {
     storage: Arc<dyn VolumeStorage>,
@@ -89,33 +116,11 @@ impl VirtualNand for WiiNand {
     async fn compose(
         &self,
         saves: Option<Arc<dyn SaveRepo>>,
-        keys: &dyn crate::keys::KeyReader,
+        keys: Arc<dyn crate::keys::KeyReader>,
     ) -> Result<Arc<dyn MountableStorage>, Error> {
         <dyn SaveRepo>::require::<WiiSaveRepo>(saves.as_ref(), "Wii")?;
-        let mut files = Vec::new();
-        for description in keys
-            .list(&crate::keys::KeyQuery {
-                namespace: Some("content".into()),
-                title_id: None,
-            })
-            .await
-            .map_err(|e| Error::Unsupported(e.to_string()))?
-        {
-            let Ok(title_id) = u64::from_str_radix(&description.identity.id, 16) else {
-                continue;
-            };
-            let record = keys
-                .read(&description.identity)
-                .await
-                .map_err(|e| Error::Unsupported(e.to_string()))?;
-            let ticket = super::ticket::Ticket::synthesize(title_id, &record.bytes)?;
-            files.push((
-                format!("ticket/{:08x}/{:08x}.tik", title_id >> 32, title_id as u32),
-                ticket,
-            ));
-        }
         let mut layers: Vec<Arc<dyn MountableStorage>> =
-            vec![Arc::new(crate::MemoryStorage::writable(files)?)];
+            vec![Arc::new(KeyStoreStorage::new(keys, WiiTickets).await?)];
         if let Some(saves) = saves {
             for entry in self.storage.read_dir("title", true)? {
                 if let Some(id) = entry

@@ -62,7 +62,7 @@ pub trait VirtualNand: Send + Sync {
     async fn compose(
         &self,
         saves: Option<Arc<dyn SaveRepo>>,
-        keys: &dyn KeyReader,
+        keys: Arc<dyn KeyReader>,
     ) -> Result<Arc<dyn MountableStorage>, Error>;
 
     /// The consolespec platform ID this NAND was created for.

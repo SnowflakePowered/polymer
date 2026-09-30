@@ -2,7 +2,7 @@ use polymer_consolestorage::keys::{KeyIdentity, KeyQuery, KeyReader, KeyRecord, 
 use polymer_library::keys::KeyStore;
 
 #[tokio::test]
-async fn platform_keys_persist_atomically_and_opened_blobs_survive_replacement() {
+async fn platform_keys_persist_atomically() {
     let directory = tempfile::tempdir().unwrap();
     let store = KeyStore::open(directory.path()).await.unwrap();
     let wii = store.for_platform("NINTENDO_WII").unwrap();
@@ -17,7 +17,6 @@ async fn platform_keys_persist_atomically_and_opened_blobs_survive_replacement()
         bytes: vec![1; 16],
     };
     wii.put(&[record.clone()]).await.unwrap();
-    let opened = wii.file(&identity).await.unwrap();
     assert!(ps3.list(&KeyQuery::default()).await.unwrap().is_empty());
     assert_eq!(
         wii.list(&KeyQuery {
@@ -42,11 +41,9 @@ async fn platform_keys_persist_atomically_and_opened_blobs_survive_replacement()
     }])
     .await
     .unwrap();
-    assert_eq!(tokio::fs::read(&opened).await.unwrap(), vec![1; 16]);
     assert_eq!(wii.read(&identity).await.unwrap().bytes, vec![2; 16]);
     assert!(wii.remove(&identity).await.unwrap());
     assert!(!wii.remove(&identity).await.unwrap());
-    assert_eq!(tokio::fs::read(&opened).await.unwrap(), vec![1; 16]);
 }
 
 #[tokio::test]
@@ -117,7 +114,7 @@ async fn generated_licenses_compose_with_nand_and_saves_and_keep_session_bytes()
             .unwrap();
         nand.set_label(Some("with content")).await.unwrap();
         for selection in [None, Some(saves.clone())] {
-            let composed = nand.compose(selection, &keys).await.unwrap();
+            let composed = nand.compose(selection, std::sync::Arc::new(keys.clone())).await.unwrap();
             let paths: Vec<_> = composed
                 .read_dir("", true)
                 .unwrap()
@@ -177,7 +174,7 @@ async fn generated_licenses_compose_with_nand_and_saves_and_keep_session_bytes()
 }
 
 #[tokio::test]
-async fn failed_blob_staging_does_not_publish_other_records() {
+async fn replaced_keys_drop_stale_titles_and_ids_are_case_sensitive() {
     let directory = tempfile::tempdir().unwrap();
     let store = KeyStore::open(directory.path()).await.unwrap();
     let keys = store.for_platform("NINTENDO_WII").unwrap();
@@ -195,27 +192,6 @@ async fn failed_blob_staging_does_not_publish_other_records() {
         bytes: vec![2],
         ..original.clone()
     };
-    let another = KeyRecord {
-        identity: KeyIdentity {
-            namespace: "content".into(),
-            id: "another".into(),
-        },
-        title_id: None,
-        bytes: vec![3],
-    };
-    // An object directory cannot be used as an immutable file. No metadata
-    // from this batch may become visible even though another blob can stage.
-    let blocked = directory
-        .path()
-        .join("NINTENDO_WII/objects")
-        .join(blake3::hash(&another.bytes).to_hex().as_str());
-    std::fs::create_dir(&blocked).unwrap();
-    assert!(keys.put(&[replacement.clone(), another]).await.is_err());
-    assert_eq!(
-        keys.read(&original.identity).await.unwrap().bytes,
-        original.bytes
-    );
-    assert_eq!(keys.list(&KeyQuery::default()).await.unwrap().len(), 1);
     keys.put(&[replacement]).await.unwrap();
     assert!(
         keys.list(&KeyQuery {

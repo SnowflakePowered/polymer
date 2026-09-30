@@ -7,13 +7,38 @@ use super::{
     CtrSaveRepo,
     layout::{Archive, Layout},
 };
+use crate::keys::{KeyDescription, KeyRecord};
 use crate::nand::{NandCompletion, VirtualNand};
 use crate::{
-    ComposedStorage, Error, MountableStorage, Permissions, SaveRepo, VersionedStorage,
-    VolumeStorage,
+    ComposedStorage, Error, KeyProjection, KeyStoreStorage, MountableStorage, Permissions,
+    SaveRepo, VersionedStorage, VolumeStorage,
 };
 
 /// A single mount with `nand/` and `sdmc/` subdirectories.
+struct CtrTickets;
+
+impl KeyProjection for CtrTickets {
+    fn path(&self, key: &KeyDescription) -> Option<String> {
+        let title_id = u64::from_str_radix(&key.identity.id, 16).ok()?;
+        Some(format!(
+            "nand/dbs/ticket.db/{title_id:016X}.{title_id:016X}.tik"
+        ))
+    }
+
+    fn len(&self, key: &KeyDescription) -> u64 {
+        u64::from_str_radix(&key.identity.id, 16)
+            .ok()
+            .and_then(|title_id| super::ticket::CtrTicket::synthesize(title_id, &[0; 16]).ok())
+            .map_or(0, |ticket| ticket.len() as u64)
+    }
+
+    fn render(&self, key: &KeyRecord) -> Result<Vec<u8>, Error> {
+        let title_id = u64::from_str_radix(&key.identity.id, 16)
+            .map_err(|_| Error::malformed(&key.identity.id, "not a 3DS title ID"))?;
+        super::ticket::CtrTicket::synthesize(title_id, &key.bytes)
+    }
+}
+
 pub struct CtrNand {
     storage: Arc<dyn VolumeStorage>,
     platform: String,
@@ -99,32 +124,11 @@ impl VirtualNand for CtrNand {
     async fn compose(
         &self,
         saves: Option<Arc<dyn SaveRepo>>,
-        keys: &dyn crate::keys::KeyReader,
+        keys: Arc<dyn crate::keys::KeyReader>,
     ) -> Result<Arc<dyn MountableStorage>, Error> {
         <dyn SaveRepo>::require::<CtrSaveRepo>(saves.as_ref(), "3DS")?;
-        let mut files = Vec::new();
-        for description in keys
-            .list(&crate::keys::KeyQuery {
-                namespace: Some("content".into()),
-                title_id: None,
-            })
-            .await
-            .map_err(|e| Error::Unsupported(e.to_string()))?
-        {
-            let Ok(title_id) = u64::from_str_radix(&description.identity.id, 16) else {
-                continue;
-            };
-            let record = keys
-                .read(&description.identity)
-                .await
-                .map_err(|e| Error::Unsupported(e.to_string()))?;
-            files.push((
-                format!("nand/dbs/ticket.db/{title_id:016X}.{title_id:016X}.tik"),
-                super::ticket::CtrTicket::synthesize(title_id, &record.bytes)?,
-            ));
-        }
         let mut layers: Vec<Arc<dyn MountableStorage>> =
-            vec![Arc::new(crate::MemoryStorage::writable(files)?)];
+            vec![Arc::new(KeyStoreStorage::new(keys, CtrTickets).await?)];
         if let Some(saves) = saves {
             layers.push(saves);
         }

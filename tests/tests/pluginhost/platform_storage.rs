@@ -309,7 +309,7 @@ async fn platform_install_persists_keys_before_validation_and_installs_content()
         .await
         .unwrap();
     assert_eq!(installed.id, "0005000c12345678");
-    let composed = nand.compose(None, &keys).await.unwrap();
+    let composed = nand.compose(None, std::sync::Arc::new(keys.clone())).await.unwrap();
     let root = "usr/title/0005000c/12345678";
     let mut bytes = Vec::new();
     std::io::Read::read_to_end(
