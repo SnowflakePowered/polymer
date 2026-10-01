@@ -1,5 +1,4 @@
 use parking_lot::RwLock;
-use polymer_ipc::{Message, MessageSink};
 use polymer_renderer::{
     CompositingPlan, Presentation,
     input::{PointerEventSink, PointerRoutingState},
@@ -16,15 +15,6 @@ impl InputEndpoint {
 
     pub fn detach(&self) {
         *self.0.write() = None;
-    }
-}
-
-impl MessageSink for InputEndpoint {
-    fn send_message(&self, message: Message) -> bool {
-        self.0
-            .read()
-            .as_ref()
-            .is_some_and(|sender| sender.send_control(message))
     }
 }
 

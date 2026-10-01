@@ -7,7 +7,7 @@ pub mod input;
 
 pub use configuration::{RenderConfiguration, SurfaceRequest};
 
-pub const PROTOCOL_VERSION: u32 = 25;
+pub const PROTOCOL_VERSION: u32 = 26;
 pub const MAX_IMAGE_SLOTS: usize = 4;
 /// Terminal consumer-fence value used when abandoning an entire image ring.
 pub const RELEASE_ALL_SYNC_VALUE: u64 = u64::MAX - 1;

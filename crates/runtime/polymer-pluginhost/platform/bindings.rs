@@ -104,7 +104,11 @@ async fn op_platform_install(
         storage: Some(id.simple().to_string()),
         ..Default::default()
     };
-    let title = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let title = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
     let job = match jobs {
         Some(jobs) => jobs.start(JobKind::Install, title, subject, parent).await,
         None => None,

@@ -23,11 +23,15 @@ impl CiaContent {
     pub(in crate::impls::ctr) fn open(path: &Path, archive: &CiaArchive<File>) -> Option<Self> {
         let header = archive.header();
         let record = archive.items().first()?;
-        let tmd_end = [header.certificates_size, header.ticket_size, header.tmd_size]
-            .into_iter()
-            .fold(u64::from(header.header_size), |cursor, size| {
-                ((cursor + 63) & !63) + u64::from(size)
-            });
+        let tmd_end = [
+            header.certificates_size,
+            header.ticket_size,
+            header.tmd_size,
+        ]
+        .into_iter()
+        .fold(u64::from(header.header_size), |cursor, size| {
+            ((cursor + 63) & !63) + u64::from(size)
+        });
         let key = if record.content_type.is_encrypted() {
             Some(CtrTicket::from_cia(path).ok()?.bytes.try_into().ok()?)
         } else {
@@ -57,7 +61,8 @@ impl Read for CiaContent {
             return Ok(0);
         }
         let Some(key) = self.key else {
-            self.file.seek(SeekFrom::Start(self.start + self.position))?;
+            self.file
+                .seek(SeekFrom::Start(self.start + self.position))?;
             let read = self.file.read(&mut buf[..count])?;
             self.position += read as u64;
             return Ok(read);

@@ -6,7 +6,6 @@ use zerocopy::{
 
 const MESSAGE_HELLO: u32 = 1;
 const MESSAGE_STREAM_READY: u32 = 2;
-const MESSAGE_SHUTDOWN: u32 = 4;
 const MESSAGE_STREAM_ACCEPTED: u32 = 6;
 const MESSAGE_BLOB: u32 = 8;
 const MESSAGE_MAP_OFFER: u32 = 9;
@@ -93,10 +92,8 @@ struct WireBlob {
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
 struct WireMapOffer {
-    channel: U32,
     handle: I64,
     mapping_len: U64,
-    generation: U64,
 }
 
 pub(super) fn encode(message: &Message) -> io::Result<WireMessage> {
@@ -138,9 +135,6 @@ pub(super) fn encode(message: &Message) -> io::Result<WireMessage> {
                 },
             );
         }
-        Message::Shutdown => {
-            wire.kind = U32::new(MESSAGE_SHUTDOWN);
-        }
         Message::GamepadFeedback(value) => {
             set_payload(
                 &mut wire,
@@ -174,10 +168,8 @@ pub(super) fn encode(message: &Message) -> io::Result<WireMessage> {
                 &mut wire,
                 MESSAGE_MAP_OFFER,
                 &WireMapOffer {
-                    channel: U32::new(value.channel as u32),
                     handle: I64::new(value.handle),
                     mapping_len: U64::new(value.mapping_len),
-                    generation: U64::new(value.generation),
                 },
             );
         }
@@ -235,7 +227,6 @@ pub(super) fn decode(wire: &WireMessage, data: Vec<u8>) -> io::Result<Message> {
                 bottom_up: value.bottom_up.get() != 0,
             }))
         }
-        MESSAGE_SHUTDOWN => Ok(Message::Shutdown),
         MESSAGE_STREAM_ACCEPTED => Ok(Message::StreamAccepted),
         MESSAGE_GAMEPAD_FEEDBACK => {
             let value = payload::<WireGamepadFeedback>(wire)?;
@@ -259,15 +250,9 @@ pub(super) fn decode(wire: &WireMessage, data: Vec<u8>) -> io::Result<Message> {
         }
         MESSAGE_MAP_OFFER => {
             let value = payload::<WireMapOffer>(wire)?;
-            let channel = match value.channel.get() {
-                2 => ChannelKind::Input,
-                _ => return Err(invalid_data("unknown shared channel kind")),
-            };
             Ok(Message::MapOffer(MapOffer {
-                channel,
                 handle: value.handle.get(),
                 mapping_len: value.mapping_len.get(),
-                generation: value.generation.get(),
             }))
         }
         MESSAGE_MAP_ACCEPTED => Ok(Message::MapAccepted),

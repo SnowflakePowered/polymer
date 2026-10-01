@@ -66,24 +66,15 @@ pub struct StreamReady {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u32)]
-pub enum ChannelKind {
-    Input = 2,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MapOffer {
-    pub channel: ChannelKind,
     pub handle: i64,
     pub mapping_len: u64,
-    pub generation: u64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Message {
     Hello(Handshake),
     StreamReady(StreamReady),
-    Shutdown,
     GamepadFeedback(WireFeedback),
     Blob {
         kind: BlobKind,

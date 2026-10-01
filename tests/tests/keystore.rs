@@ -114,7 +114,10 @@ async fn generated_licenses_compose_with_nand_and_saves_and_keep_session_bytes()
             .unwrap();
         nand.set_label(Some("with content")).await.unwrap();
         for selection in [None, Some(saves.clone())] {
-            let composed = nand.compose(selection, std::sync::Arc::new(keys.clone())).await.unwrap();
+            let composed = nand
+                .compose(selection, std::sync::Arc::new(keys.clone()))
+                .await
+                .unwrap();
             let paths: Vec<_> = composed
                 .read_dir("", true)
                 .unwrap()

@@ -1,6 +1,6 @@
 use crate::{
     Message,
-    control::{ChannelKind, LocalSocket, MapOffer},
+    control::{LocalSocket, MapOffer},
     shared,
 };
 use polymer_protocol::{ConsumerApi, Handshake, PROTOCOL_VERSION};
@@ -355,7 +355,6 @@ impl WireInputMessage {
 
 pub struct InputPublisher {
     shared: shared::Publisher,
-    generation: u64,
     latest: [Option<WireInputMessage>; 8],
     connected: [Option<WireInputMessage>; 8],
     scratch: WireInputMessage,
@@ -365,7 +364,6 @@ impl InputPublisher {
     pub fn new() -> io::Result<Self> {
         Ok(Self {
             shared: shared::Publisher::create("input")?,
-            generation: 1,
             latest: [None; 8],
             connected: [None; 8],
             scratch: WireInputMessage::empty(0, 0),
@@ -387,10 +385,8 @@ impl InputPublisher {
         }
         let handle = self.shared.duplicate_for(hello.process_id)?;
         control.send(Message::MapOffer(MapOffer {
-            channel: ChannelKind::Input,
             handle,
             mapping_len: self.shared.mapping_len(),
-            generation: self.generation,
         }))?;
         if control.receive()? != Message::MapAccepted {
             return Err(io::Error::new(
@@ -445,12 +441,6 @@ impl InputSubscriber {
                 "expected input map offer",
             ));
         };
-        if offer.channel != ChannelKind::Input {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "wrong shared channel kind",
-            ));
-        }
         let shared = unsafe { shared::Subscriber::from_handle(offer.handle, offer.mapping_len)? };
         control.send(Message::MapAccepted)?;
         Ok(Self {

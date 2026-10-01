@@ -291,7 +291,10 @@ impl PluginRuntimeHandle {
 
     /// The functions a plugin exports, loading it first when nothing has run it yet in this
     /// process.
-    pub async fn exports(&self, plugin_id: &str) -> Result<BTreeSet<String>, PluginInvocationError> {
+    pub async fn exports(
+        &self,
+        plugin_id: &str,
+    ) -> Result<BTreeSet<String>, PluginInvocationError> {
         let lifecycle = self.lifecycle(plugin_id);
         if let Some(exports) = lifecycle.loaded.get() {
             return Ok(exports.clone());
@@ -543,7 +546,9 @@ impl PluginRuntimeHandle {
         let path = ["updateContents".to_owned()];
         self.invoke_generic(plugin, &path, Vec::new(), cancellation, job)
             .await?;
-        self.lifecycle(plugin_id).ready.store(true, Ordering::Release);
+        self.lifecycle(plugin_id)
+            .ready
+            .store(true, Ordering::Release);
         Ok(())
     }
 

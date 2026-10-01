@@ -52,8 +52,15 @@ impl PluginRuntimeHandle {
             },
         };
         let arguments = vec![json!(inspection), title, json!({})];
-        self.update(&manager, &platform, "onCheckUpdates", arguments, cancellation, job)
-            .await
+        self.update(
+            &manager,
+            &platform,
+            "onCheckUpdates",
+            arguments,
+            cancellation,
+            job,
+        )
+        .await
     }
 
     /// Run the platform plugin's `onFetchUpdate` for one candidate, which downloads the
@@ -69,7 +76,14 @@ impl PluginRuntimeHandle {
     ) -> Result<PathBuf, PluginInvocationError> {
         let arguments = vec![candidate, json!({})];
         let depot = self
-            .update(manager, platform, "onFetchUpdate", arguments, cancellation, job)
+            .update(
+                manager,
+                platform,
+                "onFetchUpdate",
+                arguments,
+                cancellation,
+                job,
+            )
             .await?;
         depot
             .as_str()
