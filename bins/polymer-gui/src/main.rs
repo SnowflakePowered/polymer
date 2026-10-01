@@ -92,6 +92,7 @@ fn run(
         options.directories.clone(),
         options.local_storage.clone(),
         options.library.clone(),
+        options.jobs.clone(),
         proxy.clone(),
     );
     tracing::debug!("polymer: shell renderers are ready");

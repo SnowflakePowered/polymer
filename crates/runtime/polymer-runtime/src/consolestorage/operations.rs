@@ -2,9 +2,10 @@ use super::StorageActor;
 use actix::{Context, Handler, ResponseActFuture};
 use polymer_deno::polymer::consolestorage::*;
 use polymer_library::StorageKind;
-use polymer_pluginhost::runtime::EventEmitter;
+use polymer_library::jobs::JobKind;
 use polymer_vfs::ExclusiveResourceKey;
-use serde_json::{Value, json};
+use serde_json::json;
+use std::sync::Arc;
 
 impl Handler<Platforms> for StorageActor {
     type Result = ResponseActFuture<Self, Result<Vec<StoragePlatform>, StorageError>>;
@@ -81,45 +82,22 @@ impl Handler<Install> for StorageActor {
         Install { platform, id, path }: Install,
         _: &mut Context<Self>,
     ) -> Self::Result {
-        self.execute(move |manager, _| async move {
+        self.execute(move |manager, plugins| async move {
             let id = Self::parse(&id)?;
             let filename = path
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_else(|| path.display().to_string());
-            let source = json!({
-                "id": uuid::Uuid::now_v7().simple().to_string(),
-                "platform": platform,
-                "storage": id.simple().to_string(),
-                "filename": filename,
-            });
-            let events = std::sync::Arc::new(EventEmitter::new(&platform));
-            let publish = move |state: &str, detail: Value| {
-                let mut event = source.clone();
-                event["state"] = json!(state);
-                event["detail"] = detail;
-                events.publish("installprogress", event);
-            };
-            let publish = std::sync::Arc::new(publish);
-            publish("queued", Value::Null);
-            let result = async {
-                let _lease = ExclusiveResourceKey::Resource(id)
-                    .acquire()
-                    .map_err(StorageError::from_display)?;
-                let running = publish.clone();
-                manager
-                    .install(&platform, id, &path, move |status| {
-                        running("running", json!(status))
-                    })
-                    .await
-                    .map_err(StorageError::from)
-            }
-            .await;
-            match &result {
-                Ok(artifact) => publish("complete", json!(artifact)),
-                Err(error) => publish("failed", json!(error.to_string())),
-            }
-            result
+            let spec = Self::job_spec(
+                JobKind::Install,
+                filename,
+                json!({ "platform": platform, "storage": id.simple().to_string(), "path": path }),
+            );
+            let job = Self::jobs(&plugins)?
+                .start(spec)
+                .await
+                .map_err(StorageError::from_display)?;
+            Self::install_job(manager, Arc::new(job), false).await
         })
     }
 }
@@ -138,19 +116,16 @@ impl Handler<Bootstrap> for StorageActor {
     ) -> Self::Result {
         self.execute(move |manager, plugins| async move {
             let id = Self::parse(&id)?;
-            let _lease = ExclusiveResourceKey::Resource(id)
-                .acquire()
-                .map_err(StorageError::from_display)?;
-            plugins
-                .bootstrap(
-                    manager,
-                    &platform,
-                    id,
-                    settings,
-                    plugins.cancellation_token(),
-                )
+            let spec = Self::job_spec(
+                JobKind::Bootstrap,
+                "Installing system files".to_owned(),
+                json!({ "platform": platform, "storage": id.simple().to_string(), "settings": settings }),
+            );
+            let job = Self::jobs(&plugins)?
+                .start(spec)
                 .await
-                .map_err(StorageError::from_display)
+                .map_err(StorageError::from_display)?;
+            Self::bootstrap_job(manager, plugins, Arc::new(job), false).await
         })
     }
 }

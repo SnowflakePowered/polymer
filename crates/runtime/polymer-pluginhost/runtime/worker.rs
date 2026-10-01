@@ -208,13 +208,18 @@ pub(super) async fn invoke_export(
 ) -> Result<Value, PluginInvocationError> {
     let progress = matches!(export_path, [name] if name == "updateContents")
         || matches!(export_path, [default, name] if default == "default" && name == "updateContents");
-    let progress = progress.then(|| {
-        runtime.op_state().borrow().borrow::<Arc<super::events::EventEmitter>>().scope(
-            "loadprogress",
-            serde_json::json!({"state": "loading", "message": "Updating plugin contents"}),
-            serde_json::json!({"state": "failed", "message": "Plugin contents update interrupted"}),
-        )
-    });
+    let state = runtime.op_state();
+    let jobs = state
+        .borrow()
+        .try_borrow::<super::jobs::PluginJobs>()
+        .cloned();
+    let job = match jobs.filter(|_| progress) {
+        Some(jobs) => jobs.start("Updating plugin contents").await,
+        None => None,
+    };
+    if job.is_some() {
+        super::jobs::PluginJobs::swap(&mut state.borrow_mut(), job.clone());
+    }
     let invoke = ExtensionFunction::get(runtime, "__polymerPluginRuntime", "invoke")
         .map_err(PluginInvocationError::worker)?;
     runtime
@@ -231,11 +236,9 @@ pub(super) async fn invoke_export(
         .call(runtime, &values)
         .await
         .map_err(PluginInvocationError::worker);
-    if let Some(progress) = progress {
-        progress.finish(match &resolved {
-            Ok(_) => serde_json::json!({"state": "ready", "message": "Plugin contents updated"}),
-            Err(error) => serde_json::json!({"state": "failed", "message": error.to_string()}),
-        });
+    if job.is_some() {
+        super::jobs::PluginJobs::swap(&mut state.borrow_mut(), None);
+        super::jobs::PluginJobs::finish(job, &resolved).await;
     }
     let resolved = resolved?;
     deno_core::scope!(scope, runtime);

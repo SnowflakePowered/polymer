@@ -1,4 +1,5 @@
 mod api;
+mod jobs;
 mod operations;
 mod saves;
 mod volumes;
@@ -72,6 +73,11 @@ impl StorageService {
                 }
             })?;
         let actor = startup.recv().map_err(std::io::Error::other)?;
+        actor.do_send(jobs::ResumeJobs);
         Ok(Self { actor })
+    }
+
+    pub(crate) fn run_job(&self, id: uuid::Uuid) {
+        self.actor.do_send(jobs::RunJob(id));
     }
 }

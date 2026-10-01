@@ -206,7 +206,7 @@ export function ShellProvider(props: ParentProps) {
     ].slice(0, RECENT_LIMIT));
   };
 
-  const libraryState = new LibraryState(window.Polymer.library, window.Polymer.scraping, snapshot => {
+  const libraryState = new LibraryState(window.Polymer.library, window.Polymer.jobs, snapshot => {
     setModel("libraryGames", reconcile(snapshot.games, { key: "path" }));
     setModel("libraryActivities", reconcile(snapshot.activities, { key: "id" }));
   }, fail, async (item, bootstrap) => {

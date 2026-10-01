@@ -73,33 +73,6 @@ impl EventEmitter {
         bus.subscribers
             .retain(|subscriber| subscriber.send(event.clone()).is_ok());
     }
-
-    pub fn scope(self: &Arc<Self>, name: &str, initial: Value, interrupted: Value) -> EventScope {
-        self.publish(name, initial);
-        EventScope {
-            emitter: self.clone(),
-            name: name.to_owned(),
-            terminal: interrupted,
-        }
-    }
-}
-
-pub struct EventScope {
-    emitter: Arc<EventEmitter>,
-    name: String,
-    terminal: Value,
-}
-
-impl EventScope {
-    pub fn finish(mut self, detail: Value) {
-        self.terminal = detail;
-    }
-}
-
-impl Drop for EventScope {
-    fn drop(&mut self) {
-        self.emitter.publish(&self.name, self.terminal.take());
-    }
 }
 
 #[op2]

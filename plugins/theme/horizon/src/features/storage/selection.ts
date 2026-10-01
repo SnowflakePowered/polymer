@@ -1,11 +1,4 @@
-import type { ConsoleStorageVolume, InstallPhase } from "../../../../../../js/polymer";
-
-export const installPhases: Record<InstallPhase, string> = {
-  preparing: "Preparing",
-  verifying: "Verifying",
-  installing: "Installing",
-  finalizing: "Finalizing",
-};
+import type { ConsoleStorageVolume } from "../../../../../../js/polymer";
 
 const setups = new Map<string, Promise<ConsoleStorageVolume>>();
 

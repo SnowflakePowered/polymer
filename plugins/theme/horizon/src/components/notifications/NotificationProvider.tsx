@@ -1,9 +1,8 @@
 import { createEffect, onCleanup, onMount, untrack, type ParentProps } from "solid-js";
-import type { PluginEvent, PluginLoadProgress, StorageInstall } from "../../../../../../js/polymer";
+import type { Job } from "../../../../../../js/polymer";
 import { useShell } from "../../app/shell-context";
 import { NotificationContext } from "./notification-context";
 import { NotificationStore } from "./NotificationStore";
-import { installPhases } from "../../features/storage/selection";
 
 export function NotificationProvider(props: ParentProps) {
   const shell = useShell();
@@ -26,39 +25,23 @@ export function NotificationProvider(props: ParentProps) {
     untrack(() => name !== undefined ? notifications.upsert({ id: "controller", title: name, message: `Connected as player ${index! + 1}`, state: "info" }) : notifications.remove("controller"));
   });
   onMount(() => {
-    const receive = (event: PluginEvent) => {
-      if (event.name !== "loadprogress") return;
-      const load = event.detail as Omit<PluginLoadProgress, "id" | "pluginId">;
-      if (load.state === "ready" && !load.message) return notifications.remove(`plugin:${event.sourceId}`);
-      notifications.upsert({ id: `plugin:${event.sourceId}`, title: window.Polymer.machine(event.pluginId)?.name ?? event.pluginId, message: load.message,
-        state: load.state === "ready" ? "complete" : load.state === "failed" ? "error" : "running",
-        completed: load.completed ?? undefined, total: load.total ?? undefined });
+    // Scrape jobs are announced through the library activities above.
+    const receive = (job: Job) => {
+      if (job.kind === "scrape") return;
+      const id = `job:${job.id}`;
+      if (job.kind === "plugin" && job.state === "completed") return notifications.remove(id);
+      const active = job.state === "queued" || job.state === "running" || job.state === "paused";
+      const plugin = job.subject.pluginId;
+      notifications.upsert({ id, title: plugin ? window.Polymer.machine(plugin)?.name ?? job.title : job.title, icon: job.icon ?? undefined,
+        message: job.error ?? job.message ?? "Waiting",
+        state: active ? "running" : job.state === "completed" ? "complete" : "error",
+        completed: active ? job.completed ?? undefined : undefined, total: active ? job.total ?? undefined : undefined });
     };
-    const listener = (event: Event) => receive((event as CustomEvent<PluginEvent>).detail);
-    window.Polymer.plugin.addEventListener("loadprogress", listener);
+    const listener = (event: Event) => receive((event as CustomEvent<Job>).detail);
+    window.Polymer.jobs.addEventListener("jobchange", listener);
     // Late listeners restore running work, not historical completion notices.
-    window.Polymer.plugin.events().filter(event => event.name === "loadprogress"
-      && (event.detail as PluginLoadProgress).state === "loading").forEach(receive);
-    onCleanup(() => window.Polymer.plugin.removeEventListener("loadprogress", listener));
-  });
-  onMount(() => {
-    const titles = new Map<string, { title: string; icon?: string }>();
-    const receive = (install: StorageInstall) => {
-      const known = titles.get(install.id) ?? { title: install.filename };
-      const title = install.state === "running" && install.detail.title ? { title: install.detail.title.label, icon: install.detail.title.icon ?? undefined }
-        : install.state === "complete" ? { title: install.detail.label, icon: install.detail.icon ?? known.icon } : known;
-      titles.set(install.id, title);
-      if (install.state === "complete" || install.state === "failed") titles.delete(install.id);
-      notifications.upsert({ id: `install:${install.id}`, ...title,
-        message: install.state === "queued" ? "Waiting to install" : install.state === "running" ? installPhases[install.detail.phase] : install.state === "complete" ? "Installed" : install.detail,
-        state: install.state === "complete" ? "complete" : install.state === "failed" ? "error" : "running",
-        completed: install.state === "running" && install.detail.total ? install.detail.completed : undefined,
-        total: install.state === "running" && install.detail.total ? install.detail.total : undefined });
-    };
-    const listener = (event: Event) => receive((event as CustomEvent<StorageInstall>).detail);
-    window.Polymer.consolestorage.addEventListener("installchange", listener);
-    window.Polymer.consolestorage.installs.forEach(receive);
-    onCleanup(() => window.Polymer.consolestorage.removeEventListener("installchange", listener));
+    void window.Polymer.jobs.list().then(jobs => jobs.filter(job => job.state === "queued" || job.state === "running").forEach(receive));
+    onCleanup(() => window.Polymer.jobs.removeEventListener("jobchange", listener));
   });
   return <NotificationContext.Provider value={notifications}>{props.children}</NotificationContext.Provider>;
 }

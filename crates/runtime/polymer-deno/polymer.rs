@@ -30,6 +30,11 @@ use consolestorage::{
     op_consolestorage_set_label, op_consolestorage_supports, op_consolestorage_uninstall,
 };
 
+#[path = "jobs/mod.rs"]
+pub mod jobs;
+pub use jobs::Jobs;
+use jobs::{op_jobs_cancel, op_jobs_dismiss, op_jobs_get, op_jobs_list, op_jobs_retry};
+
 #[path = "library/mod.rs"]
 pub mod library;
 
@@ -39,9 +44,8 @@ use library::{
     op_library_import_key, op_library_keys_list, op_library_keys_platforms, op_library_keys_remove,
     op_library_launchables_add, op_library_launchables_delete, op_library_launchables_find,
     op_library_metadata_add, op_library_metadata_delete, op_library_metadata_replace,
-    op_library_metadata_text, op_library_metadata_update, op_library_metadata_url, op_scraping_job,
-    op_scraping_jobs, op_scraping_refresh, op_scraping_retry, op_scraping_scrapers,
-    op_scraping_start,
+    op_library_metadata_text, op_library_metadata_update, op_library_metadata_url,
+    op_scraping_refresh, op_scraping_scrapers, op_scraping_start,
 };
 
 pub type ApiFuture<T> = Pin<Box<dyn Future<Output = T> + 'static>>;
@@ -114,6 +118,7 @@ pub trait PolymerHost: Send + Sync {
     fn release_prepared_filesystem(&self, token: String) -> bool;
     fn consolestorage(&self) -> Result<ConsoleStorage, String>;
     fn library(&self) -> Result<Library, String>;
+    fn jobs(&self) -> Result<Jobs, String>;
     fn emulator_launch(
         &self,
         token: InstanceToken,
@@ -202,7 +207,7 @@ pub enum PolymerNotification {
         id: String,
     },
     PluginEvent(Value),
-    ScrapeJobChanged(Value),
+    JobChanged(Value),
     LibraryContentChanged {
         root_binary_id: String,
     },
@@ -571,8 +576,8 @@ deno_core::extension!(
         op_library_metadata_replace,
         op_library_metadata_text,
         op_library_metadata_url,
-        op_scraping_jobs, op_scraping_start, op_scraping_job, op_scraping_retry, op_scraping_scrapers,
-        op_scraping_refresh,
+        op_scraping_start, op_scraping_scrapers, op_scraping_refresh,
+        op_jobs_list, op_jobs_get, op_jobs_cancel, op_jobs_retry, op_jobs_dismiss,
         op_emulator_launch,
         op_emulator_close,
         op_emulator_set_volume,
@@ -604,6 +609,7 @@ deno_core::extension!(
         "07_controllers.js",
         "08_consolestorage.js",
         "09_library.js",
+        "10_jobs.js",
         "99_main.js",
     ],
     options = {

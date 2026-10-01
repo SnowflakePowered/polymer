@@ -1,5 +1,5 @@
 import { createPackage } from "ext:polymer_digest/00_digest.js";
-import { op_plugin_emit_event } from "ext:core/ops";
+import { op_job_progress } from "ext:core/ops";
 const progressContext = Object.freeze({ progress: ({ message, completed = null, total = null }) => {
     if (typeof message !== "string" ||
         (completed !== null && (!Number.isFinite(completed) || completed < 0)) ||
@@ -7,7 +7,7 @@ const progressContext = Object.freeze({ progress: ({ message, completed = null, 
         (completed !== null && total !== null && completed > total)) {
       throw new TypeError("invalid plugin progress");
     }
-    op_plugin_emit_event("loadprogress", { state: "loading", message, completed, total });
+    op_job_progress(message, completed, total);
   } });
 function bindArguments(args) {
   return args.map(argument => {

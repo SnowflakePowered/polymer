@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 dunce = "1"
+dashmap.workspace = true
 url = "2"
 async-trait.workspace = true
 sha2 = "0.11"
@@ -26,7 +27,7 @@ serde.workspace = true
 serde_json.workspace = true
 polymer-consolestorage = { version = "0.1.0", path = "../../filesystem/polymer-consolestorage" }
 thiserror.workspace = true
-tokio = { version = "1.53.1", features = ["fs", "io-util", "rt"] }
+tokio = { version = "1.53.1", features = ["fs", "io-util", "rt", "sync"] }
 tracing.workspace = true
 turso.workspace = true
 uuid = { version = "1.24.1", features = ["v5", "v7"] }

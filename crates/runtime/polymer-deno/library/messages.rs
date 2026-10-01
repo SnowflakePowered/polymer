@@ -42,10 +42,7 @@ pub struct Library {
     pub metadata_replace: Recipient<MetadataReplace>,
     pub metadata_text: Recipient<MetadataText>,
     pub metadata_url: Recipient<MetadataUrl>,
-    pub scraping_jobs: Recipient<ScrapingJobs>,
     pub scraping_start: Recipient<ScrapingStart>,
-    pub scraping_job: Recipient<ScrapingJob>,
-    pub scraping_retry: Recipient<ScrapingRetry>,
     pub scraping_scrapers: Recipient<ScrapingScrapers>,
     pub scraping_refresh: Recipient<ScrapingRefresh>,
 }
@@ -183,25 +180,9 @@ pub struct MetadataUrl {
 
 #[derive(Debug, actix::Message)]
 #[rtype(result = "Result<Value, LibraryError>")]
-pub struct ScrapingJobs;
-
-#[derive(Debug, actix::Message)]
-#[rtype(result = "Result<Value, LibraryError>")]
 pub struct ScrapingStart {
     pub root_binary_id: String,
     pub trigger_binary_id: String,
-}
-
-#[derive(Debug, actix::Message)]
-#[rtype(result = "Result<Value, LibraryError>")]
-pub struct ScrapingJob {
-    pub id: String,
-}
-
-#[derive(Debug, actix::Message)]
-#[rtype(result = "Result<Value, LibraryError>")]
-pub struct ScrapingRetry {
-    pub id: String,
 }
 
 #[derive(Debug, actix::Message)]

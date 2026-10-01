@@ -36,6 +36,19 @@ pub struct InstallStatus {
     percent: u64,
 }
 
+impl From<&InstallStatus> for crate::jobs::JobProgress {
+    fn from(status: &InstallStatus) -> Self {
+        Self {
+            title: status.title.as_ref().map(|title| title.label.clone()),
+            icon: status.title.as_ref().and_then(|title| title.icon.clone()),
+            message: Some(status.phase.to_string()),
+            completed: (status.total > 0).then_some(status.completed),
+            total: (status.total > 0).then_some(status.total),
+            detail: serde_json::to_value(status).ok(),
+        }
+    }
+}
+
 impl InstallStatus {
     /// Fold in an event, returning whether the change is worth publishing.
     fn apply(&mut self, event: InstallEvent) -> bool {

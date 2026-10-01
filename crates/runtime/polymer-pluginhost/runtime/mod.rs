@@ -1,4 +1,5 @@
 pub(crate) mod events;
+pub(crate) mod jobs;
 mod platform;
 pub use events::{EventEmitter, PluginEvent};
 pub(crate) mod controller_session;
@@ -44,19 +45,26 @@ struct RuntimeState {
     active: Mutex<HashMap<u64, Arc<InvocationControl>>>,
     plugins: Mutex<HashMap<Box<str>, Arc<PluginLifecycle>>>,
     shutdown: AtomicBool,
+    jobs: Option<Arc<polymer_library::jobs::JobStore>>,
 }
 
 struct PluginLifecycle {
     events: Arc<events::EventEmitter>,
+    jobs: jobs::PluginJobs,
     storage: Arc<crate::plugin_storage::PluginStorage>,
     loaded: OnceCell<()>,
     updates: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl PluginLifecycle {
-    fn new(plugin: &str) -> Self {
+    fn new(plugin: &str, store: Option<Arc<polymer_library::jobs::JobStore>>) -> Self {
         Self {
             events: Arc::new(events::EventEmitter::new(plugin)),
+            jobs: jobs::PluginJobs {
+                store,
+                plugin: plugin.to_owned(),
+                current: None,
+            },
             storage: Arc::new(crate::plugin_storage::PluginStorage::default()),
             loaded: OnceCell::new(),
             updates: Arc::new(tokio::sync::Mutex::new(())),
@@ -73,13 +81,12 @@ impl PluginLifecycle {
             .op_state()
             .borrow_mut()
             .put(self.events.clone());
+        let state = runtime.js_runtime_mut().op_state();
+        state.borrow_mut().put(self.jobs.clone());
         self.loaded
             .get_or_try_init(|| async {
-                let progress = self.events.scope(
-                    "loadprogress",
-                    serde_json::json!({"state": "loading", "message": "Loading plugin"}),
-                    serde_json::json!({"state": "failed", "message": "Plugin loading interrupted"}),
-                );
+                let job = self.jobs.start("Loading plugin").await;
+                jobs::PluginJobs::swap(&mut state.borrow_mut(), job.clone());
                 let result = invoke_optional_export(
                     runtime.js_runtime_mut(),
                     entrypoint,
@@ -87,12 +94,8 @@ impl PluginLifecycle {
                     Vec::new(),
                 )
                 .await;
-                progress.finish(match &result {
-                    Ok(_) => serde_json::json!({"state": "ready", "message": ""}),
-                    Err(error) => {
-                        serde_json::json!({"state": "failed", "message": error.to_string()})
-                    }
-                });
+                jobs::PluginJobs::swap(&mut state.borrow_mut(), None);
+                jobs::PluginJobs::finish(job, &result).await;
                 if result.is_err() {
                     self.storage.clear();
                 }
@@ -222,6 +225,7 @@ impl PluginRuntime {
                     active: Mutex::new(HashMap::new()),
                     plugins: Mutex::new(HashMap::new()),
                     shutdown: AtomicBool::new(false),
+                    jobs: options.jobs,
                 }),
             },
         }
@@ -249,6 +253,10 @@ pub struct PluginRuntimeHandle {
 impl PluginRuntimeHandle {
     pub fn registry(&self) -> &PluginRegistry {
         &self.state.registry
+    }
+
+    pub fn jobs(&self) -> Option<&Arc<polymer_library::jobs::JobStore>> {
+        self.state.jobs.as_ref()
     }
 
     pub fn cancellation_token(&self) -> PluginCancellationToken {
@@ -303,7 +311,7 @@ impl PluginRuntimeHandle {
             .plugins
             .lock()
             .entry(plugin_id.into())
-            .or_insert_with(|| Arc::new(PluginLifecycle::new(plugin_id)))
+            .or_insert_with(|| Arc::new(PluginLifecycle::new(plugin_id, self.state.jobs.clone())))
             .clone()
     }
 

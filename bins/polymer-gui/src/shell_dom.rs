@@ -272,12 +272,16 @@ impl ShellSessionFactory {
         directories: polymer_library::Directories,
         local_storage: Option<polymer_deno::webstorage::LocalStorage>,
         library: Option<polymer_runtime::LibraryService>,
+        jobs: Option<std::sync::Arc<polymer_library::jobs::JobStore>>,
         event_proxy: crate::window_manager::EventLoopProxy<crate::app::UserEvent>,
     ) -> Self {
         let plugin_runtime = polymer_pluginhost::runtime::PluginRuntime::new(
             plugin_registry,
             directories,
-            polymer_pluginhost::runtime::PluginRuntimeOptions::default(),
+            polymer_pluginhost::runtime::PluginRuntimeOptions {
+                jobs,
+                ..Default::default()
+            },
         );
         Self {
             debug,

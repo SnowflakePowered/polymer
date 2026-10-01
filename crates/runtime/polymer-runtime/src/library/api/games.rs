@@ -184,7 +184,7 @@ impl LibraryBackend {
             .iter()
             .map(|(launchable, job)| {
                 json!({
-                    "launchable": Self::launchable_value(launchable), "scrapeJob": job,
+                    "launchable": Self::launchable_value(launchable), "job": job,
                 })
             })
             .collect())

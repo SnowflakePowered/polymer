@@ -162,6 +162,7 @@ async fn cancelling_bootstrap_terminates_the_worker() {
                 device.id,
                 Value::Null,
                 cancellation,
+                None,
             )
             .await
     });
@@ -188,8 +189,8 @@ async fn cancelling_bootstrap_terminates_the_worker() {
 }
 
 #[tokio::test]
-async fn bootstrap_uses_existing_progress_events_for_callbacks_and_generators() {
-    use polymer_pluginhost::runtime::PluginEvent;
+async fn bootstrap_reports_callback_and_generator_progress_to_its_job() {
+    use polymer_library::jobs::{JobKind, JobSpec, JobState, JobStore};
     let fixture = Fixture::new();
     fixture
         .registry
@@ -207,7 +208,24 @@ async fn bootstrap_uses_existing_progress_events_for_callbacks_and_generators() 
         .unwrap();
     let runtime = fixture.runtime();
     let device = fixture.device().await;
-    let mut events = PluginEvent::subscribe();
+    let directory = tempfile::tempdir().unwrap();
+    let jobs = JobStore::open(directory.path().join("jobs.db"))
+        .await
+        .unwrap();
+    let mut changes = jobs.subscribe();
+    let job = Arc::new(
+        jobs.start(JobSpec {
+            kind: JobKind::Bootstrap,
+            title: "Installing system files".to_owned(),
+            subject: Default::default(),
+            params: Value::Null,
+            dedupe: None,
+            steps: Vec::new(),
+            persistent: true,
+        })
+        .await
+        .unwrap(),
+    );
     let error = runtime
         .handle()
         .bootstrap(
@@ -216,14 +234,20 @@ async fn bootstrap_uses_existing_progress_events_for_callbacks_and_generators() 
             device.id,
             Value::Null,
             runtime.handle().cancellation_token(),
+            Some(job.clone()),
         )
         .await
         .unwrap_err();
     assert!(error.message.contains("BOOTSTRAP_FAILURE"));
+    job.finish(JobState::Failed, Some(error.message))
+        .await
+        .unwrap();
     let mut messages = Vec::new();
-    while let Ok(event) = events.try_recv() {
-        if event.plugin_id == "progress-platform" && event.name == "loadprogress" {
-            messages.push(event.detail["message"].as_str().unwrap().to_owned());
+    while let Ok(job) = changes.try_recv() {
+        if let Some(message) = job.message
+            && messages.last() != Some(&message)
+        {
+            messages.push(message);
         }
     }
     let callback = messages
@@ -309,7 +333,10 @@ async fn platform_install_persists_keys_before_validation_and_installs_content()
         .await
         .unwrap();
     assert_eq!(installed.id, "0005000c12345678");
-    let composed = nand.compose(None, std::sync::Arc::new(keys.clone())).await.unwrap();
+    let composed = nand
+        .compose(None, std::sync::Arc::new(keys.clone()))
+        .await
+        .unwrap();
     let root = "usr/title/0005000c/12345678";
     let mut bytes = Vec::new();
     std::io::Read::read_to_end(
@@ -405,6 +432,7 @@ async fn bootstrap_uses_supplied_storage_and_native_requirements_with_one_worker
             device.id,
             Value::Null,
             runtime.handle().cancellation_token(),
+            None,
         ),
     )
     .await
@@ -433,6 +461,7 @@ async fn bootstrap_uses_supplied_storage_and_native_requirements_with_one_worker
             device.id,
             Value::Null,
             runtime.handle().cancellation_token(),
+            None,
         )
         .await
         .unwrap();
@@ -518,6 +547,7 @@ async fn rust_and_javascript_share_platform_keys_and_immutable_files() {
             device.id,
             Value::Null,
             runtime.handle().cancellation_token(),
+            None,
         )
         .await
         .unwrap();

@@ -215,6 +215,7 @@ pub struct FrontendServices {
         Option<Arc<crate::launchable_configuration::LaunchableConfigurations>>,
     storage: Option<Arc<StorageManager>>,
     storage_service: Result<crate::StorageService, String>,
+    job_service: Result<crate::JobService, String>,
     prepared_filesystems: PreparedFilesystemStore,
     controller_sessions: ControllerSessionStore,
     input_sources: InputHub,
@@ -542,11 +543,6 @@ impl FrontendServices {
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     };
                     let notification = match event {
-                        polymer_scraping::ScrapingEvent::JobChanged(job) => {
-                            PolymerNotification::ScrapeJobChanged(
-                                serde_json::to_value(job).expect("scrape jobs are serializable"),
-                            )
-                        }
                         polymer_scraping::ScrapingEvent::LibraryContentChanged {
                             root_binary_id,
                         } => PolymerNotification::LibraryContentChanged {
@@ -596,6 +592,32 @@ impl FrontendServices {
         let storage = polymer_library::StorageManager::shared().ok();
         let storage_service = crate::StorageService::start(storage.clone(), plugins.handle())
             .map_err(|error| format!("could not start storage actor: {error}"));
+        let jobs = plugins.handle().jobs().cloned();
+        if let Some(jobs) = &jobs {
+            let mut changes = jobs.subscribe();
+            let notifications = notifications.clone();
+            tokio::spawn(async move {
+                loop {
+                    let job = match changes.recv().await {
+                        Ok(job) => job,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    };
+                    let notification = PolymerNotification::JobChanged(
+                        serde_json::to_value(job).expect("jobs are serializable"),
+                    );
+                    if notifications.send(notification).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        let job_service = crate::JobService::start(
+            jobs,
+            library.as_ref().map(LibraryService::scraping),
+            storage_service.as_ref().ok().cloned(),
+        )
+        .map_err(|error| format!("could not start jobs actor: {error}"));
         Self {
             plugins,
             configuration,
@@ -603,6 +625,7 @@ impl FrontendServices {
             launchable_configurations,
             storage,
             storage_service,
+            job_service,
             prepared_filesystems: PreparedFilesystemStore::default(),
             controller_sessions: ControllerSessionStore::default(),
             input_sources,
@@ -860,6 +883,13 @@ impl PolymerHost for FrontendServices {
         self.storage_service
             .as_ref()
             .map(crate::StorageService::client)
+            .map_err(Clone::clone)
+    }
+
+    fn jobs(&self) -> Result<polymer_deno::polymer::Jobs, String> {
+        self.job_service
+            .as_ref()
+            .map(crate::JobService::client)
             .map_err(Clone::clone)
     }
 

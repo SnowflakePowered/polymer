@@ -1,7 +1,9 @@
 use super::super::{
     PluginInvocationError, PluginRuntimeHandle,
+    jobs::PluginJobs,
     worker::{WorkerOptions, invoke_export, run_worker},
 };
+use polymer_library::jobs::JobHandle;
 use polymer_library::{StorageInspection, StorageManager};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
@@ -15,6 +17,7 @@ impl PluginRuntimeHandle {
         id: Uuid,
         settings: Value,
         cancellation: super::super::PluginCancellationToken,
+        job: Option<Arc<JobHandle>>,
     ) -> Result<StorageInspection, PluginInvocationError> {
         let provider = self
             .registry()
@@ -40,12 +43,6 @@ impl PluginRuntimeHandle {
             .inspect(platform, id)
             .await
             .map_err(PluginInvocationError::worker)?;
-        let events = lifecycle.events.clone();
-        let progress = events.scope(
-            "loadprogress",
-            json!({"state": "loading", "message": "Installing system files"}),
-            json!({"state": "failed", "message": "System setup interrupted"}),
-        );
         self.run_with_control(cancellation.control, move |control| {
             run_worker(
                 entrypoint,
@@ -53,6 +50,7 @@ impl PluginRuntimeHandle {
                 lifecycle.clone(),
                 control,
                 move |mut runtime| async move {
+                    PluginJobs::swap(&mut runtime.js_runtime_mut().op_state().borrow_mut(), job);
                     invoke_export(
                         runtime.js_runtime_mut(),
                         &invocation_entrypoint,
@@ -68,8 +66,6 @@ impl PluginRuntimeHandle {
             .inspect(platform, id)
             .await
             .map_err(PluginInvocationError::worker)?;
-
-        progress.finish(json!({"state": "ready", "message": "System setup complete"}));
         Ok(inspection)
     }
 }

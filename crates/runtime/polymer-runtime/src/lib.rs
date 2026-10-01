@@ -8,6 +8,7 @@ mod consolestorage;
 pub mod controllers;
 pub mod frontend;
 mod instance;
+mod jobs;
 mod launch;
 mod launchable_configuration;
 mod library;
@@ -35,6 +36,7 @@ pub use instance::{
     SurfaceFrameUpdate, SurfaceOffer, SurfacePointerUpdate, TrackedSurfaceConfig,
     TrackedSurfaceHandle, TrackedSurfaceId,
 };
+pub use jobs::JobService;
 pub use library::LibraryService;
 pub use polymer_platform::{GraphicsHook, GuestWindowId, Hooks, InputHook};
 pub use savestates::{RgbaScreenshot, SaveStateManager, SaveStateMetadata};

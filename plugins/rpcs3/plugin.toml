@@ -8,6 +8,10 @@ main = "rpcs3.ts"
 key = "cache"
 label = "Shader and executable cache"
 
+[[plugin.caches]]
+key = "driver"
+label = "GPU driver shader cache"
+
 [emulator]
 platforms = ["SONY_PS3"]
 

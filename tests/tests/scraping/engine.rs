@@ -1,7 +1,8 @@
 use object_store::memory::InMemory;
 use polymer_library::{
     GameCatalog, IdentifiedLaunchable, LaunchableUri, MetadataData, MetadataInput,
-    MetadataInputData, MetadataValue, ScrapeJobState,
+    MetadataInputData, MetadataValue,
+    jobs::{JobKind, JobSpec, JobState, JobStore, JobSubject},
 };
 use polymer_pluginhost::loading::PluginRegistry;
 use polymer_scraping::{Ingestor, Package, ScrapingEngine, ScrapingEvent};
@@ -84,12 +85,17 @@ async fn successful_plugins_commit_repeated_values_and_publish_events() {
         )
         .await
         .unwrap();
+    let jobs = JobStore::open(directory.path().join("jobs.db"))
+        .await
+        .unwrap();
     let engine = ScrapingEngine::new(
         catalog.clone(),
+        jobs.clone(),
         registry,
         polymer_library::Directories::rooted(directory.path(), directory.path()),
     );
     let mut events = engine.subscribe();
+    let mut changes = jobs.subscribe();
     let job = engine
         .enqueue(launchable.binary_id, launchable.binary_id)
         .await
@@ -97,8 +103,8 @@ async fn successful_plugins_commit_repeated_values_and_publish_events() {
 
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            let current = catalog.scrape_job(job.id).await.unwrap().unwrap();
-            if current.state == ScrapeJobState::Completed {
+            let current = jobs.get(job.id).await.unwrap().unwrap();
+            if current.state == JobState::Completed {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -127,17 +133,12 @@ async fn successful_plugins_commit_repeated_values_and_publish_events() {
     );
 
     let mut saw_content = false;
+    while let Ok(ScrapingEvent::LibraryContentChanged { .. }) = events.try_recv() {
+        saw_content = true;
+    }
     let mut saw_running_attempt = false;
-    while let Ok(event) = events.try_recv() {
-        match event {
-            ScrapingEvent::LibraryContentChanged { .. } => saw_content = true,
-            ScrapingEvent::JobChanged(job) => {
-                saw_running_attempt |= job
-                    .attempts
-                    .iter()
-                    .any(|attempt| attempt.state == polymer_library::ScrapeAttemptState::Running);
-            }
-        }
+    while let Ok(job) = changes.try_recv() {
+        saw_running_attempt |= job.steps.iter().any(|step| step.state == JobState::Running);
     }
     assert!(saw_content);
     assert!(
@@ -214,10 +215,28 @@ async fn child_packages_keep_their_own_identity_and_scrape_results() {
 
     // Both requests are pending before workers start: a child must not be
     // coalesced into the root's job or overwrite its eventual metadata.
+    let store = JobStore::open(directory.path().join("jobs.db"))
+        .await
+        .unwrap();
     let mut jobs = Vec::new();
     for launchable in &launchables {
-        let (job, _) = catalog
-            .queue_scrape(root, launchable.binary_id, &["identity".to_owned()])
+        let (root, trigger) = (
+            root.simple().to_string(),
+            launchable.binary_id.simple().to_string(),
+        );
+        let (job, _) = store
+            .enqueue(JobSpec {
+                kind: JobKind::Scrape,
+                title: "Scraping metadata".to_owned(),
+                subject: JobSubject {
+                    binary_id: Some(root.clone()),
+                    ..Default::default()
+                },
+                params: serde_json::json!({ "rootBinaryId": root, "triggerBinaryId": trigger }),
+                dedupe: Some(format!("{root}:{trigger}")),
+                steps: vec!["identity".to_owned()],
+                persistent: true,
+            })
             .await
             .unwrap();
         jobs.push(job);
@@ -226,6 +245,7 @@ async fn child_packages_keep_their_own_identity_and_scrape_results() {
     registry.load(plugin.path()).unwrap();
     let engine = ScrapingEngine::new(
         catalog.clone(),
+        store.clone(),
         registry,
         polymer_library::Directories::rooted(directory.path(), directory.path()),
     );
@@ -233,10 +253,10 @@ async fn child_packages_keep_their_own_identity_and_scrape_results() {
     tokio::time::timeout(Duration::from_secs(10), async {
         for job in &jobs {
             loop {
-                let current = catalog.scrape_job(job.id).await.unwrap().unwrap();
+                let current = store.get(job.id).await.unwrap().unwrap();
                 match current.state {
-                    ScrapeJobState::Completed => break,
-                    ScrapeJobState::Queued | ScrapeJobState::Running => {
+                    JobState::Completed => break,
+                    JobState::Queued | JobState::Running => {
                         tokio::time::sleep(Duration::from_millis(10)).await;
                     }
                     _ => panic!("scrape failed: {current:?}"),
@@ -279,5 +299,12 @@ async fn child_packages_keep_their_own_identity_and_scrape_results() {
             .count(),
         2
     );
-    assert_eq!(catalog.scrape_jobs().await.unwrap().len(), 2);
+    let scrapes = store
+        .list()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|job| job.kind == JobKind::Scrape)
+        .count();
+    assert_eq!(scrapes, 2);
 }

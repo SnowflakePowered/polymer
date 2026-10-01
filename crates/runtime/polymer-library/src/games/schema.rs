@@ -45,29 +45,11 @@ CREATE TABLE IF NOT EXISTS metadata (
     ),
     UNIQUE(parent_binary_id, producer, ordinal)
 ) STRICT;
-CREATE TABLE IF NOT EXISTS scrape_jobs (
-    id BLOB PRIMARY KEY NOT NULL CHECK (length(id) = 16),
-    root_binary_id BLOB NOT NULL REFERENCES binaries(id) ON DELETE CASCADE,
-    trigger_binary_id BLOB NOT NULL REFERENCES binaries(id) ON DELETE CASCADE,
-    state TEXT NOT NULL CHECK (state IN ('queued', 'running', 'completed', 'partial', 'failed')),
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-) STRICT;
-CREATE TABLE IF NOT EXISTS scrape_attempts (
-    job_id BLOB NOT NULL REFERENCES scrape_jobs(id) ON DELETE CASCADE,
-    plugin_id TEXT NOT NULL,
-    state TEXT NOT NULL CHECK (state IN ('queued', 'running', 'completed', 'partial', 'failed')),
-    error TEXT,
-    PRIMARY KEY(job_id, plugin_id)
-) STRICT;
 CREATE INDEX IF NOT EXISTS binaries_parent ON binaries(parent_binary_id);
 CREATE INDEX IF NOT EXISTS launchables_binary ON launchables(binary_id);
 CREATE INDEX IF NOT EXISTS metadata_parent ON metadata(parent_binary_id, key, source, ordinal);
 CREATE INDEX IF NOT EXISTS metadata_producer ON metadata(parent_binary_id, producer);
 CREATE INDEX IF NOT EXISTS metadata_object ON metadata(object_blake3);
-DROP INDEX IF EXISTS scrape_jobs_active;
-CREATE UNIQUE INDEX IF NOT EXISTS scrape_jobs_active_binary ON scrape_jobs(root_binary_id, trigger_binary_id) WHERE state IN ('queued', 'running');
-CREATE INDEX IF NOT EXISTS scrape_jobs_root ON scrape_jobs(root_binary_id, created_at DESC);
 CREATE TABLE IF NOT EXISTS launchable_configurations (
     launchable_id BLOB NOT NULL REFERENCES launchables(id) ON DELETE CASCADE,
     plugin_id TEXT NOT NULL CHECK (length(plugin_id) > 0),
@@ -80,5 +62,5 @@ CREATE TABLE IF NOT EXISTS launchable_manifests (
     revision TEXT NOT NULL,
     manifest_json TEXT NOT NULL
 ) STRICT;
-PRAGMA user_version = 6;
+PRAGMA user_version = 7;
 "#;

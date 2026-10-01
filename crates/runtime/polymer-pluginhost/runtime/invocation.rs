@@ -11,17 +11,20 @@ use thiserror::Error;
 use tokio::sync::Notify;
 
 /// Scheduling policy for plugin workers.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone)]
 pub struct PluginRuntimeOptions {
     /// Maximum number of fresh isolates executing at the same time. Tokio's
     /// semaphore is fair, so excess calls are admitted in FIFO order.
     pub max_concurrent_calls: usize,
+    /// Where plugin loads and content updates report as jobs.
+    pub jobs: Option<Arc<polymer_library::jobs::JobStore>>,
 }
 
 impl Default for PluginRuntimeOptions {
     fn default() -> Self {
         Self {
             max_concurrent_calls: 2,
+            jobs: None,
         }
     }
 }
