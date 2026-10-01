@@ -10,17 +10,22 @@ impl Handler<Platforms> for StorageActor {
 
     fn handle(&mut self, _: Platforms, _: &mut Context<Self>) -> Self::Result {
         self.execute(move |_, plugins| async move {
-            Ok(plugins
+            let mut platforms = Vec::new();
+            for plugin in plugins
                 .registry()
                 .plugins::<dyn polymer_pluginhost::platform::PlatformPluginInstance>()
-                .iter()
-                .flat_map(|plugin| {
-                    plugin.platforms().iter().map(|platform| StoragePlatform {
-                        platform: platform.to_string(),
-                        plugin: plugin.id().to_string(),
-                    })
-                })
-                .collect::<Vec<_>>())
+            {
+                let updates = plugins.supports_updates(plugin.id()).await.unwrap_or_else(|error| {
+                    tracing::warn!(plugin = plugin.id(), %error, "could not load platform plugin");
+                    false
+                });
+                platforms.extend(plugin.platforms().iter().map(|platform| StoragePlatform {
+                    platform: platform.to_string(),
+                    plugin: plugin.id().to_string(),
+                    updates,
+                }));
+            }
+            Ok(platforms)
         })
     }
 }

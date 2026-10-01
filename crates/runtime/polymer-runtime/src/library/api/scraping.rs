@@ -43,7 +43,7 @@ impl Handler<ScrapingScrapers> for LibraryReader {
 }
 
 impl Handler<ScrapingRefresh> for LibraryBackend {
-    type Result = AtomicResponse<Self, Result<(), LibraryError>>;
+    type Result = AtomicResponse<Self, Result<Value, LibraryError>>;
 
     fn handle(
         &mut self,
@@ -55,6 +55,7 @@ impl Handler<ScrapingRefresh> for LibraryBackend {
             scraping
                 .refresh(&plugin)
                 .await
+                .map(|job| json!(job))
                 .map_err(|error| error.to_string())
         })
     }

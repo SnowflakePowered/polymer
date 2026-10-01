@@ -151,6 +151,10 @@ export class LibraryState {
   private jobChanged = (event: Event) => {
     const job = (event as CustomEvent<Job>).detail;
     if (job.kind === "import") return this.importChanged(job);
+    if (job.kind === "check") {
+      if (job.state === "completed") this.refresh();
+      return;
+    }
     if (job.kind !== "scrape") return;
     if (JSON.stringify(this.jobs.get(job.id)) === JSON.stringify(job)) return;
     this.updateJob(job, true);

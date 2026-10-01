@@ -227,6 +227,7 @@ async fn child_packages_keep_their_own_identity_and_scrape_results() {
         let (job, _) = store
             .enqueue(JobSpec {
                 kind: JobKind::Scrape,
+                parent: None,
                 title: "Scraping metadata".to_owned(),
                 subject: JobSubject {
                     binary_id: Some(root.clone()),
@@ -307,4 +308,230 @@ async fn child_packages_keep_their_own_identity_and_scrape_results() {
         .filter(|job| job.kind == JobKind::Scrape)
         .count();
     assert_eq!(scrapes, 2);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn overlapping_refreshes_share_one_job_that_parents_the_plugins_jobs() {
+    let directory = tempfile::tempdir().unwrap();
+    let plugin = tempfile::tempdir().unwrap();
+    std::fs::write(
+        plugin.path().join("plugin.toml"),
+        r#"
+          [plugin]
+          id = "contents"
+          version = "1"
+          class = "scraper"
+          main = "contents.js"
+
+          [scraper]
+          requires = ["package.platform"]
+          provides = ["meta.genre"]
+        "#,
+    )
+    .unwrap();
+    std::fs::write(
+        plugin.path().join("contents.js"),
+        r#"
+          import { Job } from "polymer:jobs";
+          export async function updateContents() {
+            await new Job("Indexing").run(() => new Promise(resolve => setTimeout(resolve, 50)));
+          }
+          export async function* onScrape() {}
+        "#,
+    )
+    .unwrap();
+    let registry = PluginRegistry::new();
+    registry.load(plugin.path()).unwrap();
+    let catalog = Arc::new(
+        GameCatalog::open(
+            directory.path().join("library.db"),
+            Arc::new(InMemory::new()),
+        )
+        .await
+        .unwrap(),
+    );
+    let jobs = JobStore::open(directory.path().join("jobs.db"))
+        .await
+        .unwrap();
+    let engine = ScrapingEngine::new(
+        catalog,
+        jobs.clone(),
+        registry,
+        polymer_library::Directories::rooted(directory.path(), directory.path()),
+    );
+    let first = engine.refresh("contents").await.unwrap();
+    let second = engine.refresh("contents").await.unwrap();
+    assert_eq!(first.id, second.id);
+    let refreshed = tokio::time::timeout(Duration::from_secs(10), jobs.wait(first.id))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(refreshed.state, JobState::Completed);
+    let listed = jobs.list().await.unwrap();
+    let child = listed.iter().find(|job| job.title == "Indexing").unwrap();
+    assert_eq!(child.parent, Some(first.id));
+    assert_eq!(child.state, JobState::Completed);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn scraping_refreshes_contents_a_plugin_reports_missing_before_its_first_scrape() {
+    let directory = tempfile::tempdir().unwrap();
+    let plugin = tempfile::tempdir().unwrap();
+    std::fs::write(
+        plugin.path().join("plugin.toml"),
+        r#"
+          [plugin]
+          id = "contents"
+          version = "1"
+          class = "scraper"
+          main = "contents.js"
+
+          [scraper]
+          requires = ["package.platform"]
+          provides = ["meta.genre"]
+        "#,
+    )
+    .unwrap();
+    std::fs::write(
+        plugin.path().join("contents.js"),
+        r#"
+          import { connect } from "polymer:database";
+          async function genre() {
+            const db = await connect();
+            try { return (await db.prepare("SELECT value FROM genres").get())?.value; }
+            catch { return undefined; }
+            finally { await db.close(); }
+          }
+          export async function onPluginLoad() {
+            return (await genre()) !== undefined;
+          }
+          export async function updateContents() {
+            const db = await connect();
+            try { await db.exec("CREATE TABLE genres (value TEXT); INSERT INTO genres VALUES ('Action');"); }
+            finally { await db.close(); }
+          }
+          export async function* onScrape() {
+            const value = await genre();
+            if (value === undefined) throw new Error("contents are missing");
+            yield { key: "meta.genre", value, source: "Contents" };
+          }
+        "#,
+    )
+    .unwrap();
+    let registry = PluginRegistry::new();
+    registry.load(plugin.path()).unwrap();
+    let catalog = Arc::new(
+        GameCatalog::open(
+            directory.path().join("library.db"),
+            Arc::new(InMemory::new()),
+        )
+        .await
+        .unwrap(),
+    );
+    std::fs::write(directory.path().join("game.nes"), b"contents-fixture").unwrap();
+    let (launchable, _) = catalog
+        .import_package(
+            IdentifiedLaunchable {
+                manifest: None,
+                path: LaunchableUri::file(directory.path().join("game.nes")).unwrap(),
+                entrypoint: None,
+                package: None,
+                binary_blake3: *blake3::hash(b"contents-fixture").as_bytes(),
+                serial: None,
+                title_id: None,
+                parent_binary_id: None,
+                platform: "NINTENDO_NES".to_owned(),
+            },
+            vec![(
+                "host:gumshoe".to_owned(),
+                vec![MetadataInput {
+                    key: "package.platform".to_owned(),
+                    source: "Gumshoe".to_owned(),
+                    data: MetadataInputData::Scalar {
+                        value: MetadataValue::String("NINTENDO_NES".to_owned()),
+                    },
+                }],
+            )],
+        )
+        .await
+        .unwrap();
+    let jobs = JobStore::open(directory.path().join("jobs.db"))
+        .await
+        .unwrap();
+    let engine = ScrapingEngine::new(
+        catalog.clone(),
+        jobs.clone(),
+        registry,
+        polymer_library::Directories::rooted(directory.path(), directory.path()),
+    );
+    let job = engine
+        .enqueue(launchable.binary_id, launchable.binary_id)
+        .await
+        .unwrap();
+    let scraped = tokio::time::timeout(Duration::from_secs(10), jobs.wait(job.id))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(scraped.state, JobState::Completed, "{:?}", scraped.steps);
+    let genres = catalog
+        .metadata(launchable.binary_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|value| value.producer == "scraper:contents")
+        .map(|value| value.data)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        genres,
+        [MetadataData::Scalar(MetadataValue::String("Action".to_owned()))]
+    );
+    let refreshes = jobs
+        .list()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|job| job.kind == JobKind::Refresh)
+        .collect::<Vec<_>>();
+    assert_eq!(refreshes.len(), 1);
+    assert_eq!(refreshes[0].state, JobState::Completed);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_titles_cached_updates_are_replaced_by_its_latest_check() {
+    let directory = tempfile::tempdir().unwrap();
+    let catalog = GameCatalog::open(
+        directory.path().join("library.db"),
+        Arc::new(InMemory::new()),
+    )
+    .await
+    .unwrap();
+    std::fs::write(directory.path().join("game.iso"), b"updates-fixture").unwrap();
+    let (launchable, _) = catalog
+        .import_package(
+            IdentifiedLaunchable {
+                manifest: None,
+                path: LaunchableUri::file(directory.path().join("game.iso")).unwrap(),
+                entrypoint: None,
+                package: None,
+                binary_blake3: *blake3::hash(b"updates-fixture").as_bytes(),
+                serial: None,
+                title_id: Some("BLES00229".to_owned()),
+                parent_binary_id: None,
+                platform: "SONY_PS3".to_owned(),
+            },
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let candidate = |version: &str| serde_json::json!({ "titleId": "BLES00229", "version": version });
+    catalog
+        .replace_updates(launchable.id, &[candidate("01.01"), candidate("01.02")], 1)
+        .await
+        .unwrap();
+    catalog
+        .replace_updates(launchable.id, &[candidate("01.02")], 2)
+        .await
+        .unwrap();
+    let game = catalog.game(launchable.binary_id).await.unwrap().unwrap();
+    assert_eq!(game.updates[&launchable.id], [candidate("01.02")]);
 }

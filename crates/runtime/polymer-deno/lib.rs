@@ -109,6 +109,8 @@ pub struct RuntimeOptions {
     pub local_storage: Option<webstorage::LocalStorage>,
     /// Registers this isolate with an already-created Deno inspector server.
     pub inspect: bool,
+    /// Hosts whose certificates Fetch does not verify.
+    pub insecure_hosts: Vec<String>,
 }
 
 /// A `deno_core` isolate with a curated browser-like global scope.
@@ -132,6 +134,20 @@ impl Runtime {
             },
         )?;
         Ok(PermissionsContainer::new(parser, permissions))
+    }
+
+    /// Check `url` against the network permissions set by [`Runtime::restrict_network`],
+    /// for host APIs that make requests on a plugin's behalf.
+    pub fn check_network(
+        state: &mut deno_core::OpState,
+        url: &str,
+        api: &str,
+    ) -> Result<(), deno_error::JsErrorBox> {
+        let url = deno_core::url::Url::parse(url).map_err(deno_error::JsErrorBox::from_err)?;
+        state
+            .borrow_mut::<PermissionsContainer>()
+            .check_net_url(&url, api)
+            .map_err(|error| deno_error::JsErrorBox::new("NotCapable", error.to_string()))
     }
 
     pub fn restrict_network(
@@ -166,6 +182,9 @@ impl Runtime {
             deno_tls::deno_tls::init(),
             deno_fetch::deno_fetch::init(deno_fetch::Options {
                 user_agent: user_agent.clone(),
+                // Deno ignores certificate errors for every host when the list is empty.
+                unsafely_ignore_certificate_errors: (!options.insecure_hosts.is_empty())
+                    .then(|| std::mem::take(&mut options.insecure_hosts)),
                 ..Default::default()
             }),
             deno_websocket::deno_websocket::init(),

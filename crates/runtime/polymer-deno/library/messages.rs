@@ -190,7 +190,7 @@ pub struct ScrapingStart {
 pub struct ScrapingScrapers;
 
 #[derive(Debug, actix::Message)]
-#[rtype(result = "Result<(), LibraryError>")]
+#[rtype(result = "Result<Value, LibraryError>")]
 pub struct ScrapingRefresh {
     pub plugin: String,
 }

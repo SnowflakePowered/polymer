@@ -270,9 +270,14 @@ impl StorageManager {
         self.open(kind, platform, destination).await
     }
 
+    /// The platform's oldest volume of `kind`, which launches use by default.
+    pub fn oldest(&self, kind: StorageKind, platform: &str) -> Result<Option<Uuid>, Error> {
+        Ok(self.repository(platform)?.ids(kind)?.into_iter().min())
+    }
+
     /// The platform's oldest volume of `kind`, created on first use.
-    async fn default_volume(&self, kind: StorageKind, platform: &str) -> Result<Uuid, Error> {
-        if let Some(id) = self.repository(platform)?.ids(kind)?.into_iter().min() {
+    pub async fn default_volume(&self, kind: StorageKind, platform: &str) -> Result<Uuid, Error> {
+        if let Some(id) = self.oldest(kind, platform)? {
             return Ok(id);
         }
         let label = match kind {

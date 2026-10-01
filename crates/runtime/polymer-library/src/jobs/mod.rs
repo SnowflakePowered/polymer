@@ -2,10 +2,12 @@
 
 mod handle;
 mod model;
+mod runner;
 mod store;
 
 pub use handle::JobHandle;
 pub use model::{Job, JobKind, JobProgress, JobSpec, JobState, JobStep, JobSubject};
+pub use runner::{JobOutcome, JobRunner};
 pub use store::JobStore;
 
 use uuid::Uuid;
@@ -24,4 +26,6 @@ pub enum JobError {
     NotFound(Uuid),
     #[error("job {} is {}", .0.simple(), .1.as_str())]
     InvalidState(Uuid, JobState),
+    #[error("{} jobs cannot be run or retried here", .0.as_str())]
+    Unsupported(JobKind),
 }

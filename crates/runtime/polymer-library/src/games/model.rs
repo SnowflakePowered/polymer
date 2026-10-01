@@ -9,6 +9,8 @@ pub struct Game {
     pub platform: String,
     pub launchables: Vec<Launchable>,
     pub metadata: Vec<Metadata>,
+    /// Each launchable's update candidates from its last check, in the order it returned them.
+    pub updates: std::collections::BTreeMap<Uuid, Vec<serde_json::Value>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

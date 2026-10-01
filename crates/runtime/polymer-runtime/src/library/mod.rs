@@ -152,10 +152,6 @@ impl LibraryService {
         self.configuration_locks.clone()
     }
 
-    pub(crate) fn scraping(&self) -> polymer_scraping::ScrapingEngine {
-        self.scraping.clone()
-    }
-
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<polymer_scraping::ScrapingEvent> {
         self.scraping.subscribe()
     }

@@ -101,6 +101,10 @@ pub(super) fn create_worker_runtime(
     let main_module =
         deno_core::ModuleSpecifier::parse(entrypoint).map_err(PluginInvocationError::worker)?;
     let network_hosts = loader.network_hosts().to_vec();
+    let insecure_hosts = loader.insecure_hosts().to_vec();
+    let download = crate::download::DownloadBinding {
+        insecure_hosts: loader.insecure_hosts().clone(),
+    };
     let mut runtime = polymer_deno::Runtime::new(polymer_deno::RuntimeOptions {
         main_module,
         module_loader: Rc::new(loader),
@@ -114,6 +118,7 @@ pub(super) fn create_worker_runtime(
             crate::configuration::extension(),
             crate::emulator::js::extension(),
             crate::cache::extension(cache),
+            crate::download::extension(download),
             crate::platform::extension(platform),
             crate::database::extension(database),
             crate::filesystem::extension(filesystem),
@@ -124,6 +129,7 @@ pub(super) fn create_worker_runtime(
         user_agent: format!("PolymerPluginHost/{}", env!("CARGO_PKG_VERSION")),
         local_storage: None,
         inspect: false,
+        insecure_hosts,
     });
     runtime
         .restrict_network(&network_hosts)
@@ -205,42 +211,28 @@ pub(super) async fn invoke_export(
     entrypoint: &str,
     export_path: &[String],
     mut arguments: Vec<Value>,
+    job: Option<Arc<polymer_library::jobs::JobHandle>>,
 ) -> Result<Value, PluginInvocationError> {
-    let progress = matches!(export_path, [name] if name == "updateContents")
-        || matches!(export_path, [default, name] if default == "default" && name == "updateContents");
-    let state = runtime.op_state();
-    let jobs = state
-        .borrow()
-        .try_borrow::<super::jobs::PluginJobs>()
-        .cloned();
-    let job = match jobs.filter(|_| progress) {
-        Some(jobs) => jobs.start("Updating plugin contents").await,
-        None => None,
-    };
-    if job.is_some() {
-        super::jobs::PluginJobs::swap(&mut state.borrow_mut(), job.clone());
-    }
     let invoke = ExtensionFunction::get(runtime, "__polymerPluginRuntime", "invoke")
         .map_err(PluginInvocationError::worker)?;
-    runtime
-        .op_state()
-        .borrow_mut()
-        .borrow_mut::<crate::digest::DigestState>()
-        .arguments(&mut arguments);
+    let scope = {
+        let state = runtime.op_state();
+        let mut state = state.borrow_mut();
+        state
+            .borrow_mut::<crate::digest::DigestState>()
+            .arguments(&mut arguments);
+        job.map(|job| super::jobs::PluginJobs::register(&mut state, job))
+    };
     let values = [
         ExtensionFunction::argument(runtime, entrypoint).map_err(PluginInvocationError::worker)?,
         ExtensionFunction::argument(runtime, export_path).map_err(PluginInvocationError::worker)?,
         ExtensionFunction::argument(runtime, arguments).map_err(PluginInvocationError::worker)?,
+        ExtensionFunction::argument(runtime, scope).map_err(PluginInvocationError::worker)?,
     ];
     let resolved = invoke
         .call(runtime, &values)
         .await
-        .map_err(PluginInvocationError::worker);
-    if job.is_some() {
-        super::jobs::PluginJobs::swap(&mut state.borrow_mut(), None);
-        super::jobs::PluginJobs::finish(job, &resolved).await;
-    }
-    let resolved = resolved?;
+        .map_err(PluginInvocationError::worker)?;
     deno_core::scope!(scope, runtime);
     let value = v8::Local::new(scope, resolved);
     serde_v8::from_v8(scope, value).map_err(PluginInvocationError::worker)
@@ -273,6 +265,24 @@ pub(super) async fn invoke_optional_export(
     let value: OptionalExportResult =
         serde_v8::from_v8(scope, value).map_err(PluginInvocationError::worker)?;
     Ok(value.found.then_some(value.value))
+}
+
+/// The names of the functions the plugin exports, directly or on its default export.
+pub(super) async fn plugin_exports(
+    runtime: &mut deno_core::JsRuntime,
+    entrypoint: &str,
+) -> Result<BTreeSet<String>, PluginInvocationError> {
+    let exports = ExtensionFunction::get(runtime, "__polymerPluginRuntime", "exports")
+        .map_err(PluginInvocationError::worker)?;
+    let values =
+        [ExtensionFunction::argument(runtime, entrypoint).map_err(PluginInvocationError::worker)?];
+    let resolved = exports
+        .call(runtime, &values)
+        .await
+        .map_err(PluginInvocationError::worker)?;
+    deno_core::scope!(scope, runtime);
+    let value = v8::Local::new(scope, resolved);
+    serde_v8::from_v8(scope, value).map_err(PluginInvocationError::worker)
 }
 
 #[derive(Deserialize)]

@@ -1,22 +1,19 @@
 import { caches } from "polymer:cache";
 import { connect } from "polymer:database";
-import type { OnPluginLoad, OnScrape, UpdateContents, PluginProgressContext, ScrapeInput, ScrapeResult } from "polymer:api";
+import { Job } from "polymer:jobs";
+import type { OnPluginLoad, OnScrape, UpdateContents, ScrapeInput, ScrapeResult } from "polymer:api";
 import { ShiragameContent } from "pkg:content.ts";
 import { ShiragameMatcher } from "pkg:matching.ts";
 
 class ShiragameScraper {
   readonly content = new ShiragameContent();
-  private initializedFresh = false;
 
-  async load(context: PluginProgressContext): Promise<void> {
-    this.initializedFresh = await this.content.initialize(context);
+  load(): Promise<boolean> {
+    return this.content.ready();
   }
 
-  async update(context: PluginProgressContext): Promise<void> {
-    // The host runs onPluginLoad before the first explicit update as well. Its
-    // successful first download already satisfies that update in this isolate.
-    if (this.initializedFresh) { this.initializedFresh = false; return; }
-    await this.content.refresh(context);
+  async update(): Promise<void> {
+    await new Job("Updating Shiragame database").run(job => this.content.update(job));
   }
 
   async *scrape(input: ScrapeInput): AsyncGenerator<ScrapeResult> {

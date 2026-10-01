@@ -189,7 +189,7 @@ async fn cancelling_bootstrap_terminates_the_worker() {
 }
 
 #[tokio::test]
-async fn bootstrap_reports_callback_and_generator_progress_to_its_job() {
+async fn jobs_started_during_bootstrap_are_children_of_its_job() {
     use polymer_library::jobs::{JobKind, JobSpec, JobState, JobStore};
     let fixture = Fixture::new();
     fixture
@@ -198,24 +198,31 @@ async fn bootstrap_reports_callback_and_generator_progress_to_its_job() {
             "progress-platform",
             r#"
 
-        export async function* onBootstrap(device, context) {
-            context.progress({message: 'Callback progress', completed: 1, total: 2});
-            yield {message: 'Generator progress', completed: 2, total: 2};
+        import { Job } from "polymer:jobs";
+        export async function onBootstrap(device, context) {
+            await new Job('Preparing firmware').run(() => {});
             throw new Error('BOOTSTRAP_FAILURE');
         }
     "#,
         ))
         .unwrap();
-    let runtime = fixture.runtime();
     let device = fixture.device().await;
     let directory = tempfile::tempdir().unwrap();
     let jobs = JobStore::open(directory.path().join("jobs.db"))
         .await
         .unwrap();
-    let mut changes = jobs.subscribe();
+    let runtime = PluginRuntime::new(
+        fixture.registry.clone(),
+        fixture.directories.clone(),
+        PluginRuntimeOptions {
+            jobs: Some(jobs.clone()),
+            ..Default::default()
+        },
+    );
     let job = Arc::new(
         jobs.start(JobSpec {
             kind: JobKind::Bootstrap,
+            parent: None,
             title: "Installing system files".to_owned(),
             subject: Default::default(),
             params: Value::Null,
@@ -242,23 +249,13 @@ async fn bootstrap_reports_callback_and_generator_progress_to_its_job() {
     job.finish(JobState::Failed, Some(error.message))
         .await
         .unwrap();
-    let mut messages = Vec::new();
-    while let Ok(job) = changes.try_recv() {
-        if let Some(message) = job.message
-            && messages.last() != Some(&message)
-        {
-            messages.push(message);
-        }
-    }
-    let callback = messages
+    let listed = jobs.list().await.unwrap();
+    let child = listed
         .iter()
-        .position(|message| message == "Callback progress")
+        .find(|job| job.title == "Preparing firmware")
         .unwrap();
-    let generator = messages
-        .iter()
-        .position(|message| message == "Generator progress")
-        .unwrap();
-    assert!(callback < generator);
+    assert_eq!(child.parent, Some(job.id()));
+    assert_eq!(child.state, JobState::Completed);
 }
 
 impl Fixture {
@@ -600,4 +597,195 @@ async fn rust_and_javascript_share_platform_keys_and_immutable_files() {
         .await
         .unwrap_err();
     assert!(error.message.contains("KEY_READER_VERIFIED"), "{error}");
+}
+
+#[tokio::test]
+async fn plugin_jobs_are_queued_and_fail_when_left_unfinished() {
+    use polymer_library::jobs::{JobState, JobStore};
+    let fixture = Fixture::new();
+    fixture
+        .registry
+        .load(fixture.provider(
+            "jobs-platform",
+            r#"
+        import { Job } from "polymer:jobs";
+        export async function work() {
+            const done = new Job('Indexing');
+            done.progress({message: 'Indexing entries', completed: 3, total: 3});
+            await done.complete();
+            new Job('Abandoned').progress({message: 'Working'});
+        }
+    "#,
+        ))
+        .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let jobs = JobStore::open(directory.path().join("jobs.db"))
+        .await
+        .unwrap();
+    let runtime = PluginRuntime::new(
+        fixture.registry.clone(),
+        fixture.directories.clone(),
+        PluginRuntimeOptions {
+            jobs: Some(jobs.clone()),
+            ..Default::default()
+        },
+    );
+    runtime
+        .handle()
+        .invoke("jobs-platform", &["work".to_owned()], Vec::new())
+        .await
+        .unwrap();
+    let listed = jobs.list().await.unwrap();
+    let done = listed.iter().find(|job| job.title == "Indexing").unwrap();
+    assert_eq!(done.state, JobState::Completed);
+    assert_eq!(done.message.as_deref(), Some("Indexing entries"));
+    assert_eq!(done.subject.plugin_id.as_deref(), Some("jobs-platform"));
+    let abandoned = listed.iter().find(|job| job.title == "Abandoned").unwrap();
+    assert_eq!(abandoned.state, JobState::Failed);
+}
+
+#[tokio::test]
+async fn jobs_started_in_a_run_scope_are_its_children_across_awaits() {
+    use polymer_library::jobs::{JobState, JobStore};
+    let fixture = Fixture::new();
+    fixture
+        .registry
+        .load(fixture.provider(
+            "nested-jobs-platform",
+            r#"
+        import { Job } from "polymer:jobs";
+        const scope = (title) => new Job(title).run(async () => {
+            await new Promise(resolve => setTimeout(resolve, 0));
+            await new Job(`${title} child`).run(child => child.progress({message: `${title} work`}));
+        });
+        export async function work() {
+            await Promise.all([scope('First'), scope('Second')]);
+        }
+    "#,
+        ))
+        .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let jobs = JobStore::open(directory.path().join("jobs.db"))
+        .await
+        .unwrap();
+    let runtime = PluginRuntime::new(
+        fixture.registry.clone(),
+        fixture.directories.clone(),
+        PluginRuntimeOptions {
+            jobs: Some(jobs.clone()),
+            ..Default::default()
+        },
+    );
+    runtime
+        .handle()
+        .invoke("nested-jobs-platform", &["work".to_owned()], Vec::new())
+        .await
+        .unwrap();
+    let listed = jobs.list().await.unwrap();
+    for title in ["First", "Second"] {
+        let parent = listed.iter().find(|job| job.title == title).unwrap();
+        let child = listed
+            .iter()
+            .find(|job| job.title == format!("{title} child"))
+            .unwrap();
+        assert_eq!(parent.state, JobState::Completed);
+        assert_eq!(child.parent, Some(parent.id));
+        assert_eq!(child.message.as_deref(), Some(format!("{title} work").as_str()));
+    }
+}
+
+#[tokio::test]
+async fn tracked_streams_report_bytes_read_to_their_scope_and_enforce_a_limit() {
+    use polymer_library::jobs::{JobState, JobStore};
+    let fixture = Fixture::new();
+    fixture
+        .registry
+        .load(fixture.provider(
+            "tracked-platform",
+            r#"
+        import { Job, JobTrackedStream } from "polymer:jobs";
+        const source = () => new ReadableStream({
+            start(controller) {
+                controller.enqueue(new Uint8Array(3));
+                controller.enqueue(new Uint8Array(4));
+                controller.close();
+            },
+        });
+        export async function work() {
+            await new Job('Reading').run(async () => {
+                await new Response(new JobTrackedStream(source(), { message: 'Reading bytes', total: 7 })).arrayBuffer();
+            });
+            const limited = new JobTrackedStream(source(), { maxByteLength: 5 });
+            return await new Response(limited).arrayBuffer().then(() => 'read', error => error.name);
+        }
+    "#,
+        ))
+        .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let jobs = JobStore::open(directory.path().join("jobs.db"))
+        .await
+        .unwrap();
+    let runtime = PluginRuntime::new(
+        fixture.registry.clone(),
+        fixture.directories.clone(),
+        PluginRuntimeOptions {
+            jobs: Some(jobs.clone()),
+            ..Default::default()
+        },
+    );
+    let limited = runtime
+        .handle()
+        .invoke("tracked-platform", &["work".to_owned()], Vec::new())
+        .await
+        .unwrap();
+    assert_eq!(limited, json!("RangeError"));
+    let listed = jobs.list().await.unwrap();
+    let reading = listed.iter().find(|job| job.title == "Reading").unwrap();
+    assert_eq!(reading.state, JobState::Completed);
+    assert_eq!(reading.message.as_deref(), Some("Reading bytes"));
+    assert_eq!((reading.completed, reading.total), (Some(7), Some(7)));
+}
+
+#[tokio::test]
+async fn platform_plugins_support_updates_by_exporting_both_functions() {
+    let fixture = Fixture::new();
+    fixture
+        .registry
+        .load(fixture.provider(
+            "updating-platform",
+            r#"
+        export default {
+            async *onCheckUpdates() {},
+            async onFetchUpdate() {},
+        };
+    "#,
+        ))
+        .unwrap();
+    let runtime = fixture.runtime();
+    assert!(
+        runtime
+            .handle()
+            .supports_updates("updating-platform")
+            .await
+            .unwrap()
+    );
+
+    let fixture = Fixture::new();
+    fixture
+        .registry
+        .load(fixture.provider(
+            "checking-platform",
+            r#"
+        export async function* onCheckUpdates() {}
+    "#,
+        ))
+        .unwrap();
+    let runtime = fixture.runtime();
+    assert!(
+        !runtime
+            .handle()
+            .supports_updates("checking-platform")
+            .await
+            .unwrap()
+    );
 }

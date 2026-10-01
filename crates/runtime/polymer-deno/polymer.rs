@@ -34,7 +34,8 @@ use consolestorage::{
 pub mod jobs;
 pub use jobs::Jobs;
 use jobs::{
-    op_jobs_cancel, op_jobs_dismiss, op_jobs_get, op_jobs_import, op_jobs_list, op_jobs_retry,
+    op_jobs_cancel, op_jobs_check_updates, op_jobs_dismiss, op_jobs_fetch_update, op_jobs_get,
+    op_jobs_import, op_jobs_list, op_jobs_retry,
 };
 
 #[path = "library/mod.rs"]
@@ -578,7 +579,7 @@ deno_core::extension!(
         op_library_metadata_text,
         op_library_metadata_url,
         op_scraping_start, op_scraping_scrapers, op_scraping_refresh,
-        op_jobs_list, op_jobs_get, op_jobs_cancel, op_jobs_retry, op_jobs_dismiss, op_jobs_import,
+        op_jobs_list, op_jobs_get, op_jobs_cancel, op_jobs_retry, op_jobs_dismiss, op_jobs_import, op_jobs_check_updates, op_jobs_fetch_update,
         op_emulator_launch,
         op_emulator_close,
         op_emulator_set_volume,

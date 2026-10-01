@@ -31,6 +31,24 @@ struct PluginPermissions {
 struct NetworkPermissions {
     #[serde(default)]
     allowed_hosts: Vec<String>,
+    /// Allowed hosts whose certificates are not verified, for hosts whose certificates
+    /// cannot be, such as chains signed with SHA-1 or certificates without a
+    /// subjectAltName. Requests to them can be intercepted.
+    #[serde(default)]
+    insecure_hosts: Vec<String>,
+}
+
+impl NetworkPermissions {
+    fn insecure_hosts(&self) -> Result<Vec<String>, PackageError> {
+        match self
+            .insecure_hosts
+            .iter()
+            .find(|host| !self.allowed_hosts.contains(host))
+        {
+            Some(host) => Err(PackageError::InsecureHost(host.clone())),
+            None => Ok(self.insecure_hosts.clone()),
+        }
+    }
 }
 
 /// Persistent, plugin-local cache storage declared by a package.
@@ -112,7 +130,8 @@ impl<B: DeserializeOwned> PluginPackage<B> {
         polymer_deno::Runtime::network_permissions(&plugin.permissions.net.allowed_hosts)
             .map_err(|error| PackageError::ModuleSpecifier(error.to_string()))?;
         let module_loader = crate::loading::PluginModuleLoader::new(&plugin.id, root.clone())
-            .with_network_hosts(plugin.permissions.net.allowed_hosts.clone());
+            .with_network_hosts(plugin.permissions.net.allowed_hosts.clone())
+            .with_insecure_hosts(plugin.permissions.net.insecure_hosts()?);
         let entrypoint = module_loader
             .package_specifier(&plugin.main)
             .map_err(|error| PackageError::ModuleSpecifier(error.to_string()))?;
@@ -224,6 +243,8 @@ pub enum PackageError {
     EmptyDefinitionPattern(String),
     #[error("package path escapes its root: {}", .0.display())]
     EscapesPackage(PathBuf),
+    #[error("insecure host '{0}' is not an allowed host")]
+    InsecureHost(String),
     #[error("emulator package has no input definition")]
     NoInputDefinition,
     #[error("emulator package does not support platform '{0}'")]

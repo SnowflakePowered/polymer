@@ -12,6 +12,7 @@ mod cache;
 mod configuration;
 pub mod controller;
 mod database;
+mod download;
 pub mod digest;
 pub mod emulator;
 pub mod filesystem;

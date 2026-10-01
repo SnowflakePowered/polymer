@@ -62,5 +62,12 @@ CREATE TABLE IF NOT EXISTS launchable_manifests (
     revision TEXT NOT NULL,
     manifest_json TEXT NOT NULL
 ) STRICT;
-PRAGMA user_version = 7;
+CREATE TABLE IF NOT EXISTS title_updates (
+    launchable_id BLOB NOT NULL REFERENCES launchables(id) ON DELETE CASCADE,
+    ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+    candidate_json TEXT NOT NULL,
+    checked_at INTEGER NOT NULL,
+    PRIMARY KEY (launchable_id, ordinal)
+) STRICT;
+PRAGMA user_version = 8;
 "#;

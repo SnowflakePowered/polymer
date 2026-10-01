@@ -37,12 +37,9 @@ declare module "polymer:api" {
         setItem(key: string, value: unknown): void,
     }>;
 
-    export type PluginProgressContext = Readonly<{
-        progress(update: { message: string; completed?: number; total?: number }): void;
-    }>;
-    export type PluginLoadContext = PluginProgressContext;
-    export type UpdateContents = (context: PluginProgressContext) => void | Promise<void>;
-    export type OnPluginLoad = (context: PluginLoadContext) => void | Promise<void>;
+    export type UpdateContents = () => void | Promise<void>;
+    export type OnPluginLoad = () => void | boolean | Promise<void | boolean>;
+    export type JobProgress = { readonly message?: string; readonly completed?: number; readonly total?: number };
 
     export type PluginCacheFile = Digestible & Readonly<{
         readonly size: number,
@@ -52,8 +49,17 @@ declare module "polymer:api" {
         bytes(): Promise<Uint8Array>,
         text(): Promise<string>,
     }>;
+    export type PluginCacheOpenOptions = { read?: boolean, write?: boolean, create?: boolean, truncate?: boolean };
+    /** A directory inside a plugin cache. Files opened in it are created on first write. */
+    export type PluginCacheDirectory = Readonly<{
+        name: string,
+        kind: "directory",
+        open(path: string, options?: PluginCacheOpenOptions): PluginCacheFile,
+        directory(path: string): PluginCacheDirectory,
+    }>;
     export type PluginCache = DirectoryEntry & Readonly<{
-        open(path: string, options?: { read?: boolean, write?: boolean, create?: boolean, truncate?: boolean }): PluginCacheFile,
+        open(path: string, options?: PluginCacheOpenOptions): PluginCacheFile,
+        directory(path: string): PluginCacheDirectory,
     }>;
 
     export type PluginStatement = Readonly<{
@@ -295,13 +301,49 @@ declare module "polymer:api" {
 
     export type DepotType = "system" | "app" | "appcontent" | "appupdate";
     export interface PlatformArtifact { id: string; label: string; version: string | null; depotType: DepotType; byteLength: number }
-    export interface BootstrapDevice {
+    export interface PlatformDevice {
         readonly artifacts: readonly PlatformArtifact[];
         readonly id: string;
         readonly platform: string;
+        /** Installs run in order. Unavailable while checking for updates. */
         install(source: string | PluginCacheFile): Promise<PlatformArtifact>;
     }
-    export interface BootstrapContext extends PluginProgressContext, FirmwareContext, KeyWriterContext { readonly settings: Record<string, unknown> }
+    export interface BootstrapContext extends FirmwareContext, KeyWriterContext { readonly settings: Record<string, unknown> }
+
+    export interface UpdateQuery {
+        readonly titleId: string;
+        /** Version of the base package in the library, if known. */
+        readonly version: string | null;
+        /** Installed NAND artifact backing the launchable, when the launchable is an artifact. */
+        readonly artifactId: string | null;
+    }
+    export interface UpdateCandidate {
+        readonly titleId: string;
+        readonly version: string;
+        readonly label: string;
+        readonly byteLength: number | null;
+        /** Plugin-defined JSON-safe payload returned unchanged to onFetchUpdate. */
+        readonly source: unknown;
+    }
+
+    export interface DownloadOptions {
+        /** Expected size of the complete file. */
+        readonly byteLength?: number;
+        /** Expected digest of the complete file. */
+        readonly sha1?: string;
+        readonly sha256?: string;
+        /** The digest covers only the file's first `digestLength` bytes. */
+        readonly digestLength?: number;
+        /** The download fails once the file grows past this many bytes. */
+        readonly maxByteLength?: number;
+    }
+    export interface UpdateContext extends FirmwareContext, KeyWriterContext {}
+    export type CheckUpdates = (title: UpdateQuery, device: PlatformDevice, context: UpdateContext) => AsyncGenerator<UpdateCandidate, void, void>;
+    /**
+     * Downloads one candidate into a plugin cache and returns the depot the host installs: a
+     * single file, or a cache directory holding every file of the depot.
+     */
+    export type FetchUpdate = (candidate: UpdateCandidate, context: UpdateContext) => Promise<PluginCacheFile | PluginCacheDirectory>;
 
     /** User-supplied BIOS files recognized by consolespec, separate from system software and keys. */
     export type FirmwareLookup = { readonly name: string } | {

@@ -276,11 +276,11 @@ export interface ScrapingApi extends EventTarget {
   start(rootBinaryId: string, options?: { triggerBinaryId?: string }): Promise<Job>;
   readonly scrapers: Readonly<{
     list(): Promise<ScraperDescriptor[]>;
-    update(id: string): Promise<void>;
+    update(id: string): Promise<Job>;
   }>;
 }
 
-export type JobKind = "scrape" | "install" | "bootstrap" | "plugin" | "import";
+export type JobKind = "scrape" | "install" | "bootstrap" | "plugin" | "import" | "check" | "update" | "download" | "refresh";
 export type JobState = "queued" | "running" | "paused" | "completed" | "partial" | "failed" | "cancelled";
 export type JobStep = Readonly<{ key: string; state: JobState; error: string | null }>;
 /** Background work from any source. Persistent jobs survive restarts and resume. */
@@ -288,6 +288,7 @@ export type Job = Readonly<{
   id: string;
   kind: JobKind;
   state: JobState;
+  parent: string | null;
   title: string;
   icon: string | null;
   subject: Readonly<{ platform?: string; storage?: string; binaryId?: string; pluginId?: string }>;
@@ -400,6 +401,14 @@ export interface StorageArtifact {
   /** NAND path of the installed package used for identification and scraping. */
   package?: string;
 }
+export type UpdateCandidate = Readonly<{
+  titleId: string;
+  version: string;
+  label: string;
+  byteLength: number | null;
+  /** Platform-plugin-defined payload, returned unchanged when fetching. */
+  source: unknown;
+}>;
 export interface StorageInspection { id: string; platform: string; minimal: boolean; dirty: boolean; artifacts: StorageArtifact[] }
 export interface StorageRemovalPlan { requested: string[]; affected: string[]; revision: string }
 export interface StorageSave {
@@ -445,7 +454,7 @@ export type StorageInstallStatus = Readonly<{
 }>;
 
 export interface ConsoleStorageApi extends EventTarget {
-  platforms(): Promise<{ platform: string; plugin: string }[]>;
+  platforms(): Promise<{ platform: string; plugin: string; updates: boolean }[]>;
   readonly Storage: {
     readonly prototype: ConsoleStorageVolume;
     supports(kind: ConsoleStorageKind, platform: string): Promise<boolean>;
@@ -492,7 +501,8 @@ export type LibraryMetadata = Readonly<{
 export type LibraryGame = Readonly<{
   id: string;
   platform: string;
-  launchables: readonly LibraryLaunchable[];
+  /** Each launchable carries the update candidates its last check found, oldest first. */
+  launchables: readonly (LibraryLaunchable & Readonly<{ updates: readonly UpdateCandidate[] }>)[];
   metadata: readonly LibraryMetadata[];
 }>;
 
@@ -522,6 +532,19 @@ export interface LibraryApi extends EventTarget {
    * packages install into `storage`, or into the first NAND for their platform, created if needed.
    */
   import(input: { path: string; storage?: string }): Promise<Job>;
+  readonly updates: Readonly<{
+    /**
+     * Starts an in-memory `check` job for a library title, installed or not; when it
+     * completes, its detail holds `candidates`.
+     */
+    check(launchableId: string): Promise<Job>;
+    /**
+     * Starts an `update` job that downloads one candidate as a depot. When it completes, its
+     * detail holds the `depot` path, a file or directory, and the id of the child `install`
+     * job it queued.
+     */
+    fetch(launchableId: string, candidate: UpdateCandidate): Promise<Job>;
+  }>;
   importKey(platform: string, namespace: "system" | "content", key: Uint8Array | string, titleid?: string): Promise<ImportedKey>;
   readonly keys: Readonly<{
     list(platform: string, options?: { namespace?: "system" | "content" }): Promise<ImportedKey[]>;

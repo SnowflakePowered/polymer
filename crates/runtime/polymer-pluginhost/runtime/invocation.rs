@@ -16,7 +16,7 @@ pub struct PluginRuntimeOptions {
     /// Maximum number of fresh isolates executing at the same time. Tokio's
     /// semaphore is fair, so excess calls are admitted in FIFO order.
     pub max_concurrent_calls: usize,
-    /// Where plugin loads and content updates report as jobs.
+    /// Where jobs started by plugins are reported.
     pub jobs: Option<Arc<polymer_library::jobs::JobStore>>,
 }
 

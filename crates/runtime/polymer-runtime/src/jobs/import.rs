@@ -1,23 +1,41 @@
 use polymer_deno::polymer::{
-    ConsoleStorage, Library,
-    consolestorage::{Create, List, Platforms},
+    Library,
+    consolestorage::{List, Platforms},
     jobs::{Job, JobsError},
     library::{InstalledArtifact, LaunchablesAdd, LibraryImport},
 };
-use polymer_library::jobs::{JobHandle, JobKind, JobProgress, JobSpec, JobState, JobStore};
+use polymer_library::GameCatalog;
+use polymer_library::jobs::{
+    JobHandle, JobKind, JobOutcome, JobProgress, JobRunner, JobSpec, JobState, JobStore,
+};
 use serde_json::{Value, json};
 use std::{future::Future, path::Path, sync::Arc};
 use uuid::Uuid;
 
 /// Runs import jobs: identifies a dropped path, then installs and registers what it
-/// contains. Installs and bootstraps run as child jobs whose ids are recorded before
-/// they start, so a resumed import waits on them instead of repeating them.
+/// contains. Installs run as child jobs whose ids are recorded before they start, so a
+/// resumed import waits on them instead of repeating them. A completed import queues an
+/// update check for each title it added.
 #[derive(Clone)]
 pub(super) struct Importer {
     store: Arc<JobStore>,
     library: Library,
     storage: crate::StorageService,
-    platforms: Arc<dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    catalog: Arc<GameCatalog>,
+    arbiter: actix::ArbiterHandle,
+}
+
+impl JobRunner for Importer {
+    fn run(&self, _: &Arc<JobStore>, ids: Vec<Uuid>, _: bool) {
+        for id in ids {
+            let importer = self.clone();
+            self.arbiter.spawn(async move {
+                if let Err(error) = importer.run_job(id).await {
+                    tracing::warn!(%error, job = %id, "import job failed");
+                }
+            });
+        }
+    }
 }
 
 impl Importer {
@@ -25,12 +43,14 @@ impl Importer {
         store: Arc<JobStore>,
         library: Library,
         storage: crate::StorageService,
+        catalog: Arc<GameCatalog>,
     ) -> Self {
         Self {
             store,
             library,
             storage,
-            platforms: Default::default(),
+            catalog,
+            arbiter: actix::Arbiter::current(),
         }
     }
 
@@ -41,6 +61,7 @@ impl Importer {
             .unwrap_or_else(|| path.to_owned());
         JobSpec {
             kind: JobKind::Import,
+            parent: None,
             title,
             subject: Default::default(),
             params: json!({ "path": path, "storage": storage }),
@@ -50,41 +71,7 @@ impl Importer {
         }
     }
 
-    /// Queues an import and starts it, unless the same path is already importing.
-    pub(super) async fn enqueue(&self, spec: JobSpec) -> Result<Job, JobsError> {
-        let (job, created) = self
-            .store
-            .enqueue(spec)
-            .await
-            .map_err(JobsError::from_display)?;
-        if created {
-            self.spawn(job.id);
-        }
-        Ok(job)
-    }
-
-    pub(super) async fn resume(&self) -> Result<(), JobsError> {
-        let jobs = self
-            .store
-            .recover(JobKind::Import)
-            .await
-            .map_err(JobsError::from_display)?;
-        for job in jobs {
-            self.spawn(job.id);
-        }
-        Ok(())
-    }
-
-    fn spawn(&self, id: Uuid) {
-        let importer = self.clone();
-        actix::spawn(async move {
-            if let Err(error) = importer.run(id).await {
-                tracing::warn!(%error, job = %id, "import job failed");
-            }
-        });
-    }
-
-    async fn run(&self, id: Uuid) -> Result<(), JobsError> {
+    async fn run_job(&self, id: Uuid) -> Result<(), JobsError> {
         let Some(job) = self
             .store
             .claim(id)
@@ -94,13 +81,14 @@ impl Importer {
             return Ok(());
         };
         let outcome = self.execute(&job).await;
-        let (state, error) = match &outcome {
-            Ok(()) => (JobState::Completed, None),
-            Err(error) => (JobState::Failed, Some(error.to_string())),
-        };
-        job.finish(state, error)
+        job.settle(outcome.as_ref().map(|()| JobOutcome::completed(None)))
             .await
             .map_err(JobsError::from_display)?;
+        if outcome.is_ok()
+            && let Err(error) = self.check_updates(&job).await
+        {
+            tracing::warn!(%error, job = %id, "could not check imported titles for updates");
+        }
         outcome
     }
 
@@ -197,15 +185,60 @@ impl Importer {
             }),
         };
         Self::stage(job, &key, format!("Adding {filename}"), async {
-            Self::call(&self.library.launchables_add, message)
-                .await
-                .map(drop)
+            let added = Self::call(&self.library.launchables_add, message).await?;
+            let launchables = std::iter::once(&added["launchable"])
+                .chain(added["imports"].as_array().into_iter().flatten().map(|import| &import["launchable"]))
+                .map(|launchable| launchable["id"].clone())
+                .collect::<Vec<_>>();
+            Self::note(job, |detail| detail["added"][&key] = json!(launchables)).await
         })
         .await
     }
 
+    /// Queues a `check` job for each title the import added on a platform whose plugin
+    /// provides updates.
+    async fn check_updates(&self, job: &JobHandle) -> Result<(), JobsError> {
+        let detail = Self::get(job).await?.detail;
+        let platforms = Self::call(&self.storage.client().platforms, Platforms).await?;
+        let identified = detail["result"]["imports"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|import| &import["launchable"]["id"]);
+        let installed = detail["added"]
+            .as_object()
+            .into_iter()
+            .flat_map(|added| added.values())
+            .filter_map(Value::as_array)
+            .flatten();
+        let ids = identified
+            .chain(installed)
+            .filter_map(Value::as_str)
+            .map(Self::parse)
+            .collect::<Result<Vec<_>, _>>()?;
+        for id in ids {
+            let launchable = self
+                .catalog
+                .launchable(id)
+                .await
+                .map_err(JobsError::from_display)?;
+            let updatable = platforms
+                .iter()
+                .any(|platform| platform.updates && platform.platform == launchable.identified.platform);
+            if !updatable || launchable.identified.title_id.is_none() {
+                continue;
+            }
+            let spec = crate::StorageService::check_spec(&launchable).map_err(JobsError::from_display)?;
+            self.store
+                .submit(spec)
+                .await
+                .map_err(JobsError::from_display)?;
+        }
+        Ok(())
+    }
+
     /// The NAND to install into: the job's `storage` parameter when set, otherwise the
-    /// platform's first NAND, created and optionally bootstrapped when there is none.
+    /// platform's default NAND, created and optionally bootstrapped when there is none.
     /// The choice is written back to the parameters.
     async fn nand(
         &self,
@@ -229,59 +262,16 @@ impl Importer {
             }
             return Self::parse(&volume.id);
         }
-        let lock = self
-            .platforms
-            .entry(platform.to_owned())
-            .or_default()
-            .clone();
-        let _setup = lock.lock().await;
-        let bootstrapping = format!("bootstrap:{platform}");
-        if let Some(child) = Self::child(&current, &bootstrapping) {
-            self.wait(child).await?;
-        }
-        let volumes = Self::call(&client.list, List).await?;
-        let id = match volumes
-            .iter()
-            .find(|volume| volume.kind == "nand" && volume.platform == platform)
-        {
-            Some(volume) => Self::parse(&volume.id)?,
-            None => self.create(job, &client, platform, bootstrap).await?,
-        };
+        let id = self
+            .storage
+            .provide_nand(platform, bootstrap, Some(job.id()))
+            .await
+            .map_err(JobsError::from_display)?;
         let mut params = current.params;
         params["storage"] = json!(id.simple().to_string());
         job.reparameterize(params)
             .await
             .map_err(JobsError::from_display)?;
-        Ok(id)
-    }
-
-    async fn create(
-        &self,
-        job: &JobHandle,
-        client: &ConsoleStorage,
-        platform: &str,
-        bootstrap: bool,
-    ) -> Result<Uuid, JobsError> {
-        let name = consolespec::MachineSpec::try_from(platform)
-            .map(|machine| machine.name())
-            .unwrap_or(platform);
-        let create = Create {
-            kind: "nand".to_owned(),
-            platform: platform.to_owned(),
-            label: Some(format!("{name} NAND")),
-        };
-        let id = Self::parse(&Self::call(&client.create, create).await?.id)?;
-        let provided = Self::call(&client.platforms, Platforms)
-            .await?
-            .iter()
-            .any(|provider| provider.platform == platform);
-        if bootstrap && provided {
-            let spec = crate::StorageService::bootstrap_spec(platform, id, json!({}));
-            let child = self
-                .start(job, &format!("bootstrap:{platform}"), spec)
-                .await?;
-            self.wait(child).await?;
-        }
         Ok(id)
     }
 
@@ -296,7 +286,9 @@ impl Importer {
             detail["children"][key] = json!(child.id.simple().to_string())
         })
         .await?;
-        self.storage.run_job(child.id);
+        self.store
+            .dispatch(&child)
+            .map_err(JobsError::from_display)?;
         Ok(child.id)
     }
 

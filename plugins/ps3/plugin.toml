@@ -5,11 +5,22 @@ class = "platform"
 main = "ps3.ts"
 
 [plugin.permissions.net]
-allowed-hosts = ["dus01.ps3.update.playstation.net"]
+allowed-hosts = [
+  "dus01.ps3.update.playstation.net",
+  "a0.ww.np.dl.playstation.net",
+  "b0.ww.np.dl.playstation.net",
+]
+# The update host's certificate has no subjectAltName and a SHA-1 chain, so it
+# cannot be verified.
+insecure-hosts = ["a0.ww.np.dl.playstation.net"]
 
 [[plugin.caches]]
 key = "firmware"
 label = "PlayStation 3 system software"
+
+[[plugin.caches]]
+key = "updates"
+label = "PlayStation 3 title updates"
 
 [platform]
 platforms = ["SONY_PS3"]
