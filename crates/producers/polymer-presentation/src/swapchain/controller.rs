@@ -1,9 +1,6 @@
 use super::*;
-use crate::{
-    CapturedFrame, FramePlacement,
-    producer::{AvailabilityWaiter, ProducerSession},
-};
-use polymer_protocol::{ConsumerApi, StreamId};
+use crate::producer::{AvailabilityWaiter, ProducerSession};
+use polymer_protocol::{ConsumerApi, FrameReady, StreamId};
 use std::{io, sync::Arc};
 
 #[derive(Debug)]
@@ -490,19 +487,13 @@ impl<B: SwapchainBackend> SwapchainController<B> {
         state.producer_complete = false;
         // Even a failed IPC call may have delivered metadata to the consumer.
         state.publication = Some(signal.value);
-        let extent = self.binding.extent();
-        let frame = CapturedFrame {
+        let frame = FrameReady {
             stream_id: StreamId(self.binding.generation()),
             slot: signal.slot.index(),
-            extent,
+            frame_number: 0,
             sync_value: signal.value,
             timestamp_qpc,
-        }
-        .present(FramePlacement::new(
-            extent,
-            Some(extent.rect()),
-            (false, false),
-        ));
+        };
         if let Err(error) = self
             .publisher
             .as_mut()

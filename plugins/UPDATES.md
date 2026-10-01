@@ -173,7 +173,7 @@ interface LibraryApi {
 A check is queued for a title in two cases:
 
 - **After an import.** When an `import` job completes, it queues a `check` job for each launchable it added or installed whose platform supports updates.
-- **In the background.** When the runtime starts, and then every 24 hours, it queues a `check` job for every library title on an updatable platform. Because check jobs are deduplicated, a title that is already being checked is skipped.
+- **At startup.** When the runtime starts, it queues a `check` job for every library title on a platform whose plugin provides updates. Because check jobs are deduplicated, a title that is already being checked is skipped.
 
 Results go into the `title_updates` table in `library.db`, keyed by launchable, with each candidate's JSON, its position in the order the check returned, and a `checked_at` timestamp. Rows are deleted with their launchable. A successful check replaces every row for that launchable, so an installed update stops being offered at the next check. Each launchable in `LibraryGame.launchables` carries `updates: readonly UpdateCandidate[]` from this table, so the UI never has to ping the server to show that an update is available, and Horizon refreshes the library when a `check` job completes. Updates are never downloaded automatically.
 

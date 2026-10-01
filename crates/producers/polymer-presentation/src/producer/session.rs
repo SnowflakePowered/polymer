@@ -116,7 +116,6 @@ impl ProducerSession {
                 SessionFailure::IncompatibleProtocol,
             ));
         }
-        socket.enable_frame_channel(hello.process_id)?;
         Ok(Self {
             socket,
             viewer_pid: hello.process_id,
@@ -230,21 +229,14 @@ impl ProducerSession {
             ));
         }
         frame.frame_number = self.frame_number.wrapping_add(1);
-        let diagnostic = (
-            frame.stream_id,
-            frame.slot,
-            frame.render_width,
-            frame.render_height,
-            frame.sync_value,
-        );
-        self.availability.state.lock().last_publication = Some((diagnostic.0, diagnostic.4));
+        self.availability.state.lock().last_publication = Some((frame.stream_id, frame.sync_value));
         match self.socket.send(Message::FrameReady(frame)) {
             Ok(()) => {
                 self.frame_number = self.frame_number.wrapping_add(1);
                 if self.frame_number == 1 || self.frame_number.is_multiple_of(120) {
-                    tracing::debug!(stream = ?diagnostic.0, slot = diagnostic.1,
-                        width = diagnostic.2, height = diagnostic.3, sync_value = diagnostic.4,
-                        frame = self.frame_number, "polymer: published capture frame");
+                    tracing::debug!(stream = ?frame.stream_id, slot = frame.slot,
+                        sync_value = frame.sync_value, frame = self.frame_number,
+                        "polymer: published capture frame");
                 }
                 Ok(())
             }

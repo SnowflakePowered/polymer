@@ -161,22 +161,13 @@ impl ExtCapture {
             .store(sync_value, Ordering::Relaxed);
         self.scheduler.commit(slot_index, self.slots.len());
         self.sync_value = sync_value;
-        let extent = polymer_presentation::Extent2D {
-            width: self.width,
-            height: self.height,
-        };
-        let message = polymer_presentation::CapturedFrame {
+        let message = polymer_protocol::FrameReady {
             stream_id,
             slot: slot_index as u32,
+            frame_number: 0,
             sync_value,
             timestamp_qpc: performance_counter().unwrap_or(0),
-            extent,
-        }
-        .present(polymer_presentation::FramePlacement::new(
-            extent,
-            Some(extent.rect()),
-            (false, false),
-        ));
+        };
         ProducerSession::publish_frame(&mut self.ipc, message);
     }
 }
@@ -206,10 +197,11 @@ impl ExtCapture {
             surface_id,
             adapter_luid,
             source_window: source_window as i64,
+            hook: GraphicsHook::OpenGl,
             width: self.width,
             height: self.height,
             format: DXGI_FORMAT_R8G8B8A8_UNORM.0 as u32,
-            image_kind: ExternalImageKind::OpenGlD3d12Resource,
+            image_kind: ExternalImageKind::D3d12Resource,
             sync_kind: ExternalSyncKind::D3d12Fence,
             image_handles: &image_handles,
             timeline_semaphore_handle: self.ready.handle().0 as i64,

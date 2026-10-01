@@ -55,7 +55,13 @@ pub trait Compositor {
     fn set_overlay_note(&mut self, note: &str);
     fn set_input_diagnostics(&mut self, diagnostics: InputDiagnostics);
     fn set_backend(&mut self, backend: String);
-    fn add_surface(&mut self, connection: u64, surface: u64, target: u32);
+    fn add_surface(
+        &mut self,
+        connection: u64,
+        surface: u64,
+        target: u32,
+        extent: polymer_renderer::Extent,
+    );
     fn observe_frame_at(
         &mut self,
         connection: u64,

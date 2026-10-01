@@ -81,8 +81,7 @@ impl VulkanCompositor {
             .iter()
             .filter_map(|surface| {
                 let frame = surface.frames.latest()?;
-                let image_extent = polymer_renderer::renderer::frame_image_extent(
-                    frame,
+                let image_extent = polymer_renderer::renderer::image_extent(
                     surface.imported.width,
                     surface.imported.height,
                     surface.quarter_turns,

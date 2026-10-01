@@ -213,10 +213,7 @@ impl Drop for ImportedD3d12Stream {
 fn validate_stream(stream: &StreamReady, adapter_luid: AdapterLuid) -> windows::core::Result<()> {
     match (stream.image_kind, stream.sync_kind) {
         (
-            ExternalImageKind::D3d12Resource
-            | ExternalImageKind::OpenGlD3d12Resource
-            | ExternalImageKind::VulkanD3d12Resource
-            | ExternalImageKind::D3d11D3d12Resource,
+            ExternalImageKind::D3d12Resource | ExternalImageKind::D3d11Resource,
             ExternalSyncKind::D3d12Fence,
         ) => (),
         _ => return Err(windows::core::Error::from_hresult(E_INVALIDARG)),

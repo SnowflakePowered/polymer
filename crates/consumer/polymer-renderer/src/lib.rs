@@ -17,23 +17,6 @@ pub use renderer::{
     SurfaceContent, SurfacePlacement, SwapchainMode,
 };
 
-pub fn fit_inside(
-    source_width: u32,
-    source_height: u32,
-    target_width: u32,
-    target_height: u32,
-) -> (u32, u32) {
-    if source_width <= target_width && source_height <= target_height {
-        return (source_width.max(1), source_height.max(1));
-    }
-    let scale = (target_width as f64 / source_width.max(1) as f64)
-        .min(target_height as f64 / source_height.max(1) as f64);
-    (
-        (source_width as f64 * scale).floor().max(1.0) as u32,
-        (source_height as f64 * scale).floor().max(1.0) as u32,
-    )
-}
-
 pub fn fit_extent(
     source_width: u32,
     source_height: u32,

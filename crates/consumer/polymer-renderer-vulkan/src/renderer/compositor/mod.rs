@@ -8,7 +8,7 @@ use std::error::Error;
 
 use crate::webrtc::{self, VulkanVideoCache, WebRtcCompositor};
 use polymer_renderer::renderer::SwapchainMode;
-use polymer_renderer::{ReceivedSurface, fit_inside, surface_sort_key};
+use polymer_renderer::{ReceivedSurface, surface_sort_key};
 
 use super::VulkanReceiver;
 use super::surface::{ImportedVulkanSurface, SurfaceCache};

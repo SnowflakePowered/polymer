@@ -20,6 +20,7 @@ struct JobActor {
     store: Option<Arc<JobStore>>,
     importer: Option<Importer>,
     catalog: Option<Arc<GameCatalog>>,
+    storage: Option<crate::StorageService>,
 }
 
 impl Actor for JobActor {
@@ -32,6 +33,25 @@ impl Actor for JobActor {
         let importer = self.importer.clone();
         if let Some(importer) = &importer {
             store.register(&[JobKind::Import], Arc::new(importer.clone()));
+        }
+        if let (Some(catalog), Some(storage)) = (self.catalog.clone(), self.storage.clone()) {
+            let store = store.clone();
+            actix::spawn(async move {
+                let checked = async {
+                    let games = catalog
+                        .games(None)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    let launchables = games.into_iter().flat_map(|game| game.launchables);
+                    storage
+                        .check_titles(&store, launchables)
+                        .await
+                        .map_err(|error| error.to_string())
+                };
+                if let Err(error) = checked.await {
+                    tracing::warn!(%error, "could not check library titles for updates");
+                }
+            });
         }
         actix::spawn(async move {
             if let Err(error) = store.abandon(JobKind::Download).await {
@@ -190,6 +210,7 @@ impl JobService {
                         store,
                         importer,
                         catalog,
+                        storage,
                     }
                     .start()
                 });

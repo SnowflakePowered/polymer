@@ -11,7 +11,6 @@ use polymer_pluginhost::controller::AttachAutomation;
 use polymer_pluginhost::controller::{
     AttachActions, ControllerChanged, DiscChange, PauseResume, PendingReply, Quit, StateAction,
 };
-use polymer_protocol::{PresentationMappingKind, PresentationTransform};
 use polymer_renderer::layout::Rect;
 use polymer_renderer::{
     CompositingPlan, Extent, SurfaceCapture, SurfaceCaptureEvent, SurfaceContent, SurfacePlacement,
@@ -64,6 +63,7 @@ pub(crate) struct ConnectedSurface {
     pub target_index: u32,
     pub replaced_connection: Option<u64>,
     pub backend: String,
+    pub extent: polymer_renderer::Extent,
 }
 
 pub(crate) enum GameHostCaptureEvent {
@@ -73,7 +73,6 @@ pub(crate) enum GameHostCaptureEvent {
         connection: u64,
         frame: polymer_protocol::FrameReady,
         observed_qpc: Option<u64>,
-        dimensions_changed: bool,
     },
     Removed {
         connection: u64,
@@ -213,12 +212,7 @@ impl GameHost {
         surfaces.sort_by_key(|(_, surface)| std::cmp::Reverse(surface.primary().z_index));
         for (&connection, surface) in surfaces {
             let received_surfaces = self.compositor.borrow().received_surfaces(connection);
-            for mut received_surface in received_surfaces {
-                received_surface.frame.presentation_transform = normalize_pointer_transform(
-                    received_surface.frame.presentation_transform,
-                    received_surface.frame.presentation_width,
-                    received_surface.frame.presentation_height,
-                );
+            for received_surface in received_surfaces {
                 for geometry in &surface.geometries {
                     let rectangle =
                         Rect::new(geometry.x, geometry.y, geometry.width, geometry.height);

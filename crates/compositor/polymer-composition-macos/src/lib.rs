@@ -171,9 +171,15 @@ impl Compositor for MacosCompositor {
             o.set_backend(backend);
         }
     }
-    fn add_surface(&mut self, connection: u64, surface: u64, target: u32) {
+    fn add_surface(
+        &mut self,
+        connection: u64,
+        surface: u64,
+        target: u32,
+        extent: polymer_renderer::Extent,
+    ) {
         if let Some(o) = &mut self.overlay {
-            o.add_surface(connection, surface, target);
+            o.add_surface(connection, surface, target, extent);
         }
     }
     fn observe_frame_at(

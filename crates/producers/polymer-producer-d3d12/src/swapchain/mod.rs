@@ -4,7 +4,9 @@ pub mod creation;
 pub mod frontend;
 mod resources;
 use polymer_presentation::{producer::ExportDescriptor, swapchain::*};
-use polymer_protocol::{AdapterLuid, ConsumerApi, ExternalImageKind, ExternalSyncKind, SurfaceId};
+use polymer_protocol::{
+    AdapterLuid, ConsumerApi, ExternalImageKind, ExternalSyncKind, GraphicsHook, SurfaceId,
+};
 use resources::{SharedFence, SharedImage};
 use windows::{
     Win32::{
@@ -159,6 +161,7 @@ impl SwapchainBackend for D3d12VirtualBackend {
                 high_part: luid.HighPart,
             },
             source_window: self.binding.window().handle as i64,
+            hook: GraphicsHook::D3d12,
             width: extent.width,
             height: extent.height,
             format: self.profile.format,

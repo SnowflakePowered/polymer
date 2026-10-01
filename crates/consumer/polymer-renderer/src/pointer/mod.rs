@@ -210,8 +210,8 @@ impl PointerProjector {
     }
 
     fn projection(&self, mapped: MappedPointer) -> PointerProjection {
-        let width = mapped.frame.presentation_width.max(1);
-        let height = mapped.frame.presentation_height.max(1);
+        let width = mapped.stream_extent.width.max(1);
+        let height = mapped.stream_extent.height.max(1);
         let x = mapped.position.x.round().clamp(0.0, f64::from(width - 1)) as i32;
         let y = mapped.position.y.round().clamp(0.0, f64::from(height - 1)) as i32;
         PointerProjection {

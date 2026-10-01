@@ -21,7 +21,9 @@ use polymer_hook::config;
 use polymer_platform_windows::performance_counter;
 use polymer_presentation::producer::ExportDescriptor;
 use polymer_presentation::producer::ProducerSession;
-use polymer_protocol::{AdapterLuid, ExternalImageKind, ExternalSyncKind, StreamId, SurfaceId};
+use polymer_protocol::{
+    AdapterLuid, ExternalImageKind, ExternalSyncKind, GraphicsHook, StreamId, SurfaceId,
+};
 use std::sync::{
     OnceLock,
     atomic::{AtomicU64, Ordering},

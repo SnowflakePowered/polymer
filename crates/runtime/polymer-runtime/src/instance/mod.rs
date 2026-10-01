@@ -12,7 +12,7 @@ pub use polymer_platform::{AudioState, HotkeyChord, NormalizedVolume, ResizeDime
 use polymer_platform::{Guest, GuestInput, GuestWindowId, ProcessExitReceiver};
 
 use polymer_protocol::{
-    ExternalImageKind, FrameReady,
+    FrameReady,
     input::{PointerPhase, PointerSource},
 };
 use std::{

@@ -2,16 +2,12 @@
 
 #![forbid(unsafe_code)]
 
-mod capture;
 pub mod configuration;
 pub mod input;
 
-pub use capture::{CaptureError, FrameConsumer, FrameProducer, SurfaceDesc};
 pub use configuration::{RenderConfiguration, SurfaceRequest};
 
-pub const PROTOCOL_VERSION: u32 = 20;
-/// Fractional bits used by coordinates in [`PresentationPoint`].
-pub const PRESENTATION_COORD_FRACTIONAL_BITS: u32 = 16;
+pub const PROTOCOL_VERSION: u32 = 21;
 pub const MAX_IMAGE_SLOTS: usize = 4;
 /// Terminal consumer-fence value used when abandoning an entire image ring.
 pub const RELEASE_ALL_SYNC_VALUE: u64 = u64::MAX - 1;
@@ -86,10 +82,6 @@ pub struct StreamId(pub u64);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 #[repr(transparent)]
-pub struct HandleId(pub u64);
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-#[repr(transparent)]
 pub struct SurfaceId(pub u64);
 
 /// Requests a new client-area extent for a window in the producer process.
@@ -111,19 +103,12 @@ pub struct AdapterLuid {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u32)]
 pub enum ExternalImageKind {
-    VulkanOpaqueWin32 = 1,
-    D3d12Resource = 3,
-    D3d12Heap = 4,
-    /// D3D12 shared resource owned and written through OpenGL EXT external objects.
-    /// Pixel rows retain OpenGL's bottom-left origin; consumers convert them
-    /// to their target coordinate space while presenting.
-    OpenGlD3d12Resource = 5,
-    /// D3D12 shared resource owned by D3D12 and written through Vulkan external memory.
-    VulkanD3d12Resource = 6,
     /// Fence-synchronized D3D11 shared resource, opened through its NT handle
     /// by D3D12 or as D3D11_TEXTURE external memory by Vulkan.
-    D3d11D3d12Resource = 7,
-    IOSurface = 8,
+    D3d11Resource = 1,
+    /// D3D12 shared resource opened through its NT handle.
+    D3d12Resource = 2,
+    IOSurface = 3,
 }
 
 impl TryFrom<u32> for ExternalImageKind {
@@ -131,13 +116,9 @@ impl TryFrom<u32> for ExternalImageKind {
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         match value {
-            1 => Ok(Self::VulkanOpaqueWin32),
-            3 => Ok(Self::D3d12Resource),
-            4 => Ok(Self::D3d12Heap),
-            5 => Ok(Self::OpenGlD3d12Resource),
-            6 => Ok(Self::VulkanD3d12Resource),
-            7 => Ok(Self::D3d11D3d12Resource),
-            8 => Ok(Self::IOSurface),
+            1 => Ok(Self::D3d11Resource),
+            2 => Ok(Self::D3d12Resource),
+            3 => Ok(Self::IOSurface),
             _ => Err(()),
         }
     }
@@ -146,10 +127,8 @@ impl TryFrom<u32> for ExternalImageKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u32)]
 pub enum ExternalSyncKind {
-    VulkanBinarySemaphore = 1,
-    VulkanTimelineSemaphore = 2,
-    D3d12Fence = 5,
-    MetalSharedEvent = 6,
+    D3d12Fence = 1,
+    MetalSharedEvent = 2,
 }
 
 impl TryFrom<u32> for ExternalSyncKind {
@@ -157,27 +136,11 @@ impl TryFrom<u32> for ExternalSyncKind {
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         match value {
-            1 => Ok(Self::VulkanBinarySemaphore),
-            2 => Ok(Self::VulkanTimelineSemaphore),
-            5 => Ok(Self::D3d12Fence),
-            6 => Ok(Self::MetalSharedEvent),
+            1 => Ok(Self::D3d12Fence),
+            2 => Ok(Self::MetalSharedEvent),
             _ => Err(()),
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(C)]
-pub struct ExternalImageDesc {
-    pub kind: ExternalImageKind,
-    pub handle_id: HandleId,
-    pub adapter_luid: AdapterLuid,
-    pub width: u32,
-    pub height: u32,
-    /// Backend-neutral format identifier negotiated during the handshake.
-    pub format: u32,
-    pub allocation_size: u64,
-    pub allocation_offset: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -185,121 +148,9 @@ pub struct ExternalImageDesc {
 pub struct FrameReady {
     pub stream_id: StreamId,
     pub slot: u32,
-    /// Valid captured pixels packed at the origin of the shared image. These
-    /// dimensions determine the image's displayed aspect ratio.
-    pub render_width: u32,
-    pub render_height: u32,
-    /// Axis-aligned bounds of the captured image in the producer's
-    /// presentation coordinate space. The exact orientation is described by
-    /// `presentation_transform`.
-    pub capture_x: u32,
-    pub capture_y: u32,
-    pub capture_width: u32,
-    pub capture_height: u32,
-    /// Extent of the presentation coordinate system containing the capture
-    /// rectangle. This may differ from both the shared image and target client
-    /// extents when the application uses dynamic resolution or a frame graph.
-    pub presentation_width: u32,
-    pub presentation_height: u32,
-    pub presentation_transform: PresentationTransform,
     pub frame_number: u64,
     pub sync_value: u64,
     pub timestamp_qpc: u64,
-}
-
-/// Describes whether a captured image can be mapped back to its presentation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u32)]
-pub enum PresentationMappingKind {
-    Unavailable = 0,
-    AxisAligned = 1,
-    Affine = 2,
-}
-
-impl TryFrom<u32> for PresentationMappingKind {
-    type Error = ();
-
-    fn try_from(value: u32) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(Self::Unavailable),
-            1 => Ok(Self::AxisAligned),
-            2 => Ok(Self::Affine),
-            _ => Err(()),
-        }
-    }
-}
-
-/// A signed 48.16 fixed-point position in target presentation coordinates.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-#[repr(C)]
-pub struct PresentationPoint {
-    pub x: i64,
-    pub y: i64,
-}
-
-impl PresentationPoint {
-    pub const fn from_pixels(x: i32, y: i32) -> Self {
-        Self {
-            x: (x as i64) << PRESENTATION_COORD_FRACTIONAL_BITS,
-            y: (y as i64) << PRESENTATION_COORD_FRACTIONAL_BITS,
-        }
-    }
-}
-
-/// Maps the consumer-normalized captured image into the target presentation.
-///
-/// `upper_left`, `upper_right`, and `lower_left` are the presentation-space
-/// positions of the corresponding corners after consumer-side normalization.
-/// The fourth corner is implied by the parallelogram. Storage orientation such
-/// as `StreamReady::bottom_up` and an explicitly configured display rotation
-/// are applied before this transform. This lets a producer report placement
-/// and scale without needing to know the consumer's normalization policy.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(C)]
-pub struct PresentationTransform {
-    pub kind: PresentationMappingKind,
-    pub upper_left: PresentationPoint,
-    pub upper_right: PresentationPoint,
-    pub lower_left: PresentationPoint,
-}
-
-impl PresentationTransform {
-    pub const UNAVAILABLE: Self = Self {
-        kind: PresentationMappingKind::Unavailable,
-        upper_left: PresentationPoint { x: 0, y: 0 },
-        upper_right: PresentationPoint { x: 0, y: 0 },
-        lower_left: PresentationPoint { x: 0, y: 0 },
-    };
-
-    pub fn axis_aligned(x: u32, y: u32, width: u32, height: u32) -> Self {
-        let left = fixed_unsigned(u64::from(x));
-        let top = fixed_unsigned(u64::from(y));
-        let right = fixed_unsigned(u64::from(x) + u64::from(width));
-        let bottom = fixed_unsigned(u64::from(y) + u64::from(height));
-        Self {
-            kind: PresentationMappingKind::AxisAligned,
-            upper_left: PresentationPoint { x: left, y: top },
-            upper_right: PresentationPoint { x: right, y: top },
-            lower_left: PresentationPoint { x: left, y: bottom },
-        }
-    }
-
-    pub const fn affine(
-        upper_left: PresentationPoint,
-        upper_right: PresentationPoint,
-        lower_left: PresentationPoint,
-    ) -> Self {
-        Self {
-            kind: PresentationMappingKind::Affine,
-            upper_left,
-            upper_right,
-            lower_left,
-        }
-    }
-}
-
-fn fixed_unsigned(value: u64) -> i64 {
-    (value as i64) << PRESENTATION_COORD_FRACTIONAL_BITS
 }
 
 mod hooks;

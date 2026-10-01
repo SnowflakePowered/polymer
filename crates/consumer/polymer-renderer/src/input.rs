@@ -1,12 +1,8 @@
 use crate::layout::{
-    AffineMapping, Extent, OutsideBehavior, Point, Rect, SurfaceLayout, VerticalOrder, aspect_fit,
-    vertical_surface_layout,
+    OutsideBehavior, Point, Rect, VerticalOrder, aspect_fit, vertical_surface_layout,
 };
 use crate::{CompositingPlan, MappedPointer, Presentation, ReceivedSurface};
-use polymer_protocol::{
-    FrameReady, PRESENTATION_COORD_FRACTIONAL_BITS, PresentationMappingKind,
-    input::{PointerInput, PointerPhase, PointerSource},
-};
+use polymer_protocol::input::{PointerInput, PointerPhase, PointerSource};
 use std::time::Instant;
 
 pub trait PointerEventSink {
@@ -81,20 +77,10 @@ impl PointerRoutingState {
         let Some(destination) = map_pointer(presentation, plan, self.cursor, captured) else {
             if phase == PointerPhase::ButtonDown && !self.logged_button_rejection {
                 self.logged_button_rejection = true;
-                let mapped = presentation
-                    .surfaces()
-                    .iter()
-                    .filter(|surface| {
-                        surface.frame.presentation_transform.kind
-                            != PresentationMappingKind::Unavailable
-                    })
-                    .count();
                 tracing::warn!(
-                    "polymer: pointer button was not routed at ({:.1}, {:.1}); displayed surfaces={}, mapped surfaces={}, pointer targets={}",
+                    "polymer: pointer button was not routed at ({:.1}, {:.1}); displayed surfaces={}",
                     self.cursor.x,
                     self.cursor.y,
-                    presentation.surfaces().len(),
-                    mapped,
                     presentation.surfaces().len(),
                 );
             }
@@ -112,8 +98,8 @@ impl PointerRoutingState {
             PointerPhase::Move | PointerPhase::Wheel => {}
         }
         self.sequence = self.sequence.wrapping_add(1);
-        let width = destination.frame.presentation_width.max(1);
-        let height = destination.frame.presentation_height.max(1);
+        let width = destination.stream_extent.width.max(1);
+        let height = destination.stream_extent.height.max(1);
         let x = destination
             .position
             .x
@@ -196,22 +182,6 @@ impl PointerRoutingState {
     }
 }
 
-fn presentation_mapping(frame: FrameReady) -> Option<AffineMapping> {
-    let transform = frame.presentation_transform;
-    if transform.kind == PresentationMappingKind::Unavailable {
-        return None;
-    }
-    let scale = (1u64 << PRESENTATION_COORD_FRACTIONAL_BITS) as f64;
-    let point = |point: polymer_protocol::PresentationPoint| {
-        Point::new(point.x as f64 / scale, point.y as f64 / scale)
-    };
-    Some(AffineMapping {
-        upper_left: point(transform.upper_left),
-        upper_right: point(transform.upper_right),
-        lower_left: point(transform.lower_left),
-    })
-}
-
 pub fn map_pointer(
     presentation: &Presentation,
     plan: &CompositingPlan,
@@ -262,22 +232,23 @@ fn pointer_destination(
     } else {
         VerticalOrder::TopToBottom
     };
-    let presentation_mappings = presentation_mappings(surfaces, order);
-    let placements = surfaces
-        .iter()
-        .zip(presentation_mappings)
-        .enumerate()
-        .flat_map(|(surface_index, (surface, presentation_mapping))| {
-            plan.placements()
-                .filter(move |placement| {
-                    placement.connection == surface.connection
-                        && placement.surface_id == surface.surface_id
-                })
-                .map(move |placement| (surface_index, *placement, presentation_mapping))
-        });
+    let targets = pointer_targets(surfaces, order);
+    let placements =
+        surfaces
+            .iter()
+            .zip(targets)
+            .enumerate()
+            .flat_map(|(surface_index, (surface, target))| {
+                plan.placements()
+                    .filter(move |placement| {
+                        placement.connection == surface.connection
+                            && placement.surface_id == surface.surface_id
+                    })
+                    .map(move |placement| (surface_index, *placement, target))
+            });
     placements
         .into_iter()
-        .find_map(|(surface_index, placement, presentation_mapping)| {
+        .find_map(|(surface_index, placement, target)| {
             let surface = surfaces.get(surface_index)?;
             if captured_connection.is_some_and(|connection| connection != surface.connection) {
                 return None;
@@ -292,12 +263,17 @@ fn pointer_destination(
             }
             let (sample_position, normalized_position) =
                 content_positions(placement, point, outside)?;
-            let position = presentation_mapping?.map(sample_position.x, sample_position.y);
+            let target = target?;
+            let position = Point::new(
+                f64::from(target.x) + sample_position.x * f64::from(target.width),
+                f64::from(target.y) + sample_position.y * f64::from(target.height),
+            );
             Some(MappedPointer {
                 connection: surface.connection,
                 surface_id: surface.surface_id,
                 target_window: surface.target_window,
                 frame: surface.frame,
+                stream_extent: surface.stream_extent(),
                 position,
                 normalized_position,
             })
@@ -339,92 +315,39 @@ fn content_positions(
     Some((sample, normalized))
 }
 
-fn presentation_mappings(
-    surfaces: &[ReceivedSurface],
-    order: VerticalOrder,
-) -> Vec<Option<AffineMapping>> {
-    let explicit = surfaces
-        .iter()
-        .map(|surface| presentation_mapping(surface.frame))
-        .collect::<Vec<_>>();
-    let letterboxed = |explicit: Vec<Option<AffineMapping>>| {
-        surfaces
-            .iter()
-            .zip(explicit)
-            .map(|(surface, mapping)| letterboxed_mapping(surface, mapping))
-            .collect()
-    };
-    if surfaces.len() < 2 {
-        return letterboxed(explicit);
-    }
+fn pointer_targets(surfaces: &[ReceivedSurface], order: VerticalOrder) -> Vec<Option<Rect>> {
+    let letterboxed = || surfaces.iter().map(letterboxed_target).collect();
     let Some(first_surface) = surfaces.first() else {
-        return explicit;
+        return Vec::new();
     };
-    let presentation_extent = Extent::new(
-        first_surface.frame.presentation_width,
-        first_surface.frame.presentation_height,
-    );
-    let Some(target_window) =
-        (first_surface.target_window != 0).then_some(first_surface.target_window)
-    else {
-        return letterboxed(explicit);
-    };
-    let same_target = surfaces.iter().all(|surface| {
-        surface.target_window == target_window
-            && Extent::new(
-                surface.frame.presentation_width,
-                surface.frame.presentation_height,
-            ) == presentation_extent
-    });
-    let indistinguishable = explicit
-        .first()
-        .is_some_and(|first| explicit.iter().all(|mapping| mapping == first));
-    if !same_target || !indistinguishable || presentation_extent.is_empty() {
-        return letterboxed(explicit);
+    let stream_extent = first_surface.stream_extent();
+    let shared_target = surfaces.len() > 1
+        && first_surface.target_window != 0
+        && surfaces.iter().all(|surface| {
+            surface.target_window == first_surface.target_window
+                && surface.stream_extent() == stream_extent
+        });
+    if !shared_target || stream_extent.is_empty() {
+        return letterboxed();
     }
-
-    let inferred_layouts = surfaces
+    let image_extents = surfaces
         .iter()
-        .map(|surface| SurfaceLayout {
-            image_extent: surface.image_extent,
-            presentation_extent,
-            presentation_mapping: None,
-        })
+        .map(|surface| surface.image_extent)
         .collect::<Vec<_>>();
     let mut inferred = vec![None; surfaces.len()];
-    for placement in vertical_surface_layout(presentation_extent, &inferred_layouts, order) {
-        inferred[placement.surface_index] = Some(AffineMapping::axis_aligned(Rect::new(
-            placement.viewer_rect.x,
-            placement.viewer_rect.y,
-            placement.viewer_rect.width,
-            placement.viewer_rect.height,
-        )));
+    for placement in vertical_surface_layout(stream_extent, &image_extents, order) {
+        inferred[placement.surface_index] = Some(placement.viewer_rect);
     }
     inferred
 }
 
-/// Graph placements resolved from present draws often claim the whole window
-/// even though the application letterboxes the screen inside it (the draw
-/// carries no placement, so the rect degenerates to the render area). When a
-/// mapping covers the full presentation extent but the displayed image has a
-/// different aspect, target the centered aspect-fit rectangle instead — the
-/// same fit the application itself uses — so pointer coordinates land on the
-/// content rather than being stretched across the black bars.
-fn letterboxed_mapping(
-    surface: &ReceivedSurface,
-    mapping: Option<AffineMapping>,
-) -> Option<AffineMapping> {
-    let mapping = mapping?;
-    let full = Rect::new(
-        0,
-        0,
-        surface.frame.presentation_width,
-        surface.frame.presentation_height,
-    );
-    if full.is_empty() || mapping != AffineMapping::axis_aligned(full) {
-        return Some(mapping);
+fn letterboxed_target(surface: &ReceivedSurface) -> Option<Rect> {
+    let extent = surface.stream_extent();
+    let full = Rect::new(0, 0, extent.width, extent.height);
+    if full.is_empty() {
+        return None;
     }
-    Some(aspect_fit(surface.image_extent, full).map_or(mapping, AffineMapping::axis_aligned))
+    Some(aspect_fit(surface.image_extent, full).unwrap_or(full))
 }
 
 fn pointer_button_bit(button: u32) -> u32 {

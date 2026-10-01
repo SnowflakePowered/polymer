@@ -16,14 +16,11 @@ impl GameHost {
             let Some(worker) = worker else {
                 break;
             };
-            if let Some((frame, dimensions_changed)) =
-                self.update_surface_frame(worker.connection, worker.update)
-            {
+            if let Some(frame) = self.update_surface_frame(worker.connection, worker.update) {
                 return Some(GameHostCaptureEvent::Frame {
                     connection: worker.connection,
                     frame,
                     observed_qpc: Some(worker.observed_qpc),
-                    dimensions_changed,
                 });
             }
         }
@@ -31,16 +28,13 @@ impl GameHost {
             return Some(match self.capture.try_recv().ok()? {
                 SurfaceCaptureEvent::Offered(offer) => self.handle_surface_offer(offer),
                 SurfaceCaptureEvent::Frame { connection, update } => {
-                    let Some((frame, dimensions_changed)) =
-                        self.update_surface_frame(connection, update)
-                    else {
+                    let Some(frame) = self.update_surface_frame(connection, update) else {
                         continue;
                     };
                     GameHostCaptureEvent::Frame {
                         connection,
                         frame,
                         observed_qpc: None,
-                        dimensions_changed,
                     }
                 }
                 SurfaceCaptureEvent::Removed { connection, .. } => GameHostCaptureEvent::Removed {
@@ -93,12 +87,15 @@ impl GameHost {
             return Ok(None);
         }
 
+        let stream = *offer.stream();
         let (surface, target_index, quarter_turns) = if let Some(previous) = replaced_connection {
-            let surface = self
+            let mut surface = self
                 .surfaces
                 .get(&previous)
                 .cloned()
                 .ok_or("the replaced tracked surface is no longer connected")?;
+            (surface.preferred_width, surface.preferred_height) =
+                rotated_extent(stream.width, stream.height, surface.quarter_turns);
             let target_index = surface.index;
             let quarter_turns = surface.quarter_turns;
             (surface, target_index, quarter_turns)
@@ -106,7 +103,6 @@ impl GameHost {
             let (target_index, quarter_turns) = self
                 .target_configuration(offer.id().0)
                 .ok_or("the game host already has this render target")?;
-            let stream = offer.stream();
             let (width, height) = rotated_extent(stream.width, stream.height, quarter_turns);
             (
                 CapturedSurface {
@@ -131,7 +127,8 @@ impl GameHost {
                 quarter_turns,
             )
         };
-        let backend = format!("{:?}", offer.stream().image_kind);
+        let backend = stream.hook.label().to_owned();
+        let extent = polymer_renderer::Extent::new(stream.width, stream.height);
         self.compositor
             .borrow_mut()
             .import_surface(&offer, quarter_turns)?;
@@ -176,6 +173,7 @@ impl GameHost {
             target_index,
             replaced_connection,
             backend,
+            extent,
         }))
     }
 
@@ -206,25 +204,11 @@ impl GameHost {
         &mut self,
         connection: u64,
         update: polymer_runtime::SurfaceFrameUpdate,
-    ) -> Option<(polymer_protocol::FrameReady, bool)> {
+    ) -> Option<polymer_protocol::FrameReady> {
         let frame = update.frame;
-        let surface = self.surfaces.get_mut(&connection)?;
-        let (width, height) = rotated_extent(
-            frame.render_width.max(1),
-            frame.render_height.max(1),
-            surface.quarter_turns,
-        );
-        let dimensions_changed =
-            (surface.preferred_width, surface.preferred_height) != (width, height);
-        if dimensions_changed {
-            surface.preferred_width = width;
-            surface.preferred_height = height;
-        }
+        self.surfaces.get(&connection)?;
         self.compositor.borrow_mut().set_latest(connection, frame);
-        if dimensions_changed {
-            self.mark_composition_dirty();
-        }
-        Some((frame, dimensions_changed))
+        Some(frame)
     }
 
     fn remove_surface(&mut self, connection: u64) -> bool {

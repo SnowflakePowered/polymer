@@ -71,53 +71,6 @@ impl Point {
     }
 }
 
-/// Maps normalized captured-image coordinates into a presentation coordinate
-/// space. The three points are the destinations of the image's upper-left,
-/// upper-right, and lower-left corners.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct AffineMapping {
-    pub upper_left: Point,
-    pub upper_right: Point,
-    pub lower_left: Point,
-}
-
-impl AffineMapping {
-    pub fn axis_aligned(rect: Rect) -> Self {
-        Self {
-            upper_left: Point::new(f64::from(rect.x), f64::from(rect.y)),
-            upper_right: Point::new(f64::from(rect.x) + f64::from(rect.width), f64::from(rect.y)),
-            lower_left: Point::new(
-                f64::from(rect.x),
-                f64::from(rect.y) + f64::from(rect.height),
-            ),
-        }
-    }
-
-    pub fn map(self, u: f64, v: f64) -> Point {
-        Point::new(
-            self.upper_left.x
-                + u * (self.upper_right.x - self.upper_left.x)
-                + v * (self.lower_left.x - self.upper_left.x),
-            self.upper_left.y
-                + u * (self.upper_right.y - self.upper_left.y)
-                + v * (self.lower_left.y - self.upper_left.y),
-        )
-    }
-}
-
-/// Metadata needed to display and interact with one captured surface.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct SurfaceLayout {
-    /// Extent of the valid captured image. This determines its displayed aspect
-    /// ratio independently of the allocation that contains it.
-    pub image_extent: Extent,
-    /// Extent of the target presentation coordinate space.
-    pub presentation_extent: Extent,
-    /// Mapping from consumer-normalized image coordinates into the target presentation.
-    /// `None` means graph tracking could not prove the final placement.
-    pub presentation_mapping: Option<AffineMapping>,
-}
-
 /// The vertical ordering of surfaces in the viewer.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum VerticalOrder {
@@ -138,62 +91,12 @@ pub enum OutsideBehavior {
     Clamp,
 }
 
-/// The calculated viewer placement and target mapping for one surface.
+/// The calculated viewer placement for one surface.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CompositePlacement {
     /// Index into the input slice passed to [`vertical_surface_layout`].
     pub surface_index: usize,
     pub viewer_rect: Rect,
-    pub presentation_extent: Extent,
-    pub presentation_mapping: Option<AffineMapping>,
-}
-
-impl CompositePlacement {
-    pub fn contains(self, point: Point) -> bool {
-        self.viewer_rect.contains(point)
-    }
-
-    /// Maps a viewer position into the target presentation coordinate space.
-    pub fn map_to_presentation(self, point: Point, outside: OutsideBehavior) -> Option<Point> {
-        if self.viewer_rect.is_empty() {
-            return None;
-        }
-        let mapping = self.presentation_mapping?;
-        if outside == OutsideBehavior::Reject && !self.contains(point) {
-            return None;
-        }
-
-        let mut u = (point.x - f64::from(self.viewer_rect.x)) / f64::from(self.viewer_rect.width);
-        let mut v = (point.y - f64::from(self.viewer_rect.y)) / f64::from(self.viewer_rect.height);
-        if outside == OutsideBehavior::Clamp {
-            u = u.clamp(0.0, 1.0);
-            v = v.clamp(0.0, 1.0);
-        }
-
-        Some(mapping.map(u, v))
-    }
-
-    /// Maps a viewer position into the current target client extent.
-    ///
-    /// Keeping the presentation extent in the mapping accounts for a target
-    /// client whose size differs from the render or presentation resolution.
-    pub fn map_to_client(
-        self,
-        point: Point,
-        client_extent: Extent,
-        outside: OutsideBehavior,
-    ) -> Option<Point> {
-        if self.presentation_extent.is_empty() || client_extent.is_empty() {
-            return None;
-        }
-        let presentation = self.map_to_presentation(point, outside)?;
-        Some(Point::new(
-            presentation.x * f64::from(client_extent.width)
-                / f64::from(self.presentation_extent.width),
-            presentation.y * f64::from(client_extent.height)
-                / f64::from(self.presentation_extent.height),
-        ))
-    }
 }
 
 /// Aspect-fits `source` into `bounds`, returning integer pixels suitable for
@@ -227,15 +130,15 @@ pub fn aspect_fit(source: Extent, bounds: Rect) -> Option<Rect> {
 /// `surface_index` preserves its association with the original input slice.
 pub fn vertical_surface_layout(
     viewer_extent: Extent,
-    surfaces: &[SurfaceLayout],
+    image_extents: &[Extent],
     order: VerticalOrder,
 ) -> Vec<CompositePlacement> {
     if viewer_extent.is_empty() {
         return Vec::new();
     }
-    let visible = surfaces
+    let visible = image_extents
         .iter()
-        .filter(|surface| !surface.image_extent.is_empty())
+        .filter(|extent| !extent.is_empty())
         .count() as u32;
     if visible == 0 {
         return Vec::new();
@@ -245,12 +148,12 @@ pub fn vertical_surface_layout(
         return Vec::new();
     }
 
-    surfaces
+    image_extents
         .iter()
         .enumerate()
-        .filter(|(_, surface)| !surface.image_extent.is_empty())
+        .filter(|(_, extent)| !extent.is_empty())
         .enumerate()
-        .filter_map(|(visible_index, (surface_index, surface))| {
+        .filter_map(|(visible_index, (surface_index, &image_extent))| {
             let visible_index = visible_index as u32;
             let row = match order {
                 VerticalOrder::TopToBottom => visible_index,
@@ -258,12 +161,10 @@ pub fn vertical_surface_layout(
             };
             let row_y = i64::from(row) * i64::from(row_height);
             let row_bounds = Rect::new(0, clamp_i64_to_i32(row_y), viewer_extent.width, row_height);
-            let viewer_rect = aspect_fit(surface.image_extent, row_bounds)?;
+            let viewer_rect = aspect_fit(image_extent, row_bounds)?;
             Some(CompositePlacement {
                 surface_index,
                 viewer_rect,
-                presentation_extent: surface.presentation_extent,
-                presentation_mapping: surface.presentation_mapping,
             })
         })
         .collect()

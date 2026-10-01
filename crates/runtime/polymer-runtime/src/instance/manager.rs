@@ -77,7 +77,7 @@ impl SurfaceManager {
             accepted.send(false);
             return;
         };
-        let backend = stream_backend(stream.image_kind);
+        let backend = stream.hook;
         let Some(incoming_rank) = self.hooks.iter().position(|hook| *hook == backend) else {
             accepted.send(false);
             return;
@@ -120,7 +120,7 @@ impl SurfaceManager {
                 (
                     *pending.key(),
                     pending.value().surface_id,
-                    stream_backend(pending.value().stream.image_kind),
+                    pending.value().stream.hook,
                 )
             });
         let (surface_id, replacing) = if let Some((offer, id, old_backend)) = pending {
@@ -347,16 +347,4 @@ fn logical_surface_index(surface_id: u64) -> Option<u32> {
     (surface_id & MASK == TAG)
         .then_some(surface_id & !MASK)
         .and_then(|index| u32::try_from(index).ok())
-}
-
-pub(super) fn stream_backend(kind: ExternalImageKind) -> GraphicsHook {
-    match kind {
-        ExternalImageKind::IOSurface => GraphicsHook::Metal,
-        ExternalImageKind::D3d11D3d12Resource => GraphicsHook::D3d11,
-        ExternalImageKind::D3d12Resource | ExternalImageKind::D3d12Heap => GraphicsHook::D3d12,
-        ExternalImageKind::OpenGlD3d12Resource => GraphicsHook::OpenGl,
-        ExternalImageKind::VulkanOpaqueWin32 | ExternalImageKind::VulkanD3d12Resource => {
-            GraphicsHook::Vulkan
-        }
-    }
 }

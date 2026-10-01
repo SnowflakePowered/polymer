@@ -279,16 +279,8 @@ impl D3d12Compositor {
                     surface.connection == placement.connection
                         && surface.surface_id == placement.surface_id
                 })?;
-                let frame = surface.frames.frame()?;
-                let (crop_w, crop_h) = polymer_renderer::fit_inside(
-                    frame.render_width.max(1),
-                    frame.render_height.max(1),
-                    surface.imported.width,
-                    surface.imported.height,
-                );
+                surface.frames.frame()?;
                 let (l, t, r, b) = corners(placement.content.destination);
-                let u = crop_w as f32 / surface.imported.width as f32;
-                let v = crop_h as f32 / surface.imported.height as f32;
                 let width = placement.content.destination[2] - placement.content.destination[0];
                 let height = placement.content.destination[3] - placement.content.destination[1];
                 let opacity = (placement.content.opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
@@ -300,8 +292,6 @@ impl D3d12Compositor {
                         t,
                         r,
                         b,
-                        u,
-                        v,
                         placement.content.source,
                         surface.flip_y,
                         surface.quarter_turns,
@@ -399,8 +389,6 @@ pub(super) fn quad(
     t: f32,
     r: f32,
     b: f32,
-    u: f32,
-    v: f32,
     source: [f32; 4],
     flip_y: bool,
     quarter_turns: u8,
@@ -414,8 +402,8 @@ pub(super) fn quad(
         local,
         clip,
     };
-    let (top_v, bottom_v) = if flip_y { (v, 0.0) } else { (0.0, v) };
-    let corners = [[0.0, top_v], [u, top_v], [u, bottom_v], [0.0, bottom_v]];
+    let (top_v, bottom_v) = if flip_y { (1.0, 0.0) } else { (0.0, 1.0) };
+    let corners = [[0.0, top_v], [1.0, top_v], [1.0, bottom_v], [0.0, bottom_v]];
     let full = [
         corners[quarter_turns as usize % 4],
         corners[(1 + quarter_turns as usize) % 4],

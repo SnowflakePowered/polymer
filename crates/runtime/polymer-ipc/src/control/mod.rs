@@ -12,9 +12,8 @@ use windows::Stream;
 #[cfg(target_os = "macos")]
 pub use macos::{LocalSocket, LocalSocketListener};
 use polymer_protocol::{
-    AdapterLuid, ExternalImageKind, ExternalSyncKind, FrameReady, Handshake, MAX_IMAGE_SLOTS,
-    PresentationMappingKind, PresentationPoint, PresentationTransform, ResizeWindow, StreamId,
-    SurfaceId,
+    AdapterLuid, ExternalImageKind, ExternalSyncKind, FrameReady, GraphicsHook, Handshake,
+    MAX_IMAGE_SLOTS, ResizeWindow, StreamId, SurfaceId,
 };
 use std::{io, mem, time::Duration};
 #[cfg(windows)]
@@ -23,7 +22,6 @@ use std::{
     net::Shutdown,
 };
 use wire::{WireMessage, decode, encode, invalid_data};
-pub(crate) use wire::{decode_frame, encode_frame};
 use zerocopy::{FromBytes, IntoBytes};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WireFeedback {
@@ -52,6 +50,7 @@ pub struct StreamReady {
     pub adapter_luid: AdapterLuid,
     /// Real Win32 HWND used as the target for pointer and keyboard messages.
     pub source_window: i64,
+    pub hook: GraphicsHook,
     pub width: u32,
     pub height: u32,
     pub format: u32,
@@ -72,7 +71,6 @@ pub struct StreamReady {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u32)]
 pub enum ChannelKind {
-    Frame = 1,
     Input = 2,
 }
 
@@ -111,7 +109,6 @@ pub enum Message {
     },
     /// A file handle already duplicated into the receiving process.
     MapOffer(MapOffer),
-    FrameAvailable,
     MapAccepted,
 }
 
@@ -119,7 +116,6 @@ pub enum Message {
 pub struct LocalSocket {
     stream: Stream,
     incoming: Vec<u8>,
-    frame: Option<crate::frame::FramePublisher>,
 }
 #[cfg(windows)]
 impl LocalSocket {
@@ -131,7 +127,6 @@ impl LocalSocket {
         Ok(Self {
             stream: self.stream.try_clone()?,
             incoming: Vec::new(),
-            frame: None,
         })
     }
 
@@ -139,22 +134,11 @@ impl LocalSocket {
         self.stream.shutdown(Shutdown::Both)
     }
 
-    pub fn send(&mut self, mut message: Message) -> io::Result<()> {
-        if let (Some(frame), Message::FrameReady(value)) = (&mut self.frame, &message) {
-            frame.publish(*value)?;
-            message = Message::FrameAvailable;
-        }
+    pub fn send(&mut self, message: Message) -> io::Result<()> {
         self.stream.write_all(encode(&message)?.as_bytes())?;
         if let Message::Blob { data, .. } = message {
             self.stream.write_all(&data)?;
         }
-        Ok(())
-    }
-
-    pub fn enable_frame_channel(&mut self, peer_process_id: u32) -> io::Result<()> {
-        let publisher = crate::frame::FramePublisher::new()?;
-        publisher.offer(self, peer_process_id)?;
-        self.frame = Some(publisher);
         Ok(())
     }
 

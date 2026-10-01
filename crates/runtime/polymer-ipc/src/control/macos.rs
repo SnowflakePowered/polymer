@@ -26,7 +26,6 @@ impl LocalSocketListener {
 }
 pub struct LocalSocket {
     connection: Connection,
-    frame: Option<crate::frame::FramePublisher>,
     resources: Option<crate::xpc::MetalResources>,
     read_timeout: Option<Duration>,
     write_timeout: Option<Duration>,
@@ -35,7 +34,6 @@ impl LocalSocket {
     fn new(connection: Connection) -> Self {
         Self {
             connection,
-            frame: None,
             resources: None,
             read_timeout: None,
             write_timeout: None,
@@ -61,7 +59,6 @@ impl LocalSocket {
     pub fn try_clone(&self) -> io::Result<Self> {
         Ok(Self {
             connection: self.connection.clone(),
-            frame: None,
             resources: None,
             read_timeout: self.read_timeout,
             write_timeout: self.write_timeout,
@@ -75,10 +72,6 @@ impl LocalSocket {
         Ok(())
     }
     pub fn send(&mut self, mut message: Message) -> io::Result<()> {
-        if let (Some(frame), Message::FrameReady(value)) = (&mut self.frame, &message) {
-            frame.publish(*value)?;
-            message = Message::FrameAvailable;
-        }
         let file = if let Message::MapOffer(ref mut offer) = message {
             let descriptor = i32::try_from(offer.handle)
                 .map_err(|_| invalid_data("invalid mapping descriptor"))?;
@@ -177,12 +170,6 @@ impl LocalSocket {
     }
     pub fn set_write_timeout(&mut self, timeout: Option<Duration>) -> io::Result<()> {
         self.write_timeout = timeout;
-        Ok(())
-    }
-    pub fn enable_frame_channel(&mut self, peer_process_id: u32) -> io::Result<()> {
-        let publisher = crate::frame::FramePublisher::new()?;
-        publisher.offer(self, peer_process_id)?;
-        self.frame = Some(publisher);
         Ok(())
     }
 }

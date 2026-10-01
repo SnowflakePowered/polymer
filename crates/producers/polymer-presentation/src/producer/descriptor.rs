@@ -1,6 +1,6 @@
 use polymer_ipc::StreamReady;
 use polymer_protocol::{
-    AdapterLuid, ExternalImageKind, ExternalSyncKind, MAX_IMAGE_SLOTS, SurfaceId,
+    AdapterLuid, ExternalImageKind, ExternalSyncKind, GraphicsHook, MAX_IMAGE_SLOTS, SurfaceId,
 };
 use std::io;
 
@@ -12,6 +12,7 @@ pub struct ExportDescriptor<'a> {
     pub surface_id: SurfaceId,
     pub adapter_luid: AdapterLuid,
     pub source_window: i64,
+    pub hook: GraphicsHook,
     pub width: u32,
     pub height: u32,
     pub format: u32,
@@ -38,6 +39,7 @@ impl ExportDescriptor<'_> {
             surface_id: self.surface_id,
             adapter_luid: self.adapter_luid,
             source_window: self.source_window,
+            hook: self.hook,
             width: self.width,
             height: self.height,
             format: self.format,

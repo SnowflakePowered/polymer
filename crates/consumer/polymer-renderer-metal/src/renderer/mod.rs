@@ -306,8 +306,7 @@ impl Renderer for MetalCompositor {
                     connection,
                     surface_id: surface.imported.stream.surface_id.0,
                     target_window: surface.imported.stream.source_window,
-                    image_extent: polymer_renderer::renderer::frame_image_extent(
-                        surface.frames.latest()?,
+                    image_extent: polymer_renderer::renderer::image_extent(
                         surface.imported.stream.width,
                         surface.imported.stream.height,
                         surface.quarter_turns,
