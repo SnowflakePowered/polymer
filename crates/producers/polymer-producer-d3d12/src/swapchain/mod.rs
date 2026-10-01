@@ -4,21 +4,16 @@ pub mod creation;
 pub mod frontend;
 mod resources;
 use polymer_presentation::{producer::ExportDescriptor, swapchain::*};
-use polymer_protocol::{
-    AdapterLuid, ConsumerApi, ExternalImageKind, ExternalSyncKind, GraphicsHook, SurfaceId,
-};
+use polymer_protocol::{AdapterLuid, ConsumerApi, ExternalImageKind, GraphicsHook, SurfaceId};
 use resources::{SharedFence, SharedImage};
 use windows::{
     Win32::{
         Foundation::{E_INVALIDARG, E_POINTER},
         Graphics::{
             Direct3D12::*,
-            Dxgi::{
-                Common::{
-                    DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM,
-                    DXGI_FORMAT_R10G10B10A2_UNORM,
-                },
-                DXGI_ERROR_DEVICE_REMOVED,
+            Dxgi::Common::{
+                DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM,
+                DXGI_FORMAT_R10G10B10A2_UNORM,
             },
         },
     },
@@ -53,6 +48,16 @@ pub struct D3d12VirtualBackend {
     released: SharedFence,
     cleanup: ID3D12Fence,
     cleanup_value: u64,
+}
+
+impl D3d12VirtualBackend {
+    fn arm_release(
+        &self,
+        value: u64,
+        event: windows::Win32::Foundation::HANDLE,
+    ) -> Result<(), Error> {
+        unsafe { self.released.fence.SetEventOnCompletion(value, event) }
+    }
 }
 
 impl SwapchainBackend for D3d12VirtualBackend {
@@ -116,7 +121,6 @@ impl SwapchainBackend for D3d12VirtualBackend {
         Self::check_format(&info.device, info.format)?;
         let profile = BackendProfile {
             image_kind: ExternalImageKind::D3d12Resource,
-            sync_kind: ExternalSyncKind::D3d12Fence,
             format: info.format.0 as u32,
             image_count: info.image_count,
         };
@@ -166,7 +170,6 @@ impl SwapchainBackend for D3d12VirtualBackend {
             height: extent.height,
             format: self.profile.format,
             image_kind: self.profile.image_kind,
-            sync_kind: self.profile.sync_kind,
             image_handles: &self.handles,
             timeline_semaphore_handle: self.ready.handle(),
             consumer_semaphore_handle: self.released.handle(),
@@ -186,21 +189,6 @@ impl SwapchainBackend for D3d12VirtualBackend {
             slot,
             generation: prerequisite.generation,
         };
-        let value = prerequisite.previous_publication.unwrap_or(0);
-        let completed = unsafe { self.released.fence.GetCompletedValue() };
-        if completed == u64::MAX {
-            return AcquirePoll::Failed(Error::from_hresult(DXGI_ERROR_DEVICE_REMOVED));
-        }
-        if completed < value {
-            return AcquirePoll::Pending;
-        }
-        if value != 0 {
-            // CPU readiness is scheduling evidence; the actual writing queue
-            // also receives the cross-device acquire dependency.
-            if let Err(error) = unsafe { self.queue.Wait(&self.released.fence, value) } {
-                return AcquirePoll::Indeterminate { work: token, error };
-            }
-        }
         AcquirePoll::Acquired(token)
     }
     fn submit_present(
@@ -250,8 +238,11 @@ impl SwapchainBackend for D3d12VirtualBackend {
         &mut self,
         submissions: &[SubmissionRef<'_, Submission>],
     ) -> Result<BackendProgress, Error> {
+        let released = unsafe { self.released.fence.GetCompletedValue() };
         let mut progress = BackendProgress {
-            device_lost: unsafe { self.device.GetDeviceRemovedReason() }.is_err(),
+            device_lost: released == u64::MAX
+                || unsafe { self.device.GetDeviceRemovedReason() }.is_err(),
+            released,
             ..Default::default()
         };
         for submission in submissions {
@@ -263,6 +254,24 @@ impl SwapchainBackend for D3d12VirtualBackend {
             }
         }
         Ok(progress)
+    }
+    fn arm_progress(
+        &self,
+        release: Option<u64>,
+        submission: Option<&Submission>,
+        event: windows::Win32::Foundation::HANDLE,
+    ) -> Result<bool, Error> {
+        if let Some(value) = release {
+            self.arm_release(value, event)?;
+        }
+        if let Some(submission) = submission {
+            unsafe {
+                submission
+                    .fence
+                    .SetEventOnCompletion(submission.value, event)?
+            };
+        }
+        Ok(release.is_some() || submission.is_some())
     }
     fn poll_retirement(
         &mut self,

@@ -8,7 +8,6 @@ use polymer_platform_windows::{
     NativeWindow, forward_character, performance_counter, performance_frequency,
 };
 #[cfg(windows)]
-use polymer_protocol::ExternalSyncKind;
 use polymer_protocol::{ExternalImageKind, FrameReady, input::PointerPhase};
 use polymer_renderer::Extent;
 use std::{
@@ -53,7 +52,7 @@ type WebRtcCompositor = std::convert::Infallible;
 #[cfg(windows)]
 use polymer_renderer::webrtc;
 use polymer_renderer::{
-    CompositingPlan, Presentation, RenderWindow, Renderer, SurfaceCapture, SurfaceCaptureEvent,
+    CompositingPlan, Presentation, Renderer, SurfaceCapture, SurfaceCaptureEvent,
     cli::{
         GraphicsHook, TrackedRenderTarget, ViewerApi, ViewerOptions, parse_target,
         split_command_arguments,
@@ -182,15 +181,11 @@ impl Statistics {
     }
 
     fn observe_frame(&mut self, connection: u64, frame: FrameReady, frequency: f64) {
-        let latency_ticks = performance_counter()
-            .unwrap_or(frame.timestamp_qpc)
-            .saturating_sub(frame.timestamp_qpc);
         if let Some(metrics) = self.frames.get_mut(&connection) {
             metrics.observe(
                 frame.frame_number,
-                frame.timestamp_qpc,
+                performance_counter().unwrap_or(0),
                 frequency,
-                Duration::from_secs_f64(latency_ticks as f64 / frequency.max(1.0)),
             );
         }
         self.frame_number = frame.frame_number;
@@ -266,7 +261,7 @@ fn d3d12_consumable(stream: &StreamReady) -> bool {
     matches!(
         stream.image_kind,
         ExternalImageKind::D3d12Resource | ExternalImageKind::D3d11Resource
-    ) && stream.sync_kind == ExternalSyncKind::D3d12Fence
+    )
 }
 
 impl ViewerCompositor {
@@ -456,20 +451,6 @@ impl ViewerCompositor {
         }
     }
 
-    fn resize_windows(&self, window: &impl RenderWindow) -> Vec<polymer_protocol::ResizeWindow> {
-        let presentation = self.presentation(window.render_extent());
-        let plan = layout::composition_plan(&presentation);
-        match self {
-            #[cfg(windows)]
-            Self::Vulkan(value) => Renderer::resize_windows(&value.compositor, window, &plan),
-            #[cfg(windows)]
-            Self::D3d12(value) => Renderer::resize_windows(&value.compositor, window, &plan),
-            #[cfg(target_os = "macos")]
-            Self::Metal(value) => Renderer::resize_windows(&value.compositor, window, &plan),
-            Self::Empty => Vec::new(),
-        }
-    }
-
     fn has_pending_frame(&self) -> bool {
         match self {
             #[cfg(windows)]
@@ -598,7 +579,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err("Metal WebRTC capture is not implemented".into());
     }
     let viewer_api = options.api;
-    let resize_guest = options.resize;
     #[cfg(windows)]
     let webrtc = webrtc_targets
         .as_ref()
@@ -686,19 +666,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         let mut active_backend = "Waiting";
         let mut active_consumer = "Waiting";
         let mut pressed_keys = HashSet::<KeyCode>::new();
-        let mut last_resize_windows = Vec::new();
 
         Ok(Box::new(move |event, target| match event {
         Event::AboutToWait => {
-            if resize_guest && launcher.isolate {
-                let resize_windows = compositor.resize_windows(&window);
-                if resize_windows != last_resize_windows {
-                    for resize in &resize_windows {
-                        let _ = input_tx.send(polymer_ipc::Message::ResizeWindow(*resize));
-                    }
-                    last_resize_windows = resize_windows;
-                }
-            }
             // Spend the wait for the next present slot here rather than inside
             // `Present` at the end of the redraw. Blocking afterwards
             // composites guest frames and input that were already a full
@@ -1009,12 +979,11 @@ if publish_stream && let Some(publisher) = &webrtc {
                                         #[cfg(target_os = "macos")]
                                         { active_consumer = "Metal"; }
                                         tracing::info!(
-                                            "polymer: imported {active_backend} stream {}x{} format {} {:?}/{:?} (surface {:#x}) for window {:#x} with {} slots using {}",
+                                            "polymer: imported {active_backend} stream {}x{} format {} {:?} (surface {:#x}) for window {:#x} with {} slots using {}",
                                             stream.width,
                                             stream.height,
                                             stream.format,
                                             stream.image_kind,
-                                            stream.sync_kind,
                                             stream.surface_id.0,
                                             stream.source_window,
                                             stream.slot_count,

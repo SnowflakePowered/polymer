@@ -115,7 +115,6 @@ impl PointerRoutingState {
             PointerInput {
                 surface_id: destination.surface_id,
                 target_window: destination.target_window,
-                frame_number: destination.frame.frame_number,
                 source: PointerSource::Mouse,
                 phase,
                 pointer_id: 0,

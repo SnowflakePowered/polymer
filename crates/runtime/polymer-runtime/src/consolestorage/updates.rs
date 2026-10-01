@@ -56,7 +56,12 @@ impl super::StorageService {
 
     /// A storage job for a library title. An installed title targets its own NAND; any other
     /// title targets the NAND chosen when the job runs.
-    fn title_spec(launchable: &Launchable, kind: JobKind, title: String, mut params: Value) -> JobSpec {
+    fn title_spec(
+        launchable: &Launchable,
+        kind: JobKind,
+        title: String,
+        mut params: Value,
+    ) -> JobSpec {
         let storage = match &launchable.identified.path {
             LaunchableUri::Artifact(artifact) => Some(artifact.storage.simple().to_string()),
             LaunchableUri::File(_) => None,
@@ -102,11 +107,9 @@ impl super::StorageService {
     }
 
     fn title_id(launchable: &Launchable) -> Result<&str, StorageError> {
-        launchable
-            .identified
-            .title_id
-            .as_deref()
-            .ok_or_else(|| StorageError("the title has no title ID to check for updates".to_owned()))
+        launchable.identified.title_id.as_deref().ok_or_else(|| {
+            StorageError("the title has no title ID to check for updates".to_owned())
+        })
     }
 }
 
@@ -222,7 +225,10 @@ impl StorageActor {
                 parent: Some(job.id()),
                 ..super::StorageService::install_spec(&platform, storage, &depot)
             };
-            let (install, _) = jobs.enqueue(spec).await.map_err(StorageError::from_display)?;
+            let (install, _) = jobs
+                .enqueue(spec)
+                .await
+                .map_err(StorageError::from_display)?;
             job.record(json!({ "depot": depot, "install": install.id.simple().to_string() }))
                 .await
                 .map_err(StorageError::from_display)?;

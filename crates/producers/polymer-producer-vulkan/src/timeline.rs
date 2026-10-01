@@ -43,6 +43,18 @@ impl ExportTimelineSemaphore {
     pub(crate) fn raw_handle(&self) -> isize {
         self.handle.as_raw_handle() as isize
     }
+    pub(crate) fn wait(&self, value: u64, timeout: u64) -> Result<(), vk::Result> {
+        let semaphores = [self.semaphore];
+        let values = [value];
+        unsafe {
+            self.device.wait_semaphores(
+                &vk::SemaphoreWaitInfo::default()
+                    .semaphores(&semaphores)
+                    .values(&values),
+                timeout,
+            )
+        }
+    }
 }
 
 impl Drop for ExportTimelineSemaphore {

@@ -3,15 +3,11 @@ use objc2_core_foundation::{CFArray, CGPoint};
 use objc2_core_graphics::*;
 use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSString};
 use polymer_input::{HostInputEvent, HostPointerInput};
-use polymer_platform::{GuestInput, GuestWindowId, ResizeDimensions};
+use polymer_platform::{GuestInput, GuestWindowId};
 use std::io;
 
 pub struct GuestEvents;
 impl GuestEvents {
-    pub fn dimensions(pid: u32, window: GuestWindowId) -> io::Result<ResizeDimensions> {
-        let bounds = Self::bounds(pid, window)?;
-        Ok(ResizeDimensions::new(bounds[2] as u32, bounds[3] as u32))
-    }
     fn bounds(pid: u32, window: GuestWindowId) -> io::Result<[f64; 4]> {
         let list =
             CGWindowListCopyWindowInfo(CGWindowListOption::OptionIncludingWindow, window.0 as u32)

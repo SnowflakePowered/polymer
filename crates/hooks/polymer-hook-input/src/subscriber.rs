@@ -95,7 +95,7 @@ impl Subscriber {
                         std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
                     ) => {}
                 Err(_) => return,
-                Ok(message) => input.receive_control(message),
+                Ok(_) => {}
             }
             thread::yield_now();
         }

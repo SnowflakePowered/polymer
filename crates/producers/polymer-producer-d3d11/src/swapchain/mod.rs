@@ -5,9 +5,7 @@ mod ownership;
 pub mod rotation;
 use crate::D3d11ImageRing;
 use polymer_presentation::{producer::ExportDescriptor, swapchain::*};
-use polymer_protocol::{
-    AdapterLuid, ConsumerApi, ExternalImageKind, ExternalSyncKind, GraphicsHook, SurfaceId,
-};
+use polymer_protocol::{AdapterLuid, ConsumerApi, ExternalImageKind, GraphicsHook, SurfaceId};
 use windows::{
     Win32::{
         Foundation::*,
@@ -66,6 +64,16 @@ pub struct D3d11VirtualBackend {
     cleanup_value: u64,
 }
 
+impl D3d11VirtualBackend {
+    fn arm_release(&self, value: u64, event: HANDLE) -> Result<(), Error> {
+        unsafe {
+            self.ring
+                .consumer_fence()
+                .SetEventOnCompletion(value, event)
+        }
+    }
+}
+
 impl SwapchainBackend for D3d11VirtualBackend {
     type CreateInfo = CreateInfo;
     type ApiAccess = ID3D11Texture2D;
@@ -95,7 +103,6 @@ impl SwapchainBackend for D3d11VirtualBackend {
             ));
         }
         let image_kind = ExternalImageKind::D3d11Resource;
-        let sync_kind = ExternalSyncKind::D3d12Fence;
         let _: ID3D11Device5 = info.device.cast()?;
         let _: ID3D11DeviceContext4 = unsafe { info.device.GetImmediateContext()? }.cast()?;
         let extent = binding.extent();
@@ -128,7 +135,6 @@ impl SwapchainBackend for D3d11VirtualBackend {
         }
         Ok(BackendProfile {
             image_kind,
-            sync_kind,
             format: info.format.0 as u32,
             image_count: info.image_count,
         })
@@ -214,7 +220,6 @@ impl SwapchainBackend for D3d11VirtualBackend {
             height: extent.height,
             format: self.profile.format,
             image_kind: self.profile.image_kind,
-            sync_kind: self.profile.sync_kind,
             image_handles: &self.handles,
             timeline_semaphore_handle: self.ring.raw_fence_handle() as i64,
             consumer_semaphore_handle: self.ring.raw_consumer_fence_handle() as i64,
@@ -235,20 +240,6 @@ impl SwapchainBackend for D3d11VirtualBackend {
             slot,
             generation: prerequisite.generation,
         };
-        let fence = self.ring.consumer_fence();
-        let completed = unsafe { fence.GetCompletedValue() };
-        if completed == u64::MAX {
-            return AcquirePoll::Failed(Error::from_hresult(DXGI_ERROR_DEVICE_REMOVED));
-        }
-        let value = prerequisite.previous_publication.unwrap_or(0);
-        if completed < value {
-            return AcquirePoll::Pending;
-        }
-        if value != 0 {
-            if let Err(error) = unsafe { self.context.Wait(fence, value) } {
-                return AcquirePoll::Indeterminate { work: token, error };
-            }
-        }
         let native = self
             .allocations
             .iter()
@@ -308,8 +299,11 @@ impl SwapchainBackend for D3d11VirtualBackend {
         &mut self,
         submissions: &[SubmissionRef<'_, Submission>],
     ) -> Result<BackendProgress, Error> {
+        let released = unsafe { self.ring.consumer_fence().GetCompletedValue() };
         let mut progress = BackendProgress {
-            device_lost: unsafe { self.device.GetDeviceRemovedReason() }.is_err(),
+            device_lost: released == u64::MAX
+                || unsafe { self.device.GetDeviceRemovedReason() }.is_err(),
+            released,
             ..Default::default()
         };
         for submission in submissions {
@@ -321,6 +315,24 @@ impl SwapchainBackend for D3d11VirtualBackend {
             }
         }
         Ok(progress)
+    }
+    fn arm_progress(
+        &self,
+        release: Option<u64>,
+        submission: Option<&Submission>,
+        event: HANDLE,
+    ) -> Result<bool, Error> {
+        if let Some(value) = release {
+            self.arm_release(value, event)?;
+        }
+        if let Some(submission) = submission {
+            unsafe {
+                submission
+                    .fence
+                    .SetEventOnCompletion(submission.value, event)?
+            };
+        }
+        Ok(release.is_some() || submission.is_some())
     }
     fn poll_retirement(
         &mut self,

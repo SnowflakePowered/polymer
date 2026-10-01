@@ -81,15 +81,16 @@ impl ExtCapture {
         Ok(capture)
     }
 
-    pub(super) unsafe fn copy_frame(&mut self, stream_id: StreamId) {
+    pub(super) unsafe fn copy_frame(&mut self) {
         let completed = unsafe { self.consumer.completed_value() };
-        let sync_value = self.sync_value.wrapping_add(1).max(1);
         let Some(reservation) = self.scheduler.try_acquire(self.slots.len(), |index| {
             (self.slots[index].release_value.load(Ordering::Relaxed) <= completed).then_some(())
         }) else {
             return;
         };
         let slot_index = reservation.0;
+        let sync_value =
+            FrameReady::ready_value(FrameReady::sequence(self.sync_value) + 1, slot_index as u32);
         let slot = &self.slots[slot_index];
         unsafe {
             self.consumer.wait(
@@ -161,14 +162,9 @@ impl ExtCapture {
             .store(sync_value, Ordering::Relaxed);
         self.scheduler.commit(slot_index, self.slots.len());
         self.sync_value = sync_value;
-        let message = polymer_protocol::FrameReady {
-            stream_id,
-            slot: slot_index as u32,
-            frame_number: 0,
-            sync_value,
-            timestamp_qpc: performance_counter().unwrap_or(0),
-        };
-        ProducerSession::publish_frame(&mut self.ipc, message);
+        if !self.connected() {
+            self.ipc = None;
+        }
     }
 }
 
@@ -202,7 +198,6 @@ impl ExtCapture {
             height: self.height,
             format: DXGI_FORMAT_R8G8B8A8_UNORM.0 as u32,
             image_kind: ExternalImageKind::D3d12Resource,
-            sync_kind: ExternalSyncKind::D3d12Fence,
             image_handles: &image_handles,
             timeline_semaphore_handle: self.ready.handle().0 as i64,
             consumer_semaphore_handle: self.consumer.handle().0 as i64,

@@ -173,11 +173,6 @@ impl VirtualDxgiSwapchain {
     }
     pub(super) unsafe extern "system" fn set_latency(this: *mut c_void, latency: u32) -> HRESULT {
         let object = unsafe { Self::from_this(this) };
-        if object.description.Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0 as u32
-            == 0
-        {
-            return DXGI_ERROR_INVALID_CALL;
-        }
         if latency == 0 || latency > 16 {
             return E_INVALIDARG;
         }
@@ -188,24 +183,13 @@ impl VirtualDxgiSwapchain {
             return E_POINTER;
         }
         let object = unsafe { Self::from_this(this) };
-        if object.description.Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0 as u32
-            == 0
-        {
-            return DXGI_ERROR_INVALID_CALL;
-        }
         unsafe {
             output.write(object.driver.maximum_latency());
         }
         S_OK
     }
     pub(super) unsafe extern "system" fn latency_handle(this: *mut c_void) -> HANDLE {
-        let object = unsafe { Self::from_this(this) };
-        if object.description.Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0 as u32
-            == 0
-        {
-            return HANDLE::default();
-        }
-        object.driver.latency_handle()
+        unsafe { Self::from_this(this) }.driver.latency_handle()
     }
     pub(super) unsafe extern "system" fn set_matrix(
         _: *mut c_void,

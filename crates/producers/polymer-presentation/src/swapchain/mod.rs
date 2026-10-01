@@ -15,11 +15,11 @@ mod pacing;
 #[cfg(feature = "producer")]
 mod retirement;
 #[cfg(all(feature = "producer", windows))]
-pub use maintenance::{DxgiMaintenance, PacingSource, RetiringResource};
+pub use maintenance::{DxgiMaintenance, RetiringResource};
 #[cfg(all(feature = "producer", windows))]
 mod latency;
 #[cfg(all(feature = "producer", windows))]
-pub use latency::FrameLatency;
+pub use latency::{FrameLatency, ProgressEvent};
 #[cfg(feature = "producer")]
 mod state;
 pub use pacing::AcquireDeadline;

@@ -3,7 +3,6 @@
 
 use crate::webrtc::WebRtcCompositor;
 
-use polymer_renderer::renderer::frame_ownership::Retention;
 use std::{
     collections::VecDeque,
     error::Error,

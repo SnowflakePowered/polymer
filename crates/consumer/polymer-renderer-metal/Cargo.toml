@@ -6,6 +6,7 @@ license.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 egui = "0.29.1"
+polymer-statistics.workspace = true
 polymer-renderer = { path = "../polymer-renderer" }
 polymer-ipc.workspace = true
 polymer-protocol.workspace = true

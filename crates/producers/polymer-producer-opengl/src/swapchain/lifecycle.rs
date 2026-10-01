@@ -46,9 +46,9 @@ impl Capture {
             }
         }
     }
-    pub(super) unsafe fn copy_frame(&mut self, stream: StreamId) {
+    pub(super) unsafe fn copy_frame(&mut self) {
         if let Some(native) = self.native.as_mut() {
-            unsafe { native.copy_frame(stream) };
+            unsafe { native.copy_frame() };
         }
     }
     unsafe fn initialize(&self) -> Result<Option<ExtCapture>, String> {

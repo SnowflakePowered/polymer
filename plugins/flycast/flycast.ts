@@ -34,7 +34,7 @@ export const onLaunch = async (args: EmulatorLaunchArgs<unknown, Readonly<{ vmu?
         ],
         argv: [gamePath],
         isolate: false,
-        hooks: { graphics: ["vulkan"], input: ["sdl3"] },
+        hooks: { graphics: ["vulkan"], input: ["sdl2"] },
         surfaces: [{ index: 0, pattern: "Flycast" }],
     };
 };

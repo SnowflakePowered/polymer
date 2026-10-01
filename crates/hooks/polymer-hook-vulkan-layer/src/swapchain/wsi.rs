@@ -1,6 +1,7 @@
+use super::wakeup::AcquireWakeup;
 use super::*;
-use polymer_presentation::producer::{AvailabilityWaiter, ProducerSession, ProducerWindows};
-use polymer_producer_vulkan::swapchain::{AcquireInfo, CreateInfo};
+use polymer_presentation::producer::{ProducerSession, ProducerWindows};
+use polymer_producer_vulkan::swapchain::{AcquireInfo, CreateInfo, ReleaseTimeline};
 use std::{
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
@@ -9,7 +10,6 @@ use std::{
 pub(super) struct Live {
     pub controller: Option<SwapchainController<VulkanVirtualBackend>>,
     pub leases: Vec<Option<AppLease>>,
-    pub next_present: Instant,
 }
 pub(super) struct Swapchain {
     pub device: Arc<Device>,
@@ -17,11 +17,15 @@ pub(super) struct Swapchain {
     pub images: Vec<vk::Image>,
     pub live: OwnerCell<Live>,
     pub closed: AtomicBool,
-    pub mode: vk::PresentModeKHR,
-    pub period: Duration,
-    pub availability: AvailabilityWaiter,
+    pub wakeup: AcquireWakeup,
+    release: ReleaseTimeline,
     attachment: Attachment,
 }
+
+const ACQUIRE_WAIT_SLICE: Duration = Duration::from_millis(8);
+/// Every virtual swapchain paces acquisition to one queued frame, woken by the
+/// consumer's release timeline, so applications start frames just in time.
+const MAXIMUM_LATENCY: u32 = 1;
 
 enum Attachment {
     Bound {
@@ -59,7 +63,7 @@ impl Swapchain {
                     .map_err(WsiResult::controller)
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let availability = controller.availability();
+        let release = controller.backend().release_timeline();
         for &image in &images {
             device.images.insert(image, ());
         }
@@ -71,12 +75,10 @@ impl Swapchain {
             live: OwnerCell::new(Live {
                 controller: Some(controller),
                 leases: (0..count).map(|_| None).collect(),
-                next_present: Instant::now(),
             }),
             closed: AtomicBool::new(false),
-            mode: info.present_mode,
-            period: surface.refresh_period(),
-            availability,
+            wakeup: AcquireWakeup::default(),
+            release,
             attachment,
         }))
     }
@@ -247,7 +249,7 @@ impl Swapchain {
             .flatten();
         let info = AcquireInfo { semaphore, fence };
         loop {
-            let observed = self.availability.epoch();
+            let observed = self.wakeup.epoch();
             if self.device.lost.load(Ordering::Acquire) {
                 return Err(vk::Result::ERROR_DEVICE_LOST);
             }
@@ -256,22 +258,28 @@ impl Swapchain {
                 return Err(vk::Result::ERROR_OUT_OF_DATE_KHR);
             }
             let mut in_flight = None;
+            let mut pending_release = None;
             if let Some(mut state) = self.live.enter() {
                 let controller = state
                     .controller
                     .as_mut()
                     .ok_or(vk::Result::ERROR_OUT_OF_DATE_KHR)?;
-                match controller.acquire_with_info(None, AcquireDeadline::Nonblocking, None, &info)
-                {
+                match controller.acquire_with_info(
+                    None,
+                    AcquireDeadline::Nonblocking,
+                    Some(MAXIMUM_LATENCY),
+                    &info,
+                ) {
                     Ok(lease) => {
                         let index = lease.slot().index();
                         state.leases[index as usize] = Some(lease);
                         return Ok(index);
                     }
                     Err(ControllerError::WouldBlock) => {
-                        if matches!(self.attachment, Attachment::Detached(_)) {
-                            in_flight = controller.oldest_in_flight().cloned();
-                        }
+                        in_flight = controller.oldest_in_flight().cloned();
+                        pending_release = controller
+                            .pacing_release_target(MAXIMUM_LATENCY)
+                            .or_else(|| controller.pending_release());
                     }
                     Err(error) => {
                         let error = WsiResult::controller(error);
@@ -289,25 +297,30 @@ impl Swapchain {
                 return Err(vk::Result::TIMEOUT);
             }
             let remaining = until.map(|until| until.saturating_duration_since(Instant::now()));
-            match in_flight {
-                Some(submission) => match submission.wait(remaining.map_or(u64::MAX, |r| {
-                    u64::try_from(r.as_nanos()).unwrap_or(u64::MAX)
-                })) {
-                    Ok(()) | Err(vk::Result::TIMEOUT) => {}
-                    Err(error) => {
-                        if error == vk::Result::ERROR_DEVICE_LOST {
-                            self.device.lost.store(true, Ordering::Release);
-                        }
-                        return Err(error);
+            let slice = remaining.map_or(ACQUIRE_WAIT_SLICE, |r| r.min(ACQUIRE_WAIT_SLICE));
+            let slice_ns = u64::try_from(slice.as_nanos()).unwrap_or(u64::MAX);
+            let waited = match (in_flight, pending_release) {
+                (Some(submission), _) => submission.wait(slice_ns),
+                (None, Some(value)) => self.release.wait(value, slice_ns),
+                (None, None) => {
+                    self.wakeup.wait(observed, slice);
+                    Ok(())
+                }
+            };
+            match waited {
+                Ok(()) | Err(vk::Result::TIMEOUT) => {}
+                Err(error) => {
+                    if error == vk::Result::ERROR_DEVICE_LOST {
+                        self.device.lost.store(true, Ordering::Release);
                     }
-                },
-                None => self.availability.wait(observed, remaining),
+                    return Err(error);
+                }
             }
         }
     }
     pub(super) fn retire(&self) {
         self.closed.store(true, Ordering::Release);
-        self.availability.notify();
+        self.wakeup.notify();
         if let Ok(mut state) = self
             .live
             .enter_until(AcquireDeadline::after(Duration::from_secs(2)))

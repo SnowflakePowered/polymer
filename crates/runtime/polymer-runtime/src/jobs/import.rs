@@ -187,7 +187,13 @@ impl Importer {
         Self::stage(job, &key, format!("Adding {filename}"), async {
             let added = Self::call(&self.library.launchables_add, message).await?;
             let launchables = std::iter::once(&added["launchable"])
-                .chain(added["imports"].as_array().into_iter().flatten().map(|import| &import["launchable"]))
+                .chain(
+                    added["imports"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|import| &import["launchable"]),
+                )
                 .map(|launchable| launchable["id"].clone())
                 .collect::<Vec<_>>();
             Self::note(job, |detail| detail["added"][&key] = json!(launchables)).await

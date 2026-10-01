@@ -130,14 +130,7 @@ impl D3d12Creation {
         .map_err(|failure| {
             Error::new(E_FAIL, format!("virtual stream setup: {:?}", failure.error))
         })?;
-        let driver = Arc::new(
-            D3d12Frontend::new(controller)?
-                .enable_waitable(
-                    description.Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0 as u32
-                        != 0,
-                )?
-                .bind(registration, fixed),
-        );
+        let driver = Arc::new(D3d12Frontend::new(controller)?.bind(registration, fixed));
         let object = VirtualDxgiSwapchain::create(
             factory,
             device.cast()?,
@@ -148,7 +141,6 @@ impl D3d12Creation {
         reservation
             .commit()
             .map_err(|error| Error::new(E_FAIL, error))?;
-        driver.register()?;
         Ok(Some(object))
     }
 

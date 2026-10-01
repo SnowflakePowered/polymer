@@ -6,7 +6,7 @@ use crate::{ExportImageRing, ExportImageRingDesc, ExportTimelineSemaphore, Exter
 use ash::vk;
 use native::{Queue, Semaphore, Submission};
 use polymer_presentation::{producer::ExportDescriptor, swapchain::*};
-use polymer_protocol::{ConsumerApi, ExternalImageKind, ExternalSyncKind, GraphicsHook, SurfaceId};
+use polymer_protocol::{ConsumerApi, ExternalImageKind, GraphicsHook, SurfaceId};
 use std::sync::Arc;
 
 pub struct CreateInfo {
@@ -26,13 +26,21 @@ pub struct AcquireInfo {
 pub struct PresentInfo {
     pub queue: Arc<Queue>,
     pub dependency: Arc<Semaphore>,
-    pub display_at: Option<std::time::Instant>,
 }
 pub struct WriteToken {
     slot: ImageSlot,
     generation: u64,
     acquire: Arc<Submission>,
 }
+/// The consumer's release timeline, waitable without the controller's owner.
+#[derive(Clone)]
+pub struct ReleaseTimeline(Arc<ExportTimelineSemaphore>);
+impl ReleaseTimeline {
+    pub fn wait(&self, value: u64, timeout: u64) -> Result<(), vk::Result> {
+        self.0.wait(value, timeout)
+    }
+}
+
 pub struct VulkanVirtualBackend {
     external: Arc<ExternalDevice>,
     acquire_queue: Arc<Queue>,
@@ -40,7 +48,7 @@ pub struct VulkanVirtualBackend {
     ring: ExportImageRing,
     handles: Vec<i64>,
     ready: ExportTimelineSemaphore,
-    released: ExportTimelineSemaphore,
+    released: Arc<ExportTimelineSemaphore>,
     initialized: Vec<bool>,
     last_ready: u64,
     concurrent: bool,
@@ -48,6 +56,9 @@ pub struct VulkanVirtualBackend {
 }
 
 impl VulkanVirtualBackend {
+    pub fn release_timeline(&self) -> ReleaseTimeline {
+        ReleaseTimeline(self.released.clone())
+    }
     pub fn format(format: vk::Format) -> Option<u32> {
         match format {
             vk::Format::R8G8B8A8_UNORM => Some(28),
@@ -81,7 +92,6 @@ impl SwapchainBackend for VulkanVirtualBackend {
         }
         Ok(BackendProfile {
             image_kind: ExternalImageKind::D3d12Resource,
-            sync_kind: ExternalSyncKind::D3d12Fence,
             format: Self::format(info.format).ok_or(vk::Result::ERROR_FORMAT_NOT_SUPPORTED)?,
             image_count: info.count,
         })
@@ -122,7 +132,7 @@ impl SwapchainBackend for VulkanVirtualBackend {
             ring,
             handles,
             ready: timelines.next().unwrap(),
-            released: timelines.next().unwrap(),
+            released: Arc::new(timelines.next().unwrap()),
             initialized: vec![false; info.count as usize],
             last_ready: 0,
             concurrent: info.queue_families.len() > 1,
@@ -140,7 +150,6 @@ impl SwapchainBackend for VulkanVirtualBackend {
             height: self.binding.extent().height,
             format: self.format,
             image_kind: ExternalImageKind::D3d12Resource,
-            sync_kind: ExternalSyncKind::D3d12Fence,
             image_handles: &self.handles,
             timeline_semaphore_handle: self.ready.raw_handle() as i64,
             consumer_semaphore_handle: self.released.raw_handle() as i64,
@@ -158,18 +167,13 @@ impl SwapchainBackend for VulkanVirtualBackend {
         info: &AcquireInfo,
     ) -> AcquirePoll<WriteToken, Option<WriteToken>, vk::Result> {
         let barrier = self.acquire_barrier(slot);
-        let waits = prerequisite
-            .previous_publication
-            .map(|value| (self.released.semaphore(), value))
-            .into_iter()
-            .collect::<Vec<_>>();
         let signals = (info.semaphore != vk::Semaphore::null())
             .then_some((info.semaphore, 0))
             .into_iter()
             .collect::<Vec<_>>();
         match self
             .acquire_queue
-            .submit(&[barrier], &waits, &signals, info.fence, Vec::new())
+            .submit(&[barrier], &[], &signals, info.fence, Vec::new())
         {
             Ok(acquire) => {
                 self.initialized[slot.index() as usize] = true;
@@ -213,19 +217,6 @@ impl SwapchainBackend for VulkanVirtualBackend {
         ) {
             Ok(work) => {
                 self.last_ready = signal.value();
-                if let Some(display_at) = info.display_at {
-                    // A FIFO publication reaches the virtual display only once
-                    // rendering is ready, and no earlier than its next vblank.
-                    if work.wait(2_000_000_000).is_err() {
-                        return SubmitOutcome::Indeterminate {
-                            work: Some(token),
-                            error: vk::Result::ERROR_DEVICE_LOST,
-                        };
-                    }
-                    std::thread::sleep(
-                        display_at.saturating_duration_since(std::time::Instant::now()),
-                    );
-                }
                 SubmitOutcome::Submitted(work)
             }
             Err(error)
@@ -258,8 +249,14 @@ impl SwapchainBackend for VulkanVirtualBackend {
                 completed.push(submission.slot);
             }
         }
+        let released = unsafe {
+            self.external
+                .device
+                .get_semaphore_counter_value(self.released.semaphore())?
+        };
         Ok(BackendProgress {
             completed,
+            released,
             device_lost: false,
         })
     }

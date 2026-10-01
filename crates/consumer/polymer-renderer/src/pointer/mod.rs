@@ -218,7 +218,6 @@ impl PointerProjector {
             pointer: PointerInput {
                 surface_id: mapped.surface_id,
                 target_window: mapped.target_window,
-                frame_number: mapped.frame.frame_number,
                 source: PointerSource::Mouse,
                 phase: PointerPhase::Move,
                 pointer_id: 0,

@@ -1,13 +1,12 @@
 use super::{FixedSurfaceBinding, state::*};
 use crate::producer::ExportDescriptor;
-use polymer_protocol::{ConsumerApi, ExternalImageKind, ExternalSyncKind, MAX_IMAGE_SLOTS};
+use polymer_protocol::{ConsumerApi, ExternalImageKind, MAX_IMAGE_SLOTS};
 
 /// The native frontend must validate every requested API feature against this
 /// profile before handing any buffers to the guest.
 #[derive(Clone, Debug)]
 pub struct BackendProfile {
     pub image_kind: ExternalImageKind,
-    pub sync_kind: ExternalSyncKind,
     pub format: u32,
     pub image_count: u32,
 }
@@ -66,6 +65,17 @@ pub trait SwapchainBackend: Sized {
         &mut self,
         submissions: &[SubmissionRef<'_, Self::Submission>],
     ) -> Result<BackendProgress, Self::Error>;
+    /// Arms `event` to be set once the consumer releases `release` or
+    /// `submission` completes. Returns `false` when nothing could be armed.
+    #[cfg(windows)]
+    fn arm_progress(
+        &self,
+        _release: Option<u64>,
+        _submission: Option<&Self::Submission>,
+        _event: windows::Win32::Foundation::HANDLE,
+    ) -> Result<bool, Self::Error> {
+        Ok(false)
+    }
 
     /// Must prove GPU, app-reference and external-consumer lifetimes have ended.
     /// This is called only on the API owner. Pending work is kept, never dropped.

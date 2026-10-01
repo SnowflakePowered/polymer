@@ -33,7 +33,13 @@ impl Handler<RunJobs> for StorageActor {
         let catalog = self.catalog.clone();
         let run = self.execute(move |manager, plugins| async move {
             for id in ids {
-                let run = Self::run_job(manager.clone(), plugins.clone(), catalog.clone(), id, resume);
+                let run = Self::run_job(
+                    manager.clone(),
+                    plugins.clone(),
+                    catalog.clone(),
+                    id,
+                    resume,
+                );
                 if let Err(error) = run.await {
                     tracing::warn!(%error, job = %id, "storage job failed");
                 }
@@ -116,7 +122,9 @@ impl StorageActor {
             JobKind::Bootstrap => Self::bootstrap_job(manager, plugins, job, resume)
                 .await
                 .map(drop),
-            JobKind::Check => Self::check_job(manager, plugins, catalog, job).await.map(drop),
+            JobKind::Check => Self::check_job(manager, plugins, catalog, job)
+                .await
+                .map(drop),
             JobKind::Update => Self::update_job(manager, plugins, job).await,
             kind => Err(StorageError::from_display(JobError::Unsupported(kind))),
         }

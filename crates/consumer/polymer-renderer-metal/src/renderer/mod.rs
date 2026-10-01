@@ -140,17 +140,6 @@ impl MetalCompositor {
             .queue
             .commandBuffer()
             .ok_or("Metal command buffer unavailable")?;
-        for surface in self.surfaces.values_mut() {
-            surface.frames.begin();
-            if let Some(frame) = surface.frames.pending() {
-                if surface.imported.ready(frame.sync_value) {
-                    surface.frames.prepare_pending(Retention::Retained);
-                }
-            }
-            if let Some(frame) = surface.frames.frame() {
-                surface.imported.wait(&commands, frame.sync_value);
-            }
-        }
         if let Some(drawable) = &drawable {
             self.paint_drawable(plan, &commands, drawable, paint)?;
         }
@@ -168,27 +157,25 @@ impl MetalCompositor {
             })
             .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
         capture(&commands, &frames)?;
-        let mut releases = Vec::new();
         for surface in self.surfaces.values() {
-            if let Some(value) = surface.frames.release_value() {
+            if let Some(value) = surface.frames.release_value(Retention::Retained) {
                 surface.imported.release(&commands, value);
-                if let (Some(sender), Some(frame)) =
-                    (&surface.frames.release_sender, surface.frames.frame())
-                {
-                    releases.push((sender.clone(), frame.stream_id, value));
-                }
             }
         }
-        self.submissions
-            .track(&commands, drawable.as_deref(), releases);
+        self.submissions.track(&commands, drawable.as_deref());
         if let Some(drawable) = &drawable {
             commands.presentDrawable(ProtocolObject::from_ref(&**drawable));
         }
         commands.commit();
-        // Queue order protects producer textures. Only completion handlers emit
-        // host release acknowledgments; submission advances local ownership.
-        for surface in self.surfaces.values_mut() {
-            surface.frames.commit();
+        // Queue order protects producer textures; submission advances local ownership.
+        for (&connection, surface) in &mut self.surfaces {
+            if let Some(ready) = surface.frames.commit(Retention::Retained) {
+                polymer_statistics::capture_latency(
+                    connection,
+                    surface.imported.stream.surface_id.0,
+                    ready.elapsed(),
+                );
+            }
         }
         Ok(true)
     }
@@ -266,8 +253,7 @@ impl Renderer for MetalCompositor {
             .metal_resources()
             .ok_or("missing native Metal resources")?;
         let imported = ImportedMetalStream::new(&self.device, *offer.stream(), resources)?;
-        let mut frames = SurfaceFrames::default();
-        frames.release_sender = offer.buffer_release_sender();
+        let frames = SurfaceFrames::default();
         self.surfaces.insert(
             offer.connection_id(),
             Surface {
@@ -284,9 +270,6 @@ impl Renderer for MetalCompositor {
                 .queue
                 .commandBuffer()
                 .ok_or("Metal command buffer unavailable")?;
-            if let Some(frame) = surface.frames.latest() {
-                surface.imported.wait(&commands, frame.sync_value);
-            }
             surface.imported.release(&commands, RELEASE_ALL_SYNC_VALUE);
             commands.commit();
             // The queue retains encoded resources until the release completes.
@@ -313,7 +296,7 @@ impl Renderer for MetalCompositor {
                     ),
                     quarter_turns: surface.quarter_turns,
                     flip_y: false,
-                    frame: surface.frames.latest()?,
+                    frame: surface.frames.frame()?,
                 })
             })
             .collect()

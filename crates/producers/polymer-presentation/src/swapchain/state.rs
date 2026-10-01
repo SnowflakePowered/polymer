@@ -15,7 +15,6 @@ impl ImageSlot {
 #[derive(Clone, Copy, Debug)]
 pub struct ReusePrerequisite {
     pub generation: u64,
-    pub previous_publication: Option<u64>,
 }
 
 /// Only the controller can reserve a timeline value.
@@ -59,6 +58,8 @@ pub struct SubmissionRef<'a, S> {
 #[derive(Default)]
 pub struct BackendProgress {
     pub completed: Vec<ImageSlot>,
+    /// Completed value of the consumer's shared release timeline.
+    pub released: u64,
     pub device_lost: bool,
 }
 

@@ -5,7 +5,6 @@ use polymer_hook_input::HookInput;
 use polymer_ipc::input::{InputMessage, WireHostKey, WireHostPointer};
 use polymer_platform_windows::{
     NativeWindow, ProcessId, client_size, forward_focus, forward_raw_key, is_process_window,
-    resize_client,
 };
 use polymer_protocol::input::{PointerInput, PointerPhase, RawKeyInput};
 use std::{
@@ -105,11 +104,6 @@ impl Runtime {
                 _ => {}
             }
         }
-        for message in input.drain_control() {
-            if let polymer_ipc::Message::ResizeWindow(event) = message {
-                self.apply_resize(event);
-            }
-        }
     }
 
     fn apply_wire_pointer(&self, event: WireHostPointer) {
@@ -123,7 +117,6 @@ impl Runtime {
         self.apply(PointerInput {
             surface_id: event.surface_id,
             target_window: event.target_window,
-            frame_number: 0,
             source,
             phase,
             pointer_id: event.pointer_id,
@@ -213,26 +206,6 @@ impl Runtime {
                 pressed = event.pressed,
                 "posted first raw key"
             );
-        }
-    }
-
-    fn apply_resize(&self, event: polymer_protocol::ResizeWindow) {
-        let window = NativeWindow(event.target_window as isize);
-        if polymer_platform_windows::FixedWindowBinding::active(window) {
-            return;
-        }
-        if event.target_window != 0
-            && is_process_window(window, ProcessId(unsafe { GetCurrentProcessId() }))
-        {
-            if let Err(error) = resize_client(window, event.width, event.height) {
-                tracing::error!(
-                    %error,
-                    window = event.target_window,
-                    width = event.width,
-                    height = event.height,
-                    "failed to resize window"
-                );
-            }
         }
     }
 }

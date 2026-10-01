@@ -8,12 +8,12 @@ mod target;
 
 use self::audio::AudioWorker;
 use self::target::TargetProcess;
-use crate::{NativeWindow, client_size, keyboard_code};
+use crate::keyboard_code;
 use polymer_input::{HostInputEvent, KeyCode};
-use polymer_ipc::{Message, input::host::InputIpcListener};
+use polymer_ipc::input::host::InputIpcListener;
 use polymer_platform::{
     AudioState, Guest, GuestInput, GuestWindowId, HotkeyChord, NormalizedVolume,
-    ProcessArchitecture, ProcessExitReceiver, ProcessId, ResizeDimensions,
+    ProcessArchitecture, ProcessExitReceiver, ProcessId,
 };
 use std::{
     io,
@@ -116,31 +116,6 @@ impl Guest for WindowsGuest {
             .as_ref()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "guest has exited"))?;
         process.child.subscribe_exit()
-    }
-
-    fn window_dimensions(&self, window: GuestWindowId) -> io::Result<ResizeDimensions> {
-        client_size(NativeWindow(window.0 as isize))
-            .map(|(width, height)| ResizeDimensions::new(width, height))
-            .ok_or_else(io::Error::last_os_error)
-    }
-
-    fn resize_window(&self, window: GuestWindowId, dimensions: ResizeDimensions) -> io::Result<()> {
-        if dimensions.width == 0 || dimensions.height == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "window dimensions must be non-zero",
-            ));
-        }
-        self.input
-            .send_control(Message::ResizeWindow(polymer_protocol::ResizeWindow {
-                target_window: window.0,
-                width: dimensions.width,
-                height: dimensions.height,
-            }))
-            .then_some(())
-            .ok_or_else(|| {
-                io::Error::new(io::ErrorKind::NotConnected, "guest input is unavailable")
-            })
     }
 
     fn send_input(&self, input: GuestInput) -> io::Result<()> {

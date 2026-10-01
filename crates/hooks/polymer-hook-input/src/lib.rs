@@ -6,9 +6,7 @@ mod topology;
 pub use host::HostState;
 pub use topology::TopologyGuard;
 
-use parking_lot::Mutex;
 use polymer_input::{DeviceState, Feedback, GamepadReport};
-use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -18,7 +16,6 @@ pub struct HookInput {
     topology: topology::TopologyState,
     control: subscriber::ControlSender,
     connected: AtomicBool,
-    controls: Mutex<VecDeque<polymer_ipc::Message>>,
 }
 
 impl HookInput {
@@ -30,7 +27,6 @@ impl HookInput {
             topology: topology::TopologyState::default(),
             control,
             connected: AtomicBool::new(false),
-            controls: Mutex::new(VecDeque::new()),
         });
         subscriber::Subscriber::spawn(format!("{session}-input"), value.clone(), receiver);
         value
@@ -69,10 +65,6 @@ impl HookInput {
         self.connected.load(Ordering::Acquire)
     }
 
-    pub fn drain_control(&self) -> Vec<polymer_ipc::Message> {
-        self.controls.lock().drain(..).collect()
-    }
-
     pub fn send_feedback(&self, player: u8, feedback: Feedback) -> bool {
         self.control.feedback(player, feedback)
     }
@@ -88,13 +80,5 @@ impl HookInput {
 
     pub(crate) fn set_connected(&self, connected: bool) {
         self.connected.store(connected, Ordering::Release);
-    }
-
-    pub(crate) fn receive_control(&self, message: polymer_ipc::Message) {
-        let mut controls = self.controls.lock();
-        if controls.len() == 64 {
-            controls.pop_front();
-        }
-        controls.push_back(message);
     }
 }

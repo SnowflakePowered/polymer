@@ -1,16 +1,6 @@
 use super::*;
 
 impl VulkanCompositor {
-    pub(crate) fn set_buffer_release_sender(&mut self, offer: &polymer_runtime::SurfaceOffer) {
-        if let Some(surface) = self
-            .surfaces
-            .iter_mut()
-            .find(|surface| surface.connection == offer.connection_id())
-        {
-            surface.frames.release_sender = offer.buffer_release_sender();
-        }
-    }
-
     pub(crate) fn import_stream(
         &mut self,
         connection: u64,
@@ -80,7 +70,7 @@ impl VulkanCompositor {
         self.surfaces
             .iter()
             .filter_map(|surface| {
-                let frame = surface.frames.latest()?;
+                let frame = surface.frames.frame()?;
                 let image_extent = polymer_renderer::renderer::image_extent(
                     surface.imported.width,
                     surface.imported.height,

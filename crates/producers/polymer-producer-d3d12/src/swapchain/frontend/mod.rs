@@ -6,10 +6,7 @@ use super::D3d12VirtualBackend;
 use polymer_hook_dxgi::swapchain::VirtualDxgiDriver;
 use polymer_presentation::swapchain::*;
 use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicU32, Ordering},
-    },
+    sync::atomic::{AtomicU32, Ordering},
     time::Duration,
 };
 use windows::{
@@ -33,7 +30,7 @@ pub struct D3d12Frontend {
     current: AtomicU32,
     registration: Option<SourceRegistration>,
     fixed_window: Option<polymer_platform_windows::FixedWindowBinding>,
-    pacing: Option<FrameLatency>,
+    pacing: FrameLatency,
 }
 
 impl D3d12Frontend {
@@ -66,7 +63,7 @@ impl D3d12Frontend {
             current: AtomicU32::new(0),
             registration: None,
             fixed_window: None,
-            pacing: None,
+            pacing: FrameLatency::new()?,
         })
     }
     pub(super) fn bind(

@@ -91,7 +91,6 @@ pub struct ViewerOptions {
     pub surfaces: u32,
     pub skip_surfaces: u32,
     pub isolate: bool,
-    pub resize: bool,
     pub api: ViewerApi,
     pub hooks: Vec<GraphicsHook>,
     pub webrtc: Option<Vec<u32>>,
@@ -173,10 +172,6 @@ struct ViewerArguments {
     #[arg(long, action = ArgAction::SetTrue)]
     no_isolate: bool,
 
-    /// Resize guest windows to their displayed extent. Only applies in isolated mode.
-    #[arg(long, action = ArgAction::SetTrue, conflicts_with = "no_isolate")]
-    pub(crate) resize: bool,
-
     /// Capture hooks to install, as an ordered comma-separated list.
     #[arg(
         long = "hook",
@@ -230,7 +225,6 @@ impl ViewerArguments {
             surfaces: self.surfaces,
             skip_surfaces: self.skip_surfaces,
             isolate: !self.no_isolate,
-            resize: self.resize,
             api: self.api,
             hooks,
             webrtc: self.webrtc,

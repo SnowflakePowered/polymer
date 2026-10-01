@@ -7,7 +7,7 @@ pub mod input;
 
 pub use configuration::{RenderConfiguration, SurfaceRequest};
 
-pub const PROTOCOL_VERSION: u32 = 21;
+pub const PROTOCOL_VERSION: u32 = 25;
 pub const MAX_IMAGE_SLOTS: usize = 4;
 /// Terminal consumer-fence value used when abandoning an entire image ring.
 pub const RELEASE_ALL_SYNC_VALUE: u64 = u64::MAX - 1;
@@ -78,20 +78,7 @@ impl TryFrom<u32> for ConsumerApi {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 #[repr(transparent)]
-pub struct StreamId(pub u64);
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-#[repr(transparent)]
 pub struct SurfaceId(pub u64);
-
-/// Requests a new client-area extent for a window in the producer process.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(C)]
-pub struct ResizeWindow {
-    pub target_window: i64,
-    pub width: u32,
-    pub height: u32,
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(C)]
@@ -124,33 +111,36 @@ impl TryFrom<u32> for ExternalImageKind {
     }
 }
 
+/// Low bits of a ready-timeline value that carry the published image slot.
+pub const READY_SLOT_BITS: u32 = 2;
+const _: () = assert!(MAX_IMAGE_SLOTS <= 1 << READY_SLOT_BITS);
+
+/// A frame observed on a producer's ready timeline. Producers signal
+/// `(sequence << READY_SLOT_BITS) | slot`, so the newest completed value alone
+/// identifies the latest renderable image.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u32)]
-pub enum ExternalSyncKind {
-    D3d12Fence = 1,
-    MetalSharedEvent = 2,
-}
-
-impl TryFrom<u32> for ExternalSyncKind {
-    type Error = ();
-
-    fn try_from(value: u32) -> Result<Self, Self::Error> {
-        match value {
-            1 => Ok(Self::D3d12Fence),
-            2 => Ok(Self::MetalSharedEvent),
-            _ => Err(()),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(C)]
 pub struct FrameReady {
-    pub stream_id: StreamId,
     pub slot: u32,
     pub frame_number: u64,
     pub sync_value: u64,
-    pub timestamp_qpc: u64,
+}
+
+impl FrameReady {
+    pub const fn ready_value(sequence: u64, slot: u32) -> u64 {
+        (sequence << READY_SLOT_BITS) | slot as u64
+    }
+
+    pub const fn sequence(value: u64) -> u64 {
+        value >> READY_SLOT_BITS
+    }
+
+    pub const fn observed(sync_value: u64) -> Self {
+        Self {
+            slot: (sync_value & ((1 << READY_SLOT_BITS) - 1)) as u32,
+            frame_number: Self::sequence(sync_value),
+            sync_value,
+        }
+    }
 }
 
 mod hooks;

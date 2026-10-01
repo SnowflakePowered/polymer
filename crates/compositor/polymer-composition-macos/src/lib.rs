@@ -8,7 +8,7 @@ use objc2_quartz_core::CATransaction;
 use overlay::EguiOverlay;
 use polymer_composition::*;
 use polymer_renderer::egui::InputDiagnostics;
-use polymer_renderer::{ReceivedSurface, Renderer, SurfacePointerSender};
+use polymer_renderer::{ReceivedSurface, Renderer};
 use polymer_runtime::{RgbaScreenshot, SurfaceFrameReceiver, SurfaceOffer};
 use raster::{RasterLayer, Rasterizer};
 use std::{
@@ -300,7 +300,6 @@ impl Compositor for MacosCompositor {
         &mut self,
         _connection: u64,
         _frames: SurfaceFrameReceiver,
-        _pointer: SurfacePointerSender,
     ) -> Result<(), Box<dyn Error>> {
         Err("Metal composition receives frames through the frontend capture dispatcher".into())
     }

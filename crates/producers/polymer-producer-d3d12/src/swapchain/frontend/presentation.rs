@@ -40,11 +40,7 @@ impl VirtualDxgiDriver for D3d12Frontend {
             };
         }
         let index = self.current.load(Ordering::Acquire) as usize;
-        if let Err(error) = state.acquire(
-            index,
-            deadline,
-            self.pacing.as_ref().map(|pacing| pacing.maximum()),
-        ) {
+        if let Err(error) = state.acquire(index, deadline, None) {
             return error.code();
         }
         let next = (index + 1) % self.resources.len();
@@ -54,20 +50,16 @@ impl VirtualDxgiDriver for D3d12Frontend {
             }
         }
         let lease = state.leases[index].take().unwrap();
-        if let Some(pacing) = &self.pacing {
-            pacing.signal(false);
-        }
-        match state.controller.present(
-            lease,
-            (),
-            polymer_platform_windows::performance_counter().unwrap_or(0),
-        ) {
+        self.pacing.signal(false);
+        match state.controller.present(lease, ()) {
             Ok(_) => {
-                if let Err(error) = state.acquire(next, deadline, None) {
+                // Publishing first and pacing afterwards delays the application's
+                // next frame instead of holding the finished one.
+                let pacing =
+                    (!flags.contains(DXGI_PRESENT_DO_NOT_WAIT)).then(|| self.pacing.maximum());
+                if let Err(error) = state.acquire(next, deadline, pacing) {
                     state.failed = true;
-                    if let Some(pacing) = &self.pacing {
-                        pacing.signal(true);
-                    }
+                    self.pacing.signal(true);
                     return if error.code() == DXGI_ERROR_WAS_STILL_DRAWING {
                         DXGI_ERROR_DEVICE_REMOVED
                     } else {
@@ -80,9 +72,7 @@ impl VirtualDxgiDriver for D3d12Frontend {
             }
             Err(error) => {
                 state.failed = true;
-                if let Some(pacing) = &self.pacing {
-                    pacing.signal(true);
-                }
+                self.pacing.signal(true);
                 Self::error(error).code()
             }
         }
@@ -91,14 +81,20 @@ impl VirtualDxgiDriver for D3d12Frontend {
         self.current.load(Ordering::Acquire)
     }
     fn set_maximum_latency(&self, maximum: u32) -> windows::core::Result<()> {
-        self.set_latency(maximum)
+        let mut state = self
+            .state
+            .as_ref()
+            .expect("live frontend")
+            .enter_until(AcquireDeadline::after(Duration::from_secs(2)))
+            .map_err(Self::owner_error)?;
+        self.pacing.set_maximum(maximum);
+        self.refresh_latency(&mut state);
+        Ok(())
     }
     fn maximum_latency(&self) -> u32 {
-        self.pacing.as_ref().map_or(1, |pacing| pacing.maximum())
+        self.pacing.maximum()
     }
     fn latency_handle(&self) -> HANDLE {
-        self.pacing
-            .as_ref()
-            .map_or(HANDLE::default(), |pacing| pacing.duplicate())
+        self.pacing.duplicate()
     }
 }

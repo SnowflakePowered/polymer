@@ -9734,6 +9734,7 @@ dependencies = [
 name = "polymer-consumer-metal"
 version = "0.1.0"
 dependencies = [
+ "block2 0.6.2",
  "objc2 0.6.4",
  "objc2-io-surface",
  "objc2-metal 0.3.2",
@@ -10511,6 +10512,7 @@ dependencies = [
  "polymer-protocol",
  "polymer-renderer",
  "polymer-runtime",
+ "polymer-statistics",
  "raw-window-handle",
 ]
 
@@ -10528,6 +10530,7 @@ dependencies = [
  "polymer-protocol",
  "polymer-renderer",
  "polymer-runtime",
+ "polymer-statistics",
  "raw-window-handle",
  "tracing",
 ]
@@ -10549,6 +10552,8 @@ dependencies = [
  "parking_lot",
  "polymer-config",
  "polymer-consolestorage",
+ "polymer-consumer-d3d12",
+ "polymer-consumer-metal",
  "polymer-controllers",
  "polymer-deno",
  "polymer-input",

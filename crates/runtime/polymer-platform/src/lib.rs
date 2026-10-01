@@ -10,7 +10,7 @@ pub use polymer_protocol::{GraphicsHook, Hooks, InputHook};
 use std::{ffi::OsString, io, path::PathBuf};
 pub use types::{
     GuestInput, GuestWindowId, HotkeyChord, ProcessArchitecture, ProcessExit, ProcessExitReceiver,
-    ProcessId, ResizeDimensions,
+    ProcessId,
 };
 
 /// Platform launch mechanics consume a command inside the mandatory VFS mount.
@@ -33,8 +33,6 @@ pub trait Guest: Send {
     fn id(&self) -> ProcessId;
     fn architecture(&self) -> ProcessArchitecture;
     fn subscribe_exit(&self) -> io::Result<ProcessExitReceiver>;
-    fn window_dimensions(&self, window: GuestWindowId) -> io::Result<ResizeDimensions>;
-    fn resize_window(&self, window: GuestWindowId, dimensions: ResizeDimensions) -> io::Result<()>;
     fn send_input(&self, input: GuestInput) -> io::Result<()>;
     fn audio_state(&self) -> io::Result<AudioState>;
     fn set_volume(&self, volume: NormalizedVolume) -> io::Result<()>;

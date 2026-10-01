@@ -4,7 +4,7 @@ use polymer_protocol::MAX_IMAGE_SLOTS;
 use windows::Win32::Graphics::{Direct3D12::*, Dxgi::Common::DXGI_FORMAT};
 
 use super::compositor::{create_srv, create_texture, transition};
-use polymer_renderer::renderer::frame_ownership::SurfaceFrames;
+use polymer_renderer::renderer::frame_ownership::{Retention, SurfaceFrames};
 
 pub(super) const SURFACE_DESCRIPTORS: u32 = MAX_IMAGE_SLOTS as u32 + 1;
 
@@ -54,6 +54,15 @@ impl ImportedSurface {
             surface.cache = Some(surface.create_cache(device)?);
         }
         Ok(surface)
+    }
+
+    /// A cached surface copies each frame out of the producer's slot.
+    pub fn retention(&self) -> Retention {
+        if self.cache.is_some() {
+            Retention::Cached
+        } else {
+            Retention::Retained
+        }
     }
 
     pub fn create_cache(&self, device: &ID3D12Device) -> windows::core::Result<ID3D12Resource> {

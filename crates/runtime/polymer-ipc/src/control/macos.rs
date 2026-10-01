@@ -103,7 +103,6 @@ impl LocalSocket {
         let mut message = decode(wire, data.to_vec())?;
         if let Message::StreamReady(ready) = &message {
             if ready.image_kind != ExternalImageKind::IOSurface
-                || ready.sync_kind != ExternalSyncKind::MetalSharedEvent
                 || packet.surfaces.len() != ready.slot_count as usize
                 || packet.surfaces.is_empty()
             {

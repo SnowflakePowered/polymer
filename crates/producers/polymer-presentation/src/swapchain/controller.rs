@@ -1,6 +1,6 @@
 use super::*;
-use crate::producer::{AvailabilityWaiter, ProducerSession};
-use polymer_protocol::{ConsumerApi, FrameReady, StreamId};
+use crate::producer::ProducerSession;
+use polymer_protocol::{ConsumerApi, FrameReady, RELEASE_ALL_SYNC_VALUE};
 use std::{io, sync::Arc};
 
 #[derive(Debug)]
@@ -36,6 +36,8 @@ pub struct SwapchainController<B: SwapchainBackend> {
     next_candidate: usize,
     retiring: Option<RetireReason>,
     consumer_release: u64,
+    #[cfg(windows)]
+    progress: Option<ProgressEvent>,
 }
 
 impl<B: SwapchainBackend> SwapchainController<B> {
@@ -81,11 +83,10 @@ impl<B: SwapchainBackend> SwapchainController<B> {
             error: ControllerError::Backend(error),
             retirement: None,
         })?;
-        if let Some(Err(error)) = publisher.as_mut().map(|publisher| {
-            publisher
-                .request_buffer_availability()
-                .and_then(|()| publisher.publish(backend.export_descriptor()))
-        }) {
+        if let Some(Err(error)) = publisher
+            .as_mut()
+            .map(|publisher| publisher.publish(backend.export_descriptor()))
+        {
             return Err(CreationFailure {
                 error: ControllerError::Transport(error),
                 retirement: Some(
@@ -120,16 +121,36 @@ impl<B: SwapchainBackend> SwapchainController<B> {
             next_candidate: 0,
             retiring: None,
             consumer_release: 0,
+            #[cfg(windows)]
+            progress: ProgressEvent::new().ok(),
         })
     }
 
     pub fn profile(&self) -> &BackendProfile {
         &self.profile
     }
-    pub fn availability(&self) -> AvailabilityWaiter {
-        self.publisher
-            .as_ref()
-            .map_or_else(AvailabilityWaiter::default, ProducerSession::availability)
+    pub fn backend(&self) -> &B {
+        self.backend.as_ref().expect("live controller")
+    }
+    /// The oldest publication the consumer has not yet released.
+    pub fn pending_release(&self) -> Option<u64> {
+        self.slots
+            .iter()
+            .filter_map(|slot| slot.publication)
+            .filter(|&value| value > self.consumer_release)
+            .min()
+    }
+    /// The release value at which `pacing_ready(maximum)` becomes true.
+    pub fn pacing_release_target(&self, maximum: u32) -> Option<u64> {
+        let mut pending = self
+            .slots
+            .iter()
+            .filter_map(|slot| slot.publication)
+            .filter(|&value| value > self.consumer_release)
+            .collect::<Vec<_>>();
+        let excess = pending.len().checked_sub(maximum as usize)?;
+        pending.sort_unstable();
+        excess.checked_sub(1).map(|index| pending[index])
     }
     pub fn api_access(&self, slot: ImageSlot) -> Result<B::ApiAccess, ControllerError<B::Error>> {
         if slot.index() >= self.profile.image_count {
@@ -161,12 +182,6 @@ impl<B: SwapchainBackend> SwapchainController<B> {
 
     pub fn poll(&mut self) -> Result<(), ControllerError<B::Error>> {
         self.available()?;
-        if let Some(publisher) = self.publisher.as_mut() {
-            self.consumer_release = publisher.poll_buffer_availability().map_err(|error| {
-                self.retiring = Some(RetireReason::ConnectionLost);
-                ControllerError::Transport(error)
-            })?;
-        }
         let submissions = self
             .slots
             .iter()
@@ -190,6 +205,7 @@ impl<B: SwapchainBackend> SwapchainController<B> {
             self.retiring = Some(RetireReason::DeviceLost);
             return Err(ControllerError::Retiring(RetireReason::DeviceLost));
         }
+        self.consumer_release = self.consumer_release.max(progress.released);
         for slot in progress.completed {
             let Some(state) = self.slots.get_mut(slot.index() as usize) else {
                 self.retiring = Some(RetireReason::UncertainOperation);
@@ -247,19 +263,46 @@ impl<B: SwapchainBackend> SwapchainController<B> {
         }
         loop {
             self.poll()?;
-            if maximum_latency.is_none_or(|maximum| self.pacing_ready(maximum)) {
+            let paced = maximum_latency.is_none_or(|maximum| self.pacing_ready(maximum));
+            if paced {
                 if let Some(lease) = self.try_acquire(requested, info)? {
                     return Ok(lease);
                 }
             }
-            if deadline.expired() {
-                return Err(match deadline {
-                    AcquireDeadline::Nonblocking => ControllerError::WouldBlock,
-                    AcquireDeadline::Until(_) => ControllerError::Timeout,
-                });
-            }
-            deadline.pause();
+            let release = match maximum_latency {
+                Some(maximum) if !paced => self.pacing_release_target(maximum),
+                _ => self.pending_release(),
+            };
+            self.wait_for_progress(deadline, release)?;
         }
+    }
+    /// Blocks until `release` is released or the oldest handoff completes.
+    /// Backends without native events fall back to pausing.
+    fn wait_for_progress(
+        &self,
+        deadline: AcquireDeadline,
+        release: Option<u64>,
+    ) -> Result<(), ControllerError<B::Error>> {
+        let AcquireDeadline::Until(until) = deadline else {
+            return Err(ControllerError::WouldBlock);
+        };
+        if deadline.expired() {
+            return Err(ControllerError::Timeout);
+        }
+        #[cfg(windows)]
+        if let Some(event) = &self.progress
+            && self
+                .backend()
+                .arm_progress(release, self.oldest_in_flight(), event.handle())
+                .map_err(ControllerError::Backend)?
+        {
+            event.wait(until.saturating_duration_since(std::time::Instant::now()));
+            return Ok(());
+        }
+        #[cfg(not(windows))]
+        let _ = release;
+        deadline.pause();
+        Ok(())
     }
     pub fn pacing_ready(&self, maximum: u32) -> bool {
         maximum != 0
@@ -294,13 +337,7 @@ impl<B: SwapchainBackend> SwapchainController<B> {
             if self.pacing_ready(maximum) {
                 return Ok(());
             }
-            if deadline.expired() {
-                return Err(match deadline {
-                    AcquireDeadline::Nonblocking => ControllerError::WouldBlock,
-                    AcquireDeadline::Until(_) => ControllerError::Timeout,
-                });
-            }
-            deadline.pause();
+            self.wait_for_progress(deadline, self.pacing_release_target(maximum))?;
         }
     }
 
@@ -350,7 +387,6 @@ impl<B: SwapchainBackend> SwapchainController<B> {
         let slot = ImageSlot::new(index as u32, self.profile.image_count).unwrap();
         let prerequisite = ReusePrerequisite {
             generation: self.binding.generation(),
-            previous_publication: state.publication,
         };
         match self
             .backend
@@ -406,11 +442,10 @@ impl<B: SwapchainBackend> SwapchainController<B> {
         &mut self,
         lease: AppLease,
         info: B::PresentInfo,
-        timestamp_qpc: u64,
     ) -> Result<PublicationSignal, ControllerError<B::Error>> {
         self.available()?;
-        let timestamp_qpc = self.publisher.is_some().then_some(timestamp_qpc);
-        self.submit(lease, info, timestamp_qpc)
+        let published = self.publisher.is_some();
+        self.submit(lease, info, published)
     }
 
     /// A replaced WSI generation can finish its outstanding application leases
@@ -420,21 +455,25 @@ impl<B: SwapchainBackend> SwapchainController<B> {
         lease: AppLease,
         info: B::PresentInfo,
     ) -> Result<PublicationSignal, ControllerError<B::Error>> {
-        self.submit(lease, info, None)
+        self.submit(lease, info, false)
     }
 
     fn submit(
         &mut self,
         lease: AppLease,
         info: B::PresentInfo,
-        timestamp_qpc: Option<u64>,
+        published: bool,
     ) -> Result<PublicationSignal, ControllerError<B::Error>> {
-        // Native fence APIs reserve UINT64_MAX for device removal. Retire
-        // before that sentinel can become an apparently valid publication.
-        let Some(value) = self
-            .next_value
+        // The consumer reads the newest image slot from the ready timeline
+        // itself, so every value carries its slot. Values stay below the
+        // terminal release value and the native device-removal sentinel.
+        let Some(value) = FrameReady::sequence(self.next_value)
             .checked_add(1)
-            .filter(|value| *value < u64::MAX)
+            .map(|sequence| FrameReady::ready_value(sequence, lease.slot.index()))
+            .filter(|value| {
+                *value < RELEASE_ALL_SYNC_VALUE
+                    && FrameReady::sequence(*value) > FrameReady::sequence(self.next_value)
+            })
         else {
             self.retiring = Some(RetireReason::CounterExhausted);
             return Err(ControllerError::Retiring(RetireReason::CounterExhausted));
@@ -455,14 +494,20 @@ impl<B: SwapchainBackend> SwapchainController<B> {
             .submit_present(token, info, signal)
         {
             SubmitOutcome::Submitted(submission) => {
-                if let Some(timestamp) = timestamp_qpc {
-                    self.publish(signal, submission, timestamp)
-                } else {
-                    let state = &mut self.slots[signal.slot.index() as usize];
-                    state.submission = Some(submission);
-                    state.producer_complete = false;
-                    Ok(signal)
+                let state = &mut self.slots[signal.slot.index() as usize];
+                state.submission = Some(submission);
+                state.producer_complete = false;
+                if published {
+                    state.publication = Some(signal.value);
+                    if FrameReady::sequence(signal.value) == 1
+                        || FrameReady::sequence(signal.value).is_multiple_of(120)
+                    {
+                        tracing::debug!(configured_index = self.binding.configured_index(), logical_id = self.binding.logical_id(),
+                            generation = signal.generation, slot = signal.slot.index(), ready_value = signal.value,
+                            source = ?self.binding.source(), "polymer: virtual frame published");
+                    }
                 }
+                Ok(signal)
             }
             SubmitOutcome::NotSubmitted { token, error } => {
                 self.cancel_token(lease.slot, token)?;
@@ -474,41 +519,6 @@ impl<B: SwapchainBackend> SwapchainController<B> {
                 Err(ControllerError::Backend(error))
             }
         }
-    }
-
-    fn publish(
-        &mut self,
-        signal: PublicationSignal,
-        submission: B::Submission,
-        timestamp_qpc: u64,
-    ) -> Result<PublicationSignal, ControllerError<B::Error>> {
-        let state = &mut self.slots[signal.slot.index() as usize];
-        state.submission = Some(submission);
-        state.producer_complete = false;
-        // Even a failed IPC call may have delivered metadata to the consumer.
-        state.publication = Some(signal.value);
-        let frame = FrameReady {
-            stream_id: StreamId(self.binding.generation()),
-            slot: signal.slot.index(),
-            frame_number: 0,
-            sync_value: signal.value,
-            timestamp_qpc,
-        };
-        if let Err(error) = self
-            .publisher
-            .as_mut()
-            .expect("only connected generations publish")
-            .send(frame)
-        {
-            self.retiring = Some(RetireReason::ConnectionLost);
-            return Err(ControllerError::Transport(error));
-        }
-        if signal.value == 1 || signal.value.is_multiple_of(120) {
-            tracing::debug!(configured_index = self.binding.configured_index(), logical_id = self.binding.logical_id(),
-                generation = signal.generation, slot = signal.slot.index(), ready_value = signal.value,
-                source = ?self.binding.source(), "polymer: virtual frame published");
-        }
-        Ok(signal)
     }
 
     pub fn cancel(&mut self, lease: AppLease) -> Result<(), ControllerError<B::Error>> {

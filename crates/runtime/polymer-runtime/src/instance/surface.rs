@@ -1,24 +1,9 @@
 use super::*;
 
 #[derive(Clone, Copy, Debug)]
-pub struct PresentedFrameToken {
-    generation: u64,
-    frame_number: u64,
-}
-
-#[derive(Clone, Copy, Debug)]
 pub struct SurfaceFrameUpdate {
     pub generation: u64,
     pub frame: FrameReady,
-}
-
-impl SurfaceFrameUpdate {
-    pub const fn presentation_token(self) -> PresentedFrameToken {
-        PresentedFrameToken {
-            generation: self.generation,
-            frame_number: self.frame.frame_number,
-        }
-    }
 }
 
 pub struct SurfaceFrameReceiver {
@@ -27,6 +12,11 @@ pub struct SurfaceFrameReceiver {
 }
 
 impl SurfaceFrameReceiver {
+    /// The surface generation these frames belong to.
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
     pub fn latest(&self) -> Option<SurfaceFrameUpdate> {
         (*self.receiver.peek()).map(|frame| SurfaceFrameUpdate {
             generation: self.generation,
@@ -133,7 +123,6 @@ pub(super) struct SurfaceSnapshot {
     pub(super) protocol_surface_id: u64,
     pub(super) target_window: i64,
     pub(super) backend: GraphicsHook,
-    pub(super) transport_dimensions: ResizeDimensions,
     pub(super) active: bool,
 }
 
@@ -163,25 +152,6 @@ impl TrackedSurfaceHandle {
         (window != 0).then_some(GuestWindowId(window))
     }
 
-    pub fn transport_dimensions(&self) -> ResizeDimensions {
-        self.snapshot().transport_dimensions
-    }
-
-    pub fn window_dimensions(&self) -> Result<ResizeDimensions, SurfaceError> {
-        let window = self.target_window().ok_or(SurfaceError::Unavailable)?;
-        let guest = self
-            .shared
-            .guest
-            .upgrade()
-            .ok_or(SurfaceError::Unavailable)?;
-        let guard = guest.lock();
-        guard
-            .as_ref()
-            .ok_or(SurfaceError::Unavailable)?
-            .window_dimensions(window)
-            .map_err(SurfaceError::Io)
-    }
-
     pub fn subscribe_frames(&self) -> SurfaceFrameReceiver {
         let snapshot = self.snapshot();
         let receiver = self.shared.frames.read().watch();
@@ -192,13 +162,15 @@ impl TrackedSurfaceHandle {
         }
     }
 
+    /// Delivers pointer input mapped against `generation`'s frames, rejecting
+    /// it once a replacement stream has become active.
     pub fn send_pointer_update(
         &self,
-        frame: PresentedFrameToken,
+        generation: u64,
         update: SurfacePointerUpdate,
     ) -> Result<(), SurfaceError> {
         let snapshot = self.snapshot();
-        self.validate_active_generation(&snapshot, frame.generation)?;
+        self.validate_active_generation(&snapshot, generation)?;
         let width = f64::from(update.coordinate_width.max(1));
         let height = f64::from(update.coordinate_height.max(1));
         let guest = self
@@ -260,25 +232,6 @@ impl TrackedSurfaceHandle {
             .map_err(SurfaceError::Io)
     }
 
-    pub fn resize_window(&self, dimensions: ResizeDimensions) -> Result<(), SurfaceError> {
-        if dimensions.width == 0 || dimensions.height == 0 {
-            return Err(SurfaceError::InvalidDimensions);
-        }
-        let snapshot = self.snapshot();
-        self.validate_active_generation(&snapshot, snapshot.generation)?;
-        let guest = self
-            .shared
-            .guest
-            .upgrade()
-            .ok_or(SurfaceError::Unavailable)?;
-        let guard = guest.lock();
-        guard
-            .as_ref()
-            .ok_or(SurfaceError::Unavailable)?
-            .resize_window(GuestWindowId(snapshot.target_window), dimensions)
-            .map_err(SurfaceError::Io)
-    }
-
     pub(super) fn snapshot(&self) -> SurfaceSnapshot {
         self.shared.snapshot.read().clone()
     }
@@ -302,7 +255,6 @@ impl TrackedSurfaceHandle {
 pub enum SurfaceError {
     Unavailable,
     StaleGeneration,
-    InvalidDimensions,
     Io(std::io::Error),
 }
 
@@ -311,7 +263,6 @@ impl fmt::Display for SurfaceError {
         match self {
             Self::Unavailable => formatter.write_str("tracked surface is unavailable"),
             Self::StaleGeneration => formatter.write_str("tracked surface generation is stale"),
-            Self::InvalidDimensions => formatter.write_str("window dimensions must be non-zero"),
             Self::Io(error) => error.fmt(formatter),
         }
     }
@@ -348,12 +299,6 @@ impl SurfaceOffer {
             .metal_resources(self.connection)
     }
 
-    pub fn buffer_release_sender(&self) -> Option<crate::capture::BufferReleaseSender> {
-        self.manager
-            .upgrade()?
-            .router()
-            .map(|router| router.buffer_release_sender(self.connection))
-    }
     pub const fn id(&self) -> TrackedSurfaceId {
         self.surface.id()
     }

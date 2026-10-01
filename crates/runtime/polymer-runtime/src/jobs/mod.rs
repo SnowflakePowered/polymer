@@ -94,8 +94,8 @@ impl JobActor {
         catalog: Option<Arc<GameCatalog>>,
         id: &str,
     ) -> Result<Launchable, JobError> {
-        let catalog =
-            catalog.ok_or_else(|| JobError::InvalidData("the library is unavailable".to_owned()))?;
+        let catalog = catalog
+            .ok_or_else(|| JobError::InvalidData("the library is unavailable".to_owned()))?;
         catalog
             .launchable(Self::parse(id)?)
             .await

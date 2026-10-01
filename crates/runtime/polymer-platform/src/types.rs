@@ -13,18 +13,6 @@ impl ProcessArchitecture {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ResizeDimensions {
-    pub width: u32,
-    pub height: u32,
-}
-
-impl ResizeDimensions {
-    pub const fn new(width: u32, height: u32) -> Self {
-        Self { width, height }
-    }
-}
-
 /// Identifies an OS process without exposing a native process handle.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(transparent)]

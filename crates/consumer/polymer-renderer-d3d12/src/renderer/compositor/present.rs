@@ -41,16 +41,11 @@ impl D3d12Compositor {
         } else {
             0
         };
-        // The oldest guest frame this present carries. A pass composing several
-        // streams is only as fresh as the stalest one on it, so latency is
-        // measured against that rather than the most recent.
-        let mut oldest_capture_qpc = None::<u64>;
         for index in 0..self.surfaces.len() {
             let mut surface = self.surfaces.remove(index);
             // Always reinsert the surface, including on recording errors: its
             // retained slot and native resources must survive failed frames.
             let result = (|| -> Result<(), Box<dyn Error>> {
-                surface.frames.begin();
                 if surface.cache.is_some()
                     && let Some(video) = webrtc.as_deref()
                 {
@@ -65,19 +60,12 @@ impl D3d12Compositor {
                         .resource(frame.slot)
                         .expect("validated slot")
                         .clone();
-                    if surface.imported.producer_ready(frame.sync_value) {
-                        if let Some(cache) = &surface.cache {
-                            ImportedSurface::copy(&self.command_list, &source, cache);
-                        }
-                        surface.frames.prepare_pending(if surface.cache.is_some() {
-                            Retention::Cached
-                        } else {
-                            Retention::Retained
-                        });
-                        captured = Some(frame);
-                        if let Some(value) = surface.frames.release_value() {
-                            release_values.push((surface.connection, value));
-                        }
+                    if let Some(cache) = &surface.cache {
+                        ImportedSurface::copy(&self.command_list, &source, cache);
+                    }
+                    captured = Some(frame);
+                    if let Some(value) = surface.frames.release_value(surface.retention()) {
+                        release_values.push((surface.connection, value));
                     }
                 }
                 if video_publish_budget > 0
@@ -121,12 +109,6 @@ impl D3d12Compositor {
                             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
                         )
                     };
-                }
-                if let Some(frame) = captured {
-                    oldest_capture_qpc =
-                        Some(oldest_capture_qpc.map_or(frame.timestamp_qpc, |oldest| {
-                            oldest.min(frame.timestamp_qpc)
-                        }));
                 }
                 Ok(())
             })();
@@ -188,8 +170,20 @@ impl D3d12Compositor {
             self.command_list.Close()?;
             let list: ID3D12CommandList = self.command_list.cast()?;
             self.receiver.queue().ExecuteCommandLists(&[Some(list)]);
+            // The oldest frame this present carries. A pass composing several
+            // streams is only as fresh as the stalest one on it, so display
+            // latency is measured against that rather than the most recent.
+            let mut oldest_ready = None::<std::time::Instant>;
             for surface in &mut self.surfaces {
-                surface.frames.commit();
+                let retention = surface.retention();
+                if let Some(ready) = surface.frames.commit(retention) {
+                    polymer_statistics::capture_latency(
+                        surface.connection,
+                        surface.surface_id,
+                        ready.elapsed(),
+                    );
+                    oldest_ready = Some(oldest_ready.map_or(ready, |oldest| oldest.min(ready)));
+                }
             }
             for (connection, value) in release_values {
                 if let Some(surface) = self
@@ -200,7 +194,6 @@ impl D3d12Compositor {
                     surface
                         .imported
                         .signal_release(self.receiver.queue(), value)?;
-                    surface.frames.acknowledge_release(value)?;
                 }
             }
             self.fence_value += 1;
@@ -230,9 +223,14 @@ impl D3d12Compositor {
             // Only presents that actually carried a new guest frame are worth
             // attributing; a pass that redrew unchanged content would report
             // the age of a frame the display had already shown.
-            if let Some(captured_qpc) = oldest_capture_qpc {
+            if let Some(ready) = oldest_ready {
+                let mut now = 0i64;
+                windows_sys::Win32::System::Performance::QueryPerformanceCounter(&mut now);
+                let ready_qpc = (now as u64).saturating_sub(
+                    (ready.elapsed().as_secs_f64() * super::pacing::counter_frequency()) as u64,
+                );
                 self.display_latency
-                    .record(self.swapchain.GetLastPresentCount()?, captured_qpc);
+                    .record(self.swapchain.GetLastPresentCount()?, ready_qpc);
             }
         }
         Ok(true)

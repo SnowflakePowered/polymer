@@ -13,6 +13,6 @@ mod window;
 pub use descriptor::ExportDescriptor;
 pub use failure::SessionFailure;
 pub use retry::ConnectionRetry;
-pub use session::{AvailabilityWaiter, ProducerSession};
+pub use session::ProducerSession;
 #[cfg(windows)]
 pub use window::ProducerWindows;
