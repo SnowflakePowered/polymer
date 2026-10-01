@@ -6,7 +6,7 @@ mod queue;
 
 use block2::ManualBlockEncoding;
 pub use broker::Broker;
-pub use connection::{Connection, Packet};
+pub use connection::{Call, Connection, Packet};
 pub use listener::Listener;
 use objc2::{ClassType, rc::Retained, runtime::AnyProtocol, sel};
 use objc2_foundation::{NSArray, NSSet, NSXPCInterface};

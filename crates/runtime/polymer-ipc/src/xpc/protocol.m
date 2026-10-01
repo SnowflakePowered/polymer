@@ -12,6 +12,7 @@
            event:(MTLSharedEventHandle *)event
    consumerEvent:(MTLSharedEventHandle *)consumerEvent
            reply:(void (^)(int status))reply;
+- (void)call:(NSData *)data reply:(void (^)(NSData *data, int status))reply;
 @end
 
 @protocol PolymerDirectory <NSObject>
@@ -27,6 +28,9 @@ void polymer_send(id<PolymerPacket> proxy, NSData *data, NSFileHandle *file,
                   NSArray<IOSurface *> *surfaces, MTLSharedEventHandle *event,
                   MTLSharedEventHandle *consumerEvent, void (^reply)(int)) {
     [proxy sendData:data file:file surfaces:surfaces event:event consumerEvent:consumerEvent reply:reply];
+}
+void polymer_call(id<PolymerPacket> proxy, NSData *data, void (^reply)(NSData *, int)) {
+    [proxy call:data reply:reply];
 }
 void polymer_publish(id<PolymerDirectory> proxy, NSString *name,
                      NSXPCListenerEndpoint *endpoint, void (^reply)(int)) {
