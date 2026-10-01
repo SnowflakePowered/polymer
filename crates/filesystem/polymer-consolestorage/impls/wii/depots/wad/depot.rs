@@ -10,7 +10,7 @@ use crate::Error;
 use crate::impls::wii::nand::WiiNand;
 use crate::impls::wii::ticket::Ticket;
 use crate::installable::{
-    Depot, DepotType, EmbeddedIcon, InstallEvents, InstallPreview, Installable,
+    Depot, DepotType, EmbeddedIcon, InstallContext, InstallPreview, Installable,
 };
 use crate::keys::{KeyIdentity, KeyRecord};
 use crate::nand::VirtualNand;
@@ -198,11 +198,11 @@ impl Depot for WiiWadDepot {
         Ok(())
     }
 
-    fn validate_contents(&self, events: &InstallEvents) -> Vec<String> {
+    fn validate_contents(&self, context: &InstallContext) -> Vec<String> {
         let Ok(key) = self.select_title_key() else {
             return vec!["ticket".to_owned()];
         };
-        events.phase(
+        context.phase(
             crate::installable::InstallPhase::Verifying,
             self.tmd.contents.iter().map(|content| content.size).sum(),
         );
@@ -211,7 +211,7 @@ impl Depot for WiiWadDepot {
             .iter()
             .filter_map(|content| {
                 let verified = self.decrypt_content(content, &key);
-                events.advance(content.size);
+                context.advance(content.size);
                 verified.err().map(|_| format!("{:08x}.app", content.id))
             })
             .collect()
@@ -240,8 +240,8 @@ impl Depot for WiiWadDepot {
         self,
         nand: &N,
         _keys: &dyn crate::keys::KeyReader,
-        events: InstallEvents,
+        context: &InstallContext,
     ) -> Result<impl Installable, Error> {
-        super::install::WadInstall::new(self, nand.root(), events).await
+        super::install::WadInstall::new(self, nand.root(), context).await
     }
 }

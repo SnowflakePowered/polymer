@@ -2,7 +2,7 @@ use std::{io::Cursor, path::PathBuf, sync::Arc};
 
 use super::{WiiWadDepot, tmd::Content};
 use crate::impls::wii::index::{SharedContentMap, UidMap};
-use crate::installable::{Depot, DepotFile, Installable, artifacts::Artifact};
+use crate::installable::{Depot, DepotFile, InstallContext, Installable, artifacts::Artifact};
 use crate::{Error, VolumeStorage};
 
 pub(super) struct WadInstall {
@@ -13,25 +13,23 @@ pub(super) struct WadInstall {
     index: usize,
     old: Option<Artifact>,
     root: String,
-    events: crate::installable::InstallEvents,
 }
 
 impl WadInstall {
     pub async fn new(
         source: WiiWadDepot,
         storage: Arc<dyn VolumeStorage>,
-        events: crate::installable::InstallEvents,
+        context: &InstallContext,
     ) -> Result<Self, Error> {
         let old = storage
             .artifacts()
             .artifact(&format!("{:016x}", source.title_id()))
             .await?;
-        events.phase(
+        context.phase(
             crate::installable::InstallPhase::Installing,
             source.tmd.contents.iter().map(|content| content.size).sum(),
         );
         Ok(Self {
-            events,
             key: source.select_title_key()?,
             shared: SharedContentMap::load(&*storage)?,
             root: format!(
@@ -45,7 +43,11 @@ impl WadInstall {
         })
     }
 
-    async fn content(&mut self, content: &Content) -> Result<DepotFile, Error> {
+    async fn content(
+        &mut self,
+        content: &Content,
+        context: &InstallContext,
+    ) -> Result<DepotFile, Error> {
         let bytes = self.source.decrypt_content(content, &self.key)?;
         let mut changed = false;
         let path = if content.is_shared() {
@@ -78,7 +80,7 @@ impl WadInstall {
         if changed {
             self.shared.write(&*self.storage).await?;
         }
-        self.events.advance(content.size);
+        context.advance(content.size);
         Ok(DepotFile::new(
             PathBuf::from(path),
             copied.blake3,
@@ -88,9 +90,12 @@ impl WadInstall {
 }
 
 impl Installable for WadInstall {
-    async fn next_batch(&mut self) -> Result<Option<Vec<DepotFile>>, Error> {
+    async fn next_batch(
+        &mut self,
+        context: &InstallContext,
+    ) -> Result<Option<Vec<DepotFile>>, Error> {
         if let Some(content) = self.source.tmd.contents.get(self.index).cloned() {
-            let file = self.content(&content).await?;
+            let file = self.content(&content, context).await?;
             self.index += 1;
             return Ok(Some(vec![file]));
         }

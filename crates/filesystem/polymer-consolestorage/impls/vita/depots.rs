@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use crate::impls::sony::{TitleId, metadata::SonyMetadata};
 use crate::installable::artifacts::Artifact;
 use crate::installable::{
-    Depot, DepotFile, DepotType, DirectoryInstall, IconHint, InstallEvents, Installable,
+    Depot, DepotFile, DepotType, DirectoryInstall, IconHint, InstallContext, Installable,
 };
 use crate::nand::VirtualNand;
 use crate::{Error, VolumeStorage};
@@ -132,7 +132,7 @@ impl Depot for VitaDirectoryDepot {
         Ok(())
     }
 
-    fn validate_contents(&self, _events: &InstallEvents) -> Vec<String> {
+    fn validate_contents(&self, _context: &InstallContext) -> Vec<String> {
         let mut invalid = Vec::new();
         if !self.root.join("sce_sys/param.sfo").is_file() {
             invalid.push("sce_sys/param.sfo".to_owned());
@@ -164,14 +164,14 @@ impl Depot for VitaDirectoryDepot {
         self,
         nand: &N,
         _keys: &dyn crate::keys::KeyReader,
-        events: InstallEvents,
+        context: &InstallContext,
     ) -> Result<impl Installable, Error> {
         let storage = nand.root();
         Ok(DirectoryInstall::new(
             self.root.clone(),
             self.destination.clone(),
             storage.clone(),
-            events,
+            context,
             move |manifest| self.artifact(&*storage, manifest),
         ))
     }

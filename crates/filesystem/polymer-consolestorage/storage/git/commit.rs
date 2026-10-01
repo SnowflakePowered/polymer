@@ -1,19 +1,11 @@
 use super::*;
 
 impl GitVolumeStorage {
-    pub(crate) fn commit_pending(
-        &self,
-        message: &str,
-        extra_parent: Option<gix::ObjectId>,
-    ) -> Result<Option<gix::ObjectId>, Error> {
-        self.commit_pending_reporting(message, extra_parent, &InstallEvents::default())
-    }
-
     /// Write blobs for pending files outside the operation lock, so large commits do not
     /// block readers. A file changed after staging is written again under the lock.
     fn stage_blobs(
         &self,
-        events: &InstallEvents,
+        context: &InstallContext,
     ) -> Result<BTreeMap<String, (gix::ObjectId, fs::Metadata)>, Error> {
         let files = self
             .inner
@@ -28,7 +20,7 @@ impl GitVolumeStorage {
                 Ok((path.clone(), source, metadata))
             })
             .collect::<Result<Vec<_>, Error>>()?;
-        events.phase(
+        context.phase(
             crate::installable::InstallPhase::Finalizing,
             files.iter().map(|(_, _, metadata)| metadata.len()).sum(),
         );
@@ -43,7 +35,7 @@ impl GitVolumeStorage {
                     metadata.len(),
                     &mut Reporting {
                         inner: file,
-                        events: events.clone(),
+                        context: context.clone(),
                     },
                 )
                 .map_err(|error| Error::git("write volume blob", error))?;
@@ -59,13 +51,22 @@ impl GitVolumeStorage {
             .join(path.replace('/', std::path::MAIN_SEPARATOR_STR))
     }
 
+    pub(crate) fn commit_pending(
+        &self,
+        message: &str,
+        extra_parent: Option<gix::ObjectId>,
+    ) -> Result<Option<gix::ObjectId>, Error> {
+        self.commit_pending_reporting(message, extra_parent, &InstallContext::default())
+    }
+
+    /// Commit pending files, reporting a finalizing phase through `context` while blobs are written.
     pub(crate) fn commit_pending_reporting(
         &self,
         message: &str,
         extra_parent: Option<gix::ObjectId>,
-        events: &InstallEvents,
+        context: &InstallContext,
     ) -> Result<Option<gix::ObjectId>, Error> {
-        let staged = self.stage_blobs(events)?;
+        let staged = self.stage_blobs(context)?;
         let _guard = self.inner.platform.0.operation.lock();
         let reference = self.ref_name();
         let repo = self.inner.platform.repository().to_thread_local();

@@ -1,6 +1,6 @@
 use crate::Error;
 use crate::installable::artifacts::Artifact;
-use crate::installable::{DepotFile, InstallEvents, InstallPhase, Installable, Reporting};
+use crate::installable::{DepotFile, InstallContext, InstallPhase, Installable, Reporting};
 use crate::storage::Storage;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -17,7 +17,6 @@ pub struct DirectoryInstall<F> {
     pub storage: Arc<dyn Storage>,
     entries: walkdir::IntoIter,
     excluded: BTreeSet<String>,
-    events: InstallEvents,
     finish: F,
 }
 
@@ -27,7 +26,7 @@ impl<F: FnOnce(Vec<DepotFile>) -> Result<Artifact, Error>> DirectoryInstall<F> {
         root: PathBuf,
         base: String,
         storage: Arc<dyn Storage>,
-        events: InstallEvents,
+        context: &InstallContext,
         finish: F,
     ) -> Self {
         let total = WalkDir::new(&root)
@@ -37,7 +36,7 @@ impl<F: FnOnce(Vec<DepotFile>) -> Result<Artifact, Error>> DirectoryInstall<F> {
             .filter_map(|entry| entry.metadata().ok())
             .map(|metadata| metadata.len())
             .sum();
-        events.phase(InstallPhase::Installing, total);
+        context.phase(InstallPhase::Installing, total);
         let entries = WalkDir::new(&root).into_iter();
         Self {
             root,
@@ -45,7 +44,6 @@ impl<F: FnOnce(Vec<DepotFile>) -> Result<Artifact, Error>> DirectoryInstall<F> {
             storage,
             entries,
             excluded: BTreeSet::new(),
-            events,
             finish,
         }
     }
@@ -57,7 +55,10 @@ impl<F: FnOnce(Vec<DepotFile>) -> Result<Artifact, Error>> DirectoryInstall<F> {
 }
 
 impl<F: FnOnce(Vec<DepotFile>) -> Result<Artifact, Error>> Installable for DirectoryInstall<F> {
-    async fn next_batch(&mut self) -> Result<Option<Vec<DepotFile>>, Error> {
+    async fn next_batch(
+        &mut self,
+        context: &InstallContext,
+    ) -> Result<Option<Vec<DepotFile>>, Error> {
         for entry in self.entries.by_ref() {
             let entry = entry.map_err(|error| {
                 let path = error.path().unwrap_or(&self.root).to_owned();
@@ -98,7 +99,7 @@ impl<F: FnOnce(Vec<DepotFile>) -> Result<Artifact, Error>> Installable for Direc
                 .install_file(
                     Box::new(Reporting {
                         inner: source,
-                        events: self.events.clone(),
+                        context: context.clone(),
                     }),
                     &destination,
                 )

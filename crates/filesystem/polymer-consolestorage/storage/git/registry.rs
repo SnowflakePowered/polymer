@@ -56,7 +56,7 @@ impl ArtifactRegistry for GitArtifactRegistry {
     fn record<'a>(
         &'a self,
         artifact: &'a Artifact,
-        events: InstallEvents,
+        context: &'a crate::installable::InstallContext,
     ) -> BoxFuture<'a, Result<(), Error>> {
         Box::pin(async move {
             self.0.working.write().metadata.artifacts.insert(
@@ -65,11 +65,12 @@ impl ArtifactRegistry for GitArtifactRegistry {
             );
             let storage = self.storage();
             let message = format!("Polymer install {}", artifact.id());
-            tokio::task::spawn_blocking(move || {
-                storage.commit_pending_reporting(&message, None, &events)
-            })
-            .await
-            .map_err(|error| Error::Unsupported(format!("commit worker failed: {error}")))??;
+            context
+                .spawn_blocking(move |context| {
+                    storage.commit_pending_reporting(&message, None, context)
+                })
+                .await
+                .map_err(|error| Error::Unsupported(format!("commit worker failed: {error}")))??;
             Ok(())
         })
     }

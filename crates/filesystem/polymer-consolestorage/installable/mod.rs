@@ -11,7 +11,7 @@ pub(crate) use writer::StorageWriter;
 pub use directory::DirectoryInstall;
 pub use installation::{Installable, Installation};
 pub(crate) use progress::Reporting;
-pub use progress::{InstallEvent, InstallEvents, InstallPhase, InstallPreview};
+pub use progress::{InstallContext, InstallEvent, InstallPhase, InstallPreview};
 
 /// Discriminants are persisted in the artifact database, so they are fixed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -67,10 +67,10 @@ pub trait Depot: Sized + Send + 'static {
     /// Check whether the target NAND meets this depot's format and platform requirements.
     fn satisfies<N: VirtualNand + ?Sized>(&self, nand: &N) -> Result<(), crate::Error>;
 
-    /// Validate the contents of the depot, publishing progress through `events`.
+    /// Validate the contents of the depot.
     ///
     /// Returns the names of the contents that don't validate.
-    fn validate_contents(&self, _events: &InstallEvents) -> Vec<String> {
+    fn validate_contents(&self, _context: &InstallContext) -> Vec<String> {
         Vec::new()
     }
 
@@ -81,7 +81,7 @@ pub trait Depot: Sized + Send + 'static {
         self,
         nand: &N,
         keys: &dyn crate::keys::KeyReader,
-        events: InstallEvents,
+        context: &InstallContext,
     ) -> Result<impl Installable, crate::Error>;
 }
 

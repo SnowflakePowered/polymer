@@ -9693,6 +9693,7 @@ dependencies = [
  "encoding_rs",
  "flate2",
  "futures",
+ "genawaiter",
  "gix",
  "hmac",
  "image 0.25.6",

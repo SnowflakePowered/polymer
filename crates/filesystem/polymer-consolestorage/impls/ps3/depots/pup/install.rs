@@ -1,8 +1,8 @@
 use super::{Ps3PupDepot, sce::Sce};
 use crate::installable::DepotFile;
-use crate::installable::Installable;
 use crate::installable::StorageWriter;
 use crate::installable::artifacts::Artifact;
+use crate::installable::{InstallContext, Installable};
 use crate::{Error, VolumeStorage};
 use parking_lot::Mutex;
 use std::fs::File;
@@ -23,65 +23,64 @@ struct PupExtraction {
     paths: std::collections::BTreeSet<String>,
     index: usize,
     storage: Arc<dyn VolumeStorage>,
-    events: crate::installable::InstallEvents,
 }
 impl PupInstall {
     pub async fn new(
         depot: &Ps3PupDepot,
         storage: Arc<dyn VolumeStorage>,
-        events: crate::installable::InstallEvents,
+        context: &InstallContext,
     ) -> Result<Self, Error> {
         let depot = depot.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut pup = depot.verified_pup(&events)?;
-            let (offset, size) = pup.entry(0x300).map_err(|e| Error::io(&depot.path, e))?;
-            let mut archive = tar::Archive::new((&mut pup.file).take(size));
-            let mut packages = Vec::new();
-            for entry in archive.entries().map_err(|e| Error::io(&depot.path, e))? {
-                let entry = entry.map_err(|e| Error::io(&depot.path, e))?;
-                let name = entry
-                    .path()
-                    .map_err(|e| Error::io(&depot.path, e))?
-                    .to_string_lossy()
-                    .into_owned();
-                if !name.starts_with("dev_flash_") {
-                    continue;
+        context
+            .spawn_blocking(move |context| {
+                let mut pup = depot.verified_pup(context)?;
+                let (offset, size) = pup.entry(0x300).map_err(|e| Error::io(&depot.path, e))?;
+                let mut archive = tar::Archive::new((&mut pup.file).take(size));
+                let mut packages = Vec::new();
+                for entry in archive.entries().map_err(|e| Error::io(&depot.path, e))? {
+                    let entry = entry.map_err(|e| Error::io(&depot.path, e))?;
+                    let name = entry
+                        .path()
+                        .map_err(|e| Error::io(&depot.path, e))?
+                        .to_string_lossy()
+                        .into_owned();
+                    if !name.starts_with("dev_flash_") {
+                        continue;
+                    }
+                    if !entry.header().entry_type().is_file() || entry.size() > Sce::MAX_SIZE {
+                        return Err(Error::malformed("PUP", "invalid flash package"));
+                    }
+                    if entry
+                        .raw_file_position()
+                        .checked_add(entry.size())
+                        .is_none_or(|end| end > size)
+                    {
+                        return Err(Error::malformed("PUP", "flash package exceeds update TAR"));
+                    }
+                    packages.push((name, offset + entry.raw_file_position(), entry.size()));
                 }
-                if !entry.header().entry_type().is_file() || entry.size() > Sce::MAX_SIZE {
-                    return Err(Error::malformed("PUP", "invalid flash package"));
+                if packages.is_empty() {
+                    return Err(Error::malformed("PUP", "no flash packages"));
                 }
-                if entry
-                    .raw_file_position()
-                    .checked_add(entry.size())
-                    .is_none_or(|end| end > size)
-                {
-                    return Err(Error::malformed("PUP", "flash package exceeds update TAR"));
-                }
-                packages.push((name, offset + entry.raw_file_position(), entry.size()));
-            }
-            if packages.is_empty() {
-                return Err(Error::malformed("PUP", "no flash packages"));
-            }
-            events.phase(
-                crate::installable::InstallPhase::Installing,
-                packages.iter().map(|(_, _, size)| size).sum(),
-            );
-            Ok(Self {
-                extraction: Arc::new(Mutex::new(PupExtraction {
-                    file: pup.file,
-                    packages,
-                    manifest: Vec::new(),
-                    paths: std::collections::BTreeSet::new(),
-                    index: 0,
-                    storage: storage.clone(),
-                    events,
-                })),
-                version: depot.version,
-                storage,
+                context.phase(
+                    crate::installable::InstallPhase::Installing,
+                    packages.iter().map(|(_, _, size)| size).sum(),
+                );
+                Ok(Self {
+                    extraction: Arc::new(Mutex::new(PupExtraction {
+                        file: pup.file,
+                        packages,
+                        manifest: Vec::new(),
+                        paths: std::collections::BTreeSet::new(),
+                        index: 0,
+                        storage: storage.clone(),
+                    })),
+                    version: depot.version,
+                    storage,
+                })
             })
-        })
-        .await
-        .map_err(|e| Error::Unsupported(format!("PUP worker failed: {e}")))?
+            .await
+            .map_err(|e| Error::Unsupported(format!("PUP worker failed: {e}")))?
     }
 }
 
@@ -137,7 +136,7 @@ impl PupExtraction {
 }
 
 impl PupExtraction {
-    fn next_file(&mut self) -> Result<String, Error> {
+    fn next_file(&mut self, context: &InstallContext) -> Result<String, Error> {
         let (name, offset, size) = &self.packages[self.index];
         let path = PathBuf::from(name);
         self.file
@@ -150,25 +149,29 @@ impl PupExtraction {
         let bytes = Sce::flash_tar(&bytes).map_err(|e| Error::io(&path, e))?;
         self.extract(&bytes)?;
         let (name, _, size) = self.packages[self.index].clone();
-        self.events.advance(size);
+        context.advance(size);
         self.index += 1;
         Ok(name)
     }
 }
 
 impl Installable for PupInstall {
-    async fn next_batch(&mut self) -> Result<Option<Vec<DepotFile>>, Error> {
+    async fn next_batch(
+        &mut self,
+        context: &InstallContext,
+    ) -> Result<Option<Vec<DepotFile>>, Error> {
         let extraction = self.extraction.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut extraction = extraction.lock();
-            if extraction.index == extraction.packages.len() {
-                return Ok(None);
-            }
-            extraction.next_file()?;
-            Ok(Some(std::mem::take(&mut extraction.manifest)))
-        })
-        .await
-        .map_err(|error| Error::Unsupported(format!("PUP worker failed: {error}")))?
+        context
+            .spawn_blocking(move |context| {
+                let mut extraction = extraction.lock();
+                if extraction.index == extraction.packages.len() {
+                    return Ok(None);
+                }
+                extraction.next_file(context)?;
+                Ok(Some(std::mem::take(&mut extraction.manifest)))
+            })
+            .await
+            .map_err(|error| Error::Unsupported(format!("PUP worker failed: {error}")))?
     }
     async fn finish(self, manifest: Vec<DepotFile>) -> Result<Artifact, Error> {
         if manifest.is_empty() {
