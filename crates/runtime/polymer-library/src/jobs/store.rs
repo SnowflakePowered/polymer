@@ -243,6 +243,27 @@ impl JobStore {
             .collect())
     }
 
+    /// Waits until the job is no longer queued, running, or paused.
+    pub async fn wait(&self, id: Uuid) -> Result<Job, JobError> {
+        let mut changes = self.events.subscribe();
+        loop {
+            let job = self.get(id).await?.ok_or(JobError::NotFound(id))?;
+            if !job.state.active() {
+                return Ok(job);
+            }
+            loop {
+                match changes.recv().await {
+                    Ok(changed) if changed.id == id => break,
+                    Ok(_) => {}
+                    Err(broadcast::error::RecvError::Lagged(_)) => break,
+                    Err(broadcast::error::RecvError::Closed) => {
+                        return Err(JobError::InvalidData("job store closed".to_owned()));
+                    }
+                }
+            }
+        }
+    }
+
     pub async fn cancel(&self, id: Uuid) -> Result<Job, JobError> {
         let job = self.get(id).await?.ok_or(JobError::NotFound(id))?;
         if !matches!(job.state, JobState::Queued | JobState::Paused) {
@@ -285,7 +306,7 @@ impl JobStore {
         let transaction = connection.transaction().await?;
         transaction
             .execute(
-                "UPDATE jobs SET state = ?3, title = ?4, icon = ?5, message = ?8, completed = ?9, total = ?10, detail = ?11, error = ?12, updated_at = ?14 WHERE id = ?1",
+                "UPDATE jobs SET state = ?3, title = ?4, icon = ?5, params = ?7, message = ?8, completed = ?9, total = ?10, detail = ?11, error = ?12, updated_at = ?14 WHERE id = ?1",
                 Self::row(&job),
             )
             .await?;

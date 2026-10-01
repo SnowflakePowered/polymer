@@ -65,3 +65,16 @@ pub(super) async fn op_jobs_dismiss(
         .call(JobsDismiss { id })
         .await
 }
+
+#[op2]
+#[serde]
+pub(super) async fn op_jobs_import(
+    state: Rc<RefCell<OpState>>,
+    #[string] path: String,
+    #[string] storage: Option<String>,
+) -> Result<Job, JsErrorBox> {
+    Jobs::from_state(&state)?
+        .import
+        .call(JobsImport { path, storage })
+        .await
+}

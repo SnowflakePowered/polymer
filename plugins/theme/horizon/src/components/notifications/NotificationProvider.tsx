@@ -25,9 +25,9 @@ export function NotificationProvider(props: ParentProps) {
     untrack(() => name !== undefined ? notifications.upsert({ id: "controller", title: name, message: `Connected as player ${index! + 1}`, state: "info" }) : notifications.remove("controller"));
   });
   onMount(() => {
-    // Scrape jobs are announced through the library activities above.
+    // Scrape and import jobs are announced through the library activities above.
     const receive = (job: Job) => {
-      if (job.kind === "scrape") return;
+      if (job.kind === "scrape" || job.kind === "import") return;
       const id = `job:${job.id}`;
       if (job.kind === "plugin" && job.state === "completed") return notifications.remove(id);
       const active = job.state === "queued" || job.state === "running" || job.state === "paused";

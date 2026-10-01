@@ -92,6 +92,16 @@ impl JobHandle {
         }
     }
 
+    /// Writes the job's detail immediately, so a resumed job can rely on it.
+    pub async fn record(&self, detail: serde_json::Value) -> Result<Job, JobError> {
+        self.store.modify(self.id, |job| job.detail = detail).await
+    }
+
+    /// Replaces the job's parameters, recording a choice made while it runs.
+    pub async fn reparameterize(&self, params: serde_json::Value) -> Result<Job, JobError> {
+        self.store.modify(self.id, |job| job.params = params).await
+    }
+
     pub async fn step(
         &self,
         key: &str,

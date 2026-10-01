@@ -280,7 +280,7 @@ export interface ScrapingApi extends EventTarget {
   }>;
 }
 
-export type JobKind = "scrape" | "install" | "bootstrap" | "plugin";
+export type JobKind = "scrape" | "install" | "bootstrap" | "plugin" | "import";
 export type JobState = "queued" | "running" | "paused" | "completed" | "partial" | "failed" | "cancelled";
 export type JobStep = Readonly<{ key: string; state: JobState; error: string | null }>;
 /** Background work from any source. Persistent jobs survive restarts and resume. */
@@ -463,17 +463,19 @@ export type LibraryMetadataInput = Readonly<{
     | Readonly<{ kind: "object"; mediaType: string; path: string }>;
 }>;
 
-export type LibraryLaunchable = Digestible & Readonly<{
+/** A launchable as plain data, the way it appears inside job details. */
+export type LibraryLaunchableData = Readonly<{
   preparation?: Readonly<{ state: "pending" | "ready" | "failed"; error: string | null }> | null;
   id: string;
   binaryId: string;
   uri: string;
-  binary: Digestible;
   serial: string | null;
   titleId: string | null;
   parentBinaryId: string | null;
   platform: string;
 }>;
+
+export type LibraryLaunchable = Digestible & LibraryLaunchableData & Readonly<{ binary: Digestible }>;
 
 export type LibraryMetadata = Readonly<{
   id: string;
@@ -502,8 +504,9 @@ export type FirmwareDescription = Readonly<{
 }>;
 
 export type GameImport = Readonly<{ launchable: LibraryLaunchable; job: Job | null }>;
+/** What an import found and applied, as `detail.result` of its completed `import` job. */
 export type LibraryImportResult =
-  | Readonly<{ kind: "games"; imports: readonly GameImport[] }>
+  | Readonly<{ kind: "games"; imports: readonly Readonly<{ launchable: LibraryLaunchableData; job: Job | null }>[] }>
   | Readonly<{ kind: "firmware"; firmware: FirmwareDescription }>
   | Readonly<{ kind: "installables"; installables: readonly InstallablePackage[] }>
   | Readonly<{ kind: "system"; platform: string; path: string; filename: string; version: string }>
@@ -514,7 +517,11 @@ export type InstallablePackage = Readonly<{ path: string; filename: string; plat
 export type ImportedKey = Readonly<{ namespace: "system" | "content"; id: string; titleId?: string; byteLength: number }>;
 
 export interface LibraryApi extends EventTarget {
-  import(input: { path: string }): Promise<LibraryImportResult>;
+  /**
+   * Starts an `import` job for a path, or returns the active one for the same path. Installable
+   * packages install into `storage`, or into the first NAND for their platform, created if needed.
+   */
+  import(input: { path: string; storage?: string }): Promise<Job>;
   importKey(platform: string, namespace: "system" | "content", key: Uint8Array | string, titleid?: string): Promise<ImportedKey>;
   readonly keys: Readonly<{
     list(platform: string, options?: { namespace?: "system" | "content" }): Promise<ImportedKey[]>;

@@ -1,6 +1,6 @@
 import { Package } from "./00_package.js";
 import {
-  op_library_import,
+  op_jobs_import,
   op_library_import_key,
   op_library_keys_list,
   op_library_keys_platforms,
@@ -111,10 +111,7 @@ export function createLibrary() {
       if (input === null || typeof input !== "object") throw new TypeError("import input must be an object");
       const path = optionalString(input.path, "path");
       if (path === null) throw new TypeError("path is required");
-      const result = await op_library_import(path);
-      if (result.kind === "keys") Library.dispatchEvent(new CustomEvent("contentchange", { detail: Object.freeze({ platform: result.platform }) }));
-      if (result.kind === "games") return { ...result, imports: result.imports.map(item => ({ ...item, launchable: new Package(item.launchable) })) };
-      return result;
+      return op_jobs_import(path, optionalString(input.storage, "storage"));
     } },
     importKey: { value: async (platform, namespace, key, titleid) => {
       platform = optionalString(platform, "platform");

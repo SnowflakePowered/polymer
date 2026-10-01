@@ -10,7 +10,6 @@ import { ToastRegion } from "../components/notifications/ToastRegion";
 import { InputNavigation } from "../components/InputNavigation";
 import { ColorModeProvider, type ColorMode } from "../ui";
 import { onLaunch, resolveGame } from "./launch";
-import { ensureNand } from "../features/storage/selection";
 import type { RecentGame, ShellModel } from "./models";
 import "./ShellProvider.css";
 
@@ -209,10 +208,7 @@ export function ShellProvider(props: ParentProps) {
   const libraryState = new LibraryState(window.Polymer.library, window.Polymer.jobs, snapshot => {
     setModel("libraryGames", reconcile(snapshot.games, { key: "path" }));
     setModel("libraryActivities", reconcile(snapshot.activities, { key: "id" }));
-  }, fail, async (item, bootstrap) => {
-    const nand = await ensureNand(item.platform, bootstrap);
-    return { storage: nand.id, artifact: await nand.install({ path: item.path }) };
-  });
+  }, fail);
   libraryState.start();
   onCleanup(() => libraryState.dispose());
 

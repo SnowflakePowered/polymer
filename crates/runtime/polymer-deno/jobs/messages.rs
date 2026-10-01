@@ -19,6 +19,7 @@ pub struct Jobs {
     pub cancel: Recipient<JobsCancel>,
     pub retry: Recipient<JobsRetry>,
     pub dismiss: Recipient<JobsDismiss>,
+    pub import: Recipient<JobsImport>,
 }
 
 #[derive(Debug, Message)]
@@ -47,4 +48,13 @@ pub struct JobsRetry {
 #[rtype(result = "Result<(), JobsError>")]
 pub struct JobsDismiss {
     pub id: String,
+}
+
+/// Imports a dropped path as a job. `storage` names the NAND that installable
+/// packages install into; without it the first NAND for their platform is used.
+#[derive(Debug, Message)]
+#[rtype(result = "Result<Job, JobsError>")]
+pub struct JobsImport {
+    pub path: String,
+    pub storage: Option<String>,
 }

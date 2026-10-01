@@ -23,6 +23,7 @@ pub enum JobKind {
     Install,
     Bootstrap,
     Plugin,
+    Import,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
@@ -120,6 +121,7 @@ impl JobKind {
             Self::Install => "install",
             Self::Bootstrap => "bootstrap",
             Self::Plugin => "plugin",
+            Self::Import => "import",
         }
     }
 
