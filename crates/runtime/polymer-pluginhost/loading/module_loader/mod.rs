@@ -20,6 +20,8 @@ const PLUGIN_STORAGE_MODULE: &str = "polymer:pluginStorage";
 const CONSOLESTORAGE_MODULE: &str = "polymer:consolestorage";
 const CACHE_MODULE: &str = "polymer:cache";
 const DATABASE_MODULE: &str = "polymer:database";
+const DOWNLOAD_MODULE: &str = "polymer:download";
+const JOBS_MODULE: &str = "polymer:jobs";
 const JSR_ORIGIN: &str = "https://jsr.io";
 
 /// Module resolver and source transformer bound permanently to one package.
@@ -30,6 +32,7 @@ pub struct PluginModuleLoader {
     base: ModuleSpecifier,
     jsr_cache: Option<Arc<PathBuf>>,
     network_hosts: Vec<String>,
+    insecure_hosts: Arc<[String]>,
 }
 
 impl PluginModuleLoader {
@@ -42,6 +45,7 @@ impl PluginModuleLoader {
             base,
             jsr_cache: None,
             network_hosts: Vec::new(),
+            insecure_hosts: Arc::new([]),
         }
     }
 
@@ -62,6 +66,16 @@ impl PluginModuleLoader {
 
     pub(crate) fn network_hosts(&self) -> &[String] {
         &self.network_hosts
+    }
+
+    pub(crate) fn with_insecure_hosts(mut self, hosts: Vec<String>) -> Self {
+        self.insecure_hosts = hosts.into();
+        self
+    }
+
+    /// Allowed hosts whose certificates the plugin's requests do not verify.
+    pub(crate) fn insecure_hosts(&self) -> &Arc<[String]> {
+        &self.insecure_hosts
     }
 
     pub fn root(&self) -> &std::path::Path {
@@ -251,6 +265,8 @@ impl ModuleLoader for PluginModuleLoader {
                 | CONSOLESTORAGE_MODULE
                 | CACHE_MODULE
                 | DATABASE_MODULE
+                | DOWNLOAD_MODULE
+                | JOBS_MODULE
         ) {
             return ModuleSpecifier::parse(specifier).map_err(ModuleLoaderError::from_err);
         }
@@ -342,6 +358,20 @@ impl ModuleLoader for PluginModuleLoader {
             Ok(ModuleSource::new(
                 ModuleType::JavaScript,
                 ModuleSourceCode::String(include_str!("js/07_consolestorage.js").to_owned().into()),
+                module_specifier,
+                None,
+            ))
+        } else if module_specifier.as_str() == DOWNLOAD_MODULE {
+            Ok(ModuleSource::new(
+                ModuleType::JavaScript,
+                ModuleSourceCode::String(include_str!("js/08_download.js").to_owned().into()),
+                module_specifier,
+                None,
+            ))
+        } else if module_specifier.as_str() == JOBS_MODULE {
+            Ok(ModuleSource::new(
+                ModuleType::JavaScript,
+                ModuleSourceCode::String(include_str!("js/09_jobs.js").to_owned().into()),
                 module_specifier,
                 None,
             ))

@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     id BLOB PRIMARY KEY NOT NULL CHECK (length(id) = 16),
     kind TEXT NOT NULL CHECK (length(kind) > 0),
     state TEXT NOT NULL CHECK (state IN ('queued', 'running', 'paused', 'completed', 'partial', 'failed', 'cancelled')),
+    parent BLOB CHECK (parent IS NULL OR length(parent) = 16),
     dedupe TEXT,
     title TEXT NOT NULL,
     icon TEXT,
@@ -35,16 +36,19 @@ CREATE TABLE IF NOT EXISTS job_steps (
 ) STRICT;
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_active ON jobs(kind, dedupe) WHERE dedupe IS NOT NULL AND state IN ('queued', 'running', 'paused');
 CREATE INDEX IF NOT EXISTS jobs_created ON jobs(created_at DESC);
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;
 "#;
 
-const COLUMNS: &str = "id, kind, state, title, icon, subject, params, message, completed, total, detail, error, created_at, updated_at";
+const COLUMNS: &str = "id, kind, state, parent, title, icon, subject, params, message, completed, total, detail, error, created_at, updated_at, dedupe";
 
 /// Durable job records plus in-memory jobs that end with the process.
 pub struct JobStore {
     database: turso::Database,
     ephemeral: DashMap<Uuid, Job>,
+    ephemeral_dedupe: DashMap<(JobKind, String), Uuid>,
+    pub(super) runners: DashMap<JobKind, Arc<dyn super::JobRunner>>,
     events: broadcast::Sender<Job>,
+    /// Serializes writes, which the database rejects as busy when they overlap.
     writes: tokio::sync::Mutex<()>,
 }
 
@@ -61,6 +65,8 @@ impl JobStore {
         let store = Self {
             database,
             ephemeral: DashMap::new(),
+            ephemeral_dedupe: DashMap::new(),
+            runners: DashMap::new(),
             events: broadcast::channel(256).0,
             writes: tokio::sync::Mutex::new(()),
         };
@@ -74,7 +80,13 @@ impl JobStore {
         drop(rows);
         match version {
             0 => connection.execute_batch(SCHEMA).await?,
-            1 => {}
+            1 => {
+                connection
+                    .execute_batch("DROP TABLE job_steps; DROP TABLE jobs;")
+                    .await?;
+                connection.execute_batch(SCHEMA).await?
+            }
+            2 => {}
             version => {
                 return Err(JobError::InvalidData(format!(
                     "jobs database schema version {version} is not supported"
@@ -92,10 +104,23 @@ impl JobStore {
     pub async fn enqueue(&self, spec: JobSpec) -> Result<(Job, bool), JobError> {
         let job = Job::new(Uuid::now_v7(), &spec, Self::now());
         if !spec.persistent {
+            if let Some(dedupe) = spec.dedupe {
+                let key = (spec.kind, dedupe);
+                let active = self
+                    .ephemeral_dedupe
+                    .get(&key)
+                    .and_then(|id| self.ephemeral.get(&*id).map(|job| job.clone()))
+                    .filter(|existing| existing.state.active());
+                if let Some(existing) = active {
+                    return Ok((existing, false));
+                }
+                self.ephemeral_dedupe.insert(key, job.id);
+            }
             self.ephemeral.insert(job.id, job.clone());
             self.publish(&job);
             return Ok((job, true));
         }
+        let _write = self.writes.lock().await;
         let mut connection = self.connection().await?;
         let transaction = connection
             .transaction_with_behavior(turso::transaction::TransactionBehavior::Immediate)
@@ -117,8 +142,8 @@ impl JobStore {
         }
         transaction
             .execute(
-                &format!("INSERT INTO jobs ({COLUMNS}, dedupe) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)"),
-                Self::row(&job).into_iter().chain([spec.dedupe.map(SqlValue::from).unwrap_or(SqlValue::Null)]).collect::<Vec<_>>(),
+                &format!("INSERT INTO jobs ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"),
+                Self::row(&job),
             )
             .await?;
         Self::write_steps(&transaction, job.id, &job.steps).await?;
@@ -136,6 +161,7 @@ impl JobStore {
             }
             Some(_) => false,
             None => {
+                let _write = self.writes.lock().await;
                 self.connection()
                     .await?
                     .execute(
@@ -209,6 +235,7 @@ impl JobStore {
 
     /// Requeues persistent jobs of `kind` that a previous process left running.
     pub async fn recover(&self, kind: JobKind) -> Result<Vec<Job>, JobError> {
+        let write = self.writes.lock().await;
         let connection = self.connection().await?;
         let mut rows = connection
             .query(
@@ -235,12 +262,71 @@ impl JobStore {
                 [SqlValue::from(kind.as_str())],
             )
             .await?;
+        drop(write);
         Ok(self
             .list()
             .await?
             .into_iter()
             .filter(|job| job.kind == kind && job.state == JobState::Queued)
             .collect())
+    }
+
+    /// Makes a finished job queued again, unless another active job has taken its dedupe key.
+    pub(super) async fn requeue(&self, id: Uuid) -> Result<Job, JobError> {
+        let job = self.get(id).await?.ok_or(JobError::NotFound(id))?;
+        if job.state.active() {
+            return Err(JobError::InvalidState(id, job.state));
+        }
+        if let Some(dedupe) = &job.dedupe {
+            if let Some(active) = self.active(job.kind, dedupe).await? {
+                return Ok(active);
+            }
+            if !job.persistent {
+                self.ephemeral_dedupe.insert((job.kind, dedupe.clone()), id);
+            }
+        }
+        self.modify(id, |job| {
+            job.state = JobState::Queued;
+            job.error = None;
+        })
+        .await
+    }
+
+    async fn active(&self, kind: JobKind, dedupe: &str) -> Result<Option<Job>, JobError> {
+        let ephemeral = self
+            .ephemeral_dedupe
+            .get(&(kind, dedupe.to_owned()))
+            .and_then(|id| self.ephemeral.get(&*id).map(|job| job.clone()))
+            .filter(|job| job.state.active());
+        if ephemeral.is_some() {
+            return Ok(ephemeral);
+        }
+        let connection = self.connection().await?;
+        let mut rows = connection
+            .query(
+                &format!("SELECT {COLUMNS} FROM jobs WHERE kind = ?1 AND dedupe = ?2 AND state IN ('queued', 'running', 'paused') LIMIT 1"),
+                [SqlValue::from(kind.as_str()), SqlValue::from(dedupe)],
+            )
+            .await?;
+        let Some(row) = rows.next().await? else {
+            return Ok(None);
+        };
+        Self::job(&row).map(Some)
+    }
+
+    /// The most recent persistent job of `kind` created with `dedupe`, in any state.
+    pub async fn latest(&self, kind: JobKind, dedupe: &str) -> Result<Option<Job>, JobError> {
+        let connection = self.connection().await?;
+        let mut rows = connection
+            .query(
+                &format!("SELECT {COLUMNS} FROM jobs WHERE kind = ?1 AND dedupe = ?2 ORDER BY created_at DESC, id DESC LIMIT 1"),
+                [SqlValue::from(kind.as_str()), SqlValue::from(dedupe)],
+            )
+            .await?;
+        let Some(row) = rows.next().await? else {
+            return Ok(None);
+        };
+        Self::job(&row).map(Some)
     }
 
     /// Waits until the job is no longer queued, running, or paused.
@@ -278,6 +364,7 @@ impl JobStore {
             return Err(JobError::InvalidState(id, job.state));
         }
         if self.ephemeral.remove(&id).is_none() {
+            let _write = self.writes.lock().await;
             self.connection()
                 .await?
                 .execute("DELETE FROM jobs WHERE id = ?1", [Self::id(id)])
@@ -306,7 +393,7 @@ impl JobStore {
         let transaction = connection.transaction().await?;
         transaction
             .execute(
-                "UPDATE jobs SET state = ?3, title = ?4, icon = ?5, params = ?7, message = ?8, completed = ?9, total = ?10, detail = ?11, error = ?12, updated_at = ?14 WHERE id = ?1",
+                "UPDATE jobs SET state = ?3, title = ?5, icon = ?6, params = ?8, message = ?9, completed = ?10, total = ?11, detail = ?12, error = ?13, updated_at = ?15, dedupe = ?16 WHERE id = ?1",
                 Self::row(&job),
             )
             .await?;
@@ -395,6 +482,7 @@ impl JobStore {
             Self::id(job.id),
             SqlValue::from(job.kind.as_str()),
             SqlValue::from(job.state.as_str()),
+            job.parent.map(Self::id).unwrap_or(SqlValue::Null),
             SqlValue::from(job.title.as_str()),
             text(job.icon.as_deref()),
             SqlValue::from(
@@ -412,6 +500,7 @@ impl JobStore {
             text(job.error.as_deref()),
             SqlValue::from(job.created_at),
             SqlValue::from(job.updated_at),
+            text(job.dedupe.as_deref()),
         ]
     }
 
@@ -431,20 +520,25 @@ impl JobStore {
             id: Self::uuid(row.get_value(0)?)?,
             kind: JobKind::parse(&row.get::<String>(1)?)?,
             state: JobState::parse(&row.get::<String>(2)?)?,
-            title: row.get(3)?,
-            icon: Self::text(row.get_value(4)?),
-            subject: serde_json::from_value::<JobSubject>(json(row.get_value(5)?)?)
+            parent: match row.get_value(3)? {
+                SqlValue::Null => None,
+                value => Some(Self::uuid(value)?),
+            },
+            title: row.get(4)?,
+            icon: Self::text(row.get_value(5)?),
+            subject: serde_json::from_value::<JobSubject>(json(row.get_value(6)?)?)
                 .map_err(|error| JobError::InvalidData(error.to_string()))?,
-            params: json(row.get_value(6)?)?,
-            message: Self::text(row.get_value(7)?),
-            completed: number(row.get_value(8)?),
-            total: number(row.get_value(9)?),
-            detail: json(row.get_value(10)?)?,
-            error: Self::text(row.get_value(11)?),
+            params: json(row.get_value(7)?)?,
+            message: Self::text(row.get_value(8)?),
+            completed: number(row.get_value(9)?),
+            total: number(row.get_value(10)?),
+            detail: json(row.get_value(11)?)?,
+            error: Self::text(row.get_value(12)?),
             persistent: true,
-            created_at: row.get(12)?,
-            updated_at: row.get(13)?,
+            created_at: row.get(13)?,
+            updated_at: row.get(14)?,
             steps: Vec::new(),
+            dedupe: Self::text(row.get_value(15)?),
         })
     }
 

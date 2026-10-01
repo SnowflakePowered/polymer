@@ -32,7 +32,11 @@ pub(crate) trait LibraryApi {
         json!({
             "id": game.id.simple().to_string(),
             "platform": game.platform,
-            "launchables": game.launchables.iter().map(Self::launchable_value).collect::<Vec<_>>(),
+            "launchables": game.launchables.iter().map(|launchable| {
+                let mut value = Self::launchable_value(launchable);
+                value["updates"] = json!(game.updates.get(&launchable.id).cloned().unwrap_or_default());
+                value
+            }).collect::<Vec<_>>(),
             "metadata": game.metadata.iter().map(Self::metadata_value).collect::<Vec<_>>(),
         })
     }

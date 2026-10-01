@@ -16,6 +16,7 @@ pub enum JobState {
     Cancelled,
 }
 
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum JobKind {
@@ -24,6 +25,10 @@ pub enum JobKind {
     Bootstrap,
     Plugin,
     Import,
+    Check,
+    Update,
+    Download,
+    Refresh,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
@@ -54,6 +59,9 @@ pub struct Job {
     pub id: Uuid,
     pub kind: JobKind,
     pub state: JobState,
+    /// The job this one is part of. Progress stays on each job; frontends nest children.
+    #[serde(serialize_with = "Job::serialize_parent")]
+    pub parent: Option<Uuid>,
     pub title: String,
     pub icon: Option<String>,
     pub subject: JobSubject,
@@ -67,12 +75,15 @@ pub struct Job {
     pub created_at: i64,
     pub updated_at: i64,
     pub steps: Vec<JobStep>,
+    #[serde(skip)]
+    pub dedupe: Option<String>,
 }
 
 /// A job to create. Persistent jobs with a `dedupe` key are unique while active.
 #[derive(Clone, Debug)]
 pub struct JobSpec {
     pub kind: JobKind,
+    pub parent: Option<Uuid>,
     pub title: String,
     pub subject: JobSubject,
     pub params: Value,
@@ -122,6 +133,10 @@ impl JobKind {
             Self::Bootstrap => "bootstrap",
             Self::Plugin => "plugin",
             Self::Import => "import",
+            Self::Check => "check",
+            Self::Update => "update",
+            Self::Download => "download",
+            Self::Refresh => "refresh",
         }
     }
 
@@ -136,11 +151,22 @@ impl Job {
         serializer.serialize_str(&value.simple().to_string())
     }
 
+    fn serialize_parent<S: serde::Serializer>(
+        value: &Option<Uuid>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        match value {
+            Some(value) => Self::serialize_id(value, serializer),
+            None => serializer.serialize_none(),
+        }
+    }
+
     pub(super) fn new(id: Uuid, spec: &JobSpec, now: i64) -> Self {
         Self {
             id,
             kind: spec.kind,
             state: JobState::Queued,
+            parent: spec.parent,
             title: spec.title.clone(),
             icon: None,
             subject: spec.subject.clone(),
@@ -162,6 +188,7 @@ impl Job {
                     error: None,
                 })
                 .collect(),
+            dedupe: spec.dedupe.clone(),
         }
     }
 

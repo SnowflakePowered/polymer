@@ -1,6 +1,5 @@
 use super::super::{
     PluginInvocationError, PluginRuntimeHandle,
-    jobs::PluginJobs,
     worker::{WorkerOptions, invoke_export, run_worker},
 };
 use polymer_library::jobs::JobHandle;
@@ -34,9 +33,9 @@ impl PluginRuntimeHandle {
         let entrypoint = provider.entrypoint().to_string();
         let invocation_entrypoint = entrypoint.clone();
         let lifecycle = self.lifecycle(provider.id());
-        let updates = lifecycle.updates.clone();
+        let bootstrap = lifecycle.bootstrap.clone();
         let _bootstrap = tokio::select! {
-            guard = updates.lock() => guard,
+            guard = bootstrap.lock() => guard,
             () = cancellation.control.cancelled_notification() => return Err(PluginInvocationError::cancelled()),
         };
         let inspection = manager
@@ -50,12 +49,12 @@ impl PluginRuntimeHandle {
                 lifecycle.clone(),
                 control,
                 move |mut runtime| async move {
-                    PluginJobs::swap(&mut runtime.js_runtime_mut().op_state().borrow_mut(), job);
                     invoke_export(
                         runtime.js_runtime_mut(),
                         &invocation_entrypoint,
                         &["onBootstrap".into()],
                         vec![json!(inspection), json!({"settings": settings})],
+                        job,
                     )
                     .await
                 },

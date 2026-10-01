@@ -1,5 +1,6 @@
 import { connect } from "polymer:database";
-import type { PluginCacheFile, PluginDatabase, PluginProgressContext } from "polymer:api";
+import type { PluginCacheFile, PluginDatabase } from "polymer:api";
+import type { Job } from "polymer:jobs";
 
 export type Release = { shiragame: string; schema_version: string; consolespec_version: string; release: string };
 
@@ -22,10 +23,10 @@ export class ShiragameCatalog {
     return release;
   }
 
-  static async build(file: PluginCacheFile, context: PluginProgressContext): Promise<Release> {
+  static async build(file: PluginCacheFile, job: Job): Promise<Release> {
     const db = await connect(file, { readOnly: false });
     try {
-      context.progress({ message: "Checking Shiragame database" });
+      job.progress({ message: "Checking Shiragame database" });
       const release = await this.inspect(db);
       const checks = await db.prepare("PRAGMA quick_check").all();
       if (checks.length !== 1 || Object.values(checks[0])[0] !== "ok") throw new Error("Shiragame integrity check failed");
@@ -37,12 +38,12 @@ export class ShiragameCatalog {
         "CREATE INDEX IF NOT EXISTS polymer_shiragame_normalized ON serial(normalized)",
       ];
       for (let i = 0; i < indexes.length; i++) {
-        context.progress({ message: "Indexing Shiragame hashes and serials", completed: i, total: indexes.length });
+        job.progress({ message: "Indexing Shiragame hashes and serials", completed: i, total: indexes.length });
         await db.exec(indexes[i]);
       }
       const checkpoint = await db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get<{ busy: number }>();
       if (checkpoint?.busy !== 0) throw new Error("Shiragame index checkpoint is busy");
-      context.progress({ message: "Shiragame index ready", completed: indexes.length, total: indexes.length });
+      job.progress({ message: "Shiragame index ready", completed: indexes.length, total: indexes.length });
       return release;
     } finally {
       await db.close();

@@ -3,7 +3,8 @@ mod media;
 use polymer_library::{
     GameCatalog, GameCatalogError, MetadataData, MetadataValue,
     jobs::{
-        Job, JobError, JobHandle, JobKind, JobProgress, JobSpec, JobState, JobStore, JobSubject,
+        Job, JobError, JobHandle, JobKind, JobOutcome, JobProgress, JobRunner, JobSpec, JobState,
+        JobStore, JobSubject,
     },
 };
 use polymer_pluginhost::{
@@ -93,6 +94,19 @@ impl ScrapingError {
     }
 }
 
+impl JobRunner for ScrapingEngine {
+    fn run(&self, _: &Arc<JobStore>, ids: Vec<Uuid>, _: bool) {
+        for id in ids {
+            let engine = self.clone();
+            tokio::spawn(async move {
+                if let Err(error) = engine.run_job(id).await {
+                    tracing::warn!(%error, job = %id, "scrape job failed");
+                }
+            });
+        }
+    }
+}
+
 impl ScrapingEngine {
     pub fn new(
         catalog: Arc<GameCatalog>,
@@ -118,7 +132,7 @@ impl ScrapingEngine {
     ) -> Self {
         let handle = runtime.handle();
         let (events, _) = tokio::sync::broadcast::channel(64);
-        Self {
+        let engine = Self {
             inner: Arc::new(EngineInner {
                 catalog,
                 jobs,
@@ -131,7 +145,12 @@ impl ScrapingEngine {
                     .expect("scraper HTTP client"),
                 events,
             }),
-        }
+        };
+        engine
+            .inner
+            .jobs
+            .register(&[JobKind::Scrape, JobKind::Refresh], Arc::new(engine.clone()));
+        engine
     }
 
     pub fn catalog(&self) -> &Arc<GameCatalog> {
@@ -175,8 +194,9 @@ impl ScrapingEngine {
             .map(|plugin| plugin.id().to_owned())
             .collect::<Vec<_>>();
         let (root, trigger) = (root.simple().to_string(), trigger.simple().to_string());
-        let (job, created) = Box::pin(self.inner.jobs.enqueue(JobSpec {
+        let job = Box::pin(self.inner.jobs.submit(JobSpec {
             kind: JobKind::Scrape,
+            parent: None,
             title: "Scraping metadata".to_owned(),
             subject: JobSubject {
                 binary_id: Some(root.clone()),
@@ -188,43 +208,17 @@ impl ScrapingEngine {
             persistent: true,
         }))
         .await?;
-        if created {
-            tracing::info!(job = %job.id, root = %root, scrapers = job.steps.len(), "scrape job queued");
-            let engine = self.clone();
-            let id = job.id;
-            tokio::spawn(async move {
-                if let Err(error) = engine.run(id).await {
-                    tracing::warn!(%error, job = %id, "scrape job failed");
-                }
-            });
-        }
         Ok(job)
     }
 
     /// Load every scraper and resume jobs interrupted by the previous process.
     pub async fn resume(&self) -> Result<(), ScrapingError> {
         self.inner.handle.load::<dyn ScraperPluginInstance>();
-        let jobs = self.inner.jobs.recover(JobKind::Scrape).await?;
-        for job in jobs {
-            let engine = self.clone();
-            tokio::spawn(async move {
-                if let Err(error) = engine.run(job.id).await {
-                    tracing::warn!(%error, job = %job.id, "recovered scrape job failed");
-                }
-            });
-        }
-        Ok(())
-    }
-
-    pub async fn retry(&self, id: Uuid) -> Result<Job, ScrapingError> {
-        let job = self
-            .inner
+        self.inner
             .jobs
-            .get(id)
-            .await?
-            .ok_or(JobError::NotFound(id))?;
-        let (root, trigger) = Self::targets(&job)?;
-        self.enqueue(root, trigger).await
+            .resume(&[JobKind::Scrape, JobKind::Refresh])
+            .await?;
+        Ok(())
     }
 
     fn targets(job: &Job) -> Result<(Uuid, Uuid), ScrapingError> {
@@ -238,7 +232,9 @@ impl ScrapingEngine {
         Ok((binary("rootBinaryId")?, binary("triggerBinaryId")?))
     }
 
-    pub async fn refresh(&self, plugin_id: &str) -> Result<(), ScrapingError> {
+    /// Starts an in-memory `refresh` job that runs the scraper's `updateContents`, or
+    /// returns the one already refreshing it.
+    pub async fn refresh(&self, plugin_id: &str) -> Result<Job, ScrapingError> {
         if self
             .inner
             .handle
@@ -253,27 +249,48 @@ impl ScrapingEngine {
             )
             .into());
         }
-        self.inner
-            .handle
-            .invoke(plugin_id, &["updateContents".to_owned()], Vec::new())
-            .await?;
-        Ok(())
+        let spec = JobSpec {
+            kind: JobKind::Refresh,
+            parent: None,
+            title: format!("Updating {plugin_id}"),
+            subject: JobSubject {
+                plugin_id: Some(plugin_id.to_owned()),
+                ..Default::default()
+            },
+            params: serde_json::Value::Null,
+            dedupe: Some(plugin_id.to_owned()),
+            steps: Vec::new(),
+            persistent: false,
+        };
+        Ok(self.inner.jobs.submit(spec).await?)
     }
 
-    async fn run(&self, id: Uuid) -> Result<(), ScrapingError> {
+    async fn run_job(&self, id: Uuid) -> Result<(), ScrapingError> {
         let Some(handle) = self.inner.jobs.claim(id).await? else {
             return Ok(());
         };
         let handle = Arc::new(handle);
-        let outcome = self.execute_job(&handle).await;
-        let (state, error) = match &outcome {
-            Ok(state) => (*state, None),
-            Err(error) => {
-                tracing::warn!(%error, job = %id, "scrape job execution failed");
-                (JobState::Failed, Some(error.to_string()))
+        let job = handle.job().await?;
+        let outcome = match (job.kind, job.subject.plugin_id) {
+            (JobKind::Refresh, Some(plugin)) => {
+                let cancellation = self.inner.handle.cancellation_token();
+                self.inner
+                    .handle
+                    .update_contents(&plugin, Some(handle.clone()), cancellation)
+                    .await
+                    .map(|()| JobState::Completed)
+                    .map_err(ScrapingError::from)
             }
+            _ => self.execute_job(&handle).await,
         };
-        handle.finish(state, error).await?;
+        if let Err(error) = &outcome {
+            tracing::warn!(%error, job = %id, "scraping job failed");
+        }
+        let settled = outcome.as_ref().map(|state| JobOutcome {
+            state: *state,
+            progress: None,
+        });
+        handle.settle(settled).await?;
         outcome.map(|_| ())
     }
 
@@ -470,6 +487,20 @@ impl ScrapingEngine {
                 )
             })?;
         let input = definition.requested_input(&input);
+        if !self.inner.handle.contents_ready(plugin).await? {
+            let refresh = self.refresh(plugin).await?;
+            let refreshed = self.inner.jobs.wait(refresh.id).await?;
+            if refreshed.state != JobState::Completed {
+                return Err(PluginInvocationError::new(
+                    "Error",
+                    "CONTENTS_UNAVAILABLE",
+                    refreshed
+                        .error
+                        .unwrap_or_else(|| format!("{plugin} contents could not be updated")),
+                )
+                .into());
+            }
+        }
         let cancellation = self.inner.handle.cancellation_token();
         let invocation = self
             .inner

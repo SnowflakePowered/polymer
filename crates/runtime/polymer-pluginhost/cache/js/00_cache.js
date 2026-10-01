@@ -13,7 +13,7 @@ const files = new WeakMap();
 
 export function cacheFileLocation(file) {
   const location = files.get(file);
-  if (!location) throw new TypeError("file must be opened from a plugin cache");
+  if (!location) throw new TypeError("file or directory must come from a plugin cache");
   return location;
 }
 
@@ -67,6 +67,17 @@ function file(key, path, options) {
   return result;
 }
 
+function directory(key, path) {
+  const result = Object.freeze({
+    name: path.split("/").at(-1),
+    kind: "directory",
+    open(name, options = {}) { return file(key, `${path}/${plainPath(name)}`, options); },
+    directory(name) { return directory(key, `${path}/${plainPath(name)}`); },
+  });
+  files.set(result, Object.freeze({ key, path }));
+  return result;
+}
+
 const caches = Object.create(null);
 for (const key of op_cache_keys()) {
   let cache;
@@ -75,6 +86,7 @@ for (const key of op_cache_keys()) {
     get() {
       return cache ??= globalThis.__polymerFilesystem.cacheResource(key, {
         open(path, options = {}) { return file(key, plainPath(path), options); },
+        directory(path) { return directory(key, plainPath(path)); },
       });
     },
   });

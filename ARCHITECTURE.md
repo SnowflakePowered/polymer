@@ -85,6 +85,19 @@ The **Filesystem** system is contained in the following crates
 * `polymer-consolestorage` -- Console aware NAND, EEPROM/SRAM/etc. battery save, memory card handling, and installation drivers.
 * `polymer-vfs` -- Host-agnostic VFS implementation
 * `polymer-vfs-winfsp` -- Windows driver for `polymer-vfs`.
+* `polymer-vfs-fskit` -- macOS FSKit driver for `polymer-vfs`.
+
+
+#### IPC
+The IPC protocol interacts with the **Input IPC** and **Graphics IPC** in order to ferry information between the guest process and the frontend host. On macOS, the IPC protocol is also used to interact with the filesystem driver.
+
+The IPC protocol is explicitly unstable and can change between versions of Polymer. 
+
+To initialize input over the IPC protocol, an initial handshake is done via a Unix socket on Windows, and NSXPC on macOS (the "transport"). This handshake opens a handle to a memory mapped file containing a ring buffer containing the input state for the lowest-latency input events. Topology change `Blob` messages as well as bidirectional feedback requests (i.e. rumble, speaker, calibration), remain on the transport connection.
+
+For frame signaling, the transport handshake first sends over the handle for the shared memory texture and semaphores. When a frame is ready for presentation, the frame metadata are written into the shared memory ring buffer, and the heartbeat is sent over the transport. 
+
+Raw HID messages can't use shared memory and go directly through the transport as a stream. On macOS, FSKit requests are also carried through the transport. 
 
 ### Plugin Host Runtime
 The plugin runtime manages plugin registration and execution, which are small TypeScript programs used to configure the behaviour of guest emulator launches, scraping, and theme definitions.
@@ -177,7 +190,7 @@ Emulator plugins are used to orchestrate the execution of guest emulator process
   This function takes a raw `string` that is the hotkey expression for the emulator, and returns the key code for the hotkey.
 * `onQuit` -- Called immediately before the emulating instance is exited via the GUI.
 
-  The emulator plugin MUST export `onQuit` 
+  The emulator plugin SHOULD export `onQuit` 
   
   This function returns the save state used as the quick resume save state if supported.
   
@@ -300,8 +313,11 @@ Listed is a hierarchy of well known scraping keys that frontends can rely on.
 
 #### `platform` plugins
 
-Platform plugins handle platform specific logic. Currently it is only used to bootstrap NAND installs by downloading firmware packages and installing the depot via `onBootstrap`.
+Platform plugins handle platform specific logic related to system software and game updates. It exposes the following callbacks.
 
+- `onBootstrap` -- Called to download firmware packages and installing the depot via `onBootstrap`.
+- `onCheckUpdates` -- Called to check updates for a title that is added to the library.
+- `onFetchUpdate` -- Called to download updates from a server.
 
 ### Frontend Runtime (GUI)
 
@@ -313,6 +329,6 @@ The frontend runtime glues all these parts together and can really be split into
 
 
 TODO:
-#### IPC
-The IPC protocol interacts with the **Input IPC** and **Graphics IPC** in order to ferry information between the guest process and the frontend host.
+
+
 

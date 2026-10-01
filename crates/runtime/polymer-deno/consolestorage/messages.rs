@@ -29,6 +29,8 @@ impl StorageError {
 pub struct StoragePlatform {
     pub platform: String,
     pub plugin: String,
+    /// Whether the platform plugin checks for and fetches title updates.
+    pub updates: bool,
 }
 
 #[derive(Debug, Serialize)]

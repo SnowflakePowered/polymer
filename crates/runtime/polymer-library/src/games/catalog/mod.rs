@@ -18,6 +18,7 @@ mod configuration;
 mod manifest;
 mod metadata;
 mod objects;
+mod updates;
 
 const BINARY_NAMESPACE: Uuid = Uuid::from_u128(0x599c9d3b98265d0080a77ae753dec395);
 
@@ -145,6 +146,7 @@ impl GameCatalog {
                 platform: root_platform.clone(),
                 launchables: Vec::new(),
                 metadata: Vec::new(),
+                updates: BTreeMap::new(),
             });
             let binary_id = Self::uuid(row.get_value(3)?)?;
             binary_roots.insert(binary_id, root_id);
@@ -191,6 +193,15 @@ impl GameCatalog {
                 .and_then(|root| games.get_mut(root))
             {
                 game.metadata.push(Self::metadata_from_row(&row)?);
+            }
+        }
+        drop(rows);
+        let mut updates = Self::updates(&connection).await?;
+        for game in games.values_mut() {
+            for launchable in &game.launchables {
+                if let Some(candidates) = updates.remove(&launchable.id) {
+                    game.updates.insert(launchable.id, candidates);
+                }
             }
         }
         Ok(games.into_values().collect())
@@ -420,15 +431,20 @@ impl GameCatalog {
             }
             5 => {
                 connection.execute_batch(
-                    "ALTER TABLE launchables ADD COLUMN package TEXT CHECK (package IS NULL OR length(package) > 0); DROP TABLE IF EXISTS scrape_attempts; DROP TABLE IF EXISTS scrape_jobs; PRAGMA user_version = 7;"
+                    "ALTER TABLE launchables ADD COLUMN package TEXT CHECK (package IS NULL OR length(package) > 0); DROP TABLE IF EXISTS scrape_attempts; DROP TABLE IF EXISTS scrape_jobs;"
                 ).await?;
+                connection.execute_batch(SCHEMA).await?;
             }
             6 => {
-                connection.execute_batch(
-                    "DROP TABLE IF EXISTS scrape_attempts; DROP TABLE IF EXISTS scrape_jobs; PRAGMA user_version = 7;"
-                ).await?;
+                connection
+                    .execute_batch(
+                        "DROP TABLE IF EXISTS scrape_attempts; DROP TABLE IF EXISTS scrape_jobs;",
+                    )
+                    .await?;
+                connection.execute_batch(SCHEMA).await?;
             }
-            7 => {}
+            7 => connection.execute_batch(SCHEMA).await?,
+            8 => {}
             version => {
                 return Err(GameCatalogError::InvalidData(format!(
                     "library database schema version {version} is not supported"

@@ -2,6 +2,7 @@ pub(crate) mod events;
 pub(crate) mod jobs;
 mod platform;
 pub use events::{EventEmitter, PluginEvent};
+pub use platform::UpdateTarget;
 pub(crate) mod controller_session;
 mod invocation;
 pub(crate) mod js;
@@ -26,7 +27,7 @@ use controller_session::ControllerActor;
 use parking_lot::Mutex;
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -34,7 +35,8 @@ use std::{
 };
 use tokio::sync::{OnceCell, Semaphore};
 use worker::{
-    WorkerOptions, invoke_export, invoke_optional_export, invoke_scrape_generator, run_worker,
+    WorkerOptions, invoke_export, invoke_optional_export, invoke_scrape_generator, plugin_exports,
+    run_worker,
 };
 
 struct RuntimeState {
@@ -52,8 +54,13 @@ struct PluginLifecycle {
     events: Arc<events::EventEmitter>,
     jobs: jobs::PluginJobs,
     storage: Arc<crate::plugin_storage::PluginStorage>,
-    loaded: OnceCell<()>,
-    updates: Arc<tokio::sync::Mutex<()>>,
+    /// The functions the plugin exports, discovered when it first loads in this process.
+    loaded: OnceCell<BTreeSet<String>>,
+    /// Whether the plugin's contents are usable: false when `onPluginLoad` returned false,
+    /// until `updateContents` succeeds.
+    ready: AtomicBool,
+    /// Serializes the plugin's bootstraps.
+    bootstrap: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl PluginLifecycle {
@@ -63,11 +70,11 @@ impl PluginLifecycle {
             jobs: jobs::PluginJobs {
                 store,
                 plugin: plugin.to_owned(),
-                current: None,
             },
             storage: Arc::new(crate::plugin_storage::PluginStorage::default()),
             loaded: OnceCell::new(),
-            updates: Arc::new(tokio::sync::Mutex::new(())),
+            ready: AtomicBool::new(true),
+            bootstrap: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -85,8 +92,6 @@ impl PluginLifecycle {
         state.borrow_mut().put(self.jobs.clone());
         self.loaded
             .get_or_try_init(|| async {
-                let job = self.jobs.start("Loading plugin").await;
-                jobs::PluginJobs::swap(&mut state.borrow_mut(), job.clone());
                 let result = invoke_optional_export(
                     runtime.js_runtime_mut(),
                     entrypoint,
@@ -94,12 +99,13 @@ impl PluginLifecycle {
                     Vec::new(),
                 )
                 .await;
-                jobs::PluginJobs::swap(&mut state.borrow_mut(), None);
-                jobs::PluginJobs::finish(job, &result).await;
-                if result.is_err() {
-                    self.storage.clear();
+                match &result {
+                    Ok(Some(Value::Bool(false))) => self.ready.store(false, Ordering::Release),
+                    Err(_) => self.storage.clear(),
+                    Ok(_) => {}
                 }
-                result.map(|_| ())
+                result?;
+                plugin_exports(runtime.js_runtime_mut(), entrypoint).await
             })
             .await
             .map(|_| ())
@@ -273,37 +279,43 @@ impl PluginRuntimeHandle {
         Arc<I>: std::any::Any + Send + Sync,
     {
         for plugin in self.registry().plugins::<I>() {
-            let Some(plugin) = self.registry().plugin::<dyn PluginInstance>(plugin.id()) else {
-                continue;
-            };
             let handle = self.clone();
+            let id = plugin.id().to_owned();
             tokio::spawn(async move {
-                let entrypoint = plugin.entrypoint().to_string();
-                let worker = WorkerOptions::for_plugin(
-                    plugin.as_ref(),
-                    handle.directories(),
-                    BTreeMap::new(),
-                    None,
-                )
-                .map_err(PluginInvocationError::worker);
-                let lifecycle = handle.lifecycle(plugin.id());
-                let loaded = match worker {
-                    Ok(worker) => {
-                        handle
-                            .run_with_control(handle.cancellation_token().control, move |control| {
-                                run_worker(entrypoint, worker, lifecycle, control, |_| async {
-                                    Ok(())
-                                })
-                            })
-                            .await
-                    }
-                    Err(error) => Err(error),
-                };
-                if let Err(error) = loaded {
-                    tracing::warn!(plugin = plugin.id(), %error, "plugin failed to load");
+                if let Err(error) = handle.exports(&id).await {
+                    tracing::warn!(plugin = %id, %error, "plugin failed to load");
                 }
             });
         }
+    }
+
+    /// The functions a plugin exports, loading it first when nothing has run it yet in this
+    /// process.
+    pub async fn exports(&self, plugin_id: &str) -> Result<BTreeSet<String>, PluginInvocationError> {
+        let lifecycle = self.lifecycle(plugin_id);
+        if let Some(exports) = lifecycle.loaded.get() {
+            return Ok(exports.clone());
+        }
+        let plugin = self
+            .registry()
+            .plugin::<dyn PluginInstance>(plugin_id)
+            .ok_or_else(|| {
+                PluginInvocationError::new(
+                    "NotFoundError",
+                    "UNKNOWN_PLUGIN",
+                    format!("unknown plugin '{plugin_id}'"),
+                )
+            })?;
+        let entrypoint = plugin.entrypoint().to_string();
+        let worker =
+            WorkerOptions::for_plugin(plugin.as_ref(), self.directories(), BTreeMap::new(), None)
+                .map_err(PluginInvocationError::worker)?;
+        let loading = lifecycle.clone();
+        self.run_with_control(self.cancellation_token().control, move |control| {
+            run_worker(entrypoint, worker, loading, control, |_| async { Ok(()) })
+        })
+        .await?;
+        Ok(lifecycle.loaded.get().cloned().unwrap_or_default())
     }
 
     fn lifecycle(&self, plugin_id: &str) -> Arc<PluginLifecycle> {
@@ -478,17 +490,7 @@ impl PluginRuntimeHandle {
         input: ScrapeInput,
         cancellation: PluginCancellationToken,
     ) -> Result<Vec<ScrapeResult>, PluginInvocationError> {
-        let plugin = self
-            .state
-            .registry
-            .plugin::<dyn ScraperPluginInstance>(plugin_id)
-            .ok_or_else(|| {
-                PluginInvocationError::new(
-                    "NotFoundError",
-                    "UNKNOWN_SCRAPER",
-                    format!("unknown scraper '{plugin_id}'"),
-                )
-            })?;
+        let plugin = self.scraper(plugin_id)?;
         if !plugin.accepts(&input) {
             return Err(PluginInvocationError::new(
                 "TypeError",
@@ -528,6 +530,45 @@ impl PluginRuntimeHandle {
             })
             .await?;
         Ok(results)
+    }
+
+    /// Runs a scraper's `updateContents` with `job` as the parent of the jobs it starts.
+    pub async fn update_contents(
+        &self,
+        plugin_id: &str,
+        job: Option<Arc<polymer_library::jobs::JobHandle>>,
+        cancellation: PluginCancellationToken,
+    ) -> Result<(), PluginInvocationError> {
+        let plugin = self.scraper(plugin_id)?;
+        let path = ["updateContents".to_owned()];
+        self.invoke_generic(plugin, &path, Vec::new(), cancellation, job)
+            .await?;
+        self.lifecycle(plugin_id).ready.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    /// Whether a scraper's contents are ready, loading the plugin first when nothing has
+    /// run it yet in this process. Contents that are not ready need `updateContents`.
+    pub async fn contents_ready(&self, plugin_id: &str) -> Result<bool, PluginInvocationError> {
+        self.scraper(plugin_id)?;
+        self.exports(plugin_id).await?;
+        Ok(self.lifecycle(plugin_id).ready.load(Ordering::Acquire))
+    }
+
+    fn scraper(
+        &self,
+        plugin_id: &str,
+    ) -> Result<Arc<dyn ScraperPluginInstance>, PluginInvocationError> {
+        self.state
+            .registry
+            .plugin::<dyn ScraperPluginInstance>(plugin_id)
+            .ok_or_else(|| {
+                PluginInvocationError::new(
+                    "NotFoundError",
+                    "UNKNOWN_SCRAPER",
+                    format!("unknown scraper '{plugin_id}'"),
+                )
+            })
     }
 
     async fn invoke_inner(
@@ -583,7 +624,7 @@ impl PluginRuntimeHandle {
                 "Start bootstrap through console storage",
             ));
         }
-        self.invoke_generic(plugin, export_path, arguments, cancellation)
+        self.invoke_generic(plugin, export_path, arguments, cancellation, None)
             .await
     }
 
@@ -612,6 +653,7 @@ impl PluginRuntimeHandle {
         export_path: &[String],
         arguments: Vec<Value>,
         cancellation: PluginCancellationToken,
+        job: Option<Arc<polymer_library::jobs::JobHandle>>,
     ) -> Result<PluginInvocationResult, PluginInvocationError> {
         let entrypoint = plugin.entrypoint().to_string();
         let invocation_entrypoint = entrypoint.clone();
@@ -621,9 +663,6 @@ impl PluginRuntimeHandle {
 
         let lifecycle = self.lifecycle(plugin.id());
         let path = export_path.to_vec();
-        let updates = lifecycle.updates.clone();
-        let updating = matches!(export_path, [name] if name == "updateContents")
-            || matches!(export_path, [root, name] if root == "default" && name == "updateContents");
         let execute = move |control| {
             run_worker(
                 entrypoint,
@@ -631,17 +670,13 @@ impl PluginRuntimeHandle {
                 lifecycle,
                 control,
                 move |runtime| async move {
-                    let _update = if updating {
-                        Some(updates.lock().await)
-                    } else {
-                        None
-                    };
                     let mut runtime = runtime;
                     invoke_export(
                         runtime.js_runtime_mut(),
                         &invocation_entrypoint,
                         &path,
                         arguments,
+                        job,
                     )
                     .await
                 },

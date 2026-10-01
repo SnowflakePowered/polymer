@@ -1,6 +1,8 @@
 import { Package } from "./00_package.js";
 import {
   op_jobs_import,
+  op_jobs_check_updates,
+  op_jobs_fetch_update,
   op_library_import_key,
   op_library_keys_list,
   op_library_keys_platforms,
@@ -107,6 +109,10 @@ export function createLibrary() {
     url(id) { return op_library_metadata_url(uuid(id, "id")); },
   });
   Object.defineProperties(Library, {
+    updates: { value: Object.freeze({
+      check: launchableId => op_jobs_check_updates(uuid(launchableId, "launchableId")),
+      fetch: (launchableId, candidate) => op_jobs_fetch_update(uuid(launchableId, "launchableId"), candidate),
+    }) },
     import: { value: async input => {
       if (input === null || typeof input !== "object") throw new TypeError("import input must be an object");
       const path = optionalString(input.path, "path");

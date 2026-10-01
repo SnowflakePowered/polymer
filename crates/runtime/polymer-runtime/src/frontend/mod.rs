@@ -590,7 +590,11 @@ impl FrontendServices {
             )
         });
         let storage = polymer_library::StorageManager::shared().ok();
-        let storage_service = crate::StorageService::start(storage.clone(), plugins.handle())
+        let storage_service = crate::StorageService::start(
+            storage.clone(),
+            plugins.handle(),
+            library.as_ref().map(LibraryService::catalog),
+        )
             .map_err(|error| format!("could not start storage actor: {error}"));
         let jobs = plugins.handle().jobs().cloned();
         if let Some(jobs) = &jobs {
@@ -614,9 +618,9 @@ impl FrontendServices {
         }
         let job_service = crate::JobService::start(
             jobs,
-            library.as_ref().map(LibraryService::scraping),
             storage_service.as_ref().ok().cloned(),
             library.as_ref().map(LibraryService::client),
+            library.as_ref().map(LibraryService::catalog),
         )
         .map_err(|error| format!("could not start jobs actor: {error}"));
         Self {

@@ -1,12 +1,14 @@
 mod api;
 mod jobs;
+mod nand;
 mod operations;
 mod saves;
+mod updates;
 mod volumes;
 
-use actix::{Actor, Addr, Context, ResponseActFuture, System, WrapFuture};
+use actix::{Actor, Addr, AsyncContext, Context, ResponseActFuture, System, WrapFuture};
 use polymer_deno::polymer::consolestorage::StorageError;
-use polymer_library::StorageManager;
+use polymer_library::{GameCatalog, StorageManager, jobs::JobKind};
 use polymer_pluginhost::runtime::PluginRuntimeHandle;
 use std::{future::Future, sync::Arc};
 
@@ -18,10 +20,29 @@ pub struct StorageService {
 struct StorageActor {
     manager: Option<Arc<StorageManager>>,
     plugins: PluginRuntimeHandle,
+    catalog: Option<Arc<GameCatalog>>,
 }
 
 impl Actor for StorageActor {
     type Context = Context<Self>;
+
+    fn started(&mut self, context: &mut Context<Self>) {
+        self.plugins
+            .load::<dyn polymer_pluginhost::platform::PlatformPluginInstance>();
+        let Some(store) = self.plugins.jobs().cloned() else {
+            return;
+        };
+        let runner = Arc::new(StorageService {
+            actor: context.address(),
+        });
+        let kinds = [JobKind::Install, JobKind::Bootstrap, JobKind::Update, JobKind::Check];
+        store.register(&kinds, runner);
+        actix::spawn(async move {
+            if let Err(error) = store.resume(&kinds).await {
+                tracing::warn!(%error, "could not resume storage jobs");
+            }
+        });
+    }
 
     fn stopped(&mut self, _: &mut Context<Self>) {
         System::current().stop();
@@ -57,6 +78,7 @@ impl StorageService {
     pub fn start(
         manager: Option<Arc<StorageManager>>,
         plugins: PluginRuntimeHandle,
+        catalog: Option<Arc<GameCatalog>>,
     ) -> Result<Self, std::io::Error> {
         let (ready, startup) = std::sync::mpsc::sync_channel(1);
         std::thread::Builder::new()
@@ -64,7 +86,12 @@ impl StorageService {
             .spawn(move || {
                 let system = System::new();
                 let actor = system.block_on(async move {
-                    StorageActor { manager, plugins }.start()
+                    StorageActor {
+                        manager,
+                        plugins,
+                        catalog,
+                    }
+                    .start()
                 });
                 if ready.send(actor).is_ok()
                     && let Err(error) = system.run()
@@ -73,11 +100,6 @@ impl StorageService {
                 }
             })?;
         let actor = startup.recv().map_err(std::io::Error::other)?;
-        actor.do_send(jobs::ResumeJobs);
         Ok(Self { actor })
-    }
-
-    pub(crate) fn run_job(&self, id: uuid::Uuid) {
-        self.actor.do_send(jobs::RunJob(id));
     }
 }

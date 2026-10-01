@@ -78,3 +78,31 @@ pub(super) async fn op_jobs_import(
         .call(JobsImport { path, storage })
         .await
 }
+
+#[op2]
+#[serde]
+pub(super) async fn op_jobs_check_updates(
+    state: Rc<RefCell<OpState>>,
+    #[string] launchable: String,
+) -> Result<Job, JsErrorBox> {
+    Jobs::from_state(&state)?
+        .check_updates
+        .call(JobsCheckUpdates { launchable })
+        .await
+}
+
+#[op2]
+#[serde]
+pub(super) async fn op_jobs_fetch_update(
+    state: Rc<RefCell<OpState>>,
+    #[string] launchable: String,
+    #[serde] candidate: serde_json::Value,
+) -> Result<Job, JsErrorBox> {
+    Jobs::from_state(&state)?
+        .fetch_update
+        .call(JobsFetchUpdate {
+            launchable,
+            candidate,
+        })
+        .await
+}

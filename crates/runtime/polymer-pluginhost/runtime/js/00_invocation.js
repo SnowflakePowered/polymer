@@ -1,14 +1,5 @@
 import { createPackage } from "ext:polymer_digest/00_digest.js";
-import { op_job_progress } from "ext:core/ops";
-const progressContext = Object.freeze({ progress: ({ message, completed = null, total = null }) => {
-    if (typeof message !== "string" ||
-        (completed !== null && (!Number.isFinite(completed) || completed < 0)) ||
-        (total !== null && (!Number.isFinite(total) || total <= 0)) ||
-        (completed !== null && total !== null && completed > total)) {
-      throw new TypeError("invalid plugin progress");
-    }
-    op_job_progress(message, completed, total);
-  } });
+import { hosted } from "ext:polymer_plugin_runtime/01_jobs.js";
 function bindArguments(args) {
   return args.map(argument => {
     if (argument?.__digestToken !== undefined) return createPackage(argument);
@@ -23,7 +14,7 @@ function bindArguments(args) {
   });
 }
 
-async function invoke(entrypoint, path, args) {
+async function invoke(entrypoint, path, args, job) {
   args = bindArguments(args);
   const namespace = await import(entrypoint);
   let receiver;
@@ -50,12 +41,13 @@ async function invoke(entrypoint, path, args) {
   if (typeof value !== "function") {
     throw new TypeError(`plugin export '${path.join(".")}' is not a function`);
   }
-  if (path.join(".") === "updateContents" || path.join(".") === "default.updateContents") args = [progressContext];
-  if (path.at(-1) === "onBootstrap") {
-    const result = await globalThis.__polymerPlatform.bootstrap(receiver, args[0], Object.freeze({ ...args[1], ...progressContext }));
+  if (path.join(".") === "updateContents" || path.join(".") === "default.updateContents") args = [];
+  const platform = { onBootstrap: "bootstrap", onCheckUpdates: "checkUpdates", onFetchUpdate: "fetchUpdate" }[path.at(-1)];
+  if (platform) {
+    const result = await hosted(job, () => globalThis.__polymerPlatform[platform](receiver, ...args));
     return result === undefined ? null : result;
   }
-  const result = await Reflect.apply(value, receiver, args);
+  const result = await hosted(job, () => Reflect.apply(value, receiver, args));
   return result === undefined ? null : result;
 }
 
@@ -72,13 +64,22 @@ async function invokeOptional(entrypoint, name, args) {
   if (typeof value !== "function") {
     throw new TypeError(`plugin export '${name}' is not a function`);
   }
-  if (name === "onPluginLoad") args = [progressContext];
+  if (name === "onPluginLoad") args = [];
   const result = await Reflect.apply(value, receiver, args);
   return { found: true, value: result === undefined ? null : result };
 }
 
+async function exports(entrypoint) {
+  const namespace = await import(entrypoint);
+  const named = Object.entries(namespace);
+  const fallback = namespace.default !== null && typeof namespace.default === "object"
+    ? Object.entries(namespace.default)
+    : [];
+  return [...new Set([...named, ...fallback].filter(([, value]) => typeof value === "function").map(([name]) => name))];
+}
+
 Object.defineProperty(globalThis, "__polymerPluginRuntime", {
-  value: Object.freeze({ invoke, invokeOptional }),
+  value: Object.freeze({ invoke, invokeOptional, exports }),
   configurable: false,
   enumerable: false,
   writable: false,

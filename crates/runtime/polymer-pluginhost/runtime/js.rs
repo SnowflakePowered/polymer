@@ -84,9 +84,14 @@ impl ExtensionFunction {
 
 deno_core::extension!(
     polymer_plugin_runtime,
-    ops = [super::events::op_plugin_emit_event, super::jobs::op_job_progress],
+    ops = [
+        super::events::op_plugin_emit_event,
+        super::jobs::op_job_start,
+        super::jobs::op_job_report,
+        super::jobs::op_job_finish,
+    ],
     esm_entry_point = "ext:polymer_plugin_runtime/00_invocation.js",
-    esm = [dir "runtime/js", "00_invocation.js"],
+    esm = [dir "runtime/js", "00_invocation.js", "01_jobs.js"],
 );
 
 pub(crate) fn extension() -> deno_core::Extension {

@@ -186,6 +186,7 @@ impl Runtime {
                     user_agent: format!("Polymer/{}", env!("CARGO_PKG_VERSION")),
                     local_storage,
                     inspect: true,
+                    insecure_hosts: Vec::new(),
                 });
                 worker
                     .js_runtime_mut()

@@ -2,8 +2,10 @@ import { IndexWriter } from "pkg:index-writer.ts";
 import { parseXmlStreamFromBytes } from "jsr:@std/xml/parse-stream";
 import { Reader, ZipReader } from "jsr:@zip-js/zip-js";
 import { caches } from "polymer:cache";
+import { download } from "polymer:download";
+import { Job, JobTrackedStream } from "polymer:jobs";
 import { connect } from "polymer:database";
-import type { OnPluginLoad, UpdateContents, PluginProgressContext, OnScrape, ScrapeCandidate, ScrapeInput, ScrapeResult } from "polymer:api";
+import type { OnPluginLoad, UpdateContents, OnScrape, ScrapeCandidate, ScrapeInput, ScrapeResult } from "polymer:api";
 
 const SOURCE = "LaunchBox Games Database";
 const METADATA_URL = "https://gamesdb.launchbox-app.com/Metadata.zip";
@@ -83,18 +85,14 @@ function strings(input: ScrapeInput, keys: readonly `${string}.${string}`[]): st
   return values(input, keys).map(({ value }) => value).filter((value): value is string => typeof value === "string");
 }
 
-async function* streamChunks(stream: ReadableStream<Uint8Array>, flush: () => Promise<void>, progress: (bytes: number) => void): AsyncGenerator<Uint8Array> {
+async function* streamChunks(stream: ReadableStream<Uint8Array>, flush: () => Promise<void>): AsyncGenerator<Uint8Array> {
   const reader = stream.getReader();
-  let bytes = 0;
-  let reported = 0;
   try {
     while (true) {
       const { done, value } = await reader.read();
-      if (done) { progress(bytes); return; }
+      if (done) return;
       yield value;
       await flush();
-      bytes += value.byteLength;
-      if (bytes - reported >= 1024 * 1024) { progress(bytes); reported = bytes; }
     }
   } finally {
     await reader.cancel();
@@ -102,7 +100,7 @@ async function* streamChunks(stream: ReadableStream<Uint8Array>, flush: () => Pr
   }
 }
 
-async function buildIndex(context?: PluginProgressContext): Promise<void> {
+async function buildIndex(job: Job): Promise<void> {
   const db = await connect();
   await db.exec(`
     DROP TABLE IF EXISTS games_next;
@@ -145,10 +143,9 @@ async function buildIndex(context?: PluginProgressContext): Promise<void> {
     const entries = await zip.getEntries();
     const entry = entries.find((entry) => entry.filename === "Metadata.xml");
     if (!entry?.getData) throw new Error("LaunchBox archive does not contain Metadata.xml");
-    context?.progress({ message: "Indexing game metadata", completed: 0, total: entry.uncompressedSize });
     const xml = new TransformStream<Uint8Array, Uint8Array>();
     const extraction = entry.getData(xml.writable);
-    await Promise.all([extraction, parseXmlStreamFromBytes(streamChunks(xml.readable, async () => { await games.flush(); await images.flush(); await alternates.flush(); }, completed => context?.progress({ message: "Indexing game metadata", completed, total: entry.uncompressedSize })), {
+    await Promise.all([extraction, parseXmlStreamFromBytes(streamChunks(new JobTrackedStream(xml.readable, { message: "Indexing game metadata", total: entry.uncompressedSize }), async () => { await games.flush(); await images.flush(); await alternates.flush(); }), {
       onStartElement(name) {
         if (name === "Game") { recordType = "Game"; record = { id: 0, platform: "", name: "" }; }
         else if (name === "GameImage") { recordType = "GameImage"; record = { id: 0, fileName: "", type: "", region: "" }; }
@@ -211,13 +208,12 @@ async function buildIndex(context?: PluginProgressContext): Promise<void> {
     })]);
     const filesEntry = entries.find((entry) => entry.filename === "Files.xml");
     if (!filesEntry?.getData) throw new Error("LaunchBox archive does not contain Files.xml");
-    context?.progress({ message: "Indexing filenames", completed: 0, total: filesEntry.uncompressedSize });
     const files = new TransformStream<Uint8Array, Uint8Array>();
     const filesExtraction = filesEntry.getData(files.writable);
     let file: FileRecord | undefined;
     field = "";
     text = "";
-    await Promise.all([filesExtraction, parseXmlStreamFromBytes(streamChunks(files.readable, () => aliases.flush(), completed => context?.progress({ message: "Indexing filenames", completed, total: filesEntry.uncompressedSize })), {
+    await Promise.all([filesExtraction, parseXmlStreamFromBytes(streamChunks(new JobTrackedStream(files.readable, { message: "Indexing filenames", total: filesEntry.uncompressedSize }), () => aliases.flush()), {
       onStartElement(name) {
         if (name === "File") file = { platform: "", fileName: "", gameName: "" };
         else if (file) { field = name; text = ""; }
@@ -250,7 +246,7 @@ async function buildIndex(context?: PluginProgressContext): Promise<void> {
     await images.flush();
     await alternates.flush();
     await aliases.flush();
-    context?.progress({ message: "Matching aliases and publishing metadata index" });
+    job.progress({ message: "Matching aliases and publishing metadata index" });
     console.info("LaunchBox: matching aliases and publishing metadata index");
     await db.exec(`
       CREATE INDEX games_next_match ON games_next(platform, normalized);
@@ -297,56 +293,30 @@ function imageKey(type: string): string | undefined {
   return undefined;
 }
 
-async function downloadAndBuildIndex(context?: PluginProgressContext): Promise<void> {
-  context?.progress({ message: "Downloading LaunchBox metadata" });
-  const response = await fetch(METADATA_URL);
-  if (!response.ok || !response.body) throw new Error(`LaunchBox metadata download failed: ${response.status}`);
-  const file = caches.download.open(DOWNLOAD_FILE, { read: false, write: true, create: true, truncate: true });
-  if (!file.writable) throw new Error("LaunchBox download cache is not writable");
-  const length = Number(response.headers.get("content-length"));
-  let downloaded = 0;
-  let reported = 0;
-  const downloadProgress = new TransformStream<Uint8Array, Uint8Array>({
-    transform(chunk, controller) {
-      downloaded += chunk.byteLength;
-      if (downloaded - reported >= 1024 * 1024) {
-        context?.progress({ message: "Downloading LaunchBox metadata", completed: downloaded, total: length > 0 ? Math.max(length, downloaded) : undefined });
-        reported = downloaded;
-      }
-      controller.enqueue(chunk);
-    },
-  });
-  await response.body.pipeThrough(downloadProgress).pipeTo(file.writable as WritableStream<Uint8Array>);
-  await buildIndex(context);
+async function downloadAndBuildIndex(job: Job): Promise<void> {
+  await download(METADATA_URL, caches.download.open(DOWNLOAD_FILE));
+  await buildIndex(job);
 }
 
-let updatedDuringLoad = false;
-
-export const updateContents: UpdateContents = async (context) => {
-  if (updatedDuringLoad) {
-    updatedDuringLoad = false;
-    return;
+/** Downloads new metadata, or first builds the index from an archive a previous run downloaded. */
+export const updateContents: UpdateContents = async () => {
+  let cached = false;
+  if (!await onPluginLoad()) {
+    try { cached = caches.download.open(DOWNLOAD_FILE).size > 0; } catch { /* no cached archive */ }
   }
-  await downloadAndBuildIndex(context);
+  await new Job("Updating LaunchBox metadata").run(cached ? buildIndex : downloadAndBuildIndex);
 };
 
-export const onPluginLoad: OnPluginLoad = async (context) => {
+/** Whether the metadata index is built for this version. */
+export const onPluginLoad: OnPluginLoad = async () => {
   const db = await connect();
-  let version: string | undefined;
   try {
-    version = (await db.prepare("SELECT value FROM content_state WHERE key = 'ready'").get<{ value: string }>())?.value;
-  } catch { /* first use has no schema */ }
-  if (version === "3") {
-    // Startup requests an update after loading the plugin. The persistent index
-    // satisfies that first request even when it was built by an earlier process.
-    updatedDuringLoad = true;
-    return;
+    return (await db.prepare("SELECT value FROM content_state WHERE key = 'ready'").get<{ value: string }>())?.value === "3";
+  } catch {
+    return false;
+  } finally {
+    await db.close();
   }
-  let cached = false;
-  try { cached = caches.download.open(DOWNLOAD_FILE).size > 0; } catch { /* no cached archive */ }
-  if (cached) await buildIndex(context);
-  else await downloadAndBuildIndex(context);
-  updatedDuringLoad = true;
 };
 
 function jaroWinkler(left: string, right: string): number {

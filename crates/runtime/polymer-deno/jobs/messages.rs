@@ -20,6 +20,8 @@ pub struct Jobs {
     pub retry: Recipient<JobsRetry>,
     pub dismiss: Recipient<JobsDismiss>,
     pub import: Recipient<JobsImport>,
+    pub check_updates: Recipient<JobsCheckUpdates>,
+    pub fetch_update: Recipient<JobsFetchUpdate>,
 }
 
 #[derive(Debug, Message)]
@@ -57,4 +59,20 @@ pub struct JobsDismiss {
 pub struct JobsImport {
     pub path: String,
     pub storage: Option<String>,
+}
+
+/// Starts an in-memory job that checks one library title for updates.
+#[derive(Debug, Message)]
+#[rtype(result = "Result<Job, JobsError>")]
+pub struct JobsCheckUpdates {
+    pub launchable: String,
+}
+
+/// Starts a persistent job that downloads one update candidate for a library title as a
+/// depot, then queues the depot's install.
+#[derive(Debug, Message)]
+#[rtype(result = "Result<Job, JobsError>")]
+pub struct JobsFetchUpdate {
+    pub launchable: String,
+    pub candidate: serde_json::Value,
 }

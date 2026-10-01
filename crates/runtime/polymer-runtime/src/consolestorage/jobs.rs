@@ -1,9 +1,12 @@
 use super::StorageActor;
-use actix::{Context, Handler, Message, ResponseActFuture};
+use actix::{ActorFutureExt, Context, Handler, Message, ResponseActFuture};
 use polymer_deno::polymer::consolestorage::{StorageArtifact, StorageError, StorageInspection};
 use polymer_library::{
-    StorageKind, StorageManager,
-    jobs::{JobHandle, JobKind, JobProgress, JobSpec, JobState, JobStore, JobSubject},
+    GameCatalog, StorageKind, StorageManager,
+    jobs::{
+        JobError, JobHandle, JobKind, JobOutcome, JobProgress, JobRunner, JobSpec, JobStore,
+        JobSubject,
+    },
 };
 use polymer_pluginhost::runtime::PluginRuntimeHandle;
 use polymer_vfs::ExclusiveResourceKey;
@@ -14,44 +17,40 @@ use std::{
 };
 use uuid::Uuid;
 
-/// Resumes install and bootstrap jobs that a previous process left unfinished.
+/// Runs storage jobs one after another. Resumed jobs first discard what their
+/// previous run left uncommitted.
 #[derive(Message)]
-#[rtype(result = "Result<(), StorageError>")]
-pub(super) struct ResumeJobs;
+#[rtype(result = "()")]
+pub(super) struct RunJobs {
+    pub ids: Vec<Uuid>,
+    pub resume: bool,
+}
 
-/// Runs a queued install or bootstrap job.
-#[derive(Message)]
-#[rtype(result = "Result<(), StorageError>")]
-pub(super) struct RunJob(pub Uuid);
+impl Handler<RunJobs> for StorageActor {
+    type Result = ResponseActFuture<Self, ()>;
 
-impl Handler<ResumeJobs> for StorageActor {
-    type Result = ResponseActFuture<Self, Result<(), StorageError>>;
-
-    fn handle(&mut self, _: ResumeJobs, _: &mut Context<Self>) -> Self::Result {
-        self.execute(move |manager, plugins| async move {
-            let jobs = Self::jobs(&plugins)?;
-            for kind in [JobKind::Install, JobKind::Bootstrap] {
-                for job in jobs
-                    .recover(kind)
-                    .await
-                    .map_err(StorageError::from_display)?
-                {
-                    let run = Self::run_job(manager.clone(), plugins.clone(), job.id, true);
-                    if let Err(error) = run.await {
-                        tracing::warn!(%error, job = %job.id, "resumed storage job failed");
-                    }
+    fn handle(&mut self, RunJobs { ids, resume }: RunJobs, _: &mut Context<Self>) -> Self::Result {
+        let catalog = self.catalog.clone();
+        let run = self.execute(move |manager, plugins| async move {
+            for id in ids {
+                let run = Self::run_job(manager.clone(), plugins.clone(), catalog.clone(), id, resume);
+                if let Err(error) = run.await {
+                    tracing::warn!(%error, job = %id, "storage job failed");
                 }
             }
             Ok(())
-        })
+        });
+        Box::pin(run.map(|result: Result<(), StorageError>, _, _| {
+            if let Err(error) = result {
+                tracing::warn!(%error, "could not run storage jobs");
+            }
+        }))
     }
 }
 
-impl Handler<RunJob> for StorageActor {
-    type Result = ResponseActFuture<Self, Result<(), StorageError>>;
-
-    fn handle(&mut self, RunJob(id): RunJob, _: &mut Context<Self>) -> Self::Result {
-        self.execute(move |manager, plugins| Self::run_job(manager, plugins, id, false))
+impl JobRunner for super::StorageService {
+    fn run(&self, _: &Arc<JobStore>, ids: Vec<Uuid>, resume: bool) {
+        self.actor.do_send(RunJobs { ids, resume });
     }
 }
 
@@ -69,18 +68,22 @@ impl super::StorageService {
         )
     }
 
-    /// A job that runs a platform plugin's bootstrap into a NAND.
+    /// A job that runs a platform plugin's bootstrap into a NAND, one at a time per NAND.
     pub(crate) fn bootstrap_spec(platform: &str, storage: Uuid, settings: Value) -> JobSpec {
-        Self::spec(
-            JobKind::Bootstrap,
-            "Installing system files".to_owned(),
-            json!({ "platform": platform, "storage": storage.simple().to_string(), "settings": settings }),
-        )
+        JobSpec {
+            dedupe: Some(storage.simple().to_string()),
+            ..Self::spec(
+                JobKind::Bootstrap,
+                "Installing system files".to_owned(),
+                json!({ "platform": platform, "storage": storage.simple().to_string(), "settings": settings }),
+            )
+        }
     }
 
-    fn spec(kind: JobKind, title: String, params: Value) -> JobSpec {
+    pub(super) fn spec(kind: JobKind, title: String, params: Value) -> JobSpec {
         JobSpec {
             kind,
+            parent: None,
             title,
             subject: JobSubject {
                 platform: params["platform"].as_str().map(str::to_owned),
@@ -99,6 +102,7 @@ impl StorageActor {
     async fn run_job(
         manager: Arc<StorageManager>,
         plugins: PluginRuntimeHandle,
+        catalog: Option<Arc<GameCatalog>>,
         id: Uuid,
         resume: bool,
     ) -> Result<(), StorageError> {
@@ -108,10 +112,13 @@ impl StorageActor {
         };
         let job = Arc::new(job);
         match job.job().await.map_err(StorageError::from_display)?.kind {
+            JobKind::Install => Self::install_job(manager, job, resume).await.map(drop),
             JobKind::Bootstrap => Self::bootstrap_job(manager, plugins, job, resume)
                 .await
                 .map(drop),
-            _ => Self::install_job(manager, job, resume).await.map(drop),
+            JobKind::Check => Self::check_job(manager, plugins, catalog, job).await.map(drop),
+            JobKind::Update => Self::update_job(manager, plugins, job).await,
+            kind => Err(StorageError::from_display(JobError::Unsupported(kind))),
         }
     }
 
@@ -150,14 +157,16 @@ impl StorageActor {
                 .map_err(StorageError::from)
         }
         .await;
-        let completed = result.as_ref().ok().map(|artifact| JobProgress {
-            title: Some(artifact.label.clone()),
-            icon: artifact.icons.first().cloned(),
-            message: Some("Installed".to_owned()),
-            detail: Some(json!(artifact)),
-            ..Default::default()
+        let outcome = result.as_ref().map(|artifact| {
+            JobOutcome::completed(Some(JobProgress {
+                title: Some(artifact.label.clone()),
+                icon: artifact.icons.first().cloned(),
+                message: Some("Installed".to_owned()),
+                detail: Some(json!(artifact)),
+                ..Default::default()
+            }))
         });
-        Self::finish(&job, &result, completed).await;
+        Self::finish(&job, outcome).await;
         result
     }
 
@@ -190,32 +199,23 @@ impl StorageActor {
                 .map_err(StorageError::from_display)
         }
         .await;
-        let completed = result.is_ok().then(|| JobProgress {
-            message: Some("System setup complete".to_owned()),
-            ..Default::default()
+        let outcome = result.as_ref().map(|_| {
+            JobOutcome::completed(Some(JobProgress {
+                message: Some("System setup complete".to_owned()),
+                ..Default::default()
+            }))
         });
-        Self::finish(&job, &result, completed).await;
+        Self::finish(&job, outcome).await;
         result
     }
 
-    async fn finish<T>(
-        job: &JobHandle,
-        result: &Result<T, StorageError>,
-        completed: Option<JobProgress>,
-    ) {
-        if let Some(progress) = completed {
-            let _ = job.progress(progress).await;
-        }
-        let (state, error) = match result {
-            Ok(_) => (JobState::Completed, None),
-            Err(error) => (JobState::Failed, Some(error.to_string())),
-        };
-        if let Err(error) = job.finish(state, error).await {
+    pub(super) async fn finish(job: &JobHandle, outcome: Result<JobOutcome, &StorageError>) {
+        if let Err(error) = job.settle(outcome).await {
             tracing::warn!(%error, job = %job.id(), "could not finish storage job");
         }
     }
 
-    fn target(params: &Value) -> Result<(String, Uuid), StorageError> {
+    pub(super) fn target(params: &Value) -> Result<(String, Uuid), StorageError> {
         let platform = params["platform"]
             .as_str()
             .ok_or("storage job has no platform")?;
@@ -223,7 +223,7 @@ impl StorageActor {
         Ok((platform.to_owned(), id))
     }
 
-    async fn restore(
+    pub(super) async fn restore(
         manager: &StorageManager,
         platform: &str,
         id: Uuid,
