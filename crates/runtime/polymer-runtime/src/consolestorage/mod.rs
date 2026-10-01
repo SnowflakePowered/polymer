@@ -35,7 +35,12 @@ impl Actor for StorageActor {
         let runner = Arc::new(StorageService {
             actor: context.address(),
         });
-        let kinds = [JobKind::Install, JobKind::Bootstrap, JobKind::Update, JobKind::Check];
+        let kinds = [
+            JobKind::Install,
+            JobKind::Bootstrap,
+            JobKind::Update,
+            JobKind::Check,
+        ];
         store.register(&kinds, runner);
         actix::spawn(async move {
             if let Err(error) = store.resume(&kinds).await {

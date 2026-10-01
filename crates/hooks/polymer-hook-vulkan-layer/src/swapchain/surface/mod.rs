@@ -62,9 +62,6 @@ impl Surface {
             );
         }
     }
-    pub(super) fn refresh_period(&self) -> std::time::Duration {
-        std::time::Duration::from_nanos(16_666_667)
-    }
     pub(crate) fn destroyed(handle: vk::SurfaceKHR) {
         SURFACES.remove(&handle);
     }

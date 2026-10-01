@@ -2,7 +2,6 @@ use ash::{Entry, vk};
 use polymer_consumer_vulkan::physical_device_matches_luid;
 use polymer_ipc::StreamReady;
 use polymer_protocol::{AdapterLuid, FrameReady};
-use polymer_renderer::renderer::frame_ownership::Retention;
 use polymer_renderer::renderer::{CompositingPlan, RenderWindow, SurfacePlacement};
 use std::error::Error;
 

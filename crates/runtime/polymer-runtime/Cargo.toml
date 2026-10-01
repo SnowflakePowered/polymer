@@ -43,6 +43,7 @@ uuid = "1.24.1"
 watchable.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+polymer-consumer-d3d12 = { path = "../../consumer/polymer-consumer-d3d12" }
 polymer-platform-windows.workspace = true
 polymer-vfs-winfsp.workspace = true
 
@@ -51,5 +52,6 @@ workspace = true
 
 
 [target.'cfg(target_os = "macos")'.dependencies]
+polymer-consumer-metal = { path = "../../consumer/polymer-consumer-metal" }
 polymer-platform-macos.workspace = true
 polymer-vfs-fskit.workspace = true

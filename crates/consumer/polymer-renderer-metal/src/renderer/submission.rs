@@ -3,7 +3,6 @@ use objc2::runtime::ProtocolObject;
 use objc2_metal::*;
 use objc2_quartz_core::CAMetalDrawable;
 use parking_lot::Mutex;
-use polymer_runtime::BufferReleaseSender;
 use std::{
     io,
     ptr::NonNull,
@@ -58,7 +57,6 @@ impl Submissions {
         self: &Arc<Self>,
         commands: &ProtocolObject<dyn MTLCommandBuffer>,
         drawable: Option<&ProtocolObject<dyn CAMetalDrawable>>,
-        releases: Vec<(BufferReleaseSender, polymer_protocol::StreamId, u64)>,
     ) {
         self.active.fetch_add(1, Ordering::AcqRel);
         self.gpu.fetch_add(1, Ordering::AcqRel);
@@ -78,11 +76,6 @@ impl Submissions {
                     completion.owner.gpu.fetch_sub(1, Ordering::Release);
                     completion.finish(3);
                     return;
-                }
-                for (sender, stream, value) in &releases {
-                    if let Err(error) = sender.release(*stream, *value) {
-                        *completion.owner.error.lock() = Some(error.to_string());
-                    }
                 }
                 completion.owner.gpu.fetch_sub(1, Ordering::Release);
                 completion.finish(1);

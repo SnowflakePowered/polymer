@@ -3,7 +3,7 @@ use polymer_consumer_vulkan::ImportedImageRing;
 use polymer_protocol::FrameReady;
 
 use super::compositor::color_range;
-use polymer_renderer::renderer::frame_ownership::{FrameOwnership, SurfaceFrames};
+use polymer_renderer::renderer::frame_ownership::{Retention, SurfaceFrames};
 
 pub(super) struct ImportedVulkanSurface {
     pub connection: u64,
@@ -24,6 +24,15 @@ impl ImportedVulkanSurface {
             return;
         }
         self.frames.offer(frame);
+    }
+
+    /// A cached surface copies each frame out of the producer's slot.
+    pub fn retention(&self) -> Retention {
+        if self.cache.is_some() {
+            Retention::Cached
+        } else {
+            Retention::Retained
+        }
     }
 
     pub fn image(&self) -> Option<vk::Image> {
@@ -73,10 +82,7 @@ impl ImportedVulkanSurface {
     }
 
     pub fn copy_single_slot(&self, device: &ash::Device, command: vk::CommandBuffer, family: u32) {
-        let (Some(cache), Some(frame)) = (
-            &self.cache,
-            self.frames.prepared().map(FrameOwnership::ready),
-        ) else {
+        let (Some(cache), Some(frame)) = (&self.cache, self.frames.pending()) else {
             return;
         };
         let source = self.imported.image(frame.slot).expect("prepared slot");
@@ -164,12 +170,14 @@ impl ImportedVulkanSurface {
     }
 
     pub fn commit(&mut self) {
-        if self.frames.prepared().is_some() {
+        if self.frames.has_pending() {
             if let Some(cache) = &mut self.cache {
                 cache.initialized = true;
             }
         }
-        self.frames.commit();
+        if let Some(ready) = self.frames.commit(self.retention()) {
+            polymer_statistics::capture_latency(self.connection, self.surface_id, ready.elapsed());
+        }
     }
 
     /// The caller has idled the device and supplies an unused command buffer.
@@ -195,7 +203,7 @@ impl ImportedVulkanSurface {
             device.queue_submit(queue, &[submit], vk::Fence::null())?;
             device.queue_wait_idle(queue)?;
         }
-        let last_received = self.frames.latest().map_or(0, |frame| frame.sync_value);
+        let last_received = self.frames.frame().map_or(0, |frame| frame.sync_value);
         self.imported.release_all_idle(last_received)
     }
 }

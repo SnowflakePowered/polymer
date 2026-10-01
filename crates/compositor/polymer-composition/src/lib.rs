@@ -4,8 +4,8 @@ mod events;
 pub mod overlay;
 mod scene;
 pub use events::*;
+use polymer_renderer::ReceivedSurface;
 use polymer_renderer::egui::InputDiagnostics;
-use polymer_renderer::{ReceivedSurface, SurfacePointerSender};
 use polymer_runtime::{RgbaScreenshot, SurfaceFrameReceiver, SurfaceOffer};
 use polymer_statistics::RecorderHandle;
 pub use scene::*;
@@ -101,7 +101,6 @@ pub trait Compositor {
         &mut self,
         connection: u64,
         frames: SurfaceFrameReceiver,
-        pointer: SurfacePointerSender,
     ) -> Result<(), Box<dyn Error>>;
     fn register_surface(&mut self, connection: u64, target: u32) -> Result<(), Box<dyn Error>>;
     fn remove_surface(&mut self, connection: u64);

@@ -25,8 +25,14 @@ impl Handler<ProvideNand> for StorageActor {
 
     fn handle(&mut self, message: ProvideNand, _: &mut Context<Self>) -> Self::Result {
         self.execute(move |manager, plugins| async move {
-            Self::provide_nand(&manager, &plugins, &message.platform, message.bootstrap, message.parent)
-                .await
+            Self::provide_nand(
+                &manager,
+                &plugins,
+                &message.platform,
+                message.bootstrap,
+                message.parent,
+            )
+            .await
         })
     }
 }
@@ -79,7 +85,11 @@ impl StorageActor {
                             parent,
                             ..super::StorageService::bootstrap_spec(platform, id, json!({}))
                         };
-                        job = Some(jobs.submit(spec).await.map_err(StorageError::from_display)?);
+                        job = Some(
+                            jobs.submit(spec)
+                                .await
+                                .map_err(StorageError::from_display)?,
+                        );
                     }
                     (id, job)
                 }
@@ -94,7 +104,10 @@ impl StorageActor {
                 .filter(|job| job.state.active()),
         };
         if let Some(job) = bootstrapping {
-            let done = jobs.wait(job.id).await.map_err(StorageError::from_display)?;
+            let done = jobs
+                .wait(job.id)
+                .await
+                .map_err(StorageError::from_display)?;
             if done.state != JobState::Completed {
                 return Err(StorageError(done.error.unwrap_or_else(|| {
                     format!("{} was {}", done.title, done.state.as_str())

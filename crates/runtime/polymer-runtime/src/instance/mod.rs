@@ -8,7 +8,7 @@ use parking_lot::{Mutex, RwLock};
 use polymer_input::{HostInputEvent, HostPointerInput};
 use polymer_ipc::StreamReady;
 use polymer_ipc::input::host::InputIpcListener;
-pub use polymer_platform::{AudioState, HotkeyChord, NormalizedVolume, ResizeDimensions};
+pub use polymer_platform::{AudioState, HotkeyChord, NormalizedVolume};
 use polymer_platform::{Guest, GuestInput, GuestWindowId, ProcessExitReceiver};
 
 use polymer_protocol::{

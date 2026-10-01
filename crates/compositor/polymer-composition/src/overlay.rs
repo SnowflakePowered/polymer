@@ -139,17 +139,9 @@ impl OverlayState {
         frame: polymer_protocol::FrameReady,
         observed_qpc: Option<u64>,
     ) {
-        let latency_ticks = observed_qpc
-            .or_else(|| (self.counter)().ok())
-            .unwrap_or(frame.timestamp_qpc)
-            .saturating_sub(frame.timestamp_qpc);
+        let observed_qpc = observed_qpc.or_else(|| (self.counter)().ok()).unwrap_or(0);
         if let Some(metrics) = self.frames.get_mut(&connection) {
-            metrics.observe(
-                frame.frame_number,
-                frame.timestamp_qpc,
-                self.frequency,
-                Duration::from_secs_f64(latency_ticks as f64 / self.frequency.max(1.0)),
-            );
+            metrics.observe(frame.frame_number, observed_qpc, self.frequency);
         }
         self.diagnostics.frame_number = frame.frame_number;
         self.diagnostics.slot = frame.slot;

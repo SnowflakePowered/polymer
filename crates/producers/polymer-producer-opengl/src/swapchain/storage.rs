@@ -25,7 +25,7 @@ impl CaptureStore {
         let mut capture = stored.lock();
         unsafe {
             capture.tick();
-            capture.copy_frame(StreamId((context as u64) ^ surface.0.rotate_left(17)));
+            capture.copy_frame();
         }
     }
     pub(super) fn context_destroyed(&self, context: usize) {

@@ -17,10 +17,6 @@ impl InputEndpoint {
     pub fn detach(&self) {
         *self.0.write() = None;
     }
-
-    pub fn send(&self, message: Message) -> bool {
-        self.send_message(message)
-    }
 }
 
 impl MessageSink for InputEndpoint {

@@ -4,31 +4,17 @@ use crate::input::PointerEventSink;
 use dashmap::DashMap;
 use polymer_protocol::input::PointerInput;
 use polymer_runtime::{
-    EmulatorInstance, PresentedFrameToken, SurfaceError, SurfaceEvent, SurfaceEventReceiver,
-    SurfaceFrameReceiver, SurfaceFrameUpdate, SurfaceOffer, SurfacePointerUpdate,
-    TrackedSurfaceHandle, TrackedSurfaceId,
+    EmulatorInstance, SurfaceError, SurfaceEvent, SurfaceEventReceiver, SurfaceFrameReceiver,
+    SurfaceFrameUpdate, SurfaceOffer, SurfacePointerUpdate, TrackedSurfaceHandle, TrackedSurfaceId,
 };
-use std::{
-    collections::{HashMap, VecDeque},
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 
-const POINTER_FRAME_LIMIT: usize = 16;
-
+/// A connection's swapchain has a fixed extent and window for its whole
+/// generation, so pointer input only needs that generation to be validated.
 struct PointerTarget {
     protocol_surface_id: u64,
     surface: TrackedSurfaceHandle,
-    frames: VecDeque<(u64, PresentedFrameToken)>,
-}
-
-impl PointerTarget {
-    fn remember(&mut self, update: SurfaceFrameUpdate) {
-        self.frames
-            .push_back((update.frame.frame_number, update.presentation_token()));
-        while self.frames.len() > POINTER_FRAME_LIMIT {
-            self.frames.pop_front();
-        }
-    }
+    generation: u64,
 }
 
 /// Stable pointer endpoint for accepted surfaces.
@@ -49,18 +35,10 @@ impl PointerEventSink for SurfacePointerSender {
         if target.protocol_surface_id != event.surface_id {
             return false;
         }
-        let Some(frame) = target
-            .frames
-            .iter()
-            .rev()
-            .find_map(|(number, token)| (*number == event.frame_number).then_some(*token))
-        else {
-            return false;
-        };
         target
             .surface
             .send_pointer_update(
-                frame,
+                target.generation,
                 SurfacePointerUpdate {
                     source: event.source,
                     phase: event.phase,
@@ -77,17 +55,6 @@ impl PointerEventSink for SurfacePointerSender {
                 },
             )
             .is_ok()
-    }
-}
-
-impl SurfacePointerSender {
-    /// Associates a producer frame with its runtime presentation token.
-    /// Dedicated presentation workers call this as soon as they drain a frame,
-    /// independently of the UI thread that later performs hit testing.
-    pub fn remember_frame(&self, connection: u64, update: SurfaceFrameUpdate) {
-        if let Some(mut target) = self.targets.get_mut(&connection) {
-            target.remember(update);
-        }
     }
 }
 
@@ -147,9 +114,6 @@ impl SurfaceCapture {
 
         for (&connection, frames) in &mut self.frames {
             if let Ok(Some(update)) = frames.try_next_frame() {
-                if let Some(mut target) = self.pointer.targets.get_mut(&connection) {
-                    target.remember(update);
-                }
                 return Ok(SurfaceCaptureEvent::Frame { connection, update });
             }
         }
@@ -188,7 +152,7 @@ impl SurfaceCapture {
             PointerTarget {
                 protocol_surface_id,
                 surface: surface.clone(),
-                frames: VecDeque::new(),
+                generation: frames.generation(),
             },
         );
         if let Some(previous) = self.connections.insert(id, connection)

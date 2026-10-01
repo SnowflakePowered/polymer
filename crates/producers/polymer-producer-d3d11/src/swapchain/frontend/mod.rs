@@ -18,7 +18,7 @@ pub struct D3d11Frontend {
     texture: ID3D11Texture2D,
     registration: Option<SourceRegistration>,
     fixed_window: Option<polymer_platform_windows::FixedWindowBinding>,
-    pacing: Option<FrameLatency>,
+    pacing: FrameLatency,
 }
 
 impl D3d11Frontend {
@@ -56,7 +56,7 @@ impl D3d11Frontend {
             texture,
             registration: None,
             fixed_window: None,
-            pacing: None,
+            pacing: FrameLatency::new()?,
         });
         Ok(frontend)
     }
@@ -148,11 +148,6 @@ impl VirtualDxgiDriver for D3d11Frontend {
                 .poll()
                 .map_or_else(|error| Self::error(error).code(), |()| S_OK);
         }
-        if let Some(pacing) = &self.pacing {
-            if let Err(error) = state.controller.wait_for_pacing(pacing.maximum(), deadline) {
-                return Self::error(error).code();
-            }
-        }
         if let Err(error) = state.acquire(deadline) {
             return error.code();
         }
@@ -165,23 +160,28 @@ impl VirtualDxgiDriver for D3d11Frontend {
             None
         };
         let lease = state.lease.take().unwrap();
-        if let Some(pacing) = &self.pacing {
-            pacing.signal(false);
-        }
-        match state.controller.present(
-            lease,
-            (),
-            polymer_platform_windows::performance_counter().unwrap_or(0),
-        ) {
+        self.pacing.signal(false);
+        match state.controller.present(lease, ()) {
             Ok(_) => {
                 state.lease = next;
-                match state.acquire(deadline) {
+                // Publishing first and pacing afterwards delays the application's
+                // next frame instead of holding the finished one.
+                let paced = if flags.contains(DXGI_PRESENT_DO_NOT_WAIT) {
+                    Ok(())
+                } else {
+                    state
+                        .controller
+                        .wait_for_pacing(self.pacing.maximum(), deadline)
+                        .map_err(Self::error)
+                };
+                match paced.and_then(|()| state.acquire(deadline)) {
                     Ok(_) => {
                         self.refresh_latency(&mut state);
                         S_OK
                     }
                     Err(error) => {
                         state.failed = true;
+                        self.pacing.signal(true);
                         if error.code() == DXGI_ERROR_WAS_STILL_DRAWING {
                             DXGI_ERROR_DEVICE_REMOVED
                         } else {
@@ -192,6 +192,7 @@ impl VirtualDxgiDriver for D3d11Frontend {
             }
             Err(error) => {
                 state.failed = true;
+                self.pacing.signal(true);
                 Self::error(error).code()
             }
         }
@@ -200,14 +201,15 @@ impl VirtualDxgiDriver for D3d11Frontend {
         0
     }
     fn set_maximum_latency(&self, maximum: u32) -> Result<(), Error> {
-        self.set_latency(maximum)
+        let mut state = self.enter(AcquireDeadline::after(Duration::from_secs(2)))?;
+        self.pacing.set_maximum(maximum);
+        self.refresh_latency(&mut state);
+        Ok(())
     }
     fn maximum_latency(&self) -> u32 {
-        self.pacing.as_ref().map_or(1, FrameLatency::maximum)
+        self.pacing.maximum()
     }
     fn latency_handle(&self) -> HANDLE {
-        self.pacing
-            .as_ref()
-            .map_or(HANDLE::default(), FrameLatency::duplicate)
+        self.pacing.duplicate()
     }
 }

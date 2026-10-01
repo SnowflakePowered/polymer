@@ -249,57 +249,6 @@ pub fn is_process_window(window: NativeWindow, process_id: ProcessId) -> bool {
 }
 
 #[cfg(windows)]
-pub fn resize_client(window: NativeWindow, width: u32, height: u32) -> std::io::Result<()> {
-    use windows::Win32::{
-        Foundation::RECT,
-        UI::WindowsAndMessaging::{
-            AdjustWindowRectEx, GWL_EXSTYLE, GWL_STYLE, GetWindowLongW, SWP_HIDEWINDOW, SWP_NOMOVE,
-            SWP_NOZORDER, SetWindowPos,
-        },
-    };
-    if width == 0 || height == 0 {
-        return Ok(());
-    }
-    let hwnd = hwnd(window);
-    let mut client = RECT::default();
-    if unsafe { windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut client) }.is_ok()
-        && (client.right - width as i32).abs() <= 2
-        && (client.bottom - height as i32).abs() <= 2
-    {
-        return Ok(());
-    }
-    let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32;
-    let ex_style = unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) } as u32;
-    let mut rect = RECT {
-        left: 0,
-        top: 0,
-        right: width as i32,
-        bottom: height as i32,
-    };
-    unsafe {
-        AdjustWindowRectEx(
-            &mut rect,
-            windows::Win32::UI::WindowsAndMessaging::WINDOW_STYLE(style),
-            false,
-            windows::Win32::UI::WindowsAndMessaging::WINDOW_EX_STYLE(ex_style),
-        )
-    }
-    .map_err(|_| std::io::Error::last_os_error())?;
-    unsafe {
-        SetWindowPos(
-            hwnd,
-            None,
-            0,
-            0,
-            rect.right - rect.left,
-            rect.bottom - rect.top,
-            SWP_NOMOVE | SWP_NOZORDER | SWP_HIDEWINDOW,
-        )
-    }
-    .map_err(|_| std::io::Error::last_os_error())
-}
-
-#[cfg(windows)]
 pub fn forward_key(window: NativeWindow, virtual_key: u32, pressed: bool, repeat: bool) {
     use windows::Win32::UI::Input::KeyboardAndMouse::{MAPVK_VK_TO_VSC_EX, MapVirtualKeyW};
     use windows::Win32::UI::WindowsAndMessaging::{WM_KEYDOWN, WM_KEYUP};

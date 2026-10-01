@@ -595,7 +595,7 @@ impl FrontendServices {
             plugins.handle(),
             library.as_ref().map(LibraryService::catalog),
         )
-            .map_err(|error| format!("could not start storage actor: {error}"));
+        .map_err(|error| format!("could not start storage actor: {error}"));
         let jobs = plugins.handle().jobs().cloned();
         if let Some(jobs) = &jobs {
             let mut changes = jobs.subscribe();

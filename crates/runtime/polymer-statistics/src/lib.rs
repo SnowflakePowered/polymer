@@ -5,7 +5,8 @@ mod recorder;
 mod snapshot;
 
 pub use emit::{
-    FrameMetrics, InputMetrics, PresentationMetrics, display_latency, remove_connection,
+    FrameMetrics, InputMetrics, PresentationMetrics, capture_latency, display_latency,
+    remove_connection,
 };
 pub use recorder::{LiveRecorder, RecorderHandle, install};
 pub use snapshot::{

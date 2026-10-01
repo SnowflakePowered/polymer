@@ -1,7 +1,4 @@
 use dispatch2::DispatchQueue;
-use objc2::MainThreadMarker;
-use objc2_app_kit::NSApplication;
-use objc2_foundation::NSSize;
 use polymer_input::{HostInputEvent, HostPointerInput, KeyCode};
 use polymer_ipc::{
     Message,
@@ -32,17 +29,6 @@ impl Input {
         loop {
             while let Some(message) = subscriber.control.try_receive()? {
                 match message {
-                    Message::ResizeWindow(size) => DispatchQueue::main().exec_async(move || {
-                        let main = MainThreadMarker::new().unwrap();
-                        for window in NSApplication::sharedApplication(main).windows() {
-                            if window.windowNumber() == size.target_window as isize {
-                                window.setContentSize(NSSize::new(
-                                    size.width as f64,
-                                    size.height as f64,
-                                ));
-                            }
-                        }
-                    }),
                     Message::Blob {
                         kind: polymer_ipc::BlobKind::MacosAutomationEvent,
                         data: bytes,

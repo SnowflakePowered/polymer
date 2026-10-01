@@ -21,22 +21,6 @@ impl VulkanCompositor {
             self.device
                 .wait_for_fences(&[self.fences[flight]], true, u64::MAX)?;
 
-            for surface in &mut self.surfaces {
-                surface.frames.begin();
-                if let Some(frame) = surface.frames.pending() {
-                    // Never queue an uncancellable wait for a producer that
-                    // may exit before signaling. Redraw the leased frame instead.
-                    match surface.imported.wait_for(frame.sync_value, 0) {
-                        Ok(()) => surface.frames.prepare_pending(if surface.cache.is_some() {
-                            Retention::Cached
-                        } else {
-                            Retention::Retained
-                        }),
-                        Err(vk::Result::TIMEOUT) => {}
-                        Err(error) => return Err(error.into()),
-                    }
-                }
-            }
             let (image_index, acquire_suboptimal) = match self.swapchain_loader.acquire_next_image(
                 self.swapchain,
                 u64::MAX,
@@ -109,7 +93,7 @@ impl VulkanCompositor {
                 .map_or(0, |(swapchain, _)| swapchain.available());
             let mut surface_draws = Vec::new();
             for (surface_index, surface) in self.surfaces.iter_mut().enumerate() {
-                if surface.frames.prepared().is_some() {
+                if surface.frames.has_pending() {
                     surface.release_displayed(&self.device, command, self.queue_family);
                     surface.copy_single_slot(&self.device, command, self.queue_family);
                 }
@@ -128,7 +112,7 @@ impl VulkanCompositor {
                         .image(source)
                         .subresource_range(color_range());
                     if surface.cache.is_none()
-                        && surface.frames.prepared().is_some()
+                        && surface.frames.has_pending()
                         && imported.uses_external_queue_family()
                     {
                         to_source = to_source
@@ -144,7 +128,7 @@ impl VulkanCompositor {
                         &[],
                         &[to_source],
                     );
-                    if surface.frames.prepared().is_some()
+                    if surface.frames.has_pending()
                         && video_publish_ready
                         && video_publish_budget > 0
                         && let Some(cache) = video_parts
@@ -356,19 +340,10 @@ impl VulkanCompositor {
             let mut waits = vec![self.image_available[flight]];
             let mut wait_values = vec![0];
             let mut wait_stages = vec![vk::PipelineStageFlags::TRANSFER];
-            for surface in &self.surfaces {
-                if let Some(frame) = surface.frames.prepared().map(|frame| frame.ready()) {
-                    waits.push(surface.imported.timeline());
-                    wait_values.push(frame.sync_value);
-                    wait_stages.push(
-                        vk::PipelineStageFlags::TRANSFER | vk::PipelineStageFlags::FRAGMENT_SHADER,
-                    );
-                }
-            }
             let video_wait_value = video_parts.as_ref().map_or(0, |(_, video)| {
                 self.surfaces
                     .iter()
-                    .filter(|surface| surface.frames.prepared().is_some())
+                    .filter(|surface| surface.frames.has_pending())
                     .filter_map(|surface| video.streams.get(&surface.connection))
                     .filter(|stream| stream.cache.is_some())
                     .map(|stream| stream.completion_value)
@@ -410,7 +385,7 @@ impl VulkanCompositor {
                 signal_values.push(video.ready_value);
             }
             for surface in &self.surfaces {
-                if let Some(value) = surface.frames.release_value()
+                if let Some(value) = surface.frames.release_value(surface.retention())
                     && let Some(semaphore) = surface.imported.consumer_timeline()
                 {
                     signals.push(semaphore);
@@ -430,9 +405,6 @@ impl VulkanCompositor {
             self.device
                 .queue_submit(self.queue, &[submit], self.fences[flight])?;
             for surface in &mut self.surfaces {
-                if let Some(value) = surface.frames.release_value() {
-                    surface.frames.acknowledge_release(value)?;
-                }
                 surface.commit();
             }
             for index in video_copies {

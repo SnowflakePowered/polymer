@@ -126,11 +126,9 @@ impl D3d11Creation {
             Error::new(E_FAIL, format!("virtual stream setup: {:?}", failure.error))
         })?;
         let mut driver = D3d11Frontend::new(controller, context)?;
-        Arc::get_mut(&mut driver).expect("new frontend").bind(
-            registration,
-            fixed,
-            description.Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0 as u32 != 0,
-        )?;
+        Arc::get_mut(&mut driver)
+            .expect("new frontend")
+            .bind(registration, fixed)?;
         let object = VirtualDxgiSwapchain::create(
             factory,
             device.cast()?,
@@ -141,7 +139,6 @@ impl D3d11Creation {
         reservation
             .commit()
             .map_err(|error| Error::new(E_FAIL, error))?;
-        driver.register()?;
         Ok(Some(object))
     }
 

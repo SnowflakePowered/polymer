@@ -1,9 +1,7 @@
 use polymer_composition::SurfaceFrameEvent;
 use polymer_platform_windows::performance_counter;
 use polymer_renderer::layout::Rect;
-use polymer_renderer::{
-    CompositingPlan, Renderer, SurfaceContent, SurfacePlacement, SurfacePointerSender,
-};
+use polymer_renderer::{CompositingPlan, Renderer, SurfaceContent, SurfacePlacement};
 use polymer_renderer_d3d12::D3d12Compositor;
 use polymer_runtime::SurfaceFrameReceiver;
 use std::{
@@ -32,7 +30,6 @@ impl SurfacePresentationWorker {
     pub(super) fn spawn(
         mut compositor: D3d12Compositor,
         mut frames: SurfaceFrameReceiver,
-        pointer: SurfacePointerSender,
         events: mpsc::Sender<SurfaceFrameEvent>,
         connection: u64,
         surface_id: u64,
@@ -73,35 +70,27 @@ impl SurfacePresentationWorker {
                     };
                     match frames.next_frame_timeout(timeout) {
                         Ok(Some(update)) => {
-                            pointer.remember_frame(connection, update);
                             Renderer::set_latest(&mut compositor, connection, update.frame);
                             let _ = events.send(SurfaceFrameEvent {
                                 connection,
                                 update,
-                                observed_qpc: performance_counter()
-                                    .unwrap_or(update.frame.timestamp_qpc),
+                                observed_qpc: performance_counter().unwrap_or(0),
                             });
                         }
                         Ok(None) => {}
                         Err(_) => break,
                     }
 
-                    match compositor.wait_for_ready_pending_frame(Duration::from_millis(50)) {
-                        Ok(true) if compositor.begin_frame_within(Duration::from_millis(50)) => {
-                            if let Err(error) = compositor.present_with_webrtc(&plan, None) {
-                                tracing::error!(
-                                    "polymer: presenting surface {connection} on its worker failed: {error}"
-                                );
-                                break;
-                            }
-                        }
-                        Ok(_) => {}
-                        Err(error) => {
-                            tracing::error!(
-                                "polymer: waiting for surface {connection} failed: {error}"
-                            );
-                            break;
-                        }
+                    // Frames arrive only once the producer's ready timeline has
+                    // completed them, so a pending frame can be presented directly.
+                    if Renderer::has_pending_frame(&compositor)
+                        && compositor.begin_frame_within(Duration::from_millis(50))
+                        && let Err(error) = compositor.present_with_webrtc(&plan, None)
+                    {
+                        tracing::error!(
+                            "polymer: presenting surface {connection} on its worker failed: {error}"
+                        );
+                        break;
                     }
                 }
             })

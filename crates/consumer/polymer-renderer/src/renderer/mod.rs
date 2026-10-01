@@ -1,7 +1,7 @@
 use std::error::Error;
 
 use crate::layout::{Extent, Point, Rect};
-use polymer_protocol::{FrameReady, ResizeWindow};
+use polymer_protocol::FrameReady;
 use polymer_runtime::SurfaceOffer;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
@@ -117,16 +117,6 @@ impl SwapchainMode {
 
 pub trait RenderWindow: HasDisplayHandle + HasWindowHandle {
     fn render_extent(&self) -> Extent;
-
-    /// Computes guest-window resize requests against this host window's
-    /// current drawable extent.
-    fn resize_windows(
-        &self,
-        surfaces: &[ReceivedSurface],
-        plan: &CompositingPlan,
-    ) -> Vec<ResizeWindow> {
-        Presentation::new(self.render_extent(), surfaces.to_vec()).resize_windows(plan)
-    }
 }
 
 impl RenderWindow for winit::window::Window {
@@ -200,33 +190,6 @@ impl Presentation {
     pub fn surfaces(&self) -> &[ReceivedSurface] {
         &self.surfaces
     }
-
-    /// Returns the producer client extents which fill the current presentation.
-    pub fn resize_windows(&self, plan: &CompositingPlan) -> Vec<ResizeWindow> {
-        if self.viewer_extent.is_empty() || self.surfaces.is_empty() {
-            return Vec::new();
-        }
-        self.surfaces
-            .iter()
-            .filter_map(|surface| {
-                let rectangle = plan.rectangle(surface.connection, surface.surface_id)?;
-                (surface.target_window != 0 && !rectangle.is_empty())
-                    .then_some((surface, rectangle))
-            })
-            .map(|(surface, rectangle)| {
-                let (width, height) = if surface.quarter_turns % 2 == 1 {
-                    (rectangle.height, rectangle.width)
-                } else {
-                    (rectangle.width, rectangle.height)
-                };
-                ResizeWindow {
-                    target_window: surface.target_window,
-                    width,
-                    height,
-                }
-            })
-            .collect()
-    }
 }
 
 pub trait Renderer {
@@ -254,13 +217,5 @@ pub trait Renderer {
 
     fn received_presentation(&self, viewer_extent: Extent) -> Presentation {
         Presentation::new(viewer_extent, self.received_surfaces())
-    }
-
-    fn resize_windows(
-        &self,
-        window: &impl RenderWindow,
-        plan: &CompositingPlan,
-    ) -> Vec<ResizeWindow> {
-        window.resize_windows(&self.received_surfaces(), plan)
     }
 }

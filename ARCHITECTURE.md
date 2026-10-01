@@ -1,6 +1,6 @@
 # Polymer Architecture
 
-This document is human-written and must remain human written. Agents MUST NOT modify this document. If any changes are made where this document deviates from the observed architecture, agents MUST notify the user of the discrepency.
+This document is **human-written** and **MUST remain human written**. Agents **MUST NOT** modify this document. If any changes are made where this document deviates from the observed architecture, agents MUST notify the user of the discrepency.
 
 This repository hosts the Polymer emulator frontend platform ("Polymer"),  the "Horizon" theme for Polymer, and various TypeScript plugins to interact with external standalone emulators and scraping services.
 
@@ -15,8 +15,6 @@ At its core, Polymer consists of five parts:
 ### Graphics IPC
   
 This is contained in the `consumer` and `producer` directories. These crates hook into an emulator's graphics device, and use GPU shared memory APIs to transfer the emulator's displayed swapchain texture for recomposition in the **GUI**.
-
-
 Graphics IPC is also responsible for supplying swapchain size information for **Input IPC** in order to do screen-space mouse interpolation. Instead of getting a swapchain managed by the graphics driver, Polymer provides it's own swapchain to the emulator so it can draw directly to the composed display in the **GUI**. This allows Polymer to get frame data from the emulator with zero additional copies (with the exception of OpenGL which requires one copy). It is important for multi-screen handhelds that each screen is rendered to its own dedicated swapchain for proper recomposition in the **GUI**. 
 
 Frame *Producers* interact with the hooked device, and send the texture over to a Frame *Consumer*. We support producing frames from D3D11, D3D12, Vulkan, and OpenGL; and consuming frames from a host D3D12, or Vulkan device. *Producers* are injected into an emulator ("guest process") via a *hook*; graphics hooks are implemented for D3D11, D3D12, OpenGL, and Vulkan. Frames are signaled to the **GUI** via the IPC protocol in `polymer-ipc`. 
@@ -95,7 +93,7 @@ The IPC protocol is explicitly unstable and can change between versions of Polym
 
 To initialize input over the IPC protocol, an initial handshake is done via a Unix socket on Windows, and NSXPC on macOS (the "transport"). This handshake opens a handle to a memory mapped file containing a ring buffer containing the input state for the lowest-latency input events. Topology change `Blob` messages as well as bidirectional feedback requests (i.e. rumble, speaker, calibration), remain on the transport connection.
 
-For frame signaling, the transport handshake first sends over the handle for the shared memory texture and semaphores. When a frame is ready for presentation, the frame metadata is sent directly over the transport. 
+To initialize graphics, the transport handshake first sends over the handles for the shared memory textures and signaling timelines, as well as swapchain metadata such as swapchain dimensions. Since Polymer owns the swapchain the dimensions do not change once created. When a frame is complete, the producer signals its ready timeline which can be waited on. The consumer signals its release timeline when its ready to release a frame. The exact type of semaphore used is unspecified and can vary per operating system. On Windows, Direct3D 12 fences are used regardless of producer API. On macOS, only Metal is supported with `MTLSharedEvent`. On Linux, Vulkan timeline semaphores are used (on OpenGL via `GL_NV_timeline_semaphore`).
 
 Raw HID messages can't use shared memory and go directly through the transport as a stream. On macOS, FSKit requests are also carried through the transport. 
 

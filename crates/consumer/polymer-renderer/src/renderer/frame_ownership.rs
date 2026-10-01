@@ -1,185 +1,84 @@
 use polymer_protocol::FrameReady;
+use std::time::Instant;
 
-pub struct Pending;
-pub struct Prepared {
-    retention: Retention,
-}
-pub struct Displayed;
-
+/// Whether a composited image stays in use after its frame is displayed.
 #[derive(Clone, Copy)]
 pub enum Retention {
+    /// The displayed image is redrawn from the producer's slot, so that slot
+    /// is held until a newer frame replaces it.
     Retained,
+    /// The image was copied into a consumer-owned cache, so its slot can be
+    /// released as soon as the copy is submitted.
     Cached,
 }
 
-/// A non-copyable lease. FrameReady is only the wire metadata; copying that
-/// metadata does not duplicate a lease or permit an ownership transition.
-/// Only pending leases can be prepared, and only prepared leases can submit.
-pub struct FrameOwnership<State> {
+#[derive(Clone, Copy)]
+struct ReceivedFrame {
     ready: FrameReady,
-    state: State,
+    /// When the frame arrived, which is when its ready timeline completed.
+    received: Instant,
 }
 
-impl<State> FrameOwnership<State> {
-    pub fn ready(&self) -> FrameReady {
-        self.ready
-    }
-}
-
-impl FrameOwnership<Pending> {
-    fn prepare(self, retention: Retention) -> FrameOwnership<Prepared> {
-        FrameOwnership {
-            ready: self.ready,
-            state: Prepared { retention },
-        }
-    }
-}
-
-impl FrameOwnership<Prepared> {
-    fn release_value(&self) -> u64 {
-        // The timeline acknowledges all older frames. Retaining this image
-        // must not release it, even when intermediate frames were discarded.
-        self.ready.sync_value - u64::from(matches!(self.state.retention, Retention::Retained))
-    }
-
-    fn submit(self) -> FrameOwnership<Displayed> {
-        FrameOwnership {
-            ready: self.ready,
-            state: Displayed,
-        }
-    }
-
-    fn abort(self) -> FrameOwnership<Pending> {
-        FrameOwnership {
-            ready: self.ready,
-            state: Pending,
-        }
-    }
-}
-
-/// The replacement has exactly one owner, including during command recording.
-/// It cannot simultaneously exist as both a pending and a prepared lease.
-enum Replacement {
-    Pending(FrameOwnership<Pending>),
-    Prepared(FrameOwnership<Prepared>),
-}
-
-impl Replacement {
-    fn abort(self) -> FrameOwnership<Pending> {
-        match self {
-            Self::Pending(frame) => frame,
-            Self::Prepared(frame) => frame.abort(),
-        }
-    }
-
-    fn ready(&self) -> FrameReady {
-        match self {
-            Self::Pending(frame) => frame.ready(),
-            Self::Prepared(frame) => frame.ready(),
-        }
-    }
-}
-
-/// Coordinates the independently displayed lease and its replacement.
-/// Backends prepare after checking producer readiness and commit after submit.
+/// The newest frame awaiting composite and the frame last composited. Frames
+/// only arrive once complete, so a pending frame is always drawable; it stays
+/// pending until a composite carrying it is submitted.
 #[derive(Default)]
 pub struct SurfaceFrames {
-    pub release_sender: Option<polymer_runtime::BufferReleaseSender>,
-    replacement: Option<Replacement>,
-    displayed: Option<FrameOwnership<Displayed>>,
+    pending: Option<ReceivedFrame>,
+    displayed: Option<ReceivedFrame>,
     received: u64,
     released: u64,
 }
 
 impl SurfaceFrames {
-    pub fn acknowledge_release(&self, value: u64) -> std::io::Result<()> {
-        if let (Some(sender), Some(frame)) = (&self.release_sender, self.frame()) {
-            sender.release(frame.stream_id, value)?;
-        }
-        Ok(())
-    }
     /// Superseded frames are reclaimed by the next submitted release watermark.
     pub fn offer(&mut self, ready: FrameReady) {
         if ready.sync_value <= self.received {
             return;
         }
         self.received = ready.sync_value;
-        self.replacement = Some(Replacement::Pending(FrameOwnership {
+        self.pending = Some(ReceivedFrame {
             ready,
-            state: Pending,
-        }));
+            received: Instant::now(),
+        });
     }
 
-    /// Roll back any recording that did not reach GPU submission.
-    pub fn begin(&mut self) {
-        self.replacement = self
-            .replacement
-            .take()
-            .map(|frame| Replacement::Pending(frame.abort()));
-    }
-
-    /// Prepare the owned pending lease, never arbitrary copied wire metadata.
-    /// Retention is fixed here so release calculation and commit cannot disagree.
-    pub fn prepare_pending(&mut self, retention: Retention) {
-        self.replacement = self
-            .replacement
-            .take()
-            .map(|replacement| match replacement {
-                Replacement::Pending(frame) => Replacement::Prepared(frame.prepare(retention)),
-                prepared => prepared,
-            });
-    }
-
+    /// A newer frame the next composite will carry.
     pub fn pending(&self) -> Option<FrameReady> {
-        match &self.replacement {
-            Some(Replacement::Pending(frame)) => Some(frame.ready()),
-            _ => None,
-        }
+        self.pending.map(|frame| frame.ready)
     }
 
-    /// Prepared work still needs a retry if recording or swapchain acquisition fails.
     pub fn has_pending(&self) -> bool {
-        self.replacement.is_some()
+        self.pending.is_some()
     }
 
     pub fn displayed(&self) -> Option<FrameReady> {
-        self.displayed.as_ref().map(FrameOwnership::ready)
+        self.displayed.map(|frame| frame.ready)
     }
 
-    pub fn prepared(&self) -> Option<&FrameOwnership<Prepared>> {
-        match &self.replacement {
-            Some(Replacement::Prepared(frame)) => Some(frame),
-            _ => None,
-        }
-    }
-
-    /// Metadata for UI layout and retirement, including an unsubmitted update.
-    pub fn latest(&self) -> Option<FrameReady> {
-        self.replacement
-            .as_ref()
-            .map(Replacement::ready)
-            .or_else(|| self.displayed())
-    }
-
-    /// Metadata for the image used by the current draw, or the retained redraw.
+    /// The image the next composite draws: the pending frame, else the last
+    /// displayed one.
     pub fn frame(&self) -> Option<FrameReady> {
-        self.prepared()
-            .map(FrameOwnership::ready)
-            .or_else(|| self.displayed())
+        self.pending().or_else(|| self.displayed())
     }
 
-    pub fn release_value(&self) -> Option<u64> {
-        let value = self.prepared()?.release_value();
+    /// The release watermark a composite carrying the pending frame submits.
+    pub fn release_value(&self, retention: Retention) -> Option<u64> {
+        let frame = self.pending?;
+        // The timeline acknowledges all older frames. Retaining this image
+        // must not release it, even when intermediate frames were discarded.
+        let value = frame.ready.sync_value - u64::from(matches!(retention, Retention::Retained));
         (value > self.released).then_some(value)
     }
 
-    pub fn commit(&mut self) {
-        if let Some(value) = self.release_value() {
+    /// Records a submitted composite. Returns when a newly displayed frame
+    /// arrived, for ready → composite latency.
+    pub fn commit(&mut self, retention: Retention) -> Option<Instant> {
+        if let Some(value) = self.release_value(retention) {
             self.released = value;
         }
-        match self.replacement.take() {
-            Some(Replacement::Prepared(frame)) => self.displayed = Some(frame.submit()),
-            pending => self.replacement = pending,
-        }
+        let frame = self.pending.take()?;
+        self.displayed = Some(frame);
+        Some(frame.received)
     }
 }

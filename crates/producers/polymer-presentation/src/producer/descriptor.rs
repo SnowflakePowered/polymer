@@ -1,7 +1,5 @@
 use polymer_ipc::StreamReady;
-use polymer_protocol::{
-    AdapterLuid, ExternalImageKind, ExternalSyncKind, GraphicsHook, MAX_IMAGE_SLOTS, SurfaceId,
-};
+use polymer_protocol::{AdapterLuid, ExternalImageKind, GraphicsHook, MAX_IMAGE_SLOTS, SurfaceId};
 use std::io;
 
 /// Backend export metadata. Handles remain owned by the native resources;
@@ -17,7 +15,6 @@ pub struct ExportDescriptor<'a> {
     pub height: u32,
     pub format: u32,
     pub image_kind: ExternalImageKind,
-    pub sync_kind: ExternalSyncKind,
     pub image_handles: &'a [i64],
     pub timeline_semaphore_handle: i64,
     pub consumer_semaphore_handle: i64,
@@ -35,7 +32,6 @@ impl ExportDescriptor<'_> {
         let mut image_handles = [0; MAX_IMAGE_SLOTS];
         image_handles[..self.image_handles.len()].copy_from_slice(self.image_handles);
         Ok(StreamReady {
-            producer_process_id: std::process::id(),
             surface_id: self.surface_id,
             adapter_luid: self.adapter_luid,
             source_window: self.source_window,
@@ -44,7 +40,6 @@ impl ExportDescriptor<'_> {
             height: self.height,
             format: self.format,
             image_kind: self.image_kind,
-            sync_kind: self.sync_kind,
             slot_count: self.image_handles.len() as u32,
             image_handles,
             timeline_semaphore_handle: self.timeline_semaphore_handle,

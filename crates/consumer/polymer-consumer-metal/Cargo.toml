@@ -6,6 +6,7 @@ license.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 polymer-ipc.workspace = true
 polymer-protocol.workspace = true
+block2.workspace = true
 objc2.workspace = true
 objc2-metal = { version = "0.3.2", features = ["objc2-io-surface"] }
 objc2-io-surface = "0.3.2"

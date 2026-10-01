@@ -164,7 +164,6 @@ impl SurfaceManager {
             protocol_surface_id: stream.surface_id.0,
             target_window: stream.source_window,
             backend,
-            transport_dimensions: ResizeDimensions::new(stream.width, stream.height),
             active: false,
         };
         let handle = self

@@ -5,8 +5,8 @@ mod shell;
 mod surfaces;
 mod window;
 use polymer_composition::*;
+use polymer_renderer::ReceivedSurface;
 use polymer_renderer::egui::InputDiagnostics;
-use polymer_renderer::{ReceivedSurface, SurfacePointerSender};
 use polymer_runtime::{RgbaScreenshot, SurfaceFrameReceiver, SurfaceOffer};
 pub use runtime::{NativeEventLoop, TimerResolution, WinRtApartment, WorkerWinRtApartment};
 use std::{
@@ -198,9 +198,8 @@ impl polymer_composition::Compositor for WindowsCompositor {
         &mut self,
         connection: u64,
         frames: SurfaceFrameReceiver,
-        pointer: SurfacePointerSender,
     ) -> Result<(), Box<dyn Error>> {
-        self.surfaces.start_worker(connection, frames, pointer)
+        self.surfaces.start_worker(connection, frames)
     }
     fn register_surface(&mut self, connection: u64, target: u32) -> Result<(), Box<dyn Error>> {
         self.surfaces.register(connection, target)

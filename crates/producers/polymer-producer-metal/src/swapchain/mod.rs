@@ -4,7 +4,7 @@ use objc2_metal::*;
 use polymer_ipc::xpc::MetalResources;
 use polymer_presentation::{producer::ExportDescriptor, swapchain::*};
 use polymer_protocol::{
-    AdapterLuid, ConsumerApi, ExternalImageKind, ExternalSyncKind, GraphicsHook, SurfaceId,
+    AdapterLuid, ConsumerApi, ExternalImageKind, GraphicsHook, SurfaceId,
 };
 use resources::Image;
 use std::{io, sync::Arc};
@@ -57,7 +57,6 @@ impl SwapchainBackend for MetalVirtualBackend {
         }
         Ok(BackendProfile {
             image_kind: ExternalImageKind::IOSurface,
-            sync_kind: ExternalSyncKind::MetalSharedEvent,
             format: info.format.0 as u32,
             image_count: info.image_count,
         })
@@ -104,7 +103,6 @@ impl SwapchainBackend for MetalVirtualBackend {
             height: self.binding.extent().height,
             format: self.profile.format,
             image_kind: self.profile.image_kind,
-            sync_kind: self.profile.sync_kind,
             image_handles: &self.handles,
             timeline_semaphore_handle: 0,
             consumer_semaphore_handle: 0,
@@ -123,11 +121,7 @@ impl SwapchainBackend for MetalVirtualBackend {
         prerequisite: &ReusePrerequisite,
         _: &(),
     ) -> AcquirePoll<ImageSlot, PresentWork, io::Error> {
-        if Arc::strong_count(&self.references[slot.index() as usize]) != 1
-            || prerequisite
-                .previous_publication
-                .is_some_and(|v| self.released.signaledValue() < v)
-        {
+        if Arc::strong_count(&self.references[slot.index() as usize]) != 1 {
             AcquirePoll::Pending
         } else {
             AcquirePoll::Acquired(slot)
@@ -164,6 +158,7 @@ impl SwapchainBackend for MetalVirtualBackend {
                 .filter(|s| *s.submission <= self.ready.signaledValue())
                 .map(|s| s.slot)
                 .collect(),
+            released: self.released.signaledValue(),
             device_lost: false,
         })
     }

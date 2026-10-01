@@ -14,6 +14,11 @@ use std::{
 };
 use watchable::Watchable;
 
+#[cfg(windows)]
+use polymer_consumer_d3d12::ProducerTimeline;
+#[cfg(target_os = "macos")]
+use polymer_consumer_metal::ProducerTimeline;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConsumerPreference {
     D3d12,
@@ -37,8 +42,8 @@ pub(crate) struct FrameRouter {
 struct CaptureShared {
     #[cfg(target_os = "macos")]
     resources: DashMap<u64, polymer_ipc::xpc::MetalResources>,
-    availability: DashMap<u64, Arc<Mutex<LocalSocket>>>,
     routes: DashMap<u64, Watchable<Option<FrameReady>>>,
+    timelines: DashMap<u64, Arc<ProducerTimeline>>,
     revoked: DashSet<u64>,
     wake: Option<Arc<dyn Fn() + Send + Sync>>,
     listener: LocalSocketListener,
@@ -61,12 +66,6 @@ impl FrameRouter {
         self.shared.resources.get(&connection).map(|v| v.clone())
     }
 
-    pub(crate) fn buffer_release_sender(&self, connection: u64) -> BufferReleaseSender {
-        BufferReleaseSender {
-            shared: Arc::downgrade(&self.shared),
-            connection,
-        }
-    }
     pub(crate) fn wake(&self) {
         if let Some(wake) = &self.shared.wake {
             wake();
@@ -79,9 +78,9 @@ impl FrameRouter {
     }
 
     pub(crate) fn revoke(&self, connection: u64) {
-        self.shared.availability.remove(&connection);
         self.shared.revoked.insert(connection);
         self.shared.routes.remove(&connection);
+        self.shared.close_timeline(connection);
         if let Some((_, socket)) = self.shared.sockets.remove(&connection) {
             let _ = socket.shutdown();
         }
@@ -113,10 +112,26 @@ impl CaptureShared {
     fn revoke(&self, connection: u64) {
         #[cfg(target_os = "macos")]
         self.resources.remove(&connection);
-        self.availability.remove(&connection);
         self.revoked.insert(connection);
         self.routes.remove(&connection);
         self.sockets.remove(&connection);
+        self.close_timeline(connection);
+    }
+
+    fn close_timeline(&self, connection: u64) {
+        if let Some((_, timeline)) = self.timelines.remove(&connection) {
+            timeline.close();
+        }
+    }
+
+    /// Publishes each newly completed value of the producer's ready timeline.
+    /// The timeline alone identifies the newest renderable slot.
+    fn watch_frames(&self, connection: u64, timeline: &ProducerTimeline) {
+        let mut observed = 0;
+        while let Some(value) = timeline.wait_beyond(observed) {
+            observed = value;
+            self.publish(connection, FrameReady::observed(value));
+        }
     }
 }
 
@@ -129,6 +144,9 @@ impl CaptureWorkers {
         for socket in &self.shared.sockets {
             let _ = socket.value().shutdown();
         }
+        for timeline in &self.shared.timelines {
+            timeline.value().close();
+        }
         if let Some(acceptor) = self.acceptor.lock().take() {
             let _ = acceptor.join();
         }
@@ -137,7 +155,7 @@ impl CaptureWorkers {
         }
         self.shared.routes.clear();
         self.shared.sockets.clear();
-        self.shared.availability.clear();
+        self.shared.timelines.clear();
     }
 }
 
@@ -157,8 +175,8 @@ pub(crate) fn bind(
     let shared = Arc::new(CaptureShared {
         #[cfg(target_os = "macos")]
         resources: DashMap::new(),
-        availability: DashMap::new(),
         routes: DashMap::new(),
+        timelines: DashMap::new(),
         revoked: DashSet::new(),
         wake,
         listener: listener.clone(),
@@ -225,10 +243,17 @@ fn spawn_acceptor(
                 }
                 let worker_callbacks = callbacks.clone();
                 let worker_shared = shared.clone();
+                let worker_connections = connections.clone();
                 let worker = thread::Builder::new()
                     .name(format!("polymer-runtime-capture-{connection}"))
                     .spawn(move || {
-                        receive_connection(connection, socket, worker_callbacks, &worker_shared);
+                        receive_connection(
+                            connection,
+                            socket,
+                            worker_callbacks,
+                            &worker_shared,
+                            &worker_connections,
+                        );
                     });
                 match worker {
                     Ok(worker) => connections.lock().push(worker),
@@ -247,52 +272,48 @@ fn receive_connection(
     connection: u64,
     mut socket: LocalSocket,
     callbacks: CaptureCallbacks,
-    shared: &CaptureShared,
+    shared: &Arc<CaptureShared>,
+    connections: &Mutex<Vec<JoinHandle<()>>>,
 ) {
     let result = (|| -> std::io::Result<()> {
-        let mut accepted_stream = false;
         loop {
             let message = socket.receive()?;
             if shared.revoked(connection) || shared.stopping.load(Ordering::Acquire) {
                 return Ok(());
             }
             match message {
-                Message::RequestBufferAvailability if !accepted_stream => {
-                    let mut sender = socket.try_clone()?;
-                    sender.set_write_timeout(Some(std::time::Duration::from_secs(2)))?;
-                    shared
-                        .availability
-                        .insert(connection, Arc::new(Mutex::new(sender)));
-                }
                 Message::StreamReady(stream) => {
                     #[cfg(target_os = "macos")]
-                    shared.resources.insert(
-                        connection,
-                        socket
+                    let timeline = {
+                        let resources = socket
                             .take_stream_resources()
-                            .ok_or_else(|| std::io::Error::other("missing Metal resources"))?,
-                    );
-                    let (accepted, mut response) = oneshot::oneshot();
-                    (callbacks.offer)(connection, stream, accepted);
-                    accepted_stream = loop {
-                        match response.try_recv() {
-                            Ok(accepted) => break accepted,
-                            Err(crossfire::TryRecvError::Empty)
-                                if !shared.stopping.load(Ordering::Acquire) =>
-                            {
-                                thread::sleep(std::time::Duration::from_millis(1));
-                            }
-                            Err(_) => break false,
-                        }
+                            .ok_or_else(|| std::io::Error::other("missing Metal resources"))?;
+                        let timeline = ProducerTimeline::open(&resources)?;
+                        shared.resources.insert(connection, resources);
+                        timeline
                     };
-                    if accepted_stream {
-                        socket.send(Message::StreamAccepted)?;
-                    } else {
+                    // Importing the offer consumes the stream's handles, so the
+                    // ready timeline is opened first.
+                    #[cfg(windows)]
+                    let timeline =
+                        ProducerTimeline::open(&stream).map_err(std::io::Error::other)?;
+                    let (accepted, response) = oneshot::oneshot();
+                    (callbacks.offer)(connection, stream, accepted);
+                    // Every offer is resolved, and shutdown rejects pending ones
+                    // before joining this thread.
+                    let accepted_stream = response.recv().unwrap_or(false);
+                    if !accepted_stream {
                         return Ok(());
                     }
-                }
-                Message::FrameReady(frame) if accepted_stream => {
-                    shared.publish(connection, frame);
+                    let timeline = Arc::new(timeline);
+                    shared.timelines.insert(connection, timeline.clone());
+                    let watcher_shared = shared.clone();
+                    connections.lock().push(
+                        thread::Builder::new()
+                            .name(format!("polymer-runtime-frames-{connection}"))
+                            .spawn(move || watcher_shared.watch_frames(connection, &timeline))?,
+                    );
+                    socket.send(Message::StreamAccepted)?;
                 }
                 Message::Shutdown => return Ok(()),
                 _ => {}
@@ -308,35 +329,4 @@ fn receive_connection(
     }
     shared.revoke(connection);
     (callbacks.disconnected)(connection);
-}
-
-/// A release endpoint bound to a single capture connection, never to a mutable
-/// surface identity. Old imported resources cannot acknowledge a replacement.
-#[derive(Clone)]
-pub struct BufferReleaseSender {
-    shared: std::sync::Weak<CaptureShared>,
-    connection: u64,
-}
-
-impl BufferReleaseSender {
-    pub fn release(
-        &self,
-        stream_id: polymer_protocol::StreamId,
-        through_sync_value: u64,
-    ) -> std::io::Result<()> {
-        let Some(shared) = self.shared.upgrade() else {
-            return Ok(());
-        };
-        let sender = shared
-            .availability
-            .get(&self.connection)
-            .map(|entry| entry.value().clone());
-        if let Some(sender) = sender {
-            sender.lock().send(Message::BufferAvailable {
-                stream_id,
-                through_sync_value,
-            })?;
-        }
-        Ok(())
-    }
 }

@@ -7,6 +7,7 @@ mod layouts;
 mod present;
 mod queues;
 mod surface;
+mod wakeup;
 mod wsi;
 use ash::{vk, vk::Handle};
 use dashmap::DashMap;

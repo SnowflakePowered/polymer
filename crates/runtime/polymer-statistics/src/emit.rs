@@ -7,7 +7,7 @@ use crate::{RecorderHandle, labels, names};
 #[derive(Clone, Copy, Debug)]
 struct StreamSequence {
     frame_number: u64,
-    timestamp_qpc: u64,
+    observed_qpc: u64,
 }
 
 /// Cached handles and sequence state for one captured surface.
@@ -17,7 +17,6 @@ pub struct FrameMetrics {
     received: Counter,
     dropped: Counter,
     interval: Histogram,
-    capture_latency: Histogram,
     previous: Option<StreamSequence>,
     dropped_total: u64,
 }
@@ -42,11 +41,6 @@ impl FrameMetrics {
             ),
             interval: histogram!(
                 names::FRAME_INTERVAL,
-                labels::CONNECTION => connection_label.clone(),
-                labels::SURFACE => surface_label.clone(),
-            ),
-            capture_latency: histogram!(
-                names::CAPTURE_LATENCY,
                 labels::CONNECTION => connection_label,
                 labels::SURFACE => surface_label,
             ),
@@ -56,22 +50,15 @@ impl FrameMetrics {
     }
 
     /// Records a received producer frame and returns newly detected frame gaps.
-    pub fn observe(
-        &mut self,
-        frame_number: u64,
-        timestamp_qpc: u64,
-        counter_frequency: f64,
-        capture_latency: Duration,
-    ) -> u64 {
+    pub fn observe(&mut self, frame_number: u64, observed_qpc: u64, counter_frequency: f64) -> u64 {
         self.received.increment(1);
-        self.capture_latency.record(capture_latency.as_secs_f64());
 
         let mut newly_dropped = 0;
         if let Some(previous) = self.previous
             && frame_number > previous.frame_number
         {
             let frame_delta = frame_number - previous.frame_number;
-            if let Some(ticks) = timestamp_qpc.checked_sub(previous.timestamp_qpc) {
+            if let Some(ticks) = observed_qpc.checked_sub(previous.observed_qpc) {
                 self.interval
                     .record(ticks as f64 / frame_delta as f64 / counter_frequency.max(1.0));
             }
@@ -83,7 +70,7 @@ impl FrameMetrics {
         }
         self.previous = Some(StreamSequence {
             frame_number,
-            timestamp_qpc,
+            observed_qpc,
         });
         newly_dropped
     }
@@ -140,6 +127,16 @@ impl InputMetrics {
     pub fn record_dispatch(&self, latency: Duration) {
         self.dispatch.record(latency.as_secs_f64());
     }
+}
+
+/// Time from a frame's ready timeline completing to its first composite.
+pub fn capture_latency(connection: u64, surface: u64, latency: Duration) {
+    histogram!(
+        names::CAPTURE_LATENCY,
+        labels::CONNECTION => connection.to_string(),
+        labels::SURFACE => surface.to_string(),
+    )
+    .record(latency.as_secs_f64());
 }
 
 pub fn display_latency(backend: &'static str, latency: Duration) {

@@ -1,17 +1,13 @@
 use super::{BackendRetirement, RetirementProgress, SwapchainBackend};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::sync::Arc;
-use std::sync::{LazyLock, Weak, mpsc};
+use std::sync::{LazyLock, mpsc};
+use windows::Win32::Foundation::*;
 use windows::Win32::System::LibraryLoader::*;
 use windows::Win32::System::Threading::{CreateEventW, INFINITE, SetEvent, WaitForSingleObject};
-use windows::{Win32::Foundation::*, core::Error};
 
-enum Work {
-    Retire(Box<dyn RetiringResource>),
-    Pace(Weak<dyn PacingSource>),
-}
 struct WorkerConnection {
-    sender: mpsc::Sender<Work>,
+    sender: mpsc::Sender<Box<dyn RetiringResource>>,
     wake: Arc<OwnedHandle>,
 }
 static WORKER: LazyLock<Option<WorkerConnection>> = LazyLock::new(|| {
@@ -42,9 +38,6 @@ static WORKER: LazyLock<Option<WorkerConnection>> = LazyLock::new(|| {
 });
 
 pub struct DxgiMaintenance;
-pub trait PacingSource: Send + Sync {
-    fn update_latency(&self);
-}
 pub trait RetiringResource: Send {
     fn poll(&mut self) -> RetirementProgress;
 }
@@ -57,46 +50,22 @@ where
     }
 }
 impl DxgiMaintenance {
-    pub fn register(owner: Weak<dyn PacingSource>) -> windows::core::Result<()> {
-        let worker = WORKER.as_ref().ok_or_else(|| Error::from_hresult(E_FAIL))?;
-        worker
-            .sender
-            .send(Work::Pace(owner))
-            .map_err(|_| Error::from_hresult(E_FAIL))?;
-        unsafe { SetEvent(HANDLE(worker.wake.as_raw_handle())) }
-    }
     pub fn retire(work: impl RetiringResource + 'static) {
         if let Some(worker) = &*WORKER {
-            let _ = worker.sender.send(Work::Retire(Box::new(work)));
+            let _ = worker.sender.send(Box::new(work));
             unsafe {
                 let _ = SetEvent(HANDLE(worker.wake.as_raw_handle()));
             }
         }
     }
-    fn run(receiver: mpsc::Receiver<Work>, wake: Arc<OwnedHandle>) {
+    fn run(receiver: mpsc::Receiver<Box<dyn RetiringResource>>, wake: Arc<OwnedHandle>) {
         let mut pending = Vec::new();
-        let mut pacing = Vec::new();
         loop {
-            for work in receiver.try_iter() {
-                match work {
-                    Work::Retire(retirement) => pending.push(retirement),
-                    Work::Pace(owner) => pacing.push(owner),
-                }
-            }
-            pacing.retain(|owner| {
-                let Some(owner) = owner.upgrade() else {
-                    return false;
-                };
-                owner.update_latency();
-                true
-            });
+            pending.extend(receiver.try_iter());
             pending.retain_mut(|retirement| retirement.poll() == RetirementProgress::Pending);
-            // IPC acknowledgments and completed GPU releases jointly advance pacing.
-            let timeout = if !pending.is_empty() || !pacing.is_empty() {
-                20
-            } else {
-                INFINITE
-            };
+            // Retirement waits on resources owned by other APIs and is polled
+            // only while a destroyed swapchain drains.
+            let timeout = if pending.is_empty() { INFINITE } else { 20 };
             if unsafe { WaitForSingleObject(HANDLE(wake.as_raw_handle()), timeout) } == WAIT_FAILED
             {
                 return;

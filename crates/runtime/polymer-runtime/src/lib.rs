@@ -16,7 +16,7 @@ mod savestates;
 mod session;
 mod storage;
 
-pub use capture::{BufferReleaseSender, ConsumerPreference};
+pub use capture::ConsumerPreference;
 pub use configuration::{
     ConfigurationDefaults, ConfigurationRequest, DefaultGamepad, DetectedGame, EmulatorDescriptor,
     GameDescriptor, LaunchGroupRequest, LaunchPortRequest, PortDescriptor, PortGroupDescriptor,
@@ -31,10 +31,9 @@ pub use controllers::{
 pub use frontend::{ControllerApiState, FrontendCommands, FrontendServices};
 pub use instance::{
     AudioState, EmulatorActionEndpoint, EmulatorInstance, EmulatorLaunchConfig, HotkeyChord,
-    InstanceExit, InstanceState, LaunchError, NormalizedVolume, PresentedFrameToken,
-    ResizeDimensions, SurfaceError, SurfaceEvent, SurfaceEventReceiver, SurfaceFrameReceiver,
-    SurfaceFrameUpdate, SurfaceOffer, SurfacePointerUpdate, TrackedSurfaceConfig,
-    TrackedSurfaceHandle, TrackedSurfaceId,
+    InstanceExit, InstanceState, LaunchError, NormalizedVolume, SurfaceError, SurfaceEvent,
+    SurfaceEventReceiver, SurfaceFrameReceiver, SurfaceFrameUpdate, SurfaceOffer,
+    SurfacePointerUpdate, TrackedSurfaceConfig, TrackedSurfaceHandle, TrackedSurfaceId,
 };
 pub use jobs::JobService;
 pub use library::LibraryService;

@@ -12,9 +12,6 @@ impl MetalCompositor {
         let Some(frame) = surface.frames.frame() else {
             return Ok(None);
         };
-        if !surface.imported.ready(frame.sync_value) {
-            return Ok(None);
-        }
         let texture = surface.imported.texture(frame)?;
         let bgra = match texture.pixelFormat() {
             MTLPixelFormat::BGRA8Unorm | MTLPixelFormat::BGRA8Unorm_sRGB => true,

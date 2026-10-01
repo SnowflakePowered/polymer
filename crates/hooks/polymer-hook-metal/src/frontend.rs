@@ -96,7 +96,7 @@ impl Frontend {
                         .map_err(|error| format!("{error:?}"))
                         .and_then(|mut owner| {
                             owner
-                                .present(lease, work, unsafe { libc_mach_absolute_time() })
+                                .present(lease, work)
                                 .map_err(|error| format!("{error:?}"))
                         });
                     if let Err(error) = result {
@@ -153,11 +153,6 @@ impl Frontend {
         }
     }
 }
-unsafe extern "C" {
-    #[link_name = "mach_absolute_time"]
-    fn libc_mach_absolute_time() -> u64;
-}
-
 impl Drop for Frontend {
     fn drop(&mut self) {
         if let Some(controller) = self.owner.take().and_then(OwnerCell::into_inner) {

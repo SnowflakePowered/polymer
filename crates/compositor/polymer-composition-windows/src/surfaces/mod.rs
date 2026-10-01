@@ -4,7 +4,6 @@ use polymer_protocol::AdapterLuid;
 use polymer_renderer::layout::Rect;
 use polymer_renderer::{
     CompositingPlan, Extent, ReceivedSurface, Renderer, SurfaceContent, SurfacePlacement,
-    SurfacePointerSender,
 };
 use polymer_renderer_d3d12::D3d12Compositor;
 use polymer_runtime::{SurfaceFrameReceiver, SurfaceOffer};
@@ -116,7 +115,6 @@ impl RenderDevice {
         &mut self,
         connection: u64,
         frames: SurfaceFrameReceiver,
-        pointer: SurfacePointerSender,
     ) -> Result<(), Box<dyn Error>> {
         let output = self
             .surface_compositors
@@ -129,7 +127,6 @@ impl RenderDevice {
         output.worker = Some(SurfacePresentationWorker::spawn(
             compositor,
             frames,
-            pointer,
             self.sender.clone(),
             connection,
             output.surface_id,

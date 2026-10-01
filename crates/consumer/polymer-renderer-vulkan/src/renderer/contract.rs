@@ -16,7 +16,6 @@ impl Renderer for VulkanCompositor {
             offer.stream(),
             quarter_turns,
         )?;
-        self.set_buffer_release_sender(offer);
         Ok(())
     }
 

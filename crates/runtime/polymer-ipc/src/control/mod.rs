@@ -12,8 +12,7 @@ use windows::Stream;
 #[cfg(target_os = "macos")]
 pub use macos::{LocalSocket, LocalSocketListener};
 use polymer_protocol::{
-    AdapterLuid, ExternalImageKind, ExternalSyncKind, FrameReady, GraphicsHook, Handshake,
-    MAX_IMAGE_SLOTS, ResizeWindow, StreamId, SurfaceId,
+    AdapterLuid, ExternalImageKind, GraphicsHook, Handshake, MAX_IMAGE_SLOTS, SurfaceId,
 };
 use std::{io, mem, time::Duration};
 #[cfg(windows)]
@@ -43,7 +42,6 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_RETRY_DELAY: Duration = Duration::from_millis(1);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StreamReady {
-    pub producer_process_id: u32,
     /// Opaque logical surface identity. Unlike `source_window`, this may be
     /// synthesized to distinguish multiple frame-graph surfaces from one HWND.
     pub surface_id: SurfaceId,
@@ -55,12 +53,11 @@ pub struct StreamReady {
     pub height: u32,
     pub format: u32,
     pub image_kind: ExternalImageKind,
-    pub sync_kind: ExternalSyncKind,
     pub slot_count: u32,
     /// Handles already duplicated into the viewer process.
     pub image_handles: [i64; MAX_IMAGE_SLOTS],
     pub timeline_semaphore_handle: i64,
-    /// Optional timeline handle signaled by the viewer after consuming a slot.
+    /// Release timeline signalled by the viewer once it stops reading a slot.
     pub consumer_semaphore_handle: i64,
     /// Pixel rows are stored bottom-up (OpenGL default-framebuffer origin);
     /// the consumer flips vertically while presenting. Producers pass
@@ -86,9 +83,7 @@ pub struct MapOffer {
 pub enum Message {
     Hello(Handshake),
     StreamReady(StreamReady),
-    FrameReady(FrameReady),
     Shutdown,
-    ResizeWindow(ResizeWindow),
     GamepadFeedback(WireFeedback),
     Blob {
         kind: BlobKind,
@@ -96,17 +91,6 @@ pub enum Message {
     },
     /// The viewer has imported the stream resources and released its previous stream.
     StreamAccepted,
-    /// Subscribe before publishing a virtual stream. Ordinary capture streams
-    /// do not need acknowledgments and must not accumulate unread responses.
-    RequestBufferAvailability,
-    /// The consumer has submitted release of every publication through this
-    /// value. Rendering also requires completion of the shared release fence
-    /// before reusing an image. The connection identifies
-    /// the immutable resource generation; values never cross connections.
-    BufferAvailable {
-        stream_id: StreamId,
-        through_sync_value: u64,
-    },
     /// A file handle already duplicated into the receiving process.
     MapOffer(MapOffer),
     MapAccepted,

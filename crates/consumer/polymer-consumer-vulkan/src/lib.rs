@@ -2,22 +2,24 @@
 
 use ash::vk;
 use polymer_ipc::StreamReady;
-use polymer_protocol::{AdapterLuid, ExternalImageKind, ExternalSyncKind, GraphicsHook};
+use polymer_protocol::{AdapterLuid, ExternalImageKind, FrameReady, GraphicsHook};
 use std::fmt;
 
 pub const BACKEND_NAME: &str = "vulkan";
 
 pub fn format_for_stream(stream: &StreamReady) -> Result<vk::Format, ImportError> {
     let format = match stream.image_kind {
-        ExternalImageKind::D3d11Resource | ExternalImageKind::D3d12Resource => match stream.format {
-            10 => vk::Format::R16G16B16A16_SFLOAT,
-            24 => vk::Format::A2B10G10R10_UNORM_PACK32,
-            28 => vk::Format::R8G8B8A8_UNORM,
-            29 => vk::Format::R8G8B8A8_SRGB,
-            87 => vk::Format::B8G8R8A8_UNORM,
-            91 => vk::Format::B8G8R8A8_SRGB,
-            _ => return Err(ImportError::InvalidStream("unsupported DXGI format")),
-        },
+        ExternalImageKind::D3d11Resource | ExternalImageKind::D3d12Resource => {
+            match stream.format {
+                10 => vk::Format::R16G16B16A16_SFLOAT,
+                24 => vk::Format::A2B10G10R10_UNORM_PACK32,
+                28 => vk::Format::R8G8B8A8_UNORM,
+                29 => vk::Format::R8G8B8A8_SRGB,
+                87 => vk::Format::B8G8R8A8_UNORM,
+                91 => vk::Format::B8G8R8A8_SRGB,
+                _ => return Err(ImportError::InvalidStream("unsupported DXGI format")),
+            }
+        }
         ExternalImageKind::IOSurface => {
             return Err(ImportError::InvalidStream(
                 "unsupported external image kind",
@@ -33,7 +35,6 @@ pub struct ImportedImageRing {
     device: ash::Device,
     images: Vec<vk::Image>,
     memories: Vec<vk::DeviceMemory>,
-    timeline: vk::Semaphore,
     consumer_timeline: Option<vk::Semaphore>,
     image_kind: ExternalImageKind,
     pub width: u32,
@@ -59,13 +60,12 @@ impl ImportedImageRing {
         }
         // SAFETY: the caller-owned instance/device are live, and this object
         // owns every imported child resource until Drop.
-        let (images, memories, timeline, consumer_timeline) =
+        let (images, memories, consumer_timeline) =
             unsafe { import_resources(instance, &device, physical_device, stream)? };
         Ok(Self {
             device,
             images,
             memories,
-            timeline,
             consumer_timeline,
             image_kind: stream.image_kind,
             width: stream.width,
@@ -78,10 +78,6 @@ impl ImportedImageRing {
         self.images.get(slot as usize).copied()
     }
 
-    pub fn timeline(&self) -> vk::Semaphore {
-        self.timeline
-    }
-
     pub fn consumer_timeline(&self) -> Option<vk::Semaphore> {
         self.consumer_timeline
     }
@@ -92,12 +88,13 @@ impl ImportedImageRing {
             return Ok(());
         };
         let current = unsafe { self.device.get_semaphore_counter_value(semaphore)? };
-        let produced = unsafe { self.device.get_semaphore_counter_value(self.timeline)? };
-        // Cover the bounded ring, including captures still queued on the producer.
+        // Every unreleased publication holds a ring slot, so none can be more
+        // than the ring's length past the newest released or received frame.
         // A near-u64::MAX sentinel exceeds Vulkan's permitted timeline difference.
-        let value = produced
-            .max(last_received)
-            .saturating_add(self.images.len() as u64);
+        let value = FrameReady::ready_value(
+            FrameReady::sequence(current.max(last_received)) + self.images.len() as u64 + 1,
+            0,
+        );
         if value > current {
             unsafe {
                 self.device.signal_semaphore(
@@ -120,21 +117,11 @@ impl ImportedImageRing {
             ExternalImageKind::D3d12Resource | ExternalImageKind::D3d11Resource
         )
     }
-
-    pub fn wait_for(&self, value: u64, timeout_ns: u64) -> Result<(), vk::Result> {
-        let semaphores = [self.timeline];
-        let values = [value];
-        let wait = vk::SemaphoreWaitInfo::default()
-            .semaphores(&semaphores)
-            .values(&values);
-        unsafe { self.device.wait_semaphores(&wait, timeout_ns) }
-    }
 }
 
 impl Drop for ImportedImageRing {
     fn drop(&mut self) {
         unsafe {
-            self.device.destroy_semaphore(self.timeline, None);
             if let Some(semaphore) = self.consumer_timeline.take() {
                 self.device.destroy_semaphore(semaphore, None);
             }
@@ -208,25 +195,14 @@ unsafe fn import_resources(
     device: &ash::Device,
     physical_device: vk::PhysicalDevice,
     stream: &StreamReady,
-) -> Result<
-    (
-        Vec<vk::Image>,
-        Vec<vk::DeviceMemory>,
-        vk::Semaphore,
-        Option<vk::Semaphore>,
-    ),
-    vk::Result,
-> {
+) -> Result<(Vec<vk::Image>, Vec<vk::DeviceMemory>, Option<vk::Semaphore>), vk::Result> {
     let format = format_for_stream(stream).map_err(|_| vk::Result::ERROR_FORMAT_NOT_SUPPORTED)?;
     let memory_handle_type = match stream.image_kind {
         ExternalImageKind::D3d11Resource => vk::ExternalMemoryHandleTypeFlags::D3D11_TEXTURE,
         ExternalImageKind::D3d12Resource => vk::ExternalMemoryHandleTypeFlags::D3D12_RESOURCE,
         ExternalImageKind::IOSurface => return Err(vk::Result::ERROR_FORMAT_NOT_SUPPORTED),
     };
-    let semaphore_handle_type = match stream.sync_kind {
-        ExternalSyncKind::D3d12Fence => vk::ExternalSemaphoreHandleTypeFlags::D3D12_FENCE,
-        _ => return Err(vk::Result::ERROR_FEATURE_NOT_PRESENT),
-    };
+    let semaphore_handle_type = vk::ExternalSemaphoreHandleTypeFlags::D3D12_FENCE;
     let memory_properties =
         unsafe { instance.get_physical_device_memory_properties(physical_device) };
     let mut images = Vec::new();
@@ -293,14 +269,6 @@ unsafe fn import_resources(
         memories.push(memory);
     }
     let importer = ash::khr::external_semaphore_win32::Device::new(instance, device);
-    let timeline = unsafe {
-        import_timeline(
-            device,
-            &importer,
-            semaphore_handle_type,
-            stream.timeline_semaphore_handle,
-        )?
-    };
     let consumer_timeline = if stream.consumer_semaphore_handle != 0 {
         Some(unsafe {
             import_timeline(
@@ -313,7 +281,7 @@ unsafe fn import_resources(
     } else {
         None
     };
-    Ok((images, memories, timeline, consumer_timeline))
+    Ok((images, memories, consumer_timeline))
 }
 
 unsafe fn import_timeline(

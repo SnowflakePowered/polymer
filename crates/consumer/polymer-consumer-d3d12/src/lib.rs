@@ -2,8 +2,8 @@
 #![allow(unsafe_code)]
 
 use polymer_ipc::StreamReady;
-use polymer_protocol::{AdapterLuid, ExternalImageKind, ExternalSyncKind, MAX_IMAGE_SLOTS};
-use std::{ffi::c_void, time::Duration};
+use polymer_protocol::{AdapterLuid, ExternalImageKind, MAX_IMAGE_SLOTS};
+use std::ffi::c_void;
 use windows::Win32::{
     Foundation::{CloseHandle, E_INVALIDARG, E_POINTER, HANDLE, LUID, WAIT_OBJECT_0},
     Graphics::{
@@ -15,8 +15,11 @@ use windows::Win32::{
         },
         Dxgi::{CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, IDXGIAdapter1, IDXGIFactory4},
     },
-    System::Threading::{CreateEventW, ResetEvent, WaitForSingleObject},
+    System::Threading::CreateEventW,
 };
+
+mod timeline;
+pub use timeline::ProducerTimeline;
 
 pub struct D3d12ConsumerDevice {
     factory: IDXGIFactory4,
@@ -91,7 +94,6 @@ impl D3d12ConsumerDevice {
                 resources
                     .push(resource.ok_or_else(|| windows::core::Error::from_hresult(E_POINTER))?);
             }
-            let producer = open_fence(&self.device, stream.timeline_semaphore_handle)?;
             let consumer = open_fence(&self.device, stream.consumer_semaphore_handle)?;
             for resource in &resources {
                 let desc = resource.GetDesc();
@@ -104,9 +106,7 @@ impl D3d12ConsumerDevice {
             }
             Ok(ImportedD3d12Stream {
                 resources,
-                producer,
                 consumer,
-                producer_event: CreateEventW(None, false, false, None)?,
                 width: stream.width,
                 height: stream.height,
                 format: stream.format,
@@ -137,9 +137,7 @@ impl D3d12ConsumerDevice {
 
 pub struct ImportedD3d12Stream {
     resources: Vec<ID3D12Resource>,
-    producer: ID3D12Fence,
     consumer: ID3D12Fence,
-    producer_event: HANDLE,
     pub width: u32,
     pub height: u32,
     pub format: u32,
@@ -154,44 +152,6 @@ impl ImportedD3d12Stream {
         &self.resources
     }
 
-    pub fn wait_on_queue(
-        &self,
-        queue: &ID3D12CommandQueue,
-        value: u64,
-    ) -> windows::core::Result<()> {
-        unsafe { queue.Wait(&self.producer, value) }
-    }
-
-    /// Whether the producer has finished the frame without adding an
-    /// unbounded wait to the consumer queue.
-    ///
-    /// A queue wait cannot be cancelled if the producer exits before signaling
-    /// it. Checking first lets the compositor defer that frame while keeping
-    /// its own queue usable for stream teardown.
-    pub fn producer_ready(&self, value: u64) -> bool {
-        unsafe { self.producer.GetCompletedValue() >= value }
-    }
-
-    pub fn wait_until_producer_ready(
-        &self,
-        value: u64,
-        timeout: Duration,
-    ) -> windows::core::Result<bool> {
-        if self.producer_ready(value) {
-            return Ok(true);
-        }
-        unsafe {
-            ResetEvent(self.producer_event)?;
-            self.producer
-                .SetEventOnCompletion(value, self.producer_event)?;
-            Ok(WaitForSingleObject(
-                self.producer_event,
-                timeout.as_millis().min(u128::from(u32::MAX)) as u32,
-            ) == WAIT_OBJECT_0
-                && self.producer_ready(value))
-        }
-    }
-
     pub fn signal_release(
         &self,
         queue: &ID3D12CommandQueue,
@@ -201,30 +161,20 @@ impl ImportedD3d12Stream {
     }
 }
 
-impl Drop for ImportedD3d12Stream {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = CloseHandle(self.producer_event);
-        }
-    }
-}
-
 /// Validates shared resources and their mandatory ready/release fences.
 fn validate_stream(stream: &StreamReady, adapter_luid: AdapterLuid) -> windows::core::Result<()> {
-    match (stream.image_kind, stream.sync_kind) {
-        (
-            ExternalImageKind::D3d12Resource | ExternalImageKind::D3d11Resource,
-            ExternalSyncKind::D3d12Fence,
-        ) => (),
-        _ => return Err(windows::core::Error::from_hresult(E_INVALIDARG)),
-    };
+    if !matches!(
+        stream.image_kind,
+        ExternalImageKind::D3d12Resource | ExternalImageKind::D3d11Resource
+    ) {
+        return Err(windows::core::Error::from_hresult(E_INVALIDARG));
+    }
     if stream.adapter_luid != adapter_luid
         || stream.slot_count == 0
         || stream.slot_count as usize > MAX_IMAGE_SLOTS
         || stream.image_handles[..stream.slot_count as usize]
             .iter()
             .any(|&handle| handle == 0 || handle == -1)
-        || stream.timeline_semaphore_handle == 0
         || stream.consumer_semaphore_handle == 0
         || stream.width == 0
         || stream.height == 0

@@ -7,6 +7,7 @@ license.workspace = true
 [target.'cfg(windows)'.dependencies]
 egui = "0.29.1"
 egui-ash-renderer = "0.6.0"
+polymer-statistics.workspace = true
 polymer-renderer = { path = "../polymer-renderer" }
 polymer-ipc.workspace = true
 polymer-protocol.workspace = true

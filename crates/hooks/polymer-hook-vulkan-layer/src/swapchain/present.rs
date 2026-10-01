@@ -1,6 +1,6 @@
 use super::*;
 use polymer_producer_vulkan::swapchain::{PresentInfo, native::Semaphore};
-use std::{sync::atomic::Ordering, time::Instant};
+use std::sync::atomic::Ordering;
 
 struct Entry {
     ordinal: usize,
@@ -79,8 +79,6 @@ impl PresentBatch {
         let _fanout = queue.submit(&[], &waits, &signals, vk::Fence::null(), bridges.clone())?;
         let mut results = vec![vk::Result::SUCCESS; handles.len()];
         for ((entry, state), dependency) in entries.iter().zip(&mut owners).zip(&bridges) {
-            let display_at =
-                (entry.swapchain.mode == vk::PresentModeKHR::FIFO).then_some(state.next_present);
             let lease = state
                 .leases
                 .get_mut(entry.index as usize)
@@ -90,16 +88,11 @@ impl PresentBatch {
                     let handoff = PresentInfo {
                         queue: queue.clone(),
                         dependency: dependency.clone(),
-                        display_at,
                     };
                     if entry.swapchain.closed.load(Ordering::Acquire) {
                         controller.present_retired(lease, handoff)
                     } else {
-                        controller.present(
-                            lease,
-                            handoff,
-                            polymer_platform_windows::performance_counter().unwrap_or(0),
-                        )
+                        controller.present(lease, handoff)
                     }
                     .map(|_| vk::Result::SUCCESS)
                     .unwrap_or_else(WsiResult::controller)
@@ -110,7 +103,6 @@ impl PresentBatch {
                 vk::Result::SUCCESS if entry.swapchain.superseded() => vk::Result::SUBOPTIMAL_KHR,
                 result => result,
             };
-            state.next_present = Instant::now() + entry.swapchain.period;
             results[entry.ordinal] = if matches!(
                 result,
                 vk::Result::ERROR_OUT_OF_HOST_MEMORY | vk::Result::ERROR_OUT_OF_DEVICE_MEMORY
@@ -123,7 +115,7 @@ impl PresentBatch {
         }
         drop(owners);
         for entry in &entries {
-            entry.swapchain.availability.notify();
+            entry.swapchain.wakeup.notify();
         }
         if results.contains(&vk::Result::ERROR_DEVICE_LOST) {
             device.lost.store(true, Ordering::Release);

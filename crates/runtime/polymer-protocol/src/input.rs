@@ -46,7 +46,6 @@ impl TryFrom<u32> for PointerPhase {
 pub struct PointerInput {
     pub surface_id: u64,
     pub target_window: i64,
-    pub frame_number: u64,
     pub source: PointerSource,
     pub phase: PointerPhase,
     pub pointer_id: u32,

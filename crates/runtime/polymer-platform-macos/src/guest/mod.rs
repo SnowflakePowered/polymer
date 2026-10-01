@@ -1,6 +1,6 @@
 mod process;
 use crate::SystemAudioState;
-use polymer_ipc::{Message, input::host::InputIpcListener};
+use polymer_ipc::input::host::InputIpcListener;
 use polymer_platform::*;
 use process::Process;
 use std::{io, path::Path, process::Command};
@@ -148,30 +148,6 @@ impl Guest for MacGuest {
     }
     fn subscribe_exit(&self) -> io::Result<ProcessExitReceiver> {
         Ok(self.process.subscribe())
-    }
-    fn window_dimensions(&self, window: GuestWindowId) -> io::Result<ResizeDimensions> {
-        crate::window::GuestEvents::dimensions(self.process.id(), window)
-    }
-    fn resize_window(&self, window: GuestWindowId, size: ResizeDimensions) -> io::Result<()> {
-        if size.width == 0 || size.height == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "window dimensions must be nonzero",
-            ));
-        }
-        self.input
-            .send_control(Message::ResizeWindow(polymer_protocol::ResizeWindow {
-                target_window: window.0,
-                width: size.width,
-                height: size.height,
-            }))
-            .then_some(())
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::NotConnected,
-                    "guest AppKit input is unavailable",
-                )
-            })
     }
     fn send_input(&self, input: GuestInput) -> io::Result<()> {
         match input {

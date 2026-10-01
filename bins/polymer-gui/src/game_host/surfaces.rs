@@ -150,7 +150,7 @@ impl GameHost {
         let registration = {
             let mut compositor = self.compositor.borrow_mut();
             let worker = if let Some(frames) = frames {
-                compositor.attach_surface_frames(connection, frames, self.pointer.clone())
+                compositor.attach_surface_frames(connection, frames)
             } else {
                 Ok(())
             };

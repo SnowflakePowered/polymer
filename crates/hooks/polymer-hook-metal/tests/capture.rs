@@ -1,8 +1,8 @@
 #![cfg(target_os = "macos")]
 use objc2_metal::*;
-use polymer_consumer_metal::ImportedMetalStream;
+use polymer_consumer_metal::{ImportedMetalStream, ProducerTimeline};
 use polymer_ipc::{LocalSocketListener, Message};
-use polymer_protocol::{ConsumerApi, Handshake, PROTOCOL_VERSION};
+use polymer_protocol::{ConsumerApi, FrameReady, Handshake, PROTOCOL_VERSION};
 use std::{path::PathBuf, process::Command, time::Duration};
 
 #[test]
@@ -59,71 +59,56 @@ fn injected_drawables_reach_the_shared_consumer() {
         .unwrap();
     let device = MTLCreateSystemDefaultDevice().unwrap();
     let queue = device.newCommandQueue().unwrap();
-    let mut imported = None;
-    let mut received = 0;
-    loop {
-        match control.receive() {
-            Ok(Message::RequestBufferAvailability) => {}
-            Ok(Message::StreamReady(stream)) => {
-                imported = Some(
-                    ImportedMetalStream::new(
-                        &device,
-                        stream,
-                        control.take_stream_resources().unwrap(),
-                    )
-                    .unwrap(),
-                );
-                control.send(Message::StreamAccepted).unwrap();
-            }
-            Ok(Message::FrameReady(frame)) => {
-                let imported = imported.as_ref().unwrap();
-                assert!(imported.ready(frame.sync_value));
-                let mut pixel = [0u8; 4];
-                unsafe {
-                    imported
-                        .texture(frame)
-                        .unwrap()
-                        .getBytes_bytesPerRow_fromRegion_mipmapLevel(
-                            std::ptr::NonNull::from(&mut pixel).cast(),
-                            4,
-                            MTLRegion {
-                                origin: MTLOrigin { x: 32, y: 32, z: 0 },
-                                size: MTLSize {
-                                    width: 1,
-                                    height: 1,
-                                    depth: 1,
-                                },
-                            },
-                            0,
-                        );
-                }
-                assert!((pixel[0] as i16 - 128).abs() <= 1);
-                assert!((pixel[1] as i16 - 64).abs() <= 1);
-                assert!(
-                    (pixel[2] as i16 - (frame.frame_number * 255 / 64) as i16).abs() <= 1,
-                    "frame {:?}, pixel {:?}",
-                    frame,
-                    pixel
-                );
-                assert_eq!(pixel[3], 255);
-                let commands = queue.commandBuffer().unwrap();
-                imported.release(&commands, frame.sync_value - 1);
-                commands.commit();
-                commands.waitUntilCompleted();
-                control
-                    .send(Message::BufferAvailable {
-                        stream_id: frame.stream_id,
-                        through_sync_value: frame.sync_value - 1,
-                    })
-                    .unwrap();
-                received = frame.frame_number;
-                if received == 36 {
-                    break;
-                }
-            }
-            Ok(message) => panic!("unexpected capture message {message:?}"),
-            Err(error) => panic!("capture failed after {received} frames: {error}"),
+    let (imported, timeline) = match control.receive() {
+        Ok(Message::StreamReady(stream)) => {
+            let resources = control.take_stream_resources().unwrap();
+            let timeline = ProducerTimeline::open(&resources).unwrap();
+            let imported = ImportedMetalStream::new(&device, stream, resources).unwrap();
+            control.send(Message::StreamAccepted).unwrap();
+            (imported, timeline)
         }
+        other => panic!("expected a stream, got {other:?}"),
+    };
+    let mut observed = 0;
+    let mut received = 0;
+    while received < 36 {
+        observed = timeline
+            .wait_beyond(observed)
+            .unwrap_or_else(|| panic!("ready timeline closed after {received} frames"));
+        let frame = FrameReady::observed(observed);
+        let mut pixel = [0u8; 4];
+        unsafe {
+            imported
+                .texture(frame)
+                .unwrap()
+                .getBytes_bytesPerRow_fromRegion_mipmapLevel(
+                    std::ptr::NonNull::from(&mut pixel).cast(),
+                    4,
+                    MTLRegion {
+                        origin: MTLOrigin { x: 32, y: 32, z: 0 },
+                        size: MTLSize {
+                            width: 1,
+                            height: 1,
+                            depth: 1,
+                        },
+                    },
+                    0,
+                );
+        }
+        assert!((pixel[0] as i16 - 128).abs() <= 1);
+        assert!((pixel[1] as i16 - 64).abs() <= 1);
+        assert!(
+            (pixel[2] as i16 - (frame.frame_number * 255 / 64) as i16).abs() <= 1,
+            "frame {:?}, pixel {:?}",
+            frame,
+            pixel
+        );
+        assert_eq!(pixel[3], 255);
+        let commands = queue.commandBuffer().unwrap();
+        imported.release(&commands, frame.sync_value - 1);
+        commands.commit();
+        commands.waitUntilCompleted();
+        received = frame.frame_number;
     }
     assert_eq!(received, 36);
     assert!(child.wait().unwrap().success());
