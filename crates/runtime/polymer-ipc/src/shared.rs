@@ -157,29 +157,6 @@ impl Subscriber {
         })
     }
 
-    pub fn latest(&mut self, destination: &mut Vec<u8>) -> io::Result<bool> {
-        let Some(batch) = self.reader.read_batch() else {
-            return Ok(false);
-        };
-        let mut found = false;
-        for message in batch.into_iter() {
-            match message {
-                Ok(message) => {
-                    destination.resize(message.payload_len, 0);
-                    message
-                        .read(destination)
-                        .map_err(|error| io::Error::other(error.to_string()))?;
-                    found = true;
-                }
-                Err(_) => {
-                    self.reader.reset();
-                    return Ok(false);
-                }
-            }
-        }
-        Ok(found)
-    }
-
     pub fn drain(
         &mut self,
         destination: &mut Vec<u8>,

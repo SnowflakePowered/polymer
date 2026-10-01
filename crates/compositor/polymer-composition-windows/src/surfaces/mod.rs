@@ -165,16 +165,11 @@ impl RenderDevice {
         let Some(frame) = output.latest_frame else {
             return Vec::new();
         };
-        let (width, height) = if output.quarter_turns % 2 == 1 {
-            (frame.render_height.max(1), frame.render_width.max(1))
-        } else {
-            (frame.render_width.max(1), frame.render_height.max(1))
-        };
         vec![ReceivedSurface {
             connection,
             surface_id: output.surface_id,
             target_window: output.target_window,
-            image_extent: Extent::new(width, height),
+            image_extent: Extent::new(output.width, output.height),
             quarter_turns: output.quarter_turns,
             flip_y: output.flip_y,
             frame,

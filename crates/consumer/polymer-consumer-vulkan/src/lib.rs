@@ -2,18 +2,14 @@
 
 use ash::vk;
 use polymer_ipc::StreamReady;
-use polymer_protocol::{AdapterLuid, ExternalImageKind, ExternalSyncKind};
+use polymer_protocol::{AdapterLuid, ExternalImageKind, ExternalSyncKind, GraphicsHook};
 use std::fmt;
 
 pub const BACKEND_NAME: &str = "vulkan";
 
 pub fn format_for_stream(stream: &StreamReady) -> Result<vk::Format, ImportError> {
     let format = match stream.image_kind {
-        ExternalImageKind::VulkanOpaqueWin32 => vk::Format::from_raw(stream.format as i32),
-        ExternalImageKind::D3d11D3d12Resource
-        | ExternalImageKind::D3d12Resource
-        | ExternalImageKind::OpenGlD3d12Resource
-        | ExternalImageKind::VulkanD3d12Resource => match stream.format {
+        ExternalImageKind::D3d11Resource | ExternalImageKind::D3d12Resource => match stream.format {
             10 => vk::Format::R16G16B16A16_SFLOAT,
             24 => vk::Format::A2B10G10R10_UNORM_PACK32,
             28 => vk::Format::R8G8B8A8_UNORM,
@@ -22,7 +18,7 @@ pub fn format_for_stream(stream: &StreamReady) -> Result<vk::Format, ImportError
             91 => vk::Format::B8G8R8A8_SRGB,
             _ => return Err(ImportError::InvalidStream("unsupported DXGI format")),
         },
-        _ => {
+        ExternalImageKind::IOSurface => {
             return Err(ImportError::InvalidStream(
                 "unsupported external image kind",
             ));
@@ -121,10 +117,7 @@ impl ImportedImageRing {
     pub fn uses_external_queue_family(&self) -> bool {
         matches!(
             self.image_kind,
-            ExternalImageKind::D3d12Resource
-                | ExternalImageKind::D3d11D3d12Resource
-                | ExternalImageKind::OpenGlD3d12Resource
-                | ExternalImageKind::VulkanD3d12Resource
+            ExternalImageKind::D3d12Resource | ExternalImageKind::D3d11Resource
         )
     }
 
@@ -182,10 +175,7 @@ impl From<vk::Result> for ImportError {
 fn validate_consumer_semaphore(stream: &StreamReady) -> Result<(), ImportError> {
     if matches!(
         stream.image_kind,
-        ExternalImageKind::D3d12Resource
-            | ExternalImageKind::D3d11D3d12Resource
-            | ExternalImageKind::OpenGlD3d12Resource
-            | ExternalImageKind::VulkanD3d12Resource
+        ExternalImageKind::D3d12Resource | ExternalImageKind::D3d11Resource
     ) && stream.consumer_semaphore_handle == 0
     {
         Err(ImportError::InvalidStream(
@@ -229,19 +219,11 @@ unsafe fn import_resources(
 > {
     let format = format_for_stream(stream).map_err(|_| vk::Result::ERROR_FORMAT_NOT_SUPPORTED)?;
     let memory_handle_type = match stream.image_kind {
-        ExternalImageKind::VulkanOpaqueWin32 => vk::ExternalMemoryHandleTypeFlags::OPAQUE_WIN32,
-        ExternalImageKind::D3d11D3d12Resource => vk::ExternalMemoryHandleTypeFlags::D3D11_TEXTURE,
-        ExternalImageKind::D3d12Resource
-        | ExternalImageKind::OpenGlD3d12Resource
-        | ExternalImageKind::VulkanD3d12Resource => {
-            vk::ExternalMemoryHandleTypeFlags::D3D12_RESOURCE
-        }
-        _ => return Err(vk::Result::ERROR_FORMAT_NOT_SUPPORTED),
+        ExternalImageKind::D3d11Resource => vk::ExternalMemoryHandleTypeFlags::D3D11_TEXTURE,
+        ExternalImageKind::D3d12Resource => vk::ExternalMemoryHandleTypeFlags::D3D12_RESOURCE,
+        ExternalImageKind::IOSurface => return Err(vk::Result::ERROR_FORMAT_NOT_SUPPORTED),
     };
     let semaphore_handle_type = match stream.sync_kind {
-        ExternalSyncKind::VulkanTimelineSemaphore => {
-            vk::ExternalSemaphoreHandleTypeFlags::OPAQUE_WIN32
-        }
         ExternalSyncKind::D3d12Fence => vk::ExternalSemaphoreHandleTypeFlags::D3D12_FENCE,
         _ => return Err(vk::Result::ERROR_FEATURE_NOT_PRESENT),
     };
@@ -253,7 +235,7 @@ unsafe fn import_resources(
         let mut external =
             vk::ExternalMemoryImageCreateInfo::default().handle_types(memory_handle_type);
         let mut usage = vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::SAMPLED;
-        if stream.image_kind == ExternalImageKind::OpenGlD3d12Resource {
+        if stream.hook == GraphicsHook::OpenGl {
             usage |= vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST;
         }
         let image_info = vk::ImageCreateInfo::default()

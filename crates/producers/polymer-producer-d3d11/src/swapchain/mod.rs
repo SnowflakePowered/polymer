@@ -5,7 +5,9 @@ mod ownership;
 pub mod rotation;
 use crate::D3d11ImageRing;
 use polymer_presentation::{producer::ExportDescriptor, swapchain::*};
-use polymer_protocol::{AdapterLuid, ConsumerApi, ExternalImageKind, ExternalSyncKind, SurfaceId};
+use polymer_protocol::{
+    AdapterLuid, ConsumerApi, ExternalImageKind, ExternalSyncKind, GraphicsHook, SurfaceId,
+};
 use windows::{
     Win32::{
         Foundation::*,
@@ -92,7 +94,7 @@ impl SwapchainBackend for D3d11VirtualBackend {
                 "virtual D3D11 requires an explicit consumer preference",
             ));
         }
-        let image_kind = ExternalImageKind::D3d11D3d12Resource;
+        let image_kind = ExternalImageKind::D3d11Resource;
         let sync_kind = ExternalSyncKind::D3d12Fence;
         let _: ID3D11Device5 = info.device.cast()?;
         let _: ID3D11DeviceContext4 = unsafe { info.device.GetImmediateContext()? }.cast()?;
@@ -207,6 +209,7 @@ impl SwapchainBackend for D3d11VirtualBackend {
             surface_id: SurfaceId(self.binding.logical_id()),
             adapter_luid: self.adapter_luid,
             source_window: self.binding.window().handle as i64,
+            hook: GraphicsHook::D3d11,
             width: extent.width,
             height: extent.height,
             format: self.profile.format,

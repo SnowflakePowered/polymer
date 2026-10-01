@@ -100,7 +100,6 @@ impl LocalSocketListener {
         Ok(LocalSocket {
             stream,
             incoming: Vec::new(),
-            frame: None,
         })
     }
 
@@ -175,7 +174,6 @@ impl LocalSocket {
                 return Ok(Self {
                     stream,
                     incoming: Vec::new(),
-                    frame: None,
                 });
             }
             let error = winsock_error();

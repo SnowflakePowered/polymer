@@ -1,7 +1,6 @@
 //! Polymer IPC transports.
 
 pub mod control;
-pub mod frame;
 pub mod input;
 
 pub mod shared;

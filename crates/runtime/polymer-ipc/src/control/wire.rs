@@ -11,7 +11,6 @@ const MESSAGE_SHUTDOWN: u32 = 4;
 const MESSAGE_STREAM_ACCEPTED: u32 = 6;
 const MESSAGE_BLOB: u32 = 8;
 const MESSAGE_MAP_OFFER: u32 = 9;
-const MESSAGE_FRAME_AVAILABLE: u32 = 10;
 const MESSAGE_MAP_ACCEPTED: u32 = 11;
 const MESSAGE_RESIZE_WINDOW: u32 = 13;
 const MESSAGE_GAMEPAD_FEEDBACK: u32 = 14;
@@ -76,6 +75,7 @@ struct WireStreamReady {
     adapter_luid_low: U32,
     adapter_luid_high: I32,
     source_window: I64,
+    hook: U32,
     width: U32,
     height: U32,
     format: U32,
@@ -93,21 +93,6 @@ struct WireStreamReady {
 struct WireFrameReady {
     stream_id: U64,
     slot: U32,
-    render_width: U32,
-    render_height: U32,
-    capture_x: U32,
-    capture_y: U32,
-    capture_width: U32,
-    capture_height: U32,
-    presentation_width: U32,
-    presentation_height: U32,
-    mapping_kind: U32,
-    upper_left_x: I64,
-    upper_left_y: I64,
-    upper_right_x: I64,
-    upper_right_y: I64,
-    lower_left_x: I64,
-    lower_left_y: I64,
     frame_number: U64,
     sync_value: U64,
     timestamp_qpc: U64,
@@ -173,6 +158,7 @@ pub(super) fn encode(message: &Message) -> io::Result<WireMessage> {
                     adapter_luid_low: U32::new(value.adapter_luid.low_part),
                     adapter_luid_high: I32::new(value.adapter_luid.high_part),
                     source_window: I64::new(value.source_window),
+                    hook: U32::new(u32::from(value.hook.class())),
                     width: U32::new(value.width),
                     height: U32::new(value.height),
                     format: U32::new(value.format),
@@ -193,21 +179,6 @@ pub(super) fn encode(message: &Message) -> io::Result<WireMessage> {
                 &WireFrameReady {
                     stream_id: U64::new(value.stream_id.0),
                     slot: U32::new(value.slot),
-                    render_width: U32::new(value.render_width),
-                    render_height: U32::new(value.render_height),
-                    capture_x: U32::new(value.capture_x),
-                    capture_y: U32::new(value.capture_y),
-                    capture_width: U32::new(value.capture_width),
-                    capture_height: U32::new(value.capture_height),
-                    presentation_width: U32::new(value.presentation_width),
-                    presentation_height: U32::new(value.presentation_height),
-                    mapping_kind: U32::new(value.presentation_transform.kind as u32),
-                    upper_left_x: I64::new(value.presentation_transform.upper_left.x),
-                    upper_left_y: I64::new(value.presentation_transform.upper_left.y),
-                    upper_right_x: I64::new(value.presentation_transform.upper_right.x),
-                    upper_right_y: I64::new(value.presentation_transform.upper_right.y),
-                    lower_left_x: I64::new(value.presentation_transform.lower_left.x),
-                    lower_left_y: I64::new(value.presentation_transform.lower_left.y),
                     frame_number: U64::new(value.frame_number),
                     sync_value: U64::new(value.sync_value),
                     timestamp_qpc: U64::new(value.timestamp_qpc),
@@ -284,7 +255,6 @@ pub(super) fn encode(message: &Message) -> io::Result<WireMessage> {
                 },
             );
         }
-        Message::FrameAvailable => wire.kind = U32::new(MESSAGE_FRAME_AVAILABLE),
         Message::MapAccepted => wire.kind = U32::new(MESSAGE_MAP_ACCEPTED),
     }
     Ok(wire)
@@ -318,6 +288,10 @@ pub(super) fn decode(wire: &WireMessage, data: Vec<u8>) -> io::Result<Message> {
                 .map_err(|()| io::Error::new(io::ErrorKind::InvalidData, "invalid image kind"))?;
             let sync_kind = ExternalSyncKind::try_from(value.sync_kind.get())
                 .map_err(|()| io::Error::new(io::ErrorKind::InvalidData, "invalid sync kind"))?;
+            let hook = GraphicsHook::ALL
+                .into_iter()
+                .find(|hook| u32::from(hook.class()) == value.hook.get())
+                .ok_or_else(|| invalid_data("invalid graphics hook"))?;
             Ok(Message::StreamReady(StreamReady {
                 producer_process_id: value.producer_process_id.get(),
                 surface_id: SurfaceId(value.surface_id.get()),
@@ -326,6 +300,7 @@ pub(super) fn decode(wire: &WireMessage, data: Vec<u8>) -> io::Result<Message> {
                     high_part: value.adapter_luid_high.get(),
                 },
                 source_window: value.source_window.get(),
+                hook,
                 width: value.width.get(),
                 height: value.height.get(),
                 format: value.format.get(),
@@ -340,34 +315,9 @@ pub(super) fn decode(wire: &WireMessage, data: Vec<u8>) -> io::Result<Message> {
         }
         MESSAGE_FRAME_READY => {
             let value = payload::<WireFrameReady>(wire)?;
-            let mapping_kind = PresentationMappingKind::try_from(value.mapping_kind.get())
-                .map_err(|()| invalid_data("invalid presentation mapping kind"))?;
             Ok(Message::FrameReady(FrameReady {
                 stream_id: StreamId(value.stream_id.get()),
                 slot: value.slot.get(),
-                render_width: value.render_width.get(),
-                render_height: value.render_height.get(),
-                capture_x: value.capture_x.get(),
-                capture_y: value.capture_y.get(),
-                capture_width: value.capture_width.get(),
-                capture_height: value.capture_height.get(),
-                presentation_width: value.presentation_width.get(),
-                presentation_height: value.presentation_height.get(),
-                presentation_transform: PresentationTransform {
-                    kind: mapping_kind,
-                    upper_left: PresentationPoint {
-                        x: value.upper_left_x.get(),
-                        y: value.upper_left_y.get(),
-                    },
-                    upper_right: PresentationPoint {
-                        x: value.upper_right_x.get(),
-                        y: value.upper_right_y.get(),
-                    },
-                    lower_left: PresentationPoint {
-                        x: value.lower_left_x.get(),
-                        y: value.lower_left_y.get(),
-                    },
-                },
                 frame_number: value.frame_number.get(),
                 sync_value: value.sync_value.get(),
                 timestamp_qpc: value.timestamp_qpc.get(),
@@ -414,7 +364,6 @@ pub(super) fn decode(wire: &WireMessage, data: Vec<u8>) -> io::Result<Message> {
         MESSAGE_MAP_OFFER => {
             let value = payload::<WireMapOffer>(wire)?;
             let channel = match value.channel.get() {
-                1 => ChannelKind::Frame,
                 2 => ChannelKind::Input,
                 _ => return Err(invalid_data("unknown shared channel kind")),
             };
@@ -425,7 +374,6 @@ pub(super) fn decode(wire: &WireMessage, data: Vec<u8>) -> io::Result<Message> {
                 generation: value.generation.get(),
             }))
         }
-        MESSAGE_FRAME_AVAILABLE => Ok(Message::FrameAvailable),
         MESSAGE_MAP_ACCEPTED => Ok(Message::MapAccepted),
         _ => Err(invalid_data("unknown message type")),
     }
@@ -442,24 +390,4 @@ where
 
 pub(super) fn invalid_data(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
-}
-
-pub(crate) fn encode_frame(value: FrameReady) -> Vec<u8> {
-    let wire = encode(&Message::FrameReady(value)).expect("fixed-size frame encoding");
-    wire.payload[..mem::size_of::<WireFrameReady>()].to_vec()
-}
-
-pub(crate) fn decode_frame(bytes: &[u8]) -> io::Result<FrameReady> {
-    let mut wire = WireMessage {
-        kind: U32::new(MESSAGE_FRAME_READY),
-        payload: [0; PAYLOAD_SIZE],
-    };
-    if bytes.len() != mem::size_of::<WireFrameReady>() {
-        return Err(invalid_data("invalid shared frame size"));
-    }
-    wire.payload[..bytes.len()].copy_from_slice(bytes);
-    match decode(&wire, Vec::new())? {
-        Message::FrameReady(value) => Ok(value),
-        _ => unreachable!(),
-    }
 }

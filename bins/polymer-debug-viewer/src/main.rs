@@ -39,7 +39,7 @@ mod layout;
 use gui::{LauncherState, draw_gamepad_window, draw_launcher_window, draw_layout_css_window};
 #[cfg(target_os = "macos")]
 use polymer_platform_macos::{performance_counter, performance_frequency};
-use polymer_renderer::egui::{EguiPainter, draw_statistics_graph};
+use polymer_renderer::egui::{EguiPainter, RenderTargetExtent, draw_statistics_graph};
 #[cfg(windows)]
 use polymer_renderer_d3d12::D3d12EguiPainter;
 #[cfg(target_os = "macos")]
@@ -143,12 +143,7 @@ impl ApplicationHandler for ViewerApplication {
 struct Statistics {
     frame_number: u64,
     slot: u32,
-    render_width: u32,
-    render_height: u32,
-    capture_x: u32,
-    capture_y: u32,
-    capture_width: u32,
-    capture_height: u32,
+    render_targets: Vec<RenderTargetExtent>,
     frames: HashMap<u64, FrameMetrics>,
     live: LiveStatistics,
     presentation: PresentationMetrics,
@@ -160,12 +155,7 @@ impl Statistics {
         Self {
             frame_number: 0,
             slot: 0,
-            render_width: 0,
-            render_height: 0,
-            capture_x: 0,
-            capture_y: 0,
-            capture_width: 0,
-            capture_height: 0,
+            render_targets: Vec::new(),
             frames: HashMap::new(),
             live: LiveStatistics::new(recorder),
             presentation: PresentationMetrics::new(match backend {
@@ -177,9 +167,18 @@ impl Statistics {
         }
     }
 
-    fn add_surface(&mut self, connection: u64, surface: u64, target: u32) {
+    fn add_surface(&mut self, connection: u64, surface: u64, target: u32, extent: Extent) {
         self.frames
             .insert(connection, FrameMetrics::new(connection, surface, target));
+        self.render_targets
+            .retain(|render_target| render_target.connection != connection);
+        self.render_targets.push(RenderTargetExtent {
+            connection,
+            target,
+            extent,
+        });
+        self.render_targets
+            .sort_by_key(|render_target| render_target.target);
     }
 
     fn observe_frame(&mut self, connection: u64, frame: FrameReady, frequency: f64) {
@@ -196,16 +195,12 @@ impl Statistics {
         }
         self.frame_number = frame.frame_number;
         self.slot = frame.slot;
-        self.render_width = frame.render_width;
-        self.render_height = frame.render_height;
-        self.capture_x = frame.capture_x;
-        self.capture_y = frame.capture_y;
-        self.capture_width = frame.capture_width;
-        self.capture_height = frame.capture_height;
     }
 
     fn remove_surface(&mut self, connection: u64) {
         self.frames.remove(&connection);
+        self.render_targets
+            .retain(|render_target| render_target.connection != connection);
         self.live.remove_connection(connection);
     }
 
@@ -270,10 +265,7 @@ fn vulkan_viewer(compositor: VulkanCompositor) -> Result<VulkanViewer, Box<dyn E
 fn d3d12_consumable(stream: &StreamReady) -> bool {
     matches!(
         stream.image_kind,
-        ExternalImageKind::D3d12Resource
-            | ExternalImageKind::OpenGlD3d12Resource
-            | ExternalImageKind::VulkanD3d12Resource
-            | ExternalImageKind::D3d11D3d12Resource
+        ExternalImageKind::D3d12Resource | ExternalImageKind::D3d11Resource
     ) && stream.sync_kind == ExternalSyncKind::D3d12Fence
 }
 
@@ -914,15 +906,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     capture.reject(offer);
                                     continue;
                                 }
-                                active_backend = match stream.image_kind {
-                                    ExternalImageKind::D3d11D3d12Resource => "D3D11",
-                                    ExternalImageKind::VulkanOpaqueWin32 => "Vulkan",
-                                    ExternalImageKind::D3d12Resource
-                                    | ExternalImageKind::D3d12Heap => "D3D12",
-                                    ExternalImageKind::OpenGlD3d12Resource => "OpenGL",
-                                    ExternalImageKind::VulkanD3d12Resource => "Vulkan",
-                                    ExternalImageKind::IOSurface => "Metal",
-                                };
+                                active_backend = stream.hook.label();
                                 #[cfg(windows)]
                                 if stream.source_window != 0 {
                                     let source = NativeWindow(stream.source_window as isize);
@@ -995,6 +979,7 @@ if let Some(publisher) = &webrtc {
                                             connection,
                                             stream.surface_id.0,
                                             stream_index,
+                                            Extent::new(stream.width, stream.height),
                                         );
                                         #[cfg(windows)]
 if publish_stream && let Some(publisher) = &webrtc {
@@ -1115,17 +1100,14 @@ let webrtc_stats = webrtc.as_ref().map(|publisher| publisher.stats());
                                 }
                                 ui.label(format!("Frame {}", stats.frame_number));
                                 ui.label(format!("Slot {}", stats.slot));
-                                ui.label(format!(
-                                    "Render target {}x{}",
-                                    stats.render_width, stats.render_height
-                                ));
-                                ui.label(format!(
-                                    "Scissor ({}, {}) {}x{}",
-                                    stats.capture_x,
-                                    stats.capture_y,
-                                    stats.capture_width,
-                                    stats.capture_height
-                                ));
+                                for render_target in &stats.render_targets {
+                                    ui.label(format!(
+                                        "Render target {}: {}x{}",
+                                        render_target.target,
+                                        render_target.extent.width,
+                                        render_target.extent.height
+                                    ));
+                                }
                                 if stats.snapshot.targets.is_empty() {
                                     ui.label("Target statistics waiting");
                                 } else {

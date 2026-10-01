@@ -251,7 +251,6 @@ fn receive_connection(
 ) {
     let result = (|| -> std::io::Result<()> {
         let mut accepted_stream = false;
-        let mut frames = None;
         loop {
             let message = socket.receive()?;
             if shared.revoked(connection) || shared.stopping.load(Ordering::Acquire) {
@@ -294,20 +293,6 @@ fn receive_connection(
                 }
                 Message::FrameReady(frame) if accepted_stream => {
                     shared.publish(connection, frame);
-                }
-                Message::FrameAvailable if accepted_stream => {
-                    if let Some(frame) = frames.as_mut().and_then(
-                        |frames: &mut polymer_ipc::frame::FrameSubscriber| {
-                            frames.latest().ok().flatten()
-                        },
-                    ) {
-                        shared.publish(connection, frame);
-                    }
-                }
-                Message::MapOffer(offer)
-                    if offer.channel == polymer_ipc::control::ChannelKind::Frame =>
-                {
-                    frames = Some(polymer_ipc::frame::FrameSubscriber::from_offer(offer)?);
                 }
                 Message::Shutdown => return Ok(()),
                 _ => {}

@@ -1,5 +1,7 @@
 //! Shared egui input, diagnostics and repaint policy; GPU painting stays in backends.
-use polymer_renderer::egui::{DebugOverlayModel, InputDiagnostics, draw_debug_overlay};
+use polymer_renderer::egui::{
+    DebugOverlayModel, InputDiagnostics, RenderTargetExtent, draw_debug_overlay,
+};
 use polymer_statistics::{FrameMetrics, LiveStatistics, PresentationMetrics, RecorderHandle};
 use std::{
     cell::Cell,
@@ -113,9 +115,23 @@ impl OverlayState {
     pub fn set_input_diagnostics(&mut self, diagnostics: InputDiagnostics) {
         self.diagnostics.input = diagnostics;
     }
-    pub fn add_surface(&mut self, connection: u64, surface: u64, target: u32) {
+    pub fn add_surface(
+        &mut self,
+        connection: u64,
+        surface: u64,
+        target: u32,
+        extent: polymer_renderer::Extent,
+    ) {
         self.frames
             .insert(connection, FrameMetrics::new(connection, surface, target));
+        let render_targets = &mut self.diagnostics.render_targets;
+        render_targets.retain(|render_target| render_target.connection != connection);
+        render_targets.push(RenderTargetExtent {
+            connection,
+            target,
+            extent,
+        });
+        render_targets.sort_by_key(|render_target| render_target.target);
     }
     pub fn observe_frame_at(
         &mut self,
@@ -137,12 +153,6 @@ impl OverlayState {
         }
         self.diagnostics.frame_number = frame.frame_number;
         self.diagnostics.slot = frame.slot;
-        self.diagnostics.render_width = frame.render_width;
-        self.diagnostics.render_height = frame.render_height;
-        self.diagnostics.capture_x = frame.capture_x;
-        self.diagnostics.capture_y = frame.capture_y;
-        self.diagnostics.capture_width = frame.capture_width;
-        self.diagnostics.capture_height = frame.capture_height;
     }
     pub fn record_present(&mut self, carried_new_frame: bool) {
         self.presentation.record_present(carried_new_frame);
@@ -161,6 +171,9 @@ impl OverlayState {
     }
     pub fn remove_target(&mut self, connection: u64) {
         self.frames.remove(&connection);
+        self.diagnostics
+            .render_targets
+            .retain(|render_target| render_target.connection != connection);
         self.statistics.remove_connection(connection);
         self.diagnostics.statistics = self.statistics.snapshot().clone();
     }

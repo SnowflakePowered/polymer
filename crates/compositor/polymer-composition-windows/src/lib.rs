@@ -107,8 +107,14 @@ impl polymer_composition::Compositor for WindowsCompositor {
     fn set_backend(&mut self, backend: String) {
         self.window.set_backend(backend)
     }
-    fn add_surface(&mut self, connection: u64, surface: u64, target: u32) {
-        self.window.add_surface(connection, surface, target)
+    fn add_surface(
+        &mut self,
+        connection: u64,
+        surface: u64,
+        target: u32,
+        extent: polymer_renderer::Extent,
+    ) {
+        self.window.add_surface(connection, surface, target, extent)
     }
     fn observe_frame_at(
         &mut self,

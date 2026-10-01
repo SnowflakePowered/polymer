@@ -188,9 +188,15 @@ impl WindowManager {
         }
     }
 
-    pub fn add_surface(&mut self, connection: u64, surface: u64, target: u32) {
+    pub fn add_surface(
+        &mut self,
+        connection: u64,
+        surface: u64,
+        target: u32,
+        extent: polymer_renderer::Extent,
+    ) {
         if let Some(overlay) = self.overlay.as_mut() {
-            overlay.add_surface(connection, surface, target);
+            overlay.add_surface(connection, surface, target, extent);
         }
     }
 

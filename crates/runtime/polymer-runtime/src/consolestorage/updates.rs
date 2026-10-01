@@ -1,8 +1,8 @@
 use super::StorageActor;
-use polymer_deno::polymer::consolestorage::StorageError;
+use polymer_deno::polymer::consolestorage::{Platforms, StorageError};
 use polymer_library::{
     GameCatalog, Launchable, LaunchableUri, StorageKind, StorageManager,
-    jobs::{JobHandle, JobKind, JobOutcome, JobProgress, JobSpec, JobSubject},
+    jobs::{JobHandle, JobKind, JobOutcome, JobProgress, JobSpec, JobStore, JobSubject},
 };
 use polymer_pluginhost::runtime::{PluginRuntimeHandle, UpdateTarget};
 use serde_json::{Value, json};
@@ -72,6 +72,33 @@ impl super::StorageService {
             },
             ..spec
         }
+    }
+
+    /// Queues a `check` job for each title on a platform whose plugin provides updates.
+    /// Titles without a title ID are skipped.
+    pub(crate) async fn check_titles(
+        &self,
+        store: &Arc<JobStore>,
+        launchables: impl IntoIterator<Item = Launchable>,
+    ) -> Result<(), StorageError> {
+        let platforms = self
+            .actor
+            .send(Platforms)
+            .await
+            .map_err(StorageError::from_display)??;
+        for launchable in launchables {
+            let updatable = platforms.iter().any(|platform| {
+                platform.updates && platform.platform == launchable.identified.platform
+            });
+            if !updatable || launchable.identified.title_id.is_none() {
+                continue;
+            }
+            store
+                .submit(Self::check_spec(&launchable)?)
+                .await
+                .map_err(StorageError::from_display)?;
+        }
+        Ok(())
     }
 
     fn title_id(launchable: &Launchable) -> Result<&str, StorageError> {

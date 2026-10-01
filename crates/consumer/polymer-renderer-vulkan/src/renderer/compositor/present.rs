@@ -114,9 +114,9 @@ impl VulkanCompositor {
                     surface.copy_single_slot(&self.device, command, self.queue_family);
                 }
                 let imported = &surface.imported;
-                let Some(frame) = surface.frames.frame() else {
+                if surface.frames.frame().is_none() {
                     continue;
-                };
+                }
                 if let Some(source) = surface.image() {
                     let mut to_source = vk::ImageMemoryBarrier::default()
                         .src_access_mask(vk::AccessFlags::MEMORY_WRITE)
@@ -143,12 +143,6 @@ impl VulkanCompositor {
                         &[],
                         &[],
                         &[to_source],
-                    );
-                    let (content_width, content_height) = fit_inside(
-                        frame.render_width,
-                        frame.render_height,
-                        imported.width,
-                        imported.height,
                     );
                     if surface.frames.prepared().is_some()
                         && video_publish_ready
@@ -255,10 +249,7 @@ impl VulkanCompositor {
                             placement,
                             push: SurfacePush {
                                 source: placement.content.source,
-                                active_uv: [
-                                    content_width as f32 / imported.width as f32,
-                                    content_height as f32 / imported.height as f32,
-                                ],
+                                active_uv: [1.0, 1.0],
                                 opacity: placement.content.opacity.clamp(0.0, 1.0),
                                 transform: u32::from(surface.quarter_turns)
                                     | if surface.flip_y { 0x100 } else { 0 },

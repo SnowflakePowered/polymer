@@ -213,8 +213,7 @@ impl Renderer for WebRtcCompositor {
                     connection,
                     surface_id: stream.surface_id.0,
                     target_window: stream.source_window,
-                    image_extent: polymer_renderer::renderer::frame_image_extent(
-                        frame,
+                    image_extent: polymer_renderer::renderer::image_extent(
                         stream.width,
                         stream.height,
                         *turns,

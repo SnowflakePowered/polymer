@@ -1,6 +1,6 @@
 use polymer_deno::polymer::{
     Library,
-    consolestorage::{List, Platforms},
+    consolestorage::List,
     jobs::{Job, JobsError},
     library::{InstalledArtifact, LaunchablesAdd, LibraryImport},
 };
@@ -199,7 +199,6 @@ impl Importer {
     /// provides updates.
     async fn check_updates(&self, job: &JobHandle) -> Result<(), JobsError> {
         let detail = Self::get(job).await?.detail;
-        let platforms = Self::call(&self.storage.client().platforms, Platforms).await?;
         let identified = detail["result"]["imports"]
             .as_array()
             .into_iter()
@@ -216,25 +215,19 @@ impl Importer {
             .filter_map(Value::as_str)
             .map(Self::parse)
             .collect::<Result<Vec<_>, _>>()?;
+        let mut launchables = Vec::new();
         for id in ids {
-            let launchable = self
-                .catalog
-                .launchable(id)
-                .await
-                .map_err(JobsError::from_display)?;
-            let updatable = platforms
-                .iter()
-                .any(|platform| platform.updates && platform.platform == launchable.identified.platform);
-            if !updatable || launchable.identified.title_id.is_none() {
-                continue;
-            }
-            let spec = crate::StorageService::check_spec(&launchable).map_err(JobsError::from_display)?;
-            self.store
-                .submit(spec)
-                .await
-                .map_err(JobsError::from_display)?;
+            launchables.push(
+                self.catalog
+                    .launchable(id)
+                    .await
+                    .map_err(JobsError::from_display)?,
+            );
         }
-        Ok(())
+        self.storage
+            .check_titles(&self.store, launchables)
+            .await
+            .map_err(JobsError::from_display)
     }
 
     /// The NAND to install into: the job's `storage` parameter when set, otherwise the

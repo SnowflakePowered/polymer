@@ -119,15 +119,3 @@ pub(crate) const fn rotated_extent(width: u32, height: u32, quarter_turns: u8) -
 pub(super) const fn normalized_quarter_turns(rotation: i32) -> u8 {
     rotation.rem_euclid(4) as u8
 }
-
-pub(super) fn normalize_pointer_transform(
-    transform: PresentationTransform,
-    width: u32,
-    height: u32,
-) -> PresentationTransform {
-    if transform.kind == PresentationMappingKind::Unavailable && width != 0 && height != 0 {
-        PresentationTransform::axis_aligned(0, 0, width, height)
-    } else {
-        transform
-    }
-}

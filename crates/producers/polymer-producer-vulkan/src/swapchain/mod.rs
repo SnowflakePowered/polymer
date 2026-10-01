@@ -6,7 +6,7 @@ use crate::{ExportImageRing, ExportImageRingDesc, ExportTimelineSemaphore, Exter
 use ash::vk;
 use native::{Queue, Semaphore, Submission};
 use polymer_presentation::{producer::ExportDescriptor, swapchain::*};
-use polymer_protocol::{ConsumerApi, ExternalImageKind, ExternalSyncKind, SurfaceId};
+use polymer_protocol::{ConsumerApi, ExternalImageKind, ExternalSyncKind, GraphicsHook, SurfaceId};
 use std::sync::Arc;
 
 pub struct CreateInfo {
@@ -80,7 +80,7 @@ impl SwapchainBackend for VulkanVirtualBackend {
             return Err(vk::Result::ERROR_INITIALIZATION_FAILED);
         }
         Ok(BackendProfile {
-            image_kind: ExternalImageKind::VulkanD3d12Resource,
+            image_kind: ExternalImageKind::D3d12Resource,
             sync_kind: ExternalSyncKind::D3d12Fence,
             format: Self::format(info.format).ok_or(vk::Result::ERROR_FORMAT_NOT_SUPPORTED)?,
             image_count: info.count,
@@ -135,10 +135,11 @@ impl SwapchainBackend for VulkanVirtualBackend {
             surface_id: SurfaceId(self.binding.logical_id()),
             adapter_luid: self.external.adapter_luid,
             source_window: self.binding.window().handle as i64,
+            hook: GraphicsHook::Vulkan,
             width: self.binding.extent().width,
             height: self.binding.extent().height,
             format: self.format,
-            image_kind: ExternalImageKind::VulkanD3d12Resource,
+            image_kind: ExternalImageKind::D3d12Resource,
             sync_kind: ExternalSyncKind::D3d12Fence,
             image_handles: &self.handles,
             timeline_semaphore_handle: self.ready.raw_handle() as i64,

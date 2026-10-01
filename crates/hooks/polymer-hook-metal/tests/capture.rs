@@ -1,7 +1,7 @@
 #![cfg(target_os = "macos")]
 use objc2_metal::*;
 use polymer_consumer_metal::ImportedMetalStream;
-use polymer_ipc::{LocalSocketListener, Message, frame::FrameSubscriber};
+use polymer_ipc::{LocalSocketListener, Message};
 use polymer_protocol::{ConsumerApi, Handshake, PROTOCOL_VERSION};
 use std::{path::PathBuf, process::Command, time::Duration};
 
@@ -59,14 +59,10 @@ fn injected_drawables_reach_the_shared_consumer() {
         .unwrap();
     let device = MTLCreateSystemDefaultDevice().unwrap();
     let queue = device.newCommandQueue().unwrap();
-    let mut frames = None;
     let mut imported = None;
     let mut received = 0;
     loop {
         match control.receive() {
-            Ok(Message::MapOffer(offer)) => {
-                frames = Some(FrameSubscriber::from_offer(offer).unwrap())
-            }
             Ok(Message::RequestBufferAvailability) => {}
             Ok(Message::StreamReady(stream)) => {
                 imported = Some(
@@ -79,10 +75,7 @@ fn injected_drawables_reach_the_shared_consumer() {
                 );
                 control.send(Message::StreamAccepted).unwrap();
             }
-            Ok(Message::FrameAvailable) => {
-                let Some(frame) = frames.as_mut().unwrap().latest().unwrap() else {
-                    continue;
-                };
+            Ok(Message::FrameReady(frame)) => {
                 let imported = imported.as_ref().unwrap();
                 assert!(imported.ready(frame.sync_value));
                 let mut pixel = [0u8; 4];

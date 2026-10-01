@@ -359,7 +359,7 @@ impl SurfaceOffer {
     }
 
     pub fn backend(&self) -> GraphicsHook {
-        stream_backend(self.stream.image_kind)
+        self.stream.hook
     }
 
     pub const fn connection_id(&self) -> u64 {

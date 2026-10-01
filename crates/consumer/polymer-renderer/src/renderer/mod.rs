@@ -1,7 +1,7 @@
 use std::error::Error;
 
 use crate::layout::{Extent, Point, Rect};
-use polymer_protocol::{FrameReady, PresentationMappingKind, ResizeWindow};
+use polymer_protocol::{FrameReady, ResizeWindow};
 use polymer_runtime::SurfaceOffer;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
@@ -148,31 +148,18 @@ pub struct ReceivedSurface {
     pub frame: FrameReady,
 }
 
-/// Returns the visual extent of a received image. A pre-composition capture
-/// can have a storage aspect ratio that differs from the quad that displayed
-/// it (for example, emulated pixels with a non-square pixel aspect ratio), so
-/// prefer the graph-provided presentation bounds when they are available.
-pub fn frame_image_extent(
-    frame: FrameReady,
-    imported_width: u32,
-    imported_height: u32,
-    quarter_turns: u8,
-) -> Extent {
-    let (stored_width, stored_height) = crate::fit_inside(
-        frame.render_width.max(1),
-        frame.render_height.max(1),
-        imported_width,
-        imported_height,
-    );
-    let (width, height) = if frame.presentation_transform.kind
-        != PresentationMappingKind::Unavailable
-        && frame.capture_width > 0
-        && frame.capture_height > 0
-    {
-        (frame.capture_width, frame.capture_height)
-    } else {
-        (stored_width, stored_height)
-    };
+impl ReceivedSurface {
+    pub fn stream_extent(&self) -> Extent {
+        if self.quarter_turns % 2 == 1 {
+            Extent::new(self.image_extent.height, self.image_extent.width)
+        } else {
+            self.image_extent
+        }
+    }
+}
+
+pub fn image_extent(width: u32, height: u32, quarter_turns: u8) -> Extent {
+    let (width, height) = (width.max(1), height.max(1));
     if quarter_turns % 2 == 1 {
         Extent::new(height, width)
     } else {
@@ -186,6 +173,7 @@ pub struct MappedPointer {
     pub surface_id: u64,
     pub target_window: i64,
     pub frame: FrameReady,
+    pub stream_extent: Extent,
     pub position: Point,
     pub normalized_position: Point,
 }

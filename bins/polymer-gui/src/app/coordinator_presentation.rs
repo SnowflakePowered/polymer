@@ -68,6 +68,7 @@ impl ShellCoordinator {
                         surface.connection,
                         surface.surface_id,
                         surface.target_index,
+                        surface.extent,
                     );
                     shell_refresh_required = true;
                     changed = true;
@@ -79,14 +80,10 @@ impl ShellCoordinator {
                     connection,
                     frame,
                     observed_qpc,
-                    dimensions_changed,
                 } => {
                     self.compositor
                         .borrow_mut()
                         .observe_frame_at(connection, frame, observed_qpc);
-                    if dimensions_changed {
-                        changed = true;
-                    }
                 }
                 GameHostCaptureEvent::Removed {
                     connection,

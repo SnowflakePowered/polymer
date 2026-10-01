@@ -26,6 +26,13 @@ pub trait EguiPainter {
     ) -> Result<(), Box<dyn Error>>;
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct RenderTargetExtent {
+    pub connection: u64,
+    pub target: u32,
+    pub extent: crate::Extent,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct DebugOverlayModel {
     pub backend: String,
@@ -33,12 +40,7 @@ pub struct DebugOverlayModel {
     pub notes: Vec<String>,
     pub frame_number: u64,
     pub slot: u32,
-    pub render_width: u32,
-    pub render_height: u32,
-    pub capture_x: u32,
-    pub capture_y: u32,
-    pub capture_width: u32,
-    pub capture_height: u32,
+    pub render_targets: Vec<RenderTargetExtent>,
     pub statistics: StatisticsSnapshot,
     pub input: InputDiagnostics,
 }
@@ -83,14 +85,14 @@ pub fn draw_debug_overlay(context: &egui::Context, model: &DebugOverlayModel) {
                     ui.strong(format!("Polymer {} via {}", model.backend, model.consumer));
                     ui.label(format!("Frame {}", model.frame_number));
                     ui.label(format!("Slot {}", model.slot));
-                    ui.label(format!(
-                        "Render target {}x{}",
-                        model.render_width, model.render_height
-                    ));
-                    ui.label(format!(
-                        "Scissor ({}, {}) {}x{}",
-                        model.capture_x, model.capture_y, model.capture_width, model.capture_height
-                    ));
+                    for render_target in &model.render_targets {
+                        ui.label(format!(
+                            "Render target {}: {}x{}",
+                            render_target.target,
+                            render_target.extent.width,
+                            render_target.extent.height
+                        ));
+                    }
                     for target in &model.statistics.targets {
                         ui.label(format!(
                             "Target {}: {:.1} FPS · latency {:.2} ms · frame Δ {:.2} ms",

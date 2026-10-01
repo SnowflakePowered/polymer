@@ -3,7 +3,9 @@ use objc2::{rc::Retained, runtime::ProtocolObject};
 use objc2_metal::*;
 use polymer_ipc::xpc::MetalResources;
 use polymer_presentation::{producer::ExportDescriptor, swapchain::*};
-use polymer_protocol::{AdapterLuid, ConsumerApi, ExternalImageKind, ExternalSyncKind, SurfaceId};
+use polymer_protocol::{
+    AdapterLuid, ConsumerApi, ExternalImageKind, ExternalSyncKind, GraphicsHook, SurfaceId,
+};
 use resources::Image;
 use std::{io, sync::Arc};
 
@@ -97,6 +99,7 @@ impl SwapchainBackend for MetalVirtualBackend {
                 high_part: 0,
             },
             source_window: self.binding.window().handle as i64,
+            hook: GraphicsHook::Metal,
             width: self.binding.extent().width,
             height: self.binding.extent().height,
             format: self.profile.format,

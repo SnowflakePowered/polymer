@@ -95,7 +95,7 @@ The IPC protocol is explicitly unstable and can change between versions of Polym
 
 To initialize input over the IPC protocol, an initial handshake is done via a Unix socket on Windows, and NSXPC on macOS (the "transport"). This handshake opens a handle to a memory mapped file containing a ring buffer containing the input state for the lowest-latency input events. Topology change `Blob` messages as well as bidirectional feedback requests (i.e. rumble, speaker, calibration), remain on the transport connection.
 
-For frame signaling, the transport handshake first sends over the handle for the shared memory texture and semaphores. When a frame is ready for presentation, the frame metadata are written into the shared memory ring buffer, and the heartbeat is sent over the transport. 
+For frame signaling, the transport handshake first sends over the handle for the shared memory texture and semaphores. When a frame is ready for presentation, the frame metadata is sent directly over the transport. 
 
 Raw HID messages can't use shared memory and go directly through the transport as a stream. On macOS, FSKit requests are also carried through the transport. 
 
