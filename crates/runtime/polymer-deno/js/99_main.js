@@ -8,6 +8,7 @@ import { createEmulator } from "./06_emulator.js";
 import { createConsoleStorage } from "./08_consolestorage.js";
 import { createControllers } from "./07_controllers.js";
 import { createLibrary } from "./09_library.js";
+import { createJobs } from "./10_jobs.js";
 import { op_controller_api_snapshot, op_machine, op_polymer_next_notification } from "ext:core/ops";
 
 const scraping = createScraping();
@@ -20,6 +21,7 @@ const webrtc = createWebRtc();
 const emulator = createEmulator(webrtc);
 const library = createLibrary();
 const consolestorage = createConsoleStorage(library);
+const jobs = createJobs();
 
 const Polymer = Object.freeze({
   meta: { debug: false },
@@ -32,6 +34,7 @@ const Polymer = Object.freeze({
   webrtc: webrtc.WebRTC,
   consolestorage: consolestorage.ConsoleStorage,
   library: library.Library,
+  jobs: jobs.Jobs,
   machine: (id) => op_machine(String(id)),
 });
 
@@ -60,11 +63,10 @@ function dispatch(event) {
       consolestorage.gameSaved(event.detail);
       break;
     case "pluginEvent":
-      if (event.detail?.name === "installprogress") consolestorage.installChanged(event.detail.detail);
-      else plugin.dispatch(event.detail);
+      plugin.dispatch(event.detail);
       break;
-    case "scrapeJobChanged":
-      scraping.jobChanged(event.detail);
+    case "jobChanged":
+      jobs.changed(event.detail);
       break;
     case "libraryContentChanged":
       library.contentChanged(event.detail);

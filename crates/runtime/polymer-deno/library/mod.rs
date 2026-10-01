@@ -266,17 +266,6 @@ pub(super) async fn op_library_metadata_url(
 
 #[op2]
 #[serde]
-pub(super) async fn op_scraping_jobs(
-    state: Rc<RefCell<OpState>>,
-) -> Result<serde_json::Value, JsErrorBox> {
-    Library::from_state(&state)?
-        .scraping_jobs
-        .call(ScrapingJobs)
-        .await
-}
-
-#[op2]
-#[serde]
 pub(super) async fn op_scraping_start(
     state: Rc<RefCell<OpState>>,
     #[string] root: String,
@@ -288,30 +277,6 @@ pub(super) async fn op_scraping_start(
             root_binary_id: root,
             trigger_binary_id: trigger,
         })
-        .await
-}
-
-#[op2]
-#[serde]
-pub(super) async fn op_scraping_job(
-    state: Rc<RefCell<OpState>>,
-    #[string] id: String,
-) -> Result<serde_json::Value, JsErrorBox> {
-    Library::from_state(&state)?
-        .scraping_job
-        .call(ScrapingJob { id })
-        .await
-}
-
-#[op2]
-#[serde]
-pub(super) async fn op_scraping_retry(
-    state: Rc<RefCell<OpState>>,
-    #[string] id: String,
-) -> Result<serde_json::Value, JsErrorBox> {
-    Library::from_state(&state)?
-        .scraping_retry
-        .call(ScrapingRetry { id })
         .await
 }
 

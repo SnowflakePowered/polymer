@@ -254,15 +254,6 @@ export type PluginEvent<T = unknown> = Readonly<{
   detail: T;
 }>;
 
-export type PluginLoadProgress = Readonly<{
-  id: number;
-  pluginId: string;
-  state: "loading" | "ready" | "failed";
-  message: string;
-  completed: number | null;
-  total: number | null;
-}>;
-
 import type { Package as PackageData, Digestible } from "./package.ts";
 
 export interface Package extends PackageData, Digestible {
@@ -282,29 +273,50 @@ export interface ScrapingApi extends EventTarget {
     fromPath(path: string, options?: { signal?: AbortSignal }): Promise<Package>;
   };
   readonly dropActive: boolean;
-  readonly jobs: Readonly<{
-    list(): Promise<ScrapeJob[]>;
-    get(id: string): Promise<ScrapeJob | null>;
-    start(rootBinaryId: string, options?: { triggerBinaryId?: string }): Promise<ScrapeJob>;
-    retry(id: string): Promise<ScrapeJob>;
-  }>;
+  start(rootBinaryId: string, options?: { triggerBinaryId?: string }): Promise<Job>;
   readonly scrapers: Readonly<{
     list(): Promise<ScraperDescriptor[]>;
     update(id: string): Promise<void>;
   }>;
 }
 
-export type ScrapeJobState = "queued" | "running" | "completed" | "partial" | "failed";
-export type ScrapeAttemptState = "queued" | "running" | "completed" | "failed";
-export type ScrapeJob = Readonly<{
+export type JobKind = "scrape" | "install" | "bootstrap" | "plugin";
+export type JobState = "queued" | "running" | "paused" | "completed" | "partial" | "failed" | "cancelled";
+export type JobStep = Readonly<{ key: string; state: JobState; error: string | null }>;
+/** Background work from any source. Persistent jobs survive restarts and resume. */
+export type Job = Readonly<{
   id: string;
-  rootBinaryId: string;
-  triggerBinaryId: string;
-  state: ScrapeJobState;
+  kind: JobKind;
+  state: JobState;
+  title: string;
+  icon: string | null;
+  subject: Readonly<{ platform?: string; storage?: string; binaryId?: string; pluginId?: string }>;
+  params: unknown;
+  message: string | null;
+  completed: number | null;
+  total: number | null;
+  /** Kind-specific: a StorageInstallStatus while installing, the StorageArtifact once installed. */
+  detail: unknown;
+  error: string | null;
+  persistent: boolean;
   createdAt: number;
   updatedAt: number;
-  attempts: readonly Readonly<{ pluginId: string; state: ScrapeAttemptState; error: string | null }>[];
+  /** For scrapes, one step per scraper keyed by plugin id. */
+  steps: readonly JobStep[];
 }>;
+
+export interface JobsApi extends EventTarget {
+  /** Every known job, newest first; `jobchange` fires with each updated job. */
+  list(): Promise<Job[]>;
+  get(id: string): Promise<Job | null>;
+  /** Cancels a queued or paused job. */
+  cancel(id: string): Promise<Job>;
+  /** Starts a new job with a finished job's parameters. */
+  retry(id: string): Promise<Job>;
+  /** Removes a finished job. */
+  dismiss(id: string): Promise<void>;
+}
+
 export type ScraperDescriptor = Readonly<{ id: string; version: string; requires: readonly string[]; provides: readonly string[] }>;
 
 export type {
@@ -432,16 +444,7 @@ export type StorageInstallStatus = Readonly<{
   phase: InstallPhase; file: string | null; completed: number; total: number;
 }>;
 
-export type StorageInstall = Readonly<{ id: string; platform: string; storage: string; filename: string }> & (
-  | Readonly<{ state: "queued"; detail: null }>
-  | Readonly<{ state: "running"; detail: StorageInstallStatus }>
-  | Readonly<{ state: "complete"; detail: StorageArtifact }>
-  | Readonly<{ state: "failed"; detail: string }>
-);
-
 export interface ConsoleStorageApi extends EventTarget {
-  /** Queued and running installs; `installchange` fires on each update. */
-  readonly installs: readonly StorageInstall[];
   platforms(): Promise<{ platform: string; plugin: string }[]>;
   readonly Storage: {
     readonly prototype: ConsoleStorageVolume;
@@ -498,7 +501,7 @@ export type FirmwareDescription = Readonly<{
   byteLength: number;
 }>;
 
-export type GameImport = Readonly<{ launchable: LibraryLaunchable; scrapeJob: ScrapeJob | null }>;
+export type GameImport = Readonly<{ launchable: LibraryLaunchable; job: Job | null }>;
 export type LibraryImportResult =
   | Readonly<{ kind: "games"; imports: readonly GameImport[] }>
   | Readonly<{ kind: "firmware"; firmware: FirmwareDescription }>
@@ -524,7 +527,7 @@ export interface LibraryApi extends EventTarget {
     delete(rootBinaryId: string): Promise<void>;
   }>;
   readonly launchables: Readonly<{
-    add(input: { path: string; platform?: string; parentBinaryId?: string; artifact?: { storage: string; id: string; entrypoint?: string; package?: string } }): Promise<Readonly<{ launchable: LibraryLaunchable; scrapeJob: ScrapeJob | null; imports?: readonly Readonly<{ launchable: LibraryLaunchable; scrapeJob: ScrapeJob | null }>[] }>>;
+    add(input: { path: string; platform?: string; parentBinaryId?: string; artifact?: { storage: string; id: string; entrypoint?: string; package?: string } }): Promise<Readonly<{ launchable: LibraryLaunchable; job: Job | null; imports?: readonly GameImport[] }>>;
     find(uri: string): Promise<LibraryLaunchable | null>;
     delete(id: string): Promise<void>;
   }>;
@@ -609,6 +612,7 @@ declare global {
       readonly input: InputApi;
       readonly controllers: ControllersApi;
       readonly library: LibraryApi;
+      readonly jobs: JobsApi;
       machine(id: string): MachineSpec | null;
     }>;
   }

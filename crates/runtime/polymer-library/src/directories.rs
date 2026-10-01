@@ -60,6 +60,10 @@ impl Directories {
         self.storage.join("library.db")
     }
 
+    pub fn jobs_database(&self) -> PathBuf {
+        self.storage.join("jobs.db")
+    }
+
     pub fn plugin_database(&self, plugin: &str) -> PathBuf {
         self.storage.join("plugins").join(plugin).join("plugin.db")
     }

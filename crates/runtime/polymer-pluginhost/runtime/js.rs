@@ -84,7 +84,7 @@ impl ExtensionFunction {
 
 deno_core::extension!(
     polymer_plugin_runtime,
-    ops = [super::events::op_plugin_emit_event],
+    ops = [super::events::op_plugin_emit_event, super::jobs::op_job_progress],
     esm_entry_point = "ext:polymer_plugin_runtime/00_invocation.js",
     esm = [dir "runtime/js", "00_invocation.js"],
 );

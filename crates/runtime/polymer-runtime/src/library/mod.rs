@@ -5,7 +5,7 @@ use std::{rc::Rc, sync::Arc};
 
 use actix::{Actor, Addr, Context, System};
 use polymer_deno::polymer::library::Library;
-use polymer_library::{Directories, GameCatalog};
+use polymer_library::{Directories, GameCatalog, jobs::JobStore};
 
 #[derive(Clone)]
 pub struct LibraryService {
@@ -49,31 +49,26 @@ impl Actor for LibraryBackend {
 }
 
 impl LibraryService {
-    pub async fn open(directories: &Directories) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::open_with_plugins(
-            directories,
-            polymer_pluginhost::loading::PluginRegistry::new(),
-        )
-        .await
-    }
-
     pub async fn open_with_plugins(
         directories: &Directories,
         plugins: polymer_pluginhost::loading::PluginRegistry,
+        jobs: Arc<JobStore>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let catalog = Arc::new(GameCatalog::open_local(directories).await?);
-        Ok(Self::start(catalog, plugins, directories.clone()).await?)
+        Ok(Self::start(catalog, plugins, jobs, directories.clone()).await?)
     }
 
     async fn start(
         catalog: Arc<GameCatalog>,
         plugins: polymer_pluginhost::loading::PluginRegistry,
+        jobs: Arc<JobStore>,
         directories: Directories,
     ) -> Result<Self, std::io::Error> {
         let media = server::MediaServer::start(catalog.clone()).await?;
         let firmware_root = directories.firmware();
         let key_root = directories.keys();
-        let scraping = polymer_scraping::ScrapingEngine::new(catalog.clone(), plugins, directories);
+        let scraping =
+            polymer_scraping::ScrapingEngine::new(catalog.clone(), jobs, plugins, directories);
         if let Err(error) = scraping.resume().await {
             tracing::warn!(%error, "could not resume scrape jobs");
         }
@@ -141,10 +136,7 @@ impl LibraryService {
             metadata_replace: self.actor.clone().recipient(),
             metadata_text: self.reader.clone().recipient(),
             metadata_url: self.reader.clone().recipient(),
-            scraping_jobs: self.reader.clone().recipient(),
             scraping_start: self.actor.clone().recipient(),
-            scraping_job: self.reader.clone().recipient(),
-            scraping_retry: self.actor.clone().recipient(),
             scraping_scrapers: self.reader.clone().recipient(),
             scraping_refresh: self.actor.clone().recipient(),
         }
@@ -158,6 +150,10 @@ impl LibraryService {
         &self,
     ) -> crate::launchable_configuration::ConfigurationLocks {
         self.configuration_locks.clone()
+    }
+
+    pub(crate) fn scraping(&self) -> polymer_scraping::ScrapingEngine {
+        self.scraping.clone()
     }
 
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<polymer_scraping::ScrapingEvent> {

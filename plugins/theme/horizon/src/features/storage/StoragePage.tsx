@@ -1,11 +1,10 @@
 import { For, Show, createResource, createSignal, onCleanup, onMount } from "solid-js";
 import { useSearchParams } from "@solidjs/router";
-import type { ConsoleStorageVolume, DepotType, StorageArtifact, StorageInspection, StorageInstall, StorageRemovalPlan } from "../../../../../../js/polymer";
+import type { ConsoleStorageVolume, DepotType, Job, StorageArtifact, StorageInspection, StorageRemovalPlan } from "../../../../../../js/polymer";
 import { css } from "../../../styled-system/css";
 import { Screen, ScreenHeader, MasterDetail, CategoryNavigation, TileGrid, Tile, Icon, DetailList, Section, Button, ActionGroup, Dialog, ConfirmDialog, ActionHints, EmptyState, ErrorState, Progress, Spinner, BannerImage } from "../../ui";
 import { AppSidebar } from "../../components/AppSidebar";
 import { useShell } from "../../app/shell-context";
-import { installPhases } from "./selection";
 import "./StoragePage.css";
 
 const depotTypes: Record<DepotType, string> = { system: "System title", app: "Application", appcontent: "Downloadable content", appupdate: "Update" };
@@ -18,7 +17,7 @@ const titleIcon = css({ width: "100%", flex: 1, minHeight: 0, borderRadius: "con
 const detailBanner = css({ display: "block", width: "100%", aspectRatio: "5 / 3", borderRadius: "card", bg: "panel" });
 const detailIcon = css({ width: "100%", maxWidth: "12rem", aspectRatio: "1", borderRadius: "card", objectFit: "cover", display: "flex", alignItems: "center", justifyContent: "center", bg: "panel", "& svg": { width: "5rem", height: "5rem" } });
 
-const installTitle = (install: StorageInstall) => install.state === "running" ? install.detail.title : null;
+const installing = (job: Job) => job.kind === "install" && (job.state === "queued" || job.state === "running");
 
 function TitleIcon(props: { artifact: StorageArtifact; class: string; icon: string | undefined }) {
   return <Show when={props.icon} fallback={<span class={props.class}><Icon name={props.artifact.depotType === "system" ? "settings" : "gamepad"} tone="muted" strokeWidth={1.2} /></span>}>{icon => <BannerImage class={props.class} src={icon()} />}</Show>;
@@ -37,13 +36,13 @@ export function StoragePage() {
   const [error, setError] = createSignal("");
   const [busy, setBusy] = createSignal(false);
   const api = window.Polymer.consolestorage;
-  const [installs, setInstalls] = createSignal(api.installs);
+  const [installs, setInstalls] = createSignal<Job[]>([]);
   const [inspection, { refetch: reinspect }] = createResource<StorageInspection | undefined, ConsoleStorageVolume>(current, volume => volume.inspect().catch(reason => { setError(reason instanceof Error ? reason.message : String(reason)); return undefined; }));
   const checked = () => current() && !inspection.loading ? inspection() : undefined;
   const loadVolumes = async () => {
     const items = await api.Storage.list({ kind: "nand" });
     setVolumes(items);
-    setSystems([...new Set([...items.map(volume => volume.platform), ...installs().map(install => install.platform)])]);
+    setSystems([...new Set([...items.map(volume => volume.platform), ...installs().flatMap(install => install.subject.platform ?? [])])]);
     if (!platform() && systems()!.length) changePlatform(systems()![0]);
   };
   const refresh = async () => {
@@ -73,19 +72,21 @@ export function StoragePage() {
   };
   onMount(() => {
     const listener = (event: Event) => {
-      const install = (event as CustomEvent<StorageInstall>).detail;
-      setInstalls(api.installs);
-      if (install.state === "queued" && !systems()?.includes(install.platform)) void loadVolumes();
-      if (install.state === "complete" || install.state === "failed") void refresh();
+      const install = (event as CustomEvent<Job>).detail;
+      if (install.kind !== "install") return;
+      setInstalls(items => [...items.filter(item => item.id !== install.id), ...installing(install) ? [install] : []]);
+      if (installing(install) && install.subject.platform && !systems()?.includes(install.subject.platform)) void loadVolumes();
+      if (!installing(install)) void refresh();
     };
-    api.addEventListener("installchange", listener);
-    onCleanup(() => api.removeEventListener("installchange", listener));
+    window.Polymer.jobs.addEventListener("jobchange", listener);
+    onCleanup(() => window.Polymer.jobs.removeEventListener("jobchange", listener));
+    void window.Polymer.jobs.list().then(jobs => setInstalls(jobs.filter(installing))).catch(reason => setError(String(reason)));
     void api.platforms().then(items => setPlatforms(items.map(item => item.platform))).catch(reason => setError(String(reason)));
     void loadVolumes().catch(reason => setError(String(reason)));
   });
 
   const [artifactId, setArtifactId] = createSignal<string | null>(null);
-  const pending = () => installs().filter(install => install.storage === current()?.id);
+  const pending = () => installs().filter(install => install.subject.storage === current()?.id);
   const artifact = () => checked()?.artifacts.find(item => item.id === artifactId()) ?? checked()?.artifacts[0];
   const systemItems = () => [...new Set([...systems() ?? [], ...platform() ? [platform()] : []])].map(value => ({ value, label: window.Polymer.machine(value)?.name ?? value }));
   return <div class="horizon-storage-shell"><AppSidebar /><Screen class="horizon-storage" hints={[{ action: "move", label: "Change pane" }, { action: "back", label: "Back" }, { action: "activate", label: "Select" }]} onAction={action => { if (action.type !== "back") return false; shell.navigate("/"); return true; }}>
@@ -107,9 +108,9 @@ export function StoragePage() {
             <Show when={shell.model.draft?.platform === platform()}><Button disabled={busy() || checked()?.dirty} onClick={() => shell.launchDraft()}>Continue launch</Button></Show>
           </ActionGroup></Show>
           <Section title="Installed titles"><Show when={checked()?.artifacts.length || pending().length} fallback={<Show when={checked()} fallback={<Spinner label="Checking NAND" />}><EmptyState title="No titles installed" description="Drag a title package onto your library to install it." /></Show>}>
-            <TileGrid class={titleGrid} aria-label="Installed titles"><For each={pending()}>{install => <Tile class={titleTile} aria-label={`Installing ${installTitle(install)?.label ?? install.filename}`}>
-              <Show when={installTitle(install)?.icon} fallback={<span class={titleIcon}><Icon name="gamepad" tone="muted" strokeWidth={1.2} /></span>}>{icon => <BannerImage class={titleIcon} src={icon()} />}</Show>
-              <Progress label={install.state === "running" ? installPhases[install.detail.phase] : "Waiting to install"} completed={install.state === "running" ? install.detail.completed : undefined} total={install.state === "running" ? install.detail.total : undefined} />
+            <TileGrid class={titleGrid} aria-label="Installed titles"><For each={pending()}>{install => <Tile class={titleTile} aria-label={`Installing ${install.title}`}>
+              <Show when={install.icon} fallback={<span class={titleIcon}><Icon name="gamepad" tone="muted" strokeWidth={1.2} /></span>}>{icon => <BannerImage class={titleIcon} src={icon()} />}</Show>
+              <Progress label={install.message ?? "Waiting to install"} completed={install.completed ?? undefined} total={install.total ?? undefined} />
             </Tile>}</For><For each={checked()?.artifacts ?? []}>{item => <Tile class={titleTile} selected={artifact()?.id === item.id} aria-label={item.label} onFocus={() => setArtifactId(item.id)} onClick={() => setArtifactId(item.id)}>
               <TitleIcon artifact={item} icon={item.icons[0]} class={titleIcon} />
             </Tile>}</For></TileGrid>

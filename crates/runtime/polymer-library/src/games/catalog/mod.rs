@@ -410,13 +410,25 @@ impl GameCatalog {
                 ).await?;
                 connection.execute_batch(SCHEMA).await?;
             }
-            2 | 3 | 4 => connection.execute_batch(SCHEMA).await?,
+            2..=4 => {
+                connection
+                    .execute_batch(
+                        "DROP TABLE IF EXISTS scrape_attempts; DROP TABLE IF EXISTS scrape_jobs;",
+                    )
+                    .await?;
+                connection.execute_batch(SCHEMA).await?;
+            }
             5 => {
                 connection.execute_batch(
-                    "ALTER TABLE launchables ADD COLUMN package TEXT CHECK (package IS NULL OR length(package) > 0); PRAGMA user_version = 6;"
+                    "ALTER TABLE launchables ADD COLUMN package TEXT CHECK (package IS NULL OR length(package) > 0); DROP TABLE IF EXISTS scrape_attempts; DROP TABLE IF EXISTS scrape_jobs; PRAGMA user_version = 7;"
                 ).await?;
             }
-            6 => {}
+            6 => {
+                connection.execute_batch(
+                    "DROP TABLE IF EXISTS scrape_attempts; DROP TABLE IF EXISTS scrape_jobs; PRAGMA user_version = 7;"
+                ).await?;
+            }
+            7 => {}
             version => {
                 return Err(GameCatalogError::InvalidData(format!(
                     "library database schema version {version} is not supported"
@@ -542,6 +554,21 @@ impl GameCatalog {
         } else {
             Ok(Vec::new())
         }
+    }
+
+    /// The root binary of `binary`, which is `binary` itself unless it is a disc of a game.
+    pub async fn root_binary(&self, binary: Uuid) -> Result<Uuid, GameCatalogError> {
+        let connection = self.connection().await?;
+        let mut rows = connection
+            .query(
+                "SELECT COALESCE(parent_binary_id, id) FROM binaries WHERE id = ?1",
+                [Self::id(binary)],
+            )
+            .await?;
+        rows.next()
+            .await?
+            .ok_or_else(|| GameCatalogError::NotFound(binary.simple().to_string()))
+            .and_then(|row| Self::uuid(row.get_value(0)?))
     }
 
     pub(super) async fn require_root(

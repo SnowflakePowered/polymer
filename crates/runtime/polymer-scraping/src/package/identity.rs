@@ -42,26 +42,25 @@ impl Package {
         .await
         .map_err(|error| GameCatalogError::InvalidData(error.to_string()))?
         .map_err(|error| GameCatalogError::InvalidData(error.to_string()))?;
-        catalog
-            .import_package(
-                IdentifiedLaunchable {
-                    manifest: package.manifest,
-                    path: package.uri,
-                    entrypoint: seed.entrypoint,
-                    package: seed.package,
-                    binary_blake3,
-                    serial: package.serial,
-                    title_id: package.title_id,
-                    parent_binary_id: seed.parent_binary_id,
-                    platform: package.platform,
-                },
-                vec![
-                    ("host:gumshoe".to_owned(), seed.gumshoe),
-                    ("host:shiratsu".to_owned(), seed.filename),
-                    // Clear legacy eager hashes when reimporting an existing game.
-                    ("host:raw-file".to_owned(), Vec::new()),
-                ],
-            )
-            .await
+        Box::pin(catalog.import_package(
+            IdentifiedLaunchable {
+                manifest: package.manifest,
+                path: package.uri,
+                entrypoint: seed.entrypoint,
+                package: seed.package,
+                binary_blake3,
+                serial: package.serial,
+                title_id: package.title_id,
+                parent_binary_id: seed.parent_binary_id,
+                platform: package.platform,
+            },
+            vec![
+                ("host:gumshoe".to_owned(), seed.gumshoe),
+                ("host:shiratsu".to_owned(), seed.filename),
+                // Clear legacy eager hashes when reimporting an existing game.
+                ("host:raw-file".to_owned(), Vec::new()),
+            ],
+        ))
+        .await
     }
 }

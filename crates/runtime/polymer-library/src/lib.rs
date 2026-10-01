@@ -3,6 +3,7 @@ pub mod directories;
 pub mod firmware;
 pub mod games;
 pub mod inputstore;
+pub mod jobs;
 pub mod keys;
 pub mod quickresume;
 pub mod storage;
@@ -13,7 +14,7 @@ pub use games::{
     CuePart, CueTemplate, Game, GameCatalog, GameCatalogError, IdentifiedLaunchable,
     InstalledArtifact, Launchable, LaunchableUri, MediaData, MediaResource, Metadata, MetadataData,
     MetadataInput, MetadataInputData, MetadataValue, PackageFile, PackageManifest,
-    ResolvedLaunchable, ScrapeAttempt, ScrapeAttemptState, ScrapeJob, ScrapeJobState,
+    ResolvedLaunchable,
 };
 pub use inputstore::{
     InputIdentityScope, InputMappingMode, InputMappingProfile, InputStore, InputStoreError,

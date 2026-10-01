@@ -1,4 +1,4 @@
-import type { InstallablePackage, LibraryApi, LibraryGame, ScrapingApi, ScrapeJob, StorageArtifact } from "./polymer";
+import type { InstallablePackage, Job, JobsApi, LibraryApi, LibraryGame, StorageArtifact } from "./polymer";
 
 export type LibraryEntry = {
   path: string;
@@ -20,7 +20,7 @@ export type LibrarySnapshot = { games: LibraryEntry[]; status: string; activitie
 export class LibraryState {
   private games: LibraryGame[] = [];
   private entries = new Map<string, LibraryEntry>();
-  private jobs = new Map<string, ScrapeJob>();
+  private jobs = new Map<string, Job>();
   private sessionJobs = new Set<string>();
   private jobsLoaded = false;
   private imports = new Map<symbol, string>();
@@ -32,7 +32,7 @@ export class LibraryState {
 
   constructor(
     private library: LibraryApi,
-    private scraping: ScrapingApi,
+    private jobsApi: JobsApi,
     private changed: (snapshot: LibrarySnapshot) => void,
     private failed: (error: unknown) => void,
     private install: (installable: InstallablePackage, bootstrap: boolean) => Promise<{ storage: string; artifact: StorageArtifact }>,
@@ -40,7 +40,7 @@ export class LibraryState {
 
   start() {
     this.library.addEventListener("contentchange", this.refresh);
-    this.scraping.addEventListener("jobstatechange", this.jobChanged);
+    this.jobsApi.addEventListener("jobchange", this.jobChanged);
     this.refresh();
     void this.pollJobs();
   }
@@ -49,13 +49,13 @@ export class LibraryState {
     this.disposed = true;
     clearTimeout(this.pollTimer);
     this.library.removeEventListener("contentchange", this.refresh);
-    this.scraping.removeEventListener("jobstatechange", this.jobChanged);
+    this.jobsApi.removeEventListener("jobchange", this.jobChanged);
   }
 
   private async pollJobs() {
     const previous = new Map(this.jobs);
     try {
-      const jobs = await this.scraping.jobs.list();
+      const jobs = (await this.jobsApi.list()).filter(job => job.kind === "scrape");
       if (this.disposed) return;
       let changed = false;
       for (const job of jobs) {
@@ -118,7 +118,7 @@ export class LibraryState {
         this.publish();
         await Promise.all(result.installables.map(async item => {
           const { storage, artifact } = await this.install(item, true);
-          const { scrapeJob: job } = await this.library.launchables.add({
+          const { job } = await this.library.launchables.add({
             path: item.path, platform: item.platform,
             artifact: { storage, id: artifact.id, entrypoint: artifact.entrypoint, package: artifact.package },
           });
@@ -127,7 +127,7 @@ export class LibraryState {
         this.refresh();
         return;
       }
-      for (const { scrapeJob: job } of result.imports) {
+      for (const { job } of result.imports) {
         // Notifications may already have advanced beyond the enqueue response.
         if (job && !this.jobs.has(job.id)) this.updateJob(job, true);
       }
@@ -166,14 +166,15 @@ export class LibraryState {
   };
 
   private jobChanged = (event: Event) => {
-    const job = (event as CustomEvent<ScrapeJob>).detail;
+    const job = (event as CustomEvent<Job>).detail;
+    if (job.kind !== "scrape") return;
     if (JSON.stringify(this.jobs.get(job.id)) === JSON.stringify(job)) return;
     this.updateJob(job, true);
     this.publish();
     if (job.state !== "queued" && job.state !== "running") this.refresh();
   };
 
-  private updateJob(job: ScrapeJob, notify: boolean) {
+  private updateJob(job: Job, notify: boolean) {
     const previous = this.jobs.get(job.id);
     // Terminal jobs are announced once. Later snapshots and metadata refreshes
     // must not recreate an expired or dismissed completion notice.
@@ -206,15 +207,15 @@ export class LibraryState {
     return undefined;
   }
 
-  private progress(job: ScrapeJob): string {
-    const game = this.games.find(game => game.id === job.rootBinaryId);
+  private progress(job: Job): string {
+    const game = this.games.find(game => game.id === job.subject.binaryId);
     const name = game ? this.title(game) : "Game";
-    const done = job.attempts.filter(attempt => attempt.state === "completed" || attempt.state === "failed").length;
-    const active = job.attempts.filter(attempt => attempt.state === "running").map(attempt => attempt.pluginId);
-    const errors = job.attempts.filter(attempt => attempt.error).map(attempt => `${attempt.pluginId}: ${attempt.error}`);
+    const done = job.steps.filter(step => step.state === "completed" || step.state === "failed").length;
+    const active = job.steps.filter(step => step.state === "running").map(step => step.key);
+    const errors = [...job.steps.filter(step => step.error).map(step => `${step.key}: ${step.error}`), ...(job.error ? [job.error] : [])];
     const detail = errors.length ? errors.join("; ") : active.join(", ");
-    const state = job.state === "completed" && !job.attempts.length ? "No matching scrapers" : `Scraping ${job.state}`;
-    return `${name}: ${state} (${done}/${job.attempts.length} scrapers)${detail ? ` — ${detail}` : ""}`;
+    const state = job.state === "completed" && !job.steps.length ? "No matching scrapers" : `Scraping ${job.state}`;
+    return `${name}: ${state} (${done}/${job.steps.length} scrapers)${detail ? ` — ${detail}` : ""}`;
   }
 
   private publish() {
@@ -227,8 +228,8 @@ export class LibraryState {
       ...(this.imports.size ? [{ id: "imports", title: "Identifying games and firmware", message: [...this.imports.values()].join(", "), state: "running" as const }] : []),
       ...jobs.filter(job => this.sessionJobs.has(job.id) && job.state !== "queued" && job.state !== "running").map(job => ({ id: job.id, title: "Scraping game library", message: this.progress(job),
         state: (job.state === "completed" ? "complete" : "error") as LibraryActivity["state"],
-        completed: job.attempts.filter(attempt => attempt.state === "completed" || attempt.state === "failed").length,
-        total: job.attempts.length,
+        completed: job.steps.filter(step => step.state === "completed" || step.state === "failed").length,
+        total: job.steps.length,
       })),
     ];
     this.firmwareActivities.clear();
@@ -237,11 +238,11 @@ export class LibraryState {
     }
     this.changed({
       games: [...this.entries].map(([id, entry]) => {
-        const gameJobs = active.filter(job => job.rootBinaryId === id);
-        const attempts = gameJobs.flatMap(job => job.attempts);
+        const gameJobs = active.filter(job => job.subject.binaryId === id);
+        const steps = gameJobs.flatMap(job => job.steps);
         return { ...entry, scraping: gameJobs.length ? {
-          completed: attempts.filter(attempt => attempt.state === "completed" || attempt.state === "failed").length,
-          total: attempts.length,
+          completed: steps.filter(step => step.state === "completed" || step.state === "failed").length,
+          total: steps.length,
         } : undefined };
       }),
       activities,

@@ -71,24 +71,16 @@ async fn op_platform_install(
         let path = binding.path(&state, &path, cache.as_deref())?;
         (binding, path)
     };
-    let events = state
-        .borrow()
-        .borrow::<Arc<crate::runtime::EventEmitter>>()
-        .clone();
+    let report =
+        crate::runtime::jobs::PluginJobs::current(&state.borrow()).map(|job| job.reporter());
     let (manager, platform, id) = binding.target.as_ref().ok_or_else(|| {
         JsErrorBox::type_error("NAND installation is only available during host-owned bootstrap")
     })?;
     manager
         .install(platform, *id, &path, move |status| {
-            events.publish(
-                "loadprogress",
-                json!({
-                    "state": "loading",
-                    "message": status.file.clone().unwrap_or_else(|| status.phase.to_string()),
-                    "completed": status.completed,
-                    "total": status.total,
-                }),
-            );
+            if let Some(report) = &report {
+                report(status.into());
+            }
         })
         .await
         .map_err(JsErrorBox::generic)

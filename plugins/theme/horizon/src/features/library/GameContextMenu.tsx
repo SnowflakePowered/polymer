@@ -9,7 +9,7 @@ export function GameContextMenu(props: { game: RecentGame; onClose(): void }) {
   const rescrape = async () => {
     try {
       const game = await find();
-      if (game) await window.Polymer.scraping.jobs.start(game.id);
+      if (game) await window.Polymer.scraping.start(game.id);
     } catch (error) {
       shell.setModel("error", `Could not rescrape ${props.game.name}: ${String(error)}`);
     }

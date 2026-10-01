@@ -111,6 +111,7 @@ impl ShellCoordinator {
             directories: _,
             local_storage: _,
             library: _,
+            jobs: _,
         } = options;
 
         let compositor_proxy = proxy.clone();

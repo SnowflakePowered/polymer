@@ -19,6 +19,7 @@ export const onLaunch = (args: EmulatorLaunchArgs<unknown, Readonly<{ hdd?: Stor
     for (const file of ["RPCS3.buf", "RPCS3.log", "RPCS3.log.gz", "TTY.log"]) fs.mount(`/RPCS3/${file}`, new Uint8Array(), { mode: "rw" });
     fs.mount("/User");
     fs.mount("/User/Temp");
+    fs.mount("/User/AppData/Local", caches.driver, { mode: "rwx" });
     let game: string;
     if (args.package.uri.startsWith("artifact://")) {
         const title = [args.package.titleId, args.package.serial].find(id => id && /^[A-Z]{4}[0-9]{5}$/.test(id));

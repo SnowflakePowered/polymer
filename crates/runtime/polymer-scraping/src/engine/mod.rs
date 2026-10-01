@@ -1,8 +1,10 @@
 mod media;
 
 use polymer_library::{
-    GameCatalog, GameCatalogError, MetadataData, MetadataValue, ScrapeAttemptState, ScrapeJob,
-    ScrapeJobState,
+    GameCatalog, GameCatalogError, MetadataData, MetadataValue,
+    jobs::{
+        Job, JobError, JobHandle, JobKind, JobProgress, JobSpec, JobState, JobStore, JobSubject,
+    },
 };
 use polymer_pluginhost::{
     loading::PluginRegistry,
@@ -24,12 +26,12 @@ pub struct ScrapingEngine {
 
 #[derive(Clone, Debug)]
 pub enum ScrapingEvent {
-    JobChanged(ScrapeJob),
     LibraryContentChanged { root_binary_id: Uuid },
 }
 
 struct EngineInner {
     catalog: Arc<GameCatalog>,
+    jobs: Arc<JobStore>,
     _runtime: Arc<PluginRuntime>,
     handle: PluginRuntimeHandle,
     client: reqwest::Client,
@@ -63,6 +65,10 @@ pub enum ScrapingError {
     #[error(transparent)]
     Library(#[from] GameCatalogError),
     #[error(transparent)]
+    Job(#[from] JobError),
+    #[error("the game was removed from the library")]
+    GameRemoved,
+    #[error(transparent)]
     Plugin(#[from] PluginInvocationError),
     #[error("media request failed: {0}")]
     Media(#[from] reqwest::Error),
@@ -90,6 +96,7 @@ impl ScrapingError {
 impl ScrapingEngine {
     pub fn new(
         catalog: Arc<GameCatalog>,
+        jobs: Arc<JobStore>,
         registry: PluginRegistry,
         directories: polymer_library::Directories,
     ) -> Self {
@@ -98,17 +105,23 @@ impl ScrapingEngine {
             directories,
             PluginRuntimeOptions {
                 max_concurrent_calls: 8,
+                jobs: Some(jobs.clone()),
             },
         ));
-        Self::with_runtime(catalog, runtime)
+        Self::with_runtime(catalog, jobs, runtime)
     }
 
-    fn with_runtime(catalog: Arc<GameCatalog>, runtime: Arc<PluginRuntime>) -> Self {
+    fn with_runtime(
+        catalog: Arc<GameCatalog>,
+        jobs: Arc<JobStore>,
+        runtime: Arc<PluginRuntime>,
+    ) -> Self {
         let handle = runtime.handle();
         let (events, _) = tokio::sync::broadcast::channel(64);
         Self {
             inner: Arc::new(EngineInner {
                 catalog,
+                jobs,
                 _runtime: runtime,
                 handle,
                 client: reqwest::Client::builder()
@@ -123,6 +136,10 @@ impl ScrapingEngine {
 
     pub fn catalog(&self) -> &Arc<GameCatalog> {
         &self.inner.catalog
+    }
+
+    pub fn jobs(&self) -> &Arc<JobStore> {
+        &self.inner.jobs
     }
 
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<ScrapingEvent> {
@@ -143,7 +160,13 @@ impl ScrapingEngine {
             .plugins::<dyn ScraperPluginInstance>()
     }
 
-    pub async fn enqueue(&self, root: Uuid, trigger: Uuid) -> Result<ScrapeJob, ScrapingError> {
+    pub async fn enqueue(&self, root: Uuid, trigger: Uuid) -> Result<Job, ScrapingError> {
+        if self.inner.catalog.root_binary(trigger).await? != root {
+            return Err(GameCatalogError::InvalidData(
+                "scrape trigger does not belong to the root game".to_owned(),
+            )
+            .into());
+        }
         let input = self.input(trigger).await?;
         let plugins = self
             .scrapers()
@@ -151,17 +174,22 @@ impl ScrapingEngine {
             .filter(|plugin| plugin.accepts(&input))
             .map(|plugin| plugin.id().to_owned())
             .collect::<Vec<_>>();
-        let (job, created) = self
-            .inner
-            .catalog
-            .queue_scrape(root, trigger, &plugins)
-            .await?;
+        let (root, trigger) = (root.simple().to_string(), trigger.simple().to_string());
+        let (job, created) = Box::pin(self.inner.jobs.enqueue(JobSpec {
+            kind: JobKind::Scrape,
+            title: "Scraping metadata".to_owned(),
+            subject: JobSubject {
+                binary_id: Some(root.clone()),
+                ..Default::default()
+            },
+            params: serde_json::json!({ "rootBinaryId": root, "triggerBinaryId": trigger }),
+            dedupe: Some(format!("{root}:{trigger}")),
+            steps: plugins,
+            persistent: true,
+        }))
+        .await?;
         if created {
-            tracing::info!(job = %job.id, root = %root, scrapers = job.attempts.len(), "scrape job queued");
-            let _ = self
-                .inner
-                .events
-                .send(ScrapingEvent::JobChanged(job.clone()));
+            tracing::info!(job = %job.id, root = %root, scrapers = job.steps.len(), "scrape job queued");
             let engine = self.clone();
             let id = job.id;
             tokio::spawn(async move {
@@ -176,7 +204,7 @@ impl ScrapingEngine {
     /// Load every scraper and resume jobs interrupted by the previous process.
     pub async fn resume(&self) -> Result<(), ScrapingError> {
         self.inner.handle.load::<dyn ScraperPluginInstance>();
-        let jobs = self.inner.catalog.recover_scrape_jobs().await?;
+        let jobs = self.inner.jobs.recover(JobKind::Scrape).await?;
         for job in jobs {
             let engine = self.clone();
             tokio::spawn(async move {
@@ -188,15 +216,26 @@ impl ScrapingEngine {
         Ok(())
     }
 
-    pub async fn retry(&self, id: Uuid) -> Result<ScrapeJob, ScrapingError> {
+    pub async fn retry(&self, id: Uuid) -> Result<Job, ScrapingError> {
         let job = self
             .inner
-            .catalog
-            .scrape_job(id)
+            .jobs
+            .get(id)
             .await?
-            .ok_or_else(|| GameCatalogError::NotFound(id.simple().to_string()))?;
-        self.enqueue(job.root_binary_id, job.trigger_binary_id)
-            .await
+            .ok_or(JobError::NotFound(id))?;
+        let (root, trigger) = Self::targets(&job)?;
+        self.enqueue(root, trigger).await
+    }
+
+    fn targets(job: &Job) -> Result<(Uuid, Uuid), ScrapingError> {
+        let binary = |key: &str| {
+            job.params
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .and_then(|id| Uuid::parse_str(id).ok())
+                .ok_or_else(|| JobError::InvalidData(format!("scrape job has no {key}")))
+        };
+        Ok((binary("rootBinaryId")?, binary("triggerBinaryId")?))
     }
 
     pub async fn refresh(&self, plugin_id: &str) -> Result<(), ScrapingError> {
@@ -222,20 +261,19 @@ impl ScrapingEngine {
     }
 
     async fn run(&self, id: Uuid) -> Result<(), ScrapingError> {
-        if !self.inner.catalog.claim_scrape_job(id).await? {
+        let Some(handle) = self.inner.jobs.claim(id).await? else {
             return Ok(());
-        }
-        self.publish_job(id).await;
-        let outcome = self.execute_job(id).await;
-        let state = match &outcome {
-            Ok(state) => *state,
+        };
+        let handle = Arc::new(handle);
+        let outcome = self.execute_job(&handle).await;
+        let (state, error) = match &outcome {
+            Ok(state) => (*state, None),
             Err(error) => {
                 tracing::warn!(%error, job = %id, "scrape job execution failed");
-                ScrapeJobState::Failed
+                (JobState::Failed, Some(error.to_string()))
             }
         };
-        self.inner.catalog.set_scrape_job_state(id, state).await?;
-        self.publish_job(id).await;
+        handle.finish(state, error).await?;
         outcome.map(|_| ())
     }
 
@@ -243,26 +281,31 @@ impl ScrapingEngine {
     /// scraper provides one of its inputs. A scraper that records results leaves the job;
     /// one that fails or matches nothing runs again once another scraper's results change
     /// the input. The job ends when no eligible scraper is left to run.
-    async fn execute_job(&self, id: Uuid) -> Result<ScrapeJobState, ScrapingError> {
-        let job = self
+    async fn execute_job(&self, handle: &Arc<JobHandle>) -> Result<JobState, ScrapingError> {
+        let job = handle.job().await?;
+        let (root, trigger) = Self::targets(&job)?;
+        if self
             .inner
             .catalog
-            .scrape_job(id)
+            .launchables_for_binary(trigger)
             .await?
-            .ok_or_else(|| GameCatalogError::NotFound(id.simple().to_string()))?;
+            .is_empty()
+        {
+            return Err(ScrapingError::GameRemoved);
+        }
         let mut pending = self
             .scrapers()
             .iter()
             .map(|plugin| plugin.id().to_owned())
             .filter(|plugin| {
-                !job.attempts.iter().any(|attempt| {
-                    attempt.plugin_id == *plugin && attempt.state == ScrapeAttemptState::Completed
-                })
+                !job.steps
+                    .iter()
+                    .any(|step| step.key == *plugin && step.state == JobState::Completed)
             })
             .collect::<std::collections::BTreeSet<_>>();
         let mut stale = std::collections::BTreeSet::new();
         loop {
-            let input = self.input(job.trigger_binary_id).await?;
+            let input = self.input(trigger).await?;
             let eligible = self
                 .scrapers()
                 .into_iter()
@@ -281,9 +324,11 @@ impl ScrapingEngine {
                 let engine = self.clone();
                 let input = input.clone();
                 let plugin = plugin.id().to_owned();
-                let (root, trigger) = (job.root_binary_id, job.trigger_binary_id);
+                let handle = handle.clone();
                 tasks.spawn(async move {
-                    let matched = engine.attempt(id, root, trigger, &plugin, input).await?;
+                    let matched = engine
+                        .attempt(&handle, root, trigger, &plugin, input)
+                        .await?;
                     Ok::<_, ScrapingError>((plugin, matched))
                 });
             }
@@ -298,21 +343,15 @@ impl ScrapingEngine {
                 stale.clear();
             }
         }
-        let attempts = self
-            .inner
-            .catalog
-            .scrape_job(id)
-            .await?
-            .map(|job| job.attempts)
-            .unwrap_or_default();
-        let completed = attempts
+        let steps = handle.job().await?.steps;
+        let completed = steps
             .iter()
-            .filter(|attempt| attempt.state == ScrapeAttemptState::Completed)
+            .filter(|step| step.state == JobState::Completed)
             .count();
-        Ok(match (completed, attempts.len() - completed) {
-            (_, 0) => ScrapeJobState::Completed,
-            (0, _) => ScrapeJobState::Failed,
-            _ => ScrapeJobState::Partial,
+        Ok(match (completed, steps.len() - completed) {
+            (_, 0) => JobState::Completed,
+            (0, _) => JobState::Failed,
+            _ => JobState::Partial,
         })
     }
 
@@ -342,53 +381,35 @@ impl ScrapingEngine {
     /// Run one scraper attempt, returning whether it recorded any results.
     async fn attempt(
         &self,
-        id: Uuid,
+        handle: &JobHandle,
         root: Uuid,
         trigger: Uuid,
         plugin: &str,
         input: ScrapeInput,
     ) -> Result<bool, ScrapingError> {
-        let catalog = &self.inner.catalog;
-        catalog
-            .set_scrape_attempt(id, plugin, ScrapeAttemptState::Running, None)
-            .await?;
+        let id = handle.id();
+        handle.step(plugin, JobState::Running, None).await?;
         tracing::info!(job = %id, scraper = %plugin, "scraper started");
-        self.publish_job(id).await;
         let (state, error) = match self.run_plugin(root, trigger, plugin, input).await {
-            Ok(0) => (
-                ScrapeAttemptState::Failed,
-                Some("No matching metadata".to_owned()),
-            ),
-            Ok(_) => (ScrapeAttemptState::Completed, None),
-            Err(error) => (ScrapeAttemptState::Failed, Some(error.to_string())),
+            Ok(0) => (JobState::Failed, Some("No matching metadata".to_owned())),
+            Ok(_) => (JobState::Completed, None),
+            Err(error) => (JobState::Failed, Some(error.to_string())),
         };
         tracing::info!(job = %id, scraper = %plugin, ?state, error = ?error, "scraper finished");
-        catalog
-            .set_scrape_attempt(id, plugin, state, error.as_deref())
+        let job = handle.step(plugin, state, error.as_deref()).await?;
+        let finished = job
+            .steps
+            .iter()
+            .filter(|step| matches!(step.state, JobState::Completed | JobState::Failed))
+            .count();
+        handle
+            .progress(JobProgress {
+                completed: Some(finished as u64),
+                total: Some(job.steps.len() as u64),
+                ..Default::default()
+            })
             .await?;
-        self.publish_job(id).await;
-        Ok(state == ScrapeAttemptState::Completed)
-    }
-
-    async fn publish_job(&self, id: Uuid) {
-        match self.inner.catalog.scrape_job(id).await {
-            Ok(Some(job)) => {
-                let finished = job
-                    .attempts
-                    .iter()
-                    .filter(|attempt| {
-                        matches!(
-                            attempt.state,
-                            ScrapeAttemptState::Completed | ScrapeAttemptState::Failed
-                        )
-                    })
-                    .count();
-                tracing::info!(job = %id, state = ?job.state, finished, total = job.attempts.len(), "scrape job progress");
-                let _ = self.inner.events.send(ScrapingEvent::JobChanged(job));
-            }
-            Ok(None) => {}
-            Err(error) => tracing::warn!(%error, job = %id, "could not publish scrape job"),
-        }
+        Ok(state == JobState::Completed)
     }
 
     async fn input(&self, binary: Uuid) -> Result<ScrapeInput, ScrapingError> {

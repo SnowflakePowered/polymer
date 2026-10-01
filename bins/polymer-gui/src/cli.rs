@@ -21,6 +21,7 @@ pub struct ShellOptions {
     pub directories: polymer_library::Directories,
     pub local_storage: Option<polymer_deno::webstorage::LocalStorage>,
     pub library: Option<polymer_runtime::LibraryService>,
+    pub jobs: Option<std::sync::Arc<polymer_library::jobs::JobStore>>,
 }
 
 pub async fn parse() -> Result<ShellOptions, Box<dyn Error>> {
@@ -45,16 +46,29 @@ pub async fn parse() -> Result<ShellOptions, Box<dyn Error>> {
             None
         }
     };
-    let library =
-        match polymer_runtime::LibraryService::open_with_plugins(&directories, plugins.clone())
-            .await
+    let jobs = match polymer_library::jobs::JobStore::open(directories.jobs_database()).await {
+        Ok(jobs) => Some(jobs),
+        Err(error) => {
+            eprintln!("polymer: could not open jobs database: {error}");
+            None
+        }
+    };
+    let library = match &jobs {
+        Some(jobs) => match polymer_runtime::LibraryService::open_with_plugins(
+            &directories,
+            plugins.clone(),
+            jobs.clone(),
+        )
+        .await
         {
             Ok(library) => Some(library),
             Err(error) => {
                 eprintln!("polymer: could not open games library: {error}");
                 None
             }
-        };
+        },
+        None => None,
+    };
     let saved_theme = saved_theme(local_storage.as_ref()).await;
     let theme = select_theme(&plugins, arguments.theme.as_deref(), saved_theme.as_deref())?;
     let theme = crate::theme::SelectedTheme::new(theme, arguments.debug);
@@ -65,6 +79,7 @@ pub async fn parse() -> Result<ShellOptions, Box<dyn Error>> {
         directories,
         local_storage,
         library,
+        jobs,
     })
 }
 

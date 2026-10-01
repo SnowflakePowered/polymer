@@ -6,9 +6,9 @@ This repository hosts the Polymer emulator frontend platform ("Polymer"),  the "
 
 
 ## Overview
-Polymer is a sui-generis emulator frontend that goes beyond launching a program with arguments. Using DLL hooking to reimplement core parts of the operating system stack, Polymer is able to integrate with standalone emulators at a deep level.
+Polymer is a sui-generis emulator frontend that goes beyond launching a program with arguments. Using library hooking to reimplement core parts of the operating system stack, Polymer is able to integrate with standalone emulators at a deep level.
 
-Polymer currently supports Windows only, but is designed in such a way that only certain leaf crates must be implemented to extend support for macOS and Linux.
+Polymer currently supports Windows and macOS, with support for Linux planned at a later point.
 
 At its core, Polymer consists of five parts:
 
@@ -204,16 +204,30 @@ The `input` block defines input mapping for Polymer's virtual gamepad. Targets m
 
 ##### Filesystem Mounting
 
-During `onLaunch`, emulator plugins must define the filesytem that the emulator executes in. For this, it provides a multitude of mount methods.
+During `onLaunch`, emulator plugins must define the filesytem that the emulator executes in. For this, it provides a `mount` method that can mount various different types of `Mountable` objects.
 
-* `mountTree` -- Mounts a `DirEntry` or URL as a tree under the route.
+* `Package` -- The "natural entrypoint" for the game to be launched. This could be a single ROM or ISO file, CUE+BIN bundles, or an installed bundle of files. After a `Package` is mounted, `mount` returns the natural entrypoint that can be passed to the emulator `argv` for the package.
+* `Storage` -- A managed storage device, such as savegame memory cards, system NANDs, and other devices for the emulated platform managed by Polymer.
+  * Omitting the file format mounts it as its natural directory or file format. 
+  * `raw` -- For memory cards, mount it as a raw memory card file structure
+  * `dolphin` -- For GCI memory cards, mounts it as a GameCube Memory Card folder in Dolphin's format.
+  * `pcsx2` --- For PS2 memory cards, mounts it as a PCSX2 Memory Card folder.
+  * Any writes to save storages are persisted in the save repository, and system NAND writes are discarded. 
+* `Configuration` -- A configuration file rendered to its target format. This is mounted in memory and can be refreshed with `Configuration.flush()`.
+* `Uint8Array` -- Any raw byte buffer stored in memory.
+* `DirEntry` -- Any directory or file backed by the real filesystem. The plugin runtime limits external filesystem access to within declared plugin caches or files within the plugin package itself.
+
+Scratch directories can also be mounted by omitting an object to mount. These directories are backed by a temporary directory on disk and are torn down when the emulator exists.
+<!--TODO: figure out SD cards-->
+
+<!-- * `mountTree` -- Mounts a `DirEntry` or URL as a tree under the route.
 * `mountScratch` -- Mounts a scratch directory that is backed either by memory or by a temporary directory on disk. This directory is deleted after the emulator shuts down.
 * `mountStorage` -- Mounts a managed storage device in `args.storage`. Depending on the storage, it may be mounted under the following formats.
   * Omitting the file format mounts it as its natural directory or file format. 
   * `raw` -- For memory cards, mount it as a raw memory card file structure
   * `dolphin` -- For GCI memory cards, mounts it as a GameCube Memory Card folder in Dolphin's format.
   * `pcsx2` --- For PS3 memory cards, mounts it as a PCSX2 Memory Card folder.
-* `mountFile` -- Mount either raw bytes which are hosted in memory, or a `FileEntry`. 
+* `mountFile` -- Mount either raw bytes which are hosted in memory, or a `FileEntry`.  -->
 
 #### `scraper` plugins
 

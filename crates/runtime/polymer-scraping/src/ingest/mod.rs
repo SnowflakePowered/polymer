@@ -50,7 +50,7 @@ impl Ingestor {
     pub async fn import(
         engine: &ScrapingEngine,
         packages: Vec<Package>,
-    ) -> Result<Vec<(Launchable, Option<polymer_library::ScrapeJob>)>, ScrapingError> {
+    ) -> Result<Vec<(Launchable, Option<polymer_library::jobs::Job>)>, ScrapingError> {
         let mut imported = Vec::new();
         for package in packages {
             let (launchable, created) = package.import(engine.catalog()).await?;

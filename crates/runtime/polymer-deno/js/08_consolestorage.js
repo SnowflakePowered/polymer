@@ -141,19 +141,10 @@ export function createConsoleStorage(library) {
     }
   }
 
-  const installs = new Map();
-  function installChanged(detail) {
-    const install = Object.freeze({ ...detail });
-    if (install.state === "complete" || install.state === "failed") installs.delete(install.id);
-    else installs.set(install.id, install);
-    ConsoleStorage.dispatchEvent(new CustomEvent("installchange", { detail: install }));
-  }
-
   const ConsoleStorage = new EventTarget();
   Object.defineProperties(ConsoleStorage, {
     Storage: { value: Storage },
     platforms: { value: () => op_consolestorage_platforms() },
-    installs: { get: () => [...installs.values()] },
   });
-  return Object.freeze({ ConsoleStorage, gameSaved, installChanged });
+  return Object.freeze({ ConsoleStorage, gameSaved });
 }

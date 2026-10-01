@@ -10233,6 +10233,7 @@ dependencies = [
  "blake3",
  "consolespec",
  "crc32fast",
+ "dashmap",
  "directories",
  "dunce",
  "futures-util",
