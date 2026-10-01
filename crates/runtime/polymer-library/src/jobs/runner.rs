@@ -105,7 +105,10 @@ impl JobStore {
 impl JobHandle {
     /// Finishes the job with how its work ended: an outcome records its final progress
     /// and state, and an error fails the job.
-    pub async fn settle<E: Display>(&self, outcome: Result<JobOutcome, E>) -> Result<Job, JobError> {
+    pub async fn settle<E: Display>(
+        &self,
+        outcome: Result<JobOutcome, E>,
+    ) -> Result<Job, JobError> {
         match outcome {
             Ok(JobOutcome { state, progress }) => {
                 if let Some(progress) = progress {

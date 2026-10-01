@@ -15,7 +15,7 @@ fn connects_with_redirected_guest_temp() {
         let Message::Hello(_) = socket.receive().unwrap() else {
             panic!("expected host handshake");
         };
-        socket.send(Message::Shutdown).unwrap();
+        socket.send(Message::StreamAccepted).unwrap();
         return;
     }
 
@@ -32,7 +32,7 @@ fn connects_with_redirected_guest_temp() {
                 process_id: std::process::id(),
                 preferred_consumer: ConsumerApi::D3d12,
             }))?;
-            assert_eq!(socket.receive()?, Message::Shutdown);
+            assert_eq!(socket.receive()?, Message::StreamAccepted);
             Ok(())
         });
         let output = Command::new(std::env::current_exe().unwrap())

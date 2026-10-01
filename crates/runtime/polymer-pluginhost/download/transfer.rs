@@ -1,5 +1,4 @@
 use deno_error::JsErrorBox;
-use uuid::Uuid;
 use polymer_library::{
     digest::DigestAlgorithm,
     jobs::{JobHandle, JobProgress},
@@ -12,6 +11,7 @@ use std::{
     path::PathBuf,
     sync::Arc,
 };
+use uuid::Uuid;
 
 const CHECKPOINT_INTERVAL: u64 = 8 * 1024 * 1024;
 

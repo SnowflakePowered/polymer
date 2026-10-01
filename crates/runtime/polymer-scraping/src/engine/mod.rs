@@ -146,10 +146,10 @@ impl ScrapingEngine {
                 events,
             }),
         };
-        engine
-            .inner
-            .jobs
-            .register(&[JobKind::Scrape, JobKind::Refresh], Arc::new(engine.clone()));
+        engine.inner.jobs.register(
+            &[JobKind::Scrape, JobKind::Refresh],
+            Arc::new(engine.clone()),
+        );
         engine
     }
 

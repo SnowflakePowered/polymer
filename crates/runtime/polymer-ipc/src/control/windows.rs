@@ -184,36 +184,6 @@ impl LocalSocket {
             thread::sleep(CONNECT_RETRY_DELAY);
         }
     }
-
-    /// Buffer partial messages without blocking, returning only complete messages.
-    pub fn try_receive(&mut self) -> io::Result<Option<Message>> {
-        use windows_sys::Win32::Networking::WinSock::{FIONREAD, ioctlsocket};
-        let mut available = 0;
-        if unsafe {
-            ioctlsocket(
-                self.stream.as_raw_socket() as SOCKET,
-                FIONREAD,
-                &mut available,
-            )
-        } != 0
-        {
-            return Err(io::Error::from_raw_os_error(unsafe { WSAGetLastError() }));
-        }
-        let available = self.incoming.len() + available as usize;
-        let header_len = mem::size_of::<WireMessage>();
-        self.read_control_until(available.min(header_len))?;
-        if self.incoming.len() < header_len {
-            return Ok(None);
-        }
-        let wire = WireMessage::ref_from_bytes(&self.incoming[..header_len])
-            .map_err(|_| invalid_data("invalid wire message layout"))?;
-        let total = header_len + wire.data_len()?;
-        self.read_control_until(available.min(total))?;
-        if self.incoming.len() < total {
-            return Ok(None);
-        }
-        self.receive().map(Some)
-    }
 }
 fn initialize_winsock() -> io::Result<()> {
     let result = *WINSOCK.get_or_init(|| {

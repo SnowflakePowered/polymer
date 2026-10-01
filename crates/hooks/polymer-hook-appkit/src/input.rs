@@ -40,7 +40,6 @@ impl Input {
                             }
                         });
                     }
-                    Message::Shutdown => return Ok(()),
                     _ => {}
                 }
             }

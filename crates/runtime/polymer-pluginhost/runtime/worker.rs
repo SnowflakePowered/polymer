@@ -275,7 +275,8 @@ pub(super) async fn plugin_exports(
     let exports = ExtensionFunction::get(runtime, "__polymerPluginRuntime", "exports")
         .map_err(PluginInvocationError::worker)?;
     let values =
-        [ExtensionFunction::argument(runtime, entrypoint).map_err(PluginInvocationError::worker)?];
+        [ExtensionFunction::argument(runtime, entrypoint)
+            .map_err(PluginInvocationError::worker)?];
     let resolved = exports
         .call(runtime, &values)
         .await

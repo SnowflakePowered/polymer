@@ -106,7 +106,10 @@ impl NcchHeader {
         }
         let mut key_y: [u8; 16] = self.signature[..0x10].try_into().expect("fixed signature");
         if let Some(seed) = seed {
-            let digest = Sha256::new().chain_update(key_y).chain_update(seed).finalize();
+            let digest = Sha256::new()
+                .chain_update(key_y)
+                .chain_update(seed)
+                .finalize();
             key_y.copy_from_slice(&digest[..0x10]);
         }
         let key_y = u128::from_be_bytes(key_y);
@@ -117,7 +120,9 @@ impl NcchHeader {
         let program_id = self.program_id.get();
         let seed = if self.flags[7] & (FIXED_KEY | SEED_CRYPTO) == SEED_CRYPTO {
             let seed = seed.ok_or_else(|| {
-                io::Error::other(format!("NCCH seed for {program_id:016X} is not in the key store"))
+                io::Error::other(format!(
+                    "NCCH seed for {program_id:016X} is not in the key store"
+                ))
             })?;
             let check = Sha256::new()
                 .chain_update(seed)

@@ -34,9 +34,20 @@ impl Transfer {
     /// checkpoint of the file's previous job, so an interrupted or failed download resumes
     /// the next time the file is requested. A download of the same file already running is
     /// waited on instead of started again.
-    async fn run_as_job(mut self, store: Arc<JobStore>, plugin: String, key: String) -> Result<(), JsErrorBox> {
-        let failed = |error: polymer_library::jobs::JobError| JsErrorBox::generic(error.to_string());
-        let title = self.path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    async fn run_as_job(
+        mut self,
+        store: Arc<JobStore>,
+        plugin: String,
+        key: String,
+    ) -> Result<(), JsErrorBox> {
+        let failed =
+            |error: polymer_library::jobs::JobError| JsErrorBox::generic(error.to_string());
+        let title = self
+            .path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
         let spec = JobSpec {
             kind: JobKind::Download,
             parent: self.parent,
@@ -59,12 +70,16 @@ impl Transfer {
             let done = store.wait(job.id).await.map_err(failed)?;
             return match done.state {
                 JobState::Completed => Ok(()),
-                _ => Err(JsErrorBox::generic(
-                    done.error.unwrap_or_else(|| format!("{} was not downloaded", done.title)),
-                )),
+                _ => {
+                    Err(JsErrorBox::generic(done.error.unwrap_or_else(|| {
+                        format!("{} was not downloaded", done.title)
+                    })))
+                }
             };
         };
-        if let Some(previous) = previous.filter(|previous| created && previous.state != JobState::Completed) {
+        if let Some(previous) =
+            previous.filter(|previous| created && previous.state != JobState::Completed)
+        {
             handle.record(previous.detail).await.map_err(failed)?;
         }
         let handle = Arc::new(handle);
@@ -103,7 +118,11 @@ async fn op_download(
         (transfer, jobs)
     };
     match jobs.and_then(|jobs| Some((jobs.store?, jobs.plugin))) {
-        Some((store, plugin)) => transfer.run_as_job(store, plugin, format!("{cache}/{path}")).await,
+        Some((store, plugin)) => {
+            transfer
+                .run_as_job(store, plugin, format!("{cache}/{path}"))
+                .await
+        }
         None => transfer.run().await,
     }
 }

@@ -281,43 +281,39 @@ fn receive_connection(
             if shared.revoked(connection) || shared.stopping.load(Ordering::Acquire) {
                 return Ok(());
             }
-            match message {
-                Message::StreamReady(stream) => {
-                    #[cfg(target_os = "macos")]
-                    let timeline = {
-                        let resources = socket
-                            .take_stream_resources()
-                            .ok_or_else(|| std::io::Error::other("missing Metal resources"))?;
-                        let timeline = ProducerTimeline::open(&resources)?;
-                        shared.resources.insert(connection, resources);
-                        timeline
-                    };
-                    // Importing the offer consumes the stream's handles, so the
-                    // ready timeline is opened first.
-                    #[cfg(windows)]
-                    let timeline =
-                        ProducerTimeline::open(&stream).map_err(std::io::Error::other)?;
-                    let (accepted, response) = oneshot::oneshot();
-                    (callbacks.offer)(connection, stream, accepted);
-                    // Every offer is resolved, and shutdown rejects pending ones
-                    // before joining this thread.
-                    let accepted_stream = response.recv().unwrap_or(false);
-                    if !accepted_stream {
-                        return Ok(());
-                    }
-                    let timeline = Arc::new(timeline);
-                    shared.timelines.insert(connection, timeline.clone());
-                    let watcher_shared = shared.clone();
-                    connections.lock().push(
-                        thread::Builder::new()
-                            .name(format!("polymer-runtime-frames-{connection}"))
-                            .spawn(move || watcher_shared.watch_frames(connection, &timeline))?,
-                    );
-                    socket.send(Message::StreamAccepted)?;
-                }
-                Message::Shutdown => return Ok(()),
-                _ => {}
+            let Message::StreamReady(stream) = message else {
+                continue;
+            };
+            #[cfg(target_os = "macos")]
+            let timeline = {
+                let resources = socket
+                    .take_stream_resources()
+                    .ok_or_else(|| std::io::Error::other("missing Metal resources"))?;
+                let timeline = ProducerTimeline::open(&resources)?;
+                shared.resources.insert(connection, resources);
+                timeline
+            };
+            // Importing the offer consumes the stream's handles, so the
+            // ready timeline is opened first.
+            #[cfg(windows)]
+            let timeline = ProducerTimeline::open(&stream).map_err(std::io::Error::other)?;
+            let (accepted, response) = oneshot::oneshot();
+            (callbacks.offer)(connection, stream, accepted);
+            // Every offer is resolved, and shutdown rejects pending ones
+            // before joining this thread.
+            let accepted_stream = response.recv().unwrap_or(false);
+            if !accepted_stream {
+                return Ok(());
             }
+            let timeline = Arc::new(timeline);
+            shared.timelines.insert(connection, timeline.clone());
+            let watcher_shared = shared.clone();
+            connections.lock().push(
+                thread::Builder::new()
+                    .name(format!("polymer-runtime-frames-{connection}"))
+                    .spawn(move || watcher_shared.watch_frames(connection, &timeline))?,
+            );
+            socket.send(Message::StreamAccepted)?;
         }
     })();
     if let Err(error) = result

@@ -483,7 +483,9 @@ async fn scraping_refreshes_contents_a_plugin_reports_missing_before_its_first_s
         .collect::<Vec<_>>();
     assert_eq!(
         genres,
-        [MetadataData::Scalar(MetadataValue::String("Action".to_owned()))]
+        [MetadataData::Scalar(MetadataValue::String(
+            "Action".to_owned()
+        ))]
     );
     let refreshes = jobs
         .list()
@@ -523,7 +525,8 @@ async fn a_titles_cached_updates_are_replaced_by_its_latest_check() {
         )
         .await
         .unwrap();
-    let candidate = |version: &str| serde_json::json!({ "titleId": "BLES00229", "version": version });
+    let candidate =
+        |version: &str| serde_json::json!({ "titleId": "BLES00229", "version": version });
     catalog
         .replace_updates(launchable.id, &[candidate("01.01"), candidate("01.02")], 1)
         .await

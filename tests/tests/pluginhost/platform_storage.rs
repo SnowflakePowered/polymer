@@ -690,7 +690,10 @@ async fn jobs_started_in_a_run_scope_are_its_children_across_awaits() {
             .unwrap();
         assert_eq!(parent.state, JobState::Completed);
         assert_eq!(child.parent, Some(parent.id));
-        assert_eq!(child.message.as_deref(), Some(format!("{title} work").as_str()));
+        assert_eq!(
+            child.message.as_deref(),
+            Some(format!("{title} work").as_str())
+        );
     }
 }
 

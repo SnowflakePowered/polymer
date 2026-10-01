@@ -3,9 +3,7 @@ use objc2::{rc::Retained, runtime::ProtocolObject};
 use objc2_metal::*;
 use polymer_ipc::xpc::MetalResources;
 use polymer_presentation::{producer::ExportDescriptor, swapchain::*};
-use polymer_protocol::{
-    AdapterLuid, ConsumerApi, ExternalImageKind, GraphicsHook, SurfaceId,
-};
+use polymer_protocol::{AdapterLuid, ConsumerApi, ExternalImageKind, GraphicsHook, SurfaceId};
 use resources::Image;
 use std::{io, sync::Arc};
 
