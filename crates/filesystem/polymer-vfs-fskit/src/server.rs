@@ -1,6 +1,6 @@
 use crate::wire::{Attributes, Entry, Frame, MAX_IO, Request, Response};
 use parking_lot::Mutex;
-use polymer_ipc::xpc::{Connection, Listener, Packet};
+use polymer_ipc::xpc::{Connection, Listener};
 use polymer_vfs::{
     CreateOptions, FileKind, MetadataChanges, OpenFile, OpenOptions, PreparedFilesystem,
     RemoveKind, VfsError, VfsPathBuf, VfsResult,
@@ -95,28 +95,12 @@ struct Session {
 impl Session {
     fn serve(&mut self, connection: &Connection) -> io::Result<()> {
         loop {
-            let packet = connection.receive(None)?;
-            if packet.file.is_some()
-                || !packet.surfaces.is_empty()
-                || packet.event.is_some()
-                || packet.consumer_event.is_some()
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "unexpected VFS attachment",
-                ));
-            }
-            let request = Frame::decode(&packet.data)?;
+            let call = connection.receive_call(None)?;
+            let request = Frame::decode(&call.data)?;
             let response = self
                 .dispatch(request)
                 .unwrap_or_else(|error| Response::Error(Server::errno(error)));
-            connection.send(
-                Packet {
-                    data: Frame::encode(&response)?,
-                    ..Default::default()
-                },
-                None,
-            )?;
+            call.reply(&Frame::encode(&response)?);
         }
     }
 

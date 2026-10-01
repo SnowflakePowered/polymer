@@ -1,7 +1,6 @@
 # Polymer on Linux
 
-A feasibility investigation, companion to [MACOS.md](MACOS.md) and
-[ARCHITECTURE.md](ARCHITECTURE.md).
+A feasibility investigation, companion to [ARCHITECTURE.md](ARCHITECTURE.md).
 
 > **Status: investigation; no Polymer implementation changes.** The initial assessment was
 > source-only. The container experiment below now validates some launch and software-rendering

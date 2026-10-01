@@ -2,7 +2,7 @@ use crate::wire::{Frame, Request, Response};
 use objc2::{AnyThread, rc::Retained};
 use objc2_foundation::{NSError, NSPOSIXErrorDomain, NSString, NSUUID};
 use objc2_fs_kit::{FSGenericURLResource, FSResource, FSVolumeIdentifier};
-use polymer_ipc::xpc::{Connection as XpcConnection, Packet};
+use polymer_ipc::xpc::Connection as XpcConnection;
 use std::{io, time::Duration};
 
 pub(super) struct Resource {
@@ -73,35 +73,11 @@ impl Connection {
             .collect();
         XpcConnection::connect(&name).map(Self)
     }
-    pub fn call(&mut self, request: &Request) -> io::Result<Response> {
-        let data = Frame::encode(request)?;
+    pub fn call(&self, request: &Request) -> io::Result<Response> {
         let reply = self
             .0
-            .send(
-                Packet {
-                    data,
-                    ..Default::default()
-                },
-                None,
-            )
-            .and_then(|()| self.0.receive(Some(Duration::from_secs(30))));
-        let packet = match reply {
-            Ok(packet) => packet,
-            Err(error) => {
-                self.0.close();
-                return Err(error);
-            }
-        };
-        if packet.file.is_some()
-            || !packet.surfaces.is_empty()
-            || packet.event.is_some()
-            || packet.consumer_event.is_some()
-        {
-            self.0.close();
-            return Err(Error::protocol());
-        }
-        let response = Frame::decode(&packet.data).inspect_err(|_| self.0.close())?;
-        match response {
+            .call(&Frame::encode(request)?, Some(Duration::from_secs(30)))?;
+        match Frame::decode(&reply)? {
             Response::Error(code) => Err(io::Error::from_raw_os_error(code)),
             response => Ok(response),
         }

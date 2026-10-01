@@ -12,7 +12,8 @@ optional file, IOSurface array, producer shared-event handle, and consumer
 shared-event handle attachments. Metal resource import and rendering remain
 the frontend's responsibility. IOSurfaces are non-global, and event handles
 travel as NSXPC objects rather than serialized archives. Raw HID uses the same
-XPC transport on macOS and retains named pipes on Windows.
+XPC transport on macOS and retains named pipes on Windows. `Connection::call`
+sends a bytes-only request answered by exactly one `Call::reply`.
 
 `gg.polymer.ipc` is a per-user launchd service that introduces named anonymous
 listeners. It only transfers `NSXPCListenerEndpoint` capabilities: after lookup,
