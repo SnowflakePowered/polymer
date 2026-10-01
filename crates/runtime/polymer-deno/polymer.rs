@@ -33,15 +33,17 @@ use consolestorage::{
 #[path = "jobs/mod.rs"]
 pub mod jobs;
 pub use jobs::Jobs;
-use jobs::{op_jobs_cancel, op_jobs_dismiss, op_jobs_get, op_jobs_list, op_jobs_retry};
+use jobs::{
+    op_jobs_cancel, op_jobs_dismiss, op_jobs_get, op_jobs_import, op_jobs_list, op_jobs_retry,
+};
 
 #[path = "library/mod.rs"]
 pub mod library;
 
 pub use library::Library;
 use library::{
-    op_library_games_delete, op_library_games_get, op_library_games_list, op_library_import,
-    op_library_import_key, op_library_keys_list, op_library_keys_platforms, op_library_keys_remove,
+    op_library_games_delete, op_library_games_get, op_library_games_list, op_library_import_key,
+    op_library_keys_list, op_library_keys_platforms, op_library_keys_remove,
     op_library_launchables_add, op_library_launchables_delete, op_library_launchables_find,
     op_library_metadata_add, op_library_metadata_delete, op_library_metadata_replace,
     op_library_metadata_text, op_library_metadata_update, op_library_metadata_url,
@@ -562,7 +564,6 @@ deno_core::extension!(
         op_library_games_list,
         op_library_games_get,
         op_library_games_delete,
-        op_library_import,
         op_library_import_key,
         op_library_keys_list,
         op_library_keys_platforms,
@@ -577,7 +578,7 @@ deno_core::extension!(
         op_library_metadata_text,
         op_library_metadata_url,
         op_scraping_start, op_scraping_scrapers, op_scraping_refresh,
-        op_jobs_list, op_jobs_get, op_jobs_cancel, op_jobs_retry, op_jobs_dismiss,
+        op_jobs_list, op_jobs_get, op_jobs_cancel, op_jobs_retry, op_jobs_dismiss, op_jobs_import,
         op_emulator_launch,
         op_emulator_close,
         op_emulator_set_volume,

@@ -10,18 +10,6 @@ pub use messages::*;
 
 #[op2]
 #[serde]
-pub(super) async fn op_library_import(
-    state: Rc<RefCell<OpState>>,
-    #[string] path: String,
-) -> Result<serde_json::Value, JsErrorBox> {
-    Library::from_state(&state)?
-        .import
-        .call(LibraryImport { path })
-        .await
-}
-
-#[op2]
-#[serde]
 pub(super) async fn op_library_import_key(
     state: Rc<RefCell<OpState>>,
     #[string] platform: String,

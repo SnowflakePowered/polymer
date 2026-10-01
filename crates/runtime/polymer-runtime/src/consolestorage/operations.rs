@@ -2,9 +2,7 @@ use super::StorageActor;
 use actix::{Context, Handler, ResponseActFuture};
 use polymer_deno::polymer::consolestorage::*;
 use polymer_library::StorageKind;
-use polymer_library::jobs::JobKind;
 use polymer_vfs::ExclusiveResourceKey;
-use serde_json::json;
 use std::sync::Arc;
 
 impl Handler<Platforms> for StorageActor {
@@ -84,15 +82,7 @@ impl Handler<Install> for StorageActor {
     ) -> Self::Result {
         self.execute(move |manager, plugins| async move {
             let id = Self::parse(&id)?;
-            let filename = path
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_else(|| path.display().to_string());
-            let spec = Self::job_spec(
-                JobKind::Install,
-                filename,
-                json!({ "platform": platform, "storage": id.simple().to_string(), "path": path }),
-            );
+            let spec = super::StorageService::install_spec(&platform, id, &path);
             let job = Self::jobs(&plugins)?
                 .start(spec)
                 .await
@@ -116,11 +106,7 @@ impl Handler<Bootstrap> for StorageActor {
     ) -> Self::Result {
         self.execute(move |manager, plugins| async move {
             let id = Self::parse(&id)?;
-            let spec = Self::job_spec(
-                JobKind::Bootstrap,
-                "Installing system files".to_owned(),
-                json!({ "platform": platform, "storage": id.simple().to_string(), "settings": settings }),
-            );
+            let spec = super::StorageService::bootstrap_spec(&platform, id, settings);
             let job = Self::jobs(&plugins)?
                 .start(spec)
                 .await

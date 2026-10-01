@@ -8,7 +8,10 @@ use polymer_library::{
 use polymer_pluginhost::runtime::PluginRuntimeHandle;
 use polymer_vfs::ExclusiveResourceKey;
 use serde_json::{Value, json};
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use uuid::Uuid;
 
 /// Resumes install and bootstrap jobs that a previous process left unfinished.
@@ -52,6 +55,46 @@ impl Handler<RunJob> for StorageActor {
     }
 }
 
+impl super::StorageService {
+    /// A job that installs the package at `path` into a NAND.
+    pub(crate) fn install_spec(platform: &str, storage: Uuid, path: &Path) -> JobSpec {
+        let title = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string());
+        Self::spec(
+            JobKind::Install,
+            title,
+            json!({ "platform": platform, "storage": storage.simple().to_string(), "path": path }),
+        )
+    }
+
+    /// A job that runs a platform plugin's bootstrap into a NAND.
+    pub(crate) fn bootstrap_spec(platform: &str, storage: Uuid, settings: Value) -> JobSpec {
+        Self::spec(
+            JobKind::Bootstrap,
+            "Installing system files".to_owned(),
+            json!({ "platform": platform, "storage": storage.simple().to_string(), "settings": settings }),
+        )
+    }
+
+    fn spec(kind: JobKind, title: String, params: Value) -> JobSpec {
+        JobSpec {
+            kind,
+            title,
+            subject: JobSubject {
+                platform: params["platform"].as_str().map(str::to_owned),
+                storage: params["storage"].as_str().map(str::to_owned),
+                ..Default::default()
+            },
+            params,
+            dedupe: None,
+            steps: Vec::new(),
+            persistent: true,
+        }
+    }
+}
+
 impl StorageActor {
     async fn run_job(
         manager: Arc<StorageManager>,
@@ -77,22 +120,6 @@ impl StorageActor {
             .jobs()
             .cloned()
             .ok_or_else(|| StorageError::from("jobs are unavailable"))
-    }
-
-    pub(super) fn job_spec(kind: JobKind, title: String, params: Value) -> JobSpec {
-        JobSpec {
-            kind,
-            title,
-            subject: JobSubject {
-                platform: params["platform"].as_str().map(str::to_owned),
-                storage: params["storage"].as_str().map(str::to_owned),
-                ..Default::default()
-            },
-            params,
-            dedupe: None,
-            steps: Vec::new(),
-            persistent: true,
-        }
     }
 
     /// Installs a package into a NAND. A resumed install first discards what the

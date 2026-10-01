@@ -1,4 +1,4 @@
-import type { InstallablePackage, Job, JobsApi, LibraryApi, LibraryGame, StorageArtifact } from "./polymer";
+import type { Job, JobsApi, LibraryApi, LibraryGame, LibraryImportResult } from "./polymer";
 
 export type LibraryEntry = {
   path: string;
@@ -23,7 +23,7 @@ export class LibraryState {
   private jobs = new Map<string, Job>();
   private sessionJobs = new Set<string>();
   private jobsLoaded = false;
-  private imports = new Map<symbol, string>();
+  private imports = new Map<string, Job>();
   private firmwareActivities = new Map<string, LibraryActivity>();
   private firmwareRevision = 0;
   private revision = 0;
@@ -35,7 +35,6 @@ export class LibraryState {
     private jobsApi: JobsApi,
     private changed: (snapshot: LibrarySnapshot) => void,
     private failed: (error: unknown) => void,
-    private install: (installable: InstallablePackage, bootstrap: boolean) => Promise<{ storage: string; artifact: StorageArtifact }>,
   ) {}
 
   start() {
@@ -55,8 +54,11 @@ export class LibraryState {
   private async pollJobs() {
     const previous = new Map(this.jobs);
     try {
-      const jobs = (await this.jobsApi.list()).filter(job => job.kind === "scrape");
+      const listed = await this.jobsApi.list();
       if (this.disposed) return;
+      // Imports resumed after a restart may have started before this listener.
+      listed.filter(job => job.kind === "import" && (job.state === "queued" || job.state === "running")).forEach(this.importChanged);
+      const jobs = listed.filter(job => job.kind === "scrape");
       let changed = false;
       for (const job of jobs) {
         // A notification received during the request is newer than this snapshot.
@@ -78,65 +80,46 @@ export class LibraryState {
   }
 
   async import(path: string) {
-    const token = Symbol();
-    this.imports.set(token, path.split(/[\\/]/).pop() || path);
-    this.publish();
     try {
-      const result = await this.library.import({ path });
-      if (result.kind === "firmware") {
-        const revision = ++this.firmwareRevision;
-        const item = result.firmware;
-        const key = JSON.stringify([item.platform, item.label]);
-        this.firmwareActivities.set(key, {
-          id: `firmware:${key}:${revision}`, title: "Firmware installed",
-          message: `${item.label} (${item.platform})`, state: "complete",
-        });
-        return;
-      }
-      if (result.kind === "keys") {
-        const revision = ++this.firmwareRevision;
-        this.firmwareActivities.set(`keys:${result.platform}`, {
-          id: `keys:${result.platform}:${revision}`, title: "Keys imported",
-          message: `${result.count} keys (${result.platform})`, state: "complete",
-        });
-        return;
-      }
-      if (result.kind === "system") {
-        this.imports.delete(token);
-        this.publish();
-        const { platform, version } = result;
-        await this.install({ path: result.path, filename: result.filename, platform, titleId: null }, false);
-        const revision = ++this.firmwareRevision;
-        this.firmwareActivities.set(`system:${platform}`, {
-          id: `system:${platform}:${revision}`, title: "System software installed",
-          message: `${version} (${platform})`, state: "complete",
-        });
-        return;
-      }
-      if (result.kind === "installables") {
-        this.imports.delete(token);
-        this.publish();
-        await Promise.all(result.installables.map(async item => {
-          const { storage, artifact } = await this.install(item, true);
-          const { job } = await this.library.launchables.add({
-            path: item.path, platform: item.platform,
-            artifact: { storage, id: artifact.id, entrypoint: artifact.entrypoint, package: artifact.package },
-          });
-          if (job && !this.jobs.has(job.id)) this.updateJob(job, true);
-        }));
-        this.refresh();
-        return;
-      }
-      for (const { job } of result.imports) {
-        // Notifications may already have advanced beyond the enqueue response.
-        if (job && !this.jobs.has(job.id)) this.updateJob(job, true);
-      }
-      this.refresh();
+      this.importChanged(await this.library.import({ path }));
     } catch (error) {
       if (!this.disposed) this.failed(error);
-    } finally {
-      this.imports.delete(token);
-      this.publish();
+    }
+  }
+
+  private importChanged = (job: Job) => {
+    const previous = this.imports.get(job.id);
+    // Notifications may already have advanced beyond the enqueue response.
+    if (previous && previous.updatedAt >= job.updatedAt) return;
+    const active = (state: Job["state"]) => state === "queued" || state === "running";
+    this.imports.set(job.id, job);
+    if (!active(job.state) && (!previous || active(previous.state))) {
+      if (job.state === "failed") this.failed(new Error(job.error ?? `Could not import ${job.title}`));
+      else this.announce((job.detail as { result?: LibraryImportResult } | null)?.result);
+      this.refresh();
+    }
+    this.publish();
+  };
+
+  private announce(result: LibraryImportResult | undefined) {
+    const revision = ++this.firmwareRevision;
+    if (result?.kind === "firmware") {
+      const item = result.firmware;
+      const key = JSON.stringify([item.platform, item.label]);
+      this.firmwareActivities.set(key, {
+        id: `firmware:${key}:${revision}`, title: "Firmware installed",
+        message: `${item.label} (${item.platform})`, state: "complete",
+      });
+    } else if (result?.kind === "keys") {
+      this.firmwareActivities.set(`keys:${result.platform}`, {
+        id: `keys:${result.platform}:${revision}`, title: "Keys imported",
+        message: `${result.count} keys (${result.platform})`, state: "complete",
+      });
+    } else if (result?.kind === "system") {
+      this.firmwareActivities.set(`system:${result.platform}`, {
+        id: `system:${result.platform}:${revision}`, title: "System software installed",
+        message: `${result.version} (${result.platform})`, state: "complete",
+      });
     }
   }
 
@@ -167,6 +150,7 @@ export class LibraryState {
 
   private jobChanged = (event: Event) => {
     const job = (event as CustomEvent<Job>).detail;
+    if (job.kind === "import") return this.importChanged(job);
     if (job.kind !== "scrape") return;
     if (JSON.stringify(this.jobs.get(job.id)) === JSON.stringify(job)) return;
     this.updateJob(job, true);
@@ -220,12 +204,13 @@ export class LibraryState {
 
   private publish() {
     if (this.disposed) return;
+    const importing = [...this.imports.values()].filter(job => job.state === "queued" || job.state === "running");
     const jobs = [...this.jobs.values()].sort((a, b) => b.updatedAt - a.updatedAt);
     const active = jobs.filter(job => job.state === "queued" || job.state === "running");
     const visible = active.length ? active : jobs.slice(0, 1);
     const activities: LibraryActivity[] = [
       ...this.firmwareActivities.values(),
-      ...(this.imports.size ? [{ id: "imports", title: "Identifying games and firmware", message: [...this.imports.values()].join(", "), state: "running" as const }] : []),
+      ...(importing.length ? [{ id: "imports", title: "Importing games and firmware", message: importing.map(job => job.title).join(", "), state: "running" as const }] : []),
       ...jobs.filter(job => this.sessionJobs.has(job.id) && job.state !== "queued" && job.state !== "running").map(job => ({ id: job.id, title: "Scraping game library", message: this.progress(job),
         state: (job.state === "completed" ? "complete" : "error") as LibraryActivity["state"],
         completed: job.steps.filter(step => step.state === "completed" || step.state === "failed").length,
@@ -246,7 +231,7 @@ export class LibraryState {
         } : undefined };
       }),
       activities,
-      status: [...this.imports.values()].map(name => `Identifying ${name}…`).concat(visible.map(job => this.progress(job))).join(" · "),
+      status: importing.map(job => `${job.message ?? `Importing ${job.title}`}…`).concat(visible.map(job => this.progress(job))).join(" · "),
     });
   }
 }

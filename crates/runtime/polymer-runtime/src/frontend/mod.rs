@@ -616,6 +616,7 @@ impl FrontendServices {
             jobs,
             library.as_ref().map(LibraryService::scraping),
             storage_service.as_ref().ok().cloned(),
+            library.as_ref().map(LibraryService::client),
         )
         .map_err(|error| format!("could not start jobs actor: {error}"));
         Self {
