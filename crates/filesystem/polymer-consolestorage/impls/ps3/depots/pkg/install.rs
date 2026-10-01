@@ -1,4 +1,4 @@
-use crate::installable::Installable;
+use crate::installable::{InstallContext, Installable};
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
@@ -27,49 +27,48 @@ struct PkgExtraction {
     manifest: Vec<DepotFile>,
     index: usize,
     storage: Arc<dyn VolumeStorage>,
-    events: crate::installable::InstallEvents,
 }
 
 impl Ps3PkgInstall {
     pub async fn new(
         depot: &Ps3PkgDepot,
         storage: Arc<dyn VolumeStorage>,
-        events: crate::installable::InstallEvents,
+        context: &InstallContext,
     ) -> Result<Self, Error> {
         let depot = depot.clone();
-        let mut install = tokio::task::spawn_blocking(move || {
-            let file = depot.verified_file(&events)?;
-            let size = file
-                .metadata()
-                .map_err(|error| Error::io(&depot.path, error))?
-                .len();
-            let archive = PkgArchive::from_reader(file, size)
-                .map_err(|error| Error::io(&depot.path, error))?;
-            events.phase(
-                crate::installable::InstallPhase::Installing,
-                archive
-                    .items()
-                    .iter()
-                    .filter(|item| item.is_file)
-                    .map(|item| item.file_size)
-                    .sum(),
-            );
-            Ok::<_, Error>(Self {
-                extraction: Arc::new(Mutex::new(PkgExtraction {
-                    archive,
-                    root: depot.install_path.clone(),
-                    manifest: Vec::new(),
-                    index: 0,
-                    storage: storage.clone(),
-                    events,
-                })),
-                depot,
-                retained: Vec::new(),
-                storage,
+        let mut install = context
+            .spawn_blocking(move |context| {
+                let file = depot.verified_file(context)?;
+                let size = file
+                    .metadata()
+                    .map_err(|error| Error::io(&depot.path, error))?
+                    .len();
+                let archive = PkgArchive::from_reader(file, size)
+                    .map_err(|error| Error::io(&depot.path, error))?;
+                context.phase(
+                    crate::installable::InstallPhase::Installing,
+                    archive
+                        .items()
+                        .iter()
+                        .filter(|item| item.is_file)
+                        .map(|item| item.file_size)
+                        .sum(),
+                );
+                Ok::<_, Error>(Self {
+                    extraction: Arc::new(Mutex::new(PkgExtraction {
+                        archive,
+                        root: depot.install_path.clone(),
+                        manifest: Vec::new(),
+                        index: 0,
+                        storage: storage.clone(),
+                    })),
+                    depot,
+                    retained: Vec::new(),
+                    storage,
+                })
             })
-        })
-        .await
-        .map_err(|error| Error::Unsupported(format!("PKG worker failed: {error}")))??;
+            .await
+            .map_err(|error| Error::Unsupported(format!("PKG worker failed: {error}")))??;
         // Reinstalling a patch is additive. Retain ownership of earlier files.
         let id = install.depot.artifact_id();
         if let Some(old) = install.storage.artifacts().artifact(&id).await? {
@@ -96,7 +95,7 @@ impl PkgExtraction {
 }
 
 impl PkgExtraction {
-    fn next_file(&mut self) -> Result<String, Error> {
+    fn next_file(&mut self, context: &InstallContext) -> Result<String, Error> {
         let item = &self.archive.items()[self.index];
         let path = format!("{}/{}", self.root, item.name);
         if item.is_file {
@@ -105,9 +104,8 @@ impl PkgExtraction {
                 position: 0,
                 hash: blake3::Hasher::new(),
             };
-            let events = &self.events;
             self.archive
-                .stream_item_with_progress(self.index, &mut writer, |bytes| events.advance(bytes))
+                .stream_item_with_progress(self.index, &mut writer, |bytes| context.advance(bytes))
                 .map_err(|error| Error::io(&PathBuf::from(&path), error))?;
             self.record_file(path.clone(), writer)?;
         } else {
@@ -119,18 +117,22 @@ impl PkgExtraction {
 }
 
 impl Installable for Ps3PkgInstall {
-    async fn next_batch(&mut self) -> Result<Option<Vec<DepotFile>>, Error> {
+    async fn next_batch(
+        &mut self,
+        context: &InstallContext,
+    ) -> Result<Option<Vec<DepotFile>>, Error> {
         let extraction = self.extraction.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut extraction = extraction.lock();
-            if extraction.index == extraction.archive.items().len() {
-                return Ok(None);
-            }
-            extraction.next_file()?;
-            Ok(Some(std::mem::take(&mut extraction.manifest)))
-        })
-        .await
-        .map_err(|error| Error::Unsupported(format!("PKG worker failed: {error}")))?
+        context
+            .spawn_blocking(move |context| {
+                let mut extraction = extraction.lock();
+                if extraction.index == extraction.archive.items().len() {
+                    return Ok(None);
+                }
+                extraction.next_file(context)?;
+                Ok(Some(std::mem::take(&mut extraction.manifest)))
+            })
+            .await
+            .map_err(|error| Error::Unsupported(format!("PKG worker failed: {error}")))?
     }
     async fn finish(self, manifest: Vec<DepotFile>) -> Result<Artifact, Error> {
         let root = &self.depot.install_path;

@@ -358,10 +358,10 @@ async fn platform_install_persists_keys_before_validation_and_installs_content()
 
     // A recognized source with a malformed ticket is a preparation error.
     std::fs::write(path.join("code/title.tik"), b"truncated").unwrap();
-    assert!(nand.try_install(&path, &keys, Default::default()).is_err());
+    assert!(nand.try_install(&path, &keys).is_err());
     std::fs::remove_file(path.join("code/title.tik")).unwrap();
     assert!(
-        nand.try_install(&path, &keys, Default::default())
+        nand.try_install(&path, &keys)
             .unwrap()
             .embedded_keys()
             .is_empty()
@@ -499,7 +499,7 @@ async fn try_install_retains_depot_without_starting_extraction() {
         .await
         .unwrap();
     let keys = store.for_platform("NINTENDO_WIIU").unwrap();
-    let installation = nand.try_install(&path, &keys, Default::default()).unwrap();
+    let installation = nand.try_install(&path, &keys).unwrap();
     assert!(!nand.is_dirty().unwrap());
     assert!(nand.artifacts().await.unwrap().is_empty());
     let artifact = installation.finish().await.unwrap();

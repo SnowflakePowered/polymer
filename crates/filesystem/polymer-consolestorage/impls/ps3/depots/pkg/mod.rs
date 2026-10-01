@@ -1,7 +1,7 @@
 mod install;
 mod metadata;
 
-use crate::installable::{IconHint, InstallEvents, InstallPreview, Reporting};
+use crate::installable::{IconHint, InstallContext, InstallPreview, Reporting};
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -116,7 +116,7 @@ impl Ps3PkgDepot {
     }
 
     /// Check the package footer digest, also detecting replacement after open().
-    fn verified_file(&self, events: &InstallEvents) -> Result<File, Error> {
+    fn verified_file(&self, context: &InstallContext) -> Result<File, Error> {
         let mut file = File::open(&self.path).map_err(|error| Error::io(&self.path, error))?;
         let size = file
             .metadata()
@@ -125,11 +125,11 @@ impl Ps3PkgDepot {
         let body_size = size
             .checked_sub(32)
             .ok_or_else(|| Error::malformed("PKG", "missing package digest"))?;
-        events.phase(crate::installable::InstallPhase::Verifying, body_size);
+        context.phase(crate::installable::InstallPhase::Verifying, body_size);
         let mut hash = Sha1::new();
         let mut reader = Reporting {
             inner: (&mut file).take(body_size),
-            events: events.clone(),
+            context: context.clone(),
         };
         let mut buffer = [0; 64 * 1024];
         loop {
@@ -248,9 +248,9 @@ impl Depot for Ps3PkgDepot {
         self,
         nand: &N,
         _keys: &dyn crate::keys::KeyReader,
-        events: InstallEvents,
+        context: &InstallContext,
     ) -> Result<impl Installable, Error> {
-        install::Ps3PkgInstall::new(&self, nand.root(), events).await
+        install::Ps3PkgInstall::new(&self, nand.root(), context).await
     }
 }
 

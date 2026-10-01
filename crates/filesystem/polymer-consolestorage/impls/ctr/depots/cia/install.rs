@@ -3,7 +3,7 @@ use super::metadata::{InstalledTitle, TmdHeader};
 use super::ncch::NcchDecryptor;
 use crate::{
     Error, VolumeStorage,
-    installable::{DepotFile, InstallEvents, Installable, StorageWriter, artifacts::Artifact},
+    installable::{DepotFile, InstallContext, Installable, StorageWriter, artifacts::Artifact},
 };
 use csis::{CiaArchive, CiaSection};
 use parking_lot::Mutex;
@@ -27,7 +27,6 @@ pub(in crate::impls::ctr) struct CiaInstall {
     root: String,
     storage: Arc<dyn VolumeStorage>,
     seed: Option<[u8; 16]>,
-    events: InstallEvents,
 }
 
 impl CiaInstall {
@@ -35,45 +34,45 @@ impl CiaInstall {
         depot: &CiaDepot,
         storage: Arc<dyn VolumeStorage>,
         seed: Option<[u8; 16]>,
-        events: InstallEvents,
+        context: &InstallContext,
     ) -> Result<Self, Error> {
         let depot = depot.clone();
         let old = storage
             .artifacts()
             .artifact(&format!("{:016X}", depot.title_id))
             .await?;
-        tokio::task::spawn_blocking(move || {
-            let archive = CiaArchive::open(&depot.path)
-                .map_err(|e| Error::malformed("CIA", e.to_string()))?;
-            let entries = depot.jobs(&archive);
-            events.phase(
-                crate::installable::InstallPhase::Installing,
-                archive.items().iter().map(|item| item.size).sum(),
-            );
-            let retained = Self::retain_contents(&depot, &archive, &*storage, old.as_ref())?;
-            let old_paths = old
-                .as_ref()
-                .map(|a| {
-                    a.manifest()
-                        .iter()
-                        .map(|f| f.path().to_string_lossy().into_owned())
-                        .collect()
+        context
+            .spawn_blocking(move |context| {
+                let archive = CiaArchive::open(&depot.path)
+                    .map_err(|e| Error::malformed("CIA", e.to_string()))?;
+                let entries = depot.jobs(&archive);
+                context.phase(
+                    crate::installable::InstallPhase::Installing,
+                    archive.items().iter().map(|item| item.size).sum(),
+                );
+                let retained = Self::retain_contents(&depot, &archive, &*storage, old.as_ref())?;
+                let old_paths = old
+                    .as_ref()
+                    .map(|a| {
+                        a.manifest()
+                            .iter()
+                            .map(|f| f.path().to_string_lossy().into_owned())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                Ok(Self {
+                    archive: Arc::new(Mutex::new(archive)),
+                    entries: entries.into_iter(),
+                    retained,
+                    depot: depot.clone(),
+                    old_paths,
+                    root: depot.root.clone(),
+                    storage,
+                    seed,
                 })
-                .unwrap_or_default();
-            Ok(Self {
-                archive: Arc::new(Mutex::new(archive)),
-                entries: entries.into_iter(),
-                retained,
-                depot: depot.clone(),
-                old_paths,
-                root: depot.root.clone(),
-                storage,
-                seed,
-                events,
             })
-        })
-        .await
-        .map_err(|e| Error::Unsupported(format!("CIA worker failed: {e}")))?
+            .await
+            .map_err(|e| Error::Unsupported(format!("CIA worker failed: {e}")))?
     }
 
     /// Retain already installed DLC omitted by a partial CIA only if its new TMD
@@ -128,7 +127,7 @@ impl CiaInstall {
         storage: &dyn VolumeStorage,
         entry: Entry,
         seed: Option<[u8; 16]>,
-        events: &InstallEvents,
+        context: &InstallContext,
     ) -> Result<DepotFile, Error> {
         let mut writer = StorageWriter {
             file: storage.create(&entry.path)?,
@@ -140,7 +139,7 @@ impl CiaInstall {
                 let mut ncch = NcchDecryptor::new(&mut writer, seed);
                 archive
                     .stream_item_with_progress(index, &mut ncch, |bytes| {
-                        events.advance(bytes);
+                        context.advance(bytes);
                         Ok(())
                     })
                     .map_err(|e| Error::malformed("CIA", e.to_string()))?;
@@ -164,21 +163,24 @@ impl CiaInstall {
     }
 }
 impl Installable for CiaInstall {
-    async fn next_batch(&mut self) -> Result<Option<Vec<DepotFile>>, Error> {
+    async fn next_batch(
+        &mut self,
+        context: &InstallContext,
+    ) -> Result<Option<Vec<DepotFile>>, Error> {
         let Some(entry) = self.entries.next() else {
             return Ok(None);
         };
         let archive = self.archive.clone();
         let storage = self.storage.clone();
-        let events = self.events.clone();
         let seed = self.seed;
-        tokio::task::spawn_blocking(move || {
-            let mut archive = archive.lock();
-            let file = Self::write_entry(&mut archive, &*storage, entry, seed, &events)?;
-            Ok(Some(vec![file]))
-        })
-        .await
-        .map_err(|e| Error::Unsupported(format!("CIA worker failed: {e}")))?
+        context
+            .spawn_blocking(move |context| {
+                let mut archive = archive.lock();
+                let file = Self::write_entry(&mut archive, &*storage, entry, seed, context)?;
+                Ok(Some(vec![file]))
+            })
+            .await
+            .map_err(|e| Error::Unsupported(format!("CIA worker failed: {e}")))?
     }
 
     async fn finish(self, manifest: Vec<DepotFile>) -> Result<Artifact, Error> {

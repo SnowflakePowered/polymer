@@ -20,10 +20,10 @@ impl Ps3PupDepot {
     }
     fn verified_pup(
         &self,
-        events: &crate::installable::InstallEvents,
+        context: &crate::installable::InstallContext,
     ) -> Result<reader::Pup, Error> {
         let mut pup = reader::Pup::open(&self.path).map_err(|e| Error::io(&self.path, e))?;
-        pup.verify(events)
+        pup.verify(context)
             .map_err(|e| Error::malformed("PUP", e.to_string()))?;
         if pup.version().map_err(|e| Error::io(&self.path, e))? != self.version {
             return Err(Error::malformed(
@@ -59,8 +59,8 @@ impl Depot for Ps3PupDepot {
         self,
         nand: &N,
         _keys: &dyn crate::keys::KeyReader,
-        events: crate::installable::InstallEvents,
+        context: &crate::installable::InstallContext,
     ) -> Result<impl Installable, Error> {
-        install::PupInstall::new(&self, nand.root(), events).await
+        install::PupInstall::new(&self, nand.root(), context).await
     }
 }

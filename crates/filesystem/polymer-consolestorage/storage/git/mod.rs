@@ -18,7 +18,7 @@ use typed_path::Utf8UnixPath;
 use uuid::Uuid;
 
 use crate::installable::artifacts::{Artifact, ArtifactEntrypoint};
-use crate::installable::{DepotFile, DepotType, EmbeddedIcon, IconHint, InstallEvents, Reporting};
+use crate::installable::{DepotFile, DepotType, EmbeddedIcon, IconHint, InstallContext, Reporting};
 use crate::storage::manifest::{ArtifactRegistry, ArtifactSummary, VolumeInfo};
 use crate::{
     BoxFuture, ChangeSignal, DirectoryStorage, EntryKind, Error, InstallResult, Metadata,

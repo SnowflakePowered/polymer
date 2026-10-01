@@ -4,7 +4,7 @@ use crate::error::Error;
 use crate::impls::wiiu::{nand::WiiUNand, xml};
 use crate::installable::artifacts::{Artifact, ArtifactEntrypoint};
 use crate::installable::{
-    Depot, DepotFile, DepotType, DirectoryInstall, IconHint, InstallEvents, Installable,
+    Depot, DepotFile, DepotType, DirectoryInstall, IconHint, InstallContext, Installable,
 };
 use crate::nand::VirtualNand;
 use crate::requires_structure;
@@ -157,14 +157,14 @@ impl Depot for WiiUMetaXmlDepot {
         self,
         nand: &N,
         _keys: &dyn crate::keys::KeyReader,
-        events: InstallEvents,
+        context: &InstallContext,
     ) -> Result<impl Installable, Error> {
         let storage = nand.root();
         Ok(DirectoryInstall::new(
             self.root.clone(),
             self.install_path(),
             storage.clone(),
-            events,
+            context,
             move |manifest| self.artifact(&*storage, manifest),
         )
         .excluding("code/title.tik"))

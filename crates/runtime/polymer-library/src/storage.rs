@@ -3,11 +3,10 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-use futures_util::StreamExt;
 use polymer_consolestorage::{
     ArtifactSummary, ConsoleStorage, Error, PlatformRepository, StorageKind, VolumeInfo,
     VolumeStorage,
-    installable::{InstallEvent, InstallEvents, InstallPhase, artifacts::ArtifactEntrypoint},
+    installable::{InstallEvent, InstallPhase, artifacts::ArtifactEntrypoint},
     keys::KeyWriter,
     nand::NandCompletion,
 };
@@ -208,30 +207,24 @@ impl StorageManager {
             .map_err(|error| error.to_string())?
             .as_nand()
             .ok_or("device is not a NAND")?;
-        let status = std::sync::Mutex::new(InstallStatus::default());
-        let events = InstallEvents::new(move |event| {
-            let mut status = status
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if status.apply(event) {
-                report(&status);
-            }
-        });
-        events.phase(InstallPhase::Preparing, 0);
+        let mut status = InstallStatus::default();
+        report(&status);
         let keys = crate::keys::KeyStore::open(self.root.join("keys"))
             .await
             .map_err(|error| error.to_string())?
             .for_platform(platform)
             .map_err(|error| error.to_string())?;
         let mut installation = nand
-            .try_install(path, &keys, events.clone())
+            .try_install(path, &keys)
             .map_err(|error| error.to_string())?;
         let records = installation.embedded_keys();
         if !records.is_empty() {
             keys.put(records).await.map_err(|error| error.to_string())?;
         }
-        while let Some(file) = installation.next().await {
-            events.file(file.map_err(|error| error.to_string())?.into());
+        while let Some(event) = installation.next().await {
+            if status.apply(event.map_err(|error| error.to_string())?) {
+                report(&status);
+            }
         }
         let artifact = installation
             .finish()

@@ -50,7 +50,6 @@ pub trait VirtualNand: Send + Sync {
         &'a self,
         _path: &std::path::Path,
         _keys: &'a dyn KeyReader,
-        _events: crate::installable::InstallEvents,
     ) -> Result<crate::installable::Installation<'a>, Error> {
         Err(Error::Unsupported(
             "This NAND has no depot constructors".into(),
@@ -100,7 +99,7 @@ pub trait VirtualNand: Send + Sync {
     async fn record(&self, artifact: &Artifact) -> Result<(), Error> {
         self.root()
             .artifacts()
-            .record(artifact, Default::default())
+            .record(artifact, &crate::installable::InstallContext::default())
             .await
     }
 
@@ -113,13 +112,13 @@ pub trait VirtualNand: Send + Sync {
 
 macro_rules! nand_depots {
     ($($depot:ty),+ $(,)?) => {
-        fn try_install<'a>(&'a self, path: &std::path::Path, keys: &'a dyn crate::keys::KeyReader, events: crate::installable::InstallEvents) -> Result<crate::installable::Installation<'a>, crate::Error> {
+        fn try_install<'a>(&'a self, path: &std::path::Path, keys: &'a dyn crate::keys::KeyReader) -> Result<crate::installable::Installation<'a>, crate::Error> {
             use crate::installable::Depot;
             let mut errors = Vec::new();
             $(
                 match <$depot>::open(path) {
                     Ok(depot) => {
-                        return crate::installable::Installation::new(depot, path, self, keys, events);
+                        return crate::installable::Installation::new(depot, path, self, keys);
                     }
                     Err(error) => errors.push(error.to_string()),
                 }

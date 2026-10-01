@@ -6,7 +6,7 @@ pub(in crate::impls::ctr) mod ncch;
 use crate::impls::ctr::{CtrNand, layout::Layout};
 use crate::{
     Error,
-    installable::{Depot, DepotType, IconHint, InstallEvents, InstallPreview, Installable},
+    installable::{Depot, DepotType, IconHint, InstallContext, InstallPreview, Installable},
     nand::VirtualNand,
 };
 use csis::{CiaArchive, CiaSection};
@@ -140,19 +140,19 @@ impl Depot for CiaDepot {
         })
     }
 
-    fn validate_contents(&self, events: &InstallEvents) -> Vec<String> {
+    fn validate_contents(&self, context: &InstallContext) -> Vec<String> {
         let mut archive = match CiaArchive::open(&self.path) {
             Ok(archive) => archive,
             Err(_) => return vec![self.path.display().to_string()],
         };
-        events.phase(
+        context.phase(
             crate::installable::InstallPhase::Verifying,
             archive.items().iter().map(|item| item.size).sum(),
         );
         let mut failures = Vec::new();
         for index in 0..archive.items().len() {
             let verified = archive.stream_item_with_progress(index, &mut io::sink(), |bytes| {
-                events.advance(bytes);
+                context.advance(bytes);
                 Ok(())
             });
             if verified.is_err() {
@@ -168,7 +168,7 @@ impl Depot for CiaDepot {
         self,
         nand: &N,
         keys: &dyn crate::keys::KeyReader,
-        events: InstallEvents,
+        context: &InstallContext,
     ) -> Result<impl Installable, Error> {
         let seed = match keys
             .read(&crate::keys::KeyIdentity {
@@ -186,6 +186,6 @@ impl Depot for CiaDepot {
             Err(crate::keys::KeyError::NotFound(_)) => None,
             Err(error) => return Err(Error::Unsupported(error.to_string())),
         };
-        install::CiaInstall::new(&self, nand.root(), seed, events).await
+        install::CiaInstall::new(&self, nand.root(), seed, context).await
     }
 }
