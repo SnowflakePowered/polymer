@@ -50,7 +50,7 @@ polymer-renderer = { path = "../../crates/consumer/polymer-renderer" }
 polymer-statistics.workspace = true
 tempfile.workspace = true
 winit = "0.30.13"
-deno_core = "0.409.0"
+deno_core = "0.412.0"
 deno_error = "0.7.1"
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls"] }
 rustls = { version = "0.23.40", default-features = false, features = ["aws_lc_rs"] }
