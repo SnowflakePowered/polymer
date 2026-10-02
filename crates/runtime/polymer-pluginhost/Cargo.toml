@@ -12,7 +12,7 @@ polymer-consolestorage = { path = "../../filesystem/polymer-consolestorage" }
 uuid = { version = "1", features = ["v7"] }
 polymer-protocol.workspace = true
 consolespec.workspace = true
-deno_core = "0.409.0"
+deno_core = "0.412.0"
 deno_ast = { version = "0.53.3", features = ["transpiling"] }
 deno_error = "0.7.1"
 dashmap.workspace = true
