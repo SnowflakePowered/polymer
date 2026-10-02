@@ -4,6 +4,7 @@ use blitz_dom::{BaseDocument, Node, NodeData, NodeId};
 use deno_core::{OpState, op2};
 use deno_error::JsErrorBox;
 use serde::Serialize;
+use style::properties::{PropertyDeclarationId, PropertyId};
 
 use super::scroll::ScrollSnapshot;
 use super::state::BridgeState;
@@ -180,6 +181,24 @@ pub(super) fn op_dom_get_attribute(
         .and_then(Node::element_data)
         .and_then(|element| element.attr(blitz_dom::LocalName::from(name)))
         .map(str::to_owned)
+}
+
+#[op2]
+#[string]
+pub(super) fn op_dom_computed_style(
+    state: &OpState,
+    node: f64,
+    #[string] name: String,
+) -> Option<String> {
+    let shell = state.borrow::<SharedShellDocument>().0.borrow();
+    let node = shell.base().get_node(NodeId::from_script(node))?;
+    let styles = node.primary_styles()?;
+    let property = PropertyId::parse_enabled_for_all_content(&name).ok()?;
+    let declaration = match &property {
+        PropertyId::Custom(name) => PropertyDeclarationId::Custom(name),
+        PropertyId::NonCustom(_) => PropertyDeclarationId::Longhand(property.longhand_id()?),
+    };
+    Some(styles.computed_value_to_string(declaration))
 }
 
 #[op2]

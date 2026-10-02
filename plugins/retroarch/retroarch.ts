@@ -21,7 +21,7 @@ export const onLaunch = async (args: EmulatorLaunchArgs<{ core: { placeholder: b
     args.filesystem.mount("/User/logs");
     args.filesystem.mount("/User/system/pcsx2/memcards");
     args.filesystem.mount(`/User/system/pcsx2/bios/${biosName}`, biosFile, { mode: "r" });
-    const gamePath = args.filesystem.mount("/Game", args.package, { mode: "rx" });
+    const gamePath = args.filesystem.mount("/Game", args.launchSet[0].package, { mode: "rx" });
 
     const runtimeConfig = [
         `config_save_on_exit = "false"`,

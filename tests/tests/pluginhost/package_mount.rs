@@ -55,7 +55,7 @@ async fn package_mounts_images_directories_and_cues_read_only() {
             args.filesystem.mount("/ScratchDefault");
             args.filesystem.mount("/ScratchOptions", {});
             args.filesystem.mount("/ScratchReadOnly", { mode: "rx" });
-            for (const source of [assets, image, new Uint8Array(), args.package]) {
+            for (const source of [assets, image, new Uint8Array(), args.launchSet[0].package]) {
                 let rejected = false;
                 try { args.filesystem.mount("/InvalidFormat", source, { mode: "r", format: "raw" }); }
                 catch { rejected = true; }
@@ -85,12 +85,10 @@ async fn package_mounts_images_directories_and_cues_read_only() {
                 if (entry.kind === "directory") args.filesystem.mount("/WritableShaders", entry, { mode: "rwx" });
             }
             let denied = false;
-            try { args.filesystem.mount("/WritableGame", args.package, { mode: "rw" }); }
+            try { args.filesystem.mount("/WritableGame", args.launchSet[0].package, { mode: "rw" }); }
             catch { denied = true; }
             if (!denied) throw Error("package granted write access");
-            // Changing the launch path cannot redirect the bound package.
-            args.launchPath = "not-the-game";
-            const gamePath = args.filesystem.mount("/Game", args.package, { mode: "rx" });
+            const gamePath = args.filesystem.mount("/Game", args.launchSet[0].package, { mode: "rx" });
             const command = args.filesystem.mount("/Emulator/emulator.exe", new Uint8Array([1]), { mode: "rx" });
             return { command, argv: [gamePath],
                 hooks: { graphics: ["vulkan"], input: [] }, surfaces: [{ index: 0 }] };
@@ -155,9 +153,9 @@ async fn package_mounts_images_directories_and_cues_read_only() {
             "worker-test",
             &["onLaunch".to_owned()],
             vec![serde_json::json!({
-                "launchPath": root.path().join("source.cue"), "console": "TEST",
+                "console": "TEST",
                 "controllerTopology": { "mappings": [] }, "virtualize": true,
-                "package": package,
+                "launchSet": [{ "package": package }],
             })],
             storage_mounts,
         )
@@ -301,8 +299,8 @@ async fn package_mounts_images_directories_and_cues_read_only() {
                 "worker-test",
                 &["onLaunch".to_owned()],
                 vec![serde_json::json!({
-                    "launchPath": root.path().join(source), "console": "TEST",
-                    "package": { "uri": LaunchableUri::file(root.path().join(source)).unwrap() }, "controllerTopology": { "mappings": [] },
+                    "console": "TEST", "controllerTopology": { "mappings": [] },
+                    "launchSet": [{ "package": { "uri": LaunchableUri::file(root.path().join(source)).unwrap() } }],
                 })],
                 BTreeMap::new(),
             )
@@ -363,7 +361,8 @@ async fn package_mounts_images_directories_and_cues_read_only() {
             "worker-test",
             &["onLaunch".to_owned()],
             vec![serde_json::json!({
-                "launchPath": root.path().join("missing.iso"), "console": "TEST",
+                "console": "TEST",
+                "launchSet": [{ "package": { "uri": LaunchableUri::file(root.path().join("missing.iso")).unwrap() } }],
                 "controllerTopology": { "mappings": [] },
             })],
             BTreeMap::new(),

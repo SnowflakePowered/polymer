@@ -1,5 +1,9 @@
 import runtime from "pkg:bin/win-x64";
-import type { EmulatorLaunchArgs, Storage } from "polymer:api";
+import discScript from "pkg:disc.lua";
+import type { DiscChangeContext, EmulatorLaunchArgs, Storage } from "polymer:api";
+
+const DISC_REQUEST = "/Flycast/polymer-disc.txt";
+let discPaths: string[] = [];
 
 export const onLaunch = async (args: EmulatorLaunchArgs<unknown, Readonly<{ vmu?: Storage }>>) => {
     const path = (virtualPath: string) => args.filesystem.path(virtualPath);
@@ -16,7 +20,14 @@ export const onLaunch = async (args: EmulatorLaunchArgs<unknown, Readonly<{ vmu?
             format: "raw",
         });
     }
-    const gamePath = args.filesystem.mount("/Game", args.package, { mode: "rx" });
+    discPaths = args.launchSet.length > 1
+        ? args.launchSet.map((disc, index) => args.filesystem.mount(`/Game/Disc${index}`, disc.package, { mode: "rx" }))
+        : [args.filesystem.mount("/Game", args.launchSet[0].package, { mode: "rx" })];
+    const gamePath = discPaths[args.initialDiscIndex];
+    if (discPaths.length > 1) {
+        args.filesystem.mount("/Flycast/flycast.lua", discScript, { mode: "r" });
+        args.filesystem.mount(DISC_REQUEST, new TextEncoder().encode(gamePath), { mode: "r" });
+    }
     args.filesystem.mount("/User");
     for (const [name, bytes] of Object.entries(args.configuration.render())) {
         args.filesystem.mount(`/Flycast/${name}`, bytes, { mode: "rw" });
@@ -31,6 +42,7 @@ export const onLaunch = async (args: EmulatorLaunchArgs<unknown, Readonly<{ vmu?
             ["LOCALAPPDATA", args.filesystem.path("/User/AppData/Local")],
             ["TEMP", args.filesystem.path("/User/Temp")],
             ["TMP", args.filesystem.path("/User/Temp")],
+            ["POLYMER_DISC_REQUEST", path(DISC_REQUEST)],
         ],
         argv: [gamePath],
         isolate: false,
@@ -39,4 +51,9 @@ export const onLaunch = async (args: EmulatorLaunchArgs<unknown, Readonly<{ vmu?
     };
 };
 
-export default { onLaunch };
+export const onDiscChange = (context: DiscChangeContext) => {
+    context.filesystem.mount(DISC_REQUEST, new TextEncoder().encode(discPaths[context.index]), { mode: "r" });
+    context.filesystem.flush();
+};
+
+export default { onLaunch, onDiscChange };

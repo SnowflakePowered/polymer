@@ -717,6 +717,44 @@ impl PolymerHost for FrontendServices {
         })
     }
 
+    fn select_emulator(
+        &self,
+        launchable_id: String,
+        emulator: Option<String>,
+    ) -> ApiFuture<Result<(), String>> {
+        let service = self.launchable_configurations.clone();
+        Box::pin(async move {
+            service
+                .ok_or("library configuration service is unavailable")?
+                .select(&launchable_id, emulator)
+                .await
+        })
+    }
+
+    fn platform_settings(&self) -> ApiFuture<Result<Value, String>> {
+        let service = self.launchable_configurations.clone();
+        Box::pin(async move {
+            service
+                .ok_or("library configuration service is unavailable")?
+                .platforms()
+                .await
+        })
+    }
+
+    fn update_platform_settings(
+        &self,
+        platform: String,
+        settings: polymer_library::PlatformSettings,
+    ) -> ApiFuture<Result<Value, String>> {
+        let service = self.launchable_configurations.clone();
+        Box::pin(async move {
+            service
+                .ok_or("library configuration service is unavailable")?
+                .update_platform(&platform, settings)
+                .await
+        })
+    }
+
     fn prepare_configuration(
         &self,
         launchable_id: String,
@@ -772,9 +810,6 @@ impl PolymerHost for FrontendServices {
                     .collect(),
             );
             prepared["arguments"]["initialDiscIndex"] = initial_index.into();
-            let selected = prepared["arguments"]["launchSet"][initial_index as usize].clone();
-            prepared["arguments"]["launchPath"] = selected["launchPath"].clone();
-            prepared["arguments"]["package"] = selected["package"].clone();
             Ok(prepared)
         })
     }

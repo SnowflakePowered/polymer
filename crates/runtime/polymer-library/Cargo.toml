@@ -30,8 +30,12 @@ thiserror.workspace = true
 tokio = { version = "1.53.1", features = ["fs", "io-util", "rt", "sync"] }
 tracing.workspace = true
 turso.workspace = true
+regex.workspace = true
 uuid = { version = "1.24.1", features = ["v5", "v7"] }
 
 [lints]
 workspace = true
 
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["macros", "rt"] }

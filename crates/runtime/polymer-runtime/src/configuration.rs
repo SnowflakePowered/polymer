@@ -252,12 +252,9 @@ pub(crate) fn prepare_api_with_sources(
         .ports(&prepared.machine)
         .map_err(|error| error.to_string())?;
     let topology = ControllerTopology::complete(ports, selected)?;
-    let entry = package.launch_entry();
     let mut arguments = serde_json::json!({
-        "launchSet": [&entry],
+        "launchSet": [package.launch_entry()],
         "initialDiscIndex": 0,
-        "launchPath": entry["launchPath"],
-        "package": entry["package"],
         "console": prepared.machine,
         "controllerTopology": &topology,
         "userConfiguration": user_configuration,

@@ -1,10 +1,10 @@
 use crate::library::api::LibraryApi;
 use dashmap::DashMap;
-use polymer_library::GameCatalog;
-use polymer_pluginhost::runtime::PluginRuntimeHandle;
+use polymer_library::{GameCatalog, PlatformSettings};
+use polymer_pluginhost::{emulator::EmulatorPluginInstance, runtime::PluginRuntimeHandle};
 use polymer_scraping::Package;
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -85,9 +85,13 @@ impl LaunchableConfigurations {
             self.plugins.clone(),
             defaults,
             package.clone(),
-            preferred,
+            preferred.clone(),
         )
         .await?;
+        if preferred.is_none() {
+            self.resolve_emulator(uuid, &package.platform, &mut description)
+                .await?;
+        }
         for candidate in description["candidates"]
             .as_array_mut()
             .ok_or("invalid emulator candidates")?
@@ -133,6 +137,115 @@ impl LaunchableConfigurations {
         .await?;
         self.settle(uuid, emulator, &package, initial, supplied)
             .await
+    }
+
+    async fn resolve_emulator(
+        &self,
+        id: Uuid,
+        platform: &str,
+        description: &mut Value,
+    ) -> Result<(), String> {
+        let game = self
+            .catalog
+            .launchable_emulator(id)
+            .await
+            .map_err(|error| error.to_string())?;
+        let fallback = self
+            .catalog
+            .platform_settings()
+            .await
+            .map_err(|error| error.to_string())?
+            .remove(platform)
+            .and_then(|settings| settings.emulator);
+        let selected = [&game, &fallback].into_iter().flatten().find(|emulator| {
+            description["candidates"]
+                .as_array()
+                .is_some_and(|candidates| {
+                    candidates
+                        .iter()
+                        .any(|candidate| candidate["id"] == **emulator)
+                })
+        });
+        if let Some(selected) = selected {
+            description["selectedEmulator"] = json!(selected);
+        }
+        description["gameEmulator"] = json!(game);
+        description["platformEmulator"] = json!(fallback);
+        Ok(())
+    }
+
+    fn emulators(&self, platform: &str) -> Vec<String> {
+        self.plugins
+            .registry()
+            .plugins::<dyn EmulatorPluginInstance>()
+            .iter()
+            .filter(|plugin| plugin.platforms().iter().any(|value| value == platform))
+            .map(|plugin| plugin.id().to_owned())
+            .collect()
+    }
+
+    fn validate_emulator(&self, platform: &str, emulator: Option<&str>) -> Result<(), String> {
+        match emulator {
+            Some(emulator) if !self.emulators(platform).iter().any(|id| id == emulator) => Err(
+                format!("Emulator plugin '{emulator}' does not support platform {platform}."),
+            ),
+            _ => Ok(()),
+        }
+    }
+
+    pub(crate) async fn select(&self, id: &str, emulator: Option<String>) -> Result<(), String> {
+        let package = self.package(id).await?;
+        self.validate_emulator(&package.platform, emulator.as_deref())?;
+        let uuid = Uuid::parse_str(id).map_err(|error| error.to_string())?;
+        self.catalog
+            .set_launchable_emulator(uuid, emulator.as_deref())
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    pub(crate) async fn platforms(&self) -> Result<Value, String> {
+        let mut settings = self
+            .catalog
+            .platform_settings()
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut platforms = BTreeMap::<String, Vec<String>>::new();
+        for plugin in self
+            .plugins
+            .registry()
+            .plugins::<dyn EmulatorPluginInstance>()
+        {
+            for platform in plugin.platforms() {
+                platforms
+                    .entry(platform.clone())
+                    .or_default()
+                    .push(plugin.id().to_owned());
+            }
+        }
+        Ok(platforms
+            .into_iter()
+            .map(|(platform, emulators)| {
+                let settings = settings.remove(&platform).unwrap_or_default();
+                json!({ "platform": platform, "emulators": emulators, "settings": settings })
+            })
+            .collect())
+    }
+
+    pub(crate) async fn update_platform(
+        &self,
+        platform: &str,
+        settings: PlatformSettings,
+    ) -> Result<Value, String> {
+        let emulators = self.emulators(platform);
+        if emulators.is_empty() {
+            return Err(format!("No loaded emulator plugin supports {platform}."));
+        }
+        self.validate_emulator(platform, settings.emulator.as_deref())?;
+        self.catalog
+            .save_platform_settings(platform, &settings)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(json!({ "platform": platform, "emulators": emulators, "settings": settings }))
     }
 
     async fn settle(

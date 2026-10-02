@@ -14,7 +14,7 @@ export const onLaunch = async (args: EmulatorLaunchArgs<{
     fs.mount("/Profile/state", caches.saves, { mode: "rw" });
     fs.mount("/Profile/bios.bin", await args.firmwareStore.open(bios.label), { mode: "r" });
     fs.mount("/User");
-    const game = fs.mount("/Game", args.package, { mode: "rx" });
+    const game = fs.mount("/Game", args.launchSet[0].package, { mode: "rx" });
     const options = args.configuration.options();
     options.system.InternalBackupRAMImagePath = JSON.stringify(fs.path("/Profile/state/bup-int.bin"));
     options.ipl.Path = JSON.stringify(fs.path("/Profile/bios.bin"));

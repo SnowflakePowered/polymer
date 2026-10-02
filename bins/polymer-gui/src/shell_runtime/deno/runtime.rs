@@ -6,7 +6,8 @@ use serde_json::Value;
 
 use super::dom::{
     LayoutCache, LayoutSnapshot, ScriptNodeId, op_dom_append_child, op_dom_attributes,
-    op_dom_children, op_dom_clone, op_dom_closest, op_dom_create_comment, op_dom_create_element,
+    op_dom_children, op_dom_clone, op_dom_closest, op_dom_computed_style, op_dom_create_comment,
+    op_dom_create_element,
     op_dom_create_fragment, op_dom_create_text, op_dom_element_by_id, op_dom_focus, op_dom_focused,
     op_dom_get_attribute, op_dom_image_size, op_dom_insert_before, op_dom_is_connected,
     op_dom_matches, op_dom_node_info, op_dom_query, op_dom_rect, op_dom_relative,
@@ -35,6 +36,7 @@ deno_core::extension!(
         op_dom_is_connected,
         op_dom_attributes,
         op_dom_get_attribute,
+        op_dom_computed_style,
         op_dom_query,
         op_dom_matches,
         op_dom_closest,
@@ -68,6 +70,18 @@ deno_core::extension!(
         source = r#"
                 import { core } from "ext:core/mod.js";
                 const webEvents = core.loadExtScript("ext:deno_web/02_event.js");
+                core.setReportExceptionCallback((error) => {
+                  const event = new webEvents.ErrorEvent("error", {
+                    cancelable: true,
+                    error,
+                    message: String(error?.message ?? error),
+                  });
+                  if (globalThis.dispatchEvent(event)) console.error("Uncaught", error);
+                });
+                core.setUnhandledPromiseRejectionHandler((_promise, reason) => {
+                  console.error("Uncaught (in promise)", reason);
+                  return true;
+                });
                 Object.defineProperty(globalThis, "__polymerRuntime", {
                   value: Object.freeze({
                     runMicrotasks: core.runMicrotasks,

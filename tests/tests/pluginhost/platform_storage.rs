@@ -592,6 +592,7 @@ async fn rust_and_javascript_share_platform_keys_and_immutable_files() {
             &["onLaunch".into()],
             vec![json!({
                 "console": "NINTENDO_WII", "controllerTopology": {"mappings": []},
+                "launchSet": [{"package": {"uri": "file:///missing.iso", "filename": "missing.iso"}}],
             })],
         )
         .await

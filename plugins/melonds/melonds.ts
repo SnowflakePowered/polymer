@@ -10,7 +10,7 @@ export const onLaunch = (args: EmulatorLaunchArgs<
     fs.mount("/melonDS/portable");
     fs.mount("/User");
     fs.mount("/User/states");
-    const game = fs.mount("/Game", args.package, { mode: "rx" });
+    const game = fs.mount("/Game", args.launchSet[0].package, { mode: "rx" });
     const filename = game.replaceAll("\\", "/").split("/").at(-1)!;
     const stem = filename.replace(/\.[^.]+$/, "");
     if (args.storage.battery) {

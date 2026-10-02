@@ -357,7 +357,20 @@ export type PackageConfiguration = {
   name: string;
   platform: string;
   selectedEmulator: string;
+  /** The emulator chosen for this game, or null to follow the platform setting. */
+  gameEmulator?: string | null;
+  /** The platform's default emulator, or null to use the first candidate. */
+  platformEmulator?: string | null;
   candidates: EmulatorConfiguration[];
+};
+
+export type PlatformSettings = { emulator: string | null };
+
+export type PlatformConfiguration = {
+  platform: string;
+  /** Emulator plugins supporting this platform, in default preference order. */
+  emulators: string[];
+  settings: PlatformSettings;
 };
 
 export type ConfigurationSelection = {
@@ -381,6 +394,12 @@ export interface ConfigurationApi {
     emulator: string,
     userConfiguration?: UserConfiguration,
   ): Promise<ConfigurationState | null>;
+  /** Persists the emulator for a launchable; null follows the platform setting. */
+  select(launchableId: string, emulator: string | null): Promise<void>;
+  readonly platforms: {
+    list(): Promise<PlatformConfiguration[]>;
+    update(platform: string, settings: PlatformSettings): Promise<PlatformConfiguration>;
+  };
   prepare(launchableId: string, selection: ConfigurationSelection): Promise<unknown>;
   onLaunch(launchableId: string | readonly string[], selection: ConfigurationSelection): Promise<LaunchRequest>;
 }

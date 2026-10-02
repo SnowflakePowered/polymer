@@ -94,10 +94,10 @@ export async function onLaunch(args: EmulatorLaunchArgs<Options, Storages>) {
     args.configuration.options().content.open_pad = true;
     args.configuration.options()["content-graphic"].api = api === "vulkan" ? 1 : 0;
 
-    const packs = normalizeTitleId(args.package.titleId) ? loadedGraphicsPacks() : [];
+    const packs = normalizeTitleId(args.launchSet[0].package.titleId) ? loadedGraphicsPacks() : [];
     const selected = settleGraphicsPacks(
         packs,
-        args.package.titleId,
+        args.launchSet[0].package.titleId,
         userConfiguration,
         api,
     ).entries;
@@ -132,7 +132,7 @@ export async function onLaunch(args: EmulatorLaunchArgs<Options, Storages>) {
     if (args.storage.mlc) {
         args.filesystem.mount("/Cemu/mlc01", args.storage.mlc, { mode: "rwx" });
     }
-    const game = args.filesystem.mount("/Game", args.package, { mode: "rx" });
+    const game = args.filesystem.mount("/Game", args.launchSet[0].package, { mode: "rx" });
     args.filesystem.mount("/User");
 
     const executable = args.filesystem.path("/Cemu/Cemu.exe");

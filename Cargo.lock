@@ -9853,6 +9853,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "polymer-discsets"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
+ "shiratsu-naming",
+]
+
+[[package]]
 name = "polymer-dshidmini"
 version = "0.1.0"
 dependencies = [
@@ -10264,6 +10272,7 @@ dependencies = [
  "mime",
  "object_store",
  "polymer-consolestorage",
+ "regex",
  "serde",
  "serde_json",
  "sha1 0.11.0",

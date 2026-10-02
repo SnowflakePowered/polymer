@@ -15,12 +15,11 @@ use super::{
 use crate::Directories;
 
 mod configuration;
+mod identity;
 mod manifest;
 mod metadata;
 mod objects;
 mod updates;
-
-const BINARY_NAMESPACE: Uuid = Uuid::from_u128(0x599c9d3b98265d0080a77ae753dec395);
 
 #[derive(Debug, thiserror::Error)]
 pub enum GameCatalogError {
@@ -44,6 +43,8 @@ pub enum GameCatalogError {
     InvalidData(String),
     #[error("library record was not found: {0}")]
     NotFound(String),
+    #[error("import disc 1 of {set} before disc {disc}")]
+    MissingFirstDisc { set: String, disc: u8 },
 }
 
 #[derive(Clone)]
@@ -122,7 +123,7 @@ impl GameCatalog {
                 SELECT COALESCE(binary.parent_binary_id, binary.id), root.platform,
                        launchable.id, binary.id, launchable.path, binary.blake3,
                        binary.serial, binary.title_id, binary.parent_binary_id, manifest.manifest_json,
-                       launchable.entrypoint, launchable.package
+                       launchable.entrypoint, launchable.package, binary.disc_number
                 FROM launchables AS launchable
                 LEFT JOIN launchable_manifests AS manifest ON manifest.launchable_id = launchable.id
                 JOIN binaries AS binary ON binary.id = launchable.binary_id
@@ -163,12 +164,22 @@ impl GameCatalog {
                     })?,
                     serial: Self::optional_text(row.get_value(6)?)?,
                     title_id: Self::optional_text(row.get_value(7)?)?,
+                    disc_number: Self::optional_disc(row.get_value(12)?)?,
                     parent_binary_id: Self::optional_uuid(row.get_value(8)?)?,
                     platform: root_platform,
                 },
             });
         }
         drop(rows);
+        for game in games.values_mut() {
+            game.launchables.sort_by_key(|launchable| {
+                let identified = &launchable.identified;
+                (
+                    identified.parent_binary_id.is_some(),
+                    identified.disc().unwrap_or(u8::MAX),
+                )
+            });
+        }
 
         let mut rows = connection
             .query(
@@ -219,7 +230,7 @@ impl GameCatalog {
     /// The boolean is true when this created a new binary, including a child disc.
     pub async fn import_package(
         &self,
-        input: IdentifiedLaunchable,
+        mut input: IdentifiedLaunchable,
         seeds: Vec<(String, Vec<MetadataInput>)>,
     ) -> Result<(Launchable, bool), GameCatalogError> {
         if input.platform.is_empty() {
@@ -239,11 +250,17 @@ impl GameCatalog {
             }
             prepared_seeds.push((producer, prepared));
         }
-        let binary_id = Uuid::new_v5(&BINARY_NAMESPACE, &input.binary_blake3);
+        let binary_id = Self::binary_id(
+            &input.binary_blake3,
+            &input.platform,
+            input.serial.as_deref(),
+            input.disc_number,
+        );
         let mut connection = self.connection().await?;
         let transaction = connection
             .transaction_with_behavior(turso::transaction::TransactionBehavior::Immediate)
             .await?;
+        input.parent_binary_id = self.disc_parent(&transaction, &input, binary_id).await?;
         self.validate_parent(&transaction, &input).await?;
         let mut binary_rows = transaction
             .query(
@@ -415,36 +432,7 @@ impl GameCatalog {
         drop(rows);
         match version {
             0 => connection.execute_batch(SCHEMA).await?,
-            1 => {
-                connection.execute_batch(
-                    "DROP TABLE metadata; DROP TABLE media_objects; DROP TABLE IF EXISTS scrape_attempts; DROP TABLE IF EXISTS scrape_jobs;"
-                ).await?;
-                connection.execute_batch(SCHEMA).await?;
-            }
-            2..=4 => {
-                connection
-                    .execute_batch(
-                        "DROP TABLE IF EXISTS scrape_attempts; DROP TABLE IF EXISTS scrape_jobs;",
-                    )
-                    .await?;
-                connection.execute_batch(SCHEMA).await?;
-            }
-            5 => {
-                connection.execute_batch(
-                    "ALTER TABLE launchables ADD COLUMN package TEXT CHECK (package IS NULL OR length(package) > 0); DROP TABLE IF EXISTS scrape_attempts; DROP TABLE IF EXISTS scrape_jobs;"
-                ).await?;
-                connection.execute_batch(SCHEMA).await?;
-            }
-            6 => {
-                connection
-                    .execute_batch(
-                        "DROP TABLE IF EXISTS scrape_attempts; DROP TABLE IF EXISTS scrape_jobs;",
-                    )
-                    .await?;
-                connection.execute_batch(SCHEMA).await?;
-            }
-            7 => connection.execute_batch(SCHEMA).await?,
-            8 => {}
+            12 => {}
             version => {
                 return Err(GameCatalogError::InvalidData(format!(
                     "library database schema version {version} is not supported"
@@ -524,14 +512,15 @@ impl GameCatalog {
         drop(rows);
         transaction
             .execute(
-                r#"INSERT INTO binaries (id, blake3, platform, serial, title_id, parent_binary_id)
-                   VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
+                r#"INSERT INTO binaries (id, blake3, platform, serial, title_id, disc_number, parent_binary_id)
+                   VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
                 vec![
                     Self::id(id),
                     Value::from(input.binary_blake3.to_vec()),
                     Value::from(input.platform.clone()),
                     input.serial.clone().into(),
                     input.title_id.clone().into(),
+                    input.disc_number.map_or(Value::Null, Value::from),
                     input.parent_binary_id.map(Self::id).unwrap_or(Value::Null),
                 ],
             )

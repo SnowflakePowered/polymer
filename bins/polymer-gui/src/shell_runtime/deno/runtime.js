@@ -126,6 +126,10 @@
     }
 
     setProperty(name, value, priority = "") {
+      if (value === null || String(value) === "") {
+        this.removeProperty(name);
+        return;
+      }
       const declarations = parseDeclarations(this.element.getAttribute("style"));
       const suffix = String(priority).toLowerCase() === "important" ? " !important" : "";
       declarations.set(String(name), `${String(value)}${suffix}`);
@@ -1085,13 +1089,13 @@
     scroll(...args) { documentNode.documentElement?.scrollTo(...args); },
     scrollTo(...args) { documentNode.documentElement?.scrollTo(...args); },
     scrollBy(...args) { documentNode.documentElement?.scrollBy(...args); },
-    getComputedStyle: (element) => Object.freeze({
-      getPropertyValue: (name) => element.style.getPropertyValue(name),
-      get display() { return element.style.display || "block"; },
-      get visibility() { return element.style.visibility || "visible"; },
-      get position() { return element.style.position || "static"; },
-      get pointerEvents() { return element.style.pointerEvents || "auto"; },
-      get opacity() { return element.style.opacity || "1"; },
+    getComputedStyle: (element) => new Proxy(Object.freeze({
+      getPropertyValue: (name) =>
+        ops.op_dom_computed_style(element.__id, String(name)) ?? element.style.getPropertyValue(name),
+    }), {
+      get: (target, property) => typeof property !== "string" || property in target
+        ? Reflect.get(target, property)
+        : target.getPropertyValue(camelToDash(property)),
     }),
     postMessage: shellChannel.port2.postMessage.bind(shellChannel.port2),
   });

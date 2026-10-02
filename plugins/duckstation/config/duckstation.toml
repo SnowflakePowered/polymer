@@ -13,6 +13,7 @@ false = "false"
 output = { format = "ini", path = "settings.ini" }
 
 [targets.settings.Audio]
+[targets.settings.AutoUpdater]
 [targets.settings.BIOS]
 [targets.settings.CDROM]
 [targets.settings.CPU]
@@ -21,6 +22,7 @@ output = { format = "ini", path = "settings.ini" }
 [targets.settings.Debug]
 [targets.settings.Display]
 [targets.settings.GPU]
+[targets.settings.GameList]
 [targets.settings.Hacks]
 [targets.settings.Logging]
 [targets.settings.Main]

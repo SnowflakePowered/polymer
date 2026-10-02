@@ -21,7 +21,6 @@ function quitContext(active) {
     actions: active.actions,
     filesystem: __polymerFilesystem.filesystem,
     directory: active.saveStateDirectory,
-    launchPath: active.launchSet[active.disc.index].launchPath,
     console: active.launch.console,
     package: active.launchSet[active.disc.index].package,
     userConfiguration: active.launch.userConfiguration,

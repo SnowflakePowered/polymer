@@ -1,5 +1,5 @@
 import runtime from "pkg:bin/win-x64";
-import type { EmulatorLaunchArgs, PauseResumeContext, Storage } from "polymer:api";
+import type { DiscChangeContext, EmulatorLaunchArgs, PauseResumeContext, Storage } from "polymer:api";
 import { HotkeyParser } from "pkg:hotkeys.ts";
 
 type Options = {
@@ -41,7 +41,11 @@ type Options = {
             system: boolean,
         },
         input_sources: { sdl: boolean },
+        gamelist: { recursive_paths: string },
+        autoupdater: { check_at_startup: boolean },
 };
+
+let currentDisc = 0;
 
 export const onLaunch = async (args: EmulatorLaunchArgs<Options, Readonly<{ card1?: Storage, card2?: Storage }>>) => {
     const biosFiles = (await args.firmwareStore.list()).filter(entry => entry.platform === "SONY_PSX");
@@ -65,7 +69,10 @@ export const onLaunch = async (args: EmulatorLaunchArgs<Options, Readonly<{ card
         const file = await args.firmwareStore.open(bios.label);
         args.filesystem.mount(`/User/bios/bios-${index}.bin`, file, { mode: "r" });
     }
-    const gamePath = args.filesystem.mount("/Game", args.package, { mode: "rx" });
+    const discPaths = args.launchSet.length > 1
+        ? args.launchSet.map((disc, index) => args.filesystem.mount(`/Game/Disc${index}`, disc.package, { mode: "rx" }))
+        : [args.filesystem.mount("/Game", args.launchSet[0].package, { mode: "rx" })];
+    currentDisc = args.initialDiscIndex;
 
     const options = args.configuration.options();
     options.main.settings_version = 3;
@@ -97,6 +104,8 @@ export const onLaunch = async (args: EmulatorLaunchArgs<Options, Readonly<{ card
     options.logging.memory_card = true;
     options.logging.system = true;
     options.input_sources.sdl = true;
+    options.gamelist.recursive_paths = path("/Game");
+    options.autoupdater.check_at_startup = false;
     const settings = args.configuration.render()["settings.ini"];
     if (!settings) throw new TypeError("DuckStation configuration did not render settings.ini");
     args.filesystem.mount("/DuckStation/settings.ini", settings, { mode: "rw" });
@@ -110,7 +119,7 @@ export const onLaunch = async (args: EmulatorLaunchArgs<Options, Readonly<{ card
             ["TEMP", args.filesystem.path("/User/Temp")],
             ["TMP", args.filesystem.path("/User/Temp")],
         ],
-        argv: ["-batch", "-fastboot", "--", gamePath],
+        argv: ["-fastboot", "--", discPaths[args.initialDiscIndex]],
         isolate: true,
         hooks: { graphics: ["d3d11"], input: ["sdl3"] },
         surfaces: [{ index: 0 }],
@@ -123,4 +132,11 @@ export const onPauseResume = (context: PauseResumeContext) => {
     context.actions.pause?.activate();
 };
 
-export default { onLaunch, onParseHotkey, onPauseResume };
+export const onDiscChange = (context: DiscChangeContext) => {
+    const steps = context.index - currentDisc;
+    const action = steps > 0 ? context.actions.next_disc : context.actions.previous_disc;
+    for (let press = 0; press < Math.abs(steps); press++) action.activate();
+    currentDisc = context.index;
+};
+
+export default { onLaunch, onParseHotkey, onPauseResume, onDiscChange };

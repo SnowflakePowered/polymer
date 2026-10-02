@@ -14,7 +14,9 @@ exit = { expression = "Keyboard/F8", name = "PowerOff" }
 fast_forward = { expression = "Keyboard/Tab", name = "FastForward" }
 frame_advance = { expression = "Keyboard/F6", name = "FrameStep" }
 load_state = { expression = "Keyboard/F1", name = "LoadSelectedSaveState" }
+next_disc = { expression = "Keyboard/F9", name = "SwitchToNextDisc" }
 pause = { expression = "Keyboard/Space", name = "TogglePause" }
+previous_disc = { expression = "Keyboard/F5", name = "SwitchToPreviousDisc" }
 reset = { expression = "Keyboard/F7", name = "Reset" }
 save_state = { expression = "Keyboard/F2", name = "SaveSelectedSaveState" }
 screenshot = { expression = "Keyboard/F10", name = "Screenshot" }

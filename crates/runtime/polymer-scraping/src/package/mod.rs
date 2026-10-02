@@ -38,6 +38,8 @@ pub struct Package {
     pub platform: String,
     pub serial: Option<String>,
     pub title_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disc_number: Option<u8>,
     pub binary_digest: String,
     #[serde(skip)]
     pub installable: bool,
@@ -73,6 +75,7 @@ impl Package {
             platform: launchable.platform,
             serial: launchable.serial,
             title_id: launchable.title_id,
+            disc_number: launchable.disc_number,
             binary_digest: blake3::Hash::from_bytes(launchable.binary_blake3)
                 .to_hex()
                 .to_string(),
@@ -114,7 +117,7 @@ impl Package {
     }
 
     pub fn launch_entry(&self) -> serde_json::Value {
-        serde_json::json!({ "launchPath": self.uri.to_string(), "package": self })
+        serde_json::json!({ "package": self })
     }
 
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, crate::ScrapingError> {
@@ -194,6 +197,7 @@ impl Package {
             platform: platform.to_owned(),
             serial,
             title_id,
+            disc_number: package.disc_number(),
             binary_digest: String::new(),
             installable: package.installable(),
             import: Some(PackageImport {

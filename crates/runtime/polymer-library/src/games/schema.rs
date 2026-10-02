@@ -1,13 +1,15 @@
 pub(super) const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS binaries (
     id BLOB PRIMARY KEY NOT NULL CHECK (length(id) = 16),
-    blake3 BLOB NOT NULL UNIQUE CHECK (length(blake3) = 32),
+    blake3 BLOB NOT NULL CHECK (length(blake3) = 32),
     platform TEXT NOT NULL CHECK (length(platform) > 0),
     serial TEXT,
     title_id TEXT,
+    disc_number INTEGER CHECK (disc_number IS NULL OR disc_number BETWEEN 1 AND 255),
     parent_binary_id BLOB REFERENCES binaries(id) ON DELETE RESTRICT,
     CHECK (parent_binary_id IS NULL OR parent_binary_id != id)
 ) STRICT;
+CREATE INDEX IF NOT EXISTS binaries_parent ON binaries(parent_binary_id);
 CREATE TABLE IF NOT EXISTS launchables (
     id BLOB PRIMARY KEY NOT NULL CHECK (length(id) = 16),
     binary_id BLOB NOT NULL REFERENCES binaries(id) ON DELETE CASCADE,
@@ -45,7 +47,6 @@ CREATE TABLE IF NOT EXISTS metadata (
     ),
     UNIQUE(parent_binary_id, producer, ordinal)
 ) STRICT;
-CREATE INDEX IF NOT EXISTS binaries_parent ON binaries(parent_binary_id);
 CREATE INDEX IF NOT EXISTS launchables_binary ON launchables(binary_id);
 CREATE INDEX IF NOT EXISTS metadata_parent ON metadata(parent_binary_id, key, source, ordinal);
 CREATE INDEX IF NOT EXISTS metadata_producer ON metadata(parent_binary_id, producer);
@@ -56,6 +57,14 @@ CREATE TABLE IF NOT EXISTS launchable_configurations (
     schema TEXT NOT NULL CHECK (length(schema) > 0),
     values_json TEXT NOT NULL,
     PRIMARY KEY (launchable_id, plugin_id, schema)
+) STRICT;
+CREATE TABLE IF NOT EXISTS launchable_emulators (
+    launchable_id BLOB PRIMARY KEY NOT NULL REFERENCES launchables(id) ON DELETE CASCADE,
+    plugin_id TEXT NOT NULL CHECK (length(plugin_id) > 0)
+) STRICT;
+CREATE TABLE IF NOT EXISTS platform_settings (
+    platform TEXT PRIMARY KEY NOT NULL CHECK (length(platform) > 0),
+    emulator TEXT CHECK (emulator IS NULL OR length(emulator) > 0)
 ) STRICT;
 CREATE TABLE IF NOT EXISTS launchable_manifests (
     launchable_id BLOB PRIMARY KEY NOT NULL REFERENCES launchables(id) ON DELETE CASCADE,
@@ -69,5 +78,5 @@ CREATE TABLE IF NOT EXISTS title_updates (
     checked_at INTEGER NOT NULL,
     PRIMARY KEY (launchable_id, ordinal)
 ) STRICT;
-PRAGMA user_version = 8;
+PRAGMA user_version = 12;
 "#;
