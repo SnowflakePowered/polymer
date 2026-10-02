@@ -1,0 +1,13 @@
+[package]
+name = "polymer-discsets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+rusqlite.workspace = true
+shiratsu-naming = "1.0.0"
+
+[lints]
+workspace = true

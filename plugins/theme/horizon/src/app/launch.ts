@@ -52,5 +52,10 @@ export async function createSelection(game: PackageConfiguration): Promise<Confi
 }
 
 export async function onLaunch(launchableId: string, game: PackageConfiguration) {
-  return window.Polymer.configuration.onLaunch(launchableId, await createSelection(game));
+  const launchable = await window.Polymer.library.launchables.find(game.path);
+  const library = launchable && await window.Polymer.library.games.get(launchable.parentBinaryId ?? launchable.binaryId);
+  const discs = (library?.launchables ?? [])
+    .filter((disc, index, all) => all.findIndex(other => other.binaryId === disc.binaryId) === index)
+    .map(disc => disc.binaryId === launchable?.binaryId ? launchableId : disc.id);
+  return window.Polymer.configuration.onLaunch(discs.length > 1 ? discs : launchableId, await createSelection(game));
 }

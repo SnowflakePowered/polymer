@@ -15,7 +15,7 @@ export const onLaunch = (args: EmulatorLaunchArgs<
     // Polymer's 3DS volume contains both nand/ and sdmc/, including title tickets.
     fs.mount("/Storage", args.storage.ctrnand, { mode: "rwx" });
     fs.mount("/User");
-    const game = fs.mount("/Game", args.package, { mode: "rx" });
+    const game = fs.mount("/Game", args.launchSet[0].package, { mode: "rx" });
     const options = args.configuration.options().storage;
     // QSettings treats backslashes as escapes and commas as list separators.
     options.nand_directory = JSON.stringify(fs.path("/Storage/nand").replaceAll("\\", "/"));

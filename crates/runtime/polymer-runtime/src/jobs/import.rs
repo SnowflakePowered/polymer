@@ -10,6 +10,7 @@ use polymer_library::jobs::{
 };
 use serde_json::{Value, json};
 use std::{future::Future, path::Path, sync::Arc};
+use tokio::sync::watch;
 use uuid::Uuid;
 
 /// Runs import jobs: identifies a dropped path, then installs and registers what it
@@ -23,14 +24,33 @@ pub(super) struct Importer {
     storage: crate::StorageService,
     catalog: Arc<GameCatalog>,
     arbiter: actix::ArbiterHandle,
+    identifying: Arc<watch::Sender<usize>>,
+}
+
+/// Counts an import whose identification has not settled. A later disc can then wait for
+/// the imports dropped alongside it, which may hold its first disc.
+struct Identifying(Arc<watch::Sender<usize>>);
+
+impl Identifying {
+    fn new(count: &Arc<watch::Sender<usize>>) -> Self {
+        count.send_modify(|count| *count += 1);
+        Self(count.clone())
+    }
+}
+
+impl Drop for Identifying {
+    fn drop(&mut self) {
+        self.0.send_modify(|count| *count -= 1);
+    }
 }
 
 impl JobRunner for Importer {
     fn run(&self, _: &Arc<JobStore>, ids: Vec<Uuid>, _: bool) {
         for id in ids {
             let importer = self.clone();
+            let identifying = Identifying::new(&self.identifying);
             self.arbiter.spawn(async move {
-                if let Err(error) = importer.run_job(id).await {
+                if let Err(error) = importer.run_job(id, identifying).await {
                     tracing::warn!(%error, job = %id, "import job failed");
                 }
             });
@@ -51,6 +71,7 @@ impl Importer {
             storage,
             catalog,
             arbiter: actix::Arbiter::current(),
+            identifying: Arc::new(watch::Sender::new(0)),
         }
     }
 
@@ -71,7 +92,7 @@ impl Importer {
         }
     }
 
-    async fn run_job(&self, id: Uuid) -> Result<(), JobsError> {
+    async fn run_job(&self, id: Uuid, identifying: Identifying) -> Result<(), JobsError> {
         let Some(job) = self
             .store
             .claim(id)
@@ -80,7 +101,7 @@ impl Importer {
         else {
             return Ok(());
         };
-        let outcome = self.execute(&job).await;
+        let outcome = self.execute(&job, identifying).await;
         job.settle(outcome.as_ref().map(|()| JobOutcome::completed(None)))
             .await
             .map_err(JobsError::from_display)?;
@@ -92,8 +113,24 @@ impl Importer {
         outcome
     }
 
-    async fn execute(&self, job: &JobHandle) -> Result<(), JobsError> {
-        let result = self.identify(job).await?;
+    async fn execute(&self, job: &JobHandle, identifying: Identifying) -> Result<(), JobsError> {
+        let identified = self.identify(job).await;
+        drop(identifying);
+        let result = match identified {
+            Ok(result) => result,
+            Err(error) => {
+                let mut others = self.identifying.subscribe();
+                if *others.borrow() == 0 {
+                    return Err(error);
+                }
+                others
+                    .wait_for(|count| *count == 0)
+                    .await
+                    .map_err(JobsError::from_display)?;
+                let _identifying = Identifying::new(&self.identifying);
+                self.identify(job).await?
+            }
+        };
         match result["kind"].as_str() {
             Some("system") => self.install(job, &result, false).await.map(drop),
             Some("installables") => {

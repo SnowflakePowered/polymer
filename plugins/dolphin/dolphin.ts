@@ -35,6 +35,7 @@ type Options = {
                 slot_b: string,
                 wiimote_continuous_scanning: boolean,
                 wiimote_controller_interface: boolean,
+                auto_disc_change: boolean,
             },
             general: {
                 nand_root_path: string,
@@ -66,12 +67,6 @@ type Options = {
             },
         },
 };
-
-function basename(path: string): string {
-    const name = path.replaceAll("\\", "/").split("/").at(-1);
-    if (!name) throw new TypeError(`path has no filename: ${path}`);
-    return name;
-}
 
 const DISC_IMAGE_EXTENSIONS = [".iso", ".rvz", ".wbfs", ".gcz"];
 
@@ -420,7 +415,7 @@ async function applyWiiConnectionChanges(
 }
 
 export const onLaunch = (args: EmulatorLaunchArgs<Options, Readonly<{ nand?: Storage, slotA?: Storage, slotB?: Storage }>>) => {
-    const gameName = basename(args.launchPath);
+    const gameName = args.launchSet[0].package.filename;
     const isWii = args.console === "NINTENDO_WII";
     const controllerTopology = pointerTopology(args.controllerTopology);
     // Wii WADs are installed into the selected NAND before onLaunch and
@@ -464,7 +459,14 @@ export const onLaunch = (args: EmulatorLaunchArgs<Options, Readonly<{ nand?: Sto
         }
         args.filesystem.mount("/User/Wii", args.storage.nand, { mode: "rwx" });
     }
-    const gamePath = launchesNandTitle ? null : args.filesystem.mount("/Game", args.package, { mode: "rx" });
+    const discPaths = launchesNandTitle ? [] : args.launchSet.length > 1
+        ? args.launchSet.map((disc, index) => args.filesystem.mount(`/Game/Disc${index}`, disc.package, { mode: "rx" }))
+        : [args.filesystem.mount("/Game", args.launchSet[0].package, { mode: "rx" })];
+    const gamePath = discPaths.length > 1
+        ? args.filesystem.mount("/Game/discs.m3u", new TextEncoder().encode(discPaths
+            .map((_, offset) => discPaths[(args.initialDiscIndex + offset) % discPaths.length])
+            .join("\n")), { mode: "r" })
+        : discPaths[0] ?? null;
 
     const options = args.configuration.options().main;
     // Resolve Dolphin's first-run telemetry choice in generated Dolphin.ini.
@@ -479,6 +481,7 @@ export const onLaunch = (args: EmulatorLaunchArgs<Options, Readonly<{ nand?: Sto
     options.core.enable_save_states = true;
     options.core.slot_a = "MemoryCardFolder";
     options.core.slot_b = "None";
+    options.core.auto_disc_change = discPaths.length > 1;
 
     options.general.hotkeys_require_focus = false;
     // Keep Dolphin's control window available for live settings automation;
@@ -518,12 +521,12 @@ export const onLaunch = (args: EmulatorLaunchArgs<Options, Readonly<{ nand?: Sto
 
     // Batch mode never shows Dolphin's control window. Polymer already
     // isolates that UI on a private desktop and owns process termination.
-    const quickResume = quickResumeEnabled(args.userConfiguration) && !isNKit(args.launchPath)
+    const quickResume = quickResumeEnabled(args.userConfiguration) && !isNKit(args.launchSet[0].package.filename)
         ? args.saveStates.quickResume
         : null;
     const argv = ["-u", args.filesystem.path("/User")];
     if (launchesNandTitle) {
-        const titleId = args.package.titleId?.replace(/^0x/i, "").toLowerCase();
+        const titleId = args.launchSet[0].package.titleId?.replace(/^0x/i, "").toLowerCase();
         if (!titleId || !/^[0-9a-f]{16}$/.test(titleId)) {
             throw new TypeError("a Wii launch requires a 16-character installed title ID");
         }
@@ -665,7 +668,7 @@ export const onStateResume = (context: StateContext) => {
 }
 
 export const onQuit = async (context: QuitContext): Promise<FileEntry | null> => {
-    if (!quickResumeEnabled(context.userConfiguration) || isNKit(context.launchPath)) return null;
+    if (!quickResumeEnabled(context.userConfiguration) || isNKit(context.package.filename)) return null;
     const slot = 10;
     await removeNativeState(context.directory, slot);
     activateStateAction(context.actions, "save", slot);

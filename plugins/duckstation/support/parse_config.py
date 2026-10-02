@@ -43,7 +43,13 @@ cppconfig.NOOP_MACROS = ("TRANSLATE_NOOP", "TRANSLATE_DISAM_NOOP", "FSUI_NSTR")
 
 SETTINGS_FILE = "settings.ini"
 BOOL_STYLE = "lower"
-FILESYSTEM_SETTINGS = {("PCDrv", "Root"), ("PIO", "FlashImagePath")}
+FILESYSTEM_SETTINGS = {("PCDrv", "Root"), ("PIO", "FlashImagePath"), ("GameList", "RecursivePaths")}
+
+# Settings DuckStation reads outside settings.cpp (game_list.cpp, the Qt main window).
+EXTRA_SETTINGS = (
+    {"section": "GameList", "key": "RecursivePaths", "type": "string", "default": None},
+    {"section": "AutoUpdater", "key": "CheckAtStartup", "type": "bool", "default": True},
+)
 
 # DuckStation's own standard-pad vocabulary (`GenericInputBinding`) already says
 # what each controller control corresponds to on a normal gamepad. Mapping the
@@ -107,6 +113,8 @@ ACTION_VOCABULARY = {
     "frame_advance": {"hotkey": "FrameStep", "fallback": ("f6", "Keyboard/F6")},
     "reset": {"hotkey": "Reset", "fallback": ("f7", "Keyboard/F7")},
     "exit": {"hotkey": "PowerOff", "fallback": ("f8", "Keyboard/F8")},
+    "previous_disc": {"hotkey": "SwitchToPreviousDisc", "fallback": ("f5", "Keyboard/F5")},
+    "next_disc": {"hotkey": "SwitchToNextDisc", "fallback": ("f9", "Keyboard/F9")},
 }
 
 # `si.<method>("Section", "Key", <default>)` — the method names the type.
@@ -161,6 +169,8 @@ def parse_settings(tree_root: Path, report: Report) -> list[dict]:
                         "keeping the first")
             continue
         settings[(section, key)] = entry
+    for entry in EXTRA_SETTINGS:
+        settings.setdefault((entry["section"], entry["key"]), dict(entry))
     if not settings:
         raise Bail("no settings calls found; check --duckstation")
     return list(settings.values())

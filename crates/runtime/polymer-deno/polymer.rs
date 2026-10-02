@@ -44,11 +44,12 @@ pub mod library;
 pub use library::Library;
 use library::{
     op_library_games_delete, op_library_games_get, op_library_games_list, op_library_import_key,
-    op_library_keys_list, op_library_keys_platforms, op_library_keys_remove,
-    op_library_launchables_add, op_library_launchables_delete, op_library_launchables_find,
-    op_library_metadata_add, op_library_metadata_delete, op_library_metadata_replace,
-    op_library_metadata_text, op_library_metadata_update, op_library_metadata_url,
-    op_scraping_refresh, op_scraping_scrapers, op_scraping_start,
+    op_library_keys_list,
+    op_library_keys_platforms, op_library_keys_remove, op_library_launchables_add,
+    op_library_launchables_delete, op_library_launchables_find, op_library_metadata_add,
+    op_library_metadata_delete, op_library_metadata_replace, op_library_metadata_text,
+    op_library_metadata_update, op_library_metadata_url, op_scraping_refresh, op_scraping_scrapers,
+    op_scraping_start,
 };
 
 pub type ApiFuture<T> = Pin<Box<dyn Future<Output = T> + 'static>>;
@@ -110,6 +111,17 @@ pub trait PolymerHost: Send + Sync {
         &self,
         launchable_id: String,
         request: Value,
+    ) -> ApiFuture<Result<Value, String>>;
+    fn select_emulator(
+        &self,
+        launchable_id: String,
+        emulator: Option<String>,
+    ) -> ApiFuture<Result<(), String>>;
+    fn platform_settings(&self) -> ApiFuture<Result<Value, String>>;
+    fn update_platform_settings(
+        &self,
+        platform: String,
+        settings: polymer_library::PlatformSettings,
     ) -> ApiFuture<Result<Value, String>>;
     fn list_plugins(&self) -> Value;
     fn invoke_plugin(
@@ -273,6 +285,40 @@ async fn op_configuration_configure(
 ) -> Result<serde_json::Value, JsErrorBox> {
     let host = state.borrow().borrow::<Arc<dyn PolymerHost>>().clone();
     host.configure(launchable_id, emulator, user_configuration)
+        .await
+        .map_err(JsErrorBox::generic)
+}
+
+#[op2]
+async fn op_configuration_select(
+    state: Rc<RefCell<OpState>>,
+    #[string] launchable_id: String,
+    #[string] emulator: Option<String>,
+) -> Result<(), JsErrorBox> {
+    let host = state.borrow().borrow::<Arc<dyn PolymerHost>>().clone();
+    host.select_emulator(launchable_id, emulator)
+        .await
+        .map_err(JsErrorBox::generic)
+}
+
+#[op2]
+#[serde]
+async fn op_configuration_platforms(
+    state: Rc<RefCell<OpState>>,
+) -> Result<serde_json::Value, JsErrorBox> {
+    let host = state.borrow().borrow::<Arc<dyn PolymerHost>>().clone();
+    host.platform_settings().await.map_err(JsErrorBox::generic)
+}
+
+#[op2]
+#[serde]
+async fn op_configuration_update_platform(
+    state: Rc<RefCell<OpState>>,
+    #[string] platform: String,
+    #[serde] settings: polymer_library::PlatformSettings,
+) -> Result<serde_json::Value, JsErrorBox> {
+    let host = state.borrow().borrow::<Arc<dyn PolymerHost>>().clone();
+    host.update_platform_settings(platform, settings)
         .await
         .map_err(JsErrorBox::generic)
 }
@@ -540,6 +586,9 @@ deno_core::extension!(
         op_configuration_describe,
         op_configuration_configure,
         op_configuration_prepare,
+        op_configuration_select,
+        op_configuration_platforms,
+        op_configuration_update_platform,
         op_plugin_list,
         op_plugin_invoke,
         op_prepared_filesystem_release,

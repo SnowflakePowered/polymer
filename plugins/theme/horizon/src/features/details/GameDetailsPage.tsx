@@ -1,17 +1,17 @@
 import { DialogParts as Dialog, Button, ButtonGlyph, ActionHints } from "../../ui";
-import { Show } from "solid-js";
+import { Show, createMemo } from "solid-js";
 import { produce, unwrap } from "solid-js/store";
 import { Icon } from "../../ui";
 import { OverlayPortal } from "../../ui";
 import { useShell } from "../../app/shell-context";
-import type { EmulatorConfiguration } from "../../../../../../js/polymer";
+import type { EmulatorConfiguration, PackageConfiguration } from "../../../../../../js/polymer";
 import { SettingsSection } from "./SettingsSection";
 import "./GameDetailsPage.css";
 
 export function GameDetailsPage() {
   const shell = useShell();
   let panel: HTMLDivElement | undefined;
-  const game = () => shell.model.draft;
+  const game = createMemo<PackageConfiguration | null>((previous) => shell.model.draft ?? previous, null);
   const emulator = () => game()?.candidates.find((item) => item.id === game()?.selectedEmulator) || game()?.candidates[0];
   const updateEmulatorById = (id: string, change: (emulator: EmulatorConfiguration) => void) => {
     const current = game();
@@ -23,6 +23,15 @@ export function GameDetailsPage() {
   const updateEmulator = (change: (emulator: EmulatorConfiguration) => void) => {
     const current = emulator();
     if (current) updateEmulatorById(current.id, change);
+  };
+  const selectEmulator = (value: string | null) => {
+    const current = game();
+    const launchableId = shell.model.launchableId;
+    if (!current || !launchableId) return;
+    const fallback = current.candidates.find((item) => item.id === current.platformEmulator)?.id ?? current.candidates[0]?.id ?? "";
+    shell.setModel("draft", { gameEmulator: value, selectedEmulator: value ?? fallback });
+    void window.Polymer.configuration.select(launchableId, value)
+      .catch((error) => shell.setModel("error", error instanceof Error ? error.message : String(error)));
   };
   const updateConfiguration = (group: string, option: string, value: boolean | number | string | null) => {
     const launchableId = shell.model.launchableId;
@@ -54,7 +63,7 @@ export function GameDetailsPage() {
           <Dialog.Title class="horizon-details-title">Game Settings</Dialog.Title>
           <p>{game()!.name} <span>· {window.Polymer.machine(game()!.platform)?.name ?? game()!.platform}</span></p>
         </header>
-        <SettingsSection game={game()!} emulator={emulator()!} selectEmulator={(value) => shell.setModel("draft", "selectedEmulator", value)} updateEmulator={updateEmulator} updateConfiguration={updateConfiguration} />
+        <SettingsSection game={game()!} emulator={emulator()!} selectEmulator={selectEmulator} updateEmulator={updateEmulator} updateConfiguration={updateConfiguration} />
         <div class="horizon-details-footer">
           <Button class="horizon-details-start" type="button" onClick={() => shell.launchDraft()}><Icon name="play" tone="action" />Start game</Button>
           <Button type="button" title="Escape" onClick={shell.cancelDetails}>Back</Button>

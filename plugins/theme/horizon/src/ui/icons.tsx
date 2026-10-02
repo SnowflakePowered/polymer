@@ -1,7 +1,7 @@
 import type { JSX } from "solid-js";
 import { useTone, type Tone } from "./theme";
 
-export type IconName = "user" | "friends" | "network" | "library" | "saves" | "storage" | "settings" | "back" | "play" | "info" | "close" | "gamepad" | "keyboard" | "volume" | "theme" | "key" | "trash";
+export type IconName = "user" | "friends" | "network" | "library" | "saves" | "storage" | "settings" | "back" | "play" | "info" | "close" | "gamepad" | "keyboard" | "volume" | "theme" | "key" | "trash" | "disc";
 
 const paths: Record<IconName, () => JSX.Element> = {
   user: () => <><path d="M12 4a4 4 0 1 1 0 8 4 4 0 0 1 0-8Z" /><path d="M4.5 21a7.5 7.5 0 0 1 15 0" /></>,
@@ -21,6 +21,7 @@ const paths: Record<IconName, () => JSX.Element> = {
   theme: () => <><path d="M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18Z" /><path d="M12 3v18a9 9 0 0 0 0-18Z" fill="currentColor" /></>,
   key: () => <><circle cx="7.5" cy="15.5" r="4.5" /><path d="m10.7 12.3 9.8-9.8M17.5 5.5l3 3M15 8l2 2" /></>,
   trash: () => <><path d="M4 6.5h16M9.5 6.5V4h5v2.5M6 6.5l1 14h10l1-14" /><path d="M10 10.5v6M14 10.5v6" /></>,
+  disc: () => <><path d="M7.76 5.84A7.5 7.5 0 1 1 16.24 17.16" /><circle cx="10" cy="13" r="7.5" /><circle cx="10" cy="13" r="2" /></>,
 };
 
 export function Icon(props: { name: IconName; class?: string; strokeWidth?: number; tone?: Tone }) {

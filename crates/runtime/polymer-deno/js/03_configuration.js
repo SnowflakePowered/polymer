@@ -2,7 +2,10 @@ import { Package } from "./00_package.js";
 import {
   op_configuration_configure,
   op_configuration_describe,
+  op_configuration_platforms,
   op_configuration_prepare,
+  op_configuration_select,
+  op_configuration_update_platform,
 } from "ext:core/ops";
 
 export function createConfiguration(pluginApi) {
@@ -94,11 +97,19 @@ export function createConfiguration(pluginApi) {
     configure(launchableId, emulator, userConfiguration = undefined) {
       return stateFor(launchableId, emulator, "configure").configure(userConfiguration);
     },
+    select(launchableId, emulator) {
+      return op_configuration_select(String(launchableId), emulator == null ? null : String(emulator));
+    },
+    platforms: Object.freeze({
+      list: () => op_configuration_platforms(),
+      update: (platform, settings) => op_configuration_update_platform(String(platform), {
+        emulator: settings?.emulator == null ? null : String(settings.emulator),
+      }),
+    }),
     async prepare(launchableId, selection) {
       await stateFor(launchableId, selection.emulator, "prepare").settled();
       const prepared = await op_configuration_prepare(String(launchableId), selection);
       prepared.launchSet = prepared.launchSet.map(value => new Package(value));
-      prepared.arguments.package = new Package(prepared.arguments.package);
       prepared.arguments.launchSet = prepared.arguments.launchSet.map(disc => Object.freeze({
         ...disc, package: new Package(disc.package),
       }));

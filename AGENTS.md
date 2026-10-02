@@ -27,4 +27,5 @@
 * Follow existing conventions for Actors and JS <-> Rust messaging.
 * Do not leave explanatory comments in your code. 
 * Launching an emulator with `isolate: true` or `isolate: false` only affects whether its launched in a private desktop. Filesystem access is always virtualized.
+* This is a **pre-release** project that has not shipped to any end users. Do not include migration code in the core app. Do one-time migrations instead to keep test databases updated, and collapse database schema versions.
 Read ARCHITECTURE.md for a high level overview of the architecture.

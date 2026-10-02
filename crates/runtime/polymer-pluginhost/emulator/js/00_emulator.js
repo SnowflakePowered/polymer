@@ -10,28 +10,22 @@ async function launch(entrypoint, args, configurationId, explicitDefault) {
     throw new TypeError("plugin export 'onLaunch' is not a function");
   }
 
-  const launchSet = args.launchSet ?? [{ launchPath: args.launchPath, package: args.package }];
+  const launchSet = args.launchSet;
   if (!Array.isArray(launchSet) || launchSet.length === 0) {
     throw new TypeError("onLaunch requires a nonempty launchSet");
   }
-  if (args.launchSet !== undefined && launchSet.some(disc =>
-    disc == null || typeof disc.launchPath !== "string" || !disc.launchPath
-    || disc.package == null || typeof disc.package !== "object")) {
-    throw new TypeError("each launchSet entry requires a launchPath and package");
+  if (launchSet.some(disc => disc?.package == null || typeof disc.package !== "object")) {
+    throw new TypeError("each launchSet entry requires a package");
   }
   const initialDiscIndex = args.initialDiscIndex ?? 0;
   if (!Number.isInteger(initialDiscIndex) || initialDiscIndex < 0 || initialDiscIndex >= launchSet.length) {
     throw new RangeError("initialDiscIndex is outside the launch set");
   }
   const discs = Object.freeze(launchSet.map(disc => Object.freeze({
-    ...disc,
-    package: disc.package == null ? disc.package : __polymerFilesystem.bindPackage(createPackage(disc.package)),
+    package: __polymerFilesystem.bindPackage(createPackage(disc.package)),
   })));
   args.launchSet = discs;
   args.initialDiscIndex = initialDiscIndex;
-  // Keep existing plugins working while they migrate to launchSet.
-  args.launchPath = args.launchSet[initialDiscIndex].launchPath;
-  args.package = args.launchSet[initialDiscIndex].package;
 
   const configuration = __polymerPluginHost.configuration(configurationId);
   args.configuration = configuration;
@@ -94,9 +88,7 @@ async function launch(entrypoint, args, configurationId, explicitDefault) {
         disc: { index: initialDiscIndex },
         saveStateDirectory: args.saveStates.directory,
         launch: Object.freeze({
-          launchPath: args.launchPath,
           console: args.console,
-          package: args.package,
           userConfiguration: args.userConfiguration,
         }),
         configuration,

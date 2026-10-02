@@ -4,7 +4,7 @@ mod manifest;
 use crate::{Package, ScrapingEngine, ScrapingError};
 pub(crate) use cue::CuePreparation;
 pub use manifest::{LaunchBundle, LaunchFile};
-use polymer_library::Launchable;
+use polymer_library::{DiscSets, Launchable};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -49,8 +49,15 @@ impl Ingestor {
 
     pub async fn import(
         engine: &ScrapingEngine,
-        packages: Vec<Package>,
+        mut packages: Vec<Package>,
     ) -> Result<Vec<(Launchable, Option<polymer_library::jobs::Job>)>, ScrapingError> {
+        packages.sort_by_key(|package| {
+            DiscSets::get().disc(
+                &package.platform,
+                package.serial.as_deref(),
+                package.disc_number,
+            )
+        });
         let mut imported = Vec::new();
         for package in packages {
             let (launchable, created) = package.import(engine.catalog()).await?;

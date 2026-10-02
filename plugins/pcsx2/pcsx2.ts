@@ -60,7 +60,7 @@ export const onLaunch = async (args: EmulatorLaunchArgs<Options, Readonly<{ mem1
         });
     }
     args.filesystem.mount(`/User/bios/${biosName}`, biosFile, { mode: "r" });
-    const gamePath = args.filesystem.mount("/Game", args.package, { mode: "rx" });
+    const gamePath = args.filesystem.mount("/Game", args.launchSet[0].package, { mode: "rx" });
 
     const options = args.configuration.options();
     options.ui.settings_version = 1;

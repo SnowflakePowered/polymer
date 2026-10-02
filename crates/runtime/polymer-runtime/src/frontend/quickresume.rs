@@ -66,13 +66,6 @@ impl QuickResume {
         });
         if let Some(entry) = &entry {
             argument["initialDiscIndex"] = entry.disc_index.into();
-            if let Some(disc) = argument["launchSet"]
-                .get(entry.disc_index as usize)
-                .cloned()
-            {
-                argument["launchPath"] = disc["launchPath"].clone();
-                argument["package"] = disc["package"].clone();
-            }
         }
         (
             entry.map(|entry| polymer_pluginhost::emulator::QuickResumeData {
@@ -84,10 +77,7 @@ impl QuickResume {
     }
 
     fn key(plugin_id: &str, argument: &Value) -> Option<polymer_library::QuickResumeKey> {
-        let anchor = argument["launchSet"]
-            .as_array()
-            .and_then(|set| set.first())
-            .unwrap_or(argument);
+        let anchor = argument["launchSet"].as_array()?.first()?;
         let Ok(package) =
             serde_json::from_value::<polymer_scraping::Package>(anchor["package"].clone())
         else {
@@ -106,12 +96,13 @@ impl QuickResume {
             })
             .map(|value| value.trim().to_ascii_lowercase())
             .or_else(|| {
-                anchor["launchPath"].as_str().map(|path| {
-                    std::fs::canonicalize(path)
-                        .unwrap_or_else(|_| std::path::PathBuf::from(path))
+                let path = package.uri.to_string();
+                Some(
+                    std::fs::canonicalize(&path)
+                        .unwrap_or_else(|_| std::path::PathBuf::from(&path))
                         .to_string_lossy()
-                        .to_ascii_lowercase()
-                })
+                        .to_ascii_lowercase(),
+                )
             })
             .unwrap_or_default();
         // An index is only meaningful for this exact ordered set of binaries and paths.
@@ -122,7 +113,10 @@ impl QuickResume {
                 .iter()
                 .map(|disc| {
                     let mut parts = vec![
-                        disc["launchPath"].clone(),
+                        serde_json::from_value::<polymer_library::LaunchableUri>(
+                            disc["package"]["uri"].clone(),
+                        )
+                        .map_or(Value::Null, |uri| uri.to_string().into()),
                         disc["package"]["binaryDigest"].clone(),
                     ];
                     if let Some(revision) = disc["package"]["bundle"].get("revision") {

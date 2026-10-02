@@ -44,9 +44,6 @@ impl DigestState {
     }
 
     pub(crate) fn launch(&mut self, value: &mut Value) {
-        if let Some(package) = value.get_mut("package") {
-            self.package(package);
-        }
         if let Some(discs) = value.get_mut("launchSet").and_then(Value::as_array_mut) {
             for disc in discs {
                 if let Some(package) = disc.get_mut("package") {

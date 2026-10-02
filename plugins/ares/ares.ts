@@ -17,7 +17,7 @@ export const onLaunch = async (args: LaunchArgs) => {
     fs.mount("/ares", runtime, { mode: "rx" });
     fs.mount("/User");
     fs.mount("/User/saves", caches.saves, { mode: "rw" });
-    const game = fs.mount("/Game", args.package, { mode: "rx" });
+    const game = fs.mount("/Game", args.launchSet[0].package, { mode: "rx" });
     const filename = game.replaceAll("\\", "/").split("/").at(-1)!;
     const stem = filename.replace(/\.[^.]+$/, "");
     if (args.storage.battery && system.battery) {

@@ -51,6 +51,7 @@ impl Package {
                 binary_blake3,
                 serial: package.serial,
                 title_id: package.title_id,
+                disc_number: package.disc_number,
                 parent_binary_id: seed.parent_binary_id,
                 platform: package.platform,
             },

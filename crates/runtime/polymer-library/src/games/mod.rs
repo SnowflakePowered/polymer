@@ -1,4 +1,5 @@
 mod catalog;
+mod discs;
 mod manifest;
 mod model;
 pub use manifest::{CuePart, CueTemplate, PackageFile, PackageManifest};
@@ -7,7 +8,8 @@ mod uri;
 pub use uri::{InstalledArtifact, LaunchableUri, ResolvedLaunchable};
 
 pub use catalog::{GameCatalog, GameCatalogError};
+pub use discs::{DiscSets, Serial};
 pub use model::{
     Game, IdentifiedLaunchable, Launchable, MediaData, MediaResource, Metadata, MetadataData,
-    MetadataInput, MetadataInputData, MetadataValue,
+    MetadataInput, MetadataInputData, MetadataValue, PlatformSettings,
 };

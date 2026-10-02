@@ -9,7 +9,7 @@ import "./SettingsSection.css";
 export function SettingsSection(props: {
   game: PackageConfiguration;
   emulator: EmulatorConfiguration;
-  selectEmulator(value: string): void;
+  selectEmulator(value: string | null): void;
   updateEmulator(change: (emulator: EmulatorConfiguration) => void): void;
   updateConfiguration(group: string, option: string, value: boolean | number | string | null): void;
 }) {
@@ -26,6 +26,7 @@ export function SettingsSection(props: {
     { key: "controllers", title: "Controller topology" },
     ...(props.emulator.configuration?.groups || []).map((group) => ({ key: `configuration:${group.key}`, title: group.title })),
   ]);
+  const platformDefault = () => props.game.candidates.find((item) => item.id === props.game.platformEmulator)?.id ?? props.game.candidates[0]?.id;
   const active = () => categories().find((category) => category.key === selected()) || categories()[0];
   const group = () => props.emulator.configuration?.groups.find((item) => `configuration:${item.key}` === active().key);
 
@@ -35,7 +36,7 @@ export function SettingsSection(props: {
       <h2 id="horizon-settings-title">{active().title}</h2>
       <Show when={active().key === "emulation"}>
         <SettingRow>
-          <Select label="Emulator" value={props.emulator.id} items={props.game.candidates.map((item) => ({ value: item.id, label: item.id }))} onValueChange={value => { if (value !== null) props.selectEmulator(value); }} />
+          <Select label="Emulator" value={props.game.gameEmulator ?? ""} items={[{ value: "", label: `Platform default (${platformDefault()})` }, ...props.game.candidates.map((item) => ({ value: item.id, label: item.id }))]} onValueChange={value => props.selectEmulator(value || null)} />
         </SettingRow>
       </Show>
       <Show when={active().key === "controllers"}>

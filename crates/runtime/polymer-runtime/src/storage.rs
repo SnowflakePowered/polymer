@@ -306,8 +306,14 @@ pub async fn launch_storage(
         .map(|device| device.id())
         .collect::<std::collections::BTreeSet<_>>();
     let manager = manager.ok_or_else(|| "console storage is unavailable".to_owned())?;
+    let initial = arguments
+        .get("initialDiscIndex")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0) as usize;
     let metadata = arguments
-        .get("package")
+        .get("launchSet")
+        .and_then(|set| set.get(initial))
+        .and_then(|disc| disc.get("package"))
         .map(|value| serde_json::from_value::<polymer_scraping::Package>(value.clone()))
         .transpose()
         .map_err(|error| error.to_string())?;

@@ -59,7 +59,7 @@ async fn disc_changes_keep_quit_on_the_last_successful_disc() {
             let filesystem;
             const plugin = {
               onLaunch(args) {
-                if (args.initialDiscIndex !== 1 || args.launchPath !== "disc1") throw Error("wrong initial disc");
+                if (args.initialDiscIndex !== 1 || args.launchSet[1].package.serial !== "1") throw Error("wrong initial disc");
                 if (!Object.isFrozen(args.launchSet) || !Object.isFrozen(args.launchSet[0])) throw Error("mutable set");
                 filesystem = args.filesystem;
                 filesystem.mount("/Config/", {
@@ -69,7 +69,7 @@ async fn disc_changes_keep_quit_on_the_last_successful_disc() {
                   },
                 }, { mode: "r" });
                 const mount = args.filesystem.mount;
-                if (!mount("/Initial", args.package, { mode: "rx" }).endsWith("disc1.iso")) throw Error("wrong initial mount");
+                if (!mount("/Initial", args.launchSet[1].package, { mode: "rx" }).endsWith("disc1.iso")) throw Error("wrong initial mount");
                 args.filesystem.mount("/Emulator/emulator.exe", new Uint8Array([1]), { mode: "rx" });
                 return { command: args.filesystem.path("/Emulator/emulator.exe"), hooks: { graphics: ["vulkan"], input: [] }, surfaces: [{ index: 0 }] };
               },
@@ -84,7 +84,7 @@ async fn disc_changes_keep_quit_on_the_last_successful_disc() {
               async onDiscChange(context) {
                 if (this !== plugin || busy) throw Error("callback receiver or serialization lost");
                 if (context.index === 2) throw Error("disc unavailable");
-                if (!context.filesystem || context.launchSet[context.index].launchPath !== `disc${context.index}`) throw Error("wrong context");
+                if (!context.filesystem || context.launchSet[context.index].package.serial !== `${context.index}`) throw Error("wrong context");
                 if (!context.filesystem.mount(`/Change${mounts++}`, context.launchSet[context.index].package, { mode: "rx" }).endsWith(`disc${context.index}.iso`)) throw Error("wrong target mount");
                 busy = true;
                 await new Promise(resolve => setTimeout(resolve, 5));
@@ -93,7 +93,7 @@ async fn disc_changes_keep_quit_on_the_last_successful_disc() {
                 busy = false;
               },
               onQuit(context) {
-                if (context.launchPath !== `disc${current}` || context.package.serial !== `${current}`) throw Error("quit disc mismatch");
+                if (context.package.serial !== `${current}`) throw Error("quit disc mismatch");
                 if (!context.filesystem.mount(`/Quit${mounts++}`, context.package, { mode: "rx" }).endsWith(`disc${current}.iso`)) throw Error("wrong active mount after disc change");
                 context.actions.quit.activate();
                 return null;
@@ -114,9 +114,9 @@ async fn disc_changes_keep_quit_on_the_last_successful_disc() {
                 vec![serde_json::json!({
                     "console": "TEST", "controllerTopology": { "mappings": [] },
                     "launchSet": [
-                        { "launchPath": "disc0", "package": { "serial": "0", "uri": LaunchableUri::file(root.path().join("disc0.iso")).unwrap(), "bundle": { "entrypoint": "disc0.iso", "files": [{ "name": "disc0.iso", "text": "disc", "uri": null }] } } },
-                        { "launchPath": "disc1", "package": { "serial": "1", "uri": LaunchableUri::file(root.path().join("disc1.iso")).unwrap(), "bundle": { "entrypoint": "disc1.iso", "files": [{ "name": "disc1.iso", "text": "disc", "uri": null }] } } },
-                        { "launchPath": "disc2", "package": { "serial": "2", "uri": LaunchableUri::file(root.path().join("disc2.iso")).unwrap(), "bundle": { "entrypoint": "disc2.iso", "files": [{ "name": "disc2.iso", "text": "disc", "uri": null }] } } },
+                        { "package": { "serial": "0", "filename": "disc0.iso", "uri": LaunchableUri::file(root.path().join("disc0.iso")).unwrap(), "bundle": { "entrypoint": "disc0.iso", "files": [{ "name": "disc0.iso", "text": "disc", "uri": null }] } } },
+                        { "package": { "serial": "1", "filename": "disc1.iso", "uri": LaunchableUri::file(root.path().join("disc1.iso")).unwrap(), "bundle": { "entrypoint": "disc1.iso", "files": [{ "name": "disc1.iso", "text": "disc", "uri": null }] } } },
+                        { "package": { "serial": "2", "filename": "disc2.iso", "uri": LaunchableUri::file(root.path().join("disc2.iso")).unwrap(), "bundle": { "entrypoint": "disc2.iso", "files": [{ "name": "disc2.iso", "text": "disc", "uri": null }] } } },
                     ],
                     "initialDiscIndex": 1,
                 })],

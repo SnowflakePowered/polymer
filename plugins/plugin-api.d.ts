@@ -241,18 +241,20 @@ declare module "polymer:api" {
     }>;
 
     export type EmulatorLaunchable = Readonly<{
-        launchPath: string,
         package: Package,
     }>;
 
+    /** Ordered discs. Mounting the set mounts its only package, or an M3U playlist of every disc. */
+    export type LaunchSet = readonly EmulatorLaunchable[];
+
     /** Ordered discs supplied to onLaunch; mount their files before starting the emulator. */
     export type EmulatorLaunchSet = Readonly<{
-        launchSet: readonly EmulatorLaunchable[],
+        launchSet: LaunchSet,
         initialDiscIndex: number,
     }>;
 
     export type DiscChangeContext = ActionsContext & Readonly<{
-        launchSet: readonly EmulatorLaunchable[],
+        launchSet: LaunchSet,
         index: number,
         filesystem: Filesystem,
     }>;
@@ -268,7 +270,6 @@ declare module "polymer:api" {
     export type QuitContext = ActionsContext & Readonly<{
         filesystem: Filesystem,
         directory: DirectoryResource,
-        launchPath: string,
         console: string,
         package: Package,
         userConfiguration?: UserConfiguration,
@@ -288,8 +289,6 @@ declare module "polymer:api" {
 
     export type EmulatorLaunchArgs<Options = unknown, Storages = Readonly<Record<string, Storage | undefined>>> =
         EmulatorLaunchSet & FirmwareContext & KeyReaderContext & Readonly<{
-            launchPath: string,
-            package: Package,
             console: string,
             controllerTopology: ControllerTopology,
             configuration: Configuration<Options>,

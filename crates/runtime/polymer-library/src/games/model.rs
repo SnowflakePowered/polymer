@@ -13,6 +13,12 @@ pub struct Game {
     pub updates: std::collections::BTreeMap<Uuid, Vec<serde_json::Value>>,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformSettings {
+    pub emulator: Option<String>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Launchable {
     pub id: Uuid,
@@ -29,8 +35,16 @@ pub struct IdentifiedLaunchable {
     pub binary_blake3: [u8; 32],
     pub serial: Option<String>,
     pub title_id: Option<String>,
+    pub disc_number: Option<u8>,
     pub parent_binary_id: Option<Uuid>,
     pub platform: String,
+}
+
+impl IdentifiedLaunchable {
+    /// The disc number from the package header, otherwise from the multidisc table.
+    pub fn disc(&self) -> Option<u8> {
+        super::DiscSets::get().disc(&self.platform, self.serial.as_deref(), self.disc_number)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
