@@ -26,7 +26,7 @@ polymer-controllers.workspace = true
 polymer-ipc = { workspace = true, features = ["input-host"] }
 polymer-protocol.workspace = true
 polymer-runtime.workspace = true
-winit = "0.30.13"
+winit.workspace = true
 tokio = { version = "1.32", features = ["rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true

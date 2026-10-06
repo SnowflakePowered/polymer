@@ -45,7 +45,7 @@ windows = { workspace = true, features = [
     "Win32_UI_Input_KeyboardAndMouse",
 ] }
 windows-numerics = "0.2.0"
-winit = "0.30.13"
+winit.workspace = true
 vello = "0.10"
 vello_encoding = "0.10"
 wgpu-hal = { version = "29", features = ["dx12"] }
