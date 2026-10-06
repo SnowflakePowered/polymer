@@ -153,9 +153,7 @@ fn shell_instance_options() -> wgpu::InstanceDescriptor {
     // The D3D12 debug layer costs several percent of a core per shell frame.
     // Opt back in with `WGPU_DEBUG=1` / `WGPU_VALIDATION=1`.
     options.flags = wgpu::InstanceFlags::empty().with_env();
-    // `Auto` may select a dxcompiler.dll without its matching DXIL.dll. The
-    // Shell chrome does not need Shader Model 6, so use the in-box FXC.
-    options.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::Fxc;
+    options.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::StaticDxc;
     options
 }
 
