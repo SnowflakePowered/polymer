@@ -17,4 +17,4 @@ polymer-renderer = { path = "../../consumer/polymer-renderer" }
 polymer-protocol.workspace = true
 polymer-runtime.workspace = true
 polymer-statistics.workspace = true
-winit = "0.30.13"
+winit.workspace = true

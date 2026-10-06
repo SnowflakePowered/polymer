@@ -23,7 +23,7 @@ tokio = { version = "1.32", features = ["rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
 webrtc = "0.14.0"
 webrtc-ice = "0.14.0"
-winit = "0.30.13"
+winit.workspace = true
 
 [lints]
 workspace = true

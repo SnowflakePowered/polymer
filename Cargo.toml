@@ -67,7 +67,7 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 turso = { version = "0.8.1", default-features = false }
 watchable = "1.1.2"
-winit = "0.29.15"
+winit = "0.30.13"
 windows = { version = "0.61.3", features = [
     "Win32_Foundation",
     "Win32_Graphics_Direct3D",
