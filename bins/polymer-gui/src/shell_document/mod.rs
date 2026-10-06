@@ -11,6 +11,7 @@
 
 mod bands;
 mod banner;
+mod blurhash;
 mod events;
 mod hit_test;
 mod image_levels;

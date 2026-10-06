@@ -40,6 +40,9 @@ CREATE TABLE IF NOT EXISTS metadata (
     media_type TEXT,
     byte_length INTEGER,
     source_url TEXT,
+    width INTEGER CHECK (width IS NULL OR width > 0),
+    height INTEGER CHECK (height IS NULL OR height > 0),
+    blurhash TEXT,
     CHECK (
       (data_kind = 'string' AND string_value IS NOT NULL AND number_value IS NULL AND boolean_value IS NULL AND inline_data IS NULL AND object_blake3 IS NULL AND media_type IS NULL AND byte_length IS NULL AND source_url IS NULL)
       OR (data_kind = 'number' AND string_value IS NULL AND number_value IS NOT NULL AND boolean_value IS NULL AND inline_data IS NULL AND object_blake3 IS NULL AND media_type IS NULL AND byte_length IS NULL AND source_url IS NULL)

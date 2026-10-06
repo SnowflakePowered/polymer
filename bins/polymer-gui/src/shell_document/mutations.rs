@@ -1,5 +1,6 @@
 use super::ShellDocument;
 use super::banner::BannerWidget;
+use super::blurhash::BlurhashWidget;
 use super::scrolling::Scroller;
 use super::tracked_surface::{TrackedSurfaceWidget, is_tracked_surface_element};
 use crate::shell_runtime::deno::{ScrollBehavior, ScrollCommand};
@@ -215,6 +216,9 @@ impl ShellDocument {
             QualName::new(None, ns!(), name.clone()),
             value,
         );
+        if name.as_ref() == BlurhashWidget::ATTRIBUTE {
+            BlurhashWidget::attach(self.document.as_mut(), node, value);
+        }
         self.attribute_changed(&name, previous.as_deref(), Some(value));
     }
 

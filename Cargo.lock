@@ -1387,6 +1387,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "blurhash"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e79769241dcd44edf79a732545e8b5cec84c247ac060f5252cd51885d093a8fc"
+
+[[package]]
 name = "bml"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9892,6 +9898,7 @@ dependencies = [
  "blitz-net",
  "blitz-paint",
  "blitz-traits",
+ "blurhash",
  "clap",
  "consolespec",
  "cursor-icon",
@@ -10272,12 +10279,14 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "blake3",
+ "blurhash",
  "consolespec",
  "crc32fast",
  "dashmap",
  "directories",
  "dunce",
  "futures-util",
+ "image 0.25.6",
  "language-tags",
  "md-5 0.11.0",
  "mime",
