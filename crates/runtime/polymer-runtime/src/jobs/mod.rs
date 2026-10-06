@@ -38,10 +38,7 @@ impl Actor for JobActor {
             let store = store.clone();
             actix::spawn(async move {
                 let checked = async {
-                    let games = catalog
-                        .games(None)
-                        .await
-                        .map_err(|error| error.to_string())?;
+                    let games = catalog.games().await.map_err(|error| error.to_string())?;
                     let launchables = games.into_iter().flat_map(|game| game.launchables);
                     storage
                         .check_titles(&store, launchables)

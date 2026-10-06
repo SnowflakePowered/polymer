@@ -4,6 +4,9 @@ import type { ColorMode } from "../ui";
 
 export type RecentGame = LibraryEntry;
 
+export type LibrarySort = "title" | "platform" | "added";
+export type LibraryQueryState = { text: string; platforms: string[]; sort: LibrarySort };
+
 export type AudioState = { available: boolean; volume: number; muted: boolean };
 
 export type LauncherState =
@@ -24,6 +27,10 @@ export type ShellModel = {
   error: string;
   recent: RecentGame[];
   libraryGames: LibraryEntry[];
+  libraryTotal: number;
+  libraryFiltered: boolean;
+  libraryQuery: LibraryQueryState;
+  librarySearchOpen: boolean;
   libraryActivities: LibraryActivity[];
   selectedGame: string | null;
   gamepadOpen: boolean;

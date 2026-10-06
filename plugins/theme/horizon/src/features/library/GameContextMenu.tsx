@@ -4,8 +4,10 @@ import { ActionDialog } from "../../ui";
 
 export function GameContextMenu(props: { game: RecentGame; onClose(): void }) {
   const shell = useShell();
-  const find = async () => (await window.Polymer.library.games.list())
-    .find(game => game.launchables.some(item => item.uri === props.game.path));
+  const find = async () => {
+    const launchable = await window.Polymer.library.launchables.find(props.game.path);
+    return launchable && window.Polymer.library.games.get(launchable.parentBinaryId ?? launchable.binaryId);
+  };
   const rescrape = async () => {
     try {
       const game = await find();

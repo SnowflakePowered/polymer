@@ -10,6 +10,7 @@ pub use uri::{InstalledArtifact, LaunchableUri, ResolvedLaunchable};
 pub use catalog::{GameCatalog, GameCatalogError};
 pub use discs::{DiscSets, Serial};
 pub use model::{
-    Game, IdentifiedLaunchable, Launchable, MediaData, MediaResource, Metadata, MetadataData,
-    MetadataInput, MetadataInputData, MetadataValue, PlatformSettings,
+    Game, GamePage, GameQuery, GameSort, IdentifiedLaunchable, Launchable, MediaData,
+    MediaResource, Metadata, MetadataData, MetadataInput, MetadataInputData, MetadataValue,
+    PlatformSettings,
 };

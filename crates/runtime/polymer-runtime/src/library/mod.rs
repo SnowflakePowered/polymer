@@ -149,6 +149,7 @@ impl LibraryService {
             keys_licensed: self.licenses.clone().recipient(),
             keys_remove: self.actor.clone().recipient(),
             games_list: self.reader.clone().recipient(),
+            games_platforms: self.reader.clone().recipient(),
             games_get: self.reader.clone().recipient(),
             games_delete: self.actor.clone().recipient(),
             launchables_add: self.actor.clone().recipient(),

@@ -8,7 +8,7 @@ import {
   op_library_keys_platforms,
   op_library_keys_licensed,
   op_library_keys_remove,
-  op_library_games_list, op_library_games_get, op_library_games_delete,
+  op_library_games_list, op_library_games_platforms, op_library_games_get, op_library_games_delete,
   op_library_launchables_add, op_library_launchables_find, op_library_launchables_delete,
   op_library_metadata_add, op_library_metadata_update, op_library_metadata_delete,
   op_library_metadata_replace, op_library_metadata_text, op_library_metadata_url,
@@ -58,13 +58,39 @@ function metadataInput(input, sourceOverride) {
   return result;
 }
 
+function count(value, name, fallback) {
+  if (value === undefined || value === null) return fallback;
+  if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`${name} must be a non-negative integer`);
+  return value;
+}
+
+function metadataKeys(keys) {
+  if (!Array.isArray(keys) || !keys.every(key => typeof key === "string" && key.length > 0)) throw new TypeError("metadataKeys must be an array of non-empty strings");
+  return [...keys];
+}
+
+function gameQuery(options) {
+  if (options === null || typeof options !== "object") throw new TypeError("options must be an object");
+  if (options.text != null && typeof options.text !== "string") throw new TypeError("text must be a string");
+  const platforms = options.platforms ?? [];
+  if (!Array.isArray(platforms) || !platforms.every(platform => typeof platform === "string" && platform.length > 0)) throw new TypeError("platforms must be an array of non-empty strings");
+  const sort = options.sort ?? "title";
+  if (!["title", "platform", "added"].includes(sort)) throw new TypeError("sort must be 'title', 'platform', or 'added'");
+  return {
+    text: options.text ?? null, platforms: [...platforms], sort, descending: Boolean(options.descending),
+    offset: count(options.offset, "offset", 0), limit: count(options.limit, "limit", 100),
+    metadataKeys: options.metadataKeys == null ? null : metadataKeys(options.metadataKeys),
+  };
+}
+
 export function createLibrary() {
   const Library = new EventTarget();
   const games = Object.freeze({
     async list(options = {}) {
-      const games = await op_library_games_list(optionalString(options.platform, "platform"));
-      return games.map(game => ({ ...game, launchables: game.launchables.map(value => new Package(value)) }));
+      const page = await op_library_games_list(gameQuery(options));
+      return { ...page, games: page.games.map(game => ({ ...game, launchables: game.launchables.map(value => new Package(value)) })) };
     },
+    platforms() { return op_library_games_platforms(); },
     async get(id) {
       const game = await op_library_games_get(uuid(id, "rootBinaryId"));
       return game == null ? game : { ...game, launchables: game.launchables.map(value => new Package(value)) };

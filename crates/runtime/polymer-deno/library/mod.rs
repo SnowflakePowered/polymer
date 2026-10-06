@@ -108,11 +108,22 @@ impl Library {
 #[serde]
 pub(super) async fn op_library_games_list(
     state: Rc<RefCell<OpState>>,
-    #[string] platform: Option<String>,
+    #[serde] query: polymer_library::GameQuery,
 ) -> Result<serde_json::Value, JsErrorBox> {
     Library::from_state(&state)?
         .games_list
-        .call(GamesList { platform })
+        .call(GamesList { query })
+        .await
+}
+
+#[op2]
+#[serde]
+pub(super) async fn op_library_games_platforms(
+    state: Rc<RefCell<OpState>>,
+) -> Result<Vec<String>, JsErrorBox> {
+    Library::from_state(&state)?
+        .games_platforms
+        .call(GamesPlatforms)
         .await
 }
 

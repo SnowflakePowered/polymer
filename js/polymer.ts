@@ -520,9 +520,21 @@ export type LibraryMetadata = Readonly<{
 export type LibraryGame = Readonly<{
   id: string;
   platform: string;
+  title: string;
   /** Each launchable carries the update candidates its last check found, oldest first. */
   launchables: readonly (LibraryLaunchable & Readonly<{ updates: readonly UpdateCandidate[] }>)[];
   metadata: readonly LibraryMetadata[];
+}>;
+
+export type LibraryGameQuery = Readonly<{
+  text?: string;
+  platforms?: readonly string[];
+  sort?: "title" | "platform" | "added";
+  descending?: boolean;
+  offset?: number;
+  limit?: number;
+  /** Only these metadata keys are returned for each game. */
+  metadataKeys?: readonly string[];
 }>;
 
 export type FirmwareDescription = Readonly<{
@@ -573,7 +585,12 @@ export interface LibraryApi extends EventTarget {
     remove(platform: string, namespace: "system" | "content", id: string): Promise<boolean>;
   }>;
   readonly games: Readonly<{
-    list(options?: { platform?: string }): Promise<LibraryGame[]>;
+    /**
+     * Pages through root games. Without `text`, games come in `sort` order; with `text`, by
+     * fuzzy title match quality. `total` counts every game matching the filters.
+     */
+    list(options?: LibraryGameQuery): Promise<Readonly<{ games: LibraryGame[]; total: number }>>;
+    platforms(): Promise<string[]>;
     get(rootBinaryId: string): Promise<LibraryGame | null>;
     delete(rootBinaryId: string): Promise<void>;
   }>;

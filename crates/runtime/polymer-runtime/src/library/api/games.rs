@@ -7,13 +7,32 @@ use serde_json::{Value, json};
 impl Handler<GamesList> for LibraryReader {
     type Result = ResponseActFuture<Self, Result<Value, LibraryError>>;
 
-    fn handle(&mut self, GamesList { platform }: GamesList, _: &mut Context<Self>) -> Self::Result {
+    fn handle(&mut self, GamesList { query }: GamesList, _: &mut Context<Self>) -> Self::Result {
         let catalog = self.catalog.clone();
         self.read(async move {
             catalog
-                .games(platform.as_deref())
+                .query_games(query)
                 .await
-                .map(|games| Value::Array(games.iter().map(Self::game_value).collect()))
+                .map(|page| {
+                    json!({
+                        "games": page.games.iter().map(Self::game_value).collect::<Vec<_>>(),
+                        "total": page.total,
+                    })
+                })
+                .map_err(|error| error.to_string())
+        })
+    }
+}
+
+impl Handler<GamesPlatforms> for LibraryReader {
+    type Result = ResponseActFuture<Self, Result<Vec<String>, LibraryError>>;
+
+    fn handle(&mut self, _: GamesPlatforms, _: &mut Context<Self>) -> Self::Result {
+        let catalog = self.catalog.clone();
+        self.read(async move {
+            catalog
+                .game_platforms()
+                .await
                 .map_err(|error| error.to_string())
         })
     }

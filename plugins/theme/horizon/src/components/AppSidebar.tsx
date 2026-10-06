@@ -5,6 +5,7 @@ import { SidebarJobs } from "./notifications/SidebarJobs";
 import { AvatarButton } from "./AvatarButton";
 import { SidebarButton } from "./SidebarButton";
 import { ControllerStatus } from "./ControllerStatus";
+import { useShell } from "../app/shell-context";
 
 const rail = css({
   display: "flex", width: "7rem", height: "100%", flex: "none", flexDirection: "column", alignItems: "center",
@@ -18,10 +19,12 @@ const nav = css({ display: "flex", flex: "none", flexDirection: "column", alignI
 export function AppSidebar() {
   const navigate = useNavigate();
   const location = useLocation();
+  const shell = useShell();
   return <NavigationRail class={rail} aria-label="Horizon navigation">
     <AvatarButton />
     <div class={spacer}><SidebarJobs /></div>
     <nav class={nav} aria-label="Library sections">
+      <SidebarButton icon="search" iconSize={42} label="Search library" active={shell.model.librarySearchOpen} onClick={() => { navigate("/"); shell.setModel("librarySearchOpen", true); }} />
       <SidebarButton icon="library" iconSize={42} label="Your library" active={location.pathname === "/"} onClick={() => navigate("/")} />
       <SidebarButton icon="saves" iconSize={42} label="Saves" active={location.pathname === "/saves"} onClick={() => navigate("/saves")} />
       <SidebarButton icon="storage" iconSize={42} label="System Storage" active={location.pathname === "/storage"} onClick={() => navigate("/storage")} />

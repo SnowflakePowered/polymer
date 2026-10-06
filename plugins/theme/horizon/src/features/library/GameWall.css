@@ -1,4 +1,4 @@
 @layer horizon {
-.horizon-game-wall { min-height: 0; flex: 1; overflow: auto; padding: 0; background: var(--hz-surface); scrollbar-width: none; }
+.horizon-game-wall { min-height: 0; flex: 1; overflow: auto; padding: 1rem 0 0; background: var(--hz-surface); scrollbar-width: none; }
 .horizon-game-wall-canvas { position: relative; width: 100%; }
 }

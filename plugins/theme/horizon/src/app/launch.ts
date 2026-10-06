@@ -25,8 +25,7 @@ export function applyFrontendDefaults(game: PackageConfiguration) {
 }
 
 export async function resolveGame(path: string, emulator?: string, signal?: AbortSignal) {
-  const games = await window.Polymer.library.games.list();
-  const launchable = games.flatMap(game => game.launchables).find(item => item.uri === path);
+  const launchable = await window.Polymer.library.launchables.find(path);
   if (!launchable) throw new Error("Add this launchable to the library before configuring it");
   if (signal?.aborted) throw signal.reason;
   const draft = applyFrontendDefaults(await window.Polymer.configuration.describe(launchable.id, { emulator }));
