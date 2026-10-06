@@ -44,6 +44,8 @@ pub struct Package {
     #[serde(skip)]
     pub installable: bool,
     #[serde(skip)]
+    pub requires_license: bool,
+    #[serde(skip)]
     import: Option<PackageImport>,
 }
 
@@ -76,6 +78,7 @@ impl Package {
             serial: launchable.serial,
             title_id: launchable.title_id,
             disc_number: launchable.disc_number,
+            requires_license: launchable.requires_license,
             binary_digest: blake3::Hash::from_bytes(launchable.binary_blake3)
                 .to_hex()
                 .to_string(),
@@ -200,6 +203,7 @@ impl Package {
             disc_number: package.disc_number(),
             binary_digest: String::new(),
             installable: package.installable(),
+            requires_license: package.requires_license(),
             import: Some(PackageImport {
                 entrypoint: None,
                 package: None,

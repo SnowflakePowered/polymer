@@ -568,6 +568,8 @@ export interface LibraryApi extends EventTarget {
   readonly keys: Readonly<{
     list(platform: string, options?: { namespace?: "system" | "content" }): Promise<ImportedKey[]>;
     platforms(): Promise<string[]>;
+    /** False only when the title needs a license and no key for it has been imported. */
+    licensed(platform: string, titleId: string): Promise<boolean>;
     remove(platform: string, namespace: "system" | "content", id: string): Promise<boolean>;
   }>;
   readonly games: Readonly<{

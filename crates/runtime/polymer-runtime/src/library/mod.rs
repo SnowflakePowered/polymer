@@ -13,6 +13,7 @@ pub struct LibraryService {
     catalog: Arc<GameCatalog>,
     actor: Addr<LibraryBackend>,
     reader: Addr<LibraryReader>,
+    licenses: Addr<LicenseReader>,
     scraping: polymer_scraping::ScrapingEngine,
 }
 
@@ -33,6 +34,16 @@ struct LibraryReader {
 }
 
 impl Actor for LibraryReader {
+    type Context = Context<Self>;
+}
+
+struct LicenseReader {
+    keys: polymer_library::keys::KeyStore,
+    catalog: Arc<GameCatalog>,
+    _lifetime: Rc<LibraryActorLifetime>,
+}
+
+impl Actor for LicenseReader {
     type Context = Context<Self>;
 }
 
@@ -80,7 +91,16 @@ impl LibraryService {
             .spawn(move || {
                 let system = System::new();
                 let actor = system.block_on(async move {
+                    let keys = polymer_library::keys::KeyStore::open(&key_root)
+                        .await
+                        .map_err(std::io::Error::other)?;
                     let lifetime = Rc::new(LibraryActorLifetime);
+                    let licenses = LicenseReader {
+                        keys,
+                        catalog: actor_catalog.clone(),
+                        _lifetime: lifetime.clone(),
+                    }
+                    .start();
                     let reader = LibraryReader {
                         catalog: actor_catalog.clone(),
                         scraping: actor_scraping.clone(),
@@ -98,20 +118,23 @@ impl LibraryService {
                             _lifetime: lifetime,
                         }
                     });
-                    (writer, reader)
+                    Ok::<_, std::io::Error>((writer, reader, licenses))
                 });
+                let started = actor.is_ok();
                 if ready.send(actor).is_ok()
+                    && started
                     && let Err(error) = system.run()
                 {
                     tracing::error!(%error, "library actor system failed");
                 }
             })?;
-        let (actor, reader) = startup.await.map_err(std::io::Error::other)?;
+        let (actor, reader, licenses) = startup.await.map_err(std::io::Error::other)??;
 
         Ok(Self {
             configuration_locks: Default::default(),
             actor,
             reader,
+            licenses,
             scraping,
             catalog,
         })
@@ -123,6 +146,7 @@ impl LibraryService {
             import_key: self.actor.clone().recipient(),
             keys_list: self.actor.clone().recipient(),
             keys_platforms: self.actor.clone().recipient(),
+            keys_licensed: self.licenses.clone().recipient(),
             keys_remove: self.actor.clone().recipient(),
             games_list: self.reader.clone().recipient(),
             games_get: self.reader.clone().recipient(),

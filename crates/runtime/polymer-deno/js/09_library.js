@@ -6,6 +6,7 @@ import {
   op_library_import_key,
   op_library_keys_list,
   op_library_keys_platforms,
+  op_library_keys_licensed,
   op_library_keys_remove,
   op_library_games_list, op_library_games_get, op_library_games_delete,
   op_library_launchables_add, op_library_launchables_find, op_library_launchables_delete,
@@ -143,6 +144,12 @@ export function createLibrary() {
         return op_library_keys_list(platform, namespace);
       },
       platforms() { return op_library_keys_platforms(); },
+      licensed(platform, titleId) {
+        platform = optionalString(platform, "platform");
+        titleId = optionalString(titleId, "titleId");
+        if (platform === null || titleId === null) throw new TypeError("platform and titleId are required");
+        return op_library_keys_licensed(platform, titleId);
+      },
       async remove(platform, namespace, id) {
         platform = optionalString(platform, "platform");
         id = optionalString(id, "id");

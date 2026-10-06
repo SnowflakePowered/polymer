@@ -91,4 +91,24 @@ impl PlatformKeys {
     pub fn platform(&self) -> &str {
         &self.platform
     }
+
+    pub async fn licensed(&self, title_id: &str) -> Result<bool, KeyError> {
+        let connection = self
+            .store
+            .database
+            .connect()
+            .map_err(|error| KeyError::Database(error.to_string()))?;
+        let mut rows = connection
+            .query(
+                "SELECT 1 FROM keys WHERE platform = ?1 AND (lower(id) = lower(?2) OR lower(title_id) = lower(?2)) LIMIT 1",
+                turso::params![self.platform.clone(), title_id],
+            )
+            .await
+            .map_err(|error| KeyError::Database(error.to_string()))?;
+        Ok(rows
+            .next()
+            .await
+            .map_err(|error| KeyError::Database(error.to_string()))?
+            .is_some())
+    }
 }

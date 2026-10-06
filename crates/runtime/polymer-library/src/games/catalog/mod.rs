@@ -123,7 +123,8 @@ impl GameCatalog {
                 SELECT COALESCE(binary.parent_binary_id, binary.id), root.platform,
                        launchable.id, binary.id, launchable.path, binary.blake3,
                        binary.serial, binary.title_id, binary.parent_binary_id, manifest.manifest_json,
-                       launchable.entrypoint, launchable.package, binary.disc_number
+                       launchable.entrypoint, launchable.package, binary.disc_number,
+                       binary.requires_license
                 FROM launchables AS launchable
                 LEFT JOIN launchable_manifests AS manifest ON manifest.launchable_id = launchable.id
                 JOIN binaries AS binary ON binary.id = launchable.binary_id
@@ -165,6 +166,7 @@ impl GameCatalog {
                     serial: Self::optional_text(row.get_value(6)?)?,
                     title_id: Self::optional_text(row.get_value(7)?)?,
                     disc_number: Self::optional_disc(row.get_value(12)?)?,
+                    requires_license: row.get::<i64>(13)? != 0,
                     parent_binary_id: Self::optional_uuid(row.get_value(8)?)?,
                     platform: root_platform,
                 },
@@ -503,8 +505,13 @@ impl GameCatalog {
             drop(rows);
             transaction
                 .execute(
-                    "UPDATE binaries SET serial = COALESCE(serial, ?2), title_id = COALESCE(title_id, ?3) WHERE id = ?1",
-                    vec![Self::id(id), input.serial.clone().into(), input.title_id.clone().into()],
+                    "UPDATE binaries SET serial = COALESCE(serial, ?2), title_id = COALESCE(title_id, ?3), requires_license = ?4 WHERE id = ?1",
+                    vec![
+                        Self::id(id),
+                        input.serial.clone().into(),
+                        input.title_id.clone().into(),
+                        Value::from(i64::from(input.requires_license)),
+                    ],
                 )
                 .await?;
             return Ok(());
@@ -512,8 +519,8 @@ impl GameCatalog {
         drop(rows);
         transaction
             .execute(
-                r#"INSERT INTO binaries (id, blake3, platform, serial, title_id, disc_number, parent_binary_id)
-                   VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
+                r#"INSERT INTO binaries (id, blake3, platform, serial, title_id, disc_number, requires_license, parent_binary_id)
+                   VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"#,
                 vec![
                     Self::id(id),
                     Value::from(input.binary_blake3.to_vec()),
@@ -521,6 +528,7 @@ impl GameCatalog {
                     input.serial.clone().into(),
                     input.title_id.clone().into(),
                     input.disc_number.map_or(Value::Null, Value::from),
+                    Value::from(i64::from(input.requires_license)),
                     input.parent_binary_id.map(Self::id).unwrap_or(Value::Null),
                 ],
             )
@@ -574,6 +582,21 @@ impl GameCatalog {
             .await?
             .ok_or_else(|| GameCatalogError::NotFound(binary.simple().to_string()))
             .and_then(|row| Self::uuid(row.get_value(0)?))
+    }
+
+    pub async fn requires_license(
+        &self,
+        platform: &str,
+        title_id: &str,
+    ) -> Result<bool, GameCatalogError> {
+        let connection = self.connection().await?;
+        let mut rows = connection
+            .query(
+                "SELECT 1 FROM binaries WHERE platform = ?1 AND title_id = ?2 AND requires_license = 1 LIMIT 1",
+                vec![Value::from(platform), Value::from(title_id)],
+            )
+            .await?;
+        Ok(rows.next().await?.is_some())
     }
 
     pub(super) async fn require_root(

@@ -29,6 +29,7 @@ pub struct Library {
     pub import_key: Recipient<LibraryImportKey>,
     pub keys_list: Recipient<KeysList>,
     pub keys_platforms: Recipient<KeysPlatforms>,
+    pub keys_licensed: Recipient<KeysLicensed>,
     pub keys_remove: Recipient<KeysRemove>,
     pub games_list: Recipient<GamesList>,
     pub games_get: Recipient<GamesGet>,
@@ -72,6 +73,13 @@ pub struct KeysList {
 #[derive(Debug, actix::Message)]
 #[rtype(result = "Result<Vec<String>, LibraryError>")]
 pub struct KeysPlatforms;
+
+#[derive(Debug, actix::Message)]
+#[rtype(result = "Result<bool, LibraryError>")]
+pub struct KeysLicensed {
+    pub platform: String,
+    pub title_id: String,
+}
 
 #[derive(Debug, actix::Message)]
 #[rtype(result = "Result<bool, LibraryError>")]

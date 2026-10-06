@@ -1,11 +1,13 @@
 use super::LibraryBackend;
-use actix::{AtomicResponse, Context, Handler};
+use crate::library::LicenseReader;
+use actix::{AtomicResponse, Context, Handler, ResponseActFuture, WrapFuture};
 use polymer_consolestorage::impls::ctr::{CtrNand, seeddb::CtrSeedDb};
 use polymer_consolestorage::impls::ps3::{Ps3Nand, depots::Ps3PupDepot, rap::Rap};
 use polymer_consolestorage::installable::Depot;
 use polymer_consolestorage::keys::{KeyIdentity, KeyQuery, KeyReader, KeyRecord, KeyWriter};
 use polymer_deno::polymer::library::{
-    ImportedKey, KeysList, KeysPlatforms, KeysRemove, LibraryError, LibraryImport, LibraryImportKey,
+    ImportedKey, KeysLicensed, KeysList, KeysPlatforms, KeysRemove, LibraryError, LibraryImport,
+    LibraryImportKey,
 };
 use polymer_scraping::Ingestor;
 use serde_json::{Value, json};
@@ -184,6 +186,36 @@ impl Handler<KeysPlatforms> for LibraryBackend {
                 .await
                 .map_err(|error| error.to_string())
         })
+    }
+}
+
+impl Handler<KeysLicensed> for LicenseReader {
+    type Result = ResponseActFuture<Self, Result<bool, LibraryError>>;
+
+    fn handle(
+        &mut self,
+        KeysLicensed { platform, title_id }: KeysLicensed,
+        _: &mut Context<Self>,
+    ) -> Self::Result {
+        let keys = self.keys.clone();
+        let catalog = self.catalog.clone();
+        Box::pin(
+            async move {
+                if !catalog
+                    .requires_license(&platform, &title_id)
+                    .await
+                    .map_err(|error| error.to_string())?
+                {
+                    return Ok(true);
+                }
+                keys.for_platform(&platform)
+                    .map_err(|error| error.to_string())?
+                    .licensed(&title_id)
+                    .await
+                    .map_err(|error| LibraryError::Generic(error.to_string()))
+            }
+            .into_actor(self),
+        )
     }
 }
 

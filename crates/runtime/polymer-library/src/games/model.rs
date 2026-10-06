@@ -36,6 +36,7 @@ pub struct IdentifiedLaunchable {
     pub serial: Option<String>,
     pub title_id: Option<String>,
     pub disc_number: Option<u8>,
+    pub requires_license: bool,
     pub parent_binary_id: Option<Uuid>,
     pub platform: String,
 }
