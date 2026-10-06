@@ -1,6 +1,6 @@
 import { createContext, useContext, type Context } from "solid-js";
 import type { PackageConfiguration } from "../../../../../js/polymer";
-import type { RecentGame, ShellModel } from "./models";
+import type { LibraryQueryState, RecentGame, ShellModel } from "./models";
 
 export type ShellContextValue = {
   model: ShellModel;
@@ -13,6 +13,8 @@ export type ShellContextValue = {
   cancelDetails(): void;
   closeGame(): void;
   rememberGame(): void;
+  queryLibrary(query: Partial<LibraryQueryState>): void;
+  loadMoreGames(): void;
 };
 
 export const ShellContext: Context<ShellContextValue | undefined> = import.meta.hot?.data.shellContext ?? createContext<ShellContextValue>();

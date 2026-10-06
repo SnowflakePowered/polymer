@@ -7,6 +7,7 @@ use uuid::Uuid;
 pub struct Game {
     pub id: Uuid,
     pub platform: String,
+    pub title: String,
     pub launchables: Vec<Launchable>,
     pub metadata: Vec<Metadata>,
     /// Each launchable's update candidates from its last check, in the order it returned them.
@@ -17,6 +18,38 @@ pub struct Game {
 #[serde(rename_all = "camelCase")]
 pub struct PlatformSettings {
     pub emulator: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GameSort {
+    #[default]
+    Title,
+    Platform,
+    Added,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GameQuery {
+    pub text: Option<String>,
+    #[serde(default)]
+    pub platforms: Vec<String>,
+    #[serde(default)]
+    pub sort: GameSort,
+    #[serde(default)]
+    pub descending: bool,
+    #[serde(default)]
+    pub offset: usize,
+    pub limit: usize,
+    #[serde(default)]
+    pub metadata_keys: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct GamePage {
+    pub games: Vec<Game>,
+    pub total: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

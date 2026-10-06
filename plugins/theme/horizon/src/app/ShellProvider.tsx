@@ -10,7 +10,7 @@ import { ToastRegion } from "../components/notifications/ToastRegion";
 import { InputNavigation } from "../components/InputNavigation";
 import { ColorModeProvider, type ColorMode } from "../ui";
 import { onLaunch, resolveGame } from "./launch";
-import type { RecentGame, ShellModel } from "./models";
+import type { LibraryQueryState, RecentGame, ShellModel } from "./models";
 import "./ShellProvider.css";
 
 const RECENT_KEY = "polymer.recentGames.v2";
@@ -67,6 +67,10 @@ export function ShellProvider(props: ParentProps) {
     error: "",
     recent: [],
     libraryGames: [],
+    libraryTotal: 0,
+    libraryFiltered: false,
+    libraryQuery: { text: "", platforms: [], sort: "title" },
+    librarySearchOpen: false,
     libraryActivities: [],
     selectedGame: null,
     gamepadOpen: false,
@@ -207,10 +211,22 @@ export function ShellProvider(props: ParentProps) {
 
   const libraryState = new LibraryState(window.Polymer.library, window.Polymer.jobs, snapshot => {
     setModel("libraryGames", reconcile(snapshot.games, { key: "path" }));
+    setModel("libraryTotal", snapshot.total);
+    setModel("libraryFiltered", snapshot.filtered);
     setModel("libraryActivities", reconcile(snapshot.activities, { key: "id" }));
   }, fail);
   libraryState.start();
   onCleanup(() => libraryState.dispose());
+  let queryTimer: ReturnType<typeof setTimeout> | undefined;
+  const queryLibrary = (query: Partial<LibraryQueryState>) => {
+    setModel("libraryQuery", query);
+    clearTimeout(queryTimer);
+    queryTimer = setTimeout(() => {
+      const { text, platforms, sort } = model.libraryQuery;
+      libraryState.setQuery({ text, platforms: [...platforms], sort, descending: sort === "added" });
+    }, 200);
+  };
+  const loadMoreGames = () => libraryState.loadMore();
 
   const acceptStartup = (request: StartupRequest) => {
     if (request.kind === "scrape") {
@@ -246,6 +262,7 @@ export function ShellProvider(props: ParentProps) {
   onCleanup(() => {
     detection?.abort();
     if (toastTimer) clearTimeout(toastTimer);
+    clearTimeout(queryTimer);
     window.Polymer.controllers.removeEventListener("playerchange", playersChanged);
     if (startupHandler === acceptStartup) startupHandler = null;
   });
@@ -262,6 +279,8 @@ export function ShellProvider(props: ParentProps) {
       cancelDetails,
       closeGame,
       rememberGame,
+      queryLibrary,
+      loadMoreGames,
     }}>
       <ColorModeProvider mode={model.colorMode}><NotificationProvider><div class="horizon-shell-root">
         <div class="horizon-shell-content">{props.children}</div>

@@ -8,7 +8,7 @@ import { GameContextMenu } from "./GameContextMenu";
 import { gameId, nearestInDirection, type Direction } from "./spatial-navigation";
 import "./GameWall.css";
 
-export function GameWall(props: { games: RecentGame[] }) {
+export function GameWall(props: { games: RecentGame[]; onEnd?: () => void }) {
   const shell = useShell();
   const [context, setContext] = createSignal<{ game: RecentGame }>();
   const [zoom, setZoom] = createSignal(1);
@@ -89,6 +89,7 @@ export function GameWall(props: { games: RecentGame[] }) {
     class="horizon-game-wall"
     aria-label="Game library"
     onWheel={zoomWall}
+    onScroll={event => { const element = event.currentTarget; if (element.scrollTop + element.clientHeight * 2 >= element.scrollHeight) props.onEnd?.(); }}
   >
     <div class="horizon-game-wall-canvas" style={{ height: `${layout().height}px` }}>
     <For each={props.games}>{(game, index) => {

@@ -32,6 +32,7 @@ pub struct Library {
     pub keys_licensed: Recipient<KeysLicensed>,
     pub keys_remove: Recipient<KeysRemove>,
     pub games_list: Recipient<GamesList>,
+    pub games_platforms: Recipient<GamesPlatforms>,
     pub games_get: Recipient<GamesGet>,
     pub games_delete: Recipient<GamesDelete>,
     pub launchables_add: Recipient<LaunchablesAdd>,
@@ -102,8 +103,12 @@ pub struct ImportedKey {
 #[derive(Debug, actix::Message)]
 #[rtype(result = "Result<Value, LibraryError>")]
 pub struct GamesList {
-    pub platform: Option<String>,
+    pub query: polymer_library::GameQuery,
 }
+
+#[derive(Debug, actix::Message)]
+#[rtype(result = "Result<Vec<String>, LibraryError>")]
+pub struct GamesPlatforms;
 
 #[derive(Debug, actix::Message)]
 #[rtype(result = "Result<Value, LibraryError>")]

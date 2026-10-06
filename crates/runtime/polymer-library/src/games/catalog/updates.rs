@@ -35,11 +35,17 @@ impl GameCatalog {
     /// Every title's cached update candidates, in the order its last check returned them.
     pub(super) async fn updates(
         connection: &turso::Connection,
+        scope: &str,
+        parameters: Vec<turso::Value>,
     ) -> Result<BTreeMap<Uuid, Vec<Value>>, GameCatalogError> {
         let mut rows = connection
             .query(
-                "SELECT launchable_id, candidate_json FROM title_updates ORDER BY launchable_id, ordinal",
-                (),
+                &format!(
+                    "SELECT launchable_id, candidate_json FROM title_updates
+                     WHERE launchable_id IN (SELECT id FROM launchables WHERE binary_id {scope})
+                     ORDER BY launchable_id, ordinal"
+                ),
+                parameters,
             )
             .await?;
         let mut updates = BTreeMap::<Uuid, Vec<Value>>::new();

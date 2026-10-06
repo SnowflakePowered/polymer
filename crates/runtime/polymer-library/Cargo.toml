@@ -8,7 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 dunce = "1"
-dashmap.workspace = true
+dashmap = { workspace = true, features = ["rayon"] }
 url = "2"
 async-trait.workspace = true
 sha2 = "0.11"
@@ -30,6 +30,8 @@ thiserror.workspace = true
 tokio = { version = "1.53.1", features = ["fs", "io-util", "rt", "sync"] }
 tracing.workspace = true
 turso.workspace = true
+nucleo-matcher = "0.3.1"
+rayon = "1.12.0"
 regex.workspace = true
 uuid = { version = "1.24.1", features = ["v5", "v7"] }
 

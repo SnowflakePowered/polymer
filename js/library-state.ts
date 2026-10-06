@@ -1,4 +1,4 @@
-import type { Job, JobsApi, LibraryApi, LibraryGame, LibraryImportResult } from "./polymer";
+import type { Job, JobsApi, LibraryApi, LibraryGame, LibraryGameQuery, LibraryImportResult } from "./polymer";
 
 export type LibraryEntry = {
   path: string;
@@ -14,12 +14,23 @@ export type LibraryEntry = {
 
 export type LibraryActivity = { id: string; title: string; message: string; state: "running" | "complete" | "error"; completed?: number; total?: number };
 /** Activities contain running jobs and newly completed notices, not notification history. */
-export type LibrarySnapshot = { games: LibraryEntry[]; status: string; activities: LibraryActivity[] };
+export type LibrarySnapshot = { games: LibraryEntry[]; total: number; filtered: boolean; status: string; activities: LibraryActivity[] };
+export type LibraryQuery = Omit<LibraryGameQuery, "offset" | "limit">;
+
+const PAGE_SIZE = 120;
+const ARTWORK_KEYS = ["media.boxart.front", "media.icon", "banner.icon", "banner.banner"];
 
 /** Catalog and scrape subscriptions, independent of theme rendering. */
 export class LibraryState {
   private games: LibraryGame[] = [];
   private entries = new Map<string, LibraryEntry>();
+  private query: LibraryQuery = {};
+  private filtered = false;
+  private limit = PAGE_SIZE;
+  private total = 0;
+  private artwork = new Map<string, Promise<string>>();
+  private licenses = new Map<string, Promise<boolean>>();
+  private loadingMore = false;
   private jobs = new Map<string, Job>();
   private sessionJobs = new Set<string>();
   private jobsLoaded = false;
@@ -79,6 +90,19 @@ export class LibraryState {
     }
   }
 
+  setQuery(query: LibraryQuery) {
+    this.query = query;
+    this.limit = PAGE_SIZE;
+    void this.load(0, this.limit);
+  }
+
+  loadMore() {
+    if (this.loadingMore || this.games.length >= this.total) return;
+    this.loadingMore = true;
+    this.limit = this.games.length + PAGE_SIZE;
+    void this.load(this.games.length, PAGE_SIZE).finally(() => { this.loadingMore = false; });
+  }
+
   async import(path: string) {
     try {
       this.importChanged(await this.library.import({ path }));
@@ -123,26 +147,32 @@ export class LibraryState {
     }
   }
 
-  private refresh = () => {
-    const revision = ++this.revision;
-    void this.library.games.list().then(async games => {
+  private refresh = () => void this.load(0, this.limit, true);
+
+  private load(offset: number, limit: number, fresh = false): Promise<void> {
+    const revision = offset ? this.revision : ++this.revision;
+    const query = this.query;
+    return this.library.games.list({ ...query, offset, limit, metadataKeys: ARTWORK_KEYS }).then(async ({ games, total }) => {
       const entries = await Promise.all(games.map(async game => {
         const launchable = game.launchables.find(item => !item.parentBinaryId) ?? game.launchables[0];
         if (!launchable) return [];
         const titleId = launchable.titleId;
-        return [[game.id, { path: launchable.uri, name: this.title(game), platform: game.platform,
-          missingKey: titleId && !await this.library.keys.licensed(launchable.platform, titleId) ? { id: titleId } : undefined,
-          emulator: "", playedAt: 0, artwork: await this.media(game, ["media.boxart.front"]),
-          icon: await this.media(game, ["media.icon", "banner.icon", "banner.banner"]) }] as const];
+        return [[game.id, { path: launchable.uri, name: game.title, platform: game.platform,
+          missingKey: titleId && !await this.licensed(launchable.platform, titleId, fresh) ? { id: titleId } : undefined,
+          emulator: "", playedAt: 0, artwork: await this.media(game, ["media.boxart.front"], fresh),
+          icon: await this.media(game, ["media.icon", "banner.icon", "banner.banner"], fresh) }] as const];
       }));
       if (this.disposed || revision !== this.revision) return;
-      this.games = games;
-      this.entries = new Map(entries.flat());
+      if (!offset && limit !== this.limit) { void this.load(0, this.limit, fresh); return; }
+      this.games = offset ? [...this.games, ...games] : games;
+      this.filtered = !!query.text?.trim() || !!query.platforms?.length;
+      this.total = total;
+      this.entries = new Map<string, LibraryEntry>([...(offset ? this.entries : []), ...entries.flat()]);
       this.publish();
     }).catch(error => {
       if (!this.disposed && revision === this.revision) this.failed(error);
     });
-  };
+  }
 
   private jobChanged = (event: Event) => {
     const job = (event as CustomEvent<Job>).detail;
@@ -168,22 +198,30 @@ export class LibraryState {
     this.jobs.set(job.id, job);
   }
 
-  private title(game: LibraryGame): string {
-    const titles = game.metadata.filter(item => item.key === "meta.title" || item.key.startsWith("meta.title."));
-    const title = titles.find(item => item.key === "meta.title") ?? titles[0];
-    if (title?.data.kind === "scalar" && typeof title.data.value === "string") return title.data.value;
-    const internal = game.metadata.find(item => item.key === "package.internalname");
-    if (internal?.data.kind === "scalar" && typeof internal.data.value === "string") return internal.data.value;
-    return game.launchables[0]?.uri.split("/").pop() || game.id;
+  private licensed(platform: string, titleId: string, fresh: boolean): Promise<boolean> {
+    const key = `${platform}:${titleId}`;
+    let licensed = fresh ? undefined : this.licenses.get(key);
+    if (!licensed) {
+      licensed = this.library.keys.licensed(platform, titleId);
+      this.licenses.set(key, licensed);
+      licensed.catch(() => this.licenses.delete(key));
+    }
+    return licensed;
   }
 
-  private async media(game: LibraryGame, keys: readonly string[]): Promise<string | undefined> {
+  private async media(game: LibraryGame, keys: readonly string[], fresh: boolean): Promise<string | undefined> {
     const candidates = game.metadata.filter(item =>
       keys.includes(item.key) && item.data.kind === "media" && item.data.mediaType.startsWith("image/")
     ).sort((a, b) => keys.indexOf(a.key) - keys.indexOf(b.key) || a.ordinal - b.ordinal);
     for (const candidate of candidates) {
       try {
-        return await this.library.metadata.url(candidate.id);
+        let url = fresh ? undefined : this.artwork.get(candidate.id);
+        if (!url) {
+          url = this.library.metadata.url(candidate.id);
+          this.artwork.set(candidate.id, url);
+          url.catch(() => this.artwork.delete(candidate.id));
+        }
+        return await url;
       } catch (error) {
         console.warn(`Unable to load artwork for ${game.id}: ${candidate.id}`, error);
       }
@@ -193,7 +231,7 @@ export class LibraryState {
 
   private progress(job: Job): string {
     const game = this.games.find(game => game.id === job.subject.binaryId);
-    const name = game ? this.title(game) : "Game";
+    const name = game?.title ?? "Game";
     const done = job.steps.filter(step => step.state === "completed" || step.state === "failed").length;
     const active = job.steps.filter(step => step.state === "running").map(step => step.key);
     const errors = [...job.steps.filter(step => step.error).map(step => `${step.key}: ${step.error}`), ...(job.error ? [job.error] : [])];
@@ -230,6 +268,8 @@ export class LibraryState {
           total: steps.length,
         } : undefined };
       }),
+      total: this.total,
+      filtered: this.filtered,
       activities,
       status: importing.map(job => `${job.message ?? `Importing ${job.title}`}…`).concat(visible.map(job => this.progress(job))).join(" · "),
     });

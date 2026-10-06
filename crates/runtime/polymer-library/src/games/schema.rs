@@ -80,5 +80,87 @@ CREATE TABLE IF NOT EXISTS title_updates (
     checked_at INTEGER NOT NULL,
     PRIMARY KEY (launchable_id, ordinal)
 ) STRICT;
+CREATE TABLE IF NOT EXISTS game_titles (
+    root_binary_id BLOB PRIMARY KEY NOT NULL REFERENCES binaries(id) ON DELETE CASCADE,
+    platform TEXT NOT NULL,
+    title TEXT NOT NULL,
+    sort_title TEXT NOT NULL,
+    added_key BLOB NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS game_title_changes (
+    root_binary_id BLOB PRIMARY KEY NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS game_titles_title ON game_titles(sort_title, root_binary_id);
+CREATE INDEX IF NOT EXISTS game_titles_platform ON game_titles(platform, sort_title, root_binary_id);
+CREATE INDEX IF NOT EXISTS game_titles_added ON game_titles(added_key, root_binary_id);
+CREATE TRIGGER IF NOT EXISTS game_titles_metadata_insert AFTER INSERT ON metadata
+WHEN (NEW.key = 'meta.title' OR substr(NEW.key, 1, 11) = 'meta.title.' OR NEW.key = 'package.internalname')
+BEGIN
+    INSERT INTO game_title_changes (root_binary_id)
+    SELECT COALESCE(changed.parent_binary_id, changed.id) FROM binaries AS changed
+    WHERE changed.id = NEW.parent_binary_id AND NOT EXISTS (
+        SELECT 1 FROM game_title_changes AS pending
+        WHERE pending.root_binary_id = COALESCE(changed.parent_binary_id, changed.id));
+END;
+CREATE TRIGGER IF NOT EXISTS game_titles_metadata_delete AFTER DELETE ON metadata
+WHEN (OLD.key = 'meta.title' OR substr(OLD.key, 1, 11) = 'meta.title.' OR OLD.key = 'package.internalname')
+BEGIN
+    INSERT INTO game_title_changes (root_binary_id)
+    SELECT COALESCE(changed.parent_binary_id, changed.id) FROM binaries AS changed
+    WHERE changed.id = OLD.parent_binary_id AND NOT EXISTS (
+        SELECT 1 FROM game_title_changes AS pending
+        WHERE pending.root_binary_id = COALESCE(changed.parent_binary_id, changed.id));
+END;
+CREATE TRIGGER IF NOT EXISTS game_titles_metadata_update AFTER UPDATE ON metadata
+WHEN (OLD.key = 'meta.title' OR substr(OLD.key, 1, 11) = 'meta.title.' OR OLD.key = 'package.internalname') OR (NEW.key = 'meta.title' OR substr(NEW.key, 1, 11) = 'meta.title.' OR NEW.key = 'package.internalname')
+BEGIN
+    INSERT INTO game_title_changes (root_binary_id)
+    SELECT COALESCE(changed.parent_binary_id, changed.id) FROM binaries AS changed
+    WHERE changed.id = OLD.parent_binary_id AND NOT EXISTS (
+        SELECT 1 FROM game_title_changes AS pending
+        WHERE pending.root_binary_id = COALESCE(changed.parent_binary_id, changed.id));
+    INSERT INTO game_title_changes (root_binary_id)
+    SELECT COALESCE(changed.parent_binary_id, changed.id) FROM binaries AS changed
+    WHERE changed.id = NEW.parent_binary_id AND NOT EXISTS (
+        SELECT 1 FROM game_title_changes AS pending
+        WHERE pending.root_binary_id = COALESCE(changed.parent_binary_id, changed.id));
+END;
+CREATE TRIGGER IF NOT EXISTS game_titles_launchables_insert AFTER INSERT ON launchables
+BEGIN
+    INSERT INTO game_title_changes (root_binary_id)
+    SELECT COALESCE(changed.parent_binary_id, changed.id) FROM binaries AS changed
+    WHERE changed.id = NEW.binary_id AND NOT EXISTS (
+        SELECT 1 FROM game_title_changes AS pending
+        WHERE pending.root_binary_id = COALESCE(changed.parent_binary_id, changed.id));
+END;
+CREATE TRIGGER IF NOT EXISTS game_titles_launchables_delete AFTER DELETE ON launchables
+BEGIN
+    INSERT INTO game_title_changes (root_binary_id)
+    SELECT COALESCE(changed.parent_binary_id, changed.id) FROM binaries AS changed
+    WHERE changed.id = OLD.binary_id AND NOT EXISTS (
+        SELECT 1 FROM game_title_changes AS pending
+        WHERE pending.root_binary_id = COALESCE(changed.parent_binary_id, changed.id));
+END;
+CREATE TRIGGER IF NOT EXISTS game_titles_launchables_update AFTER UPDATE ON launchables
+BEGIN
+    INSERT INTO game_title_changes (root_binary_id)
+    SELECT COALESCE(changed.parent_binary_id, changed.id) FROM binaries AS changed
+    WHERE changed.id = OLD.binary_id AND NOT EXISTS (
+        SELECT 1 FROM game_title_changes AS pending
+        WHERE pending.root_binary_id = COALESCE(changed.parent_binary_id, changed.id));
+    INSERT INTO game_title_changes (root_binary_id)
+    SELECT COALESCE(changed.parent_binary_id, changed.id) FROM binaries AS changed
+    WHERE changed.id = NEW.binary_id AND NOT EXISTS (
+        SELECT 1 FROM game_title_changes AS pending
+        WHERE pending.root_binary_id = COALESCE(changed.parent_binary_id, changed.id));
+END;
+CREATE TRIGGER IF NOT EXISTS game_titles_binaries_delete AFTER DELETE ON binaries
+BEGIN
+    INSERT INTO game_title_changes (root_binary_id)
+    SELECT COALESCE(OLD.parent_binary_id, OLD.id)
+    WHERE NOT EXISTS (
+        SELECT 1 FROM game_title_changes
+        WHERE root_binary_id = COALESCE(OLD.parent_binary_id, OLD.id));
+END;
 PRAGMA user_version = 12;
 "#;

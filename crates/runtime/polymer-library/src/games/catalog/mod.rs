@@ -9,8 +9,9 @@ use turso::{Value, transaction::Transaction};
 use uuid::Uuid;
 
 use super::{
-    Game, IdentifiedLaunchable, Launchable, LaunchableUri, MediaData, MediaResource, Metadata,
-    MetadataData, MetadataInput, MetadataInputData, MetadataValue, schema::SCHEMA,
+    Game, GamePage, GameQuery, GameSort, IdentifiedLaunchable, Launchable, LaunchableUri,
+    MediaData, MediaResource, Metadata, MetadataData, MetadataInput,
+    MetadataInputData, MetadataValue, schema::SCHEMA,
 };
 use crate::Directories;
 
@@ -19,7 +20,10 @@ mod identity;
 mod manifest;
 mod metadata;
 mod objects;
+mod titles;
 mod updates;
+
+use titles::TitleIndex;
 
 #[derive(Debug, thiserror::Error)]
 pub enum GameCatalogError {
@@ -51,6 +55,7 @@ pub enum GameCatalogError {
 pub struct GameCatalog {
     database: turso::Database,
     objects: Arc<dyn ObjectStore>,
+    titles: Arc<TitleIndex>,
 }
 
 struct PreparedMetadata {
@@ -96,9 +101,14 @@ impl GameCatalog {
             .to_str()
             .ok_or(GameCatalogError::InvalidDatabasePath)?;
         let database = turso::Builder::new_local(path).build().await?;
-        let store = Self { database, objects };
+        let store = Self {
+            database,
+            objects,
+            titles: Arc::default(),
+        };
         store.initialize().await?;
         store.reconcile_objects().await?;
+        store.sync_titles(true).await?;
         Ok(store)
     }
 
@@ -115,24 +125,73 @@ impl GameCatalog {
         self.objects.as_ref()
     }
 
-    pub async fn games(&self, platform: Option<&str>) -> Result<Vec<Game>, GameCatalogError> {
+    pub async fn games(&self) -> Result<Vec<Game>, GameCatalogError> {
+        self.load_games(None, None).await
+    }
+
+    pub async fn games_by_ids(
+        &self,
+        roots: &[Uuid],
+        metadata_keys: Option<&[String]>,
+    ) -> Result<Vec<Game>, GameCatalogError> {
+        if roots.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut games = self
+            .load_games(Some(roots), metadata_keys)
+            .await?
+            .into_iter()
+            .map(|game| (game.id, game))
+            .collect::<BTreeMap<_, _>>();
+        Ok(roots.iter().filter_map(|root| games.remove(root)).collect())
+    }
+
+    pub async fn game(&self, id: Uuid) -> Result<Option<Game>, GameCatalogError> {
+        Ok(self.games_by_ids(&[id], None).await?.pop())
+    }
+
+    async fn load_games(
+        &self,
+        roots: Option<&[Uuid]>,
+        metadata_keys: Option<&[String]>,
+    ) -> Result<Vec<Game>, GameCatalogError> {
+        self.sync_titles(false).await?;
+        let (scope, parameters) = match roots {
+            Some(roots) => {
+                let list = (1..=roots.len())
+                    .map(|index| format!("?{index}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                (
+                    format!(
+                        "IN (SELECT id FROM binaries WHERE id IN ({list}) UNION ALL SELECT id FROM binaries WHERE parent_binary_id IN ({list}))"
+                    ),
+                    roots.iter().copied().map(Self::id).collect::<Vec<_>>(),
+                )
+            }
+            None => ("IS NOT NULL".to_owned(), Vec::new()),
+        };
         let connection = self.connection().await?;
         let mut rows = connection
             .query(
-                r#"
+                &format!(
+                    r#"
                 SELECT COALESCE(binary.parent_binary_id, binary.id), root.platform,
                        launchable.id, binary.id, launchable.path, binary.blake3,
                        binary.serial, binary.title_id, binary.parent_binary_id, manifest.manifest_json,
-                       launchable.entrypoint, launchable.package, binary.disc_number,
-                       binary.requires_license
+                       launchable.entrypoint, launchable.package, COALESCE(titles.title, ''),
+                       binary.disc_number, binary.requires_license
                 FROM launchables AS launchable
                 LEFT JOIN launchable_manifests AS manifest ON manifest.launchable_id = launchable.id
                 JOIN binaries AS binary ON binary.id = launchable.binary_id
                 JOIN binaries AS root ON root.id = COALESCE(binary.parent_binary_id, binary.id)
+                LEFT JOIN game_titles AS titles ON titles.root_binary_id = root.id
+                WHERE binary.id {scope}
                 ORDER BY COALESCE(binary.parent_binary_id, binary.id),
                          binary.parent_binary_id IS NOT NULL, binary.id, launchable.path
-                "#,
-                (),
+                "#
+                ),
+                parameters.clone(),
             )
             .await?;
         let mut games = BTreeMap::<Uuid, Game>::new();
@@ -140,16 +199,17 @@ impl GameCatalog {
         while let Some(row) = rows.next().await? {
             let root_id = Self::uuid(row.get_value(0)?)?;
             let root_platform: String = row.get(1)?;
-            if platform.is_some_and(|platform| platform != root_platform) {
-                continue;
-            }
-            let game = games.entry(root_id).or_insert_with(|| Game {
-                id: root_id,
-                platform: root_platform.clone(),
-                launchables: Vec::new(),
-                metadata: Vec::new(),
-                updates: BTreeMap::new(),
-            });
+            let game = match games.entry(root_id) {
+                std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::btree_map::Entry::Vacant(entry) => entry.insert(Game {
+                    id: root_id,
+                    platform: root_platform.clone(),
+                    title: row.get(12)?,
+                    launchables: Vec::new(),
+                    metadata: Vec::new(),
+                    updates: BTreeMap::new(),
+                }),
+            };
             let binary_id = Self::uuid(row.get_value(3)?)?;
             binary_roots.insert(binary_id, root_id);
             game.launchables.push(Launchable {
@@ -165,8 +225,8 @@ impl GameCatalog {
                     })?,
                     serial: Self::optional_text(row.get_value(6)?)?,
                     title_id: Self::optional_text(row.get_value(7)?)?,
-                    disc_number: Self::optional_disc(row.get_value(12)?)?,
-                    requires_license: row.get::<i64>(13)? != 0,
+                    disc_number: Self::optional_disc(row.get_value(13)?)?,
+                    requires_license: row.get::<i64>(14)? != 0,
                     parent_binary_id: Self::optional_uuid(row.get_value(8)?)?,
                     platform: root_platform,
                 },
@@ -183,9 +243,28 @@ impl GameCatalog {
             });
         }
 
+        let (key_filter, metadata_parameters) = match metadata_keys {
+            Some([]) => ("AND 0".to_owned(), parameters.clone()),
+            Some(keys) => (
+                format!(
+                    "AND metadata.key IN ({})",
+                    (parameters.len() + 1..=parameters.len() + keys.len())
+                        .map(|index| format!("?{index}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                parameters
+                    .iter()
+                    .cloned()
+                    .chain(keys.iter().cloned().map(Value::from))
+                    .collect(),
+            ),
+            None => (String::new(), parameters.clone()),
+        };
         let mut rows = connection
             .query(
-                r#"
+                &format!(
+                    r#"
                 SELECT metadata.id, metadata.parent_binary_id, metadata.key,
                        metadata.source, metadata.producer, metadata.ordinal,
                        metadata.data_kind, metadata.string_value, metadata.number_value,
@@ -193,10 +272,12 @@ impl GameCatalog {
                        media_objects.object_key, metadata.media_type, metadata.source_url
                 FROM metadata
                 LEFT JOIN media_objects ON media_objects.blake3 = metadata.object_blake3
+                WHERE metadata.parent_binary_id {scope} {key_filter}
                 ORDER BY metadata.parent_binary_id, metadata.key,
                          metadata.source, metadata.ordinal, metadata.id
-                "#,
-                (),
+                "#
+                ),
+                metadata_parameters,
             )
             .await?;
         while let Some(row) = rows.next().await? {
@@ -209,7 +290,7 @@ impl GameCatalog {
             }
         }
         drop(rows);
-        let mut updates = Self::updates(&connection).await?;
+        let mut updates = Self::updates(&connection, &scope, parameters).await?;
         for game in games.values_mut() {
             for launchable in &game.launchables {
                 if let Some(candidates) = updates.remove(&launchable.id) {
@@ -218,14 +299,6 @@ impl GameCatalog {
             }
         }
         Ok(games.into_values().collect())
-    }
-
-    pub async fn game(&self, id: Uuid) -> Result<Option<Game>, GameCatalogError> {
-        Ok(self
-            .games(None)
-            .await?
-            .into_iter()
-            .find(|game| game.id == id))
     }
 
     /// Imports a launchable and replaces its host-produced seed metadata in one transaction.
