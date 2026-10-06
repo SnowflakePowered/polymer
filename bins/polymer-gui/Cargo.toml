@@ -9,6 +9,7 @@ polymer-composition.workspace = true
 polymer-banner = { workspace = true, features = ["render"] }
 actix.workspace = true
 anyrender = "0.13.0"
+blurhash = "0.2.3"
 base64.workspace = true
 blitz-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "7100a3b38901085e9a08180d235810cb6a3194c9", features = ["custom-widget"] }
 blitz-html = { git = "https://github.com/DioxusLabs/blitz", rev = "7100a3b38901085e9a08180d235810cb6a3194c9" }

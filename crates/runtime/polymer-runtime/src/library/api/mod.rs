@@ -65,10 +65,14 @@ pub(crate) trait LibraryApi {
                 media_type,
                 data,
                 source_url,
+                preview,
             } => json!({
                 "kind": "media",
                 "mediaType": media_type,
                 "sourceUrl": source_url,
+                "width": preview.as_ref().map(|preview| preview.width),
+                "height": preview.as_ref().map(|preview| preview.height),
+                "blurhash": preview.as_ref().map(|preview| &preview.blurhash),
                 "storage": match data {
                     MediaData::Inline(_) => "inline",
                     MediaData::Object(_) => "object",

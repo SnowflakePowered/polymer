@@ -514,7 +514,11 @@ export type LibraryMetadata = Readonly<{
   ordinal: number;
   data:
     | Readonly<{ kind: "scalar"; value: string | number | boolean }>
-    | Readonly<{ kind: "media"; mediaType: string; storage: "inline" | "object"; sourceUrl: string | null }>;
+    | Readonly<{
+      kind: "media"; mediaType: string; storage: "inline" | "object"; sourceUrl: string | null;
+      width: number | null; height: number | null;
+      blurhash: string | null;
+    }>;
 }>;
 
 export type LibraryGame = Readonly<{

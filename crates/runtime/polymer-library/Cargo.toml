@@ -19,6 +19,8 @@ tempfile.workspace = true
 consolespec.workspace = true
 directories = "6.0.0"
 blake3 = { workspace = true, features = ["traits-preview"] }
+blurhash = "0.2.3"
+image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png"] }
 futures-util = "0.3.32"
 language-tags = "0.3.2"
 mime = "0.3.17"

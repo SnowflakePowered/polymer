@@ -3,8 +3,8 @@ use turso::{Value, transaction::Transaction};
 use uuid::Uuid;
 
 use super::{
-    GameCatalog, GameCatalogError, MediaData, MediaResource, Metadata, MetadataData, MetadataInput,
-    MetadataInputData, MetadataValue, PreparedMetadata, PreparedMetadataData,
+    GameCatalog, GameCatalogError, MediaData, MediaPreview, MediaResource, Metadata, MetadataData,
+    MetadataInput, MetadataInputData, MetadataValue, PreparedMetadata, PreparedMetadataData,
 };
 
 impl GameCatalog {
@@ -122,7 +122,7 @@ impl GameCatalog {
                       metadata.producer, metadata.ordinal, metadata.data_kind,
                       metadata.string_value, metadata.number_value, metadata.boolean_value,
                       metadata.inline_data, media_objects.object_key, metadata.media_type,
-                      metadata.source_url
+                      metadata.source_url, metadata.width, metadata.height, metadata.blurhash
                FROM metadata LEFT JOIN media_objects ON media_objects.blake3 = metadata.object_blake3
                WHERE metadata.parent_binary_id = ?1
                ORDER BY metadata.key, metadata.source, metadata.ordinal, metadata.id"#,
@@ -272,10 +272,12 @@ impl GameCatalog {
                 Self::validate_media_type(&media_type)?;
                 i64::try_from(bytes.len())
                     .map_err(|_| GameCatalogError::InvalidData("media is too large".to_owned()))?;
+                let preview = Self::preview(&media_type, bytes.to_vec()).await;
                 PreparedMetadataData::Inline {
                     media_type,
                     bytes,
                     source_url,
+                    preview,
                 }
             }
             MetadataInputData::Object {
@@ -285,10 +287,15 @@ impl GameCatalog {
             } => {
                 Self::validate_media_type(&media_type)?;
                 let object = self.store_object(&path).await?;
+                let preview = match tokio::fs::read(&path).await {
+                    Ok(bytes) => Self::preview(&media_type, bytes).await,
+                    Err(_) => None,
+                };
                 PreparedMetadataData::Object {
                     media_type,
                     object,
                     source_url,
+                    preview,
                 }
             }
         };
@@ -299,6 +306,16 @@ impl GameCatalog {
             ordinal,
             data,
         })
+    }
+
+    async fn preview(media_type: &str, bytes: Vec<u8>) -> Option<MediaPreview> {
+        if !media_type.starts_with("image/") {
+            return None;
+        }
+        tokio::task::spawn_blocking(move || MediaPreview::from_image(&bytes))
+            .await
+            .ok()
+            .flatten()
     }
 
     fn validate_key(key: &str) -> Result<(), GameCatalogError> {
@@ -351,8 +368,8 @@ impl GameCatalog {
         transaction.execute(
             r#"INSERT INTO metadata (id, parent_binary_id, key, source, producer, ordinal, data_kind,
                     string_value, number_value, boolean_value, inline_data, object_blake3,
-                    media_type, byte_length, source_url)
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)"#,
+                    media_type, byte_length, source_url, width, height, blurhash)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)"#,
             parameters,
         ).await?;
         Ok(())
@@ -367,19 +384,23 @@ impl PreparedMetadata {
                 media_type,
                 bytes,
                 source_url,
+                preview,
             } => MetadataData::Media {
                 media_type,
                 data: MediaData::Inline(bytes),
                 source_url,
+                preview,
             },
             PreparedMetadataData::Object {
                 media_type,
                 object,
                 source_url,
+                preview,
             } => MetadataData::Media {
                 media_type,
                 data: MediaData::Object(object.key),
                 source_url,
+                preview,
             },
         };
         Metadata {
@@ -395,47 +416,60 @@ impl PreparedMetadata {
 }
 
 impl PreparedMetadataData {
-    fn database_values(&self) -> Result<[Value; 9], GameCatalogError> {
-        Ok(match self {
-            Self::Scalar(MetadataValue::String(value)) => [
-                Value::from("string"),
-                Value::from(value.clone()),
-                Value::Null,
-                Value::Null,
-                Value::Null,
-                Value::Null,
-                Value::Null,
-                Value::Null,
-                Value::Null,
-            ],
-            Self::Scalar(MetadataValue::Number(value)) => [
-                Value::from("number"),
-                Value::Null,
-                Value::from(*value),
-                Value::Null,
-                Value::Null,
-                Value::Null,
-                Value::Null,
-                Value::Null,
-                Value::Null,
-            ],
-            Self::Scalar(MetadataValue::Boolean(value)) => [
-                Value::from("boolean"),
-                Value::Null,
-                Value::Null,
-                Value::from(i64::from(*value)),
-                Value::Null,
-                Value::Null,
-                Value::Null,
-                Value::Null,
-                Value::Null,
-            ],
-            Self::Inline {
-                media_type,
-                bytes,
-                source_url,
-            } => {
+    fn database_values(&self) -> Result<[Value; 12], GameCatalogError> {
+        let preview = match self {
+            Self::Inline { preview, .. } | Self::Object { preview, .. } => preview.as_ref(),
+            Self::Scalar(_) => None,
+        };
+        let [width, height, blurhash] =
+            preview.map_or([Value::Null, Value::Null, Value::Null], |preview| {
                 [
+                    Value::from(i64::from(preview.width)),
+                    Value::from(i64::from(preview.height)),
+                    Value::from(preview.blurhash.clone()),
+                ]
+            });
+        let values =
+            match self {
+                Self::Scalar(MetadataValue::String(value)) => [
+                    Value::from("string"),
+                    Value::from(value.clone()),
+                    Value::Null,
+                    Value::Null,
+                    Value::Null,
+                    Value::Null,
+                    Value::Null,
+                    Value::Null,
+                    Value::Null,
+                ],
+                Self::Scalar(MetadataValue::Number(value)) => [
+                    Value::from("number"),
+                    Value::Null,
+                    Value::from(*value),
+                    Value::Null,
+                    Value::Null,
+                    Value::Null,
+                    Value::Null,
+                    Value::Null,
+                    Value::Null,
+                ],
+                Self::Scalar(MetadataValue::Boolean(value)) => [
+                    Value::from("boolean"),
+                    Value::Null,
+                    Value::Null,
+                    Value::from(i64::from(*value)),
+                    Value::Null,
+                    Value::Null,
+                    Value::Null,
+                    Value::Null,
+                    Value::Null,
+                ],
+                Self::Inline {
+                    media_type,
+                    bytes,
+                    source_url,
+                    ..
+                } => [
                     Value::from("inline"),
                     Value::Null,
                     Value::Null,
@@ -447,14 +481,13 @@ impl PreparedMetadataData {
                         GameCatalogError::InvalidData("media is too large".to_owned())
                     })?),
                     source_url.clone().into(),
-                ]
-            }
-            Self::Object {
-                media_type,
-                object,
-                source_url,
-            } => {
-                [
+                ],
+                Self::Object {
+                    media_type,
+                    object,
+                    source_url,
+                    ..
+                } => [
                     Value::from("object"),
                     Value::Null,
                     Value::Null,
@@ -466,8 +499,32 @@ impl PreparedMetadataData {
                         GameCatalogError::InvalidData("media is too large".to_owned())
                     })?),
                     source_url.clone().into(),
-                ]
-            }
-        })
+                ],
+            };
+        let [
+            kind,
+            string,
+            number,
+            boolean,
+            inline,
+            object,
+            media_type,
+            byte_length,
+            source_url,
+        ] = values;
+        Ok([
+            kind,
+            string,
+            number,
+            boolean,
+            inline,
+            object,
+            media_type,
+            byte_length,
+            source_url,
+            width,
+            height,
+            blurhash,
+        ])
     }
 }

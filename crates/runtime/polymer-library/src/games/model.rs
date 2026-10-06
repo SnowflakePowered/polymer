@@ -111,6 +111,7 @@ pub enum MetadataData {
         media_type: String,
         data: MediaData,
         source_url: Option<String>,
+        preview: Option<super::MediaPreview>,
     },
 }
 

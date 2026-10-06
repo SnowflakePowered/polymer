@@ -7,6 +7,8 @@ export type LibraryEntry = {
   emulator: string;
   playedAt: number;
   artwork?: string;
+  artworkBlurhash?: string;
+  artworkRatio?: number;
   icon?: string;
   scraping?: { completed: number; total: number };
   missingKey?: { id: string };
@@ -159,8 +161,8 @@ export class LibraryState {
         const titleId = launchable.titleId;
         return [[game.id, { path: launchable.uri, name: game.title, platform: game.platform,
           missingKey: titleId && !await this.licensed(launchable.platform, titleId, fresh) ? { id: titleId } : undefined,
-          emulator: "", playedAt: 0, artwork: await this.media(game, ["media.boxart.front"], fresh),
-          icon: await this.media(game, ["media.icon", "banner.icon", "banner.banner"], fresh) }] as const];
+          emulator: "", playedAt: 0, ...await this.artworkFor(game, fresh),
+          icon: (await this.media(game, ["media.icon", "banner.icon", "banner.banner"], fresh))?.url }] as const];
       }));
       if (this.disposed || revision !== this.revision) return;
       if (!offset && limit !== this.limit) { void this.load(0, this.limit, fresh); return; }
@@ -209,7 +211,17 @@ export class LibraryState {
     return licensed;
   }
 
-  private async media(game: LibraryGame, keys: readonly string[], fresh: boolean): Promise<string | undefined> {
+  private async artworkFor(game: LibraryGame, fresh: boolean): Promise<Pick<LibraryEntry, "artwork" | "artworkBlurhash" | "artworkRatio">> {
+    const media = await this.media(game, ["media.boxart.front"], fresh);
+    const data = media?.metadata.data.kind === "media" ? media.metadata.data : undefined;
+    return {
+      artwork: media?.url,
+      artworkBlurhash: data?.blurhash ?? undefined,
+      artworkRatio: data?.width && data.height ? data.width / data.height : undefined,
+    };
+  }
+
+  private async media(game: LibraryGame, keys: readonly string[], fresh: boolean): Promise<{ url: string; metadata: LibraryGame["metadata"][number] } | undefined> {
     const candidates = game.metadata.filter(item =>
       keys.includes(item.key) && item.data.kind === "media" && item.data.mediaType.startsWith("image/")
     ).sort((a, b) => keys.indexOf(a.key) - keys.indexOf(b.key) || a.ordinal - b.ordinal);
@@ -221,7 +233,7 @@ export class LibraryState {
           this.artwork.set(candidate.id, url);
           url.catch(() => this.artwork.delete(candidate.id));
         }
-        return await url;
+        return { url: await url, metadata: candidate };
       } catch (error) {
         console.warn(`Unable to load artwork for ${game.id}: ${candidate.id}`, error);
       }

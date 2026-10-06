@@ -36,10 +36,10 @@ export function ButtonChord(props: { buttons: readonly ButtonName[] }) {
 export function Avatar(props: { src?: string; label: string; tone?: Tone }) {
   return <span class="hz-avatar"><Show when={props.src} fallback={<Icon name="user" tone={props.tone} />}><img src={props.src} alt={props.label} /></Show></span>;
 }
-export function CoverArt(props: { src?: string; alt?: string; class?: string; onRatio?: (ratio: number) => void; onReady?: (ready: boolean) => void }) {
+export function CoverArt(props: { src?: string; blurhash?: string; alt?: string; class?: string; onRatio?: (ratio: number) => void; onReady?: (ready: boolean) => void }) {
   const [failed, setFailed] = createSignal<string>();
   const source = () => props.src !== failed() ? props.src : undefined;
-  return <Show when={source()}>{url => <img class={`hz-cover-art ${props.class ?? ""}`} src={url()} alt={props.alt ?? ""} loading="lazy" decoding="async"
+  return <Show when={source()}>{url => <img class={`hz-cover-art ${props.class ?? ""}`} src={url()} data-blurhash={props.blurhash} alt={props.alt ?? ""} loading="lazy" decoding="async"
     onLoad={event => { const image = event.currentTarget; if (!image.naturalHeight) return; props.onRatio?.(image.naturalWidth / image.naturalHeight); props.onReady?.(true); }}
     onError={() => { setFailed(url()); props.onReady?.(false); }} />}</Show>;
 }

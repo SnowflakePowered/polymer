@@ -28,7 +28,7 @@ export function GameTile(props: {
     type="button"
     class="horizon-game-tile"
     data-select-ring
-    classList={{ "has-artwork-ratio": ready(), scraping: !!props.game.scraping }}
+    classList={{ "has-artwork-ratio": ready() || !!props.game.artworkBlurhash, scraping: !!props.game.scraping }}
     data-controller={props.players.length ? props.players[0] % 8 : undefined}
     style={{ left: `${props.placement.x}px`, top: `${props.placement.y}px`, width: `${props.placement.width}px`, height: `${props.placement.height}px`, "--tile-color": tileColor(id()) }}
     aria-label={`${props.game.name}, ${window.Polymer.machine(props.game.platform)?.name ?? props.game.platform}${props.game.missingKey ? ", missing key" : ""}`}
@@ -38,7 +38,7 @@ export function GameTile(props: {
     onClick={props.onActivate}
     onContextMenu={event => { event.preventDefault(); event.currentTarget.focus(); props.onContextMenu(event); }}
   >
-    <CoverArt class="horizon-cover-art" src={props.game.artwork} onRatio={props.onRatio} onReady={setReady} />
+    <CoverArt class="horizon-cover-art" src={props.game.artwork} blurhash={props.game.artworkBlurhash} onRatio={props.onRatio} onReady={setReady} />
     <span class="horizon-game-title"><ScrollingText active={focused()}>{props.game.name}</ScrollingText></span>
     <small>{window.Polymer.machine(props.game.platform)?.name ?? props.game.platform}</small><span class="horizon-game-players"><For each={props.players}>{player => <PlayerBadge player={player} />}</For></span>
     <Show when={props.game.missingKey}>{key => <span class="horizon-game-missing-key" title={`Missing key: ${key().id}`} role="img" aria-label="Missing key">

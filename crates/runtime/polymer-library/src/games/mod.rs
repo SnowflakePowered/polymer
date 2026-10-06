@@ -2,6 +2,8 @@ mod catalog;
 mod discs;
 mod manifest;
 mod model;
+mod preview;
+pub use preview::MediaPreview;
 pub use manifest::{CuePart, CueTemplate, PackageFile, PackageManifest};
 mod schema;
 mod uri;

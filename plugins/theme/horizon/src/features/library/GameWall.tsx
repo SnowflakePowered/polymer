@@ -16,7 +16,7 @@ export function GameWall(props: { games: RecentGame[]; onEnd?: () => void }) {
   const [ratios, setRatios] = createSignal<Record<string, number>>({});
   let wall!: HTMLElement;
   const layout = createMemo(() => CoverLayout.arrange(
-    props.games.map(game => ratios()[game.artwork || gameId(game)] ?? 0.72),
+    props.games.map(game => ratios()[game.artwork || gameId(game)] ?? game.artworkRatio ?? 0.72),
     viewport().width, Math.min(240, Math.max(144, viewport().height * .3)) * zoom(),
   ));
   const [controllerSelections, setControllerSelections] = createSignal<Record<string, string>>({});

@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use super::{
     Game, GamePage, GameQuery, GameSort, IdentifiedLaunchable, Launchable, LaunchableUri,
-    MediaData, MediaResource, Metadata, MetadataData, MetadataInput,
+    MediaData, MediaPreview, MediaResource, Metadata, MetadataData, MetadataInput,
     MetadataInputData, MetadataValue, schema::SCHEMA,
 };
 use crate::Directories;
@@ -72,11 +72,13 @@ enum PreparedMetadataData {
         media_type: String,
         bytes: Box<[u8]>,
         source_url: Option<String>,
+        preview: Option<MediaPreview>,
     },
     Object {
         media_type: String,
         object: PreparedObject,
         source_url: Option<String>,
+        preview: Option<MediaPreview>,
     },
 }
 
@@ -269,7 +271,8 @@ impl GameCatalog {
                        metadata.source, metadata.producer, metadata.ordinal,
                        metadata.data_kind, metadata.string_value, metadata.number_value,
                        metadata.boolean_value, metadata.inline_data,
-                       media_objects.object_key, metadata.media_type, metadata.source_url
+                       media_objects.object_key, metadata.media_type, metadata.source_url,
+                       metadata.width, metadata.height, metadata.blurhash
                 FROM metadata
                 LEFT JOIN media_objects ON media_objects.blake3 = metadata.object_blake3
                 WHERE metadata.parent_binary_id {scope} {key_filter}
@@ -719,11 +722,13 @@ impl GameCatalog {
                 media_type: row.get(12)?,
                 data: MediaData::Inline(Self::blob(row.get_value(10)?)?.into_boxed_slice()),
                 source_url: Self::optional_text(row.get_value(13)?)?,
+                preview: Self::preview_from_row(row)?,
             },
             "object" => MetadataData::Media {
                 media_type: row.get(12)?,
                 data: MediaData::Object(ObjectPath::from(row.get::<String>(11)?)),
                 source_url: Self::optional_text(row.get_value(13)?)?,
+                preview: Self::preview_from_row(row)?,
             },
             _ => {
                 return Err(GameCatalogError::InvalidData(format!(
@@ -742,6 +747,33 @@ impl GameCatalog {
             })?,
             data,
         })
+    }
+
+    fn preview_from_row(row: &turso::Row) -> Result<Option<MediaPreview>, GameCatalogError> {
+        let dimension = |index| -> Result<Option<u32>, GameCatalogError> {
+            match row.get_value(index)? {
+                Value::Null => Ok(None),
+                value => u32::try_from(value.as_integer().copied().unwrap_or_default())
+                    .map(Some)
+                    .map_err(|_| {
+                        GameCatalogError::InvalidData("invalid media dimension".to_owned())
+                    }),
+            }
+        };
+        Ok(
+            match (
+                dimension(14)?,
+                dimension(15)?,
+                Self::optional_text(row.get_value(16)?)?,
+            ) {
+                (Some(width), Some(height), Some(blurhash)) => Some(MediaPreview {
+                    width,
+                    height,
+                    blurhash,
+                }),
+                _ => None,
+            },
+        )
     }
 
     fn validate_media_type(value: &str) -> Result<(), GameCatalogError> {
