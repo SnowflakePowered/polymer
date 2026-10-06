@@ -28,7 +28,7 @@ export function KeySettings() {
     return (keys() ?? []).filter(key => !query || key.id.toLowerCase().includes(query) || key.titleId?.toLowerCase().includes(query));
   });
   const missing = () => shell.model.libraryGames.flatMap(game => game.platform === platform() && game.missingKey
-    ? [{ label: game.name, value: game.missingKey.filename }] : []);
+    ? [{ label: game.name, value: game.missingKey.id }] : []);
 
   const dropChanged = (event: Event) => setDropActive((event as CustomEvent<boolean>).detail);
   const contentChanged = () => { void refetchPlatforms(); void refetchKeys(); };

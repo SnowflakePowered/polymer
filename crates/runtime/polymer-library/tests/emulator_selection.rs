@@ -19,6 +19,7 @@ async fn emulator_choices_persist_until_their_game_is_deleted() {
         serial: None,
         title_id: None,
         disc_number: None,
+        requires_license: false,
         parent_binary_id: None,
         platform: "SONY_PSX".to_owned(),
     };

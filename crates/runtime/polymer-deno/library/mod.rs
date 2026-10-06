@@ -56,6 +56,18 @@ pub(super) async fn op_library_keys_platforms(
 }
 
 #[op2]
+pub(super) async fn op_library_keys_licensed(
+    state: Rc<RefCell<OpState>>,
+    #[string] platform: String,
+    #[string] title_id: String,
+) -> Result<bool, JsErrorBox> {
+    Library::from_state(&state)?
+        .keys_licensed
+        .call(KeysLicensed { platform, title_id })
+        .await
+}
+
+#[op2]
 pub(super) async fn op_library_keys_remove(
     state: Rc<RefCell<OpState>>,
     #[string] platform: String,

@@ -49,7 +49,7 @@ impl GameCatalog {
     pub async fn launchable(&self, id: Uuid) -> Result<Launchable, GameCatalogError> {
         let connection = self.connection().await?;
         let mut rows = connection.query(
-            "SELECT l.binary_id, l.path, b.blake3, b.serial, b.title_id, b.parent_binary_id, b.platform, m.manifest_json, l.entrypoint, l.package, b.disc_number FROM launchables l JOIN binaries b ON b.id = l.binary_id LEFT JOIN launchable_manifests m ON m.launchable_id = l.id WHERE l.id = ?1",
+            "SELECT l.binary_id, l.path, b.blake3, b.serial, b.title_id, b.parent_binary_id, b.platform, m.manifest_json, l.entrypoint, l.package, b.disc_number, b.requires_license FROM launchables l JOIN binaries b ON b.id = l.binary_id LEFT JOIN launchable_manifests m ON m.launchable_id = l.id WHERE l.id = ?1",
             [Self::id(id)],
         ).await?;
         let row = rows
@@ -70,6 +70,7 @@ impl GameCatalog {
                 serial: Self::optional_text(row.get_value(3)?)?,
                 title_id: Self::optional_text(row.get_value(4)?)?,
                 disc_number: Self::optional_disc(row.get_value(10)?)?,
+                requires_license: row.get::<i64>(11)? != 0,
                 parent_binary_id: Self::optional_uuid(row.get_value(5)?)?,
                 platform: row.get(6)?,
             },

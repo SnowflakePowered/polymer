@@ -9,7 +9,7 @@ export type LibraryEntry = {
   artwork?: string;
   icon?: string;
   scraping?: { completed: number; total: number };
-  missingKey?: { id: string; filename: string };
+  missingKey?: { id: string };
 };
 
 export type LibraryActivity = { id: string; title: string; message: string; state: "running" | "complete" | "error"; completed?: number; total?: number };
@@ -126,16 +126,12 @@ export class LibraryState {
   private refresh = () => {
     const revision = ++this.revision;
     void this.library.games.list().then(async games => {
-      const licenses = games.some(game => game.platform === "SONY_PS3")
-        ? new Set((await this.library.keys.list("SONY_PS3", { namespace: "content" })).map(key => key.id))
-        : new Set<string>();
       const entries = await Promise.all(games.map(async game => {
         const launchable = game.launchables.find(item => !item.parentBinaryId) ?? game.launchables[0];
         if (!launchable) return [];
-        const license = launchable.platform === "SONY_PS3" && launchable.titleId
-          && /^[A-Za-z0-9]{6}-[A-Za-z]{4}\d{5}_\d{2}-[A-Za-z0-9_-]{16}$/.test(launchable.titleId) ? launchable.titleId : null;
+        const titleId = launchable.titleId;
         return [[game.id, { path: launchable.uri, name: this.title(game), platform: game.platform,
-          missingKey: license && !licenses.has(license) ? { id: license, filename: `${license}.rap` } : undefined,
+          missingKey: titleId && !await this.library.keys.licensed(launchable.platform, titleId) ? { id: titleId } : undefined,
           emulator: "", playedAt: 0, artwork: await this.media(game, ["media.boxart.front"]),
           icon: await this.media(game, ["media.icon", "banner.icon", "banner.banner"]) }] as const];
       }));

@@ -6,10 +6,12 @@ CREATE TABLE IF NOT EXISTS binaries (
     serial TEXT,
     title_id TEXT,
     disc_number INTEGER CHECK (disc_number IS NULL OR disc_number BETWEEN 1 AND 255),
+    requires_license INTEGER NOT NULL DEFAULT 0 CHECK (requires_license IN (0, 1)),
     parent_binary_id BLOB REFERENCES binaries(id) ON DELETE RESTRICT,
     CHECK (parent_binary_id IS NULL OR parent_binary_id != id)
 ) STRICT;
 CREATE INDEX IF NOT EXISTS binaries_parent ON binaries(parent_binary_id);
+CREATE INDEX IF NOT EXISTS binaries_title ON binaries(platform, title_id);
 CREATE TABLE IF NOT EXISTS launchables (
     id BLOB PRIMARY KEY NOT NULL CHECK (length(id) = 16),
     binary_id BLOB NOT NULL REFERENCES binaries(id) ON DELETE CASCADE,

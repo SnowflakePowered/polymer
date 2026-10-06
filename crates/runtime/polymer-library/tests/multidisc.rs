@@ -22,6 +22,7 @@ async fn import(
         serial: Some(serial.to_owned()),
         title_id: None,
         disc_number: None,
+        requires_license: false,
         parent_binary_id: None,
         platform: "SONY_PSX".to_owned(),
     };

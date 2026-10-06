@@ -52,6 +52,7 @@ impl Package {
                 serial: package.serial,
                 title_id: package.title_id,
                 disc_number: package.disc_number,
+                requires_license: package.requires_license,
                 parent_binary_id: seed.parent_binary_id,
                 platform: package.platform,
             },

@@ -41,7 +41,7 @@ export function GameTile(props: {
     <CoverArt class="horizon-cover-art" src={props.game.artwork} onRatio={props.onRatio} onReady={setReady} />
     <span class="horizon-game-title"><ScrollingText active={focused()}>{props.game.name}</ScrollingText></span>
     <small>{window.Polymer.machine(props.game.platform)?.name ?? props.game.platform}</small><span class="horizon-game-players"><For each={props.players}>{player => <PlayerBadge player={player} />}</For></span>
-    <Show when={props.game.missingKey}>{key => <span class="horizon-game-missing-key" title={`Missing key: ${key().filename}`} role="img" aria-label="Missing key">
+    <Show when={props.game.missingKey}>{key => <span class="horizon-game-missing-key" title={`Missing key: ${key().id}`} role="img" aria-label="Missing key">
       <Icon name="key" tone="onBrand" strokeWidth={2.2} />
     </span>}</Show>
     <Show when={props.game.scraping}>{progress => <div class="horizon-game-scraping">
