@@ -1,7 +1,7 @@
 use std::{path::PathBuf, time::Instant};
 use winit::{
     event::{DeviceEvent, ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent},
-    keyboard::{Key, PhysicalKey},
+    keyboard::{Key, NamedKey, PhysicalKey},
 };
 #[derive(Debug)]
 pub enum WindowCommand {
@@ -110,6 +110,7 @@ pub fn translate_window_event(event: WindowEvent) -> ShellWindowEvent {
                 PhysicalKey::Unidentified(_) => None,
             };
             let logical_key = match event.logical_key {
+                Key::Named(NamedKey::Space) => " ".into(),
                 Key::Named(key) => format!("{key:?}"),
                 Key::Character(key) => key.to_string(),
                 Key::Dead(_) => "Dead".into(),

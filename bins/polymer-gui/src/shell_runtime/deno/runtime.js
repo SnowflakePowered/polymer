@@ -760,8 +760,13 @@
     set role(value) { this.setAttribute("role", value); }
     get tabIndex() { return Number(this.getAttribute("tabindex") ?? -1); }
     set tabIndex(value) { this.setAttribute("tabindex", value); }
-    get value() { return this.getAttribute("value") || ""; }
-    set value(value) { this.setAttribute("value", value); }
+    get value() { return this.__value ?? (this.getAttribute("value") || ""); }
+    set value(value) {
+      value = String(value ?? "");
+      if (value === this.value) return;
+      this.__value = value;
+      this.setAttribute("value", value);
+    }
     get checked() { return this.hasAttribute("checked"); }
     set checked(value) { this.toggleAttribute("checked", Boolean(value)); }
     get hidden() { return this.hasAttribute("hidden"); }
@@ -1163,6 +1168,9 @@
       }
       if (eventClass === "pointer" || eventClass === "mouse") {
         target = pointerCaptureTarget(init.pointerId) || target;
+      }
+      if (eventClass === "input" && target instanceof Element) {
+        target.__value = init.data;
       }
       const constructors = { mouse: MouseEvent, pointer: PointerEvent, wheel: WheelEvent, keyboard: KeyboardEvent, focus: FocusEvent, input: InputEvent, composition: CompositionEvent };
       const Constructor = constructors[eventClass] || Event;

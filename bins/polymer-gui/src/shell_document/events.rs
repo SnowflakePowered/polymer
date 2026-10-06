@@ -90,8 +90,8 @@ pub struct DomMouseEvent<'a> {
     pub shift_key: bool,
 }
 
-pub struct DomKeyboardEvent<'a> {
-    pub kind: &'a str,
+pub struct DomKeyboardEvent {
+    pub pressed: bool,
     pub key: String,
     pub code: String,
     pub repeat: bool,
@@ -327,17 +327,17 @@ impl SharedShellDocument {
     }
 
     /// Dispatches a regular keyboard event to the shell window.
-    pub fn keyboard_event(
-        &mut self,
-        runtime: &mut ShellRuntime,
-        event: DomKeyboardEvent<'_>,
-    ) -> bool {
+    pub fn keyboard_event(&mut self, runtime: &mut ShellRuntime, event: DomKeyboardEvent) -> bool {
         let mut modifiers = keyboard_types::Modifiers::empty();
         modifiers.set(keyboard_types::Modifiers::ALT, event.alt_key);
         modifiers.set(keyboard_types::Modifiers::CONTROL, event.ctrl_key);
         modifiers.set(keyboard_types::Modifiers::SHIFT, event.shift_key);
-        let key = keyboard_types::Key::from_str(&event.key)
-            .unwrap_or_else(|_| keyboard_types::Key::Character(event.key.clone()));
+        let key =
+            keyboard_types::Key::from_str(&event.key).unwrap_or(keyboard_types::Key::Unidentified);
+        let text = match &key {
+            keyboard_types::Key::Character(text) if event.pressed => Some(text.as_str().into()),
+            _ => None,
+        };
         let code = keyboard_types::Code::from_str(&event.code)
             .unwrap_or(keyboard_types::Code::Unidentified);
         let data = BlitzKeyEvent {
@@ -347,24 +347,33 @@ impl SharedShellDocument {
             location: keyboard_types::Location::Standard,
             is_auto_repeating: event.repeat,
             is_composing: false,
-            state: if event.kind == "keydown" {
+            state: if event.pressed {
                 KeyState::Pressed
             } else {
                 KeyState::Released
             },
-            text: (event.kind == "keydown" && event.key.chars().count() == 1)
-                .then(|| event.key.clone().into()),
+            text,
         };
         let claimed = Rc::new(Cell::new(false));
         let previous_focus = self.0.borrow().document.as_ref().get_focussed_node_id();
         let handler = self.handler(runtime, claimed.clone(), false);
-        EventDriver::new(self, handler).handle_ui_event(if event.kind == "keydown" {
+        EventDriver::new(self, handler).handle_ui_event(if event.pressed {
             UiEvent::KeyDown(data)
         } else {
             UiEvent::KeyUp(data)
         });
         let mut shell = self.0.borrow_mut();
         let next_focus = shell.document.as_ref().get_focussed_node_id();
+        if next_focus.is_some_and(|node| {
+            shell
+                .document
+                .as_ref()
+                .get_node(node)
+                .and_then(|node| node.element_data())
+                .is_some_and(|element| element.text_input_data().is_some())
+        }) {
+            shell.invalidate();
+        }
         if next_focus != previous_focus {
             if let Some(node) = next_focus {
                 use crate::shell_runtime::deno::{ScrollAlignment, ScrollCommand};

@@ -233,7 +233,7 @@ impl ShellSession {
         document.needs_paint()
     }
 
-    pub fn keyboard_event(&mut self, event: DomKeyboardEvent<'_>) -> bool {
+    pub fn keyboard_event(&mut self, event: DomKeyboardEvent) -> bool {
         let ShellDocumentSlot::Active(active) = &mut self.slot else {
             return false;
         };

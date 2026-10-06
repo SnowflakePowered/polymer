@@ -285,12 +285,8 @@ impl ShellApplication {
                 repeat,
             } = &event
         {
-            ui_prevented = state.shell_keyboard(
-                if *pressed { "keydown" } else { "keyup" },
-                logical_key.clone(),
-                code.clone(),
-                *repeat,
-            );
+            ui_prevented =
+                state.shell_keyboard(*pressed, logical_key.clone(), code.clone(), *repeat);
             consumed = ui_prevented;
         }
         match event {

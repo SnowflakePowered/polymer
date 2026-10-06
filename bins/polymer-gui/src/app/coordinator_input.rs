@@ -108,13 +108,13 @@ impl ShellCoordinator {
 
     pub(super) fn shell_keyboard(
         &mut self,
-        kind: &str,
+        pressed: bool,
         key: String,
         code: String,
         repeat: bool,
     ) -> bool {
         let prevented = self.shell_dom.keyboard_event(DomKeyboardEvent {
-            kind,
+            pressed,
             key,
             code,
             repeat,
