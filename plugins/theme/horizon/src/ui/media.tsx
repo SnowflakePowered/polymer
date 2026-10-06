@@ -44,8 +44,8 @@ export function CoverArt(props: { src?: string; blurhash?: string; alt?: string;
     onError={() => { setFailed(url()); props.onReady?.(false); }} />}</Show>;
 }
 export function Tile(props: JSX.ButtonHTMLAttributes<HTMLButtonElement> & { selected?: boolean }) {
-  const [local, rest] = splitProps(props, ["selected", "class"]);
-  return <button type="button" {...rest} class={`hz-tile ${local.class ?? ""}`} data-selected={local.selected || undefined} aria-pressed={local.selected} />;
+  const [local, rest] = splitProps(props, ["selected", "class", "classList"]);
+  return <button type="button" {...rest} class={`hz-tile ${local.class ?? ""}`} classList={local.classList} data-selected={local.selected || undefined} aria-pressed={local.selected} />;
 }
 export function EmptySlot(props: { label: string }) { return <div class="hz-empty-slot">{props.label}</div>; }
 export function PlayerBadge(props: { player: number }) { return <span class="hz-player-badge" data-player={props.player}>P{props.player + 1}</span>; }
