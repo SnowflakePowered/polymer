@@ -110,7 +110,11 @@ impl ChromeTexture {
                 1,
                 1,
             );
-            device.create_texture_from_hal::<wgpu_hal::api::Dx12>(hal, &descriptor)
+            device.create_texture_from_hal::<wgpu_hal::api::Dx12>(
+                hal,
+                &descriptor,
+                wgpu::TextureUses::UNINITIALIZED,
+            )
         };
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 

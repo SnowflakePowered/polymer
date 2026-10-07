@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use super::dom::{
     LayoutCache, LayoutSnapshot, ScriptNodeId, op_dom_append_child, op_dom_attributes,
+    op_dom_clear_image_mip_chains,
     op_dom_children, op_dom_clone, op_dom_closest, op_dom_computed_style, op_dom_create_comment,
     op_dom_create_element,
     op_dom_create_fragment, op_dom_create_text, op_dom_element_by_id, op_dom_focus, op_dom_focused,
@@ -45,6 +46,7 @@ deno_core::extension!(
         op_dom_rect,
         op_dom_scroll_metrics,
         op_dom_image_size,
+        op_dom_clear_image_mip_chains,
         op_dom_create_element,
         op_dom_create_text,
         op_dom_create_comment,

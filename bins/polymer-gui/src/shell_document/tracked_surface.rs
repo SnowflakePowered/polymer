@@ -123,7 +123,7 @@ pub(super) fn initialise_tracked_surfaces(document: &mut blitz_html::HtmlDocumen
         .iter()
         .filter_map(|(node, current)| {
             let element = current.element_data()?;
-            if element.name.local.as_ref() != "tracked-surface" {
+            if &*element.name.local != "tracked-surface" {
                 return None;
             }
             let source = element.attr(local_name!("src"))?.parse::<u64>().ok()?;
@@ -138,5 +138,5 @@ pub(super) fn initialise_tracked_surfaces(document: &mut blitz_html::HtmlDocumen
 }
 
 pub(super) fn is_tracked_surface_element(element: &blitz_dom::node::ElementData) -> bool {
-    element.name.local.as_ref() == "tracked-surface"
+    &*element.name.local == "tracked-surface"
 }

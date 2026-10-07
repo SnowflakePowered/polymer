@@ -10,10 +10,9 @@
 //! around them.
 
 mod bands;
-mod banner;
-mod blurhash;
 mod events;
 mod hit_test;
+mod image;
 mod image_levels;
 mod mutations;
 mod providers;
@@ -105,6 +104,7 @@ pub struct ShellDocument {
     bands: Vec<anyrender::Scene>,
     placements: Vec<GamePlacement>,
     images: ImageLevels,
+    image_loader: Arc<image::ImageLoader>,
     width: u32,
     height: u32,
     scale_factor: f32,
@@ -186,7 +186,8 @@ impl ShellDocumentFactory {
                 crate::window_manager::WindowCommand::RedrawShell,
             ));
         });
-        let net: Arc<dyn NetProvider> = Arc::new(providers::ShellNetProvider::new(waker));
+        let net: Arc<dyn NetProvider> =
+            Arc::new(providers::ShellNetProvider::new(waker.clone()));
         let level_proxy = self.event_proxy.clone();
         let images = ImageLevels::new(move || {
             let _ = level_proxy.send_event(crate::commands::UserEvent::Window(
@@ -199,15 +200,18 @@ impl ShellDocumentFactory {
             html,
             blitz_dom::DocumentConfig {
                 base_url: Some(base_url.clone()),
-                net_provider: Some(net),
+                net_provider: Some(net.clone()),
                 shell_provider: Some(shell_provider),
                 html_parser_provider: Some(Arc::new(blitz_html::HtmlProvider)),
                 ..Default::default()
             },
         );
-        document
-            .as_mut()
-            .add_user_agent_stylesheet(banner::BannerWidget::USER_AGENT_CSS);
+        let image_loader = Arc::new(image::ImageLoader::new(
+            net,
+            waker,
+            document.as_ref().id(),
+            &base_url,
+        ));
         initialise_tracked_surfaces(&mut document);
         let mut document = ShellDocument {
             document,
@@ -216,6 +220,7 @@ impl ShellDocumentFactory {
             bands: vec![anyrender::Scene::new()],
             placements: Vec::new(),
             images,
+            image_loader,
             width: 0,
             height: 0,
             scale_factor: 1.0,
@@ -278,6 +283,12 @@ impl ShellDocument {
         (x / self.scale_factor, y / self.scale_factor)
     }
 
+    /// Evicts every image mip chain. Images still shown load again.
+    pub(crate) fn clear_image_mip_chains(&mut self) {
+        polymer_mipmap::MipImages::clear();
+        self.dirty = true;
+    }
+
     pub fn resize(&mut self, width: u32, height: u32, scale_factor: f32) {
         let (width, height) = (width.max(1), height.max(1));
         let scale_factor = normalized_scale_factor(scale_factor);
@@ -287,6 +298,7 @@ impl ShellDocument {
         self.width = width;
         self.height = height;
         self.scale_factor = scale_factor;
+        self.image_loader.set_scale_factor(scale_factor);
         let (logical_width, logical_height) = self.logical_size();
         // Absolutely positioned boxes resolve against the viewport, so without
         // one every box in this layer lays out at zero size. Keep Blitz in CSS
@@ -369,7 +381,7 @@ impl ShellDocument {
                 attachment,
                 index,
                 ?dom_node,
-                tag = element.map(|element| element.name.local.as_ref()),
+                tag = element.map(|element| &*element.name.local),
                 source = element.and_then(|element| element.attr(local_name!("src"))),
                 "polymer: invalid shell surface attachment"
             );
@@ -592,6 +604,7 @@ impl ShellDocument {
             surface_layout,
             width: self.width,
             height: self.height,
+            mip_generation: polymer_mipmap::MipImages::generation(),
         })
     }
 }

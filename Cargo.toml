@@ -4,6 +4,7 @@ members = [
     "tests",
     "crates/polymer-config",
     "crates/polymer-banner",
+    "crates/polymer-mipmap",
     "crates/producers/*",
     "crates/hooks/*",
     "crates/consumer/*",
@@ -23,6 +24,7 @@ rust-version = "1.94"
 
 [workspace.dependencies]
 polymer-banner = { path = "crates/polymer-banner" }
+polymer-mipmap = { path = "crates/polymer-mipmap" }
 bannerbobomb-parser = { path = "../bannerbobomb/bannerbobomb-parser" }
 cgfx-parser = { path = "../cgfx/crates/cgfx-parser" }
 cgfx-renderer = { path = "../cgfx/crates/cgfx-renderer" }
@@ -277,6 +279,30 @@ opt-level = 3
 opt-level = 3
 
 [profile.dev.package.peniko]
+opt-level = 3
+
+[profile.dev.package.image]
+opt-level = 3
+
+[profile.dev.package.zune-jpeg]
+opt-level = 3
+
+[profile.dev.package.zune-core]
+opt-level = 3
+
+[profile.dev.package.png]
+opt-level = 3
+
+[profile.dev.package.fdeflate]
+opt-level = 3
+
+[profile.dev.package.image-webp]
+opt-level = 3
+
+[profile.dev.package.gif]
+opt-level = 3
+
+[profile.dev.package.weezl]
 opt-level = 3
 
 [profile.dev.package.anyrender]

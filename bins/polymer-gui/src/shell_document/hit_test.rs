@@ -100,7 +100,7 @@ pub(super) fn pointer_hit(document: &blitz_dom::BaseDocument, x: f32, y: f32) ->
                 .and_then(blitz_dom::Node::element_data)
                 .is_some_and(|element| {
                     matches!(
-                        element.name.local.as_ref(),
+                        &*element.name.local,
                         "button" | "input" | "textarea" | "select" | "a" | "label"
                     ) || matches!(element.attr(local_name!("role")), Some("button" | "link"))
                 })
@@ -131,7 +131,7 @@ fn painted_pointer_target_is_valid(
     }
     if node.element_data().is_some_and(|element| {
         matches!(
-            element.name.local.as_ref(),
+            &*element.name.local,
             "head" | "style" | "script" | "link" | "meta" | "title"
         )
     }) {

@@ -24,6 +24,7 @@ pub(crate) struct ShellFrame {
     pub surface_layout: Vec<TrackedSurfaceLayout>,
     pub width: u32,
     pub height: u32,
+    pub mip_generation: u64,
 }
 
 pub use polymer_composition::{RasterChunkId, ShellCompositionGroup, ShellRasterChunk};

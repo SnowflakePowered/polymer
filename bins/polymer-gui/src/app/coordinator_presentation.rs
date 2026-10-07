@@ -232,6 +232,7 @@ impl ShellCoordinator {
             composition_groups: frame.composition_groups,
             width: frame.width,
             height: frame.height,
+            mip_generation: frame.mip_generation,
         });
         if let Some(superseded) = superseded {
             self.pending_layouts.remove(&superseded);

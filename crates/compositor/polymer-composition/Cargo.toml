@@ -10,7 +10,7 @@ workspace = true
 [dependencies]
 egui = "0.29.1"
 egui-winit = "0.29.1"
-anyrender = "0.13.0"
+anyrender = "0.14.0"
 kurbo = "0.13.1"
 cursor-icon = "1.2.0"
 polymer-renderer = { path = "../../consumer/polymer-renderer" }

@@ -113,7 +113,10 @@ impl OverlayState {
         self.diagnostics.backend = backend;
     }
     pub fn set_input_diagnostics(&mut self, diagnostics: InputDiagnostics) {
-        self.diagnostics.input = diagnostics;
+        if self.diagnostics.input != diagnostics {
+            self.diagnostics.input = diagnostics;
+            self.request_immediate_repaint();
+        }
     }
     pub fn add_surface(
         &mut self,

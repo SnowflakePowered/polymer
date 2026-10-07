@@ -45,13 +45,13 @@ pub struct DebugOverlayModel {
     pub input: InputDiagnostics,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct InputAxisDiagnostics {
     pub name: String,
     pub value: i16,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct InputSlotDiagnostics {
     pub slot: usize,
     pub layout: String,
@@ -70,7 +70,7 @@ pub struct InputSlotDiagnostics {
     pub gyroscope: [f32; 3],
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct InputDiagnostics {
     pub active: bool,
     pub slots: Vec<InputSlotDiagnostics>,
