@@ -9,6 +9,7 @@ use polymer_banner::BannerTextures;
 use polymer_composition::{
     CompositionScene as ShellFrame, RasterChunkId, RasterChunkLayout, ShellCompositionGroup,
 };
+use polymer_mipmap::MipTextures;
 use polymer_protocol::AdapterLuid;
 use std::{
     collections::{HashMap, HashSet},
@@ -30,6 +31,7 @@ pub(crate) struct ShellRasterizer {
     rendered_scenes: HashMap<RasterChunkId, vello::Scene>,
     recorded_scenes: HashMap<RasterChunkId, anyrender::Scene>,
     banners: BannerTextures,
+    mips: MipTextures,
     animated_chunks: HashSet<RasterChunkId>,
     atlas_images: HashSet<u64>,
 }
@@ -216,6 +218,7 @@ impl ShellRasterizer {
             rendered_scenes: HashMap::new(),
             recorded_scenes: HashMap::new(),
             banners: BannerTextures::default(),
+            mips: MipTextures::default(),
             animated_chunks: HashSet::new(),
             atlas_images: HashSet::new(),
         })
@@ -253,6 +256,7 @@ impl ShellRasterizer {
                     power_preference: wgpu::PowerPreference::HighPerformance,
                     compatible_surface: None,
                     force_fallback_adapter: false,
+                    apply_limit_buckets: false,
                 })
                 .await
                 .map_err(|error| format!("shell chrome found no D3D12 adapter: {error}"))?
@@ -299,6 +303,9 @@ impl ShellRasterizer {
             .collect::<HashSet<_>>();
         let mut updates = Vec::with_capacity(chunk_count);
         let mut reused = Vec::with_capacity(chunk_count);
+        for image in self.mips.begin_frame(frame.mip_generation) {
+            self.renderer.override_image(&image, None);
+        }
         let mut timings = Vec::with_capacity(chunk_count);
         for layer in frame.raster_chunks.drain(..) {
             let id = layer.id;
@@ -364,7 +371,11 @@ impl ShellRasterizer {
             }
             let mut animated = false;
             for image in scene_images(&scene) {
-                if let Some(texture) = self.banners.prepare(&self.device, &self.queue, image) {
+                if let Some(texture) = self
+                    .banners
+                    .prepare(&self.device, &self.queue, image)
+                    .or_else(|| self.mips.prepare(&self.device, &self.queue, image))
+                {
                     self.renderer.override_image(
                         image,
                         Some(wgpu::TexelCopyTextureInfoBase {
@@ -412,7 +423,12 @@ impl ShellRasterizer {
         // here serialized every DOM transform update with the GPU and
         // starved both input delivery and guest presentation while dragging.
         self.device.poll(wgpu::PollType::Poll).ok();
-        for image in self.banners.release_stale() {
+        for image in self
+            .banners
+            .release_stale()
+            .into_iter()
+            .chain(self.mips.release_stale())
+        {
             self.renderer.override_image(&image, None);
         }
         self.targets.retain(|id, _| live.contains(id));

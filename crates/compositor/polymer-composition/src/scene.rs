@@ -8,6 +8,8 @@ pub struct CompositionScene {
     pub composition_groups: Vec<ShellCompositionGroup>,
     pub width: u32,
     pub height: u32,
+    /// Image mip chains from earlier generations are evicted.
+    pub mip_generation: u64,
 }
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CompositionShadowStyle {

@@ -1,18 +1,18 @@
 //! Retained shell raster and WUC composition ownership.
 
 mod chrome;
+mod chunk;
 mod raster;
 
 pub(crate) use raster::ShellRasterizer;
 
 use crate::surfaces::RenderDevice;
+use chunk::{ChunkSurface, ChunkSurfaces};
 use polymer_composition::{
     CompositionScene as ShellFrame, CompositionShadowStyle, RasterChunkId, RasterChunkLayout,
     ShellCompositionGroup, SurfaceLayer,
 };
 use polymer_protocol::AdapterLuid;
-use polymer_renderer::Extent;
-use polymer_renderer_d3d12::RasterSurface;
 use raster::{ShellRasterResult, ShellRasterWorker};
 use std::{
     collections::{HashMap, HashSet},
@@ -21,8 +21,9 @@ use std::{
 };
 use windows::{
     UI::Composition::{
-        CompositionShadow, CompositionStretch, CompositionSurfaceBrush, Compositor,
-        ContainerVisual, DropShadow, InsetClip, LayerVisual, SpriteVisual, Visual,
+        CompositionDropShadowSourcePolicy, CompositionShadow, CompositionStretch,
+        CompositionSurfaceBrush, Compositor, ContainerVisual, DropShadow, InsetClip, LayerVisual,
+        SpriteVisual, Visual,
     },
     Win32::System::WinRT::Composition::ICompositorInterop,
     core::{IUnknown, Interface},
@@ -112,37 +113,31 @@ struct ShellDeviceContext {
     queue: IUnknown,
 }
 
-struct PendingPublication {
-    chunks: Vec<RasterChunkLayout>,
-    groups: Vec<ShellCompositionGroup>,
-    revision: u64,
-}
-
 struct RasterDomain {
     context: ShellDeviceContext,
     worker: ShellRasterWorker,
-    surfaces: Vec<RasterSurface>,
-    slots: HashMap<RasterChunkId, usize>,
+    chunk_surfaces: ChunkSurfaces,
+    surfaces: HashMap<RasterChunkId, ChunkSurface>,
     chunks: Vec<RasterChunkLayout>,
     groups: Vec<ShellCompositionGroup>,
-    dirty: HashSet<RasterChunkId>,
-    pending: Option<PendingPublication>,
+    /// A finished raster result waiting for the reconcile that commits it.
+    pending: Option<ShellRasterResult>,
 }
 
 impl RasterDomain {
     fn new(
+        compositor: &Compositor,
         rasterizer: ShellRasterizer,
         publication_ready: Arc<dyn Fn() + Send + Sync>,
     ) -> Result<Self, Box<dyn Error>> {
         let context = rasterizer.device_context()?;
         Ok(Self {
+            chunk_surfaces: ChunkSurfaces::new(compositor, &context)?,
             context,
             worker: ShellRasterWorker::spawn(rasterizer, publication_ready),
-            surfaces: Vec::new(),
-            slots: HashMap::new(),
+            surfaces: HashMap::new(),
             chunks: Vec::new(),
             groups: Vec::new(),
-            dirty: HashSet::new(),
             pending: None,
         })
     }
@@ -160,6 +155,9 @@ pub(crate) struct ShellCompositor {
     raster: RasterDomain,
     publication_ready: Arc<dyn Fn() + Send + Sync>,
     content_dirty: bool,
+    /// Chunk pixels were copied into drawing surfaces, which only appear with
+    /// a composition commit even when the layout is unchanged.
+    pixels_dirty: bool,
     game_revision: u64,
 }
 
@@ -170,7 +168,7 @@ impl ShellCompositor {
         publication_ready: impl Fn() + Send + Sync + 'static,
     ) -> Result<Self, Box<dyn Error>> {
         let publication_ready: Arc<dyn Fn() + Send + Sync> = Arc::new(publication_ready);
-        let raster = RasterDomain::new(rasterizer, publication_ready.clone())?;
+        let raster = RasterDomain::new(compositor, rasterizer, publication_ready.clone())?;
         let root = compositor.CreateContainerVisual()?;
         root.SetRelativeSizeAdjustment(Vector2 { X: 1.0, Y: 1.0 })?;
         Ok(Self {
@@ -183,12 +181,14 @@ impl ShellCompositor {
             raster,
             publication_ready,
             content_dirty: true,
+            pixels_dirty: false,
             game_revision: 0,
         })
     }
 
     fn replace_rasterizer(&mut self, rasterizer: ShellRasterizer) -> Result<(), Box<dyn Error>> {
-        self.raster = RasterDomain::new(rasterizer, self.publication_ready.clone())?;
+        self.raster =
+            RasterDomain::new(&self.compositor, rasterizer, self.publication_ready.clone())?;
         self.content_dirty = true;
         Ok(())
     }
@@ -221,103 +221,63 @@ impl ShellCompositor {
     }
 
     pub(crate) fn is_pending(&self) -> bool {
-        !self.raster.dirty.is_empty() || self.raster.worker.is_pending()
+        self.raster.worker.is_pending()
     }
 
+    /// Takes the next finished raster result. Its chunk pixels are copied
+    /// into their drawing surfaces only by the reconcile that commits it:
+    /// drawing surface updates are applied by whichever commit comes next, so
+    /// copying any earlier would let an unrelated commit show them before the
+    /// layout they belong to.
     pub(crate) fn draw(&mut self) -> Result<Option<u64>, String> {
-        while let Some(result) = self.raster.worker.try_result() {
-            self.apply_result(result)?;
-        }
-        for id in self.raster.dirty.iter().copied().collect::<Vec<_>>() {
-            let Some(slot) = self.raster.slots.get(&id).copied() else {
-                self.raster.dirty.remove(&id);
-                continue;
-            };
-            if !self.raster.surfaces[slot]
-                .try_present()
-                .map_err(|error| error.to_string())?
-            {
-                continue;
-            }
-            self.raster.dirty.remove(&id);
-        }
-        if !self.raster.dirty.is_empty() {
+        if self.raster.pending.is_some() {
             return Ok(None);
         }
-        let Some(pending) = self.raster.pending.take() else {
+        let Some(result) = self.raster.worker.try_result() else {
             return Ok(None);
         };
-        self.content_dirty |=
-            self.raster.chunks != pending.chunks || self.raster.groups != pending.groups;
-        self.raster.chunks = pending.chunks;
-        self.raster.groups = pending.groups;
-        self.raster.worker.acknowledge_publication();
-        Ok(Some(pending.revision))
+        let revision = result.revision;
+        self.raster.pending = Some(result);
+        Ok(Some(revision))
     }
 
-    fn apply_result(&mut self, result: ShellRasterResult) -> Result<(), String> {
-        debug_assert!(self.raster.pending.is_none());
+    fn apply_result(&mut self, result: ShellRasterResult) -> windows::core::Result<()> {
         let live = result
             .raster_chunks
             .iter()
             .map(|chunk| chunk.id)
             .collect::<HashSet<_>>();
-        self.raster.slots.retain(|id, _| live.contains(id));
-        let mut used = self.raster.slots.values().copied().collect::<HashSet<_>>();
-        for chunk in &result.raster_chunks {
-            if self.raster.slots.contains_key(&chunk.id) {
-                continue;
-            }
-            let slot = (0..self.raster.surfaces.len())
-                .find(|slot| !used.contains(slot))
-                .unwrap_or(self.raster.surfaces.len());
-            if slot == self.raster.surfaces.len() {
-                let surface = unsafe {
-                    RasterSurface::from_external(
-                        &self.compositor,
-                        self.raster.context.adapter,
-                        self.raster.context.device.clone().into_raw(),
-                        self.raster.context.queue.clone().into_raw(),
-                        chunk_capacity(chunk),
-                    )
-                }
-                .map_err(|error| error.to_string())?;
-                self.raster.surfaces.push(surface);
-            }
-            self.raster.slots.insert(chunk.id, slot);
-            used.insert(slot);
-            self.content_dirty = true;
-        }
-        for chunk in &result.raster_chunks {
-            let slot = self.raster.slots[&chunk.id];
-            let desired = chunk_capacity(chunk);
-            let current = self.raster.surfaces[slot].capacity();
-            if desired.width > current.width
-                || desired.height > current.height
-                || u64::from(current.width) * u64::from(current.height)
-                    > 4 * u64::from(desired.width) * u64::from(desired.height)
-            {
-                self.raster.surfaces[slot]
-                    .resize(desired)
-                    .map_err(|error| error.to_string())?;
-                self.raster.dirty.insert(chunk.id);
-            }
-        }
+        let surface_count = self.raster.surfaces.len();
+        self.raster.surfaces.retain(|id, _| live.contains(id));
+        let mut created = self.raster.surfaces.len() != surface_count;
+        let pixels_changed = !result.updates.is_empty();
         for (id, resource) in result.updates {
-            let Some(slot) = self.raster.slots.get(&id).copied() else {
-                continue;
-            };
             let (width, height) = (resource.width, resource.height);
+            let surface = match self.raster.surfaces.entry(id) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    created = true;
+                    entry.insert(self.raster.chunk_surfaces.create(width, height)?)
+                }
+            };
+            // SAFETY: the resource's single owned reference is handed over,
+            // and Vello left it in the unordered-access state.
             unsafe {
-                self.raster.surfaces[slot].set_source(resource.into_abi_reference(), width, height);
+                self.raster.chunk_surfaces.update(
+                    surface,
+                    resource.into_abi_reference(),
+                    width,
+                    height,
+                )?;
             }
-            self.raster.dirty.insert(id);
         }
-        self.raster.pending = Some(PendingPublication {
-            chunks: result.raster_chunks,
-            groups: result.composition_groups,
-            revision: result.revision,
-        });
+        self.raster.chunk_surfaces.flush();
+        self.pixels_dirty |= pixels_changed;
+        self.content_dirty |= created
+            || self.raster.chunks != result.raster_chunks
+            || self.raster.groups != result.composition_groups;
+        self.raster.chunks = result.raster_chunks;
+        self.raster.groups = result.composition_groups;
         Ok(())
     }
 
@@ -360,7 +320,12 @@ impl ShellCompositor {
             .collect();
         let mut layers = Vec::new();
         for chunk in &self.raster.chunks {
-            let Some(slot) = self.raster.slots.get(&chunk.id).copied() else {
+            let Some(surface) = self
+                .raster
+                .surfaces
+                .get(&chunk.id)
+                .and_then(|surface| surface.composition_surface().ok())
+            else {
                 continue;
             };
             let origin = chunk
@@ -371,9 +336,7 @@ impl ShellCompositor {
                 id: CompositionLayerId::Raster(chunk.id),
                 parent: chunk.group,
                 z_order: chunk.z_order,
-                content: CompositionLayerContent::Surface(
-                    self.raster.surfaces[slot].composition_surface(),
-                ),
+                content: CompositionLayerContent::Surface(surface),
                 x: chunk.bounds.x0 as f32 - origin.0 as f32,
                 y: chunk.bounds.y0 as f32 - origin.1 as f32,
                 width: chunk.bounds.width() as f32,
@@ -434,10 +397,16 @@ impl ShellCompositor {
         game_revision: u64,
         device: &RenderDevice,
     ) -> Result<bool, Box<dyn Error>> {
+        if let Some(result) = self.raster.pending.take() {
+            self.apply_result(result)?;
+            self.raster.worker.acknowledge_publication();
+        }
+        let pixels_dirty = std::mem::take(&mut self.pixels_dirty);
         let Some(content) = self.content_update(surfaces, game_revision, device) else {
-            return Ok(false);
+            return Ok(pixels_dirty);
         };
         self.reconcile_content(&content)?;
+
         self.content_dirty = false;
         self.game_revision = game_revision;
         Ok(true)
@@ -487,7 +456,13 @@ impl ShellCompositor {
             let shadow = if let Some(style) = group.shadow {
                 let shadow = match retained.shadow {
                     Some(shadow) => shadow,
-                    None => self.compositor.CreateDropShadow()?,
+                    None => {
+                        let shadow = self.compositor.CreateDropShadow()?;
+                        shadow.SetSourcePolicy(
+                            CompositionDropShadowSourcePolicy::InheritFromVisualContent,
+                        )?;
+                        shadow
+                    }
                 };
                 shadow.SetBlurRadius(style.blur_radius.max(0.0))?;
                 shadow.SetColor(windows::UI::Color {
@@ -696,14 +671,4 @@ impl ShellCompositor {
             }
         }
     }
-}
-
-fn chunk_capacity(chunk: &RasterChunkLayout) -> Extent {
-    fn bucket(value: u32) -> u32 {
-        value.max(64).checked_next_power_of_two().unwrap_or(value)
-    }
-    Extent::new(
-        bucket(chunk.bounds.width().ceil().max(1.0) as u32),
-        bucket(chunk.bounds.height().ceil().max(1.0) as u32),
-    )
 }

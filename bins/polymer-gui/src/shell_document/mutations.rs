@@ -1,6 +1,5 @@
 use super::ShellDocument;
-use super::banner::BannerWidget;
-use super::blurhash::BlurhashWidget;
+use super::image::ImageWidget;
 use super::scrolling::Scroller;
 use super::tracked_surface::{TrackedSurfaceWidget, is_tracked_surface_element};
 use crate::shell_runtime::deno::{ScrollBehavior, ScrollCommand};
@@ -24,6 +23,7 @@ impl ShellDocument {
 
     fn attach_custom_widgets(&mut self, root: NodeId) {
         let mut widgets: Vec<(NodeId, Box<dyn Widget>)> = Vec::new();
+        let mut images = Vec::new();
         let mut pending = vec![root];
         while let Some(id) = pending.pop() {
             let Some(node) = self.document.as_ref().get_node(id) else {
@@ -38,12 +38,15 @@ impl ShellDocument {
                     .attr(local_name!("src"))
                     .and_then(|source| source.parse().ok());
                 widgets.push((id, Box::new(TrackedSurfaceWidget::new(source))));
-            } else if BannerWidget::is_banner_element(element) {
-                widgets.push((id, Box::new(BannerWidget::from_element(element))));
+            } else if element.name.local == local_name!("img") {
+                images.push(id);
             }
         }
         for (node, widget) in widgets {
             self.document.as_mut().set_custom_widget(node, widget);
+        }
+        for node in images {
+            ImageWidget::attach(self.document.as_mut(), &self.image_loader, node);
         }
     }
 
@@ -194,7 +197,7 @@ impl ShellDocument {
         self.dirty = true;
         self.needs_resolve = true;
         self.needs_geometry_sync |=
-            name.as_ref() != "style" || style_change_requires_geometry(previous, current);
+            &*name != "style" || style_change_requires_geometry(previous, current);
     }
 
     pub(crate) fn set_attribute(&mut self, node: NodeId, name: &str, value: &str) {
@@ -216,8 +219,8 @@ impl ShellDocument {
             QualName::new(None, ns!(), name.clone()),
             value,
         );
-        if name.as_ref() == BlurhashWidget::ATTRIBUTE {
-            BlurhashWidget::attach(self.document.as_mut(), node, value);
+        if ImageWidget::is_trigger(&name) {
+            ImageWidget::attach(self.document.as_mut(), &self.image_loader, node);
         }
         self.attribute_changed(&name, previous.as_deref(), Some(value));
     }

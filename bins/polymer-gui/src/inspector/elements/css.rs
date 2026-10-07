@@ -54,13 +54,13 @@ impl<'a> Stylesheets<'a> {
 impl InspectorStylesheet {
     fn from_node(node_id: NodeId, node: &Node) -> Option<Self> {
         let element = node.element_data()?;
-        if element.name.local.as_ref() != "style" {
+        if &*element.name.local != "style" {
             return None;
         }
         let source = element
             .attrs
             .iter()
-            .find(|attribute| attribute.name.local.as_ref() == "data-vite-dev-id")
+            .find(|attribute| &*attribute.name.local == "data-vite-dev-id")
             .map(|attribute| attribute.value.clone())
             .unwrap_or_default();
         let title = if source.is_empty() {
@@ -368,7 +368,7 @@ impl Stylesheets<'_> {
         node.attrs()
             .into_iter()
             .flatten()
-            .find(|attribute| attribute.name.local.as_ref() == "style")
+            .find(|attribute| &*attribute.name.local == "style")
             .map(|attribute| {
                 attribute
                     .value

@@ -1,0 +1,17 @@
+[package]
+name = "polymer-mipmap"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+render = ["dep:wgpu"]
+
+[dependencies]
+dashmap.workspace = true
+parking_lot.workspace = true
+peniko = "0.6.1"
+wgpu = { version = "30", default-features = false, features = ["wgsl"], optional = true }

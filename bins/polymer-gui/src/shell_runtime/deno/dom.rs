@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use blitz_dom::{BaseDocument, Node, NodeData, NodeId};
+use blitz_dom::{BaseDocument, Node, NodeData, NodeId, local_name};
 use deno_core::{OpState, op2};
 use deno_error::JsErrorBox;
 use serde::Serialize;
@@ -54,7 +54,7 @@ pub(super) fn op_dom_node_info(state: &OpState, node: f64) -> Option<NodeInfo> {
     let node = shell.base().get_node(NodeId::from_script(node))?;
     let (kind, element) = match &node.data {
         NodeData::Document(_) => ("document", None),
-        NodeData::Element(element) if element.name.local.as_ref() == "#document-fragment" => {
+        NodeData::Element(element) if &*element.name.local == "#document-fragment" => {
             ("fragment", None)
         }
         NodeData::Element(element) => ("element", Some(element)),
@@ -316,6 +316,12 @@ pub(super) fn op_dom_image_size(state: &OpState, node: f64) -> Vec<f32> {
 }
 
 #[op2(fast)]
+pub(super) fn op_dom_clear_image_mip_chains(state: &OpState) {
+    let shared = state.borrow::<SharedShellDocument>();
+    shared.0.borrow_mut().clear_image_mip_chains();
+}
+
+#[op2(fast)]
 pub(super) fn op_dom_create_element(
     state: &OpState,
     #[string] tag: &str,
@@ -491,6 +497,10 @@ impl LayoutSnapshot {
         let NodeData::Element(element) = &node.data else {
             return [0.0; 2];
         };
+        if let Some(data) = element.custom_widget_data() {
+            let sizes = data.widget.intrinsic_sizes();
+            return [sizes.width.unwrap_or(0.0), sizes.height.unwrap_or(0.0)];
+        }
         if let Some(image) = element.raster_image_data() {
             return [image.width as f32, image.height as f32];
         }
@@ -502,6 +512,13 @@ impl LayoutSnapshot {
 
     fn image_identity(node: &Node) -> u64 {
         match &node.data {
+            NodeData::Element(element) if element.custom_widget_data().is_some() => element
+                .attr(local_name!("src"))
+                .map_or(0, |source| {
+                    let mut hasher = std::hash::DefaultHasher::new();
+                    std::hash::Hash::hash(source, &mut hasher);
+                    std::hash::Hasher::finish(&hasher)
+                }),
             NodeData::Element(element) => element
                 .raster_image_data()
                 .map_or(0, |image| image.data.id()),

@@ -115,6 +115,7 @@ enum CommandMeta {
 /// A clip layer left open across a band switch.
 struct OpenLayer {
     id: u64,
+    fill: Fill,
     blend: Option<BlendMode>,
     alpha: f32,
     transform: Affine,
@@ -137,8 +138,8 @@ pub struct BandedScene<'a, S> {
     /// are stable for the lifetime of an emulator layout even when unrelated
     /// paint commands are inserted earlier in the document.
     promoted_layers: HashMap<u64, u64>,
-    /// Paint-order ordinal of the next isolated layer. A layer is isolated by
-    /// the identity filter `filter: opacity(1)`.
+    /// Paint-order ordinal of the next isolated layer, for embedded surfaces
+    /// that share a source with another placement.
     next_isolated_group: u64,
 }
 
@@ -200,6 +201,7 @@ impl<'a, S: PaintScene + Default> BandedScene<'a, S> {
         for layer in stack {
             if let Some(blend) = layer.blend {
                 bands[self.current].push_layer(
+                    layer.fill,
                     blend,
                     layer.alpha,
                     layer.transform,
@@ -208,7 +210,7 @@ impl<'a, S: PaintScene + Default> BandedScene<'a, S> {
                     layer.backdrop_filter.clone(),
                 );
             } else {
-                bands[self.current].push_clip_layer(layer.transform, &layer.clip);
+                bands[self.current].push_clip_layer(layer.fill, layer.transform, &layer.clip);
             }
             self.command_meta[self.current].push(CommandMeta::Push(layer.id));
         }
@@ -410,6 +412,7 @@ impl<S: PaintScene + Default> PaintScene for BandedScene<'_, S> {
 
     fn push_layer(
         &mut self,
+        fill: Fill,
         blend: impl Into<BlendMode>,
         alpha: f32,
         transform: Affine,
@@ -419,23 +422,10 @@ impl<S: PaintScene + Default> PaintScene for BandedScene<'_, S> {
     ) {
         let blend = blend.into();
         let clip = clip.into_path(CLIP_TOLERANCE);
-        if filter.as_ref().is_some_and(|filter| {
-            !filter.nodes().is_empty()
-                && filter
-                    .nodes()
-                    .iter()
-                    .all(|node| node.effect == anyrender::filters::FilterEffect::opacity(1.0))
-        }) && backdrop_filter.is_none()
-            && alpha == 1.0
-        {
-            let group = self.isolated_group();
-            self.promoted_layers.insert(self.next_layer_id, group);
-            self.push_clip_layer(transform, &clip);
-            return;
-        }
         let id = self.next_layer_id;
         self.next_layer_id += 1;
         self.band().push_layer(
+            fill,
             blend,
             alpha,
             transform,
@@ -445,6 +435,7 @@ impl<S: PaintScene + Default> PaintScene for BandedScene<'_, S> {
         );
         self.stack.push(OpenLayer {
             id,
+            fill,
             blend: Some(blend),
             alpha,
             transform,
@@ -455,13 +446,14 @@ impl<S: PaintScene + Default> PaintScene for BandedScene<'_, S> {
         self.record(CommandMeta::Push(id));
     }
 
-    fn push_clip_layer(&mut self, transform: Affine, clip: &impl Shape) {
+    fn push_clip_layer(&mut self, fill: Fill, transform: Affine, clip: &impl Shape) {
         let clip = clip.into_path(CLIP_TOLERANCE);
         let id = self.next_layer_id;
         self.next_layer_id += 1;
-        self.band().push_clip_layer(transform, &clip);
+        self.band().push_clip_layer(fill, transform, &clip);
         self.stack.push(OpenLayer {
             id,
+            fill,
             blend: None,
             alpha: 1.0,
             transform,
@@ -542,6 +534,7 @@ impl<S: PaintScene + Default> PaintScene for BandedScene<'_, S> {
         }
         if let Paint::Image(image) = &brush
             && image.sampler.quality != ImageQuality::Low
+            && !image.image.data.data().is_empty()
             && let Some((reduced, stretch)) = self
                 .images
                 .reduce(image.image, transform * brush_transform.unwrap_or_default())

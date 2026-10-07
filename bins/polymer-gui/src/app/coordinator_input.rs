@@ -361,7 +361,6 @@ impl ShellCoordinator {
         if let Some(state) = publication.api_state {
             self.notify_polymer(PolymerNotification::ControllerApiStateChanged(state));
         }
-        self.compositor.borrow_mut().request_overlay_repaint();
     }
 
     pub(super) fn publish_targets_for(&mut self, token: InstanceToken) {

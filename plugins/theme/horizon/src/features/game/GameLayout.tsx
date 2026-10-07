@@ -84,6 +84,7 @@ export function GameLayout(props: ParentProps) {
           if (!attach?.isConnected || attach.localName !== "tracked-surface") throw new Error(`Surface ${surface.index} is not ready`);
           return { ...surface, attach };
         });
+        navigator.clearImageMipChains();
         const instance = window.Polymer.emulator.launch({ ...plan, surfaces: attached } as LaunchOptions);
         shell.setModel("launch", instance);
         bind(instance);

@@ -1121,6 +1121,10 @@
     get: () => shellLocation,
     configurable: false,
   });
+  const shellNavigator = Object.freeze(Object.create(globalThis.navigator, {
+    clearImageMipChains: { value: function clearImageMipChains() { ops.op_dom_clear_image_mip_chains(); }, enumerable: true },
+  }));
+  Object.defineProperty(globalThis, "navigator", { value: shellNavigator, configurable: false });
   Object.defineProperty(globalThis, "CSS", { value: Object.freeze({
     escape(value) { return String(value).replace(/[^a-zA-Z0-9_-]/g, (character) => `\\${character}`); },
   }) });

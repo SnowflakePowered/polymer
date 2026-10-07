@@ -289,8 +289,8 @@ impl<'a> DocumentProtocol<'a> {
             NodeData::Document(_) => (DOCUMENT_NODE, "#document".into(), "".into(), "".into()),
             NodeData::Element(element) | NodeData::AnonymousBlock(element) => (
                 ELEMENT_NODE,
-                element.name.local.as_ref().to_ascii_uppercase(),
-                element.name.local.as_ref().to_owned(),
+                element.name.local.to_ascii_uppercase(),
+                element.name.local.to_string(),
                 String::new(),
             ),
             NodeData::Text(text) => (TEXT_NODE, "#text".into(), "".into(), text.content.clone()),
@@ -359,7 +359,7 @@ impl<'a> DocumentProtocol<'a> {
             .flatten()
             .flat_map(|attribute| {
                 [
-                    attribute.name.local.as_ref().to_owned(),
+                    attribute.name.local.to_string(),
                     attribute.value.clone(),
                 ]
             })

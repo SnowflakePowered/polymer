@@ -27,11 +27,11 @@ cursor-icon = "1.2.0"
 winit.workspace = true
 egui = "0.29.1"
 egui-winit = "0.29.1"
-anyrender = "0.13.0"
-anyrender_vello = "0.14.0"
+anyrender = "0.14.0"
+anyrender_vello = "0.15.0"
 kurbo = "0.13.1"
-vello = "0.10"
-wgpu-hal = { version = "29", features = ["metal"] }
+vello = "0.11"
+wgpu-hal = { version = "30", features = ["metal"] }
 tracing.workspace = true
 
 [dev-dependencies]

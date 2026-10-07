@@ -211,7 +211,15 @@ impl Worker {
             worker.refresh(true);
             worker.drain_commands();
             worker.publish();
-            thread::sleep(worker.poll_interval);
+            let interval = if worker.pads.is_empty() {
+                worker
+                    .next_refresh
+                    .saturating_duration_since(Instant::now())
+                    .max(worker.poll_interval)
+            } else {
+                worker.poll_interval
+            };
+            thread::sleep(interval);
         }
         for pad in worker.pads.drain(..) {
             if pad.active {
