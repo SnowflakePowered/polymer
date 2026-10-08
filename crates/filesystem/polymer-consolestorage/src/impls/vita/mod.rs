@@ -1,5 +1,6 @@
 //! Vita storage uses native device directories beneath one volume root.
 //! Save volumes use one fixed guest user, independently of Polymer profiles.
+pub(super) mod composer;
 mod depots;
 mod nand;
 mod save_repo;

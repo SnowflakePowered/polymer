@@ -72,6 +72,17 @@ impl<'r> ArtifactRepository<'r> {
             .collect()
     }
 
+    pub(in crate::storage::git) fn records_at(
+        &self,
+        tip: gix::ObjectId,
+    ) -> Result<Vec<ArtifactRecord>, Error> {
+        let root = GitVolumeStorage::root_tree(self.repo, Some(tip))?;
+        self.trees(&root)?
+            .iter()
+            .map(|(_, tree)| tree.record())
+            .collect()
+    }
+
     pub(super) fn summaries(&self) -> Result<Vec<ArtifactSummary>, Error> {
         self.trees(&self.root()?)?
             .iter()

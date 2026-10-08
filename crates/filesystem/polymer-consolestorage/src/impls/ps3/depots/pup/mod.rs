@@ -57,10 +57,16 @@ impl Depot for Ps3PupDepot {
     }
     async fn install<N: VirtualNand + ?Sized>(
         self,
-        nand: &N,
+        _nand: &N,
         _keys: &dyn crate::keys::KeyReader,
         context: &crate::installable::InstallContext,
     ) -> Result<impl Installable, Error> {
-        install::PupInstall::new(&self, nand.root(), context).await
+        let stage = crate::installable::ComponentStage::new()?;
+        let inner = install::PupInstall::new(&self, stage.storage.clone(), context).await?;
+        Ok(stage.install(
+            inner,
+            super::super::composer::Ps3Composer::firmware(),
+            serde_json::Value::Null,
+        ))
     }
 }

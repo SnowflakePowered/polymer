@@ -28,6 +28,7 @@ use crate::{
 mod artifact;
 mod checkout;
 mod commit;
+mod component;
 mod registry;
 mod repository;
 mod traits;

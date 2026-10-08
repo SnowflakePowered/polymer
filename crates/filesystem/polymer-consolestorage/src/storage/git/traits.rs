@@ -248,6 +248,9 @@ impl VolumeStorage for GitVolumeStorage {
     fn is_dirty(&self) -> Result<bool, Error> {
         let _guard = self.inner.platform.0.operation.lock();
         let repo = self.inner.platform.repository().to_thread_local();
+        if self.has_component_histories() {
+            component::ComponentHistory::new(self, &repo).recover()?;
+        }
         let tip = Self::tip_in(&repo, &self.ref_name())?;
         let root = Self::root_tree(&repo, tip)?;
         if !self.inner.working.read().is_empty() {
@@ -261,8 +264,11 @@ impl VolumeStorage for GitVolumeStorage {
             return Err(Error::Unsupported("Only NANDs support recovery".into()));
         }
         let _guard = self.inner.platform.0.operation.lock();
-        let mut state = self.inner.working.write();
         let repo = self.inner.platform.repository().to_thread_local();
+        if self.has_component_histories() {
+            component::ComponentHistory::new(self, &repo).recover()?;
+        }
+        let mut state = self.inner.working.write();
         let tip = Self::tip_in(&repo, &self.ref_name())?.ok_or(Error::UnclaimedNand)?;
         self.refresh_checkout_locked(&repo, Some(tip))?;
         *state = WorkingState::default();
@@ -275,6 +281,7 @@ impl VolumeStorage for GitVolumeStorage {
 
     fn set_label<'a>(&'a self, label: Option<&'a str>) -> BoxFuture<'a, Result<(), Error>> {
         Box::pin(async move {
+            self.recover_components()?;
             let mut info = self.volume_info_sync()?.ok_or(Error::UnclaimedNand)?;
             if info.label.as_deref() == label {
                 return Ok(());
@@ -291,7 +298,10 @@ impl VolumeStorage for GitVolumeStorage {
     }
 
     fn volumeinfo(&self) -> BoxFuture<'_, Result<Option<VolumeInfo>, Error>> {
-        Box::pin(async move { self.volume_info_sync() })
+        Box::pin(async move {
+            self.recover_components()?;
+            self.volume_info_sync()
+        })
     }
 
     fn brand<'a>(

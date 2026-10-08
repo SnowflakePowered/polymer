@@ -8,7 +8,7 @@ use crate::installable::{
 };
 use crate::nand::VirtualNand;
 use crate::requires_structure;
-use crate::{Storage, VolumeStorage};
+use crate::{ArtifactComponent, Storage};
 
 /// A Wii U title dumped as a loose `code`/`content`/`meta` tree.
 pub struct WiiUMetaXmlDepot {
@@ -33,18 +33,31 @@ impl WiiUMetaXmlDepot {
 
     /// Where this title lives in a Wii U NAND.
     pub fn install_path(&self) -> String {
-        format!(
-            "usr/title/{:08x}/{:08x}",
-            (self.title_id >> 32) as u32,
-            self.title_id as u32
-        )
+        Self::component(self.title_id).root
     }
 
-    fn artifact(
-        self,
-        storage: &dyn VolumeStorage,
-        manifest: Vec<DepotFile>,
-    ) -> Result<Artifact, Error> {
+    pub(crate) fn component(id: u64) -> ArtifactComponent {
+        let title = match (id >> 32) as u32 {
+            0x0005000c | 0x0005000e => 0x0005000000000000 | (id & 0xffffffff),
+            _ => id,
+        };
+        ArtifactComponent {
+            id: format!("usr/title/{:08x}/{:08x}", (id >> 32) as u32, id as u32),
+            title: format!("{title:016x}"),
+            root: format!("usr/title/{:08x}/{:08x}", (id >> 32) as u32, id as u32),
+        }
+    }
+
+    pub(crate) fn title_kind(id: u64) -> DepotType {
+        match (id >> 32) as u32 {
+            0x0005000C => DepotType::AppContent,
+            0x0005000E => DepotType::AppUpdate,
+            0x00050000 | 0x00050002 => DepotType::App,
+            _ => DepotType::System,
+        }
+    }
+
+    fn artifact(self, storage: &dyn Storage, manifest: Vec<DepotFile>) -> Result<Artifact, Error> {
         let root = self.install_path();
         let path = format!("{root}/code/app.xml");
         let app: xml::AppXml =
@@ -145,28 +158,26 @@ impl Depot for WiiUMetaXmlDepot {
     }
 
     fn depot_type(&self) -> DepotType {
-        match (self.title_id >> 32) as u32 {
-            0x0005000C => DepotType::AppContent,
-            0x0005000E => DepotType::AppUpdate,
-            0x00050000 | 0x00050002 => DepotType::App,
-            _ => DepotType::System,
-        }
+        Self::title_kind(self.title_id)
     }
 
     async fn install<N: VirtualNand + ?Sized>(
         self,
-        nand: &N,
+        _nand: &N,
         _keys: &dyn crate::keys::KeyReader,
         context: &InstallContext,
     ) -> Result<impl Installable, Error> {
-        let storage = nand.root();
-        Ok(DirectoryInstall::new(
+        let stage = crate::installable::ComponentStage::new()?;
+        let storage = stage.storage.clone();
+        let component = Self::component(self.title_id);
+        let inner = DirectoryInstall::new(
             self.root.clone(),
             self.install_path(),
             storage.clone(),
             context,
             move |manifest| self.artifact(&*storage, manifest),
         )
-        .excluding("code/title.tik"))
+        .excluding("code/title.tik");
+        Ok(stage.install(inner, component, serde_json::Value::Null))
     }
 }

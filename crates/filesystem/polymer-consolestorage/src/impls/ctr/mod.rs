@@ -1,3 +1,4 @@
+pub(super) mod composer;
 pub mod depots;
 mod import;
 mod layout;

@@ -35,7 +35,7 @@ impl CiaDepot {
         &self.root
     }
 
-    fn title_kind(id: u64) -> DepotType {
+    pub(crate) fn title_kind(id: u64) -> DepotType {
         let category = (id >> 32) as u16;
         let nand = category & (0x10 | 0x01 | 0x8000) != 0 || id & 0x02 != 0;
         match category {
@@ -43,6 +43,25 @@ impl CiaDepot {
             0x008c => DepotType::AppContent,
             _ if nand && category & 0x8000 == 0 => DepotType::System,
             _ => DepotType::App,
+        }
+    }
+
+    pub(crate) fn component(id: u64) -> crate::ArtifactComponent {
+        let category = (id >> 32) as u16;
+        let nand = category & (0x10 | 0x01 | 0x8000) != 0 || id & 0x02 != 0;
+        let base = if nand {
+            Layout::NAND_TITLE.to_owned()
+        } else {
+            format!("{}/title", Layout::SD)
+        };
+        let title = match category {
+            0x000e | 0x008c => 0x0004000000000000 | (id & 0xffffffff),
+            _ => id,
+        };
+        crate::ArtifactComponent {
+            id: format!("{base}/{:08x}/{:08x}/content", id >> 32, id as u32),
+            title: format!("{title:016X}"),
+            root: format!("{base}/{:08x}/{:08x}/content", id >> 32, id as u32),
         }
     }
 
@@ -82,14 +101,7 @@ impl Depot for CiaDepot {
                 "CIA requires a 3DS title with present content".into(),
             ));
         }
-        let category = (id >> 32) as u16;
-        let nand = category & (0x10 | 0x01 | 0x8000) != 0 || id & 0x02 != 0;
-        let base = if nand {
-            Layout::NAND_TITLE.to_owned()
-        } else {
-            format!("{}/title", Layout::SD)
-        };
-        let root = format!("{base}/{:08x}/{:08x}/content", id >> 32, id as u32);
+        let root = Self::component(id).root;
         let content_root = if archive
             .tmd()
             .contents()
@@ -186,6 +198,11 @@ impl Depot for CiaDepot {
             Err(crate::keys::KeyError::NotFound(_)) => None,
             Err(error) => return Err(Error::Unsupported(error.to_string())),
         };
-        install::CiaInstall::new(&self, nand.root(), seed, context).await
+        let stage = crate::installable::ComponentStage::new()?;
+        let component = Self::component(self.title_id);
+        let inner =
+            install::CiaInstall::new(&self, nand.root(), stage.storage.clone(), seed, context)
+                .await?;
+        Ok(stage.install(inner, component, serde_json::Value::Null))
     }
 }

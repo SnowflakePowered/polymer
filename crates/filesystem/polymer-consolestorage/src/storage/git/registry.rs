@@ -13,7 +13,60 @@ impl GitArtifactRegistry {
 }
 
 impl ArtifactRegistry for GitArtifactRegistry {
+    fn install_component<'a>(
+        &'a self,
+        component: &'a crate::ArtifactComponent,
+        metadata: &'a serde_json::Value,
+        artifact: &'a Artifact,
+        source: Arc<dyn Storage>,
+        context: &'a InstallContext,
+    ) -> BoxFuture<'a, Result<(), Error>> {
+        Box::pin(async move {
+            let storage = self.storage();
+            let component = component.clone();
+            let metadata = metadata.clone();
+            let artifact = artifact.clone();
+            context
+                .spawn_blocking(move |context| {
+                    let _guard = storage.inner.platform.0.operation.lock();
+                    let repo = storage.inner.platform.repository().to_thread_local();
+                    component::ComponentHistory::new(&storage, &repo)
+                        .install(&component, &metadata, &artifact, &*source, context)
+                })
+                .await
+                .map_err(|error| Error::Unsupported(format!("component worker failed: {error}")))?
+        })
+    }
+
+    fn history<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<crate::ArtifactRevision>, Error>> {
+        Box::pin(async move {
+            let storage = self.storage();
+            if !storage.has_component_histories() {
+                return Err(Error::Unsupported("component history".into()));
+            }
+            let _guard = self.0.platform.0.operation.lock();
+            let repo = self.0.platform.repository().to_thread_local();
+            component::ComponentHistory::new(&storage, &repo).history(id)
+        })
+    }
+
+    fn restore<'a>(&'a self, id: &'a str, revision: &'a str) -> BoxFuture<'a, Result<(), Error>> {
+        Box::pin(async move {
+            let storage = self.storage();
+            if !storage.has_component_histories() {
+                return Err(Error::Unsupported("component restore".into()));
+            }
+            let _guard = self.0.platform.0.operation.lock();
+            let repo = self.0.platform.repository().to_thread_local();
+            component::ComponentHistory::new(&storage, &repo).restore(id, revision)
+        })
+    }
+
     fn revision(&self) -> Result<String, Error> {
+        self.storage().recover_components()?;
         let repo = self.0.platform.repository().to_thread_local();
         let reference = self.storage().ref_name();
         Ok(ArtifactRepository::new(&repo, &reference)
@@ -30,6 +83,10 @@ impl ArtifactRegistry for GitArtifactRegistry {
                 ));
             }
             let repo = self.0.platform.repository().to_thread_local();
+            let storage = self.storage();
+            if storage.has_component_histories() {
+                return component::ComponentHistory::new(&storage, &repo).affected(ids);
+            }
             let reference = self.storage().ref_name();
             let artifacts = ArtifactRepository::new(&repo, &reference);
             let Some(tip) = artifacts.tip()? else {
@@ -59,6 +116,11 @@ impl ArtifactRegistry for GitArtifactRegistry {
         context: &'a crate::installable::InstallContext,
     ) -> BoxFuture<'a, Result<(), Error>> {
         Box::pin(async move {
+            if self.storage().has_component_histories() {
+                return Err(Error::Unsupported(
+                    "artifacts for this NAND must be installed as staged components".into(),
+                ));
+            }
             self.0.working.write().metadata.artifacts.insert(
                 artifact.id().to_owned(),
                 Some(ArtifactRecord::from(artifact)),
@@ -77,6 +139,7 @@ impl ArtifactRegistry for GitArtifactRegistry {
 
     fn summaries(&self) -> BoxFuture<'_, Result<Vec<ArtifactSummary>, Error>> {
         Box::pin(async move {
+            self.storage().recover_components()?;
             let repo = self.0.platform.repository().to_thread_local();
             let reference = self.storage().ref_name();
             let mut summaries = ArtifactRepository::new(&repo, &reference).summaries()?;
@@ -87,6 +150,7 @@ impl ArtifactRegistry for GitArtifactRegistry {
 
     fn artifact<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<Option<Artifact>, Error>> {
         Box::pin(async move {
+            self.storage().recover_components()?;
             let repo = self.0.platform.repository().to_thread_local();
             let reference = self.storage().ref_name();
             ArtifactRepository::new(&repo, &reference)
@@ -98,6 +162,7 @@ impl ArtifactRegistry for GitArtifactRegistry {
 
     fn contains<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<bool, Error>> {
         Box::pin(async move {
+            self.storage().recover_components()?;
             let repo = self.0.platform.repository().to_thread_local();
             let reference = self.storage().ref_name();
             Ok(ArtifactRepository::new(&repo, &reference)
@@ -123,6 +188,9 @@ impl ArtifactRegistry for GitArtifactRegistry {
             }
             let repo = self.0.platform.repository().to_thread_local();
             let storage = self.storage();
+            if storage.has_component_histories() {
+                return component::ComponentHistory::new(&storage, &repo).uninstall(ids);
+            }
             let reference = storage.ref_name();
             let artifacts = ArtifactRepository::new(&repo, &reference);
             let Some(tip) = artifacts.tip()? else {

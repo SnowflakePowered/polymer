@@ -70,19 +70,28 @@ impl Handler<Delete> for StorageActor {
         Delete { kind, platform, id }: Delete,
         _: &mut Context<Self>,
     ) -> Self::Result {
+        let catalog = self.catalog.clone();
         self.execute(move |manager, _| async move {
             let _lease = polymer_vfs::ExclusiveResourceKey::Resource(Self::parse(&id)?)
                 .acquire()
                 .map_err(StorageError::from_display)?;
+            let kind = kind
+                .parse::<StorageKind>()
+                .map_err(StorageError::from_display)?;
+            let id = Self::parse(&id)?;
             manager
-                .delete(
-                    kind.parse::<StorageKind>()
-                        .map_err(StorageError::from_display)?,
-                    &platform,
-                    Self::parse(&id)?,
-                )
+                .delete(kind, &platform, id)
                 .await
-                .map_err(StorageError::from_display)
+                .map_err(StorageError::from_display)?;
+            if kind == StorageKind::Nand
+                && let Some(catalog) = catalog
+            {
+                catalog
+                    .retain_artifacts(&platform, id, &[])
+                    .await
+                    .map_err(StorageError::from_display)?;
+            }
+            Ok(())
         })
     }
 }

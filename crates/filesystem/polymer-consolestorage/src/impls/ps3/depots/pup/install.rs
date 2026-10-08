@@ -3,7 +3,7 @@ use crate::installable::DepotFile;
 use crate::installable::StorageWriter;
 use crate::installable::artifacts::Artifact;
 use crate::installable::{InstallContext, Installable};
-use crate::{Error, VolumeStorage};
+use crate::{Error, Storage};
 use parking_lot::Mutex;
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -13,7 +13,7 @@ use std::sync::Arc;
 pub(super) struct PupInstall {
     extraction: Arc<Mutex<PupExtraction>>,
     version: String,
-    storage: Arc<dyn VolumeStorage>,
+    storage: Arc<dyn Storage>,
 }
 
 struct PupExtraction {
@@ -22,12 +22,12 @@ struct PupExtraction {
     manifest: Vec<DepotFile>,
     paths: std::collections::BTreeSet<String>,
     index: usize,
-    storage: Arc<dyn VolumeStorage>,
+    storage: Arc<dyn Storage>,
 }
 impl PupInstall {
     pub async fn new(
         depot: &Ps3PupDepot,
-        storage: Arc<dyn VolumeStorage>,
+        storage: Arc<dyn Storage>,
         context: &InstallContext,
     ) -> Result<Self, Error> {
         let depot = depot.clone();
@@ -216,22 +216,6 @@ impl Installable for PupInstall {
             )],
             None,
         )?;
-        // A firmware image replaces the previous image. Remove only files owned
-        // by its previous artifact, preserving unrelated NAND contents.
-        if let Some(previous) = self.storage.artifacts().artifact(artifact.id()).await? {
-            for file in previous.manifest() {
-                if !artifact
-                    .manifest()
-                    .iter()
-                    .any(|new| new.path() == file.path())
-                {
-                    let path = file.path().to_string_lossy();
-                    if path.starts_with("dev_flash/") && self.storage.exists(&path) {
-                        self.storage.remove(&path)?;
-                    }
-                }
-            }
-        }
         Ok(artifact)
     }
 }

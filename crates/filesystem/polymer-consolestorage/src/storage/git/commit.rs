@@ -70,7 +70,21 @@ impl GitVolumeStorage {
         let _guard = self.inner.platform.0.operation.lock();
         let reference = self.ref_name();
         let repo = self.inner.platform.repository().to_thread_local();
+        if Self::tip_in(&repo, &self.kind().deletion_ref(self.id()))?.is_some() {
+            return Err(Error::HistoryConflict("volume deletion is pending".into()));
+        }
         let parent = Self::tip_in(&repo, &reference)?;
+        if self.has_component_histories()
+            && Self::tip_in(
+                &repo,
+                &component::ComponentHistory::new(self, &repo).journal_ref(),
+            )?
+            .is_some()
+        {
+            return Err(Error::HistoryConflict(
+                "component transaction requires recovery".into(),
+            ));
+        }
         let mut state = self.inner.working.write();
         if extra_parent.is_none() && state.is_empty() {
             return Ok(None);

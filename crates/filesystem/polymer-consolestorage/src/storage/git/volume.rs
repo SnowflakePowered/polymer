@@ -94,6 +94,7 @@ impl GitVolumeStorage {
     }
 
     pub fn artifact_summary(&self, id: &str) -> Result<Option<ArtifactSummary>, Error> {
+        self.recover_components()?;
         let repo = self.inner.platform.repository().to_thread_local();
         let reference = self.ref_name();
         ArtifactRepository::new(&repo, &reference)

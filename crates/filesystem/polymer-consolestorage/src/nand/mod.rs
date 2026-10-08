@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+pub mod composition;
+
 use async_trait::async_trait;
 use uuid::Uuid;
 

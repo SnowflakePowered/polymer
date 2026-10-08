@@ -9,7 +9,7 @@ use super::ncch::NcchHeader;
 use crate::impls::ctr::smdh::ExtdataIcon;
 use crate::installable::artifacts::{Artifact, ArtifactEntrypoint};
 use crate::installable::{DepotFile, DepotType, EmbeddedIcon, IconHint};
-use crate::{Error, VolumeStorage};
+use crate::{Error, Storage};
 use polymer_banner::ctr::CtrBanner;
 
 pub(super) struct InstalledTitle;
@@ -64,7 +64,7 @@ impl TmdHeader {
 impl InstalledTitle {
     pub fn read(
         depot: &CiaDepot,
-        storage: &dyn VolumeStorage,
+        storage: &dyn Storage,
         manifest: Vec<DepotFile>,
     ) -> Result<Artifact, Error> {
         let id = format!("{:016X}", depot.title_id);
@@ -120,7 +120,7 @@ impl InstalledTitle {
         )
     }
 
-    pub(super) fn tmd(depot: &CiaDepot, storage: &dyn VolumeStorage) -> Result<Vec<u8>, Error> {
+    pub(super) fn tmd(depot: &CiaDepot, storage: &dyn Storage) -> Result<Vec<u8>, Error> {
         let path = format!("{}/00000000.tmd", depot.title_root);
         let mut bytes = Vec::new();
         storage
@@ -133,7 +133,7 @@ impl InstalledTitle {
 
     /// A decrypted ExeFS file of an installed NCCH content.
     fn exefs_file(
-        storage: &dyn VolumeStorage,
+        storage: &dyn Storage,
         path: &str,
         name: [u8; 8],
     ) -> Result<Option<Vec<u8>>, Error> {

@@ -81,12 +81,7 @@ export function createConsoleStorage(library) {
         planRemoval: (ids) => op_consolestorage_plan_removal(this.platform, this.id, ids),
         uninstall: async (plan) => {
           const artifacts = await op_consolestorage_uninstall(this.platform, this.id, plan.requested, plan.revision);
-          await Promise.all(plan.requested.map(async (id) => {
-            const launchable = await library.Library.launchables.find(`artifact://${this.platform}/${this.id}/${id}`);
-            if (launchable == null) return;
-            await library.Library.launchables.delete(launchable.id);
-            library.contentChanged({ rootBinaryId: launchable.parentBinaryId ?? launchable.binaryId });
-          }));
+          library.contentChanged({ platform: this.platform });
           return artifacts;
         },
       });
@@ -125,6 +120,7 @@ export function createConsoleStorage(library) {
     async delete() {
       const data = storageData.get(this);
       await op_consolestorage_delete(data.kind, data.platform, data.id);
+      if (data.kind === "nand") library.contentChanged({ platform: data.platform });
       deleted.add(this);
       storages.delete(this);
     }

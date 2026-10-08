@@ -23,7 +23,9 @@ pub use impls::battery::{
 };
 
 pub use save_repo::SaveRepo;
-pub use storage::manifest::{ArtifactRegistry, ArtifactSummary, VolumeInfo};
+pub use storage::manifest::{
+    ArtifactComponent, ArtifactRegistry, ArtifactRevision, ArtifactSummary, VolumeInfo,
+};
 pub use storage::memorycard::{MemoryCard, MemoryCardView, Reconcile};
 pub use storage::{
     BoxFuture, ChangeSignal, ComposedStorage, DirEntry, DirectoryStorage, EntryKind,
