@@ -14,7 +14,6 @@ pub(crate) struct ShellApplication {
     commands: FrontendCommands,
     exit_requested: bool,
     error: Option<Box<dyn Error>>,
-    next_runtime_poll: Instant,
 }
 
 impl ShellApplication {
@@ -40,7 +39,6 @@ impl ShellApplication {
             commands,
             exit_requested: false,
             error: None,
-            next_runtime_poll: Instant::now(),
         }
     }
 
@@ -93,18 +91,16 @@ impl ShellApplication {
                 Err(error) => self.error = Some(error),
             }
         }
-        let now = Instant::now();
-        let poll_runtime = now >= self.next_runtime_poll;
-        if poll_runtime {
-            self.next_runtime_poll = now + SHELL_RUNTIME_POLL_INTERVAL;
-            // Actors only run during the native/Actix phase. Move the coordinator
-            // out for Deno's separate runtime turn so no RefCell borrow crosses
-            // an await, then return it before the next actor turn.
+        let reload = self
+            .state
+            .borrow()
+            .as_ref()
+            .is_some_and(|state| state.shell.reload_pending());
+        if reload {
+            // Move the coordinator out so no RefCell borrow crosses the
+            // reload's await, then return it before the next actor turn.
             let state = self.state.borrow_mut().take();
             if let Some(mut state) = state {
-                if state.shell_dom.poll_runtime().await && state.shell_dom.needs_paint() {
-                    state.refresh_shell();
-                }
                 state.reload_shell(self.commands.clone()).await;
                 *self.state.borrow_mut() = Some(state);
             }
@@ -194,7 +190,7 @@ impl ShellApplication {
             UserEvent::Window(WindowCommand::WakeCapture) => state.process_capture(),
             UserEvent::Window(WindowCommand::CompositorTick) => state.handle_compositor_tick(),
             UserEvent::Window(WindowCommand::ShellRasterReady) => state.draw_pending_chrome(),
-            UserEvent::Window(WindowCommand::RedrawShell) => state.refresh_shell(),
+            UserEvent::Window(WindowCommand::ShellUpdated) => state.drain_shell(),
             UserEvent::Window(WindowCommand::SetCursor(icon)) => {
                 state.compositor.borrow_mut().set_cursor(icon)
             }
@@ -267,8 +263,7 @@ impl ShellApplication {
             state.open_inspector();
             return false;
         }
-        let mut consumed = overlay_consumed && !keyboard_owned_by_game;
-        let mut ui_prevented = false;
+        let consumed = overlay_consumed && !keyboard_owned_by_game;
         if consumed {
             // egui took this event, so it is being interacted with and gets to
             // set its own repaint rate until the interaction settles.
@@ -285,9 +280,7 @@ impl ShellApplication {
                 repeat,
             } = &event
         {
-            ui_prevented =
-                state.shell_keyboard(*pressed, logical_key.clone(), code.clone(), *repeat);
-            consumed = ui_prevented;
+            state.shell_keyboard(*pressed, logical_key.clone(), code.clone(), *repeat);
         }
         match event {
             ShellWindowEvent::CloseRequested => unreachable!(),
@@ -309,15 +302,6 @@ impl ShellApplication {
                 }
             }
             ShellWindowEvent::FocusLost => state.handle_focus_lost(),
-            ShellWindowEvent::Keyboard {
-                physical_key,
-                pressed,
-                ..
-            } if state.input.keyboard_target(overlay_consumed, ui_prevented)
-                == KeyboardTarget::Game =>
-            {
-                state.route_keyboard_to_game(physical_key, pressed);
-            }
             ShellWindowEvent::Modifiers {
                 alt,
                 shift,
@@ -330,9 +314,7 @@ impl ShellApplication {
             {
                 state.handle_cursor_moved(x, y, consumed);
             }
-            ShellWindowEvent::CursorLeft if state.shell_dom.clear_pointer_hover() => {
-                state.compositor.borrow_mut().request_redraw();
-            }
+            ShellWindowEvent::CursorLeft => state.shell.input(None, ShellInput::PointerLeft),
             ShellWindowEvent::MouseInput { button, pressed }
                 if !consumed || state.input.has_active_pointer_sequence() =>
             {
@@ -345,13 +327,7 @@ impl ShellApplication {
                 state.handle_mouse_wheel(horizontal, vertical);
             }
             ShellWindowEvent::Ime(event) if !consumed => state.handle_ime(event),
-            ShellWindowEvent::RedrawRequested => {
-                // Paint shell chrome at most once for the pointer samples Winit
-                // coalesced into this redraw. This keeps expensive Blitz
-                // resolve/paint work out of the mouse-message hot path.
-                state.refresh_dirty_shell();
-                state.draw_overlay();
-            }
+            ShellWindowEvent::RedrawRequested => state.draw_overlay(),
             _ => {}
         }
         false
@@ -396,16 +372,11 @@ impl ShellApplication {
             let entered = state.profile.enter();
             state.publish_input_state();
             state.profile.record(TurnPhase::Input, entered);
+            deadline = deadline.min(state.input.next_publication());
             state.poll_target();
-            if state.shell_dom.needs_paint() {
-                state.refresh_shell();
-                deadline = deadline.min(now + Duration::from_millis(16));
-            }
-            if state.shell_dom.is_active() {
-                // Deno owns browser timers, fetch, WebSockets, promises, and
-                // inspector traffic. Return to the Tokio loop regularly so it
-                // can advance them even when the window is otherwise idle.
-                deadline = deadline.min(now + Duration::from_millis(16));
+            state.release_held_input(now);
+            if let Some(held) = state.held.deadline() {
+                deadline = deadline.min(held);
             }
             if state.compositor.borrow_mut().overlay_repaint_due(now) {
                 state.compositor.borrow_mut().request_redraw();

@@ -4,7 +4,7 @@
 //! models are contained here; the shell coordinator only forwards commands.
 
 use crate::{
-    launch::AttachedLaunchPlan, shell_document::GameViewStyle, shell_dom::TrackedSurfaceLayout,
+    launch::AttachedLaunchPlan, shell::document::GameViewStyle, shell::protocol::TrackedSurfaceLayout,
 };
 use polymer_composition::{CompositorHandle, SurfaceLayer as CapturedSurfaceSnapshot};
 use polymer_pluginhost::controller::AttachAutomation;
@@ -47,7 +47,7 @@ impl CapturedSurface {
 }
 
 struct ActivePresentation {
-    token: crate::shell_runtime::InstanceToken,
+    token: crate::shell::runtime::InstanceToken,
     options: AttachedLaunchPlan,
     webrtc: bool,
     controller_session: Option<polymer_pluginhost::controller::ControllerSession>,
@@ -85,7 +85,7 @@ pub(crate) enum GameHostCaptureEvent {
 }
 
 pub(crate) struct FinishedGame {
-    pub token: crate::shell_runtime::InstanceToken,
+    pub token: crate::shell::runtime::InstanceToken,
     pub connections: Vec<u64>,
     pub finalization_error: Option<String>,
 }
@@ -168,14 +168,14 @@ impl GameHost {
         self.composition_revision = self.composition_revision.wrapping_add(1);
     }
 
-    pub fn is_active(&self, token: crate::shell_runtime::InstanceToken) -> bool {
+    pub fn is_active(&self, token: crate::shell::runtime::InstanceToken) -> bool {
         self.session.is_active(token.0)
     }
 
-    pub fn active_token(&self) -> Option<crate::shell_runtime::InstanceToken> {
+    pub fn active_token(&self) -> Option<crate::shell::runtime::InstanceToken> {
         self.session
             .active_token()
-            .map(crate::shell_runtime::InstanceToken)
+            .map(crate::shell::runtime::InstanceToken)
     }
 
     pub fn has_active_game(&self) -> bool {
@@ -257,10 +257,6 @@ impl GameHost {
 
     pub fn take_shell_refresh_request(&mut self) -> bool {
         std::mem::take(&mut self.shell_refresh_pending)
-    }
-
-    pub fn clear_shell_refresh_request(&mut self) {
-        self.shell_refresh_pending = false;
     }
 }
 

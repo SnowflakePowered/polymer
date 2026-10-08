@@ -1,6 +1,6 @@
 //! Outbound emulator-instance event payloads consumed by the shell UI.
 
-use crate::{game_host::GameSurfaceTarget, shell_runtime::InstanceToken};
+use crate::{game_host::GameSurfaceTarget, shell::runtime::InstanceToken};
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]

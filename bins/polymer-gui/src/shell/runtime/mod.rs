@@ -6,9 +6,10 @@
 pub(crate) mod deno;
 mod events;
 
-use crate::shell_document::SharedShellDocument;
+use crate::shell::document::SharedShellDocument;
 use blitz_dom::BaseDocument;
 use deno::EventResult;
+pub(crate) use events::CoalescedPointer;
 use serde_json::Value;
 use std::error::Error;
 
@@ -94,13 +95,19 @@ impl ShellRuntime {
         event: &blitz_traits::events::DomEventData,
         bubbles: bool,
         cancelable: bool,
+        samples: &[CoalescedPointer],
     ) -> EventResult {
-        let (event_class, init) = events::event_init(event);
+        let (event_class, mut init) = events::event_init(event);
+        if matches!(event, blitz_traits::events::DomEventData::PointerMove(_))
+            && !samples.is_empty()
+        {
+            events::attach_samples(&mut init, samples);
+        }
         self.dispatch_dom(kind, target, event_class, &init, bubbles, cancelable)
     }
 
-    pub async fn poll_event_loop(&mut self) {
-        if let Err(error) = self.runtime.poll_event_loop().await {
+    pub fn poll_event_loop(&mut self, cx: &mut std::task::Context<'_>) {
+        if let std::task::Poll::Ready(Err(error)) = self.runtime.poll_event_loop(cx) {
             tracing::error!("polymer: polling shell JavaScript failed: {error}");
         }
     }
@@ -122,7 +129,7 @@ impl ShellRuntime {
         }
     }
 
-    pub fn reload_requested(&mut self) -> bool {
+    pub fn reload_requested(&self) -> bool {
         self.runtime.reload_requested()
     }
 

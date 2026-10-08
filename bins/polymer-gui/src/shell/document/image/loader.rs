@@ -10,7 +10,7 @@ use std::sync::{
 
 const MAX_DIMENSION: u32 = 8192;
 
-pub(in crate::shell_document) struct ImageLoader {
+pub(in crate::shell::document) struct ImageLoader {
     net: Arc<dyn NetProvider>,
     waker: Arc<dyn NetWaker>,
     doc_id: usize,
@@ -20,7 +20,7 @@ pub(in crate::shell_document) struct ImageLoader {
 }
 
 impl ImageLoader {
-    pub(in crate::shell_document) fn new(
+    pub(in crate::shell::document) fn new(
         net: Arc<dyn NetProvider>,
         waker: Arc<dyn NetWaker>,
         doc_id: usize,
@@ -36,7 +36,7 @@ impl ImageLoader {
         }
     }
 
-    pub(in crate::shell_document) fn set_scale_factor(&self, scale_factor: f32) {
+    pub(in crate::shell::document) fn set_scale_factor(&self, scale_factor: f32) {
         self.scale_factor
             .store(scale_factor.to_bits(), Ordering::Relaxed);
     }

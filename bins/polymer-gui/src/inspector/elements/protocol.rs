@@ -1,53 +1,30 @@
 //! Blitz-backed DOM, Page, and Schema protocol handling.
 
 use super::{css::Stylesheets, geometry::NodeGeometry};
-use crate::shell_document::ShellDocument;
-use actix::{Actor, Context, Handler, Message};
+use crate::shell::document::ShellDocument;
 use blitz_dom::{BaseDocument, Node, NodeData, NodeId};
 use serde_json::{Value, json};
-use std::{cell::RefCell, rc::Weak};
 
 const DOCUMENT_NODE: u64 = 9;
 const ELEMENT_NODE: u64 = 1;
 const TEXT_NODE: u64 = 3;
 const COMMENT_NODE: u64 = 8;
 
-#[derive(Message)]
-#[rtype(result = "Result<Reply, ProtocolError>")]
-pub(super) struct Dispatch {
+pub(crate) struct Dispatch {
     pub(super) request: Value,
     pub(super) target_url: String,
     pub(super) include_whitespace: bool,
 }
 
-/// Runs on the GUI's Actix executor. The weak reference leaves document
-/// ownership and destruction with the shell; no DOM borrow survives a handler.
-pub(super) struct InspectorProtocol {
-    pub(super) document: Weak<RefCell<ShellDocument>>,
-}
-
-impl Actor for InspectorProtocol {
-    type Context = Context<Self>;
-}
-
-impl Handler<Dispatch> for InspectorProtocol {
-    type Result = Result<Reply, ProtocolError>;
-
-    fn handle(&mut self, message: Dispatch, _ctx: &mut Self::Context) -> Self::Result {
-        let document = self
-            .document
-            .upgrade()
-            .ok_or_else(|| ProtocolError::unavailable("The Blitz document is not active"))?;
-        let document = document.borrow();
-        let protocol = DocumentProtocol::new(
-            document.runtime_context().0,
-            &message.target_url,
-            message.include_whitespace,
-        );
-        Ok(Reply {
-            result: protocol.handle(&message.request),
-            events: protocol.events_for(&message.request),
-        })
+impl Dispatch {
+    /// Answers the request on the shell thread, which owns the document.
+    pub(crate) fn handle(&self, document: &ShellDocument) -> Reply {
+        let protocol =
+            DocumentProtocol::new(document.base(), &self.target_url, self.include_whitespace);
+        Reply {
+            result: protocol.handle(&self.request),
+            events: protocol.events_for(&self.request),
+        }
     }
 }
 #[derive(Debug)]

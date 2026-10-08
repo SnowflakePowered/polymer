@@ -1,6 +1,6 @@
 //! Save and restore remain sequential through plugin completion and metadata commit.
 use super::StateActor;
-use crate::shell_runtime::InstanceToken;
+use crate::shell::runtime::InstanceToken;
 use actix::{AtomicResponse, Context, Handler, WrapFuture};
 use polymer_runtime::frontend::emulator::{ChangeDisc, Close, ResumeState, SaveState};
 use serde_json::Value;

@@ -68,13 +68,18 @@ impl NetProvider for ShellNetProvider {
 
 pub(super) struct NativeShellProvider {
     proxy: crate::window_manager::EventLoopProxy<crate::app::UserEvent>,
+    shell: crate::shell::protocol::ShellChannel,
     clipboard: Mutex<Option<arboard::Clipboard>>,
 }
 
 impl NativeShellProvider {
-    pub(super) fn new(proxy: crate::window_manager::EventLoopProxy<crate::app::UserEvent>) -> Self {
+    pub(super) fn new(
+        proxy: crate::window_manager::EventLoopProxy<crate::app::UserEvent>,
+        shell: crate::shell::protocol::ShellChannel,
+    ) -> Self {
         Self {
             proxy,
+            shell,
             clipboard: Mutex::new(arboard::Clipboard::new().ok()),
         }
     }
@@ -88,7 +93,7 @@ impl NativeShellProvider {
 
 impl ShellProvider for NativeShellProvider {
     fn request_redraw(&self) {
-        self.send(crate::window_manager::WindowCommand::RedrawShell);
+        self.shell.wake();
     }
 
     fn set_cursor(&self, icon: Option<cursor_icon::CursorIcon>) {

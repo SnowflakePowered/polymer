@@ -8,7 +8,7 @@ use style::properties::{PropertyDeclarationId, PropertyId};
 
 use super::scroll::ScrollSnapshot;
 use super::state::BridgeState;
-use crate::shell_document::SharedShellDocument;
+use crate::shell::document::SharedShellDocument;
 
 pub(crate) trait ScriptNodeId {
     fn from_script(id: f64) -> Self;

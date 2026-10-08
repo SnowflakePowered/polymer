@@ -4,7 +4,7 @@ impl ShellCoordinator {
     pub(super) fn handle_compositor_tick(&mut self) {
         self.compositor.borrow_mut().clear_clock_tick();
         self.compositor.borrow_mut().record_clock();
-        self.refresh_pending_shell();
+        self.forward_shell_refresh_request();
         self.present_pending_surfaces(PRESENT_PERMIT_WAIT);
         // A DXGI latency handle can remain signalled after the available frame
         // has been consumed. Stop waiting until capture publishes more work so
@@ -25,7 +25,6 @@ impl ShellCoordinator {
         // per captured frame.
         self.game_host.begin_capture_drain();
         let mut changed = false;
-        let mut shell_refresh_required = false;
         let mut processed = 0;
         while processed < MAX_CAPTURE_EVENTS_PER_TURN {
             let event = self.game_host.try_capture_event();
@@ -43,8 +42,7 @@ impl ShellCoordinator {
                                 self.cancel_pointer_connection(connection);
                             }
                             self.pending_layouts.clear();
-                            self.shell_dom.invalidate();
-                            shell_refresh_required = true;
+                            self.shell.send(ShellCommand::Invalidate);
                             changed = true;
                         }
                         Err(error) => {
@@ -70,7 +68,6 @@ impl ShellCoordinator {
                         surface.target_index,
                         surface.extent,
                     );
-                    shell_refresh_required = true;
                     changed = true;
                 }
                 GameHostCaptureEvent::Rejected { connection, error } => {
@@ -97,11 +94,7 @@ impl ShellCoordinator {
                 }
             }
         }
-        if shell_refresh_required {
-            self.refresh_shell();
-        } else {
-            self.sync_shell_visuals();
-        }
+        self.sync_shell_visuals();
         if changed && let Some(token) = self.game_host.active_token() {
             self.publish_targets_for(token);
         }
@@ -208,20 +201,37 @@ impl ShellCoordinator {
         }
     }
 
-    /// Re-lays out the shell document and moves the compositor to match.
-    pub(super) fn refresh_shell(&mut self) {
-        let entered = self.profile.enter();
+    /// Applies everything the shell thread published: the newest frame, and
+    /// script's decisions about held input.
+    pub(super) fn drain_shell(&mut self) {
+        let mut latest = None;
+        for event in self.shell.drain() {
+            match event {
+                ShellEvent::Frame {
+                    frame,
+                    structure_revision,
+                } => latest = Some((frame, structure_revision)),
+                ShellEvent::InputSettled { sequence, outcome } => {
+                    self.held.settle(sequence, outcome);
+                }
+                ShellEvent::ReloadRequested => {}
+            }
+        }
+        self.release_held_input(Instant::now());
+        if let Some((frame, structure_revision)) = latest {
+            self.present_shell_frame(frame, structure_revision);
+        }
+    }
 
-        self.game_host.clear_shell_refresh_request();
-        let Some(frame) = self.shell_dom.produce_frame() else {
-            return;
-        };
-        if let Some((inspector, revision)) = self
-            .inspector
-            .as_ref()
-            .zip(self.shell_dom.inspector_structure_revision())
-        {
-            inspector.document_updated(revision);
+    /// Hands a painted shell frame to the compositor.
+    fn present_shell_frame(
+        &mut self,
+        frame: crate::shell::protocol::ShellFrame,
+        structure_revision: u64,
+    ) {
+        let entered = self.profile.enter();
+        if let Some(inspector) = &self.inspector {
+            inspector.document_updated(structure_revision);
         }
         self.next_scene_revision += 1;
         let revision = self.next_scene_revision;
@@ -238,7 +248,6 @@ impl ShellCoordinator {
             self.pending_layouts.remove(&superseded);
         }
         self.draw_pending_chrome();
-
         self.profile.record(TurnPhase::Shell, entered);
     }
 }

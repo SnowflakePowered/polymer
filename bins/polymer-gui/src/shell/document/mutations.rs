@@ -2,7 +2,7 @@ use super::ShellDocument;
 use super::image::ImageWidget;
 use super::scrolling::Scroller;
 use super::tracked_surface::{TrackedSurfaceWidget, is_tracked_surface_element};
-use crate::shell_runtime::deno::{ScrollBehavior, ScrollCommand};
+use crate::shell::runtime::deno::{ScrollBehavior, ScrollCommand};
 use blitz_dom::node::NodeData;
 use blitz_dom::node::Widget;
 use blitz_dom::{LocalName, NodeId, QualName, local_name, ns};

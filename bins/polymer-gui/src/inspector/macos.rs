@@ -4,12 +4,7 @@ use objc2_app_kit::{NSAutoresizingMaskOptions, NSView};
 use objc2_foundation::{NSString, NSURL, NSURLRequest};
 use objc2_web_kit::{WKWebView, WKWebViewConfiguration};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use std::{
-    cell::{Cell, RefCell},
-    error::Error,
-    net::SocketAddr,
-    rc::Weak,
-};
+use std::{cell::Cell, error::Error, net::SocketAddr};
 use winit::{
     event::WindowEvent,
     window::{Window, WindowId},
@@ -24,12 +19,11 @@ impl InspectorWindow {
     pub(crate) fn open(
         window: Window,
         address: SocketAddr,
-        document: Weak<RefCell<crate::shell_document::ShellDocument>>,
-        proxy: crate::window_manager::EventLoopProxy<crate::app::UserEvent>,
+        shell: crate::shell::protocol::ShellChannel,
     ) -> Result<Self, Box<dyn Error>> {
         let target = inspector_target(address)?;
         let bridge =
-            elements::Bridge::start(target.web_socket_debugger_url, target.url, document, proxy)?;
+            elements::Bridge::start(target.web_socket_debugger_url, target.url, shell)?;
         let main = MainThreadMarker::new().ok_or("inspector requires the AppKit thread")?;
         let RawWindowHandle::AppKit(handle) = window.window_handle()?.as_raw() else {
             return Err("inspector requires an AppKit window".into());

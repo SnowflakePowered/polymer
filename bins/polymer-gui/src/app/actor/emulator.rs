@@ -5,16 +5,27 @@ use polymer_runtime::frontend::emulator::*;
 use std::time::Instant;
 
 impl Handler<Launch> for GuiActor {
-    type Result = Result<(), String>;
+    type Result = ResponseActFuture<Self, Result<(), String>>;
     fn handle(&mut self, message: Launch, _: &mut Context<Self>) -> Self::Result {
-        self.state.with(|state| {
-            state.launch(
-                message.token,
-                message.options,
-                message.prepared_filesystem,
-                message.controller_session,
-            )
-        })
+        let validation = self
+            .state
+            .with(|state| Ok(state.shell.validate_launch(message.options.clone())));
+        let state = self.state.clone();
+        Box::pin(
+            async move {
+                let invalid_attachment = validation?.await.unwrap_or(None);
+                state.with(|state| {
+                    state.launch(
+                        message.token,
+                        message.options,
+                        message.prepared_filesystem,
+                        message.controller_session,
+                        invalid_attachment,
+                    )
+                })
+            }
+            .into_actor(self),
+        )
     }
 }
 

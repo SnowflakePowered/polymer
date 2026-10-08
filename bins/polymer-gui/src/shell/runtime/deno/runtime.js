@@ -6,7 +6,7 @@
   const { defineEventHandler } = webEvents;
   const eventDispatch = globalThis.__polymerCreateEventDispatch(webEvents, ops);
   delete globalThis.__polymerCreateEventDispatch;
-  const { MouseEvent, PointerEvent, WheelEvent, KeyboardEvent, FocusEvent, InputEvent, CompositionEvent, dispatch, dispatchNativeEvent } = eventDispatch;
+  const { MouseEvent, PointerEvent, WheelEvent, KeyboardEvent, FocusEvent, InputEvent, CompositionEvent, createPointerEvent, dispatch, dispatchNativeEvent } = eventDispatch;
   delete globalThis.__polymerRuntime;
   const wrappers = new Map();
   const pointerCaptures = new Map();
@@ -1178,7 +1178,8 @@
       }
       const constructors = { mouse: MouseEvent, pointer: PointerEvent, wheel: WheelEvent, keyboard: KeyboardEvent, focus: FocusEvent, input: InputEvent, composition: CompositionEvent };
       const Constructor = constructors[eventClass] || Event;
-      dispatch(target, new Constructor(type, { bubbles, cancelable, ...init }));
+      const eventInit = { bubbles, cancelable, ...init };
+      dispatch(target, eventClass === "pointer" ? createPointerEvent(type, eventInit) : new Constructor(type, eventInit));
       // Proc the microtask queue before propagating DOM effects.
       runMicrotasks();
       if (eventClass === "pointer" && (type === "pointerup" || type === "pointercancel")) {

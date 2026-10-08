@@ -16,6 +16,7 @@ impl ShellCoordinator {
         options: serde_json::Value,
         prepared_filesystem: Option<polymer_vfs::PreparedFilesystemLaunch>,
         controller_session: Option<polymer_pluginhost::controller::ControllerSession>,
+        invalid_attachment: Option<u32>,
     ) -> Result<(), String> {
         let options = serde_json::from_value::<AttachedLaunchPlan>(options)
             .map_err(|error| format!("invalid emulator launch options: {error}"))
@@ -24,7 +25,13 @@ impl ShellCoordinator {
                 Ok(options)
             });
         options.and_then(|options| {
-            self.launch_game(token, options, prepared_filesystem, controller_session)
+            self.launch_game(
+                token,
+                options,
+                prepared_filesystem,
+                controller_session,
+                invalid_attachment,
+            )
         })
     }
 

@@ -3,7 +3,7 @@ use deno_core::{OpState, op2};
 use serde::{Deserialize, Serialize};
 
 use super::dom::ScriptNodeId;
-use crate::shell_document::SharedShellDocument;
+use crate::shell::document::SharedShellDocument;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]

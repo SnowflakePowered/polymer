@@ -1,7 +1,7 @@
 use blitz_dom::{BaseDocument, NodeId, ScrollBehavior};
 use style::values::computed::Overflow;
 
-use crate::shell_runtime::deno::{ScrollAlignment, ScrollCommand};
+use crate::shell::runtime::deno::{ScrollAlignment, ScrollCommand};
 
 pub(super) struct Scroller;
 

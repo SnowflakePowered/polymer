@@ -20,7 +20,7 @@ use super::input::{EventResult, op_event_result};
 use super::modules::{BrowserModuleLoader, document_scripts, execute_document_script};
 use super::scroll::op_dom_scroll;
 use super::state::{BridgeState, op_post_message, op_shell_reload};
-use crate::shell_document::SharedShellDocument;
+use crate::shell::document::SharedShellDocument;
 use polymer_deno::polymer::PolymerNotificationSender;
 
 const BOOTSTRAP: &str = include_str!("runtime.js");
@@ -99,59 +99,15 @@ deno_core::extension!(
     },
 );
 
-struct DenoRealm {
-    worker: Option<polymer_deno::Runtime>,
-    executor: Option<tokio::runtime::Runtime>,
-}
-
-impl DenoRealm {
-    fn new(worker: polymer_deno::Runtime, executor: tokio::runtime::Runtime) -> Self {
-        Self {
-            worker: Some(worker),
-            executor: Some(executor),
-        }
-    }
-
-    fn parts(&mut self) -> (&mut polymer_deno::Runtime, &tokio::runtime::Runtime) {
-        (
-            self.worker.as_mut().expect("Deno worker is initialized"),
-            self.executor
-                .as_ref()
-                .expect("Deno executor is initialized"),
-        )
-    }
-
-    async fn poll_event_loop(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let (worker, executor) = self.parts();
-        tokio::task::block_in_place(|| {
-            executor.block_on(worker.run_up_to_duration(std::time::Duration::ZERO))
-        })?;
-        Ok(())
-    }
-}
-
-impl Drop for DenoRealm {
-    fn drop(&mut self) {
-        let Some(executor) = self.executor.take() else {
-            return;
-        };
-        if let Some(worker) = self.worker.take() {
-            let _executor = executor.enter();
-            drop(worker);
-        }
-        executor.shutdown_background();
-    }
-}
-
 pub struct Runtime {
-    realm: DenoRealm,
+    worker: polymer_deno::Runtime,
     inspector_address: std::net::SocketAddr,
     layout_cache: LayoutCache,
     layout_view_state: Option<(u32, u32, u32)>,
 }
 
 impl Runtime {
-    pub(in crate::shell_runtime) async fn start(
+    pub(in crate::shell::runtime) async fn start(
         debug: bool,
         document: SharedShellDocument,
         html: String,
@@ -176,81 +132,66 @@ impl Runtime {
                 base.root_node().id.to_script()
             )
         };
-        let executor = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        let worker_result = tokio::task::block_in_place(|| {
-            executor.block_on(async move {
-                let document_url = ModuleSpecifier::parse(&source_name)?;
-                let browser_loader = Rc::new(BrowserModuleLoader::new());
-                let (polymer_extension, notifications) =
-                    polymer_deno::polymer::init_with_notifications(|notifications| {
-                        polymer_runtime::FrontendServices::new(
-                            plugin_runtime.clone(),
-                            Some(polymer_runtime::ConfigurationDefaults::default()),
-                            library.clone(),
-                            input_sources.clone(),
-                            controller_api.clone(),
-                            commands,
-                            notifications,
-                        )
-                    });
-                let mut worker = polymer_deno::Runtime::new(polymer_deno::RuntimeOptions {
-                    main_module: document_url.clone(),
-                    module_loader: browser_loader.clone(),
-                    extensions: vec![polymer_extension, polymer_shell_runtime::init()],
-                    user_agent: format!("Polymer/{}", env!("CARGO_PKG_VERSION")),
-                    local_storage,
-                    inspect: true,
-                    insecure_hosts: Vec::new(),
-                });
-                worker
-                    .js_runtime_mut()
-                    .op_state()
-                    .borrow_mut()
-                    .put(document);
-                worker.js_runtime_mut().execute_script(
-                    "polymer:shell/meta.js",
-                    format!("Polymer.meta.debug = {debug}; Object.freeze(Polymer.meta);"),
-                )?;
-                worker
-                    .js_runtime_mut()
-                    .execute_script("polymer:shell/event-dispatch.js", EVENT_DISPATCH)?;
-                worker
-                    .js_runtime_mut()
-                    .execute_script("polymer:shell/runtime.js", BOOTSTRAP)?;
-                worker
-                    .js_runtime_mut()
-                    .execute_script("polymer:shell/document.js", install)?;
-                for (index, script) in document_scripts(&html).enumerate() {
-                    let result = execute_document_script(
-                        &mut worker,
-                        browser_loader.as_ref(),
-                        &document_url,
-                        index,
-                        script,
-                    )
-                    .await;
-                    if let Err(error) = result {
-                        // A browser reports an individual script error without
-                        // discarding the document's realm or preventing later scripts.
-                        tracing::error!("polymer: shell script {index} failed: {error}");
-                    }
-                }
-                worker.run_up_to_duration(std::time::Duration::ZERO).await?;
-                Ok::<_, Box<dyn std::error::Error>>((worker, notifications))
-            })
+        let document_url = ModuleSpecifier::parse(&source_name)?;
+        let browser_loader = Rc::new(BrowserModuleLoader::new());
+        let (polymer_extension, notifications) =
+            polymer_deno::polymer::init_with_notifications(|notifications| {
+                polymer_runtime::FrontendServices::new(
+                    plugin_runtime.clone(),
+                    Some(polymer_runtime::ConfigurationDefaults::default()),
+                    library.clone(),
+                    input_sources.clone(),
+                    controller_api.clone(),
+                    commands,
+                    notifications,
+                )
+            });
+        let mut worker = polymer_deno::Runtime::new(polymer_deno::RuntimeOptions {
+            main_module: document_url.clone(),
+            module_loader: browser_loader.clone(),
+            extensions: vec![polymer_extension, polymer_shell_runtime::init()],
+            user_agent: format!("Polymer/{}", env!("CARGO_PKG_VERSION")),
+            local_storage,
+            inspect: true,
+            insecure_hosts: Vec::new(),
         });
-        let (worker, notifications) = match worker_result {
-            Ok(result) => result,
-            Err(error) => {
-                executor.shutdown_background();
-                return Err(error);
+        worker
+            .js_runtime_mut()
+            .op_state()
+            .borrow_mut()
+            .put(document);
+        worker.js_runtime_mut().execute_script(
+            "polymer:shell/meta.js",
+            format!("Polymer.meta.debug = {debug}; Object.freeze(Polymer.meta);"),
+        )?;
+        worker
+            .js_runtime_mut()
+            .execute_script("polymer:shell/event-dispatch.js", EVENT_DISPATCH)?;
+        worker
+            .js_runtime_mut()
+            .execute_script("polymer:shell/runtime.js", BOOTSTRAP)?;
+        worker
+            .js_runtime_mut()
+            .execute_script("polymer:shell/document.js", install)?;
+        for (index, script) in document_scripts(&html).enumerate() {
+            let result = execute_document_script(
+                &mut worker,
+                browser_loader.as_ref(),
+                &document_url,
+                index,
+                script,
+            )
+            .await;
+            if let Err(error) = result {
+                // A browser reports an individual script error without
+                // discarding the document's realm or preventing later scripts.
+                tracing::error!("polymer: shell script {index} failed: {error}");
             }
-        };
+        }
+        worker.run_up_to_duration(std::time::Duration::ZERO).await?;
         Ok((
             Self {
-                realm: DenoRealm::new(worker, executor),
+                worker,
                 inspector_address,
                 layout_cache: LayoutCache::new(),
                 layout_view_state: None,
@@ -278,7 +219,7 @@ impl Runtime {
             return;
         }
         self.layout_view_state = Some(view_state);
-        let (worker, _) = self.realm.parts();
+        let worker = &mut self.worker;
         worker
             .js_runtime_mut()
             .op_state()
@@ -288,8 +229,7 @@ impl Runtime {
     }
 
     pub fn publish_layout(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let (worker, executor) = self.realm.parts();
-        let _executor = executor.enter();
+        let worker = &mut self.worker;
         if worker
             .js_runtime_mut()
             .op_state()
@@ -312,8 +252,7 @@ impl Runtime {
         height: u32,
         device_pixel_ratio: f32,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let (worker, executor) = self.realm.parts();
-        let _executor = executor.enter();
+        let worker = &mut self.worker;
         worker.js_runtime_mut().execute_script(
             "polymer:shell/resize.js",
             format!("__polymerDom.resize({width}, {height}, {device_pixel_ratio});"),
@@ -330,8 +269,7 @@ impl Runtime {
         bubbles: bool,
         cancelable: bool,
     ) -> Result<EventResult, Box<dyn std::error::Error>> {
-        let (worker, executor) = self.realm.parts();
-        let _executor = executor.enter();
+        let worker = &mut self.worker;
         worker
             .js_runtime_mut()
             .op_state()
@@ -355,18 +293,19 @@ impl Runtime {
             .event)
     }
 
-    /// Polls Deno once without waiting for the realm to become idle.
-    ///
-    /// A browser realm may keep timers, sockets, or an inspector session alive
-    /// indefinitely. The shell's event loop calls this regularly so those
-    /// tasks progress without blocking the window thread.
-    pub async fn poll_event_loop(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        self.realm.poll_event_loop().await
+    /// Advances timers, sockets, promises and inspector traffic, registering
+    /// the shell thread's waker for whichever of them completes next.
+    pub fn poll_event_loop(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), deno_core::error::CoreError>> {
+        self.worker
+            .js_runtime_mut()
+            .poll_event_loop(cx, deno_core::PollEventLoopOptions::default())
     }
 
-    pub fn reload_requested(&mut self) -> bool {
-        let (worker, _) = self.realm.parts();
-        worker
+    pub fn reload_requested(&self) -> bool {
+        self.worker
             .js_runtime()
             .op_state()
             .borrow()

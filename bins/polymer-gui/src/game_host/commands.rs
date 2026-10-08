@@ -168,7 +168,7 @@ impl GameHost {
 
     pub fn begin_quit(
         &mut self,
-        token: crate::shell_runtime::InstanceToken,
+        token: crate::shell::runtime::InstanceToken,
         timeout: std::time::Duration,
     ) -> Result<
         Option<(

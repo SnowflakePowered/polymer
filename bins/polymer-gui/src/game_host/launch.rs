@@ -3,7 +3,7 @@ use super::*;
 impl GameHost {
     pub fn launch(
         &mut self,
-        token: crate::shell_runtime::InstanceToken,
+        token: crate::shell::runtime::InstanceToken,
         options: AttachedLaunchPlan,
         filesystem: polymer_vfs::MountedFilesystem,
         controller_session: Option<polymer_pluginhost::controller::ControllerSession>,
@@ -143,7 +143,7 @@ impl GameHost {
 
     pub fn start_webrtc(
         &mut self,
-        token: crate::shell_runtime::InstanceToken,
+        token: crate::shell::runtime::InstanceToken,
         bind: std::net::SocketAddr,
         targets: &[u32],
     ) -> Result<(), String> {
@@ -177,7 +177,7 @@ impl GameHost {
         Ok(())
     }
 
-    pub fn stop_webrtc(&mut self, token: crate::shell_runtime::InstanceToken) -> bool {
+    pub fn stop_webrtc(&mut self, token: crate::shell::runtime::InstanceToken) -> bool {
         let Some(active) = self.active.as_mut().filter(|active| active.token == token) else {
             return false;
         };
@@ -190,7 +190,7 @@ impl GameHost {
         self.session.instance().map(|instance| instance.input())
     }
 
-    pub fn request_close(&mut self, token: crate::shell_runtime::InstanceToken) -> bool {
+    pub fn request_close(&mut self, token: crate::shell::runtime::InstanceToken) -> bool {
         if !self.session.close(token.0) {
             return false;
         }
@@ -198,11 +198,11 @@ impl GameHost {
         true
     }
 
-    pub fn set_volume(&self, token: crate::shell_runtime::InstanceToken, volume: f64) -> bool {
+    pub fn set_volume(&self, token: crate::shell::runtime::InstanceToken, volume: f64) -> bool {
         self.session.set_volume(token.0, volume)
     }
 
-    pub fn set_muted(&self, token: crate::shell_runtime::InstanceToken, muted: bool) -> bool {
+    pub fn set_muted(&self, token: crate::shell::runtime::InstanceToken, muted: bool) -> bool {
         self.session.set_muted(token.0, muted)
     }
 
@@ -210,12 +210,12 @@ impl GameHost {
         &mut self,
         force: bool,
     ) -> Option<(
-        crate::shell_runtime::InstanceToken,
+        crate::shell::runtime::InstanceToken,
         polymer_runtime::AudioState,
     )> {
         self.session
             .audio_change(force)
-            .map(|(token, audio)| (crate::shell_runtime::InstanceToken(token), audio))
+            .map(|(token, audio)| (crate::shell::runtime::InstanceToken(token), audio))
     }
 
     pub fn has_exited(&self) -> bool {

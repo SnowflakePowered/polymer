@@ -11,9 +11,7 @@ mod inspector;
 mod instance_events;
 mod launch;
 mod metrics;
-mod shell_document;
-mod shell_dom;
-mod shell_runtime;
+mod shell;
 mod theme;
 mod window_manager;
 
@@ -52,7 +50,7 @@ fn run(
 
     // The generated frontend bundle has enough nested module code to exceed
     // V8's conservative default JavaScript stack during evaluation.
-    // Keep this below the executable's 8 MiB stack while giving Deno's
+    // Keep this below the shell thread's 8 MiB stack while giving Deno's
     // primordials, the shell document, and fresh plugin isolates enough room.
     let v8_program = "polymer-gui".to_owned();
     let unknown_v8_flags =
@@ -86,7 +84,7 @@ fn run(
     #[cfg(windows)]
     let mut event_loop = event_loop;
     let proxy = event_loop.create_proxy();
-    let shell_factory = shell_dom::ShellSessionFactory::new(
+    let shell_factory = shell::ShellSessionFactory::new(
         options.debug,
         options.plugins.clone(),
         options.directories.clone(),
@@ -125,7 +123,7 @@ fn run(
         let status = system.block_on(async {
             let status =
                 event_loop.pump_app_events(Some(std::time::Duration::ZERO), application.as_mut());
-            // Give local actors a turn after native callbacks release the DOM.
+            // Give local actors a turn after native callbacks release the coordinator.
             tokio::task::yield_now().await;
             status
         });

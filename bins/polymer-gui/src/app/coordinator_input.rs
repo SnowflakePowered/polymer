@@ -6,7 +6,7 @@ impl ShellCoordinator {
             inspector.show();
             return;
         }
-        let Some(address) = self.shell_dom.inspector_address() else {
+        let Some(address) = self.shell.inspector_address() else {
             tracing::warn!("polymer: inspector requested before the shell runtime was ready");
             return;
         };
@@ -23,31 +23,29 @@ impl ShellCoordinator {
         window: Window,
         address: std::net::SocketAddr,
     ) {
-        let result = InspectorWindow::open(
-            window,
-            address,
-            self.shell_dom.inspector_document(),
-            self.proxy.clone(),
-        );
+        let Some(shell) = self.shell.channel() else {
+            return;
+        };
+        let result = InspectorWindow::open(window, address, shell);
         match result {
             Ok(inspector) => self.inspector = Some(inspector),
             Err(error) => tracing::error!(%error, "polymer: opening the Deno inspector failed"),
         }
     }
 
-    /// Dispatches a regular DOM mouse event to the Deno-backed shell.
-    /// Script claims the pointer from the guest by cancelling the event.
-    pub(super) fn shell_mouse(
+    /// Sends a mouse event to the shell thread and holds it. Script may
+    /// claim it; otherwise it reaches the game if it landed on a game surface.
+    fn shell_mouse(
         &mut self,
-        kind: &str,
-        x: f32,
-        y: f32,
+        kind: &'static str,
         button: u16,
         pressed: Option<bool>,
-    ) -> bool {
-        let timing = std::env::var_os("POLYMER_GAME_LAYER_TIMING")
-            .is_some()
-            .then(std::time::Instant::now);
+        phase: PointerPhase,
+        game_button: u32,
+    ) {
+        if !self.shell.is_active() {
+            return;
+        }
         let flag = match button {
             0 => 1,
             1 => 4,
@@ -56,64 +54,53 @@ impl ShellCoordinator {
             4 => 16,
             _ => 0,
         };
-        let previous_buttons = pressed
-            .map(|pressed| self.input.set_mouse_button(flag, pressed))
-            .unwrap_or(self.input.mouse_buttons());
-        let buttons = self.input.mouse_buttons();
-        let Some(hit) = self.shell_dom.hit_test(x, y) else {
-            self.input.restore_mouse_buttons(previous_buttons);
-            return false;
-        };
-        let hit_elapsed = timing.map(|started| started.elapsed());
-        let prevented = self.shell_dom.mouse_event(
-            hit,
-            DomMouseEvent {
-                kind,
-                x,
-                y,
-                button: button.min(u16::from(u8::MAX)) as u8,
-                buttons,
-                ctrl_key: self.input.dom_control_key(),
-                shift_key: self.input.dom_shift_key(),
-            },
-        );
-        let dispatch_elapsed = timing.map(|started| started.elapsed());
-        let needs_paint = self.shell_dom.needs_paint();
-        if !prevented {
-            self.input.restore_mouse_buttons(previous_buttons);
+        let flag_was_set = self.input.mouse_buttons() & flag != 0;
+        if let Some(pressed) = pressed {
+            self.input.set_mouse_button(flag, pressed);
         }
-        if needs_paint {
-            // Winit coalesces redraw requests, which gives capture wakeups a
-            // chance to drain between pointer samples. Resolving and encoding
-            // the complete Blitz scene here used to hold the producer's export
-            // buffers for the duration of every mouse move and back-pressure
-            // the guest itself. The redraw path still applies DOM motion once
-            // per display frame, while guest capture/presentation remains
-            // independent of chrome work.
-            self.compositor.borrow_mut().request_redraw();
-        }
-        if kind == "mousemove"
-            && let (Some(started), Some(hit_elapsed), Some(dispatch_elapsed)) =
-                (timing, hit_elapsed, dispatch_elapsed)
-        {
-            tracing::error!(
-                "polymer: mousemove hit {:.2}ms dispatch {:.2}ms total {:.2}ms",
-                hit_elapsed.as_secs_f64() * 1000.0,
-                (dispatch_elapsed - hit_elapsed).as_secs_f64() * 1000.0,
-                started.elapsed().as_secs_f64() * 1000.0,
-            );
-        }
-        prevented
+        let sequence = self.held.hold(HeldInput::Pointer {
+            phase,
+            button: game_button,
+            flag: if pressed.is_some() { flag } else { 0 },
+            flag_was_set,
+        });
+        let input = self.pointer_input(kind, button);
+        self.shell.input(Some(sequence), input);
     }
 
-    pub(super) fn shell_keyboard(
-        &mut self,
-        pressed: bool,
-        key: String,
-        code: String,
-        repeat: bool,
-    ) -> bool {
-        let prevented = self.shell_dom.keyboard_event(DomKeyboardEvent {
+    fn pointer_input(&self, kind: &'static str, button: u16) -> ShellInput {
+        let (x, y) = self.input.cursor();
+        ShellInput::Pointer {
+            kind,
+            sample: PointerSample {
+                x,
+                y,
+                at: Instant::now(),
+            },
+            button: button.min(u16::from(u8::MAX)) as u8,
+            buttons: self.input.mouse_buttons(),
+            ctrl_key: self.input.dom_control_key(),
+            shift_key: self.input.dom_shift_key(),
+        }
+    }
+
+    /// Sends a key to the shell thread. While the game owns the keyboard the
+    /// key is held, and reaches the game unless script cancels it.
+    pub(super) fn shell_keyboard(&mut self, pressed: bool, key: String, code: String, repeat: bool) {
+        let game_owned = self.input.priority() == InputPriority::Game;
+        if !self.shell.is_active() {
+            if game_owned {
+                self.route_keyboard_to_game(Some(code), pressed);
+            }
+            return;
+        }
+        let sequence = game_owned.then(|| {
+            self.held.hold(HeldInput::Key {
+                physical_key: Some(code.clone()),
+                pressed,
+            })
+        });
+        let input = ShellInput::Key {
             pressed,
             key,
             code,
@@ -121,16 +108,46 @@ impl ShellCoordinator {
             alt_key: self.input.dom_alt_key(),
             ctrl_key: self.input.dom_control_key(),
             shift_key: self.input.dom_shift_key(),
-        });
-        if self.shell_dom.needs_paint() {
-            self.refresh_shell();
-        }
-        prevented
+        };
+        self.shell.input(sequence, input);
     }
 
-    pub(super) fn refresh_pending_shell(&mut self) {
+    /// Routes held input the shell has settled, or that waited too long, to
+    /// the game in arrival order.
+    pub(super) fn release_held_input(&mut self, now: Instant) {
+        for (input, outcome) in self.held.release(now) {
+            match input {
+                HeldInput::Key {
+                    physical_key,
+                    pressed,
+                } if !outcome.claimed && self.input.priority() == InputPriority::Game => {
+                    self.route_keyboard_to_game(physical_key, pressed);
+                }
+                HeldInput::Pointer {
+                    phase,
+                    button,
+                    flag,
+                    flag_was_set,
+                } if !outcome.claimed => {
+                    self.input.set_mouse_button(flag, flag_was_set);
+                    if outcome.over_tracked_surface {
+                        self.route_pointer(phase, button, 0, 0);
+                    }
+                }
+                HeldInput::Wheel {
+                    horizontal,
+                    vertical,
+                } if !outcome.claimed && outcome.over_tracked_surface => {
+                    self.route_pointer(PointerPhase::Wheel, 0, horizontal, vertical);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub(super) fn forward_shell_refresh_request(&mut self) {
         if self.game_host.take_shell_refresh_request() {
-            self.refresh_shell();
+            self.shell.send(ShellCommand::Invalidate);
         }
     }
 
@@ -209,12 +226,12 @@ impl ShellCoordinator {
         if let Err(error) = self.compositor.borrow_mut().resize_overlay() {
             tracing::error!("polymer: resizing egui composition overlay failed: {error}");
         }
-        if self
-            .shell_dom
-            .resize(width, height, self.compositor.borrow_mut().scale_factor())
-        {
-            self.refresh_shell();
-        }
+        let scale_factor = self.compositor.borrow_mut().scale_factor();
+        self.shell.send(ShellCommand::Resize {
+            width,
+            height,
+            scale_factor,
+        });
         self.compositor.borrow_mut().request_redraw();
     }
 
@@ -222,12 +239,9 @@ impl ShellCoordinator {
         if let Some(connection) = self.input.captured_connection() {
             self.cancel_pointer_connection(connection);
         }
-        let cursor = self.input.cursor();
-        let (css_x, css_y) = self
-            .shell_dom
-            .physical_to_css(cursor.x as f32, cursor.y as f32);
         for (button, _) in self.input.focus_lost_buttons() {
-            self.shell_mouse("mouseup", css_x, css_y, button, Some(false));
+            let input = self.pointer_input("mouseup", button);
+            self.shell.input(None, input);
         }
         self.input.finish_focus_lost();
     }
@@ -242,15 +256,7 @@ impl ShellCoordinator {
         if consumed {
             return;
         }
-        let (css_x, css_y) = self.shell_dom.physical_to_css(x as f32, y as f32);
-        let Some(hit) = self.shell_dom.hit_test(css_x, css_y) else {
-            return;
-        };
-        let prevented = self.shell_mouse("mousemove", css_x, css_y, 0, None);
-        if prevented || !hit.over_tracked_surface {
-            return;
-        }
-        self.route_pointer(PointerPhase::Move, 0, 0, 0);
+        self.shell_mouse("mousemove", 0, None, PointerPhase::Move, 0);
     }
 
     pub(super) fn handle_mouse_button(
@@ -260,64 +266,42 @@ impl ShellCoordinator {
         consumed: bool,
     ) {
         let Some(button) = button else { return };
+        if consumed {
+            return;
+        }
         let dom_button = match button {
             1 => 0,
             2 => 2,
             3 => 1,
             value => value.saturating_sub(1),
         };
-        let cursor = self.input.cursor();
-        if consumed {
-            return;
-        }
-        let (css_x, css_y) = self
-            .shell_dom
-            .physical_to_css(cursor.x as f32, cursor.y as f32);
-        let Some(hit) = self.shell_dom.hit_test(css_x, css_y) else {
-            return;
+        let (kind, phase) = if pressed {
+            ("mousedown", PointerPhase::ButtonDown)
+        } else {
+            ("mouseup", PointerPhase::ButtonUp)
         };
-        let kind = if pressed { "mousedown" } else { "mouseup" };
-        let prevented = self.shell_mouse(kind, css_x, css_y, dom_button, Some(pressed));
-        if prevented || !hit.over_tracked_surface {
-            return;
-        }
-        self.route_pointer(
-            if pressed {
-                PointerPhase::ButtonDown
-            } else {
-                PointerPhase::ButtonUp
-            },
-            u32::from(button),
-            0,
-            0,
-        );
+        self.shell_mouse(kind, dom_button, Some(pressed), phase, u32::from(button));
     }
 
     pub(super) fn handle_mouse_wheel(&mut self, horizontal: i32, vertical: i32) {
-        let cursor = self.input.cursor();
-        let (css_x, css_y) = self
-            .shell_dom
-            .physical_to_css(cursor.x as f32, cursor.y as f32);
-        let Some(hit) = self.shell_dom.hit_test(css_x, css_y) else {
+        if !self.shell.is_active() {
             return;
-        };
-        let scale_factor = f64::from(self.compositor.borrow_mut().scale_factor());
-        let claimed = self.shell_dom.wheel_event(
-            hit,
-            DomWheelEvent {
-                x: css_x,
-                y: css_y,
-                horizontal: f64::from(horizontal) / scale_factor,
-                vertical: f64::from(vertical) / scale_factor,
-                ctrl_key: self.input.dom_control_key(),
-                shift_key: self.input.dom_shift_key(),
-                alt_key: self.input.dom_alt_key(),
-            },
-        );
-        self.refresh_dirty_shell();
-        if !claimed && hit.over_tracked_surface {
-            self.route_pointer(PointerPhase::Wheel, 0, horizontal, vertical);
         }
+        let (x, y) = self.input.cursor();
+        let sequence = self.held.hold(HeldInput::Wheel {
+            horizontal,
+            vertical,
+        });
+        let input = ShellInput::Wheel {
+            x: x as f32,
+            y: y as f32,
+            horizontal,
+            vertical,
+            ctrl_key: self.input.dom_control_key(),
+            shift_key: self.input.dom_shift_key(),
+            alt_key: self.input.dom_alt_key(),
+        };
+        self.shell.input(Some(sequence), input);
     }
 
     pub(super) fn handle_ime(&mut self, event: ShellImeEvent) {
@@ -329,8 +313,7 @@ impl ShellCoordinator {
             ShellImeEvent::Commit(value) => blitz_traits::events::BlitzImeEvent::Commit(value),
             ShellImeEvent::Disabled => blitz_traits::events::BlitzImeEvent::Disabled,
         };
-        self.shell_dom.ime_event(event);
-        self.refresh_dirty_shell();
+        self.shell.input(None, ShellInput::Ime(event));
     }
 
     pub(super) fn draw_overlay(&mut self) {
