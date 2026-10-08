@@ -17,6 +17,7 @@ use atomic_write_file::AtomicWriteFile;
 mod composed;
 mod git;
 mod keystore;
+pub(crate) mod operation;
 pub mod manifest;
 pub(crate) mod memory;
 pub mod memorycard;
@@ -25,6 +26,7 @@ mod reconcile;
 mod scratch;
 
 pub use composed::ComposedStorage;
+pub(crate) use composed::ComposedLayer;
 pub use git::{GitVolumeStorage, PlatformRepository};
 pub use keystore::{KeyProjection, KeyStoreStorage};
 pub use memory::{MemoryFile, MemoryStorage};

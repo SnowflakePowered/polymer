@@ -119,8 +119,11 @@ impl VirtualNand for WiiNand {
         keys: Arc<dyn crate::keys::KeyReader>,
     ) -> Result<Arc<dyn MountableStorage>, Error> {
         <dyn SaveRepo>::require::<WiiSaveRepo>(saves.as_ref(), "Wii")?;
-        let mut layers: Vec<Arc<dyn MountableStorage>> =
-            vec![Arc::new(KeyStoreStorage::new(keys, WiiTickets).await?)];
+        let mut layers: Vec<crate::storage::ComposedLayer> =
+            vec![crate::storage::ComposedLayer::volatile(
+                "keys",
+                Arc::new(KeyStoreStorage::new(keys, WiiTickets).await?),
+            )];
         if let Some(saves) = saves {
             for entry in self.storage.read_dir("title", true)? {
                 if let Some(id) = entry
@@ -132,10 +135,13 @@ impl VirtualNand for WiiNand {
                     saves.create_dir_all(&super::data_path(id))?;
                 }
             }
-            layers.push(saves);
+            layers.push(crate::storage::ComposedLayer::saves("saves", saves));
         }
-        layers.push(Arc::new(crate::ScratchStorage::new(self.root())));
-        Ok(Arc::new(ComposedStorage::new(layers)?))
+        layers.push(crate::storage::ComposedLayer::volatile(
+            "scratch",
+            Arc::new(crate::ScratchStorage::new(self.root())),
+        ));
+        Ok(Arc::new(ComposedStorage::with_layers(layers)?))
     }
 
     fn platform(&self) -> &str {

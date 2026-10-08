@@ -53,7 +53,7 @@ impl SaveVersioning {
                 Error::HistoryConflict(format!("{} is not UTF-8: {error}", kind.as_str()))
             })?;
         }
-        let _guard = self.inner.operation.lock().await;
+        let _guard = self.inner.operation.gate.lock().await;
         self.ensure_no_pending_journal()?;
         let path = self.note_path(depot, scope)?;
         let repo = self.inner.repository().to_thread_local();
@@ -108,7 +108,7 @@ impl SaveVersioning {
         scope: AttachmentScope,
         kind: SaveAttachmentKind,
     ) -> Result<bool, Error> {
-        let _guard = self.inner.operation.lock().await;
+        let _guard = self.inner.operation.gate.lock().await;
         self.ensure_no_pending_journal()?;
         let path = self.note_path(depot, scope)?;
         let repo = self.inner.repository().to_thread_local();

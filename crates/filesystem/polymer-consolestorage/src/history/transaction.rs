@@ -141,6 +141,11 @@ impl SaveVersioning {
     }
 
     pub(super) fn ensure_no_pending_journal(&self) -> Result<(), Error> {
+        self.inner.operation.ensure_ready()?;
+        self.ensure_no_materialization()
+    }
+
+    pub(super) fn ensure_no_materialization(&self) -> Result<(), Error> {
         let repo = self.inner.repository().to_thread_local();
         if Self::tip_in(&repo, &self.journal_ref())?.is_some() {
             return Err(Error::HistoryConflict(
@@ -179,6 +184,7 @@ impl SaveVersioning {
         &self,
         owner: &R,
     ) -> Result<(), Error> {
+        self.inner.operation.ensure_ready()?;
         let Some(journal) = self.read_journal()? else {
             return Ok(());
         };
@@ -235,7 +241,7 @@ impl SaveVersioning {
     }
 
     pub(crate) async fn recover<R: SaveRepo + ?Sized>(&self, owner: &R) -> Result<(), Error> {
-        let _guard = self.inner.operation.lock().await;
+        let _guard = self.inner.operation.gate.lock().await;
         self.recover_locked(owner).await
     }
 

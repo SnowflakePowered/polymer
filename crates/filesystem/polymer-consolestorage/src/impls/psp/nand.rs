@@ -59,12 +59,15 @@ impl VirtualNand for PspMemoryStick {
         _keys: Arc<dyn crate::keys::KeyReader>,
     ) -> Result<Arc<dyn MountableStorage>, Error> {
         <dyn SaveRepo>::require::<PspSaveRepo>(saves.as_ref(), "PSP")?;
-        let mut layers: Vec<Arc<dyn MountableStorage>> = Vec::new();
+        let mut layers: Vec<crate::storage::ComposedLayer> = Vec::new();
         if let Some(saves) = saves {
-            layers.push(saves);
+            layers.push(crate::storage::ComposedLayer::saves("saves", saves));
         }
-        layers.push(Arc::new(crate::ScratchStorage::new(self.root())));
-        Ok(Arc::new(crate::ComposedStorage::new(layers)?))
+        layers.push(crate::storage::ComposedLayer::volatile(
+            "scratch",
+            Arc::new(crate::ScratchStorage::new(self.root())),
+        ));
+        Ok(Arc::new(crate::ComposedStorage::with_layers(layers)?))
     }
 
     fn platform(&self) -> &str {

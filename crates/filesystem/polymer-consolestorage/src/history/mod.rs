@@ -16,7 +16,6 @@ use std::sync::Arc;
 
 use jiff::Timestamp;
 use tokio::io::AsyncRead;
-use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::savegame::{SaveDepotId, SaveDescriptor};
@@ -201,7 +200,7 @@ impl SaveRefs {
 
 struct HistoryInner {
     profile: crate::GitVolumeStorage,
-    operation: Mutex<()>,
+    operation: Arc<crate::storage::operation::StorageOperation>,
 }
 
 impl HistoryInner {
@@ -233,6 +232,23 @@ impl fmt::Debug for SaveVersioning {
 }
 
 impl SaveVersioning {
+    pub(crate) fn profile_storage(&self) -> crate::GitVolumeStorage {
+        self.inner.profile.clone()
+    }
+
+    pub(crate) fn profile_operation(&self) -> Arc<crate::storage::operation::StorageOperation> {
+        self.inner.operation.clone()
+    }
+
+    pub(crate) fn try_profile_operation(&self) -> Result<tokio::sync::MutexGuard<'_, ()>, Error> {
+        let guard =
+            self.inner.operation.gate.try_lock().map_err(|_| {
+                Error::HistoryConflict("profile operation is in progress".to_owned())
+            })?;
+        self.ensure_no_materialization()?;
+        Ok(guard)
+    }
+
     fn archive_ref(&self) -> String {
         format!(
             "refs/consoles/archive/v2/{}/recently-deleted",
@@ -312,7 +328,7 @@ impl SaveVersioning {
         depot: SaveDepotId,
         requested: SaveCommitOperation,
     ) -> Result<Option<SaveCommitInfo>, Error> {
-        let guard = self.inner.operation.lock().await;
+        let guard = self.inner.operation.gate.lock().await;
         self.recover_locked(owner).await?;
         let exported = owner.export_save(&depot)?;
         let repo = self.inner.repository().to_thread_local();
@@ -355,7 +371,7 @@ impl SaveVersioning {
     }
 
     pub(crate) async fn checkpoint_profile(&self) -> Result<bool, Error> {
-        let _guard = self.inner.operation.lock().await;
+        let _guard = self.inner.operation.gate.lock().await;
         self.ensure_no_pending_journal()?;
         self.inner
             .profile
@@ -395,7 +411,7 @@ impl SaveVersioning {
     ) -> Result<SaveCommitInfo, Error> {
         self.checkpoint(owner, depot, SaveCommitOperation::Manual)
             .await?;
-        let guard = self.inner.operation.lock().await;
+        let guard = self.inner.operation.gate.lock().await;
         self.recover_locked(owner).await?;
         self.ensure_member(depot, wanted)?;
         let refs = self.refs(depot);
@@ -625,7 +641,7 @@ async fn copy_save_locked(
         return SaveVersioning::commit_info(&source_core.inner.repository().to_thread_local(), tip);
     }
 
-    let _guard = destination_core.inner.operation.lock().await;
+    let _guard = destination_core.inner.operation.gate.lock().await;
     destination_core.recover_locked(destination).await?;
     let (source_state, conflict) = {
         let source_repo = source_core.inner.repository().to_thread_local();
@@ -661,6 +677,6 @@ async fn copy_save_locked(
 
 async fn delete_save_locked(owner: &dyn SaveRepo, depot: SaveDepotId) -> Result<(), Error> {
     let core = owner.versioning();
-    let _guard = core.inner.operation.lock().await;
+    let _guard = core.inner.operation.gate.lock().await;
     core.archive_and_remove_locked(owner, depot).await
 }

@@ -185,9 +185,8 @@ impl MountableStorage for GitVolumeStorage {
         self.open(path, true)?.set_len(len)
     }
 
-    fn sync(&self, _path: &str) -> Result<(), Error> {
-        self.ensure_checkout()?;
-        self.inner.checkout.sync(_path)
+    fn sync(&self, path: &str) -> Result<(), Error> {
+        self.open(path, true)?.sync()
     }
 
     fn finish(&self, _path: &str) -> Result<(), Error> {
