@@ -66,6 +66,11 @@ impl LibraryService {
         jobs: Arc<JobStore>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let catalog = Arc::new(GameCatalog::open_local(directories).await?);
+        catalog
+            .reconcile_storage(&polymer_library::StorageManager::new(
+                directories.consolestorage(),
+            ))
+            .await?;
         Ok(Self::start(catalog, plugins, jobs, directories.clone()).await?)
     }
 

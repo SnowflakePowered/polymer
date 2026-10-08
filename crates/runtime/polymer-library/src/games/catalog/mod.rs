@@ -15,6 +15,7 @@ use super::{
 };
 use crate::Directories;
 
+mod artifacts;
 mod configuration;
 mod identity;
 mod manifest;

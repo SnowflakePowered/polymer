@@ -45,6 +45,7 @@ pub struct WiiWadDepot {
     pub(super) tmd: Tmd,
     tmd_offset: u64,
     tmd_size: u64,
+    tmd_digest: blake3::Hash,
     channel: std::sync::OnceLock<Channel>,
 }
 
@@ -92,7 +93,13 @@ impl WiiWadDepot {
 
     pub(super) fn read_tmd(&self) -> Result<Vec<u8>, Error> {
         let mut file = File::open(&self.path).map_err(|source| Error::io(&self.path, source))?;
-        Self::read_section(&mut file, self.tmd_offset, self.tmd_size, &self.path)
+        let bytes = Self::read_section(&mut file, self.tmd_offset, self.tmd_size, &self.path)?;
+        if blake3::hash(&bytes) != self.tmd_digest {
+            return Err(Error::IntegrityMatchFailed {
+                failed: "WAD title metadata".into(),
+            });
+        }
+        Ok(bytes)
     }
 
     pub(super) fn signature_is_zero(&self) -> bool {
@@ -187,6 +194,7 @@ impl Depot for WiiWadDepot {
             tmd,
             tmd_offset,
             tmd_size,
+            tmd_digest: blake3::hash(&tmd_bytes),
             channel: std::sync::OnceLock::new(),
         })
     }
@@ -229,19 +237,36 @@ impl Depot for WiiWadDepot {
     }
 
     fn depot_type(&self) -> DepotType {
-        if (self.title_id() >> 32) as u32 == 1 {
-            DepotType::System
-        } else {
-            DepotType::App
-        }
+        crate::impls::wii::composer::WiiComposer::title_kind(self.title_id())
     }
 
     async fn install<N: VirtualNand + ?Sized>(
         self,
-        nand: &N,
+        _nand: &N,
         _keys: &dyn crate::keys::KeyReader,
         context: &InstallContext,
     ) -> Result<impl Installable, Error> {
-        super::install::WadInstall::new(self, nand.root(), context).await
+        let stage = crate::installable::ComponentStage::new()?;
+        let component = crate::impls::wii::composer::WiiComposer::component(self.title_id());
+        let contribution = crate::impls::wii::composer::WiiContribution {
+            title_id: self.title_id(),
+            required_ios: self.tmd.system_version,
+            shared: self
+                .tmd
+                .contents
+                .iter()
+                .filter(|content| content.is_shared())
+                .map(|content| {
+                    (
+                        format!("{}/{:08x}.app", component.root, content.id),
+                        content.sha1,
+                    )
+                })
+                .collect(),
+        };
+        let metadata = serde_json::to_value(contribution)
+            .map_err(|error| Error::malformed("Wii component", error.to_string()))?;
+        let inner = super::install::WadInstall::new(self, stage.storage.clone(), context)?;
+        Ok(stage.install(inner, component, metadata))
     }
 }

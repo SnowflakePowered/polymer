@@ -7,7 +7,8 @@ use crate::Error;
 #[derive(FromBytes, Immutable, KnownLayout, Unaligned)]
 #[repr(C)]
 struct TmdHeader {
-    before_title_id: [u8; 0x4c],
+    before_system_version: [u8; 0x44],
+    system_version: U64,
     title_id: U64,
     before_title_version: [u8; 0x48],
     title_version: U16,
@@ -48,6 +49,7 @@ impl Content {
 
 #[derive(Clone)]
 pub(super) struct Tmd {
+    pub(super) system_version: u64,
     pub(super) title_id: u64,
     pub(super) title_version: u16,
     pub(super) boot_index: u16,
@@ -70,10 +72,15 @@ impl Tmd {
             .ok_or_else(|| Error::malformed("WAD", "data section overflows"))?;
         let mut wad_offset = data_offset;
         let mut contents = Vec::with_capacity(usize::from(header.content_count.get()));
+        let mut ids = std::collections::BTreeSet::new();
+        let mut indices = std::collections::BTreeSet::new();
         for record in records.chunks_exact(size_of::<TmdContent>()) {
             let record = TmdContent::ref_from_bytes(record)
                 .map_err(|_| Error::malformed("TMD", "invalid content record"))?;
             let size = record.size.get();
+            if !ids.insert(record.id.get()) || !indices.insert(record.index.get()) {
+                return Err(Error::malformed("TMD", "duplicate content ID or index"));
+            }
             let end = wad_offset
                 .checked_add(align(size, 0x40)?)
                 .ok_or_else(|| Error::malformed("WAD", "content range overflows"))?;
@@ -91,6 +98,7 @@ impl Tmd {
             wad_offset = end;
         }
         Ok(Self {
+            system_version: header.system_version.get(),
             title_id: header.title_id.get(),
             title_version: header.title_version.get(),
             boot_index: header.boot_index.get(),

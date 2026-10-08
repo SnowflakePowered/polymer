@@ -34,6 +34,7 @@ impl Handler<Inspect> for StorageActor {
     type Result = ResponseActFuture<Self, Result<StorageInspection, StorageError>>;
 
     fn handle(&mut self, Inspect { platform, id }: Inspect, _: &mut Context<Self>) -> Self::Result {
+        let catalog = self.catalog.clone();
         self.execute(move |manager, _| async move {
             let id = Self::parse(&id)?;
             let key = ExclusiveResourceKey::Resource(id);
@@ -46,6 +47,15 @@ impl Handler<Inspect> for StorageActor {
                 .inspect(&platform, id)
                 .await
                 .map_err(StorageError::from_display)?;
+            if !busy
+                && !inspection.dirty
+                && let Some(catalog) = catalog
+            {
+                catalog
+                    .retain_artifacts(&platform, id, &inspection.artifacts)
+                    .await
+                    .map_err(StorageError::from_display)?;
+            }
             inspection.dirty &= !busy;
             Ok(inspection)
         })
@@ -134,6 +144,7 @@ impl Handler<Uninstall> for StorageActor {
         }: Uninstall,
         _: &mut Context<Self>,
     ) -> Self::Result {
+        let catalog = self.catalog.clone();
         self.execute(move |manager, _| async move {
             let id = Self::parse(&id)?;
             let _lease = ExclusiveResourceKey::Resource(id)
@@ -162,7 +173,14 @@ impl Handler<Uninstall> for StorageActor {
             nand.uninstall(&ids.iter().map(String::as_str).collect::<Vec<_>>())
                 .await
                 .map_err(StorageError::from_display)?;
-            nand.artifacts().await.map_err(StorageError::from_display)
+            let artifacts = nand.artifacts().await.map_err(StorageError::from_display)?;
+            if let Some(catalog) = catalog {
+                catalog
+                    .retain_artifacts(&platform, id, &artifacts)
+                    .await
+                    .map_err(StorageError::from_display)?;
+            }
+            Ok(artifacts)
         })
     }
 }

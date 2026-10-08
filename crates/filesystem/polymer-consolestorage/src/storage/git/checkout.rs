@@ -370,6 +370,7 @@ impl GitVolumeStorage {
     }
 
     pub(super) fn ensure_checkout(&self) -> Result<(), Error> {
+        self.recover_components()?;
         if *self.inner.cache_ready.lock() {
             return Ok(());
         }

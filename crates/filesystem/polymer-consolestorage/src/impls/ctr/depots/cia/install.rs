@@ -2,7 +2,7 @@ use super::CiaDepot;
 use super::metadata::{InstalledTitle, TmdHeader};
 use super::ncch::NcchDecryptor;
 use crate::{
-    Error, VolumeStorage,
+    Error, Storage, VolumeStorage,
     installable::{DepotFile, InstallContext, Installable, StorageWriter, artifacts::Artifact},
 };
 use csis::{CiaArchive, CiaSection};
@@ -23,21 +23,20 @@ pub(in crate::impls::ctr) struct CiaInstall {
     entries: std::vec::IntoIter<Entry>,
     depot: CiaDepot,
     retained: Vec<DepotFile>,
-    old_paths: Vec<String>,
-    root: String,
-    storage: Arc<dyn VolumeStorage>,
+    storage: Arc<dyn Storage>,
     seed: Option<[u8; 16]>,
 }
 
 impl CiaInstall {
     pub async fn new(
         depot: &CiaDepot,
-        storage: Arc<dyn VolumeStorage>,
+        current: Arc<dyn VolumeStorage>,
+        storage: Arc<dyn Storage>,
         seed: Option<[u8; 16]>,
         context: &InstallContext,
     ) -> Result<Self, Error> {
         let depot = depot.clone();
-        let old = storage
+        let old = current
             .artifacts()
             .artifact(&format!("{:016X}", depot.title_id))
             .await?;
@@ -50,23 +49,36 @@ impl CiaInstall {
                     crate::installable::InstallPhase::Installing,
                     archive.items().iter().map(|item| item.size).sum(),
                 );
-                let retained = Self::retain_contents(&depot, &archive, &*storage, old.as_ref())?;
-                let old_paths = old
-                    .as_ref()
-                    .map(|a| {
-                        a.manifest()
-                            .iter()
-                            .map(|f| f.path().to_string_lossy().into_owned())
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let retained = Self::retain_contents(&depot, &archive, &*current, old.as_ref())?;
+                for file in &retained {
+                    let path = file.path().to_string_lossy();
+                    let mut writer = StorageWriter {
+                        file: storage.create(&path)?,
+                        position: 0,
+                        hash: blake3::Hasher::new(),
+                    };
+                    let mut reader = crate::installable::Reporting {
+                        inner: current.open_read(&path)?,
+                        context: context.clone(),
+                    };
+                    std::io::copy(&mut reader, &mut writer)
+                        .map_err(|error| Error::io(file.path(), error))?;
+                    writer
+                        .flush()
+                        .map_err(|error| Error::io(file.path(), error))?;
+                    if writer.position != file.byte_length()
+                        || writer.hash.finalize().as_bytes() != file.blake3()
+                    {
+                        return Err(Error::HistoryConflict(format!(
+                            "retained content changed: {path}"
+                        )));
+                    }
+                }
                 Ok(Self {
                     archive: Arc::new(Mutex::new(archive)),
                     entries: entries.into_iter(),
                     retained,
                     depot: depot.clone(),
-                    old_paths,
-                    root: depot.root.clone(),
                     storage,
                     seed,
                 })
@@ -81,10 +93,13 @@ impl CiaInstall {
     fn retain_contents(
         depot: &CiaDepot,
         archive: &CiaArchive<File>,
-        storage: &dyn VolumeStorage,
+        storage: &dyn Storage,
         old: Option<&Artifact>,
     ) -> Result<Vec<DepotFile>, Error> {
         let mut retained = Vec::new();
+        if depot.kind != crate::installable::DepotType::AppContent {
+            return Ok(retained);
+        }
         let Some(old) = old else {
             return Ok(retained);
         };
@@ -124,7 +139,7 @@ impl CiaInstall {
 
     fn write_entry(
         archive: &mut CiaArchive<File>,
-        storage: &dyn VolumeStorage,
+        storage: &dyn Storage,
         entry: Entry,
         seed: Option<[u8; 16]>,
         context: &InstallContext,
@@ -185,17 +200,6 @@ impl Installable for CiaInstall {
 
     async fn finish(self, manifest: Vec<DepotFile>) -> Result<Artifact, Error> {
         let manifest = DepotFile::merge(self.retained, manifest);
-        let artifact = InstalledTitle::read(&self.depot, &*self.storage, manifest)?;
-        for path in self.old_paths {
-            if path.starts_with(&format!("{}/", self.root))
-                && !artifact
-                    .manifest()
-                    .iter()
-                    .any(|f| f.path() == std::path::Path::new(&path))
-            {
-                self.storage.remove(&path)?;
-            }
-        }
-        Ok(artifact)
+        InstalledTitle::read(&self.depot, &*self.storage, manifest)
     }
 }

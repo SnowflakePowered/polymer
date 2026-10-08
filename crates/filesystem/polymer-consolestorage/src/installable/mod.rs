@@ -2,6 +2,8 @@ use crate::nand::VirtualNand;
 use std::path::{Path, PathBuf};
 
 pub mod artifacts;
+mod component;
+pub(crate) use component::ComponentStage;
 mod directory;
 mod installation;
 mod progress;

@@ -9729,6 +9729,7 @@ dependencies = [
  "cbc 0.1.2",
  "csis",
  "ctr 0.9.2",
+ "dashmap",
  "encoding_rs",
  "flate2",
  "futures",
@@ -9747,6 +9748,7 @@ dependencies = [
  "sha1 0.10.7",
  "sha2 0.10.9",
  "tar",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "toml 0.9.12+spec-1.1.0",
@@ -10281,11 +10283,13 @@ dependencies = [
 name = "polymer-library"
 version = "0.1.0"
 dependencies = [
+ "aes 0.8.4",
  "async-trait",
  "blake3",
  "blurhash",
  "consolespec",
  "crc32fast",
+ "ctr 0.9.2",
  "dashmap",
  "directories",
  "dunce",

@@ -22,6 +22,17 @@ pub trait Installable: Sized {
     ) -> Result<Option<Vec<DepotFile>>, Error>;
     /// Reconcile retained files and read installed metadata, then build the artifact.
     async fn finish(self, manifest: Vec<DepotFile>) -> Result<Artifact, Error>;
+
+    async fn finish_and_record(
+        self,
+        manifest: Vec<DepotFile>,
+        storage: std::sync::Arc<dyn crate::VolumeStorage>,
+        context: &super::InstallContext,
+    ) -> Result<Artifact, Error> {
+        let artifact = self.finish(manifest).await?;
+        storage.artifacts().record(&artifact, context).await?;
+        Ok(artifact)
+    }
 }
 
 /// Installation progress driven directly by `next().await`.
@@ -103,11 +114,10 @@ impl<'a> Installation<'a> {
             }
         }
         let manifest = manifest.into_values().collect();
-        let artifact = reporter.run(installable.finish(manifest)).await?;
         let storage = nand.root();
-        let artifacts = storage.artifacts();
-        reporter.run(artifacts.record(&artifact, &context)).await?;
-        Ok(artifact)
+        reporter
+            .run(installable.finish_and_record(manifest, storage, &context))
+            .await
     }
 
     /// Checks the NAND and the depot's contents, then prepares extraction.

@@ -1,7 +1,6 @@
 use std::collections::HashSet;
-use std::io::{Cursor, Read};
+use std::io::Read;
 
-use sha1::{Digest, Sha1};
 use zerocopy::byteorder::big_endian::{U32, U64};
 use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 
@@ -54,25 +53,6 @@ impl SharedContentMap {
         Ok(Self { entries })
     }
 
-    pub(crate) fn find(&self, sha1: &[u8; 20]) -> Option<&SharedEntry> {
-        self.entries.iter().find(|entry| entry.sha1 == *sha1)
-    }
-
-    pub(crate) fn add(&mut self, id: String, sha1: [u8; 20]) {
-        self.entries.push(SharedEntry { id, sha1 });
-    }
-
-    pub(crate) fn next_id(&self) -> Result<String, Error> {
-        let last = self
-            .entries
-            .iter()
-            .filter_map(|entry| u32::from_str_radix(&entry.id, 16).ok())
-            .max();
-        last.map_or(Some(0), |id| id.checked_add(1))
-            .map(|id| format!("{id:08x}"))
-            .ok_or_else(|| Error::malformed("shared1/content.map", "ID namespace is exhausted"))
-    }
-
     pub(crate) fn is_valid(&self) -> bool {
         let ids = self
             .entries
@@ -85,22 +65,6 @@ impl SharedContentMap {
             .map(|entry| entry.sha1)
             .collect::<HashSet<_>>();
         ids.len() == self.entries.len() && hashes.len() == self.entries.len()
-    }
-
-    pub(crate) fn file_matches(storage: &dyn Storage, path: &str, expected: &[u8; 20]) -> bool {
-        Self::read(storage, path).is_ok_and(|bytes| Sha1::digest(bytes).as_slice() == expected)
-    }
-
-    pub(crate) async fn write(&self, storage: &dyn Storage) -> Result<(), Error> {
-        let mut bytes = Vec::with_capacity(self.entries.len() * 28);
-        for entry in &self.entries {
-            bytes.extend_from_slice(entry.id.as_bytes());
-            bytes.extend_from_slice(&entry.sha1);
-        }
-        storage
-            .install_file(Box::new(Cursor::new(bytes)), "shared1/content.map")
-            .await?;
-        Ok(())
     }
 
     fn read(storage: &dyn Storage, path: &str) -> Result<Vec<u8>, Error> {
@@ -170,36 +134,5 @@ impl UidMap {
                     entry.title_id.get() == 0x0000_0001_0000_0002 && entry.uid.get() == 0x1000
                 })
             })
-    }
-
-    pub(crate) async fn insert(
-        &mut self,
-        storage: &dyn Storage,
-        title_id: u64,
-    ) -> Result<(), Error> {
-        if self.bytes.is_empty() {
-            self.bytes.extend_from_slice(INITIAL_UID_SYS);
-        }
-        if self
-            .bytes
-            .chunks_exact(12)
-            .filter_map(|entry| UidEntry::ref_from_bytes(entry).ok())
-            .any(|entry| entry.title_id.get() == title_id)
-        {
-            return Ok(());
-        }
-        let next = self
-            .bytes
-            .chunks_exact(12)
-            .filter_map(|entry| UidEntry::ref_from_bytes(entry).ok())
-            .map(|entry| entry.uid.get())
-            .max()
-            .map_or(0x1000, |uid| uid.saturating_add(1));
-        self.bytes.extend_from_slice(&title_id.to_be_bytes());
-        self.bytes.extend_from_slice(&next.to_be_bytes());
-        storage
-            .install_file(Box::new(Cursor::new(self.bytes.clone())), "sys/uid.sys")
-            .await?;
-        Ok(())
     }
 }

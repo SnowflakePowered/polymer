@@ -1,13 +1,13 @@
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
+use crate::Error;
 use crate::impls::sony::{TitleId, metadata::SonyMetadata};
 use crate::installable::artifacts::Artifact;
 use crate::installable::{
     Depot, DepotFile, DepotType, DirectoryInstall, IconHint, InstallContext, Installable,
 };
 use crate::nand::VirtualNand;
-use crate::{Error, VolumeStorage};
 
 /// An already-decrypted Vita application, patch, or add-on directory.
 /// PKG/PFS decryption and license installation are deliberately separate.
@@ -48,7 +48,7 @@ impl VitaDirectoryDepot {
 
     fn artifact(
         self,
-        storage: &dyn VolumeStorage,
+        storage: &dyn crate::Storage,
         manifest: Vec<DepotFile>,
     ) -> Result<Artifact, Error> {
         let root = &self.destination;
@@ -162,17 +162,24 @@ impl Depot for VitaDirectoryDepot {
 
     async fn install<N: VirtualNand + ?Sized>(
         self,
-        nand: &N,
+        _nand: &N,
         _keys: &dyn crate::keys::KeyReader,
         context: &InstallContext,
     ) -> Result<impl Installable, Error> {
-        let storage = nand.root();
-        Ok(DirectoryInstall::new(
+        let stage = crate::installable::ComponentStage::new()?;
+        let storage = stage.storage.clone();
+        let component = crate::ArtifactComponent {
+            id: self.destination.clone(),
+            title: self.title_id.clone(),
+            root: self.destination.clone(),
+        };
+        let inner = DirectoryInstall::new(
             self.root.clone(),
             self.destination.clone(),
             storage.clone(),
             context,
             move |manifest| self.artifact(&*storage, manifest),
-        ))
+        );
+        Ok(stage.install(inner, component, serde_json::Value::Null))
     }
 }

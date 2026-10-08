@@ -24,9 +24,30 @@ per-title save history.
 `ux0/patch`, and `ux0/addcont`, respectively. Applications and patches require
 `eboot.bin`; add-ons require a content ID whose title matches `TITLE_ID`.
 Links and `sce_pfs` trees are rejected. Drive installation with
-`depot.install(&nand).finish().await`, then record the returned artifact with
-`nand.record(&artifact).await`, as for other directory depots. Application,
-patch, and add-on artifacts have separate identities.
+`nand.try_install(path, keys)?.finish().await`. Extraction uses a temporary
+directory, and completion publishes the artifact and its files together.
+
+Applications, patches, and each add-on directory have independent Git histories.
+Each revision is a complete component snapshot. Installing a different version
+replaces that component's files, removing files omitted by the replacement.
+Installing its currently installed version again requires explicit uninstall
+first. `storage.artifacts().history(id)` lists the active component's ancestry;
+`restore(id, revision)` rolls it back to an ancestor without changing other
+components. Revisions beyond the rollback point leave the active history.
+
+Uninstalling an application reports its installed patch and add-ons through
+`affected`; callers must include those artifacts in the removal request.
+Patch removal and rollback preserve add-ons. Version-specific DLC requirements
+are not inferred. A patch or add-on can be installed without an application in
+the NAND, allowing a base title supplied by external media.
+
+Component refs and the composed NAND checkout are published through a recovery
+journal. Opening the volume or starting another operation completes a pending
+transition before proceeding. Failed extraction leaves the installed NAND
+unchanged; failures after journaling are completed on recovery. Ordinary guest
+changes still require explicit NAND recovery before installation or removal.
+Existing NANDs using the old global artifact history require a one-time
+conversion outside the application; there is no automatic migration.
 
 This backend does not extract firmware, archives, encrypted PKGs, or PFS data,
 and does not install licenses. It does not add a Vita3K emulator plugin.

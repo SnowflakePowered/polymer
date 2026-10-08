@@ -1,10 +1,13 @@
 use super::*;
 
+mod deletion;
+
 pub(super) struct PlatformInner {
     path: PathBuf,
     platform: String,
+    pub(super) composer: Option<&'static dyn crate::nand::composition::NandComposer>,
     repository: gix::ThreadSafeRepository,
-    pub(super) operation: Mutex<()>,
+    pub(super) operation: Arc<Mutex<()>>,
 }
 
 #[derive(Clone)]
@@ -39,13 +42,35 @@ impl PlatformRepository {
             .to_thread_local()
         };
         let repository = repository.into_sync();
+        let operation = Self::operation_lock(repository.git_dir())?;
+        let guard = operation.lock();
         Self::configure(&repository, platform)?;
-        Ok(Self(Arc::new(PlatformInner {
+        drop(guard);
+        let platform = Self(Arc::new(PlatformInner {
             path,
             platform: platform.to_owned(),
+            composer: <dyn crate::nand::composition::NandComposer>::for_platform(platform),
             repository,
-            operation: Mutex::new(()),
-        })))
+            operation,
+        }));
+        platform.recover_deletions()?;
+        Ok(platform)
+    }
+
+    fn operation_lock(path: &Path) -> Result<Arc<Mutex<()>>, Error> {
+        static LOCKS: std::sync::OnceLock<dashmap::DashMap<PathBuf, std::sync::Weak<Mutex<()>>>> =
+            std::sync::OnceLock::new();
+        let path = fs::canonicalize(path).map_err(|error| Error::io(path, error))?;
+        let mut entry = LOCKS
+            .get_or_init(dashmap::DashMap::new)
+            .entry(path)
+            .or_default();
+        if let Some(lock) = entry.upgrade() {
+            return Ok(lock);
+        }
+        let lock = Arc::new(Mutex::new(()));
+        *entry = Arc::downgrade(&lock);
+        Ok(lock)
     }
 
     pub(super) fn write_text(
@@ -179,78 +204,6 @@ impl PlatformRepository {
 
     pub(crate) fn repository(&self) -> &gix::ThreadSafeRepository {
         &self.0.repository
-    }
-
-    pub fn delete(&self, kind: StorageKind, id: Uuid) -> Result<(), Error> {
-        let _guard = self.0.operation.lock();
-        let repo = self.0.repository.to_thread_local();
-        let name = kind.ref_name(id);
-        let Some(reference) = repo
-            .try_find_reference(&name)
-            .map_err(|error| Error::git("find volume reference", error))?
-        else {
-            return Ok(());
-        };
-        let mut edits = vec![RefEdit {
-            change: Change::Delete {
-                expected: PreviousValue::MustExistAndMatch(reference.target().to_owned().into()),
-                log: RefLog::AndReference,
-            },
-            name: gix::refs::FullName::try_from(name.as_str())
-                .map_err(|error| Error::git("validate volume reference", error))?,
-            deref: false,
-        }];
-        if kind != StorageKind::Nand {
-            let profile = id.simple().to_string();
-            let prefixes = [
-                format!("refs/consoles/saves/v2/{profile}/"),
-                format!("refs/notes/consoles/v2/{profile}/"),
-            ];
-            let exact = [
-                format!("refs/consoles/archive/v2/{profile}/recently-deleted"),
-                format!("refs/consoles/transactions/v2/{profile}"),
-            ];
-            let references = repo
-                .references()
-                .map_err(|error| Error::git("list profile references", error))?;
-            for reference in references
-                .all()
-                .map_err(|error| Error::git("list profile references", error))?
-            {
-                let reference =
-                    reference.map_err(|error| Error::git("read profile reference", error))?;
-                let reference_name = reference.name().as_bstr().to_str_lossy().into_owned();
-                if !prefixes
-                    .iter()
-                    .any(|prefix| reference_name.starts_with(prefix))
-                    && !exact.contains(&reference_name)
-                {
-                    continue;
-                }
-                edits.push(RefEdit {
-                    change: Change::Delete {
-                        expected: PreviousValue::MustExistAndMatch(
-                            reference.target().to_owned().into(),
-                        ),
-                        log: RefLog::AndReference,
-                    },
-                    name: gix::refs::FullName::try_from(reference_name.as_str())
-                        .map_err(|error| Error::git("validate profile reference", error))?,
-                    deref: false,
-                });
-            }
-        }
-        let signature = PlatformRepository::signature();
-        let mut time = gix::date::parse::TimeBuf::default();
-        repo.edit_references_as(edits, Some(signature.to_ref(&mut time)))
-            .map_err(|error| Error::git("delete volume reference", error))?;
-        self.volume(kind, id)
-            .remove_from_index(repo.object_hash())?;
-        let checkout = self.checkout_path(kind, id);
-        if checkout.exists() {
-            fs::remove_dir_all(&checkout).map_err(|error| Error::io(&checkout, error))?;
-        }
-        Ok(())
     }
 
     pub fn fork_profile(

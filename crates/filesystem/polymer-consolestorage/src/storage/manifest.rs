@@ -52,7 +52,39 @@ pub struct VolumeInfo {
     pub created: Timestamp,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ArtifactComponent {
+    pub id: String,
+    pub title: String,
+    pub root: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ArtifactRevision {
+    pub revision: String,
+    pub artifact: ArtifactSummary,
+}
+
 pub trait ArtifactRegistry: Send + Sync {
+    fn install_component<'a>(
+        &'a self,
+        _component: &'a ArtifactComponent,
+        _metadata: &'a serde_json::Value,
+        _artifact: &'a Artifact,
+        _source: std::sync::Arc<dyn super::Storage>,
+        _context: &'a crate::installable::InstallContext,
+    ) -> BoxFuture<'a, Result<(), Error>> {
+        Box::pin(async { Err(Error::Unsupported("component installation".into())) })
+    }
+
+    fn history<'a>(&'a self, _id: &'a str) -> BoxFuture<'a, Result<Vec<ArtifactRevision>, Error>> {
+        Box::pin(async { Err(Error::Unsupported("component history".into())) })
+    }
+
+    fn restore<'a>(&'a self, _id: &'a str, _revision: &'a str) -> BoxFuture<'a, Result<(), Error>> {
+        Box::pin(async { Err(Error::Unsupported("component restore".into())) })
+    }
+
     fn revision(&self) -> Result<String, Error>;
     fn affected<'a>(&'a self, ids: &'a [&'a str]) -> BoxFuture<'a, Result<Vec<String>, Error>>;
     /// Commit the artifact and pending files, reporting a finalizing phase while blobs are written.

@@ -11,6 +11,7 @@ use orbis_unpkg::Psf;
 use pkgrip::PkgArchive;
 use sha1::{Digest, Sha1};
 
+use super::super::composer::PkgContribution;
 use super::super::{Ps3Nand, TitleId};
 use crate::Error;
 use crate::installable::{Depot, DepotType, Installable};
@@ -29,6 +30,7 @@ pub struct Ps3PkgDepot {
     digest: [u8; 20],
     label: Option<String>,
     icon: Option<Vec<u8>>,
+    contribution: PkgContribution,
 }
 
 impl Ps3PkgDepot {
@@ -197,9 +199,41 @@ impl Depot for Ps3PkgDepot {
         if directory.contains('/') {
             return Err(Error::InvalidPath(directory.to_owned()));
         }
+        let install_path = format!("dev_hdd0/game/{directory}");
+        let app_version = sfo
+            .get_string("APP_VER")
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_owned);
+        let target_app_version = sfo
+            .get_string("TARGET_APP_VER")
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_owned);
+        let version = if kind == DepotType::AppContent {
+            metadata.version
+        } else {
+            app_version.clone().or(metadata.version)
+        };
+        let contribution = PkgContribution {
+            content_id: content_id.clone(),
+            title_id: title_id.clone(),
+            digest,
+            app_version,
+            target_app_version,
+            files: archive
+                .items()
+                .iter()
+                .filter(|item| item.is_file)
+                .map(|item| {
+                    (
+                        format!("{install_path}/{}", item.name),
+                        item.entry_type & 0x80000000 != 0,
+                    )
+                })
+                .collect(),
+        };
         Ok(Self {
-            install_path: format!("dev_hdd0/game/{directory}"),
-            version: metadata.version,
+            install_path,
+            version,
             path: path.to_path_buf(),
             title_id,
             content_id,
@@ -207,6 +241,7 @@ impl Depot for Ps3PkgDepot {
             digest,
             label,
             icon,
+            contribution,
         })
     }
 
@@ -246,11 +281,16 @@ impl Depot for Ps3PkgDepot {
 
     async fn install<N: VirtualNand + ?Sized>(
         self,
-        nand: &N,
+        _nand: &N,
         _keys: &dyn crate::keys::KeyReader,
         context: &InstallContext,
     ) -> Result<impl Installable, Error> {
-        install::Ps3PkgInstall::new(&self, nand.root(), context).await
+        let stage = crate::installable::ComponentStage::new()?;
+        let component = self.contribution.component(&self.install_path, self.kind);
+        let metadata = serde_json::to_value(&self.contribution)
+            .map_err(|error| Error::malformed("PS3 component", error.to_string()))?;
+        let inner = install::Ps3PkgInstall::new(&self, stage.storage.clone(), context).await?;
+        Ok(stage.install(inner, component, metadata))
     }
 }
 

@@ -12,13 +12,12 @@ use crate::installable::DepotFile;
 use crate::installable::DepotType;
 use crate::installable::StorageWriter;
 use crate::installable::artifacts::{Artifact, ArtifactEntrypoint};
-use crate::{Error, VolumeStorage};
+use crate::{Error, Storage};
 
 pub(super) struct Ps3PkgInstall {
     extraction: Arc<Mutex<PkgExtraction>>,
     depot: Ps3PkgDepot,
-    retained: Vec<DepotFile>,
-    storage: Arc<dyn VolumeStorage>,
+    storage: Arc<dyn Storage>,
 }
 
 struct PkgExtraction {
@@ -26,17 +25,17 @@ struct PkgExtraction {
     root: String,
     manifest: Vec<DepotFile>,
     index: usize,
-    storage: Arc<dyn VolumeStorage>,
+    storage: Arc<dyn Storage>,
 }
 
 impl Ps3PkgInstall {
     pub async fn new(
         depot: &Ps3PkgDepot,
-        storage: Arc<dyn VolumeStorage>,
+        storage: Arc<dyn Storage>,
         context: &InstallContext,
     ) -> Result<Self, Error> {
         let depot = depot.clone();
-        let mut install = context
+        context
             .spawn_blocking(move |context| {
                 let file = depot.verified_file(context)?;
                 let size = file
@@ -63,18 +62,11 @@ impl Ps3PkgInstall {
                         storage: storage.clone(),
                     })),
                     depot,
-                    retained: Vec::new(),
                     storage,
                 })
             })
             .await
-            .map_err(|error| Error::Unsupported(format!("PKG worker failed: {error}")))??;
-        // Reinstalling a patch is additive. Retain ownership of earlier files.
-        let id = install.depot.artifact_id();
-        if let Some(old) = install.storage.artifacts().artifact(&id).await? {
-            install.retained = old.manifest().to_vec();
-        }
-        Ok(install)
+            .map_err(|error| Error::Unsupported(format!("PKG worker failed: {error}")))?
     }
 }
 
@@ -156,14 +148,11 @@ impl Installable for Ps3PkgInstall {
         Artifact::new(
             self.depot.artifact_id(),
             self.depot.kind,
-            DepotFile::merge(self.retained, manifest),
+            manifest,
             crate::impls::sony::metadata::SonyMetadata::title(&sfo)
                 .unwrap_or(&self.depot.title_id)
                 .to_owned(),
-            sfo.get_string("APP_VER")
-                .filter(|s| !s.trim().is_empty())
-                .map(str::to_owned)
-                .or(self.depot.version),
+            self.depot.version,
             vec![icon],
             (self.depot.kind == DepotType::App).then(|| ArtifactEntrypoint {
                 root: root.clone(),
