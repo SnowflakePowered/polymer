@@ -84,6 +84,7 @@ impl SaveVersioning {
                 .await?;
         }
         let _guard = self.inner.operation.lock().await;
+        self.recover_locked(owner).await?;
         let (record, conflict) = {
             let repo = self.inner.repository().to_thread_local();
             let record = self
@@ -121,9 +122,9 @@ impl SaveVersioning {
         owner: &R,
         present: &HashSet<SaveDepotId>,
     ) -> Result<bool, Error> {
-        self.recover(owner).await?;
-        let tracked = self.tracked_depots()?;
         let _guard = self.inner.operation.lock().await;
+        self.ensure_no_pending_journal()?;
+        let tracked = self.tracked_depots()?;
         let mut changed = false;
         for depot in tracked {
             if !present.contains(&depot) {
@@ -263,6 +264,7 @@ impl SaveVersioning {
         owner: &R,
         depot: SaveDepotId,
     ) -> Result<(), Error> {
+        self.recover_locked(owner).await?;
         let Some(state) = ({
             let repo = self.inner.repository().to_thread_local();
             let Some(state) = Self::ref_state_in(&repo, &self.refs(depot))? else {

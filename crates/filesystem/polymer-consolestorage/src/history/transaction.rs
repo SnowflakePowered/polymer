@@ -6,18 +6,13 @@ use super::{
     AttachmentTips, SaveAttachmentKind, SaveDepotId, SaveRefState, SaveTransition, SaveVersioning,
 };
 use crate::{Error, SaveRepo};
-use gix::refs::transaction::{Change, PreviousValue, RefEdit, RefLog};
+use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
 
 struct MaterializationJournal {
     depot: u64,
     old: Option<String>,
     target: Option<String>,
     attachments: AttachmentTips,
-}
-
-enum MaterializationFailure {
-    RolledBack(Error),
-    RollbackFailed { apply: Error, rollback: Error },
 }
 
 impl SaveVersioning {
@@ -83,7 +78,6 @@ impl SaveVersioning {
     fn write_journal_ref(&self, journal: &MaterializationJournal) -> Result<(), Error> {
         let repo = self.inner.repository().to_thread_local();
         let reference = self.journal_ref();
-        let parent = Self::tip_in(&repo, &reference)?;
         let mut editor = repo
             .empty_tree()
             .edit()
@@ -117,16 +111,43 @@ impl SaveVersioning {
         let signature = Self::signature();
         let mut time = gix::date::parse::TimeBuf::default();
         let signature = signature.to_ref(&mut time);
-        repo.commit_as(
-            signature,
-            signature,
-            reference,
-            "Polymer profile materialization transaction",
-            tree,
-            parent,
-        )
-        .map(|_| ())
-        .map_err(|error| Error::git("commit profile transaction", error))
+        let commit = repo
+            .new_commit_as(
+                signature,
+                signature,
+                "Polymer profile materialization transaction",
+                tree,
+                std::iter::empty::<gix::ObjectId>(),
+            )
+            .map_err(|error| Error::git("commit profile transaction", error))?
+            .id;
+        let edit = RefEdit {
+            change: Change::Update {
+                log: LogChange {
+                    mode: RefLog::AndReference,
+                    force_create_reflog: true,
+                    message: "polymer: materialization transaction".into(),
+                },
+                expected: PreviousValue::MustNotExist,
+                new: gix::refs::Target::Object(commit),
+            },
+            name: gix::refs::FullName::try_from(reference.as_str())
+                .map_err(|error| Error::git("validate profile transaction ref", error))?,
+            deref: false,
+        };
+        repo.edit_references_as([edit], Some(signature))
+            .map(|_| ())
+            .map_err(|error| Error::git("publish profile transaction", error))
+    }
+
+    pub(super) fn ensure_no_pending_journal(&self) -> Result<(), Error> {
+        let repo = self.inner.repository().to_thread_local();
+        if Self::tip_in(&repo, &self.journal_ref())?.is_some() {
+            return Err(Error::HistoryConflict(
+                "save materialization requires recovery".to_owned(),
+            ));
+        }
+        Ok(())
     }
 
     fn clear_journal(&self) -> Result<(), Error> {
@@ -191,43 +212,9 @@ impl SaveVersioning {
                     .unwrap_or_default(),
             )
         };
-        if let Err(failure) = Self::apply_files(owner, &old_files, &new_files).await {
-            return match failure {
-                MaterializationFailure::RolledBack(error) => {
-                    self.clear_journal()?;
-                    Err(error)
-                }
-                MaterializationFailure::RollbackFailed { apply, rollback } => {
-                    // Keep the journal. A later recovery will idempotently
-                    // roll forward to the requested snapshot.
-                    Err(Error::HistoryConflict(format!(
-                        "save materialization failed ({apply}); rollback also failed ({rollback})"
-                    )))
-                }
-            };
-        }
+        Self::apply_files(owner, &old_files, &new_files).await?;
         let repo = self.inner.repository().to_thread_local();
-        if let Err(reference_error) =
-            self.install_save_refs(&repo, transition.depot, transition.after)
-        {
-            drop(repo);
-            return match Self::apply_files(owner, &new_files, &old_files).await {
-                Ok(()) => {
-                    self.clear_journal()?;
-                    Err(reference_error)
-                }
-                Err(MaterializationFailure::RolledBack(rollback)) => {
-                    Err(Error::HistoryConflict(format!(
-                        "save reference publication failed ({reference_error}); canonical rollback failed ({rollback})"
-                    )))
-                }
-                Err(MaterializationFailure::RollbackFailed { apply, rollback }) => {
-                    Err(Error::HistoryConflict(format!(
-                        "save reference publication failed ({reference_error}); canonical rollback failed ({apply}) and compensation failed ({rollback})"
-                    )))
-                }
-            };
-        }
+        self.install_save_refs(&repo, transition.depot, transition.after)?;
         self.inner
             .profile
             .set_save_tip(transition.depot.0, transition.after.map(|state| state.tip));
@@ -242,11 +229,12 @@ impl SaveVersioning {
         owner: &R,
         transition: SaveTransition,
     ) -> Result<(), Error> {
+        self.ensure_no_pending_journal()?;
         self.write_journal(transition)?;
         self.recover_locked(owner).await
     }
 
-    pub(super) async fn recover<R: SaveRepo + ?Sized>(&self, owner: &R) -> Result<(), Error> {
+    pub(crate) async fn recover<R: SaveRepo + ?Sized>(&self, owner: &R) -> Result<(), Error> {
         let _guard = self.inner.operation.lock().await;
         self.recover_locked(owner).await
     }
@@ -255,31 +243,18 @@ impl SaveVersioning {
         owner: &R,
         old: &BTreeMap<String, Vec<u8>>,
         new: &BTreeMap<String, Vec<u8>>,
-    ) -> Result<(), MaterializationFailure> {
-        if let Err(apply) = Self::apply_files_once(owner, old, new).await {
-            return match Self::apply_files_once(owner, new, old).await {
-                Ok(()) => Err(MaterializationFailure::RolledBack(apply)),
-                Err(rollback) => Err(MaterializationFailure::RollbackFailed { apply, rollback }),
-            };
-        }
-        Ok(())
-    }
-
-    async fn apply_files_once<R: crate::Storage + ?Sized>(
-        owner: &R,
-        old: &BTreeMap<String, Vec<u8>>,
-        new: &BTreeMap<String, Vec<u8>>,
     ) -> Result<(), Error> {
-        // Install replacements before removing obsolete files. Each install is
-        // itself atomic, and this ordering leaves the complete old snapshot
-        // available for compensation until every target file is durable.
         for (path, bytes) in new {
             owner
                 .install_file(Box::new(Cursor::new(bytes.clone())), path)
                 .await?;
         }
         for path in old.keys().filter(|path| !new.contains_key(*path)) {
-            owner.remove(path)?;
+            match owner.remove(path) {
+                Ok(()) => {}
+                Err(Error::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
         }
 
         let mut directories = BTreeSet::new();

@@ -312,9 +312,9 @@ impl SaveVersioning {
         depot: SaveDepotId,
         requested: SaveCommitOperation,
     ) -> Result<Option<SaveCommitInfo>, Error> {
-        self.recover(owner).await?;
-        let exported = owner.export_save(&depot)?;
         let guard = self.inner.operation.lock().await;
+        self.recover_locked(owner).await?;
+        let exported = owner.export_save(&depot)?;
         let repo = self.inner.repository().to_thread_local();
         let reference = self.refs(depot).head;
         let parent = Self::tip_in(&repo, &reference)?;
@@ -354,7 +354,9 @@ impl SaveVersioning {
         Ok(Some(info))
     }
 
-    pub(crate) fn checkpoint_profile(&self) -> Result<bool, Error> {
+    pub(crate) async fn checkpoint_profile(&self) -> Result<bool, Error> {
+        let _guard = self.inner.operation.lock().await;
+        self.ensure_no_pending_journal()?;
         self.inner
             .profile
             .commit_pending("Polymer profile autosave", None)
@@ -394,6 +396,7 @@ impl SaveVersioning {
         self.checkpoint(owner, depot, SaveCommitOperation::Manual)
             .await?;
         let guard = self.inner.operation.lock().await;
+        self.recover_locked(owner).await?;
         self.ensure_member(depot, wanted)?;
         let refs = self.refs(depot);
         let operation = SaveCommitOperation::Restore {
