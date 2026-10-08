@@ -225,8 +225,9 @@ impl<L: SaveLayout> SaveRepo for SonySaveRepo<L> {
     }
 
     async fn checkpoint_saves(&self) -> Result<bool, Error> {
+        self.versioning().recover(self).await?;
         if self.has_staging() {
-            return self.versioning().checkpoint_profile();
+            return self.versioning().checkpoint_profile().await;
         }
         let saves = self.save_ids();
         let present = saves.iter().copied().collect::<HashSet<_>>();
@@ -242,7 +243,7 @@ impl<L: SaveLayout> SaveRepo for SonySaveRepo<L> {
             .versioning()
             .archive_missing_saves(self, &present)
             .await?;
-        changed |= self.versioning().checkpoint_profile()?;
+        changed |= self.versioning().checkpoint_profile().await?;
         Ok(changed)
     }
 }

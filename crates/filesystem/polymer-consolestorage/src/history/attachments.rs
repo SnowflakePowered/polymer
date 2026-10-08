@@ -54,6 +54,7 @@ impl SaveVersioning {
             })?;
         }
         let _guard = self.inner.operation.lock().await;
+        self.ensure_no_pending_journal()?;
         let path = self.note_path(depot, scope)?;
         let repo = self.inner.repository().to_thread_local();
         let reference = self.refs(depot).attachment(kind).to_owned();
@@ -108,6 +109,7 @@ impl SaveVersioning {
         kind: SaveAttachmentKind,
     ) -> Result<bool, Error> {
         let _guard = self.inner.operation.lock().await;
+        self.ensure_no_pending_journal()?;
         let path = self.note_path(depot, scope)?;
         let repo = self.inner.repository().to_thread_local();
         let reference = self.refs(depot).attachment(kind).to_owned();

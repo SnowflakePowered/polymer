@@ -1,230 +1,144 @@
 ---------------------------- MODULE SaveJournal ----------------------------
-(***************************************************************************)
-(* T3: save-history materialization journal.                              *)
-(*                                                                         *)
-(* Rust mapping (history/transaction.rs, history/mod.rs, archive.rs):      *)
-(*   journal        refs/consoles/transactions/v2/<volume>                 *)
-(*                  (write_journal / read_journal / clear_journal)         *)
-(*   fs             files in the owning Storage (install_file / remove)    *)
-(*   head, attach   save + notes refs, edited atomically by                *)
-(*                  install_save_refs                                      *)
-(*   profileTip     profile.set_save_tip + commit_pending                  *)
-(*   lock           HistoryInner::operation                                *)
-(*   ctx[p]         one apply_files / apply_files_once loop in flight      *)
-(*                                                                         *)
-(* Callers (restore, restore_deleted, archive_missing_saves) call          *)
-(* recover() and release the lock before taking it again for               *)
-(* apply_transition_locked; that window is modelled by RecoverThenLock.    *)
-(* Snapshot 0 is "no save" (before/after = None).                          *)
-(***************************************************************************)
 EXTENDS Integers, FiniteSets, TLC
 
-CONSTANTS Procs, Paths, Snapshots, Contents, InitSnap, Target,
+CONSTANTS Procs, Depots, Depot, Paths, Snapshots, Contents, InitSnap, Target,
           MaxFailures, MaxCrashes
 
 ASSUME InitSnap \in Snapshots /\ 0 \in Snapshots
-ASSUME Target \in [Procs -> Snapshots]
+ASSUME Target \in [Procs -> Snapshots] /\ Depot \in [Procs -> Depots]
 ASSUME Contents \in [Snapshots -> SUBSET Paths] /\ Contents[0] = {}
 
 None == "none"
-NoJournal == [old |-> -1, target |-> -1]
+NoJournal == [depot |-> None, old |-> -1, target |-> -1]
+Notes == {"note", "screenshot", "icon", "title"}
+RefNames == Notes \cup {"head"}
 
-VARIABLES fs, head, attach, profileTip, journal, lock,
-          pc, ctx, done, failures, crashes
-
-vars == <<fs, head, attach, profileTip, journal, lock, pc, ctx, done, failures, crashes>>
+VARIABLES fs, refs, profileTip, journal, lock, pc, todo, done, failures, crashes
+vars == <<fs, refs, profileTip, journal, lock, pc, todo, done, failures, crashes>>
 
 Mat(s) == [p \in Paths |-> IF p \in Contents[s] THEN s ELSE 0]
-
-\* One apply_files_once(src, dst): install every dst file, then remove src-only files.
-Pass(cont, stage, src0, dst0, src, dst) ==
-  [cont |-> cont, stage |-> stage, src0 |-> src0, dst0 |-> dst0,
-   dst |-> dst, install |-> Contents[dst], remove |-> Contents[src] \ Contents[dst]]
-
-\* ctx.stage: "fwd" = first apply_files_once, "back" = its rollback.
-\* ctx.cont:  "main" = materialization, "comp" = compensation after refs failed.
-NoCtx == Pass("none", "none", 0, 0, 0, 0)
-
-Start(cont, src, dst) == Pass(cont, "fwd", src, dst, src, dst)
+Work(old, target) == [install |-> Contents[target],
+                       remove |-> Contents[old] \ Contents[target], refs |-> RefNames]
+NoWork == Work(0, 0)
 
 TypeOK ==
-  /\ fs \in [Paths -> Snapshots]
-  /\ head \in Snapshots /\ attach \in Snapshots /\ profileTip \in Snapshots
+  /\ fs \in [Depots -> [Paths -> Snapshots]]
+  /\ refs \in [Depots -> [RefNames -> Snapshots]]
+  /\ profileTip \in [Depots -> Snapshots]
+  /\ journal \in {NoJournal} \cup [depot : Depots, old : Snapshots, target : Snapshots]
   /\ lock \in Procs \cup {None}
-  /\ pc \in [Procs -> {"idle", "recovering", "want", "files", "refs", "profile", "clear"}]
+  /\ pc \in [Procs -> {"idle", "want", "prepared", "files", "refs", "profile", "clear"}]
 
 Init ==
-  /\ fs = Mat(InitSnap)
-  /\ head = InitSnap /\ attach = InitSnap /\ profileTip = InitSnap
-  /\ journal = NoJournal
-  /\ lock = None
+  /\ fs = [d \in Depots |-> Mat(InitSnap)]
+  /\ refs = [d \in Depots |-> [r \in RefNames |-> InitSnap]]
+  /\ profileTip = [d \in Depots |-> InitSnap]
+  /\ journal = NoJournal /\ lock = None
   /\ pc = [p \in Procs |-> "idle"]
-  /\ ctx = [p \in Procs |-> NoCtx]
-  /\ done = [p \in Procs |-> FALSE]
+  /\ todo = NoWork /\ done = [p \in Procs |-> FALSE]
   /\ failures = 0 /\ crashes = 0
 
-CanFail == failures < MaxFailures
+Release(p) == /\ lock' = None /\ pc' = [pc EXCEPT ![p] = "idle"] /\ todo' = NoWork
 
-Release(p) == /\ lock' = None /\ pc' = [pc EXCEPT ![p] = "idle"] /\ ctx' = [ctx EXCEPT ![p] = NoCtx]
-
-\* recover() with no journal: lock, read nothing, unlock.  With a journal:
-\* run recover_locked.  The caller then later takes the lock again.
-RecoverThenLock(p) ==
-  /\ pc[p] = "idle" /\ ~done[p] /\ lock = None
-  /\ journal = NoJournal
+Request(p) ==
+  /\ pc[p] = "idle" /\ ~done[p]
   /\ pc' = [pc EXCEPT ![p] = "want"]
-  /\ UNCHANGED <<fs, head, attach, profileTip, journal, lock, ctx, done, failures, crashes>>
+  /\ UNCHANGED <<fs, refs, profileTip, journal, lock, todo, done, failures, crashes>>
 
-\* apply_transition_locked: write_journal (before = current refs) then recover_locked.
+Prepare(p) ==
+  /\ pc[p] = "want" /\ lock = None /\ journal = NoJournal
+  /\ lock' = p /\ pc' = [pc EXCEPT ![p] = "prepared"]
+  /\ UNCHANGED <<fs, refs, profileTip, journal, todo, done, failures, crashes>>
+
 WriteJournal(p) ==
-  /\ pc[p] = "want" /\ lock = None
-  /\ lock' = p
-  /\ journal' = [old |-> head, target |-> Target[p]]
-  /\ done' = [done EXCEPT ![p] = TRUE]
-  /\ pc' = [pc EXCEPT ![p] = "files"]
-  /\ ctx' = [ctx EXCEPT ![p] = Start("main", head, Target[p])]
-  /\ UNCHANGED <<fs, head, attach, profileTip, failures, crashes>>
+  /\ pc[p] = "prepared" /\ lock = p /\ journal = NoJournal
+  /\ journal' = [depot |-> Depot[p], old |-> refs[Depot[p]]["head"], target |-> Target[p]]
+  /\ todo' = Work(refs[Depot[p]]["head"], Target[p])
+  /\ pc' = [pc EXCEPT ![p] = "files"] /\ done' = [done EXCEPT ![p] = TRUE]
+  /\ UNCHANGED <<fs, refs, profileTip, lock, failures, crashes>>
 
-\* recover() at startup or from any later caller when a journal exists.
 Recover(p) ==
-  /\ pc[p] = "idle" /\ lock = None /\ journal # NoJournal
-  /\ lock' = p
-  /\ pc' = [pc EXCEPT ![p] = "files"]
-  /\ ctx' = [ctx EXCEPT ![p] = Start("main", journal.old, journal.target)]
-  /\ UNCHANGED <<fs, head, attach, profileTip, journal, done, failures, crashes>>
+  /\ pc[p] \in {"idle", "want"} /\ lock = None /\ journal # NoJournal
+  /\ lock' = p /\ pc' = [pc EXCEPT ![p] = "files"]
+  /\ todo' = Work(journal.old, journal.target)
+  /\ UNCHANGED <<fs, refs, profileTip, journal, done, failures, crashes>>
 
 InstallFile(p) ==
   /\ pc[p] = "files"
-  /\ \E f \in ctx[p].install :
-       /\ fs' = [fs EXCEPT ![f] = ctx[p].dst]
-       /\ ctx' = [ctx EXCEPT ![p].install = @ \ {f}]
-  /\ UNCHANGED <<head, attach, profileTip, journal, lock, pc, done, failures, crashes>>
+  /\ \E f \in todo.install :
+       /\ fs' = [fs EXCEPT ![journal.depot][f] = journal.target]
+       /\ todo' = [todo EXCEPT !.install = @ \ {f}]
+  /\ UNCHANGED <<refs, profileTip, journal, lock, pc, done, failures, crashes>>
 
 RemoveFile(p) ==
-  /\ pc[p] = "files" /\ ctx[p].install = {}
-  /\ \E f \in ctx[p].remove :
-       /\ fs' = [fs EXCEPT ![f] = 0]
-       /\ ctx' = [ctx EXCEPT ![p].remove = @ \ {f}]
-  /\ UNCHANGED <<head, attach, profileTip, journal, lock, pc, done, failures, crashes>>
-
-\* Outcome of apply_files once the current apply_files_once finished or failed.
-\*   ok          : fwd pass finished
-\*   rolledBack  : fwd failed, back pass finished
-\*   rollbackFail: fwd failed, back failed
-Outcome(p, kind) ==
-  LET c == ctx[p] IN
-  IF c.cont = "main" THEN
-    CASE kind = "ok" ->
-           /\ pc' = [pc EXCEPT ![p] = "refs"] /\ ctx' = [ctx EXCEPT ![p] = c]
-           /\ UNCHANGED <<journal, lock>>
-      [] kind = "rolledBack" ->
-           /\ journal' = NoJournal /\ Release(p)
-      [] kind = "rollbackFail" ->
-           /\ UNCHANGED journal /\ Release(p)
-  ELSE
-    CASE kind = "ok" ->
-           /\ journal' = NoJournal /\ Release(p)
-      [] kind \in {"rolledBack", "rollbackFail"} ->
-           /\ UNCHANGED journal /\ Release(p)
+  /\ pc[p] = "files" /\ todo.install = {}
+  /\ \E f \in todo.remove :
+       /\ fs' = [fs EXCEPT ![journal.depot][f] = 0]
+       /\ todo' = [todo EXCEPT !.remove = @ \ {f}]
+  /\ UNCHANGED <<refs, profileTip, journal, lock, pc, done, failures, crashes>>
 
 FilesDone(p) ==
-  /\ pc[p] = "files" /\ ctx[p].install = {} /\ ctx[p].remove = {}
-  /\ Outcome(p, IF ctx[p].stage = "fwd" THEN "ok" ELSE "rolledBack")
-  /\ UNCHANGED <<fs, head, attach, profileTip, done, failures, crashes>>
+  /\ pc[p] = "files" /\ todo.install = {} /\ todo.remove = {}
+  /\ pc' = [pc EXCEPT ![p] = "refs"]
+  /\ UNCHANGED <<fs, refs, profileTip, journal, lock, todo, done, failures, crashes>>
 
-FileFails(p) ==
-  /\ pc[p] = "files" /\ CanFail
-  /\ ctx[p].install \cup ctx[p].remove # {}
-  /\ failures' = failures + 1
-  /\ IF ctx[p].stage = "fwd"
-       THEN /\ ctx' = [ctx EXCEPT ![p] = Pass(ctx[p].cont, "back", ctx[p].src0, ctx[p].dst0,
-                                              ctx[p].dst0, ctx[p].src0)]
-            /\ UNCHANGED <<journal, lock, pc>>
-       ELSE Outcome(p, "rollbackFail")
-  /\ UNCHANGED <<fs, head, attach, profileTip, done, crashes>>
-
-\* install_save_refs: one atomic edit of head + every notes ref.
-InstallRefs(p) ==
+InstallRef(p) ==
   /\ pc[p] = "refs"
-  /\ head' = journal.target /\ attach' = journal.target
-  /\ pc' = [pc EXCEPT ![p] = "profile"]
-  /\ UNCHANGED <<fs, profileTip, journal, lock, ctx, done, failures, crashes>>
+  /\ \E r \in todo.refs :
+       /\ refs' = [refs EXCEPT ![journal.depot][r] = journal.target]
+       /\ todo' = [todo EXCEPT !.refs = @ \ {r}]
+  /\ UNCHANGED <<fs, profileTip, journal, lock, pc, done, failures, crashes>>
 
-RefsFail(p) ==
-  /\ pc[p] = "refs" /\ CanFail
-  /\ failures' = failures + 1
-  /\ pc' = [pc EXCEPT ![p] = "files"]
-  /\ ctx' = [ctx EXCEPT ![p] = Start("comp", journal.target, journal.old)]
-  /\ UNCHANGED <<fs, head, attach, profileTip, journal, lock, done, crashes>>
+RefsDone(p) ==
+  /\ pc[p] = "refs" /\ todo.refs = {}
+  /\ pc' = [pc EXCEPT ![p] = "profile"]
+  /\ UNCHANGED <<fs, refs, profileTip, journal, lock, todo, done, failures, crashes>>
 
 CommitProfile(p) ==
   /\ pc[p] = "profile"
-  /\ profileTip' = journal.target
+  /\ profileTip' = [profileTip EXCEPT ![journal.depot] = journal.target]
   /\ pc' = [pc EXCEPT ![p] = "clear"]
-  /\ UNCHANGED <<fs, head, attach, journal, lock, ctx, done, failures, crashes>>
-
-ProfileFails(p) ==
-  /\ pc[p] = "profile" /\ CanFail
-  /\ failures' = failures + 1
-  /\ Release(p)
-  /\ UNCHANGED <<fs, head, attach, profileTip, journal, done, crashes>>
+  /\ UNCHANGED <<fs, refs, journal, lock, todo, done, failures, crashes>>
 
 ClearJournal(p) ==
   /\ pc[p] = "clear"
-  /\ journal' = NoJournal
-  /\ Release(p)
-  /\ UNCHANGED <<fs, head, attach, profileTip, done, failures, crashes>>
+  /\ journal' = NoJournal /\ Release(p)
+  /\ UNCHANGED <<fs, refs, profileTip, done, failures, crashes>>
 
-ClearFails(p) ==
-  /\ pc[p] = "clear" /\ CanFail
-  /\ failures' = failures + 1
-  /\ Release(p)
-  /\ UNCHANGED <<fs, head, attach, profileTip, journal, done, crashes>>
+Fail(p) ==
+  /\ pc[p] \in {"files", "refs", "profile", "clear"} /\ failures < MaxFailures
+  /\ failures' = failures + 1 /\ Release(p)
+  /\ UNCHANGED <<fs, refs, profileTip, journal, done, crashes>>
 
-\* Process death: volatile state is lost, durable state survives.
 Crash ==
-  /\ crashes < MaxCrashes
-  /\ \E p \in Procs : pc[p] # "idle"
-  /\ crashes' = crashes + 1
-  /\ lock' = None
-  /\ pc' = [p \in Procs |-> "idle"]
-  /\ ctx' = [p \in Procs |-> NoCtx]
-  /\ UNCHANGED <<fs, head, attach, profileTip, journal, done, failures>>
+  /\ crashes < MaxCrashes /\ lock # None
+  /\ crashes' = crashes + 1 /\ lock' = None
+  /\ pc' = [p \in Procs |-> "idle"] /\ todo' = NoWork
+  /\ UNCHANGED <<fs, refs, profileTip, journal, done, failures>>
 
 Progress(p) ==
-  \/ WriteJournal(p) \/ Recover(p) \/ InstallFile(p) \/ RemoveFile(p) \/ FilesDone(p)
-  \/ InstallRefs(p) \/ CommitProfile(p) \/ ClearJournal(p)
-
-Faults(p) == FileFails(p) \/ RefsFail(p) \/ ProfileFails(p) \/ ClearFails(p)
+  \/ Request(p) \/ Prepare(p) \/ WriteJournal(p) \/ Recover(p)
+  \/ InstallFile(p) \/ RemoveFile(p) \/ FilesDone(p)
+  \/ InstallRef(p) \/ RefsDone(p) \/ CommitProfile(p) \/ ClearJournal(p)
 
 Finished ==
   /\ \A p \in Procs : done[p] /\ pc[p] = "idle"
-  /\ journal = NoJournal
-  /\ UNCHANGED vars
+  /\ journal = NoJournal /\ UNCHANGED vars
 
-Next ==
-  \/ \E p \in Procs : RecoverThenLock(p) \/ Progress(p) \/ Faults(p)
-  \/ Crash
-  \/ Finished
-
+Next == (\E p \in Procs : Progress(p) \/ Fail(p)) \/ Crash \/ Finished
 Spec == Init /\ [][Next]_vars /\ \A p \in Procs : WF_vars(Progress(p))
 
-Quiescent == journal = NoJournal /\ lock = None
-
-\* After every completed or rolled-back transition, the depot is exactly the
-\* snapshot its refs name.
-MaterializedMatchesRefs == Quiescent => fs = Mat(head)
-
-\* The profile's recorded tip agrees with the refs when nothing is pending.
-ProfileMatchesRefs == Quiescent => profileTip = head
-
-\* Notes refs always move with the save ref.
-AttachmentsFollowTip == attach = head
-
-\* While a journal is pending the refs are at old or target.
-RefsAtEndpoint == journal # NoJournal => head \in {journal.old, journal.target}
-
-\* A pending journal is eventually resolved.
+Settled(d) == journal = NoJournal \/ journal.depot # d
+MaterializedMatchesRefs == \A d \in Depots : Settled(d) => fs[d] = Mat(refs[d]["head"])
+ProfileMatchesRefs == \A d \in Depots : Settled(d) => profileTip[d] = refs[d]["head"]
+AttachmentsFollowTip == \A d \in Depots : Settled(d) => \A n \in Notes : refs[d][n] = refs[d]["head"]
+RefsAtEndpoint == journal # NoJournal =>
+  \A r \in RefNames : refs[journal.depot][r] \in {journal.old, journal.target}
+ClearedAtTarget == (journal # NoJournal /\ journal' = NoJournal) =>
+  /\ fs'[journal.depot] = Mat(journal.target)
+  /\ profileTip'[journal.depot] = journal.target
+  /\ \A r \in RefNames : refs'[journal.depot][r] = journal.target
+JournalNotReplaced == [][journal # NoJournal => journal' \in {journal, NoJournal}]_vars
+JournalCompletes == [][ClearedAtTarget]_vars
 JournalResolves == journal # NoJournal ~> journal = NoJournal
-
 =============================================================================

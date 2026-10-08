@@ -97,6 +97,7 @@ pub trait SaveRepo: VolumeStorage + SaveGameSink + DowncastSaveRepo {
     /// Record the current state of every save and archive histories whose
     /// canonical save has disappeared.
     async fn checkpoint_saves(&self) -> Result<bool, Error> {
+        self.versioning().recover(self).await?;
         let saves = self
             .enumerate_saves()
             .map(|save| save.id)
@@ -117,7 +118,7 @@ pub trait SaveRepo: VolumeStorage + SaveGameSink + DowncastSaveRepo {
             .versioning()
             .archive_missing_saves(self, &present)
             .await?;
-        changed |= self.versioning().checkpoint_profile()?;
+        changed |= self.versioning().checkpoint_profile().await?;
         Ok(changed)
     }
 
