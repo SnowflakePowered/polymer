@@ -1,16 +1,12 @@
 //! WebSocket proxy and inspector bridge lifetime.
 
-use super::protocol::{Dispatch, InspectorProtocol, ProtocolError, Reply};
-use crate::shell_document::ShellDocument;
-use crate::{app::UserEvent, window_manager::EventLoopProxy};
-use actix::{Actor, Recipient};
+use super::protocol::{Dispatch, ProtocolError, Reply};
+use crate::shell::protocol::{ShellChannel, ShellCommand};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use std::{
-    cell::RefCell,
     error::Error,
     net::{SocketAddr, TcpListener},
-    rc::Weak,
     thread,
 };
 use tokio::sync::{broadcast, oneshot};
@@ -27,8 +23,7 @@ impl Bridge {
     pub(crate) fn start(
         upstream: String,
         target_url: String,
-        document: Weak<RefCell<ShellDocument>>,
-        proxy: EventLoopProxy<UserEvent>,
+        shell: ShellChannel,
     ) -> Result<Self, Box<dyn Error>> {
         let listener = TcpListener::bind(("127.0.0.1", 0))?;
         let address = listener.local_addr()?;
@@ -36,7 +31,6 @@ impl Bridge {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let (events, _) = broadcast::channel(32);
         let thread_events = events.clone();
-        let protocol = InspectorProtocol { document }.start().recipient();
         let thread = thread::Builder::new()
             .name("polymer-elements-inspector".into())
             .spawn(move || {
@@ -48,8 +42,7 @@ impl Bridge {
                         listener,
                         upstream,
                         target_url,
-                        protocol,
-                        proxy,
+                        shell,
                         events: thread_events,
                         shutdown: shutdown_rx,
                     }
@@ -93,8 +86,7 @@ struct Server {
     listener: TcpListener,
     upstream: String,
     target_url: String,
-    protocol: Recipient<Dispatch>,
-    proxy: EventLoopProxy<UserEvent>,
+    shell: ShellChannel,
     events: broadcast::Sender<Value>,
     shutdown: oneshot::Receiver<()>,
 }
@@ -116,8 +108,7 @@ impl Server {
                         let session = Session {
                             upstream: self.upstream.clone(),
                             target_url: self.target_url.clone(),
-                            protocol: self.protocol.clone(),
-                            proxy: self.proxy.clone(),
+                            shell: self.shell.clone(),
                         };
                         let receiver = self.events.subscribe();
                         tokio::spawn(async move {
@@ -136,8 +127,7 @@ impl Server {
 struct Session {
     upstream: String,
     target_url: String,
-    protocol: Recipient<Dispatch>,
-    proxy: EventLoopProxy<UserEvent>,
+    shell: ShellChannel,
 }
 
 impl Session {
@@ -208,14 +198,15 @@ impl Session {
 
     async fn dispatch(&self, request: Value, include_whitespace: bool) -> Vec<Value> {
         let id = request.get("id").cloned().unwrap_or(Value::Null);
-        let response = self.protocol.send(Dispatch {
-            request,
-            target_url: self.target_url.clone(),
-            include_whitespace,
+        let (reply, response) = oneshot::channel();
+        self.shell.send(ShellCommand::Inspect {
+            dispatch: Dispatch {
+                request,
+                target_url: self.target_url.clone(),
+                include_whitespace,
+            },
+            reply,
         });
-        // Winit's native wait cannot observe Actix's waker. Interrupt it
-        // after enqueueing the request so the main-thread executor can run.
-        let _ = self.proxy.send_event(UserEvent::WakeActors);
         match tokio::time::timeout(std::time::Duration::from_secs(2), response).await {
             Ok(Ok(Ok(Reply { result, events }))) => {
                 let mut messages = vec![match result {

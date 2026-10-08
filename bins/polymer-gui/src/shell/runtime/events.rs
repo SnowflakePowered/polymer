@@ -1,5 +1,26 @@
 use blitz_traits::events::{BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta, DomEventData};
 
+/// A pointer position in CSS pixels, received `age_ms` before dispatch.
+pub(crate) struct CoalescedPointer {
+    pub x: f32,
+    pub y: f32,
+    pub age_ms: f64,
+}
+
+/// Attaches the positions a `pointermove` coalesced, oldest first and ending
+/// with its own, so script can rebuild `getCoalescedEvents()`.
+pub(super) fn attach_samples(init: &mut serde_json::Value, samples: &[CoalescedPointer]) {
+    if let Some(init) = init.as_object_mut() {
+        init.insert(
+            "samples".into(),
+            samples
+                .iter()
+                .map(|sample| serde_json::json!([sample.x, sample.y, sample.age_ms]))
+                .collect(),
+        );
+    }
+}
+
 fn modifier_init(modifiers: keyboard_types::Modifiers) -> serde_json::Value {
     serde_json::json!({
         "altKey": modifiers.contains(keyboard_types::Modifiers::ALT),

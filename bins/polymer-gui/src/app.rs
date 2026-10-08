@@ -1,14 +1,14 @@
 use crate::cli::ShellOptions;
 use crate::commands::ShellDocumentSource;
 use crate::game_host::{GameHost, GameHostCaptureEvent};
-use crate::input::{InputPriority, InputRouter, KeyboardTarget};
+use crate::input::{InputPriority, InputRouter};
 use crate::inspector::InspectorWindow;
 use crate::instance_events;
 use crate::launch::AttachedLaunchPlan;
 use crate::metrics::{TurnPhase, TurnProfile};
-use crate::shell_document::{DomKeyboardEvent, DomMouseEvent, DomWheelEvent};
-use crate::shell_dom::{ShellSession, ShellSessionFactory};
-use crate::shell_runtime::{InstanceToken, PolymerNotification, PolymerNotificationSender};
+use crate::shell::protocol::{PointerSample, ShellCommand, ShellEvent, ShellInput};
+use crate::shell::{ShellSession, ShellSessionFactory, ShellSource};
+use crate::shell::runtime::{InstanceToken, PolymerNotification, PolymerNotificationSender};
 use crate::window_manager::{
     EventLoopProxy, LoopDirective, ShellDeviceEvent, ShellImeEvent, ShellWindowEvent, WindowCommand,
 };
@@ -31,10 +31,12 @@ mod coordinator_commands;
 mod coordinator_game;
 mod coordinator_input;
 mod coordinator_presentation;
+mod held_input;
 
 pub(crate) use application::ShellApplication;
 
 pub(crate) use crate::commands::UserEvent;
+use held_input::{HeldInput, InputHold};
 
 // Capture can produce events much faster than the window message queue when
 // several streams are active. Keep each dispatch small so native window input
@@ -51,23 +53,21 @@ const PENDING_SURFACE_RETRY: Duration = Duration::from_millis(1);
 /// misses it by a hair and defers the present a whole interval, which is the
 /// judder this budget exists to close. Expected waits are a fraction of a
 /// millisecond — the bound is only here so a stalled swapchain cannot hold the
-/// event loop and Deno UI isolate that share this thread.
+/// event loop.
 const PRESENT_PERMIT_WAIT: Duration = Duration::from_millis(3);
-/// Native notifications enter JavaScript through the Polymer inbox. Poll
-/// the browser's asynchronous work once per UI frame instead of once per
-/// cursor, capture, and compositor event.
-const SHELL_RUNTIME_POLL_INTERVAL: Duration = Duration::from_millis(16);
 
 struct ShellCoordinator {
-    shell_dom: ShellSession,
+    shell: ShellSession,
     compositor: CompositorHandle,
-    pending_layouts: std::collections::BTreeMap<u64, Vec<crate::shell_dom::TrackedSurfaceLayout>>,
+    pending_layouts:
+        std::collections::BTreeMap<u64, Vec<crate::shell::protocol::TrackedSurfaceLayout>>,
     next_scene_revision: u64,
     profile: TurnProfile,
     session: String,
     proxy: EventLoopProxy<UserEvent>,
     game_host: GameHost,
     input: InputRouter,
+    held: InputHold,
     inspector: Option<InspectorWindow>,
     notifications: Option<PolymerNotificationSender>,
     theme: crate::theme::SelectedTheme,
@@ -129,14 +129,14 @@ impl ShellCoordinator {
         let session = unique_session();
         let input_sources = shell_factory.input_sources();
         let controller_api = shell_factory.controller_api();
-        let shell_dom = ShellSession::new(shell_factory);
+        let shell = ShellSession::new(shell_factory);
 
         let input = InputRouter::runtime(input_sources, controller_api)
             .await
             .map_err(std::io::Error::other)?;
 
         let state = Self {
-            shell_dom,
+            shell,
             compositor,
             pending_layouts: Default::default(),
             next_scene_revision: 0,
@@ -145,18 +145,13 @@ impl ShellCoordinator {
             proxy,
             game_host,
             input,
+            held: InputHold::default(),
             inspector: None,
             notifications: None,
             theme,
             quitting: false,
         };
         Ok(state)
-    }
-
-    fn refresh_dirty_shell(&mut self) {
-        if self.shell_dom.needs_paint() {
-            self.refresh_shell();
-        }
     }
 
     async fn activate_shell(
@@ -171,27 +166,17 @@ impl ShellCoordinator {
         if let Some(shell_source) = source {
             let size = self.compositor.borrow_mut().size();
             let scale_factor = self.compositor.borrow_mut().scale_factor();
-            let html = shell_source.html.clone();
-            let base_url = shell_source.base_url.clone();
-            let notifications = match self
-                .shell_dom
-                .activate(|factory| async move {
-                    factory
-                        .create(
-                            &html,
-                            base_url,
-                            size.width,
-                            size.height,
-                            scale_factor,
-                            commands,
-                        )
-                        .await
-                })
-                .await
-            {
+            let source = ShellSource {
+                html: shell_source.html.clone(),
+                base_url: shell_source.base_url.clone(),
+                width: size.width,
+                height: size.height,
+                scale_factor,
+            };
+            let notifications = match self.shell.activate(source, commands).await {
                 Ok(notifications) => notifications,
                 Err(error) => {
-                    self.shell_dom.disable();
+                    self.shell.disable();
                     return Err(error);
                 }
             };
@@ -203,18 +188,17 @@ impl ShellCoordinator {
                 return Ok(());
             };
             self.notifications = Some(notifications);
-            self.refresh_shell();
             tracing::error!("polymer: using shell document at {}", shell_source.base_url);
         } else {
             // Failed/absent documents do not retain an inactive DOM slot.
-            self.shell_dom.disable();
+            self.shell.disable();
         }
         self.publish_input_configuration();
         Ok(())
     }
 
     async fn reload_shell(&mut self, commands: FrontendCommands) {
-        if !self.shell_dom.take_reload() {
+        if !self.shell.take_reload() {
             return;
         }
         let (source, error) = match self.theme.reload_document().await {

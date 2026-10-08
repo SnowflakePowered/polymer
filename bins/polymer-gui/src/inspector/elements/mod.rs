@@ -2,11 +2,12 @@
 //!
 //! Deno's inspector owns the V8 domains. This module places a small WebSocket
 //! multiplexer in front of it and answers browser DOM/CSS/Page requests on the
-//! Polymer event-loop thread, where the Blitz document is owned.
+//! shell thread, where the Blitz document is owned.
 
 mod css;
 mod geometry;
 mod protocol;
 mod server;
 
+pub(crate) use protocol::{Dispatch, ProtocolError, Reply};
 pub(crate) use server::Bridge;

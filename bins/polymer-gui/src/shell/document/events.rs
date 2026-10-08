@@ -1,6 +1,5 @@
-use super::{SharedShellDocument, ShellDocument};
-use crate::shell_dom::ShellHitSnapshot;
-use crate::shell_runtime::ShellRuntime;
+use super::{SharedShellDocument, ShellDocument, ShellHitSnapshot};
+use crate::shell::runtime::{CoalescedPointer, ShellRuntime};
 use blitz_dom::{EventDriver, EventHandler, NodeId};
 use blitz_traits::events::{
     BlitzImeEvent, BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta,
@@ -21,6 +20,7 @@ struct DenoEventHandler<'a> {
     ordinary_dom_hit: bool,
     target_override: Option<usize>,
     default_prevented: Option<Rc<Cell<bool>>>,
+    samples: &'a [CoalescedPointer],
 }
 
 impl EventHandler for DenoEventHandler<'_> {
@@ -56,6 +56,7 @@ impl EventHandler for DenoEventHandler<'_> {
             &event.data,
             event.bubbles,
             event.cancelable,
+            self.samples,
         );
         if result.default_prevented {
             if let Some(default_prevented) = &self.default_prevented {
@@ -198,17 +199,20 @@ impl SharedShellDocument {
             ordinary_dom_hit,
             target_override: None,
             default_prevented: None,
+            samples: &[],
         }
     }
 
     /// Dispatches a mouse event to a target selected from a shell hit
     /// snapshot. The return value is true when script claims the pointer from
-    /// the guest surface below this layer.
+    /// the guest surface below this layer. `samples` are the positions a
+    /// pointer move coalesced, ending with its own.
     pub fn mouse_event(
         &mut self,
         runtime: &mut ShellRuntime,
         hit: ShellHitSnapshot,
         event: DomMouseEvent<'_>,
+        samples: &[CoalescedPointer],
     ) -> bool {
         let DomMouseEvent {
             kind,
@@ -259,6 +263,7 @@ impl SharedShellDocument {
             let target_override = self.0.borrow().pointer_target_override(hit, x, y);
             let handler = DenoEventHandler {
                 target_override,
+                samples,
                 ..self.handler(runtime, claimed.clone(), !hit.over_tracked_surface)
             };
             EventDriver::new(self, handler).handle_ui_event(event);
@@ -376,7 +381,7 @@ impl SharedShellDocument {
         }
         if next_focus != previous_focus {
             if let Some(node) = next_focus {
-                use crate::shell_runtime::deno::{ScrollAlignment, ScrollCommand};
+                use crate::shell::runtime::deno::{ScrollAlignment, ScrollCommand};
                 super::scrolling::Scroller::apply(
                     shell.document.as_mut(),
                     node,

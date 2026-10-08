@@ -32,19 +32,6 @@ pub(crate) enum InputPriority {
     Ui,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum KeyboardTarget {
-    Overlay,
-    Ui,
-    Game,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct PointerPosition {
-    pub x: i32,
-    pub y: i32,
-}
-
 pub(crate) struct InputPublication {
     pub diagnostics: InputDiagnostics,
     pub api_state: Option<serde_json::Value>,
@@ -70,7 +57,7 @@ pub(crate) struct InputRouter {
     pointer_projectors: Vec<PointerProjector>,
     pointer_revisions: Vec<Option<u64>>,
     priority: InputPriority,
-    cursor: PointerPosition,
+    cursor: (f64, f64),
     dom_mouse_keys: u32,
     dom_alt_key: bool,
     next_publish: Instant,
@@ -135,7 +122,7 @@ impl InputRouter {
                 .collect(),
             pointer_revisions: vec![None; 8],
             priority: InputPriority::Ui,
-            cursor: PointerPosition::default(),
+            cursor: (0.0, 0.0),
             dom_mouse_keys: 0,
             dom_alt_key: false,
             next_publish: Instant::now(),
@@ -250,23 +237,17 @@ impl InputRouter {
         std::mem::replace(&mut self.priority, priority)
     }
 
-    pub const fn cursor(&self) -> PointerPosition {
+    pub const fn cursor(&self) -> (f64, f64) {
         self.cursor
     }
 
     pub fn set_cursor(&mut self, x: f64, y: f64) {
-        self.cursor = PointerPosition {
-            x: x.round() as i32,
-            y: y.round() as i32,
-        };
+        self.cursor = (x, y);
         self.pointer_routing.set_cursor(x, y);
     }
 
     pub const fn mouse_buttons(&self) -> u8 {
         self.mouse_buttons
-    }
-    pub fn restore_mouse_buttons(&mut self, buttons: u8) {
-        self.mouse_buttons = buttons;
     }
     pub const fn dom_shift_key(&self) -> bool {
         self.dom_mouse_keys & DOM_MK_SHIFT != 0
@@ -428,6 +409,10 @@ impl InputRouter {
         self.hub.publish_host(HostInputEvent::FocusLost);
     }
 
+    pub const fn next_publication(&self) -> Instant {
+        self.next_publish
+    }
+
     pub fn publication_due(&mut self, now: Instant) -> bool {
         if now < self.next_publish {
             false
@@ -445,18 +430,6 @@ impl InputRouter {
             self.mouse_buttons &= !flag;
         }
         previous
-    }
-
-    pub fn keyboard_target(&self, overlay_consumed: bool, ui_prevented: bool) -> KeyboardTarget {
-        if ui_prevented {
-            KeyboardTarget::Ui
-        } else if overlay_consumed && self.priority == InputPriority::Ui {
-            KeyboardTarget::Overlay
-        } else if self.priority == InputPriority::Game {
-            KeyboardTarget::Game
-        } else {
-            KeyboardTarget::Ui
-        }
     }
 
     pub fn configure_launch(

@@ -7,6 +7,7 @@ impl ShellCoordinator {
         options: AttachedLaunchPlan,
         prepared_filesystem: Option<polymer_vfs::PreparedFilesystemLaunch>,
         controller_session: Option<polymer_pluginhost::controller::ControllerSession>,
+        invalid_attachment: Option<u32>,
     ) -> Result<(), String> {
         let host = polymer_runtime::filesystem_host();
         let mounted_filesystem = match prepared_filesystem
@@ -27,8 +28,7 @@ impl ShellCoordinator {
             self.emit_instance_event(token, "closed", &serde_json::Value::Null);
             return Err(error);
         }
-        let invalid_shell_attachment = self.shell_dom.invalid_attachment(&options);
-        if let Some(index) = invalid_shell_attachment {
+        if let Some(index) = invalid_attachment {
             let error = format!("surface {index} does not attach to its shell tracked-surface");
             self.emit_instance_event(token, "error", &instance_events::error(&error));
             self.emit_instance_event(token, "closed", &serde_json::Value::Null);

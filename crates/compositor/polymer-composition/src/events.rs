@@ -8,7 +8,7 @@ pub enum WindowCommand {
     WakeCapture,
     CompositorTick,
     ShellRasterReady,
-    RedrawShell,
+    ShellUpdated,
     SetCursor(Option<cursor_icon::CursorIcon>),
     SetTitle(String),
     SetImeEnabled(bool),

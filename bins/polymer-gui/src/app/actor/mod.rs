@@ -35,7 +35,7 @@ impl GuiState {
 
     fn with_active<R>(
         &self,
-        token: crate::shell_runtime::InstanceToken,
+        token: crate::shell::runtime::InstanceToken,
         operation: impl FnOnce(&mut ShellCoordinator) -> Result<R, String>,
     ) -> Result<R, String> {
         self.with(|state| {
@@ -107,7 +107,7 @@ impl GuiActors {
         }
     }
 
-    pub(super) fn close(&self, token: crate::shell_runtime::InstanceToken) {
+    pub(super) fn close(&self, token: crate::shell::runtime::InstanceToken) {
         self.state.do_send(frontend::emulator::Close { token });
     }
 

@@ -19,12 +19,12 @@ mod providers;
 mod scrolling;
 mod tracked_surface;
 
-use crate::shell_dom::{
-    RasterChunkId, ShellCompositionGroup, ShellFrame, ShellHitSnapshot, ShellRasterChunk,
+use crate::shell::protocol::{
+    RasterChunkId, ShellChannel, ShellCompositionGroup, ShellFrame, ShellRasterChunk,
     TrackedSurfaceLayout,
 };
-use crate::shell_runtime::ShellRuntime;
-use crate::shell_runtime::deno::ScrollCommand;
+use crate::shell::runtime::ShellRuntime;
+use crate::shell::runtime::deno::ScrollCommand;
 use anyrender::PaintScene as _;
 use bands::BandedScene;
 pub use bands::{GamePlacement, GameViewStyle};
@@ -126,6 +126,13 @@ pub struct ShellDocument {
     pointer_hover_path: Vec<NodeId>,
 }
 
+/// Result of hit testing the document for one input event.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ShellHitSnapshot {
+    pub node_id: NodeId,
+    pub over_tracked_surface: bool,
+}
+
 #[derive(Clone)]
 pub(crate) struct SharedShellDocument(pub(crate) Rc<RefCell<ShellDocument>>);
 
@@ -160,6 +167,9 @@ impl SharedShellDocument {
 }
 
 /// Factory for a shell document and its native network/window providers.
+///
+/// Asset arrivals and redraw requests wake the shell thread. Cursor, title
+/// and IME changes go straight to the window thread.
 #[derive(Clone)]
 pub struct ShellDocumentFactory {
     event_proxy: crate::window_manager::EventLoopProxy<crate::app::UserEvent>,
@@ -177,25 +187,21 @@ impl ShellDocumentFactory {
         width: u32,
         height: u32,
         scale_factor: f32,
+        shell: ShellChannel,
     ) -> ShellDocument {
         let (sender, arrivals) = channel();
-        let proxy = self.event_proxy.clone();
+        let arrival_shell = shell.clone();
         let waker: Arc<dyn NetWaker> = Arc::new(move |_| {
             let _ = sender.send(());
-            let _ = proxy.send_event(crate::commands::UserEvent::Window(
-                crate::window_manager::WindowCommand::RedrawShell,
-            ));
+            arrival_shell.wake();
         });
         let net: Arc<dyn NetProvider> =
             Arc::new(providers::ShellNetProvider::new(waker.clone()));
-        let level_proxy = self.event_proxy.clone();
-        let images = ImageLevels::new(move || {
-            let _ = level_proxy.send_event(crate::commands::UserEvent::Window(
-                crate::window_manager::WindowCommand::RedrawShell,
-            ));
-        });
-        let shell_provider: Arc<dyn blitz_traits::shell::ShellProvider> =
-            Arc::new(NativeShellProvider::new(self.event_proxy.clone()));
+        let level_shell = shell.clone();
+        let images = ImageLevels::new(move || level_shell.wake());
+        let shell_provider: Arc<dyn blitz_traits::shell::ShellProvider> = Arc::new(
+            NativeShellProvider::new(self.event_proxy.clone(), shell),
+        );
         let mut document = blitz_html::HtmlDocument::from_html(
             html,
             blitz_dom::DocumentConfig {
@@ -329,6 +335,14 @@ impl ShellDocument {
 
     pub fn needs_paint(&self) -> bool {
         self.dirty || self.animation_frame_due()
+    }
+
+    /// When the next animation frame is due, while Blitz is animating.
+    pub fn next_animation_frame(&self) -> Option<std::time::Instant> {
+        self.document
+            .as_ref()
+            .is_animating()
+            .then(|| self.last_animation_frame + ANIMATION_FRAME_INTERVAL)
     }
 
     fn animation_frame_due(&self) -> bool {
