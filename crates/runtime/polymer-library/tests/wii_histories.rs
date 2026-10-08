@@ -7,6 +7,145 @@ use polymer_consolestorage::{Error, PlatformRepository, Storage, StorageKind, Vo
 use wii_support::{Wad, WiiFixture};
 
 #[tokio::test]
+async fn composed_rename_refuses_pending_save_restore_until_recovery() {
+    use polymer_consolestorage::savegame::SaveDepotId;
+    use polymer_consolestorage::{Save, VersionedStorage};
+    use std::sync::Arc;
+
+    let fixture = WiiFixture::new().await;
+    let id = uuid::Uuid::new_v4();
+    let profile = fixture.platform.volume(StorageKind::SaveRepo, id);
+    let saves = WiiNand::new_save_repo(VersionedStorage::new(profile).unwrap(), id, None)
+        .await
+        .unwrap();
+    let path = "title/00010001/41424344/data/save.bin";
+    saves
+        .create(path)
+        .unwrap()
+        .write_all_at(0, b"original")
+        .unwrap();
+    let save = Save::new(saves.as_ref(), SaveDepotId(0x0001000141424344));
+    let first = save.checkpoint().await.unwrap().unwrap();
+    saves
+        .create(path)
+        .unwrap()
+        .write_all_at(0, b"modified")
+        .unwrap();
+    save.checkpoint().await.unwrap().unwrap();
+    let mounted = fixture
+        .nand
+        .compose(Some(saves.clone()), Arc::new(fixture.keys.clone()))
+        .await
+        .unwrap();
+    mounted
+        .create("tmp/incoming")
+        .unwrap()
+        .write_all_at(0, b"incoming")
+        .unwrap();
+    let lock = fixture.platform.path().join(format!(
+        ".git/refs/consoles/profiles/v2/{}.lock",
+        id.simple()
+    ));
+    std::fs::write(&lock, b"held").unwrap();
+    assert!(save.restore(first.id).await.is_err());
+    assert!(matches!(
+        mounted.rename("tmp/incoming", path),
+        Err(Error::HistoryConflict(_))
+    ));
+    assert!(mounted.exists("tmp/incoming"));
+    std::fs::remove_file(&lock).unwrap();
+    saves.checkpoint_saves().await.unwrap();
+    mounted.rename("tmp/incoming", path).unwrap();
+    assert!(!mounted.exists("tmp/incoming"));
+    let reopened = fixture.platform.volume(StorageKind::SaveRepo, id);
+    let mut bytes = [0; 8];
+    assert_eq!(
+        reopened
+            .open(path, false)
+            .unwrap()
+            .read_at(0, &mut bytes)
+            .unwrap(),
+        8
+    );
+    assert_eq!(&bytes, b"incoming");
+}
+
+#[tokio::test]
+async fn composed_rename_persists_profile_changes_before_reopen() {
+    use polymer_consolestorage::VersionedStorage;
+    use std::io::Read;
+    use std::sync::Arc;
+
+    let fixture = WiiFixture::new().await;
+    let id = uuid::Uuid::new_v4();
+    let path = "title/00010001/41424344/data/save.bin";
+    {
+        let profile = fixture.platform.volume(StorageKind::SaveRepo, id);
+        let saves = WiiNand::new_save_repo(VersionedStorage::new(profile).unwrap(), id, None)
+            .await
+            .unwrap();
+        saves
+            .create(path)
+            .unwrap()
+            .write_all_at(0, b"old destination")
+            .unwrap();
+        saves.set_label(Some("baseline")).await.unwrap();
+        let mounted = fixture
+            .nand
+            .compose(Some(saves.clone()), Arc::new(fixture.keys.clone()))
+            .await
+            .unwrap();
+        saves
+            .create("title/00010001/41424344/data/other.bin")
+            .unwrap()
+            .write_all_at(0, b"pending edit")
+            .unwrap();
+        let source = mounted.create("tmp/save.tmp").unwrap();
+        source.write_all_at(0, b"replacement").unwrap();
+        mounted.rename("tmp/save.tmp", path).unwrap();
+        assert!(!mounted.exists("tmp/save.tmp"));
+        source.write_all_at(0, b"updated").unwrap();
+        source.set_len(7).unwrap();
+        mounted.sync(path).unwrap();
+    }
+    {
+        let profile = fixture.platform.volume(StorageKind::SaveRepo, id);
+        let mut contents = String::new();
+        profile
+            .open_read(path)
+            .unwrap()
+            .read_to_string(&mut contents)
+            .unwrap();
+        assert_eq!(contents, "updated");
+        contents.clear();
+        profile
+            .open_read("title/00010001/41424344/data/other.bin")
+            .unwrap()
+            .read_to_string(&mut contents)
+            .unwrap();
+        assert_eq!(contents, "pending edit");
+        let saves = WiiNand::open_save_repo(VersionedStorage::new(profile).unwrap())
+            .await
+            .unwrap();
+        let mounted = fixture
+            .nand
+            .compose(Some(saves), Arc::new(fixture.keys.clone()))
+            .await
+            .unwrap();
+        mounted.rename(path, "tmp/removed-save").unwrap();
+    }
+    let reopened = fixture.platform.volume(StorageKind::SaveRepo, id);
+    assert!(!reopened.exists(path));
+    assert!(reopened.exists("title/00010001/41424344/data/other.bin"));
+    assert!(
+        reopened
+            .read_dir("", true)
+            .unwrap()
+            .all(|entry| !entry.name.contains(".polymer-"))
+    );
+}
+
+#[tokio::test]
 async fn shared_content_survives_other_title_replacement_and_removal() {
     let fixture = WiiFixture::new().await;
     let a = fixture

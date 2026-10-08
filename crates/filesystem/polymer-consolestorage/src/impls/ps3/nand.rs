@@ -93,13 +93,19 @@ impl VirtualNand for Ps3Nand {
         keys: Arc<dyn crate::keys::KeyReader>,
     ) -> Result<Arc<dyn MountableStorage>, Error> {
         <dyn SaveRepo>::require::<Ps3SaveRepo>(saves.as_ref(), "PlayStation 3")?;
-        let mut layers: Vec<Arc<dyn MountableStorage>> =
-            vec![Arc::new(KeyStoreStorage::new(keys, Ps3Licenses).await?)];
+        let mut layers: Vec<crate::storage::ComposedLayer> =
+            vec![crate::storage::ComposedLayer::volatile(
+                "keys",
+                Arc::new(KeyStoreStorage::new(keys, Ps3Licenses).await?),
+            )];
         if let Some(saves) = saves {
-            layers.push(saves);
+            layers.push(crate::storage::ComposedLayer::saves("saves", saves));
         }
-        layers.push(Arc::new(crate::ScratchStorage::new(self.root())));
-        Ok(Arc::new(crate::ComposedStorage::new(layers)?))
+        layers.push(crate::storage::ComposedLayer::volatile(
+            "scratch",
+            Arc::new(crate::ScratchStorage::new(self.root())),
+        ));
+        Ok(Arc::new(crate::ComposedStorage::with_layers(layers)?))
     }
 
     fn platform(&self) -> &str {

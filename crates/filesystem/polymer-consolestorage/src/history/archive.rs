@@ -83,7 +83,7 @@ impl SaveVersioning {
             self.checkpoint(owner, depot, SaveCommitOperation::Manual)
                 .await?;
         }
-        let _guard = self.inner.operation.lock().await;
+        let _guard = self.inner.operation.gate.lock().await;
         self.recover_locked(owner).await?;
         let (record, conflict) = {
             let repo = self.inner.repository().to_thread_local();
@@ -122,7 +122,7 @@ impl SaveVersioning {
         owner: &R,
         present: &HashSet<SaveDepotId>,
     ) -> Result<bool, Error> {
-        let _guard = self.inner.operation.lock().await;
+        let _guard = self.inner.operation.gate.lock().await;
         self.ensure_no_pending_journal()?;
         let tracked = self.tracked_depots()?;
         let mut changed = false;

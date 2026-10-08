@@ -127,13 +127,19 @@ impl VirtualNand for CtrNand {
         keys: Arc<dyn crate::keys::KeyReader>,
     ) -> Result<Arc<dyn MountableStorage>, Error> {
         <dyn SaveRepo>::require::<CtrSaveRepo>(saves.as_ref(), "3DS")?;
-        let mut layers: Vec<Arc<dyn MountableStorage>> =
-            vec![Arc::new(KeyStoreStorage::new(keys, CtrTickets).await?)];
+        let mut layers: Vec<crate::storage::ComposedLayer> =
+            vec![crate::storage::ComposedLayer::volatile(
+                "keys",
+                Arc::new(KeyStoreStorage::new(keys, CtrTickets).await?),
+            )];
         if let Some(saves) = saves {
-            layers.push(saves);
+            layers.push(crate::storage::ComposedLayer::saves("saves", saves));
         }
-        layers.push(Arc::new(crate::ScratchStorage::new(self.root())));
-        Ok(Arc::new(ComposedStorage::new(layers)?))
+        layers.push(crate::storage::ComposedLayer::volatile(
+            "scratch",
+            Arc::new(crate::ScratchStorage::new(self.root())),
+        ));
+        Ok(Arc::new(ComposedStorage::with_layers(layers)?))
     }
 
     fn permissions(&self, path: &str) -> Permissions {

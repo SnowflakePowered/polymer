@@ -114,13 +114,19 @@ impl VirtualNand for WiiUNand {
         let tickets = WiiUTickets {
             storage: self.storage.clone(),
         };
-        let mut layers: Vec<Arc<dyn MountableStorage>> =
-            vec![Arc::new(KeyStoreStorage::new(keys, tickets).await?)];
+        let mut layers: Vec<crate::storage::ComposedLayer> =
+            vec![crate::storage::ComposedLayer::volatile(
+                "keys",
+                Arc::new(KeyStoreStorage::new(keys, tickets).await?),
+            )];
         if let Some(saves) = saves {
-            layers.push(saves);
+            layers.push(crate::storage::ComposedLayer::saves("saves", saves));
         }
-        layers.push(Arc::new(crate::ScratchStorage::new(self.root())));
-        Ok(Arc::new(ComposedStorage::new(layers)?))
+        layers.push(crate::storage::ComposedLayer::volatile(
+            "scratch",
+            Arc::new(crate::ScratchStorage::new(self.root())),
+        ));
+        Ok(Arc::new(ComposedStorage::with_layers(layers)?))
     }
 
     async fn open<St: VolumeStorage + 'static>(storage: St) -> Result<Self, Error> {

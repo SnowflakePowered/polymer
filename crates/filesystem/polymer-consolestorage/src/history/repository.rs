@@ -7,7 +7,6 @@ use gix::bstr::ByteSlice;
 use gix::objs::Write;
 use gix::refs::Target;
 use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
-use tokio::sync::Mutex;
 
 use super::{
     AttachmentTips, HistoryInner, SaveAttachmentKind, SaveCommitId, SaveDepotId, SaveRefState,
@@ -24,11 +23,12 @@ impl SaveVersioning {
                 "NAND volumes cannot provide per-save history".to_owned(),
             ));
         }
+        let operation = crate::storage::operation::StorageOperation::open(
+            profile.platform_repository().repository().git_dir(),
+            profile.id(),
+        )?;
         Ok(Self {
-            inner: Arc::new(HistoryInner {
-                profile,
-                operation: Mutex::new(()),
-            }),
+            inner: Arc::new(HistoryInner { profile, operation }),
         })
     }
 

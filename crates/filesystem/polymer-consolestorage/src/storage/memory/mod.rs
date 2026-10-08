@@ -239,8 +239,24 @@ impl Storage for MemoryStorage {
     }
 
     fn create(&self, path: &str) -> Result<Arc<dyn StorageFile>, Error> {
-        // Replacement leaves existing handles attached to the old file.
-        Ok(self.insert(path, Vec::new())?.handle(true))
+        self.require_writable(path)?;
+        let mut entries = self.entries.lock();
+        match entries.get(path) {
+            Some(Entry::File(file)) => {
+                file.replace_contents(Vec::new());
+                Ok(file.handle(true))
+            }
+            Some(Entry::Directory(_)) => Err(Error::InvalidPath(path.to_owned())),
+            None => {
+                Self::ensure_directories(
+                    &mut entries,
+                    path.rsplit_once('/').map_or("", |(parent, _)| parent),
+                )?;
+                let file = MemoryFile::new(Vec::new());
+                entries.insert(path.to_owned(), Entry::File(file.clone()));
+                Ok(file.handle(true))
+            }
+        }
     }
 
     fn open(&self, path: &str, write: bool) -> Result<Arc<dyn StorageFile>, Error> {
