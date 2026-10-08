@@ -41,7 +41,6 @@ export class LibraryState {
   private firmwareRevision = 0;
   private revision = 0;
   private disposed = false;
-  private pollTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
     private library: LibraryApi,
@@ -54,17 +53,16 @@ export class LibraryState {
     this.library.addEventListener("contentchange", this.refresh);
     this.jobsApi.addEventListener("jobchange", this.jobChanged);
     this.refresh();
-    void this.pollJobs();
+    void this.loadJobs();
   }
 
   dispose() {
     this.disposed = true;
-    clearTimeout(this.pollTimer);
     this.library.removeEventListener("contentchange", this.refresh);
     this.jobsApi.removeEventListener("jobchange", this.jobChanged);
   }
 
-  private async pollJobs() {
+  private async loadJobs() {
     const previous = new Map(this.jobs);
     try {
       const listed = await this.jobsApi.list();
@@ -87,8 +85,6 @@ export class LibraryState {
       }
     } catch (error) {
       if (!this.disposed) this.failed(error);
-    } finally {
-      if (!this.disposed) this.pollTimer = setTimeout(() => void this.pollJobs(), 1000);
     }
   }
 
