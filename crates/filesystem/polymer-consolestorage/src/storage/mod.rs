@@ -256,6 +256,12 @@ pub trait Storage: fmt::Debug + Send + Sync {
         Ok(None)
     }
 
+    fn install_bytes(&self, _bytes: &[u8], _dest: &str) -> Result<InstallResult, Error> {
+        Err(Error::Unsupported(
+            "synchronous atomic installation is not supported".to_owned(),
+        ))
+    }
+
     /// Copy `source` to `dest`, returning the blake3 digest and length of what
     /// was written. The file is only visible at `dest` once fully written.
     fn install_file<'a>(
@@ -356,6 +362,10 @@ impl<T: VolumeOverlay> Storage for T {
 
     fn watch(&self) -> Result<Option<Box<dyn ChangeSignal>>, Error> {
         self.inner().watch()
+    }
+
+    fn install_bytes(&self, bytes: &[u8], dest: &str) -> Result<InstallResult, Error> {
+        self.inner().install_bytes(bytes, dest)
     }
 
     fn install_file<'a>(
@@ -600,6 +610,28 @@ impl Storage for DirectoryStorage {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(Error::io(&resolved, e)),
         }
+    }
+
+    fn install_bytes(&self, bytes: &[u8], dest: &str) -> Result<InstallResult, Error> {
+        use std::io::Write;
+
+        if dest.is_empty() {
+            return Err(Error::InvalidPath(dest.to_owned()));
+        }
+        let resolved = self.resolve(dest)?;
+        Self::ensure_directory(&resolved)?;
+        let mut output =
+            AtomicWriteFile::open(&resolved).map_err(|error| Error::io(&resolved, error))?;
+        output
+            .write_all(bytes)
+            .map_err(|error| Error::io(&resolved, error))?;
+        output
+            .commit()
+            .map_err(|error| Error::io(&resolved, error))?;
+        Ok(InstallResult {
+            blake3: *blake3::hash(bytes).as_bytes(),
+            byte_length: bytes.len() as u64,
+        })
     }
 
     fn install_file<'a>(

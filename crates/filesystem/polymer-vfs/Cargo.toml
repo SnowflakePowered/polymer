@@ -18,6 +18,7 @@ rand.workspace = true
 polymer-consolestorage = { version = "0.1.0", path = "../polymer-consolestorage" }
 tempfile.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 uuid = "1.24.1"
 widestring = "1"
 
@@ -36,3 +37,6 @@ windows = { workspace = true, features = [
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tokio = { version = "1.53.0", features = ["macros", "rt", "time"] }

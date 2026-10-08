@@ -323,13 +323,12 @@ impl PlaystationMemoryCard {
             }
         }
 
-        let output = self.storage.create(&path)?;
-        let mut offset = 0;
+        let mut bytes = Vec::with_capacity(raw_save.byte_len());
         for block in raw_save.blocks() {
-            output.write_all_at(offset, block)?;
-            offset += block.len() as u64;
+            bytes.extend_from_slice(block);
         }
-        output.sync()
+        self.storage.install_bytes(&bytes, &path)?;
+        Ok(())
     }
 
     fn snapshot(&self, saves: &[SaveDepotId]) -> Vec<(u64, Option<(u64, Timestamp)>)> {

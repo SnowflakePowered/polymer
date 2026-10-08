@@ -60,14 +60,16 @@ impl<T: ReconciliableStorage> Storage for ReconcileStorage<T> {
     }
 
     fn create_dir_all(&self, path: &str) -> Result<(), Error> {
+        let mutation = self.worker.begin(true)?;
         self.storage.create_dir_all(path)?;
-        self.worker.schedule();
+        mutation.complete()?;
         Ok(())
     }
 
     fn create(&self, path: &str) -> Result<Arc<dyn StorageFile>, Error> {
+        let mutation = self.worker.begin(true)?;
         let file = self.storage.create(path)?;
-        self.worker.schedule();
+        mutation.complete()?;
         Ok(Arc::new(ReconcileFile {
             file,
             worker: self.worker.clone(),
@@ -84,8 +86,9 @@ impl<T: ReconciliableStorage> Storage for ReconcileStorage<T> {
     }
 
     fn remove(&self, path: &str) -> Result<(), Error> {
+        let mutation = self.worker.begin(true)?;
         self.storage.remove(path)?;
-        self.worker.schedule();
+        mutation.complete()?;
         Ok(())
     }
 
@@ -94,10 +97,11 @@ impl<T: ReconciliableStorage> Storage for ReconcileStorage<T> {
         source: Box<dyn tokio::io::AsyncRead + Send + Unpin>,
         dest: &str,
     ) -> BoxFuture<'a, Result<InstallResult, Error>> {
-        let install = self.storage.install_file(source, dest);
+        let dest = dest.to_owned();
         Box::pin(async move {
-            let result = install.await?;
-            self.worker.schedule();
+            let mutation = self.worker.begin(true)?;
+            let result = self.storage.install_file(source, &dest).await?;
+            mutation.complete()?;
             Ok(result)
         })
     }
@@ -105,16 +109,16 @@ impl<T: ReconciliableStorage> Storage for ReconcileStorage<T> {
 
 impl<T: ReconciliableStorage + MountableStorage> MountableStorage for ReconcileStorage<T> {
     fn rename(&self, from: &str, to: &str) -> Result<(), Error> {
+        let mutation = self.worker.begin(true)?;
         self.storage.rename(from, to)?;
-        self.worker.schedule();
+        mutation.complete()?;
         Ok(())
     }
 
     fn truncate(&self, path: &str, len: u64) -> Result<(), Error> {
+        let mutation = self.worker.begin(T::filter(path))?;
         self.storage.truncate(path, len)?;
-        if T::filter(path) {
-            self.worker.schedule();
-        }
+        mutation.complete()?;
         Ok(())
     }
 
@@ -124,7 +128,7 @@ impl<T: ReconciliableStorage + MountableStorage> MountableStorage for ReconcileS
     }
 
     fn finish(&self, path: &str) -> Result<(), Error> {
-        self.storage.finish(path)?;
-        self.worker.shutdown()
+        self.worker.shutdown()?;
+        self.storage.finish(path)
     }
 }

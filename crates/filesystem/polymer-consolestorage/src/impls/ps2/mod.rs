@@ -347,10 +347,8 @@ impl Playstation2MemoryCard {
         let handle = SaveDataHandle::from_name(save.name_bytes())
             .ok_or_else(|| Error::InvalidPath(save.name().into_owned()))?;
         let path = handle.path();
-        let output = self.storage.create(&path)?;
-        output.write_all_at(0, save.as_bytes())?;
-        output.set_len(save.as_bytes().len() as u64)?;
-        output.sync()
+        self.storage.install_bytes(save.as_bytes(), &path)?;
+        Ok(())
     }
 
     fn snapshot(&self, saves: &[SaveDepotId]) -> Vec<(String, u64, Timestamp)> {

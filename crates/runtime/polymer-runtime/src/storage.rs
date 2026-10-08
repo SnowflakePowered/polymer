@@ -114,19 +114,30 @@ impl ResourceFactory<dyn Volume> for SaveWatchFactory {
         }
         let saves = self.saves.clone();
         let notification = self.notification.clone();
-        let (stop, mut stopped) = tokio::sync::oneshot::channel();
+        let (stop, mut stopped) = tokio::sync::mpsc::unbounded_channel::<
+            std::sync::mpsc::SyncSender<Result<(), polymer_consolestorage::Error>>,
+        >();
         let thread = match std::thread::Builder::new()
             .name("polymer-save-history".to_owned())
             .spawn(move || {
                 runtime.block_on(async move {
                     loop {
                         tokio::select! {
-                            _ = &mut stopped => {
-                                let changed = saves.checkpoint_saves().await?;
-                                if changed {
+                            request = stopped.recv() => {
+                                let result = saves.checkpoint_saves().await;
+                                if matches!(result, Ok(true)) {
                                     notification.publish();
                                 }
-                                return Ok(());
+                                let finished = result.is_ok();
+                                if let Some(reply) = request {
+                                    let _ = reply.send(result.map(|_| ()));
+                                } else {
+                                    result?;
+                                    return Ok(());
+                                }
+                                if finished {
+                                    return Ok(());
+                                }
                             },
                             _ = watcher.changed() => {
                                 if checkpoint_saves_logged(&*saves).await {
@@ -147,7 +158,7 @@ impl ResourceFactory<dyn Volume> for SaveWatchFactory {
         };
         let history_lease: Arc<dyn ResourceLease> = Arc::new(SaveWatchingLease {
             task: Mutex::new(SaveWatchingTask {
-                stop: Some(stop),
+                stop,
                 thread: Some(thread),
             }),
         });
@@ -167,23 +178,29 @@ struct SaveWatchingLease {
 }
 
 struct SaveWatchingTask {
-    stop: Option<tokio::sync::oneshot::Sender<()>>,
+    stop: tokio::sync::mpsc::UnboundedSender<
+        std::sync::mpsc::SyncSender<Result<(), polymer_consolestorage::Error>>,
+    >,
     thread: Option<std::thread::JoinHandle<Result<(), polymer_consolestorage::Error>>>,
 }
 
 impl SaveWatchingLease {
     fn stop(&self) -> VfsResult<()> {
-        let (stop, thread) = {
-            let mut task = self.task.lock();
-            (task.stop.take(), task.thread.take())
-        };
-        let Some(thread) = thread else {
+        let mut task = self.task.lock();
+        if task.thread.is_none() {
             return Ok(());
-        };
-        if let Some(stop) = stop {
-            let _ = stop.send(());
         }
-        thread
+        let (finished, result) = std::sync::mpsc::sync_channel(1);
+        task.stop
+            .send(finished)
+            .map_err(|_| VfsError::Unsupported("save history watcher stopped".to_owned()))?;
+        result
+            .recv()
+            .map_err(|_| VfsError::Unsupported("save history watcher stopped".to_owned()))?
+            .map_err(VfsError::from)?;
+        task.thread
+            .take()
+            .expect("the stop caller owns the history thread")
             .join()
             .map_err(|_| VfsError::Unsupported("save history watcher panicked".to_owned()))?
             .map_err(VfsError::from)

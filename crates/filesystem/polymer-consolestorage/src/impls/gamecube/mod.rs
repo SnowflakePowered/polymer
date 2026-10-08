@@ -246,10 +246,8 @@ impl GameCubeMemoryCard {
                 return Ok(());
             }
         }
-        let output = self.storage.create(path)?;
-        output.write_all_at(0, bytes)?;
-        output.set_len(bytes.len() as u64)?;
-        output.sync()
+        self.storage.install_bytes(bytes, path)?;
+        Ok(())
     }
 
     fn describe_save(&self, save: &Save<'_>) -> Result<SaveDescriptor, Error> {
