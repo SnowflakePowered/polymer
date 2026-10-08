@@ -50,6 +50,16 @@ Status: none implemented. No `kani`, `proptest`, or `loom` dependencies exist in
 | T12 | Composed storage cross-layer rename | `crates/filesystem/polymer-consolestorage/storage/composed.rs` (`rename`, `move_binding`, `ComposedFile::redirected`) | Model layers, open handles, and renames, with crashes between steps. **Windows to check:** a write through an open handle to `from` after its bytes are copied but before `move_binding` would be lost; a same-layer directory rename doesn't update `redirected_to` for files beneath it that were redirected earlier; a crash after the staged rename but before `remove(from)` leaves both `from` and `to` visible in the union listing. Property: every acknowledged write is visible at the file's current path. |
 | T13 | Plugin download resume | `crates/runtime/polymer-pluginhost/download/transfer.rs` | Model crashes, server content changes, and 200 vs 206 responses. Property: a completed download equals a single server version. **Gaps to check:** `Content-Range` on a 206 isn't validated against the requested offset; downloads without size or digest (`checkable() == false`) and without ETag/Last-Modified can splice two versions undetected; `File::flush` isn't durable, so a checkpoint can get ahead of the bytes on disk after power loss. |
 
+## Shell thread (Deno off the window thread, `1c8f9fa9`)
+
+| # | Target | Location | Strategy | Properties |
+|---|--------|----------|----------|------------|
+| S1 | Held input protocol | `bins/polymer-gui/src/app/held_input.rs` (`InputHold`), `app/coordinator_input.rs` (`shell_pointer`, `shell_keyboard`, `release_held_input`), `shell/host/mod.rs` (`receive`) | TLA+ | Processes: window thread, shell thread, script (may stall), game. Nondeterministic settle vs. 100 ms timeout, priority flips, shell reload. **Invariants:** every held sequence is released exactly once; the game never sees a key or button release before its press; with all input stopped, the game's held keys and buttons and the shell's button mask converge to the physical state (no stuck keys). **Traces to check:** (a) key press held while the shell is active, shell reloads (`take_reload` → not active), release goes straight to the game via the inactive branch, then the held press times out and reaches the game afterward; (b) press held under `InputPriority::Game`, priority changes before release, so `release_held_input` drops the press but a later release may still route; (c) unclaimed press then unclaimed release each restore `flag_was_set`, which leaves the shell mask set after both are released, unless the revert semantics differ from what the code reads as. |
+| S2 | Pointer-move coalescing | `bins/polymer-gui/src/shell/host/mod.rs` (`receive`) | TLA+ (fold into S1) | Every `Input` sequence in a batch is settled exactly once, in order; only consecutive moves coalesce; `Shutdown` mid-batch leaves unsettled sequences to the timeout, never to a stale outcome. |
+| S3 | Outbox wake signalling | `bins/polymer-gui/src/shell/mod.rs` (`ShellOutbox::send`, `ShellSession::drain`) | loom | No lost wakeup: an event sent after `drain` clears `signalled` always produces another `ShellUpdated`. Reads correct (send before swap, store before `try_iter`), so this is confirmation. |
+| S4 | Shell lifecycle | `shell/mod.rs` (`activate`, `take_reload`, `disable`, `ActiveShell::drop`), `shell/host/mod.rs` (`run`, `poll`) | TLA+ | States `Awaiting`/`Active`/`Disabled` × shell thread states. **Safety:** `validate_launch` during `Awaiting` resolves `None` (treated as valid), so model whether a launch can slip through mid-reload; no `InputSettled` from an old shell applies to a new one. **Liveness:** shutdown and reload complete. `ActiveShell::drop` sends `Shutdown` and joins, and no `terminate_execution` call was found, so a script stuck in a loop blocks the window thread on reload or exit. That's a design fix rather than something to prove. |
+| S5 | Shell frame loop | `shell/host/mod.rs` (`poll`, `paint`, `paint_due`) | TLA+ (small) | No busy loop: the `poll_event_loop`/`paint` loop terminates each turn; frames respect `MIN_FRAME_SPACING`; a change or animation frame is eventually painted; published `structure_revision` is monotonic. |
+
 ## Other tools
 
 | Target | Location | Tool |
@@ -77,6 +87,8 @@ Hook and vtable crates, D3D/Vulkan/Metal FFI, the Deno runtime, the GUI, `polyme
 8. **K12**, **K14**: hostile input and plugin sandbox.
 9. **T12**: save data written through composed storage.
 10. **K17**, **T13**.
+
+For the shell thread, S1 comes first: traces (a) and (c) are quick to reproduce by hand before writing any spec.
 
 ## Practical notes
 

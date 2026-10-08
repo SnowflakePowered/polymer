@@ -23,6 +23,7 @@
     * Do not write tests against a removal of a feature.
     * Do not write change detector tests. Change detectors provide negative value.
     * Do not write constructors or logic that purely serve tests.
+* Do allow inline Kani proofs
 * Make only the smallest change needed for a request or feature. 
 * Follow existing conventions for Actors and JS <-> Rust messaging.
 * Do not leave explanatory comments in your code. 
