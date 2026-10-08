@@ -98,6 +98,19 @@ impl Storage for GitVolumeStorage {
         Ok(Some(Box::new(self.inner.changes.clone())))
     }
 
+    fn install_bytes(&self, bytes: &[u8], dest: &str) -> Result<InstallResult, Error> {
+        Self::validate(dest)?;
+        self.ensure_checkout()?;
+        let result = self.inner.checkout.install_bytes(bytes, dest)?;
+        self.inner
+            .working
+            .write()
+            .entries
+            .insert(dest.to_owned(), OverlayEntry::File);
+        self.inner.changes.notify_one();
+        Ok(result)
+    }
+
     fn install_file<'a>(
         &'a self,
         source: Box<dyn AsyncRead + Send + Unpin>,

@@ -298,10 +298,8 @@ impl DreamcastMemoryCard {
                 return Ok(());
             }
         }
-        let output = self.storage.create(path)?;
-        output.write_all_at(0, bytes)?;
-        output.set_len(bytes.len() as u64)?;
-        output.sync()
+        self.storage.install_bytes(bytes, path)?;
+        Ok(())
     }
 
     fn write_save(&self, product: DreamcastProductId, save: &Save<'_>) -> Result<(), Error> {

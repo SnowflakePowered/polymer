@@ -2,6 +2,7 @@ mod exclusive;
 mod lease;
 mod namespace_file;
 mod prepared;
+mod retry;
 
 use crate::{Permissions, VfsResult};
 use std::{fmt, sync::Arc};

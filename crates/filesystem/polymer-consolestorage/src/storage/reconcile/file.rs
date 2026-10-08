@@ -17,26 +17,23 @@ impl StorageFile for ReconcileFile {
     }
 
     fn write_at(&self, offset: u64, buffer: &[u8]) -> Result<usize, Error> {
+        let mutation = self.worker.begin(self.schedule_writeback)?;
         let written = self.file.write_at(offset, buffer)?;
-        if self.schedule_writeback {
-            self.worker.schedule();
-        }
+        mutation.complete()?;
         Ok(written)
     }
 
     fn set_len(&self, len: u64) -> Result<(), Error> {
+        let mutation = self.worker.begin(self.schedule_writeback)?;
         self.file.set_len(len)?;
-        if self.schedule_writeback {
-            self.worker.schedule();
-        }
+        mutation.complete()?;
         Ok(())
     }
 
     fn flush(&self) -> Result<(), Error> {
+        let mutation = self.worker.begin(self.schedule_writeback)?;
         self.file.flush()?;
-        if self.schedule_writeback {
-            self.worker.schedule();
-        }
+        mutation.complete()?;
         Ok(())
     }
 

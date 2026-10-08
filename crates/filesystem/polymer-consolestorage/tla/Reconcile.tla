@@ -12,16 +12,16 @@
 (*   sv         acked when that thread called ReconcileFile::sync          *)
 (*   acked      newest write whose write_at returned Ok to the guest       *)
 (*   synced     newest write covered by a sync that returned Ok            *)
-(*   flag       ReconcileWorker.dirty_enqueued (src/storage/reconcile/worker.rs)               *)
+(*   flag       Admission.state.dirty_enqueued (worker/admission.rs)      *)
 (*   queue      ReconcileWorker.commands mpsc channel                      *)
-(*   dirty      local `dirty` in ReconcileWorker::run                      *)
+(*   dirty      Writeback.dirty (worker/state.rs)                          *)
 (*   wpc        ReconcileWorker::run loop / reconcile closure progress;    *)
 (*              "stopped" = thread exited, receiver dropped                *)
 (*   wcause     the command (or timeout) that triggered reconcile()        *)
 (*   snap       bytes taken by MemoryCardStorage::reconcile (src/impls/memorycard/raw.rs)     *)
 (*   disk       save file in the GitVolumeStorage checkout, written by     *)
-(*              src/impls/ps2/mod.rs write_save (create truncates, then          *)
-(*              write_all_at); Truncated = after create, before write      *)
+(*              src/impls/ps2/mod.rs write_save (install_bytes atomically *)
+(*              replaces the checkout); temporary writes leave it intact *)
 (*   notified   GitVolumeInner.changes Notify permit (notify_one)          *)
 (*   hpc, hexp, hfinal, hstop                                              *)
 (*              polymer-save-history thread in SaveWatchFactory            *)
@@ -59,7 +59,7 @@ vars == <<guest, worker, history, control>>
 
 TypeOK ==
   /\ mem \in 0..MaxWrites /\ nextVer \in 1..MaxWrites + 1
-  /\ gpc \in [Threads -> {"idle", "swap", "send", "syncWait", "syncOk"}]
+  /\ gpc \in [Threads -> {"idle", "swap", "syncWait", "syncOk"}]
   /\ disk \in {Truncated} \cup 0..MaxWrites
   /\ wpc \in {"recv", "snap", "create", "write", "stopped"}
   /\ hpc \in {"wait", "export", "commit", "stopped"}
@@ -89,22 +89,13 @@ WriteAt(t) ==
   /\ gpc' = [gpc EXCEPT ![t] = "swap"]
   /\ UNCHANGED <<sv, acked, synced, worker, history, control>>
 
-\* schedule: dirty_enqueued.swap(true); a true result returns Ok immediately.
-ScheduleSwap(t) ==
+Schedule(t) ==
   /\ gpc[t] = "swap"
+  /\ Alive
+  /\ queue' = IF flag THEN queue ELSE Append(queue, Msg("dirty", NoSender))
   /\ flag' = TRUE
-  /\ IF flag
-       THEN /\ gpc' = [gpc EXCEPT ![t] = "idle"] /\ acked' = Max(acked, gver[t])
-       ELSE /\ gpc' = [gpc EXCEPT ![t] = "send"] /\ UNCHANGED acked
-  /\ UNCHANGED <<mem, nextVer, gver, sv, synced, queue, dirty, wpc, wcause, snap,
-                 history, control>>
-
-\* schedule: commands.send(Dirty); a dropped receiver is ignored.
-ScheduleSend(t) ==
-  /\ gpc[t] = "send"
-  /\ Send(Msg("dirty", NoSender))
   /\ gpc' = [gpc EXCEPT ![t] = "idle"] /\ acked' = Max(acked, gver[t])
-  /\ UNCHANGED <<mem, nextVer, gver, sv, synced, flag, dirty, wpc, wcause, snap,
+  /\ UNCHANGED <<mem, nextVer, gver, sv, synced, dirty, wpc, wcause, snap,
                  history, control>>
 
 \* ReconcileFile::sync -> ReconcileWorker::reconcile: send Sync, block on reply.
@@ -148,17 +139,13 @@ RecvDirty ==
 RecvSync ==
   /\ wpc = "recv" /\ queue # <<>> /\ Head(queue).kind = "sync"
   /\ queue' = Tail(queue)
-  /\ IF dirty
-       THEN StartReconcile(Head(queue)) /\ UNCHANGED gpc
-       ELSE Reply(Head(queue), TRUE) /\ UNCHANGED <<wpc, wcause>>
+  /\ StartReconcile(Head(queue)) /\ UNCHANGED gpc
   /\ UNCHANGED <<mem, nextVer, gver, sv, acked, synced, flag, dirty, snap, history, control>>
 
 RecvShutdown ==
   /\ wpc = "recv" /\ queue # <<>> /\ Head(queue).kind = "shutdown"
   /\ queue' = Tail(queue)
-  /\ IF dirty
-       THEN StartReconcile(Head(queue))
-       ELSE wpc' = "stopped" /\ UNCHANGED wcause
+  /\ StartReconcile(Head(queue))
   /\ UNCHANGED <<guest, flag, dirty, snap, history, control>>
 
 \* recv_timeout drains pending commands before reporting Timeout.
@@ -173,20 +160,17 @@ Snapshot ==
   /\ snap' = mem /\ wpc' = "create"
   /\ UNCHANGED <<guest, flag, queue, dirty, wcause, history, control>>
 
-\* write_save: storage.create(path) truncates the checkout file and notifies.
 Create ==
   /\ wpc = "create"
-  /\ disk' = Truncated /\ notified' = TRUE /\ wpc' = "write"
-  /\ UNCHANGED <<guest, flag, queue, dirty, wcause, snap, hpc, hexp, hfinal, hstop,
-                 commits, control>>
+  /\ wpc' = "write"
+  /\ UNCHANGED <<guest, flag, queue, dirty, wcause, snap, history, control>>
 
 Finish(ok) ==
-  /\ IF wcause.kind = "shutdown"
-       THEN wpc' = "stopped" /\ UNCHANGED dirty
-       ELSE wpc' = "recv" /\ dirty' = ~ok
+  /\ wpc' = IF wcause.kind = "shutdown" /\ ok THEN "stopped" ELSE "recv"
+  /\ dirty' = ~ok
   /\ Reply(wcause, ok)
 
-\* write_all_at + set_len + sync, then reconcile() returns Ok.
+\* The atomic writer syncs its temporary file and publishes the replacement.
 WriteBytes ==
   /\ wpc = "write"
   /\ disk' = snap /\ notified' = TRUE
@@ -198,8 +182,9 @@ ReconcileFails ==
   /\ wpc \in {"snap", "create", "write"} /\ failures < MaxFailures
   /\ failures' = failures + 1
   /\ Finish(FALSE)
+  /\ epc' = IF wcause.kind = "shutdown" THEN "shutdown" ELSE epc
   /\ UNCHANGED <<mem, nextVer, gver, sv, acked, synced, flag, queue, wcause, snap,
-                 history, phase, epc, crashes>>
+                 history, phase, crashes>>
 
 ----------------------------------------------------------------------------
 \* polymer-save-history: select! { stopped => final checkpoint, changed => checkpoint }
@@ -230,12 +215,12 @@ Commit ==
 CheckpointFails ==
   /\ hpc \in {"export", "commit"} /\ failures < MaxFailures
   /\ failures' = failures + 1
-  /\ hpc' = IF hfinal THEN "stopped" ELSE "wait"
+  /\ hpc' = "wait"
   /\ UNCHANGED <<guest, worker, disk, notified, hexp, hfinal, hstop, commits,
                  phase, epc, crashes>>
 
 ----------------------------------------------------------------------------
-\* Emulator process exit, then MaterializedResources::finalize (leases in reverse).
+\* Exit closes mutation admission; admitted writes drain before Shutdown.
 
 EmulatorExit ==
   /\ phase = "running"
@@ -246,11 +231,12 @@ EmulatorExit ==
 \* ReconcileStorage::finish -> ReconcileWorker::shutdown: send Shutdown.
 ShutdownSend ==
   /\ epc = "shutdown"
+  /\ \A t \in Threads : gpc[t] # "swap"
   /\ Send(Msg("shutdown", NoSender))
   /\ epc' = "shutdownWait"
   /\ UNCHANGED <<guest, flag, dirty, wpc, wcause, snap, history, phase, failures, crashes>>
 
-\* recv the reply, join the thread, then SaveWatchingLease::stop.
+\* Only successful shutdown releases the worker; failed finalization is retained for retry.
 ShutdownJoin ==
   /\ epc = "shutdownWait" /\ ~Alive
   /\ hstop' = TRUE /\ epc' = "historyWait"
@@ -286,7 +272,7 @@ Finished ==
   /\ phase \in {"done", "recovered"}
   /\ UNCHANGED vars
 
-InFlight(t) == ScheduleSwap(t) \/ ScheduleSend(t) \/ SyncReturn(t) \/ SyncAbandoned(t)
+InFlight(t) == Schedule(t) \/ SyncReturn(t) \/ SyncAbandoned(t)
 
 WorkerStep == RecvDirty \/ RecvSync \/ RecvShutdown \/ Timeout \/ Snapshot \/ Create \/ WriteBytes
 
@@ -326,6 +312,8 @@ RecoveredKeepsSynced == phase = "recovered" => Committed >= synced
 
 \* After a crash and the next baseline, every acknowledged write is committed.
 RecoveredKeepsAcked == phase = "recovered" => Committed >= acked
+
+ShutdownKeepsAcked == phase = "exiting" /\ wpc = "stopped" => disk >= acked
 
 ExitTerminates == phase = "exiting" ~> phase \in {"done", "recovered"}
 

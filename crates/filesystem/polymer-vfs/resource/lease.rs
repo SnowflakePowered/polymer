@@ -1,5 +1,6 @@
 use super::ExclusiveResourceKey;
 use crate::VfsResult;
+use parking_lot::Mutex;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -15,7 +16,7 @@ pub trait ResourceLease: Send + Sync {
 }
 
 pub struct CompositeResourceLease {
-    leases: Vec<Arc<dyn ResourceLease>>,
+    leases: Mutex<Vec<Arc<dyn ResourceLease>>>,
 }
 
 impl CompositeResourceLease {
@@ -24,26 +25,25 @@ impl CompositeResourceLease {
             .into_iter()
             .map(|id| ExclusiveResourceKey::Resource(id).acquire())
             .collect::<VfsResult<Vec<_>>>()?;
-        Ok(Self { leases })
+        Ok(Self {
+            leases: Mutex::new(leases),
+        })
     }
 
     pub fn with(mut self, lease: Arc<dyn ResourceLease>) -> Self {
-        self.leases.push(lease);
+        self.leases.get_mut().push(lease);
         self
     }
 }
 
 impl ResourceLease for CompositeResourceLease {
     fn finalize(&self, reason: FinalizationReason) -> VfsResult<()> {
-        let mut failure = None;
-        for lease in self.leases.iter().rev() {
-            if let Err(error) = lease.finalize(reason)
-                && failure.is_none()
-            {
-                failure = Some(error);
-            }
+        let mut leases = self.leases.lock();
+        while let Some(lease) = leases.last() {
+            lease.finalize(reason)?;
+            leases.pop();
         }
-        failure.map_or(Ok(()), Err)
+        Ok(())
     }
 }
 

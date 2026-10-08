@@ -667,8 +667,12 @@ fn materialize_directory(
 
 impl Drop for PreparedFilesystem {
     fn drop(&mut self) {
-        if let Some(resources) = self.materialized.get_mut().as_mut() {
-            let _ = resources.finalize(FinalizationReason::Cancelled);
+        if let Some(mut resources) = self.materialized.get_mut().take()
+            && resources.finalize(FinalizationReason::Cancelled).is_err()
+        {
+            super::retry::FinalizationRetry::retain(Arc::new(FinalizingResources(Mutex::new(
+                resources,
+            ))));
         }
     }
 }
@@ -727,27 +731,24 @@ impl MaterializedResources {
         if self.finalized {
             return Ok(());
         }
-        let mut failure = None;
         if reason != FinalizationReason::LaunchFailed {
             for file in self.files.values().chain(self.tree_files.values()) {
-                if let Err(error) = file.finalize_adoption()
-                    && failure.is_none()
-                {
-                    failure = Some(error);
-                }
+                file.finalize_adoption()?;
             }
         }
-        for lease in self.leases.iter().rev() {
-            if let Err(error) = lease.finalize(reason)
-                && failure.is_none()
-            {
-                failure = Some(error);
-            }
+        while let Some(lease) = self.leases.last() {
+            lease.finalize(reason)?;
+            self.leases.pop();
         }
         self.finalized = true;
-        match failure {
-            Some(error) => Err(error),
-            None => Ok(()),
-        }
+        Ok(())
+    }
+}
+
+struct FinalizingResources(Mutex<MaterializedResources>);
+
+impl ResourceLease for FinalizingResources {
+    fn finalize(&self, reason: FinalizationReason) -> VfsResult<()> {
+        self.0.lock().finalize(reason)
     }
 }
