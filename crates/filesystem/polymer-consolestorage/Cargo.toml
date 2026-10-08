@@ -3,10 +3,6 @@ name = "polymer-consolestorage"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-build = "build.rs"
-
-[lib]
-path = "lib.rs"
 
 [dependencies]
 polymer-banner.workspace = true
@@ -38,7 +34,6 @@ bitflags = "2.13.1"
 uuid = { version = "1.24.1", features = ["serde", "v4", "v7"] }
 parking_lot.workspace = true
 zerocopy.workspace = true
-phf.workspace = true
 orbis-unpkg = "0.1.1"
 pkgrip = "2.0.0"
 csis = "0.1.0"
@@ -47,8 +42,4 @@ sha2 = "0.10.9"
 zenwebp = "0.4.4"
 typed-path = "0.12.3"
 
-[build-dependencies]
-phf_codegen.workspace = true
-serde.workspace = true
 toml.workspace = true
-
