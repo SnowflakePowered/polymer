@@ -41,6 +41,19 @@
 (*                  a replaced swapchain (present_retired path)            *)
 (*   lastSubmit     ghost: controller and lease generation of the last     *)
 (*                  successful take_token                                  *)
+(*   acqDone[g]     Vulkan: WriteToken::acquire (the acquire-queue         *)
+(*                  ownership barrier) has completed.  One in-order pq     *)
+(*                  abstracts the acquire queue, the present queues and    *)
+(*                  their private CompletionTimelines.                     *)
+(*   killed         hosted launch: the viewer owned the kill-on-close job  *)
+(*                  (polymer-platform-windows guest/target.rs), so its     *)
+(*                  death ended the producer process too                   *)
+(*   vDevLost       viewer device removed: compositor queue signals,      *)
+(*                  including signal_release(RELEASE_ALL), never execute   *)
+(*                                                                         *)
+(* VulkanPath selects polymer-hook-vulkan-layer: Swapchain::acquire,       *)
+(* Swapchain::retire and VulkanVirtualBackend::retirement replace the      *)
+(* D3d12Frontend and DxgiMaintenance actions.                              *)
 (*                                                                         *)
 (* Values are FrameReady::ready_value(seq, slot) = 4*seq + slot; u64       *)
 (* overflow is abstracted as seq > MaxSeq.  RELEASE_ALL_SYNC_VALUE is a    *)
@@ -49,7 +62,8 @@
 EXTENDS Integers, FiniteSets, Sequences, TLC
 
 CONSTANTS N, MaxGen, MaxSeq, MaxLease, Latency, MaxFaults,
-          CrashFault, DropFault, DeviceFault, IndeterminateFault, VulkanPath
+          CrashFault, DropFault, DeviceFault, IndeterminateFault, ViewerDeviceFault,
+          VulkanPath, HostedLaunch
 
 ASSUME N \in 2..4 /\ MaxGen \in Nat \ {0} /\ Latency \in Nat
 
@@ -72,13 +86,13 @@ VARIABLES phase, retiring, closed, token, serial, sub, done, pub,
           nextValue, nextLease, crel, uncertain, work, cleanupNext,
           pq, ready, cleanup, devLost,
           conn, imported, retention, frames, relFence, comp, consumerUp,
-          app, oldLease, faults, lastSubmit
+          app, oldLease, faults, lastSubmit, acqDone, killed, vDevLost
 
 ctlVars == <<phase, retiring, closed, token, serial, sub, done, pub,
              nextValue, nextLease, crel, uncertain, work, cleanupNext>>
-gpuVars == <<pq, ready, cleanup, devLost>>
-conVars == <<conn, imported, retention, frames, relFence, comp, consumerUp>>
-appVars == <<app, oldLease, faults, lastSubmit>>
+gpuVars == <<pq, ready, cleanup, devLost, acqDone>>
+conVars == <<conn, imported, retention, frames, relFence, comp, consumerUp, vDevLost>>
+appVars == <<app, oldLease, faults, lastSubmit, killed>>
 vars == <<ctlVars, gpuVars, conVars, appVars>>
 
 Fence(g, f) == IF f = "ready" THEN ready[g] ELSE cleanup[g]
@@ -89,7 +103,8 @@ TypeOK ==
   /\ token \in [Gens -> [Slots -> BOOLEAN]]
   /\ done \in [Gens -> [Slots -> BOOLEAN]]
   /\ conn \in [Gens -> {"none", "up", "down"}]
-  /\ app.pc \in {"acquire", "wait", "hold", "failed", "create", "done"}
+  /\ app.pc \in {"acquire", "wait", "hold", "failed", "returned", "create", "done"}
+  /\ acqDone \in [Gens -> [Slots -> BOOLEAN]]
 
 -----------------------------------------------------------------------------
 (* Controller helpers (controller.rs).                                     *)
@@ -128,10 +143,11 @@ Submit(g, l, published, OkStep, ErrStep) ==
      /\ retiring' = [retiring EXCEPT ![g] = "counter"]
      /\ ErrStep
      /\ UNCHANGED <<phase, closed, token, serial, sub, done, pub, nextValue, nextLease,
-                    crel, uncertain, work, cleanupNext, gpuVars, conVars, faults, lastSubmit>>
+                    crel, uncertain, work, cleanupNext, gpuVars, conVars, faults, lastSubmit,
+                    killed>>
   \/ /\ ~SubmitExhausted(g) /\ ~TakeTokenOK(g, l)
      /\ ErrStep
-     /\ UNCHANGED <<ctlVars, gpuVars, conVars, faults, lastSubmit>>
+     /\ UNCHANGED <<ctlVars, gpuVars, conVars, faults, lastSubmit, killed>>
   \/ /\ ~SubmitExhausted(g) /\ TakeTokenOK(g, l)
      /\ LET v == Val(SeqOf(nextValue[g]) + 1, l.s)
             signal == [f |-> "ready", g |-> g, v |-> v]
@@ -152,7 +168,7 @@ Submit(g, l, published, OkStep, ErrStep) ==
                  /\ ErrStep
                  /\ UNCHANGED <<sub, done, pub>>
      /\ UNCHANGED <<phase, closed, serial, nextLease, crel, work, cleanupNext,
-                    ready, cleanup, devLost, conVars>>
+                    ready, cleanup, devLost, acqDone, conVars, killed>>
 
 (* retire(): retirement_work() then SwapchainBackend::retire; dropping the *)
 (* controller drops its ProducerSession, which shuts the socket down.      *)
@@ -198,6 +214,9 @@ Init ==
   /\ oldLease = NoLease
   /\ faults = 0
   /\ lastSubmit = [g |-> 0, lg |-> 0]
+  /\ acqDone = [g \in Gens |-> [s \in Slots |-> TRUE]]
+  /\ killed = FALSE
+  /\ vDevLost = FALSE
 
 -----------------------------------------------------------------------------
 (* Application / frontend on the API owner thread.                         *)
@@ -233,14 +252,19 @@ AcquireWithInfo ==
                                 /\ nextLease' = [nextLease EXCEPT ![g] = sr]
                                 /\ app' = [app EXCEPT !.pc = "hold",
                                                       !.lease = [g |-> g, s |-> k, serial |-> sr]]
+                                /\ IF VulkanPath
+                                     THEN /\ pq' = Append(pq, [f |-> "acquire", g |-> g, v |-> k])
+                                          /\ acqDone' = [acqDone EXCEPT ![g][k] = FALSE]
+                                     ELSE UNCHANGED <<pq, acqDone>>
                                 /\ UNCHANGED retiring
                     ELSE /\ app' = [app EXCEPT !.pc = "wait", !.arm =
                               [rel |-> IF Latency # 0 /\ app.paced /\ ~paced
                                          THEN PacingTarget(g, c) ELSE PendingRelease(g, c),
                                sub |-> OldestInFlight(g, d)]]
-                         /\ UNCHANGED <<retiring, token, serial, sub, pub, nextLease>>
+                         /\ UNCHANGED <<retiring, token, serial, sub, pub, nextLease, pq, acqDone>>
                /\ UNCHANGED <<phase, closed, nextValue, uncertain, work, cleanupNext>>
-  /\ UNCHANGED <<gpuVars, conVars, oldLease, faults, lastSubmit>>
+  /\ (PollErr(g) \/ ~(app'.pc = "hold")) => UNCHANGED <<pq, acqDone>>
+  /\ UNCHANGED <<ready, cleanup, devLost, conVars, oldLease, faults, lastSubmit, killed>>
 
 (* ProgressEvent wakes on the armed release value or submission; with     *)
 (* nothing armed, arm_progress returns false and deadline.pause() retries. *)
@@ -253,13 +277,20 @@ WaitForProgress ==
         \/ a.sub # NoSub /\ Fence(g, a.sub.f) >= a.sub.v
         \/ devLost
      /\ app' = [app EXCEPT !.pc = "acquire", !.arm = NoArm]
-     /\ UNCHANGED <<ctlVars, gpuVars, conVars, oldLease, faults, lastSubmit>>
+     /\ UNCHANGED <<ctlVars, gpuVars, conVars, oldLease, faults, lastSubmit, killed>>
 
 (* AcquireDeadline expired: ControllerError::Timeout; the frontend fails.  *)
+(* Vulkan: Swapchain::acquire returns VK_TIMEOUT / VK_NOT_READY to the     *)
+(* application, which may acquire again or destroy the swapchain.          *)
 Timeout ==
   /\ app.pc = "wait"
-  /\ app' = [app EXCEPT !.pc = "failed", !.arm = NoArm]
-  /\ UNCHANGED <<ctlVars, gpuVars, conVars, oldLease, faults, lastSubmit>>
+  /\ app' = [app EXCEPT !.pc = IF VulkanPath THEN "returned" ELSE "failed", !.arm = NoArm]
+  /\ UNCHANGED <<ctlVars, gpuVars, conVars, oldLease, faults, lastSubmit, killed>>
+
+RetryAcquire ==
+  /\ VulkanPath /\ app.pc = "returned"
+  /\ app' = [app EXCEPT !.pc = "acquire"]
+  /\ UNCHANGED <<ctlVars, gpuVars, conVars, oldLease, faults, lastSubmit, killed>>
 
 (* present(): available() then submit(published = publisher.is_some()).    *)
 Present ==
@@ -270,7 +301,7 @@ Present ==
           THEN /\ retiring' = [retiring EXCEPT ![g] = IF @ = "none" THEN "conn" ELSE @]
                /\ app' = failed
                /\ UNCHANGED <<phase, closed, token, serial, sub, done, pub, nextValue, nextLease,
-                              crel, uncertain, work, cleanupNext, gpuVars, conVars, faults, lastSubmit>>
+                              crel, uncertain, work, cleanupNext, gpuVars, conVars, faults, lastSubmit, killed>>
           ELSE Submit(g, app.lease, TRUE,
                       app' = [app EXCEPT !.pc = "acquire", !.k = (app.k + 1) % N,
                                          !.paced = TRUE, !.lease = NoLease],
@@ -283,7 +314,8 @@ TakeRetirement ==
       l == app.lease
       c == cleanupNext[g] + 1
       holding == app.pc = "hold"
-  IN /\ app.pc \in {"hold", "failed"} /\ phase[g] = "live"
+  IN /\ ~VulkanPath
+     /\ app.pc \in {"hold", "failed"} /\ phase[g] = "live"
      /\ IF holding
           THEN /\ pq' = Append(pq, [f |-> "cleanup", g |-> g, v |-> c])
                /\ cleanupNext' = [cleanupNext EXCEPT ![g] = c]
@@ -294,8 +326,8 @@ TakeRetirement ==
                /\ UNCHANGED <<pq, cleanupNext, done>>
      /\ app' = [app EXCEPT !.pc = "create", !.lease = NoLease]
      /\ UNCHANGED <<retiring, closed, serial, pub, nextValue, nextLease, crel, uncertain,
-                    ready, cleanup, devLost, imported, retention, frames, relFence, comp,
-                    consumerUp, oldLease, faults, lastSubmit>>
+                    ready, cleanup, devLost, acqDone, imported, retention, frames, relFence,
+                    comp, consumerUp, vDevLost, oldLease, faults, lastSubmit, killed>>
 
 (* SwapchainController::create for the next generation; publish() needs   *)
 (* a live viewer, otherwise the hook falls back to native presentation.    *)
@@ -312,7 +344,7 @@ Create ==
                        lease |-> NoLease, arm |-> NoArm]
   /\ UNCHANGED <<retiring, closed, token, serial, sub, done, pub, nextValue, nextLease, crel,
                  uncertain, work, cleanupNext, gpuVars, retention, frames, relFence, comp,
-                 consumerUp, oldLease, faults, lastSubmit>>
+                 consumerUp, vDevLost, oldLease, faults, lastSubmit, killed>>
 
 (* Vulkan layer Swapchain::create with oldSwapchain: the old generation is *)
 (* closed while the application still owns an image of it.                 *)
@@ -323,7 +355,7 @@ CloseOldSwapchain ==
   /\ oldLease' = app.lease
   /\ app' = [app EXCEPT !.pc = "create", !.lease = NoLease]
   /\ UNCHANGED <<phase, retiring, token, serial, sub, done, pub, nextValue, nextLease, crel,
-                 uncertain, work, cleanupNext, gpuVars, conVars, faults, lastSubmit>>
+                 uncertain, work, cleanupNext, gpuVars, conVars, faults, lastSubmit, killed>>
 
 (* queue_present on a closed swapchain: present_retired -> submit(false).  *)
 PresentRetired ==
@@ -335,12 +367,24 @@ PresentRetired ==
 (* Swapchain::retire on the closed generation: controller.retire() without *)
 (* cancelling; outstanding tokens move into RetirementWork::acquired.      *)
 RetireClosed(g) ==
-  /\ closed[g] /\ phase[g] = "live"
+  /\ ~killed /\ closed[g] /\ phase[g] = "live"
   /\ RetireWith(g, token[g], sub[g])
   /\ oldLease' = IF oldLease.g = g THEN NoLease ELSE oldLease
   /\ UNCHANGED <<retiring, closed, serial, done, pub, nextValue, nextLease, crel, uncertain,
                  cleanupNext, gpuVars, imported, retention, frames, relFence, comp, consumerUp,
-                 app, faults, lastSubmit>>
+                 vDevLost, app, faults, lastSubmit, killed>>
+
+(* vkDestroySwapchainKHR on the current swapchain -> Swapchain::retire:    *)
+(* controller.retire(ApplicationDestroyed) without cancelling held leases. *)
+DestroyCurrent ==
+  LET g == app.g IN
+  /\ VulkanPath /\ app.pc \in {"hold", "failed", "returned"} /\ phase[g] = "live"
+  /\ closed' = [closed EXCEPT ![g] = TRUE]
+  /\ RetireWith(g, token[g], sub[g])
+  /\ app' = [app EXCEPT !.pc = "create", !.lease = NoLease, !.arm = NoArm]
+  /\ UNCHANGED <<retiring, serial, done, pub, nextValue, nextLease, crel, uncertain,
+                 cleanupNext, gpuVars, imported, retention, frames, relFence, comp, consumerUp,
+                 vDevLost, oldLease, faults, lastSubmit, killed>>
 
 (* A lease of one controller handed to another controller's present().    *)
 StalePresent ==
@@ -351,14 +395,29 @@ StalePresent ==
        THEN /\ retiring' = [retiring EXCEPT ![g] = IF @ = "none" THEN "conn" ELSE @]
             /\ oldLease' = NoLease
             /\ UNCHANGED <<phase, closed, token, serial, sub, done, pub, nextValue, nextLease,
-                           crel, uncertain, work, cleanupNext, gpuVars, conVars, faults, lastSubmit>>
+                           crel, uncertain, work, cleanupNext, gpuVars, conVars, faults, lastSubmit, killed>>
        ELSE Submit(g, oldLease, TRUE, oldLease' = NoLease, oldLease' = NoLease)
   /\ UNCHANGED app
 
 -----------------------------------------------------------------------------
+(* VulkanVirtualBackend::retirement: no cleanup submission; acquired      *)
+(* tokens wait for their acquire barrier.  Publications are not awaited:   *)
+(* the viewer's OpenSharedHandle reference keeps each NT-handle resource   *)
+(* alive after the producer drops its own.                                 *)
+VulkanRetirement(g) ==
+  LET w == work[g] IN
+  /\ phase[g] = "retired"
+  /\ IF w.unc \/ devLost
+       THEN phase' = [phase EXCEPT ![g] = "quarantined"]
+       ELSE /\ \A s \in w.acq : acqDone[g][s]
+            /\ \A sb \in w.subs : Fence(g, sb.f) >= sb.v
+            /\ phase' = [phase EXCEPT ![g] = "safe"]
+  /\ UNCHANGED <<retiring, closed, token, serial, sub, done, pub, nextValue, nextLease, crel,
+                 uncertain, work, cleanupNext, gpuVars, conVars, appVars>>
+
 (* DxgiMaintenance polling BackendRetirement::poll ->                      *)
 (* D3d12VirtualBackend::poll_retirement.                                   *)
-PollRetirement(g) ==
+DxgiRetirement(g) ==
   /\ phase[g] = "retired"
   /\ LET w == work[g] IN
      IF w.unc \/ devLost
@@ -377,7 +436,21 @@ PollRetirement(g) ==
               /\ phase' = [phase EXCEPT ![g] = "safe"]
               /\ UNCHANGED <<work, cleanupNext, pq>>
   /\ UNCHANGED <<retiring, closed, token, serial, sub, done, pub, nextValue, nextLease, crel,
-                 uncertain, ready, cleanup, devLost, conVars, appVars>>
+                 uncertain, ready, cleanup, devLost, acqDone, conVars, appVars>>
+
+(* Vulkan Device::poll_retired runs only inside Swapchain::acquire (every  *)
+(* loop iteration); DxgiMaintenance polls on its own thread.               *)
+PollRetirement(g) ==
+  /\ ~killed
+  /\ IF VulkanPath
+       THEN app.pc \in {"acquire", "wait"} /\ VulkanRetirement(g)
+       ELSE DxgiRetirement(g)
+
+(* Swapchain::retire, vkDeviceWaitIdle and the 2s Device::destroy loop:   *)
+(* polls that nothing obliges to recur.                                    *)
+IncidentalPoll(g) ==
+  /\ VulkanPath /\ ~killed /\ app.pc \in {"create", "returned", "failed", "done"}
+  /\ VulkanRetirement(g)
 
 -----------------------------------------------------------------------------
 (* Producer GPU: the command queue completes signals in order.             *)
@@ -386,6 +459,7 @@ ProducerGpu ==
   /\ LET h == Head(pq) IN
      /\ ready' = IF h.f = "ready" THEN [ready EXCEPT ![h.g] = h.v] ELSE ready
      /\ cleanup' = IF h.f = "cleanup" THEN [cleanup EXCEPT ![h.g] = h.v] ELSE cleanup
+     /\ acqDone' = IF h.f = "acquire" THEN [acqDone EXCEPT ![h.g][h.v] = TRUE] ELSE acqDone
   /\ pq' = Tail(pq)
   /\ UNCHANGED <<ctlVars, devLost, conVars, appVars>>
 
@@ -398,7 +472,8 @@ WatchFrames(g) ==
   /\ consumerUp /\ imported[g]
   /\ ready[g] > frames[g].recv
   /\ frames' = [frames EXCEPT ![g].recv = ready[g], ![g].pend = ready[g]]
-  /\ UNCHANGED <<ctlVars, gpuVars, conn, imported, retention, relFence, comp, consumerUp, appVars>>
+  /\ UNCHANGED <<ctlVars, gpuVars, conn, imported, retention, relFence, comp, consumerUp,
+                 vDevLost, appVars>>
 
 ReleaseValue(g) ==
   LET fr == frames[g]
@@ -414,7 +489,7 @@ Reads(g) ==
 (* D3d12Compositor present: record reads, ExecuteCommandLists, queue       *)
 (* signal_release(release_value), then SurfaceFrames::commit.              *)
 Composite ==
-  /\ consumerUp /\ ~comp.busy
+  /\ consumerUp /\ ~vDevLost /\ ~comp.busy
   /\ \E g \in Gens : imported[g] /\ frames[g].pend # 0
   /\ comp' = [busy |-> TRUE,
               reads |-> UNION {Reads(g) : g \in {x \in Gens : imported[x]}},
@@ -424,22 +499,25 @@ Composite ==
          THEN [frames[g] EXCEPT !.rel = IF ReleaseValue(g) # 0 THEN ReleaseValue(g) ELSE @,
                                 !.disp = frames[g].pend, !.pend = 0]
          ELSE frames[g]]
-  /\ UNCHANGED <<ctlVars, gpuVars, conn, imported, retention, relFence, consumerUp, appVars>>
+  /\ UNCHANGED <<ctlVars, gpuVars, conn, imported, retention, relFence, consumerUp,
+                 vDevLost, appVars>>
 
 ConsumerGpu ==
-  /\ consumerUp /\ comp.busy
+  /\ consumerUp /\ ~vDevLost /\ comp.busy
   /\ relFence' = [g \in Gens |-> IF comp.rels[g] # 0 THEN comp.rels[g] ELSE relFence[g]]
   /\ comp' = Idle
-  /\ UNCHANGED <<ctlVars, gpuVars, conn, imported, retention, frames, consumerUp, appVars>>
+  /\ UNCHANGED <<ctlVars, gpuVars, conn, imported, retention, frames, consumerUp,
+                 vDevLost, appVars>>
 
 (* disconnected callback -> disconnect_stream: remove the surface, signal  *)
-(* RELEASE_ALL_SYNC_VALUE and wait_idle.                                   *)
+(* RELEASE_ALL_SYNC_VALUE and wait_idle.  On a removed viewer device the   *)
+(* surface is already gone when the queue signal fails.                    *)
 DisconnectStream(g) ==
   /\ consumerUp /\ imported[g] /\ conn[g] = "down" /\ ~comp.busy
   /\ imported' = [imported EXCEPT ![g] = FALSE]
-  /\ relFence' = [relFence EXCEPT ![g] = ReleaseAll]
+  /\ relFence' = IF vDevLost THEN relFence ELSE [relFence EXCEPT ![g] = ReleaseAll]
   /\ frames' = [frames EXCEPT ![g] = NoFrames]
-  /\ UNCHANGED <<ctlVars, gpuVars, conn, retention, comp, consumerUp, appVars>>
+  /\ UNCHANGED <<ctlVars, gpuVars, conn, retention, comp, consumerUp, vDevLost, appVars>>
 
 -----------------------------------------------------------------------------
 (* Faults.                                                                 *)
@@ -450,8 +528,10 @@ ConnectionDrop(g) ==
   /\ conn' = [conn EXCEPT ![g] = "down"]
   /\ faults' = faults + 1
   /\ UNCHANGED <<ctlVars, gpuVars, imported, retention, frames, relFence, comp, consumerUp,
-                 app, oldLease, lastSubmit>>
+                 vDevLost, app, oldLease, lastSubmit, killed>>
 
+(* Viewer process death.  Hosted: the kill-on-close job ends the producer *)
+(* process; the OS reclaims its queue, allocations and permits.            *)
 ConsumerCrash ==
   /\ CrashFault /\ CanFault /\ consumerUp
   /\ consumerUp' = FALSE
@@ -459,13 +539,38 @@ ConsumerCrash ==
   /\ imported' = [g \in Gens |-> FALSE]
   /\ comp' = Idle
   /\ faults' = faults + 1
-  /\ UNCHANGED <<ctlVars, gpuVars, retention, frames, relFence, app, oldLease, lastSubmit>>
+  /\ IF HostedLaunch
+       THEN /\ killed' = TRUE
+            /\ app' = [app EXCEPT !.pc = "done", !.lease = NoLease, !.arm = NoArm]
+            /\ oldLease' = NoLease
+            /\ pq' = <<>>
+       ELSE UNCHANGED <<killed, app, oldLease, pq>>
+  /\ UNCHANGED <<ctlVars, ready, cleanup, devLost, acqDone, retention, frames, relFence,
+                 vDevLost, lastSubmit>>
+
+(* A new viewer process accepts new connections; the old generations'     *)
+(* release timelines stay where the dead viewer left them.                 *)
+ConsumerRestart ==
+  /\ ~HostedLaunch /\ ~consumerUp
+  /\ consumerUp' = TRUE
+  /\ vDevLost' = FALSE
+  /\ UNCHANGED <<ctlVars, gpuVars, conn, imported, retention, frames, relFence, comp, appVars>>
+
+(* Viewer device removed while its process lives: no further reads and no *)
+(* further release signals.                                                *)
+ViewerDeviceLost ==
+  /\ ViewerDeviceFault /\ CanFault /\ consumerUp /\ ~vDevLost
+  /\ vDevLost' = TRUE
+  /\ comp' = Idle
+  /\ faults' = faults + 1
+  /\ UNCHANGED <<ctlVars, gpuVars, conn, imported, retention, frames, relFence, consumerUp,
+                 app, oldLease, lastSubmit, killed>>
 
 DeviceLost ==
   /\ DeviceFault /\ CanFault /\ ~devLost
   /\ devLost' = TRUE
   /\ faults' = faults + 1
-  /\ UNCHANGED <<ctlVars, pq, ready, cleanup, conVars, app, oldLease, lastSubmit>>
+  /\ UNCHANGED <<ctlVars, pq, ready, cleanup, acqDone, conVars, app, oldLease, lastSubmit, killed>>
 
 Finished ==
   /\ app.pc = "done"
@@ -473,21 +578,30 @@ Finished ==
 
 -----------------------------------------------------------------------------
 Next ==
-  \/ AcquireWithInfo \/ WaitForProgress \/ Timeout \/ Present \/ TakeRetirement \/ Create
+  \/ AcquireWithInfo \/ WaitForProgress \/ Timeout \/ RetryAcquire \/ Present
+  \/ TakeRetirement \/ DestroyCurrent \/ Create
   \/ CloseOldSwapchain \/ PresentRetired \/ StalePresent
-  \/ \E g \in Gens : RetireClosed(g) \/ PollRetirement(g) \/ WatchFrames(g)
-                     \/ DisconnectStream(g) \/ ConnectionDrop(g)
+  \/ \E g \in Gens : RetireClosed(g) \/ PollRetirement(g) \/ IncidentalPoll(g)
+                     \/ WatchFrames(g) \/ DisconnectStream(g) \/ ConnectionDrop(g)
   \/ ProducerGpu \/ Composite \/ ConsumerGpu
-  \/ ConsumerCrash \/ DeviceLost
+  \/ ConsumerCrash \/ ConsumerRestart \/ ViewerDeviceLost \/ DeviceLost
   \/ Finished
 
+(* Timeout fairness stands for a finite acquire deadline.  Poll fairness  *)
+(* is strong: Vulkan polls only while the application keeps acquiring.     *)
 Fairness ==
-  /\ WF_vars(AcquireWithInfo) /\ WF_vars(WaitForProgress)
+  /\ WF_vars(AcquireWithInfo) /\ WF_vars(WaitForProgress) /\ WF_vars(Timeout)
+  /\ WF_vars(RetryAcquire) /\ WF_vars(ConsumerRestart)
   /\ WF_vars(ProducerGpu) /\ WF_vars(Composite) /\ WF_vars(ConsumerGpu)
   /\ \A g \in Gens : WF_vars(WatchFrames(g)) /\ SF_vars(DisconnectStream(g))
-                     /\ WF_vars(PollRetirement(g))
+                     /\ SF_vars(PollRetirement(g))
 
 Spec == Init /\ [][Next]_vars /\ Fairness
+
+(* An application that keeps rendering and recreating its swapchain.      *)
+RenderingSpec ==
+  /\ Spec
+  /\ WF_vars(Present) /\ WF_vars(PresentRetired) /\ WF_vars(DestroyCurrent) /\ WF_vars(Create)
 
 -----------------------------------------------------------------------------
 (* Properties.                                                             *)
@@ -507,9 +621,13 @@ ProducerMayWrite(g, s) ==
 NoWriteWhileRead ==
   \A g \in Gens, s \in Slots : ~(ConsumerMayRead(g, s) /\ ProducerMayWrite(g, s))
 
+(* Vulkan relies on the viewer's own allocation reference instead of its  *)
+(* release timeline, so only the producer's side is checked there.         *)
 SafeRetirement ==
   \A g \in Gens : phase[g] = "safe" =>
-    \A s \in Slots : ~ConsumerMayRead(g, s) /\ ~ProducerMayWrite(g, s)
+    /\ \A s \in Slots : /\ ~ProducerMayWrite(g, s) /\ acqDone[g][s]
+                        /\ (VulkanPath \/ ~ConsumerMayRead(g, s))
+    /\ \A i \in 1..Len(pq) : pq[i].g # g
 
 SubmitOnlyOwnLease == lastSubmit.g = lastSubmit.lg
 
@@ -527,9 +645,18 @@ CounterExhaustedStops ==
 
 AcquireSucceeds ==
   \A g \in Gens : (app.g = g /\ app.pc \in {"acquire", "wait"})
-                  ~> (app.pc \in {"hold", "failed"} \/ app.g # g)
+                  ~> (app.pc \in {"hold", "failed", "returned"} \/ app.g # g)
 
-RetirementResolves ==
-  \A g \in Gens : phase[g] = "retired" ~> phase[g] \in {"safe", "quarantined"}
+(* A GenerationPermit returns unless the producer itself lost track of its *)
+(* GPU work (Quarantined keeps the permit), or the process ended.          *)
+ProducerFault(g) == work[g].unc \/ devLost
+
+PermitReturns ==
+  \A g \in Gens : phase[g] = "retired"
+                  ~> (phase[g] = "safe" \/ ProducerFault(g) \/ killed \/ app.pc = "done")
+
+(* As PermitReturns, without relying on the application to keep running.  *)
+PermitReturnsIdle ==
+  \A g \in Gens : phase[g] = "retired" ~> (phase[g] = "safe" \/ ProducerFault(g) \/ killed)
 
 =============================================================================

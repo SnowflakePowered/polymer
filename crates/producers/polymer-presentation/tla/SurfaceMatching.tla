@@ -18,19 +18,22 @@
 (*   foreignForget  ghost: forget(source) issued by a source whose         *)
 (*                  identity is now owned by another live registration     *)
 (*                                                                         *)
-(* SourceIdentity: D3D12 uses a process-wide serial (never repeats); the   *)
-(* Vulkan layer uses (instance, VkSurfaceKHR handle, window lifetime), so  *)
-(* a recreated surface on the same window can repeat it (IdentityReuse).   *)
+(* SourceIdentity: D3D12 and the Vulkan layer both use a process-wide     *)
+(* serial, so an identity never repeats.  Vulkan Surface::destroyed        *)
+(* releases the registration; the SourceRegistration Drop releases again.  *)
+(* ArcLeak: an Arc<Surface> outlives vkDestroySurfaceKHR (a Detached       *)
+(* swapchain the application never destroyed) and can still call           *)
+(* Surface::binding, i.e. observe() and reserve().                         *)
 (* Title patterns are abstracted away: every request is unqualified, so    *)
 (* resolve() runs phase 0 (previous_window) then phase 2.                  *)
 (***************************************************************************)
 EXTENDS Integers, Sequences, FiniteSets, TLC
 
-CONSTANTS Insts, Handles, SurfHandles, Ords, MaxLife, MaxBindings, IdentityReuse, DoubleRelease
+CONSTANTS Insts, Handles, SurfHandles, Ords, MaxLife, MaxBindings, DoubleRelease, ArcLeak
 
 NoWin == [h |-> 0, life |-> 0]
 NoId == [obj |-> 0, life |-> 0]
-NoInst == [st |-> "none", id |-> NoId, w |-> NoWin, surf |-> 0, releases |-> 0]
+NoInst == [st |-> "none", id |-> NoId, w |-> NoWin, surf |-> 0, releases |-> 0, arc |-> FALSE]
 
 VARIABLES win, nextLife, inst, cands, req, bs, prov, held, foreignForget
 
@@ -48,6 +51,7 @@ Init ==
   /\ foreignForget = FALSE
 
 Live(i) == inst[i].st = "live"
+Arc(i) == Live(i) \/ inst[i].arc
 CandIdx(id) == {k \in 1..Len(cands) : cands[k].src = id}
 Bound(r) == req[r].b # 0
 BSrc(r) == bs[req[r].b].src
@@ -74,8 +78,7 @@ Register(i) ==
        /\ win[h] # 0
        /\ \A j \in Insts : inst[j].surf # sh
        /\ LET w == [h |-> h, life |-> win[h]]
-              id == IF IdentityReuse THEN [obj |-> sh, life |-> win[h]]
-                    ELSE [obj |-> i, life |-> i]
+              id == [obj |-> i, life |-> i]
           IN IF CandIdx(id) # {}
                THEN /\ inst' = [inst EXCEPT ![i] = [NoInst EXCEPT !.st = "rejected", !.id = id,
                                                     !.w = w, !.surf = sh]]
@@ -85,13 +88,13 @@ Register(i) ==
                     /\ cands' = Append(cands, [src |-> id, w |-> w])
   /\ UNCHANGED <<win, nextLife, req, bs, prov, held, foreignForget>>
 
-(* Vulkan Surface::binding: identify the window, then observe().           *)
+(* Vulkan Surface::binding: identify the window, then observe(), which    *)
+(* only updates an existing candidate.                                     *)
 Observe(i) ==
-  /\ Live(i) /\ win[inst[i].w.h] = inst[i].w.life
+  /\ Arc(i) /\ win[inst[i].w.h] = inst[i].w.life
+  /\ CandIdx(inst[i].id) # {}
   /\ LET c == [src |-> inst[i].id, w |-> inst[i].w] IN
-     cands' = IF CandIdx(inst[i].id) # {}
-                THEN [k \in 1..Len(cands) |-> IF cands[k].src = inst[i].id THEN c ELSE cands[k]]
-                ELSE Append(cands, c)
+     cands' = [k \in 1..Len(cands) |-> IF cands[k].src = inst[i].id THEN c ELSE cands[k]]
   /\ UNCHANGED <<win, nextLife, inst, req, bs, prov, held, foreignForget>>
 
 (* Assignments::resolve.                                                   *)
@@ -116,7 +119,7 @@ Resolve ==
 
 (* SourceRegistration::reserve -> AssignmentRegistry::reserve.             *)
 Reserve(i) ==
-  /\ Live(i) /\ prov[i] = 0 /\ held[i] = 0 /\ Len(bs) < MaxBindings
+  /\ Arc(i) /\ prov[i] = 0 /\ held[i] = 0 /\ Len(bs) < MaxBindings
   /\ LET id == inst[i].id
          a == Resolve
          rs == {r \in Ords : a[r] = id}
@@ -178,16 +181,22 @@ Forget(i) ==
 Release(i) ==
   /\ \/ Live(i)
      \/ DoubleRelease /\ inst[i].st = "released" /\ inst[i].releases = 1
+     \/ inst[i].arc
   /\ Forget(i)
-  /\ inst' = [inst EXCEPT ![i].st = "released", ![i].releases = @ + 1]
+  /\ inst' = [inst EXCEPT ![i].st = "released", ![i].releases = @ + 1, ![i].arc = FALSE]
   /\ UNCHANGED <<win, nextLife, bs, prov, held>>
 
-(* vkDestroySurfaceKHR: the handle may be reused before the Surface Arc,   *)
-(* and with it the registration, is dropped.                               *)
+(* vkDestroySurfaceKHR -> Surface::destroyed: remove the SURFACES entry   *)
+(* and release the registration.                                           *)
 DestroySurfaceHandle(i) ==
   /\ inst[i].surf # 0
-  /\ inst' = [inst EXCEPT ![i].surf = 0]
-  /\ UNCHANGED <<win, nextLife, cands, req, bs, prov, held, foreignForget>>
+  /\ IF ~Live(i)
+       THEN /\ inst' = [inst EXCEPT ![i].surf = 0]
+            /\ UNCHANGED <<cands, req, foreignForget>>
+       ELSE /\ Forget(i)
+            /\ inst' = [inst EXCEPT ![i].surf = 0, ![i].st = "released",
+                                    ![i].releases = @ + 1, ![i].arc = ArcLeak]
+  /\ UNCHANGED <<win, nextLife, bs, prov, held>>
 
 Finished ==
   /\ \A i \in Insts : inst[i].st # "live" /\ prov[i] = 0
@@ -222,5 +231,8 @@ NoForeignForget == ~foreignForget
 (* Availability: a source is never refused because of an identity that  *)
 (* is still registered by an older source.                                 *)
 NoRejectedSource == \A i \in Insts : inst[i].st # "rejected"
+
+(* A released source never re-enters the candidate list.                  *)
+NoZombieCandidate == \A i \in Insts : inst[i].st = "released" => CandIdx(inst[i].id) = {}
 
 =============================================================================

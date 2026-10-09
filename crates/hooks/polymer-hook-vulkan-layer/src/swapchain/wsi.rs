@@ -371,10 +371,6 @@ pub(crate) unsafe extern "system" fn destroy(
 ) {
     match Swapchain::get(device, swapchain) {
         Ok(Some(value)) => {
-            if value.device.lost.load(Ordering::Acquire) {
-                value.closed.store(true, Ordering::Release);
-                return;
-            }
             SWAPCHAINS.remove(&swapchain);
             value.retire();
         }

@@ -77,7 +77,9 @@ pub trait SwapchainBackend: Sized {
         Ok(false)
     }
 
-    /// Must prove GPU, app-reference and external-consumer lifetimes have ended.
+    /// Must prove GPU and app-reference lifetimes have ended, and that external
+    /// consumers either released every publication or hold their own reference
+    /// to the exported allocation.
     /// This is called only on the API owner. Pending work is kept, never dropped.
     fn poll_retirement(
         &mut self,
