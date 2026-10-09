@@ -299,6 +299,14 @@ impl SurfaceOffer {
             .metal_resources(self.connection)
     }
 
+    #[cfg(windows)]
+    pub fn win32_resources(&self) -> Option<std::sync::Arc<polymer_ipc::Win32Resources>> {
+        self.manager
+            .upgrade()?
+            .router()?
+            .win32_resources(self.connection)
+    }
+
     pub const fn id(&self) -> TrackedSurfaceId {
         self.surface.id()
     }

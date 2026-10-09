@@ -47,7 +47,13 @@ fn guest_receives_virtual_controller_and_returns_feedback() {
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
     let mut publisher = InputPublisher::new().unwrap();
-    publisher.accept(&mut socket).unwrap();
+    let Message::Hello(hello) = socket.receive().unwrap() else {
+        panic!("expected input hello");
+    };
+    socket
+        .send(Message::MapOffer(publisher.map_offer(&hello).unwrap()))
+        .unwrap();
+    assert_eq!(socket.receive().unwrap(), Message::MapAccepted);
     let topology = InputTopology {
         revision: 1,
         ports: vec![PortBinding {

@@ -5,6 +5,7 @@ impl VulkanCompositor {
         &mut self,
         connection: u64,
         stream: &StreamReady,
+        shared: &polymer_ipc::Win32Resources,
         quarter_turns: u8,
     ) -> Result<(), Box<dyn Error>> {
         if !self.mode.accepts(connection) {
@@ -13,7 +14,7 @@ impl VulkanCompositor {
             );
         }
         self.disconnect_stream(connection)?;
-        let imported = self.receiver.import_stream(stream)?;
+        let imported = self.receiver.import_stream(stream, shared)?;
         let quarter_turns = quarter_turns % 4;
         let cache = (stream.slot_count == 1)
             .then(|| {

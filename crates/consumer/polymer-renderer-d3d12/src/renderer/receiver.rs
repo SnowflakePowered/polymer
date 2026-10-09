@@ -1,7 +1,7 @@
 //! Import side of the D3D12 renderer.
 
 use polymer_consumer_d3d12::{D3d12ConsumerDevice, ImportedD3d12Stream};
-use polymer_ipc::StreamReady;
+use polymer_ipc::{StreamReady, Win32Resources};
 use polymer_protocol::AdapterLuid;
 use std::ops::Deref;
 
@@ -29,8 +29,9 @@ impl D3d12Receiver {
     pub fn import_stream(
         &self,
         stream: &StreamReady,
+        shared: &Win32Resources,
     ) -> windows::core::Result<ImportedD3d12Stream> {
-        self.consumer.import(stream)
+        self.consumer.import(stream, shared)
     }
 
     pub fn adapter_luid(&self) -> AdapterLuid {

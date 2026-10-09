@@ -18,8 +18,15 @@ impl InputPublication {
         })
     }
 
-    pub fn accept(&mut self, socket: &mut crate::LocalSocket) -> io::Result<u32> {
-        self.publisher.accept(socket)
+    pub fn map_offer(
+        &self,
+        hello: &polymer_protocol::Handshake,
+    ) -> io::Result<crate::control::MapOffer> {
+        self.publisher.map_offer(hello)
+    }
+
+    pub fn replay(&mut self) -> io::Result<()> {
+        self.publisher.replay()
     }
 
     pub fn on_input(&mut self, event: InputEvent<'_>) {

@@ -225,9 +225,40 @@ impl InputIpcListener {
         self.0.hub.lock().take();
     }
 
+    fn serve(self, mut socket: crate::LocalSocket) {
+        let accepted = socket
+            .try_clone()
+            .and_then(|shutdown| {
+                self.0
+                    .control
+                    .handshake(shutdown, || self.accept(&mut socket))
+            })
+            .and_then(|()| self.0.control.add_client(&socket));
+        if let Err(error) = accepted {
+            tracing::warn!("input client rejected: {error}");
+            return;
+        }
+        let feedback = self.0.hub.clone();
+        drop(self);
+        Control::forward_feedback(socket, &feedback);
+    }
+
     fn accept(&self, socket: &mut crate::LocalSocket) -> io::Result<()> {
-        self.0.publication.lock().accept(socket)?;
-        self.0.control.add_client(socket, self.0.hub.clone())
+        let crate::Message::Hello(hello) = socket.receive()? else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "expected input hello",
+            ));
+        };
+        let offer = self.0.publication.lock().map_offer(&hello)?;
+        socket.send(crate::Message::MapOffer(offer))?;
+        if socket.receive()? != crate::Message::MapAccepted {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "input map was not accepted",
+            ));
+        }
+        self.0.publication.lock().replay()
     }
 }
 

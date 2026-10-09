@@ -18,6 +18,7 @@ tokio = { version = "1.53", features = ["io-util", "macros", "net", "rt", "sync"
 serde.workspace = true
 serde_json.workspace = true
 bcast.workspace = true
+dashmap.workspace = true
 memmap2.workspace = true
 tempfile.workspace = true
 polymer-protocol.workspace = true
@@ -37,7 +38,6 @@ objc2-metal = "0.3.2"
 objc2-io-surface = "0.3.2"
 block2.workspace = true
 libc = "0.2"
-dashmap.workspace = true
 
 [build-dependencies]
 cc = "1"

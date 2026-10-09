@@ -10,7 +10,16 @@ impl Renderer for D3d12Compositor {
         offer: &SurfaceOffer,
         quarter_turns: u8,
     ) -> Result<(), Box<dyn Error>> {
-        D3d12Compositor::import_stream(self, offer.connection_id(), offer.stream(), quarter_turns)?;
+        let shared = offer
+            .win32_resources()
+            .ok_or("stream resources were revoked")?;
+        D3d12Compositor::import_stream(
+            self,
+            offer.connection_id(),
+            offer.stream(),
+            &shared,
+            quarter_turns,
+        )?;
         Ok(())
     }
 

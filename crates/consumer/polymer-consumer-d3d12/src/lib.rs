@@ -1,9 +1,9 @@
 //! Native D3D12 import of Polymer shared image rings and fences.
 #![allow(unsafe_code)]
 
-use polymer_ipc::StreamReady;
+use polymer_ipc::{StreamReady, Win32Resources};
 use polymer_protocol::{AdapterLuid, ExternalImageKind, MAX_IMAGE_SLOTS};
-use std::ffi::c_void;
+use std::os::windows::io::{AsRawHandle, OwnedHandle};
 use windows::Win32::{
     Foundation::{CloseHandle, E_INVALIDARG, E_POINTER, HANDLE, LUID, WAIT_OBJECT_0},
     Graphics::{
@@ -81,20 +81,22 @@ impl D3d12ConsumerDevice {
         })
     }
 
-    pub fn import(&self, stream: &StreamReady) -> windows::core::Result<ImportedD3d12Stream> {
+    pub fn import(
+        &self,
+        stream: &StreamReady,
+        shared: &Win32Resources,
+    ) -> windows::core::Result<ImportedD3d12Stream> {
         validate_stream(stream, self.adapter_luid)?;
-        let mut resources = Vec::<ID3D12Resource>::with_capacity(stream.slot_count as usize);
+        let mut resources = Vec::<ID3D12Resource>::with_capacity(shared.images.len());
         unsafe {
-            for &raw in &stream.image_handles[..stream.slot_count as usize] {
-                let handle = HANDLE(raw as *mut c_void);
+            for handle in &shared.images {
                 let mut resource = None;
-                let result = self.device.OpenSharedHandle(handle, &mut resource);
-                let _ = CloseHandle(handle);
-                result?;
+                self.device
+                    .OpenSharedHandle(HANDLE(handle.as_raw_handle()), &mut resource)?;
                 resources
                     .push(resource.ok_or_else(|| windows::core::Error::from_hresult(E_POINTER))?);
             }
-            let consumer = open_fence(&self.device, stream.consumer_semaphore_handle)?;
+            let consumer = open_fence(&self.device, &shared.released)?;
             for resource in &resources {
                 let desc = resource.GetDesc();
                 if desc.Width != u64::from(stream.width)
@@ -172,10 +174,6 @@ fn validate_stream(stream: &StreamReady, adapter_luid: AdapterLuid) -> windows::
     if stream.adapter_luid != adapter_luid
         || stream.slot_count == 0
         || stream.slot_count as usize > MAX_IMAGE_SLOTS
-        || stream.image_handles[..stream.slot_count as usize]
-            .iter()
-            .any(|&handle| handle == 0 || handle == -1)
-        || stream.consumer_semaphore_handle == 0
         || stream.width == 0
         || stream.height == 0
     {
@@ -184,11 +182,11 @@ fn validate_stream(stream: &StreamReady, adapter_luid: AdapterLuid) -> windows::
     Ok(())
 }
 
-unsafe fn open_fence(device: &ID3D12Device, raw: i64) -> windows::core::Result<ID3D12Fence> {
-    let handle = HANDLE(raw as *mut c_void);
+unsafe fn open_fence(
+    device: &ID3D12Device,
+    handle: &OwnedHandle,
+) -> windows::core::Result<ID3D12Fence> {
     let mut fence = None;
-    let result = unsafe { device.OpenSharedHandle(handle, &mut fence) };
-    let _ = unsafe { CloseHandle(handle) };
-    result?;
+    unsafe { device.OpenSharedHandle(HANDLE(handle.as_raw_handle()), &mut fence)? };
     fence.ok_or_else(|| windows::core::Error::from_hresult(E_POINTER))
 }

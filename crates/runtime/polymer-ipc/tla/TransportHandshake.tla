@@ -25,10 +25,15 @@
 (*               shutdown, drop or process exit on either side             *)
 (*   hello[c], ready[c], acc[c]   Message::Hello / StreamReady /           *)
 (*               StreamAccepted written to the socket                      *)
+(*   refs[c]     owners of c's polymer_ipc::Win32Resources in the viewer:  *)
+(*               "socket" = LocalSocket::receive wrapped the handles,      *)
+(*               "map" = CaptureShared::resources entry, "gui" = the Arc   *)
+(*               SurfaceOffer::win32_resources handed to an importer. The  *)
+(*               OwnedHandles close when the last owner drops.             *)
 (*   wp[c]       polymer-runtime capture.rs receive_connection worker:     *)
 (*               "recv" = socket.receive, "timeline" =                     *)
-(*               ProducerTimeline::open (polymer-consumer-d3d12            *)
-(*               timeline.rs, open_fence closes the ready handle),         *)
+(*               take_stream_resources + ProducerTimeline::open (borrows   *)
+(*               the ready handle) + resources.insert,                     *)
 (*               "offer" = callbacks.offer, "wait" = response.recv,        *)
 (*               "send" = socket.send(StreamAccepted), "exit" = loop       *)
 (*               returned (shared.revoke + callbacks.disconnected)         *)
@@ -40,9 +45,11 @@
 (*   respTwice   ghost: a oneshot was sent twice                           *)
 (*   events      SurfaceEvent::Offered queue to the GUI                    *)
 (*   gpc, gcur   polymer-gui game_host/surfaces.rs handle_surface_offer /  *)
-(*               accept_surface_offer: import_surface                      *)
-(*               (D3d12ConsumerDevice::import closes img and rel), then    *)
-(*               capture.accept -> SurfaceOffer::accept -> resolve_offer   *)
+(*               accept_surface_offer: import_surface ("importing" =       *)
+(*               D3d12ConsumerDevice::import / ImportedImageRing::import_  *)
+(*               into borrowing the handles), then capture.accept ->       *)
+(*               SurfaceOffer::accept -> resolve_offer                     *)
+(*   useAfterClose  ghost: an importer opened a handle already closed      *)
 (*   imported[c] ghost: c's handles were imported by the GUI               *)
 (*   viewerAlive viewer (polymer-gui + polymer-runtime) process alive      *)
 (*                                                                         *)
@@ -63,14 +70,17 @@ Live == {"exported", "viewer"}
 
 VARIABLES pp, h, doubleClose, sock, hello, ready, acc,
           wp, revoked, timeline, pending, active, replacing, resp, respTwice,
-          events, gpc, gcur, imported, viewerAlive, crashes, vcrashes, failures
+          events, gpc, gcur, imported, refs, useAfterClose,
+          viewerAlive, crashes, vcrashes, failures
 
 vars == <<pp, h, doubleClose, sock, hello, ready, acc,
           wp, revoked, timeline, pending, active, replacing, resp, respTwice,
-          events, gpc, gcur, imported, viewerAlive, crashes, vcrashes, failures>>
+          events, gpc, gcur, imported, refs, useAfterClose,
+          viewerAlive, crashes, vcrashes, failures>>
 
 producerVars == <<pp, h, doubleClose, sock, hello, ready, acc>>
-viewerVars == <<wp, revoked, timeline, pending, active, replacing, resp, respTwice, events, gpc, gcur, imported>>
+viewerVars == <<wp, revoked, timeline, pending, active, replacing, resp, respTwice, events, gpc, gcur, imported,
+                refs, useAfterClose>>
 budgetVars == <<viewerAlive, crashes, vcrashes, failures>>
 
 TypeOK ==
@@ -84,7 +94,8 @@ TypeOK ==
   /\ replacing \in [Conns -> Conns \cup {None}]
   /\ resp \in [Conns -> {"none", "true", "false"}]
   /\ events \in Seq(Conns)
-  /\ gpc \in {"idle", "imported", "dead"} /\ gcur \in Conns \cup {None}
+  /\ gpc \in {"idle", "importing", "imported", "dead"} /\ gcur \in Conns \cup {None}
+  /\ refs \in [Conns -> SUBSET {"socket", "map", "gui"}]
 
 Init ==
   /\ pp = [c \in Conns |-> "connecting"]
@@ -104,12 +115,21 @@ Init ==
   /\ events = <<>>
   /\ gpc = "idle" /\ gcur = None
   /\ imported = [c \in Conns |-> FALSE]
+  /\ refs = [c \in Conns |-> {}]
+  /\ useAfterClose = FALSE
   /\ viewerAlive = TRUE
   /\ crashes = 0 /\ vcrashes = 0 /\ failures = 0
 
-\* CloseHandle in the viewer of the kinds in ks for connection c.
-CloseInViewer(hh, c, ks) == [hh EXCEPT ![c] = [k \in Kinds |-> IF k \in ks THEN "closedV" ELSE hh[c][k]]]
-BadClose(c, ks) == \E k \in ks : h[c][k] # "viewer"
+\* refs' = r; OwnedHandle::drop closes every handle of a connection whose
+\* last owner went away.
+Released(r, c) == r[c] = {} /\ refs[c] # {}
+SetRefs(r) ==
+  /\ refs' = r
+  /\ h' = [c \in Conns |-> IF Released(r, c)
+                             THEN [k \in Kinds |-> IF h[c][k] = "viewer" THEN "closedV" ELSE h[c][k]]
+                             ELSE h[c]]
+  /\ doubleClose' = (doubleClose \/ \E c \in Conns : Released(r, c) /\ \E k \in Kinds : h[c][k] # "viewer")
+DropRef(c, o) == [refs EXCEPT ![c] = @ \ {o}]
 
 \* oneshot TxOneshot::send, applied to a resp function.
 SendResp(r, c, v) == [r EXCEPT ![c] = v]
@@ -125,7 +145,7 @@ Accept(c) ==
   /\ hello' = [hello EXCEPT ![c] = TRUE]
   /\ wp' = [wp EXCEPT ![c] = "recv"]
   /\ UNCHANGED <<h, doubleClose, sock, ready, acc, revoked, timeline, pending, active, replacing,
-                 resp, respTwice, events, gpc, gcur, imported>>
+                 resp, respTwice, events, gpc, gcur, imported, refs, useAfterClose>>
   /\ UNCHANGED budgetVars
 
 \* ProducerSession::connect: socket.receive() -> Hello.
@@ -211,40 +231,38 @@ ProducerCrash(c) ==
 --------------------------------------------------------------------------
 \* Viewer: receive_connection worker (polymer-runtime capture.rs).
 
-\* socket.receive(); then the revoked/stopping check.
+\* socket.receive() wraps StreamReady's handles in Win32Resources; then the
+\* revoked/stopping check.
 WorkerReceive(c) ==
   /\ wp[c] = "recv"
   /\ \/ /\ ready[c] = "sent"
         /\ ready' = [ready EXCEPT ![c] = "recv"]
         /\ wp' = [wp EXCEPT ![c] = IF revoked[c] THEN "exit" ELSE "timeline"]
+        /\ refs' = [refs EXCEPT ![c] = {"socket"}]
      \/ /\ ready[c] # "sent" /\ sock[c] = "shut"
         /\ wp' = [wp EXCEPT ![c] = "exit"]
-        /\ UNCHANGED ready
+        /\ UNCHANGED <<ready, refs>>
   /\ UNCHANGED <<pp, h, doubleClose, sock, hello, acc, revoked, timeline, pending, active, replacing,
-                 resp, respTwice, events, gpc, gcur, imported>>
+                 resp, respTwice, events, gpc, gcur, imported, useAfterClose>>
   /\ UNCHANGED budgetVars
 
-\* ProducerTimeline::open succeeds: open_fence closes the ready handle.
+\* take_stream_resources, ProducerTimeline::open, resources.insert.
 TimelineOpen(c) ==
   /\ wp[c] = "timeline"
-  /\ h' = CloseInViewer(h, c, {"ready"})
-  /\ doubleClose' = (doubleClose \/ BadClose(c, {"ready"}))
+  /\ refs' = [refs EXCEPT ![c] = {"map"}]
   /\ wp' = [wp EXCEPT ![c] = "offer"]
-  /\ UNCHANGED <<pp, sock, hello, ready, acc, revoked, timeline, pending, active, replacing,
-                 resp, respTwice, events, gpc, gcur, imported>>
+  /\ UNCHANGED <<pp, h, doubleClose, sock, hello, ready, acc, revoked, timeline, pending, active,
+                 replacing, resp, respTwice, events, gpc, gcur, imported, useAfterClose>>
   /\ UNCHANGED budgetVars
 
-\* ProducerTimeline::open fails: before open_fence (factory/adapter/device)
-\* nothing is closed; inside open_fence the handle is closed first.
+\* ProducerTimeline::open fails: the taken resources drop with the `?`.
 TimelineOpenFails(c) ==
   /\ wp[c] = "timeline" /\ failures < MaxFailures
   /\ failures' = failures + 1
-  /\ \E ks \in {{}, {"ready"}} :
-       /\ h' = CloseInViewer(h, c, ks)
-       /\ doubleClose' = (doubleClose \/ BadClose(c, ks))
+  /\ SetRefs([refs EXCEPT ![c] = {}])
   /\ wp' = [wp EXCEPT ![c] = "exit"]
   /\ UNCHANGED <<pp, sock, hello, ready, acc, revoked, timeline, pending, active, replacing,
-                 resp, respTwice, events, gpc, gcur, imported>>
+                 resp, respTwice, events, gpc, gcur, imported, useAfterClose>>
   /\ UNCHANGED <<viewerAlive, crashes, vcrashes>>
 
 \* CaptureRouter::revoke applied to x (shutdown of the cloned socket).
@@ -274,7 +292,8 @@ Offer(c) ==
           /\ pending' = c
           /\ events' = Append(events, c)
           /\ UNCHANGED <<resp, respTwice, timeline, sock>>
-  /\ UNCHANGED <<pp, h, doubleClose, hello, ready, acc, active, gpc, gcur, imported>>
+  /\ UNCHANGED <<pp, h, doubleClose, hello, ready, acc, active, gpc, gcur, imported, refs,
+                 useAfterClose>>
   /\ UNCHANGED budgetVars
 
 \* response.recv(); on true: timelines.insert, spawn watch_frames.
@@ -283,7 +302,7 @@ WorkerResolved(c) ==
   /\ wp' = [wp EXCEPT ![c] = IF resp[c] = "true" THEN "send" ELSE "exit"]
   /\ timeline' = IF resp[c] = "true" THEN [timeline EXCEPT ![c] = TRUE] ELSE timeline
   /\ UNCHANGED <<pp, h, doubleClose, sock, hello, ready, acc, revoked, pending, active, replacing,
-                 resp, respTwice, events, gpc, gcur, imported>>
+                 resp, respTwice, events, gpc, gcur, imported, refs, useAfterClose>>
   /\ UNCHANGED budgetVars
 
 \* socket.send(Message::StreamAccepted)?
@@ -293,11 +312,11 @@ SendStreamAccepted(c) ==
        THEN acc' = [acc EXCEPT ![c] = TRUE] /\ wp' = [wp EXCEPT ![c] = "recv"]
        ELSE UNCHANGED acc /\ wp' = [wp EXCEPT ![c] = "exit"]
   /\ UNCHANGED <<pp, h, doubleClose, sock, hello, ready, revoked, timeline, pending, active,
-                 replacing, resp, respTwice, events, gpc, gcur, imported>>
+                 replacing, resp, respTwice, events, gpc, gcur, imported, refs, useAfterClose>>
   /\ UNCHANGED budgetVars
 
-\* receive_connection returns: CaptureShared::revoke, socket dropped,
-\* SurfaceManager::disconnected.
+\* receive_connection returns: CaptureShared::revoke (resources.remove),
+\* socket dropped, SurfaceManager::disconnected.
 WorkerExit(c) ==
   /\ wp[c] = "exit"
   /\ wp' = [wp EXCEPT ![c] = "done"]
@@ -305,8 +324,9 @@ WorkerExit(c) ==
   /\ timeline' = [timeline EXCEPT ![c] = FALSE]
   /\ sock' = [sock EXCEPT ![c] = "shut"]
   /\ active' = IF active = c THEN None ELSE active
-  /\ UNCHANGED <<pp, h, doubleClose, hello, ready, acc, pending, replacing, resp, respTwice,
-                 events, gpc, gcur, imported>>
+  /\ SetRefs([refs EXCEPT ![c] = @ \ {"socket", "map"}])
+  /\ UNCHANGED <<pp, hello, ready, acc, pending, replacing, resp, respTwice,
+                 events, gpc, gcur, imported, useAfterClose>>
   /\ UNCHANGED budgetVars
 
 --------------------------------------------------------------------------
@@ -327,36 +347,50 @@ GuiReject ==
   /\ GuiMayReject /\ gpc = "idle" /\ events # <<>>
   /\ events' = Tail(events)
   /\ ResolveReject(Head(events))
-  /\ UNCHANGED <<pp, h, doubleClose, hello, ready, acc, wp, active, replacing, gpc, gcur, imported>>
+  /\ UNCHANGED <<pp, h, doubleClose, hello, ready, acc, wp, active, replacing, gpc, gcur, imported,
+                 refs, useAfterClose>>
   /\ UNCHANGED budgetVars
 
-\* import_surface -> D3d12ConsumerDevice::import succeeds: image handles and
-\* the consumer fence handle are closed after OpenSharedHandle.
-GuiImport ==
+\* import_surface: SurfaceOffer::win32_resources clones the Arc out of
+\* CaptureShared::resources, or returns None once the worker removed it and
+\* the offer is dropped (resolve_offer false).
+GuiImportBegin ==
   /\ gpc = "idle" /\ events # <<>>
   /\ LET c == Head(events) IN
-       /\ h' = CloseInViewer(h, c, {"img", "rel"})
-       /\ doubleClose' = (doubleClose \/ BadClose(c, {"img", "rel"}))
-       /\ imported' = [imported EXCEPT ![c] = TRUE]
-       /\ gpc' = "imported" /\ gcur' = c
+       IF "map" \in refs[c]
+         THEN /\ refs' = [refs EXCEPT ![c] = @ \cup {"gui"}]
+              /\ gpc' = "importing" /\ gcur' = c
+              /\ UNCHANGED <<pending, resp, respTwice, revoked, timeline, sock>>
+         ELSE /\ ResolveReject(c)
+              /\ UNCHANGED <<refs, gpc, gcur>>
   /\ events' = Tail(events)
-  /\ UNCHANGED <<pp, sock, hello, ready, acc, wp, revoked, timeline, pending, active, replacing,
-                 resp, respTwice>>
+  /\ UNCHANGED <<pp, h, doubleClose, hello, ready, acc, wp, active, replacing, imported,
+                 useAfterClose>>
   /\ UNCHANGED budgetVars
 
-\* import fails: validate_stream closes nothing, a failed OpenSharedHandle
-\* closes the images opened so far, a failed open_fence closes both; the
-\* offer is then dropped (resolve_offer false).
+\* D3d12ConsumerDevice::import / ImportedImageRing::import_into open the
+\* borrowed handles; the Arc drops when import_surface returns.
+GuiImportEnd ==
+  /\ gpc = "importing"
+  /\ LET c == gcur IN
+       /\ useAfterClose' = (useAfterClose \/ \E k \in Kinds : h[c][k] # "viewer")
+       /\ imported' = [imported EXCEPT ![c] = TRUE]
+       /\ SetRefs(DropRef(c, "gui"))
+  /\ gpc' = "imported"
+  /\ UNCHANGED <<pp, sock, hello, ready, acc, wp, revoked, timeline, pending, active, replacing,
+                 resp, respTwice, events, gcur>>
+  /\ UNCHANGED budgetVars
+
+\* An import fails (validation, OpenSharedHandle, open_fence); the Arc drops
+\* and the offer is dropped (resolve_offer false).
 GuiImportFails ==
-  /\ gpc = "idle" /\ events # <<>> /\ failures < MaxFailures
+  /\ gpc = "importing" /\ failures < MaxFailures
   /\ failures' = failures + 1
-  /\ LET c == Head(events) IN
-       /\ \E ks \in {{}, {"img"}, {"img", "rel"}} :
-            /\ h' = CloseInViewer(h, c, ks)
-            /\ doubleClose' = (doubleClose \/ BadClose(c, ks))
+  /\ LET c == gcur IN
+       /\ SetRefs(DropRef(c, "gui"))
        /\ ResolveReject(c)
-  /\ events' = Tail(events)
-  /\ UNCHANGED <<pp, hello, ready, acc, wp, active, replacing, gpc, gcur, imported>>
+  /\ gpc' = "idle" /\ gcur' = None
+  /\ UNCHANGED <<pp, hello, ready, acc, wp, active, replacing, events, imported, useAfterClose>>
   /\ UNCHANGED <<viewerAlive, crashes, vcrashes>>
 
 \* capture.accept -> SurfaceOffer::accept -> resolve_offer(offer, true);
@@ -375,7 +409,8 @@ GuiAccept ==
               /\ revoked' = r[1] /\ timeline' = r[2] /\ sock' = r[3]
          ELSE UNCHANGED <<pending, active, resp, respTwice, revoked, timeline, sock>>
   /\ gpc' = "idle" /\ gcur' = None
-  /\ UNCHANGED <<pp, h, doubleClose, hello, ready, acc, wp, replacing, events, imported>>
+  /\ UNCHANGED <<pp, h, doubleClose, hello, ready, acc, wp, replacing, events, imported, refs,
+                 useAfterClose>>
   /\ UNCHANGED budgetVars
 
 \* The viewer process exits: its handle table and threads vanish.
@@ -388,13 +423,14 @@ ViewerCrash ==
   /\ wp' = [c \in Conns |-> IF wp[c] = "idle" THEN "idle" ELSE "dead"]
   /\ gpc' = "dead" /\ gcur' = None /\ events' = <<>>
   /\ pending' = None /\ active' = None
+  /\ refs' = [c \in Conns |-> {}]
   /\ UNCHANGED <<pp, doubleClose, hello, ready, acc, revoked, timeline, replacing, resp, respTwice,
-                 imported, crashes, failures>>
+                 imported, useAfterClose, crashes, failures>>
 
 Quiescent ==
   /\ \A c \in Conns : pp[c] \in ProducerDone \cup {"connecting"}
   /\ \A c \in Conns : wp[c] \in {"idle", "done", "dead"}
-  /\ events = <<>> /\ gpc # "imported"
+  /\ events = <<>> /\ gpc \notin {"importing", "imported"}
 
 Finished == Quiescent /\ UNCHANGED vars
 
@@ -408,7 +444,7 @@ WorkerStep(c) ==
 Next ==
   \/ \E c \in Conns : ProducerStep(c) \/ DuplicateFails(c) \/ ReadTimeout(c) \/ ProducerCrash(c)
                       \/ WorkerStep(c) \/ TimelineOpenFails(c)
-  \/ GuiReject \/ GuiImport \/ GuiImportFails \/ GuiAccept \/ ViewerCrash
+  \/ GuiReject \/ GuiImportBegin \/ GuiImportEnd \/ GuiImportFails \/ GuiAccept \/ ViewerCrash
   \/ Finished
 
 \* A producer stuck waiting on a vanished peer is released by its read timeout.
@@ -416,9 +452,10 @@ Spec == Init /\ [][Next]_vars
         /\ (\A c \in Conns : WF_vars(ProducerStep(c)) /\ WF_vars(WorkerStep(c))
                              /\ WF_vars(pp[c] \in {"hello", "await"} /\ ~viewerAlive /\ ReadTimeout(c))
                              /\ WF_vars(pp[c] = "prepare" /\ ~viewerAlive /\ DuplicateFails(c)))
-        /\ WF_vars(GuiReject \/ GuiImport) /\ WF_vars(GuiAccept)
+        /\ WF_vars(GuiReject \/ GuiImportBegin) /\ WF_vars(GuiImportEnd) /\ WF_vars(GuiAccept)
 
 NoDoubleClose == ~doubleClose
+NoUseAfterClose == ~useAfterClose
 OneshotSentOnce == ~respTwice
 ActiveWasAccepted == active # None => resp[active] = "true" /\ imported[active]
 AtMostOneAcceptedLive ==
@@ -426,8 +463,14 @@ AtMostOneAcceptedLive ==
                       => sock[c] = "shut" \/ sock[d] = "shut"
 
 \* At quiescence no duplicated handle is still open in a live viewer.
-NoLeakedHandle ==
+StrictNoLeakedHandle ==
   Quiescent /\ viewerAlive => \A c \in Conns, k \in Kinds : h[c][k] \notin Live
+
+\* Only a producer that crashed before its StreamReady reached the viewer can
+\* leave duplicates there: nothing in the viewer knows their values.
+NoLeakedHandle ==
+  Quiescent /\ viewerAlive =>
+    \A c \in Conns, k \in Kinds : h[c][k] \in Live => pp[c] = "crashed" /\ ready[c] # "recv"
 
 ProducerTerminates ==
   \A c \in Conns : <>(pp[c] \in ProducerDone \cup {"accepted"} \/ (pp[c] = "connecting" /\ ~viewerAlive))

@@ -5,6 +5,7 @@ impl D3d12Compositor {
         &mut self,
         connection: u64,
         stream: &StreamReady,
+        shared: &polymer_ipc::Win32Resources,
         quarter_turns: u8,
     ) -> Result<(), Box<dyn Error>> {
         if !self.mode.accepts(connection) {
@@ -18,7 +19,7 @@ impl D3d12Compositor {
         {
             return Err("D3D12 surface descriptor heap is full".into());
         }
-        let imported = self.receiver.import_stream(stream)?;
+        let imported = self.receiver.import_stream(stream, shared)?;
         self.surfaces.push(ImportedSurface::new(
             self.receiver.device(),
             imported,
