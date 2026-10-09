@@ -63,7 +63,6 @@ impl BluetoothActor {
             host: self.bredr.clone(),
             pairing: self.pairing.clone(),
             keys: self.keys.clone(),
-            internal: self.internal.clone(),
             events: self.events.clone(),
         };
         let (abort, registration) = AbortHandle::new_pair();
@@ -126,8 +125,25 @@ impl BluetoothActor {
         }
         self.connect_tasks.remove(&address);
         self.connecting_transports.remove(&transport);
+        let result = result.and_then(|session| {
+            let disconnections = session.transport.disconnections();
+            if session.transport.state() == crate::ConnectionState::Disconnected {
+                return Err(Error::Unsupported(
+                    "controller disconnected before its session started",
+                ));
+            }
+            Ok((session, disconnections))
+        });
         let result = match result {
-            Ok(session) => {
+            Ok((mut session, disconnections)) => {
+                session.report_task = Some(Self::spawn_reports(
+                    session.info.controller_id,
+                    id,
+                    session.transport.reports(),
+                    disconnections,
+                    self.events.clone(),
+                    self.internal.clone(),
+                ));
                 let _ = self
                     .events
                     .send(ManagerEvent::Connected(session.info.clone()));
@@ -191,7 +207,7 @@ impl Handler<Forget> for BluetoothActor {
         AtomicResponse::new(Box::pin(
             async move {
                 if let Some(mut session) = session {
-                    session.report_task.abort();
+                    session.stop_reports();
                     let _ = session.transport.disconnect().await;
                     let _ = events.send(ManagerEvent::Disconnected {
                         controller_id,
@@ -241,8 +257,7 @@ impl Handler<HciLifecycle> for BluetoothActor {
         let id = SessionId(self.next_session_id);
         self.next_session_id = self.next_session_id.wrapping_add(1).max(1);
         let config = self.config.clone();
-        let events = self.events.clone();
-        let internal = self.internal.clone();
+        let keys = self.keys.clone();
         let discovered = self.discovered.get(&addr).cloned();
         let (abort, registration) = AbortHandle::new_pair();
         self.connect_tasks
@@ -250,15 +265,7 @@ impl Handler<HciLifecycle> for BluetoothActor {
         let accept = async move {
             let result = time::timeout(
                 CONNECTION_ATTEMPT_TIMEOUT,
-                Self::accept_inbound(
-                    &config,
-                    &host,
-                    addr,
-                    id,
-                    &events,
-                    internal,
-                    discovered.as_ref(),
-                ),
+                Self::accept_inbound(&config, &host, keys, addr, id, discovered.as_ref()),
             )
             .await
             .unwrap_or(Err(Error::Timeout("inbound controller connection")));

@@ -398,13 +398,19 @@ impl ControllerStore for FileControllerStore {
     }
     fn put(&self, record: ControllerRecord) -> Result<()> {
         let mut records = self.records.lock().map_err(|_| Error::ChannelClosed)?;
-        records.insert(key(record.address, record.transport), record);
-        self.save(&records)
+        let mut updated = records.clone();
+        updated.insert(key(record.address, record.transport), record);
+        self.save(&updated)?;
+        *records = updated;
+        Ok(())
     }
     fn remove(&self, address: DeviceAddr) -> Result<()> {
         let mut records = self.records.lock().map_err(|_| Error::ChannelClosed)?;
-        records.retain(|_, record| record.address != address);
-        self.save(&records)
+        let mut updated = records.clone();
+        updated.retain(|_, record| record.address != address);
+        self.save(&updated)?;
+        *records = updated;
+        Ok(())
     }
 }
 

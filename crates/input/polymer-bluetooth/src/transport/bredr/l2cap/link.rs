@@ -56,6 +56,11 @@ struct PendingChannel {
     response: oneshot::Sender<Result<Channel>>,
 }
 
+struct OpenChannel {
+    remote_cid: u16,
+    sender: mpsc::Sender<Bytes>,
+}
+
 struct StoredRequest {
     identifier: u8,
     psm: u16,
@@ -227,7 +232,7 @@ async fn link_actor(
     let mut configuration_ids: HashMap<u8, u16> = HashMap::new();
     let mut accepts: HashMap<u16, VecDeque<oneshot::Sender<Result<Channel>>>> = HashMap::new();
     let mut stored_requests: VecDeque<StoredRequest> = VecDeque::new();
-    let mut channels: HashMap<u16, mpsc::Sender<Bytes>> = HashMap::new();
+    let mut channels: HashMap<u16, OpenChannel> = HashMap::new();
 
     loop {
         tokio::select! {
@@ -284,9 +289,9 @@ async fn link_actor(
                 if frame.handle != handle { continue; }
                 let packet = match Packet::parse(&frame.pdu) { Ok(packet) => packet, Err(error) => { tracing::warn!(handle, %error, "invalid L2CAP PDU"); continue; } };
                 if packet.channel_id != SIGNALING_CID {
-                    if let Some(sender) = channels.get(&packet.channel_id) {
+                    if let Some(channel) = channels.get(&packet.channel_id) {
                         // A slow consumer must not stall HCI credit returns or other controllers.
-                        let _ = sender.try_send(packet.payload);
+                        let _ = channel.sender.try_send(packet.payload);
                     }
                     continue;
                 }
@@ -389,7 +394,9 @@ async fn link_actor(
                             // the peer wait forever even though our local state looks ready.
                             let source_cid = pending
                                 .get(&destination_cid)
-                                .map_or(destination_cid, |channel| channel.remote_cid);
+                                .map(|channel| channel.remote_cid)
+                                .or_else(|| channels.get(&destination_cid).map(|channel| channel.remote_cid))
+                                .unwrap_or(destination_cid);
                             let response = Signal::ConfigurationResponse { identifier, source_cid, flags, result, options: response_options };
                             let _ = send_signal(&host, handle, response).await;
                             if result == 0 {
@@ -399,12 +406,23 @@ async fn link_actor(
                         }
                         Signal::ConfigurationResponse { identifier, source_cid, flags, result, .. } => {
                             let local_cid = configuration_ids
-                                .get(&identifier)
-                                .copied()
+                                .remove(&identifier)
                                 .unwrap_or(source_cid);
-                            if result != 0 { fail_pending(local_cid, Error::L2cap(format!("configuration rejected with result 0x{result:04x}")), &mut pending); continue; }
-                            if let Some(channel) = pending.get_mut(&local_cid) { channel.local_configured = flags & 1 == 0; }
-                            if flags & 1 == 0 { configuration_ids.remove(&identifier); }
+                            let Some(remote_cid) = pending.get(&local_cid).map(|channel| channel.remote_cid) else { continue; };
+                            if result != 0 {
+                                fail_pending(local_cid, Error::L2cap(format!("configuration rejected with result 0x{result:04x}")), &mut pending);
+                                let identifier = allocate_identifier(&mut next_identifier);
+                                let _ = send_signal(&host, handle, Signal::DisconnectionRequest { identifier, destination_cid: remote_cid, source_cid: local_cid }).await;
+                                continue;
+                            }
+                            if flags & 1 != 0 {
+                                let config_id = allocate_identifier(&mut next_identifier);
+                                configuration_ids.insert(config_id, local_cid);
+                                let signal = Signal::ConfigurationRequest { identifier: config_id, destination_cid: remote_cid, flags: 0, options: Vec::new() };
+                                if let Err(error) = send_signal(&host, handle, signal).await { fail_pending(local_cid, error, &mut pending); }
+                                continue;
+                            }
+                            if let Some(channel) = pending.get_mut(&local_cid) { channel.local_configured = true; }
                             finish_if_ready(local_cid, &command_sender, &mut pending, &mut channels);
                         }
                         Signal::DisconnectionRequest { identifier, destination_cid, source_cid } => {
@@ -460,7 +478,7 @@ async fn accept_request(
     next_cid: &mut u16,
     next_identifier: &mut u8,
     pending: &mut HashMap<u16, PendingChannel>,
-    channels: &HashMap<u16, mpsc::Sender<Bytes>>,
+    channels: &HashMap<u16, OpenChannel>,
 ) {
     let local_cid = allocate_cid_for_psm(request.psm, next_cid, pending, channels);
     pending.insert(
@@ -504,7 +522,7 @@ fn finish_if_ready(
     local_cid: u16,
     command_sender: &mpsc::WeakSender<LinkCommand>,
     pending: &mut HashMap<u16, PendingChannel>,
-    channels: &mut HashMap<u16, mpsc::Sender<Bytes>>,
+    channels: &mut HashMap<u16, OpenChannel>,
 ) {
     if !pending
         .get(&local_cid)
@@ -514,7 +532,13 @@ fn finish_if_ready(
     }
     let pending = pending.remove(&local_cid).unwrap();
     let (sender, receiver) = mpsc::channel(128);
-    channels.insert(local_cid, sender);
+    channels.insert(
+        local_cid,
+        OpenChannel {
+            remote_cid: pending.remote_cid,
+            sender,
+        },
+    );
     let Some(commands) = command_sender.upgrade() else {
         let _ = pending.response.send(Err(Error::ChannelClosed));
         return;
@@ -538,7 +562,7 @@ fn fail_pending(local_cid: u16, error: Error, pending: &mut HashMap<u16, Pending
 fn allocate_cid(
     next: &mut u16,
     pending: &HashMap<u16, PendingChannel>,
-    channels: &HashMap<u16, mpsc::Sender<Bytes>>,
+    channels: &HashMap<u16, OpenChannel>,
 ) -> u16 {
     loop {
         let candidate = *next;
@@ -557,7 +581,7 @@ fn allocate_cid_for_psm(
     psm: u16,
     next: &mut u16,
     pending: &HashMap<u16, PendingChannel>,
-    channels: &HashMap<u16, mpsc::Sender<Bytes>>,
+    channels: &HashMap<u16, OpenChannel>,
 ) -> u16 {
     let preferred = match psm {
         // Match the stable host CIDs used by BlueRetro's known-good Nintendo

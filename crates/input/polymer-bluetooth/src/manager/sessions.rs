@@ -231,7 +231,7 @@ impl BluetoothActor {
                 {
                     return (Some(session), Err(error));
                 }
-                session.report_task.abort();
+                session.stop_reports();
                 let result = session.transport.disconnect().await;
                 let _ = events.send(ManagerEvent::Disconnected {
                     controller_id,

@@ -5,6 +5,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use tokio::sync::broadcast;
+
 use crate::{
     DeviceAddr, Error, Result,
     transport::bredr::hci::{Command, Event, HciHost, Opcode},
@@ -98,14 +100,20 @@ impl LinkKeyStore for FileLinkKeyStore {
 
     fn put(&self, addr: DeviceAddr, key: LinkKey) -> Result<()> {
         let mut keys = self.keys.lock().map_err(|_| Error::ChannelClosed)?;
-        keys.insert(addr, key);
-        self.save(&keys)
+        let mut updated = keys.clone();
+        updated.insert(addr, key);
+        self.save(&updated)?;
+        *keys = updated;
+        Ok(())
     }
 
     fn remove(&self, addr: DeviceAddr) -> Result<()> {
         let mut keys = self.keys.lock().map_err(|_| Error::ChannelClosed)?;
-        keys.remove(&addr);
-        self.save(&keys)
+        let mut updated = keys.clone();
+        updated.remove(&addr);
+        self.save(&updated)?;
+        *keys = updated;
+        Ok(())
     }
 }
 
@@ -169,8 +177,17 @@ impl PairingAgent {
     pub async fn run(self: Arc<Self>) -> Result<()> {
         let mut events = self.host.events();
         loop {
-            self.handle(events.recv().await.map_err(|_| Error::ChannelClosed)?)
-                .await?;
+            match events.recv().await {
+                Ok(event) => {
+                    if let Err(error) = self.handle(event).await {
+                        tracing::warn!(%error, "BR/EDR pairing event failed");
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(count)) => {
+                    tracing::warn!(count, "BR/EDR pairing agent dropped HCI events");
+                }
+                Err(broadcast::error::RecvError::Closed) => return Err(Error::ChannelClosed),
+            }
         }
     }
 

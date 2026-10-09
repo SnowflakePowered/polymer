@@ -19,7 +19,12 @@
 (*              receiver dropped, pending entry left in place)             *)
 (*   toPeer / toHost   signaling PDUs on the ACL (send_signal / frames)    *)
 (*   msg.good   ConfigurationResponse source_cid names the peer's CID      *)
-(*              (pending lookup hit) rather than echoing destination_cid   *)
+(*              (pending or open-channel lookup hit) rather than echoing   *)
+(*              destination_cid                                            *)
+(*                                                                         *)
+(* A non-zero ConfigurationResponse fails the caller and disconnects the   *)
+(* channel; a success response with the C flag is answered by an empty    *)
+(* ConfigurationRequest.                                                   *)
 (*                                                                         *)
 (* Host actions: HostReceiveConfigurationResponse / ...Request /           *)
 (* ...DisconnectionRequest are the matching arms of link_actor's frame     *)
@@ -96,9 +101,13 @@ HostReceiveConfigurationResponse ==
         ELSE IF m.result # 0
           THEN /\ hState' = "failed"
                /\ caller' = IF caller = "waiting" THEN "error" ELSE caller
-               /\ UNCHANGED <<localCfg, toPeer>>
-        ELSE /\ localCfg' = ~m.cont
-             /\ FinishIfReady(~m.cont, remoteCfg)
+               /\ toPeer' = Append(toPeer, Msg("DiscReq", 0, FALSE, FALSE, TRUE))
+               /\ UNCHANGED localCfg
+        ELSE IF m.cont
+          THEN /\ toPeer' = Append(toPeer, Msg("ConfReq", 0, FALSE, FALSE, TRUE))
+               /\ UNCHANGED <<hState, localCfg, caller>>
+        ELSE /\ localCfg' = TRUE
+             /\ FinishIfReady(TRUE, remoteCfg)
   /\ UNCHANGED <<remoteCfg>>
   /\ UNCHANGED peerVars
 
@@ -106,7 +115,7 @@ HostReceiveConfigurationRequest ==
   /\ toHost # <<>> /\ Head(toHost).type = "ConfReq"
   /\ LET m == Head(toHost)
          result == IF m.unknown THEN 3 ELSE 0
-         rsp == Msg("ConfRsp", result, m.cont, FALSE, hState = "pending")
+         rsp == Msg("ConfRsp", result, m.cont, FALSE, hState \in {"pending", "open"})
      IN
      /\ toHost' = Tail(toHost)
      /\ IF result = 0 /\ hState = "pending"
@@ -267,8 +276,9 @@ SpecWithTimeouts ==
 Agreement == Settled => ((hState = "open") = (pState = "open"))
 
 \* The host never treats the channel as open while the peer is still
-\* configuring with nothing left in flight.
-NoHalfOpen == (toPeer = <<>> /\ toHost = <<>>) => ~(hState = "open" /\ pState = "config")
+\* configuring with nothing left in flight or left for the peer to send.
+NoHalfOpen ==
+  (toPeer = <<>> /\ toHost = <<>> /\ ~pReqNeeded) => ~(hState = "open" /\ pState = "config")
 
 \* Negotiation finishes without relying on a timeout.
 NegotiationTerminates == <>[]Settled

@@ -51,12 +51,11 @@ pub(super) async fn run(
             None
         }
     };
-    let pairing = host.as_ref().map(|host| {
-        Arc::new(PairingAgent::new(
-            host.clone(),
-            Arc::new(ControllerLinkKeyStore::new(controller_store.clone())),
-        ))
-    });
+    let link_keys: Arc<dyn LinkKeyStore> =
+        Arc::new(ControllerLinkKeyStore::new(controller_store.clone()));
+    let pairing = host
+        .as_ref()
+        .map(|host| Arc::new(PairingAgent::new(host.clone(), link_keys.clone())));
     let pairing_task = pairing.as_ref().map(|pairing| {
         let pairing = pairing.clone();
         let pairing_events = events.clone();
@@ -743,7 +742,8 @@ pub(super) async fn run(
                         )));
                         diagnostic(&format!("Pairing policy for {}: {pin_source}", device.addr));
                         let _ = events.send(Event::Busy(format!("Connecting and authenticating {}…", device.addr)));
-                        let mut transport = BrEdrHid::new(host.clone());
+                        let mut transport =
+                            BrEdrHid::new(host.clone(), device.addr, link_keys.clone());
                         if identity.is_wii_remote() {
                             // Keep the controller's default retransmission policy until
                             // the four-controller latency value is tuned on Wii hardware.
@@ -1137,7 +1137,8 @@ pub(super) async fn run(
                         let become_master = identity.policy(addr, 0).become_master;
                         match host.accept_connection_with_role(addr, become_master).await {
                             Ok(handle) => {
-                                let mut transport = BrEdrHid::new(host.clone());
+                                let mut transport =
+                                    BrEdrHid::new(host.clone(), addr, link_keys.clone());
                                 if identity.is_wii_remote() {
                                     transport.set_automatic_flush_slots(0);
                                 }
@@ -1155,7 +1156,7 @@ pub(super) async fn run(
                                     let result = async {
                                         let policy = identity.policy(addr, slot);
                                         if policy.host_opens_hid_on_reconnect {
-                                            transport.attach_inbound_host_hid_with_frames(handle, early_frames).await?;
+                                            transport.attach_inbound_host_hid_with_frames(handle, early_frames, early_hci_events).await?;
                                         } else if policy.wait_for_encryption_before_inbound_hid {
                                             transport
                                                 .attach_inbound_encrypted_with_frames(
@@ -1166,7 +1167,7 @@ pub(super) async fn run(
                                                 .await?;
                                         } else {
                                             transport
-                                                .attach_inbound_with_frames(handle, early_frames)
+                                                .attach_inbound_with_frames(handle, early_frames, early_hci_events)
                                                 .await?;
                                         }
 

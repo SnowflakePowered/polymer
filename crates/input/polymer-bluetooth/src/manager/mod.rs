@@ -62,7 +62,7 @@ struct Session {
     info: ConnectedController,
     transport: Box<dyn Transport>,
     controller: Box<dyn ControllerSession>,
-    report_task: JoinHandle<()>,
+    report_task: Option<JoinHandle<()>>,
     externally_owned: bool,
 }
 
@@ -72,7 +72,6 @@ struct ConnectContext {
     host: Option<Arc<HciHost>>,
     pairing: Option<Arc<PairingAgent>>,
     keys: Arc<ControllerLinkKeyStore>,
-    internal: Internal,
     events: broadcast::Sender<ManagerEvent>,
 }
 
@@ -87,9 +86,17 @@ impl Drop for PendingOperation {
     }
 }
 
+impl Session {
+    fn stop_reports(&mut self) {
+        if let Some(task) = self.report_task.take() {
+            task.abort();
+        }
+    }
+}
+
 impl Drop for Session {
     fn drop(&mut self) {
-        self.report_task.abort();
+        self.stop_reports();
     }
 }
 

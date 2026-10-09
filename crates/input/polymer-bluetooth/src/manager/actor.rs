@@ -76,7 +76,7 @@ impl BluetoothActor {
                         false
                     }
                 };
-                session.report_task.abort();
+                session.stop_reports();
                 if let Err(error) = session.transport.disconnect().await {
                     tracing::warn!(%error, session_id = session.info.session_id.get(), "failed to disconnect controller during shutdown");
                 }
