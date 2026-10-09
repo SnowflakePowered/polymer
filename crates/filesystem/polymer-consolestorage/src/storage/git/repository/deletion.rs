@@ -101,7 +101,7 @@ impl PlatformRepository {
                     ],
                     vec![
                         format!("refs/consoles/archive/v2/{profile}/recently-deleted"),
-                        format!("refs/consoles/transactions/v2/{profile}"),
+                        crate::storage::operation::StorageOperation::journal_ref(id),
                     ],
                 )
             };

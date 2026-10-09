@@ -34,8 +34,8 @@ impl WorkingState {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct PathActivity {
-    pub(crate) writing: usize,
-    pub(crate) generation: u64,
+    pub(super) writing: usize,
+    pub(super) generation: u64,
 }
 
 impl PathActivity {
@@ -115,12 +115,7 @@ impl GitVolumeStorage {
         static VOLUMES: std::sync::OnceLock<
             dashmap::DashMap<(PathBuf, StorageKind, Uuid), std::sync::Weak<GitVolumeInner>>,
         > = std::sync::OnceLock::new();
-        let git_dir = platform.repository().git_dir();
-        let key = (
-            fs::canonicalize(git_dir).unwrap_or_else(|_| git_dir.to_owned()),
-            kind,
-            id,
-        );
+        let key = (platform.git_dir().to_owned(), kind, id);
         let mut entry = VOLUMES
             .get_or_init(dashmap::DashMap::new)
             .entry(key)

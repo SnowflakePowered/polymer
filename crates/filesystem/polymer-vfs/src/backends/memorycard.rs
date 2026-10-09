@@ -45,38 +45,6 @@ impl ResourceFactory<dyn FileNode> for MemoryCardFileFactory {
     }
 }
 
-/// Adapts a directory entry from a [`MemoryCardView`] into a VFS volume.
-pub struct MemoryCardVolumeFactory {
-    view: MemoryCardView,
-    resource_id: Uuid,
-}
-
-impl MemoryCardVolumeFactory {
-    pub fn new(view: MemoryCardView, resource_id: Uuid) -> VfsResult<Self> {
-        if view.kind() != EntryKind::Directory {
-            return Err(VfsError::NotDirectory(VfsPathBuf::storage(view.entry())));
-        }
-        Ok(Self { view, resource_id })
-    }
-}
-
-impl ResourceFactory<dyn Volume> for MemoryCardVolumeFactory {
-    fn resource_keys(&self) -> Vec<ExclusiveResourceKey> {
-        vec![ExclusiveResourceKey::Resource(self.resource_id)]
-    }
-
-    fn materialize_in(&self, scope: &mut MaterializationScope) -> VfsResult<Arc<dyn Volume>> {
-        scope.push(Arc::new(MemoryCardLease {
-            view: self.view.clone(),
-        }));
-        Ok(Arc::new(StorageVolume::new(
-            self.view.storage().clone(),
-            self.view.entry().to_owned(),
-            unrestricted(),
-        )))
-    }
-}
-
 struct MemoryCardLease {
     view: MemoryCardView,
 }
@@ -151,13 +119,6 @@ where
 
     fn mount(&self, format: Option<&str>) -> VfsResult<Node> {
         let format = format.unwrap_or("raw");
-        let mut mounted = self.view.lock();
-        if let Some(existing) = mounted.as_ref() {
-            return Err(VfsError::Unsupported(format!(
-                "the memory card is already mounted as '{}'",
-                existing.format
-            )));
-        }
         let view = self.card.view(&self.primary, format)?;
         let (node, volume) = match view.kind() {
             EntryKind::File => (
@@ -177,7 +138,7 @@ where
                 (Node::Directory(volume.root()?), Some(volume))
             }
         };
-        *mounted = Some(MountedMemoryCardView {
+        *self.view.lock() = Some(MountedMemoryCardView {
             format: format.to_owned(),
             view,
             volume,

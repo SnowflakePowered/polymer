@@ -396,7 +396,7 @@ impl GitVolumeStorage {
         let present = self.inner.checkout.root().is_dir();
         let diverged = present && !self.checkout_matches_commit(&repo, &root, &target)?;
         if diverged {
-            self.preserve_checkout(&repo, tip, &root)?;
+            self.preserve_checkout(&repo, tip, &root, &target)?;
         }
         if !present
             || diverged

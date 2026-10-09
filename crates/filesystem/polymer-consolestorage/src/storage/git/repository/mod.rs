@@ -4,6 +4,7 @@ mod deletion;
 
 pub(super) struct PlatformInner {
     path: PathBuf,
+    git_dir: PathBuf,
     platform: String,
     pub(super) composer: Option<&'static dyn crate::nand::composition::NandComposer>,
     repository: gix::ThreadSafeRepository,
@@ -42,12 +43,15 @@ impl PlatformRepository {
             .to_thread_local()
         };
         let repository = repository.into_sync();
-        let operation = Self::operation_lock(repository.git_dir())?;
+        let git_dir = fs::canonicalize(repository.git_dir())
+            .map_err(|error| Error::io(repository.git_dir(), error))?;
+        let operation = Self::operation_lock(&git_dir);
         let guard = operation.lock();
         Self::configure(&repository, platform)?;
         drop(guard);
         let platform = Self(Arc::new(PlatformInner {
             path,
+            git_dir,
             platform: platform.to_owned(),
             composer: <dyn crate::nand::composition::NandComposer>::for_platform(platform),
             repository,
@@ -57,20 +61,19 @@ impl PlatformRepository {
         Ok(platform)
     }
 
-    fn operation_lock(path: &Path) -> Result<Arc<Mutex<()>>, Error> {
+    fn operation_lock(path: &Path) -> Arc<Mutex<()>> {
         static LOCKS: std::sync::OnceLock<dashmap::DashMap<PathBuf, std::sync::Weak<Mutex<()>>>> =
             std::sync::OnceLock::new();
-        let path = fs::canonicalize(path).map_err(|error| Error::io(path, error))?;
         let mut entry = LOCKS
             .get_or_init(dashmap::DashMap::new)
-            .entry(path)
+            .entry(path.to_owned())
             .or_default();
         if let Some(lock) = entry.upgrade() {
-            return Ok(lock);
+            return lock;
         }
         let lock = Arc::new(Mutex::new(()));
         *entry = Arc::downgrade(&lock);
-        Ok(lock)
+        lock
     }
 
     pub(super) fn write_text(
@@ -144,6 +147,10 @@ impl PlatformRepository {
 
     pub fn path(&self) -> &Path {
         &self.0.path
+    }
+
+    pub(crate) fn git_dir(&self) -> &Path {
+        &self.0.git_dir
     }
 
     pub fn checkout_root(&self) -> PathBuf {

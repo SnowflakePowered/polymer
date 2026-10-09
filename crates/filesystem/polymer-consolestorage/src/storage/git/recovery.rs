@@ -1,4 +1,5 @@
 use super::*;
+use crate::storage::operation::StorageOperation;
 
 type Files = BTreeMap<String, gix::ObjectId>;
 
@@ -26,14 +27,17 @@ impl GitVolumeStorage {
         repo: &gix::Repository,
         tip: Option<gix::ObjectId>,
         root: &gix::Tree<'_>,
+        target: &gix::index::File,
     ) -> Result<(), Error> {
         let recovering = Self::tip_in(repo, &self.kind().recovering_ref(self.id()))?;
         let (files, directories) = self.checkout_snapshot(repo)?;
         let files = match recovering {
             Some(entry) => {
-                let entry = self.tree_files(repo, &Self::root_tree(repo, Some(entry))?)?;
+                let entry = Self::index_files(
+                    &self.target_index(repo, &Self::root_tree(repo, Some(entry))?)?,
+                );
                 let rebased =
-                    Self::rebase_snapshot(entry.clone(), &self.tree_files(repo, root)?, files);
+                    Self::rebase_snapshot(entry.clone(), &Self::index_files(target), files);
                 if rebased == entry {
                     return Ok(());
                 }
@@ -124,16 +128,11 @@ impl GitVolumeStorage {
     }
 
     pub(super) fn recovery_owned_elsewhere(&self, repo: &gix::Repository) -> Result<bool, Error> {
-        let id = self.id().simple().to_string();
-        let marker = repo
-            .git_dir()
-            .join("polymer/operations")
-            .join(&id)
-            .join("pending");
+        let marker = StorageOperation::pending_marker(self.inner.platform.git_dir(), self.id());
         Ok(marker
             .try_exists()
             .map_err(|error| Error::io(&marker, error))?
-            || Self::tip_in(repo, &format!("refs/consoles/transactions/v2/{id}"))?.is_some())
+            || Self::tip_in(repo, &StorageOperation::journal_ref(self.id()))?.is_some())
     }
 
     pub(super) fn finish_recovery(&self, repo: &gix::Repository) -> Result<(), Error> {
@@ -169,13 +168,12 @@ impl GitVolumeStorage {
         entry
     }
 
-    fn tree_files(&self, repo: &gix::Repository, root: &gix::Tree<'_>) -> Result<Files, Error> {
-        let index = self.target_index(repo, root)?;
-        Ok(index
+    fn index_files(index: &gix::index::File) -> Files {
+        index
             .entries()
             .iter()
-            .map(|entry| (entry.path(&index).to_str_lossy().into_owned(), entry.id))
-            .collect())
+            .map(|entry| (entry.path(index).to_str_lossy().into_owned(), entry.id))
+            .collect()
     }
 
     fn checkout_snapshot(

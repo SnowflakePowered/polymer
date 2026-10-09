@@ -298,7 +298,11 @@ impl PlaystationMemoryCard {
                 identity: native_id,
                 paths: vec![SaveDataHandle::from_native_id(native_id).data_path()],
                 contents: raw_save.map(|raw_save| {
-                    vec![Cow::Owned(raw_save.blocks().collect::<Vec<_>>().concat())]
+                    let mut bytes = Vec::with_capacity(raw_save.block_count() * BLOCK_SIZE);
+                    raw_save
+                        .blocks()
+                        .for_each(|block| bytes.extend_from_slice(block));
+                    vec![Cow::Owned(bytes)]
                 }),
             })
             .collect::<Vec<_>>();

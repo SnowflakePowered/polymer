@@ -215,12 +215,18 @@ struct WriteCall<'a>(&'a GitVolumeFile);
 
 impl<'a> WriteCall<'a> {
     fn begin(file: &'a GitVolumeFile) -> Self {
+        let mut working = file.volume.working.write();
+        working
+            .entries
+            .entry(file.path.clone())
+            .or_insert(OverlayEntry::File);
         file.volume
             .activity
             .lock()
             .entry(file.path.clone())
             .or_default()
             .writing += 1;
+        drop(working);
         Self(file)
     }
 }
@@ -312,7 +318,7 @@ impl VolumeStorage for GitVolumeStorage {
             }
             info.label = label.map(str::to_owned);
             self.inner.working.write().metadata.volume = Some(info);
-            self.commit_pending("Polymer volume label changed", None)?;
+            self.commit_pending("Polymer volume label changed")?;
             Ok(())
         })
     }
@@ -350,7 +356,7 @@ impl VolumeStorage for GitVolumeStorage {
                 created: Timestamp::from_second(Timestamp::now().as_second())?,
             };
             self.inner.working.write().metadata.volume = Some(info.clone());
-            self.commit_pending("Polymer volume created", None)?;
+            self.commit_pending("Polymer volume created")?;
             Ok(info)
         })
     }

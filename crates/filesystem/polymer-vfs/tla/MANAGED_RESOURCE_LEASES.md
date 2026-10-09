@@ -26,7 +26,7 @@ Drop transfers pending state to its reserved worker without running cleanup on t
 | Shared `Mount` / `Finish` | `SharedResourceFactory::materialize_in` calls `MaterializationScope::retain`; the launch's reference is dropped with its ownership after its own cleanup succeeds. |
 | `DropHandle` / `BeginCleanup` | Dropping `FilesystemState` drops the handle's `Arc`; the last drop runs `ManagedResourceLease::drop`, which hands pending cleanup to its reserved worker. |
 | `Build`, `Register` | Factory `materialize_in` and `MaterializationScope::push` register cleanup before subsequent fallible work. |
-| `Ready` | `complete` / `into_lease` transfer the unique scope state into its owning lease. |
+| `Ready` | `into_lease` transfers the unique scope state into its owning lease. |
 | Construction abort | Dropping the scope's lease latches its `LaunchFailed` fallback and transfers state to the reserved worker. |
 | `Finalize` | Managed finalization uses a mutex and latches the first reason with `get_or_insert`; prepared finalization also latches its reason before namespace adoption. Reason latching is not modeled and rests on this code review. |
 | `Cleanup` / cursor | A queue entry is removed only after its finalizer returns `Ok`. |

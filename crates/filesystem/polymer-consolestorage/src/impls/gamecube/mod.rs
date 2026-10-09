@@ -236,7 +236,7 @@ impl GameCubeMemoryCard {
                     String::from_utf8_lossy(save.game_code()).into_owned(),
                 )
             });
-        let path = format!("{SAVE_ROOT}/{}", save.file_name());
+        let path = Self::save_path(save);
         let timestamp = self
             .storage
             .metadata(&path)
@@ -257,7 +257,7 @@ impl GameCubeMemoryCard {
             .into_iter()
             .filter(|save| selected.is_empty() || selected.contains(&save.depot_id().0))
             .map(|save| {
-                let path = format!("{SAVE_ROOT}/{}", save.file_name());
+                let path = Self::save_path(&save);
                 let metadata = self
                     .storage
                     .metadata(&path)
@@ -384,7 +384,7 @@ impl SaveGameSink for GameCubeMemoryCard {
         let blobs = saves
             .into_iter()
             .map(|save| SaveBlob {
-                target_path: PathBuf::from(format!("{SAVE_ROOT}/{}", save.file_name())),
+                target_path: PathBuf::from(Self::save_path(&save)),
                 blake3: *blake3::hash(save.as_bytes()).as_bytes(),
                 bytes: save.as_bytes().to_vec(),
             })
@@ -415,7 +415,7 @@ impl SaveGameSink for GameCubeMemoryCard {
                         "a GameCube save install may contain only one depot".to_owned(),
                     ));
                 }
-                let path = format!("{SAVE_ROOT}/{}", save.file_name());
+                let path = Self::save_path(&save);
                 self.storage.write_if_changed(&path, save.as_bytes())?;
                 installed = Some(save.depot_id());
                 representative.get_or_insert(save);

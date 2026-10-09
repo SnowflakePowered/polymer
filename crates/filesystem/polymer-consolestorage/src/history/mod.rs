@@ -20,6 +20,7 @@ use uuid::Uuid;
 
 use std::collections::HashSet;
 
+use crate::installable::InstallContext;
 use crate::savegame::{SaveDepotId, SaveDescriptor};
 use crate::storage::PendingScope;
 use crate::{CheckpointGate, CheckpointRequest, Error, SaveRepo};
@@ -386,11 +387,15 @@ impl SaveVersioning {
                 Checkpointed::Unchanged => {}
             }
         }
-        let vanished = gate
-            .map(|_| self.inner.profile.pending_within(""))
-            .unwrap_or_default();
+        let vanished = std::sync::OnceLock::new();
         for depot in self.tracked_depots()? {
-            if !present.contains(&depot) && !Self::ready(gate, depot, "", || vanished.clone()).await
+            if !present.contains(&depot)
+                && !Self::ready(gate, depot, "", || {
+                    vanished
+                        .get_or_init(|| self.inner.profile.pending_within(""))
+                        .clone()
+                })
+                .await
             {
                 present.insert(depot);
                 deferred.push(String::new());
@@ -445,9 +450,11 @@ impl SaveVersioning {
         if let Some(parent) = parent {
             let current_tree = Self::commit_tree(&repo, parent)?;
             if current_tree == tree {
-                self.inner
-                    .profile
-                    .commit_pending_within("Polymer profile autosave", scope)?;
+                self.inner.profile.commit_scoped(
+                    "Polymer profile autosave",
+                    &InstallContext::default(),
+                    scope,
+                )?;
                 drop(guard);
                 owner.save_icon(depot).await?;
                 return Ok(Checkpointed::Unchanged);
@@ -468,9 +475,11 @@ impl SaveVersioning {
             .map_err(|error| Error::git("commit save snapshot", error))?
             .detach();
         self.inner.profile.set_save_tip(depot.0, Some(id));
-        self.inner
-            .profile
-            .commit_pending_within("Polymer profile autosave", scope)?;
+        self.inner.profile.commit_scoped(
+            "Polymer profile autosave",
+            &InstallContext::default(),
+            scope,
+        )?;
         let info = Self::commit_info(&repo, id)?;
         drop(guard);
         owner.save_icon(depot).await?;
@@ -482,7 +491,11 @@ impl SaveVersioning {
         self.ensure_no_pending_journal()?;
         self.inner
             .profile
-            .commit_pending_within("Polymer profile autosave", PendingScope::Except(deferred))
+            .commit_scoped(
+                "Polymer profile autosave",
+                &InstallContext::default(),
+                PendingScope::Except(deferred),
+            )
             .map(|commit| commit.is_some())
     }
 

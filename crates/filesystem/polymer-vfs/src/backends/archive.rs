@@ -63,11 +63,7 @@ struct AsarInner {
 
 enum AsarNode {
     Directory(BTreeMap<Vec<VfsPathUnit>, (VfsComponent, usize)>),
-    File {
-        range: Range<usize>,
-        #[allow(dead_code)]
-        executable: bool,
-    },
+    File { range: Range<usize> },
 }
 
 struct AsarDirectory {
@@ -110,7 +106,6 @@ impl AsarVolume {
             }
             let node = builder.allocate(AsarNode::File {
                 range: data_range(&mapping, file.data())?,
-                executable: false,
             });
             builder.paths.insert(path_key, node);
             let AsarNode::Directory(children) = builder.nodes.get_mut(&parent).unwrap() else {

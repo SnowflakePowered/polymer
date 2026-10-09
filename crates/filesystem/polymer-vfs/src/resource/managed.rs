@@ -4,9 +4,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 use super::retry::FinalizationRetry;
-use super::{
-    ExclusiveResourceKey, FinalizationReason, Materialized, ResourceFactory, ResourceLease,
-};
+use super::{ExclusiveResourceKey, FinalizationReason, ResourceFactory, ResourceLease};
 use crate::VfsResult;
 
 pub trait ResourceFinalizer: Send + Sync {
@@ -48,10 +46,6 @@ impl MaterializationScope {
 
     pub fn retain(&mut self, lease: Arc<dyn ResourceLease>) {
         self.state().ownership.push(lease);
-    }
-
-    pub fn complete<T: ?Sized>(self, backend: Arc<T>) -> Materialized<T> {
-        Materialized::new(backend, self.into_lease())
     }
 
     pub fn into_lease(self) -> ManagedResourceLease {

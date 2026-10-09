@@ -49,10 +49,13 @@ impl GitVolumeStorage {
         let files = scope
             .entries(&self.inner.working.read().entries)
             .filter(|(_, entry)| matches!(entry, OverlayEntry::File))
-            .map(|(path, _)| {
+            .filter_map(|(path, _)| {
                 let source = self.checkout_file(path);
-                let metadata = fs::metadata(&source).map_err(|error| Error::io(&source, error))?;
-                Ok((path.clone(), source, metadata))
+                match fs::metadata(&source) {
+                    Ok(metadata) => Some(Ok((path.clone(), source, metadata))),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => Some(Err(Error::io(&source, error))),
+                }
             })
             .collect::<Result<Vec<_>, Error>>()?;
         context.phase(
@@ -91,36 +94,14 @@ impl GitVolumeStorage {
             .join(path.replace('/', std::path::MAIN_SEPARATOR_STR))
     }
 
-    pub(crate) fn commit_pending(
-        &self,
-        message: &str,
-        extra_parent: Option<gix::ObjectId>,
-    ) -> Result<Option<gix::ObjectId>, Error> {
-        self.commit_pending_reporting(message, extra_parent, &InstallContext::default())
-    }
-
-    pub(crate) fn commit_pending_within(
-        &self,
-        message: &str,
-        scope: PendingScope<'_>,
-    ) -> Result<Option<gix::ObjectId>, Error> {
-        self.commit_scoped(message, None, &InstallContext::default(), scope)
+    pub(crate) fn commit_pending(&self, message: &str) -> Result<Option<gix::ObjectId>, Error> {
+        self.commit_scoped(message, &InstallContext::default(), PendingScope::All)
     }
 
     /// Commit pending files, reporting a finalizing phase through `context` while blobs are written.
-    pub(crate) fn commit_pending_reporting(
+    pub(crate) fn commit_scoped(
         &self,
         message: &str,
-        extra_parent: Option<gix::ObjectId>,
-        context: &InstallContext,
-    ) -> Result<Option<gix::ObjectId>, Error> {
-        self.commit_scoped(message, extra_parent, context, PendingScope::All)
-    }
-
-    fn commit_scoped(
-        &self,
-        message: &str,
-        extra_parent: Option<gix::ObjectId>,
         context: &InstallContext,
         scope: PendingScope<'_>,
     ) -> Result<Option<gix::ObjectId>, Error> {
@@ -144,10 +125,7 @@ impl GitVolumeStorage {
             ));
         }
         let mut state = self.inner.working.write();
-        if extra_parent.is_none()
-            && state.metadata.is_empty()
-            && scope.entries(&state.entries).next().is_none()
-        {
+        if state.metadata.is_empty() && scope.entries(&state.entries).next().is_none() {
             return Ok(None);
         }
         let root = Self::root_tree(&repo, parent)?;
@@ -162,6 +140,9 @@ impl GitVolumeStorage {
             match entry {
                 OverlayEntry::File => {
                     let Some((id, before)) = staged.get(path) else {
+                        if !self.checkout_file(path).exists() {
+                            committed.insert(path.clone());
+                        }
                         continue;
                     };
                     if self.inner.activity(path) != *before {
@@ -271,7 +252,7 @@ impl GitVolumeStorage {
             .write()
             .map_err(|error| Error::git("write volume tree", error))?
             .detach();
-        if extra_parent.is_none() && tree == root_id {
+        if tree == root_id {
             self.write_index(self.target_index(&repo, &root)?, &pending)?;
             *self.inner.cache_ready.lock() = true;
             state.metadata = PendingMetadata::default();
@@ -280,12 +261,8 @@ impl GitVolumeStorage {
         let signature = PlatformRepository::signature();
         let mut time = gix::date::parse::TimeBuf::default();
         let signature = signature.to_ref(&mut time);
-        let mut parents = parent.into_iter().collect::<Vec<_>>();
-        if let Some(extra_parent) = extra_parent {
-            parents.push(extra_parent);
-        }
         let commit = repo
-            .new_commit_as(signature, signature, message, tree, parents)
+            .new_commit_as(signature, signature, message, tree, parent)
             .map_err(|error| Error::git("write volume commit", error))?
             .id;
         let expected = parent.map_or(PreviousValue::MustNotExist, |id| {

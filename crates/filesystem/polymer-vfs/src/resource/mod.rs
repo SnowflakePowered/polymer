@@ -58,6 +58,10 @@ impl<T: ?Sized> Resource<T> {
     pub fn materialize_in(&self, scope: &mut MaterializationScope) -> VfsResult<Arc<T>> {
         scope.build(&*self.factory)
     }
+
+    pub(crate) fn key(self: &Arc<Self>) -> usize {
+        Arc::as_ptr(self) as *const () as usize
+    }
 }
 
 impl<T: ?Sized> fmt::Debug for Resource<T> {
@@ -80,17 +84,14 @@ pub trait ResourceFactory<T: ?Sized>: Send + Sync {
     fn materialize(&self) -> VfsResult<Materialized<T>> {
         let mut scope = MaterializationScope::new()?;
         let backend = scope.build(self)?;
-        Ok(scope.complete(backend))
+        Ok(Materialized {
+            backend,
+            lease: scope.into_lease(),
+        })
     }
 }
 
 pub struct Materialized<T: ?Sized> {
     pub backend: Arc<T>,
     pub lease: ManagedResourceLease,
-}
-
-impl<T: ?Sized> Materialized<T> {
-    pub fn new(backend: Arc<T>, lease: ManagedResourceLease) -> Self {
-        Self { backend, lease }
-    }
 }
