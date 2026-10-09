@@ -71,16 +71,6 @@ impl VulkanVirtualBackend {
                 Err(_) => return RetirementProgress::Quarantined,
             }
         }
-        match unsafe {
-            self.external
-                .device
-                .get_semaphore_counter_value(self.released.semaphore())
-        } {
-            Ok(value) if work.publications.iter().any(|(_, needed)| value < *needed) => {
-                RetirementProgress::Pending
-            }
-            Ok(_) => RetirementProgress::Safe,
-            Err(_) => RetirementProgress::Quarantined,
-        }
+        RetirementProgress::Safe
     }
 }

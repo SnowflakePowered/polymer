@@ -5,8 +5,12 @@ mod profile;
 use crate::layer::PhysicalDeviceState;
 use parking_lot::Mutex;
 use polymer_platform_windows::{NativeWindow, WindowLifetime};
-use std::ffi::CStr;
+use std::{
+    ffi::CStr,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
+static NEXT_SOURCE: AtomicU64 = AtomicU64::new(1);
 static ASSIGNMENTS: LazyLock<Result<Arc<AssignmentRegistry>, String>> = LazyLock::new(|| {
     AssignmentRegistry::new(polymer_hook::config::render_configuration().map_err(str::to_owned)?)
 });
@@ -14,6 +18,7 @@ static ASSIGNMENTS: LazyLock<Result<Arc<AssignmentRegistry>, String>> = LazyLock
 pub(crate) struct Surface {
     source: SourceIdentity,
     pub window: NativeWindow,
+    lifetime: u64,
     registration: SourceRegistration,
     binding: Mutex<(Option<ProvisionalBinding>, Option<Arc<FixedSurfaceBinding>>)>,
 }
@@ -34,42 +39,50 @@ impl Surface {
         let Ok(registry) = ASSIGNMENTS.as_ref() else {
             return;
         };
+        let Ok(serial) = NEXT_SOURCE.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            value.checked_add(1)
+        }) else {
+            return;
+        };
+        let source = SourceIdentity {
+            device: instance.as_raw(),
+            object: serial,
+            lifetime: serial,
+        };
         let candidate = Candidate {
-            source: SourceIdentity {
-                device: instance.as_raw(),
-                object: handle.as_raw(),
-                lifetime,
-            },
+            source,
             window: WindowIdentity {
                 handle: window.0 as u64,
                 lifetime,
             },
             title: polymer_platform_windows::window_title(window).unwrap_or_default(),
         };
-        if let Ok(registration) = registry.register(candidate) {
-            SURFACES.insert(
-                handle,
-                Arc::new(Self {
-                    source: SourceIdentity {
-                        device: instance.as_raw(),
-                        object: handle.as_raw(),
+        match registry.register(candidate) {
+            Ok(registration) => {
+                SURFACES.insert(
+                    handle,
+                    Arc::new(Self {
+                        source,
+                        window,
                         lifetime,
-                    },
-                    window,
-                    registration,
-                    binding: Mutex::new((None, None)),
-                }),
-            );
+                        registration,
+                        binding: Mutex::new((None, None)),
+                    }),
+                );
+            }
+            Err(error) => tracing::warn!(error, "virtual Vulkan surface not registered"),
         }
     }
     pub(crate) fn destroyed(handle: vk::SurfaceKHR) {
-        SURFACES.remove(&handle);
+        if let Some((_, surface)) = SURFACES.remove(&handle) {
+            surface.registration.release();
+        }
     }
     pub(super) fn get(handle: vk::SurfaceKHR) -> Option<Arc<Self>> {
         SURFACES.get(&handle).map(|v| v.clone())
     }
     pub(super) fn binding(&self) -> Option<Arc<FixedSurfaceBinding>> {
-        if WindowLifetime::identify(self.window).ok() != Some(self.source.lifetime) {
+        if WindowLifetime::identify(self.window).ok() != Some(self.lifetime) {
             return None;
         }
         if let Ok(registry) = ASSIGNMENTS.as_ref() {
@@ -77,7 +90,7 @@ impl Surface {
                 source: self.source,
                 window: WindowIdentity {
                     handle: self.window.0 as u64,
-                    lifetime: self.source.lifetime,
+                    lifetime: self.lifetime,
                 },
                 title: polymer_platform_windows::window_title(self.window).unwrap_or_default(),
             }]);

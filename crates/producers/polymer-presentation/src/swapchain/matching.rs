@@ -137,7 +137,8 @@ impl AssignmentRegistry {
     }
 
     /// Caller gathers captions/window lifetimes before entering this transaction.
-    /// Updating a caption never changes an existing claim.
+    /// Updating a caption never changes an existing claim, and a released source
+    /// is never re-admitted.
     pub fn observe(&self, observations: impl IntoIterator<Item = Candidate>) {
         let mut state = self.state.lock().unwrap();
         for observation in observations {
@@ -147,8 +148,6 @@ impl AssignmentRegistry {
                 .find(|candidate| candidate.source == observation.source)
             {
                 *candidate = observation;
-            } else {
-                state.candidates.push(observation);
             }
         }
     }
