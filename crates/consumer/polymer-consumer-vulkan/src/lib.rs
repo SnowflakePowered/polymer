@@ -1,9 +1,9 @@
 //! Vulkan external-resource import and synchronization backend.
 
 use ash::vk;
-use polymer_ipc::StreamReady;
+use polymer_ipc::{StreamReady, Win32Resources};
 use polymer_protocol::{AdapterLuid, ExternalImageKind, FrameReady, GraphicsHook};
-use std::fmt;
+use std::{fmt, os::windows::io::AsRawHandle};
 
 pub const BACKEND_NAME: &str = "vulkan";
 
@@ -48,6 +48,7 @@ impl ImportedImageRing {
         device: ash::Device,
         physical_device: vk::PhysicalDevice,
         stream: &StreamReady,
+        shared: &Win32Resources,
     ) -> Result<Self, ImportError> {
         if stream.slot_count == 0 || stream.slot_count as usize > stream.image_handles.len() {
             return Err(ImportError::InvalidStream("invalid slot count"));
@@ -61,7 +62,7 @@ impl ImportedImageRing {
         // SAFETY: the caller-owned instance/device are live, and this object
         // owns every imported child resource until Drop.
         let (images, memories, consumer_timeline) =
-            unsafe { import_resources(instance, &device, physical_device, stream)? };
+            unsafe { import_resources(instance, &device, physical_device, stream, shared)? };
         Ok(Self {
             device,
             images,
@@ -195,6 +196,7 @@ unsafe fn import_resources(
     device: &ash::Device,
     physical_device: vk::PhysicalDevice,
     stream: &StreamReady,
+    shared: &Win32Resources,
 ) -> Result<(Vec<vk::Image>, Vec<vk::DeviceMemory>, Option<vk::Semaphore>), vk::Result> {
     let format = format_for_stream(stream).map_err(|_| vk::Result::ERROR_FORMAT_NOT_SUPPORTED)?;
     let memory_handle_type = match stream.image_kind {
@@ -207,7 +209,8 @@ unsafe fn import_resources(
         unsafe { instance.get_physical_device_memory_properties(physical_device) };
     let mut images = Vec::new();
     let mut memories = Vec::new();
-    for raw_handle in stream.image_handles.iter().take(stream.slot_count as usize) {
+    for handle in &shared.images {
+        let raw_handle = handle.as_raw_handle() as isize;
         let mut external =
             vk::ExternalMemoryImageCreateInfo::default().handle_types(memory_handle_type);
         let mut usage = vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::SAMPLED;
@@ -239,7 +242,7 @@ unsafe fn import_resources(
             unsafe {
                 importer.get_memory_win32_handle_properties(
                     memory_handle_type,
-                    *raw_handle as isize,
+                    raw_handle,
                     &mut handle_properties,
                 )?;
             }
@@ -254,33 +257,27 @@ unsafe fn import_resources(
             .ok_or(vk::Result::ERROR_FEATURE_NOT_PRESENT)?;
         let mut import = vk::ImportMemoryWin32HandleInfoKHR::default()
             .handle_type(memory_handle_type)
-            .handle(*raw_handle as isize);
+            .handle(raw_handle);
         let mut dedicated = vk::MemoryDedicatedAllocateInfo::default().image(image);
         let allocation = vk::MemoryAllocateInfo::default()
             .push_next(&mut import)
             .push_next(&mut dedicated)
             .allocation_size(requirements.size)
             .memory_type_index(memory_type_index);
-        let allocation_result = unsafe { device.allocate_memory(&allocation, None) };
-        close_win32_handle(*raw_handle);
-        let memory = allocation_result?;
+        let memory = unsafe { device.allocate_memory(&allocation, None)? };
         unsafe { device.bind_image_memory(image, memory, 0)? };
         images.push(image);
         memories.push(memory);
     }
     let importer = ash::khr::external_semaphore_win32::Device::new(instance, device);
-    let consumer_timeline = if stream.consumer_semaphore_handle != 0 {
-        Some(unsafe {
-            import_timeline(
-                device,
-                &importer,
-                semaphore_handle_type,
-                stream.consumer_semaphore_handle,
-            )?
-        })
-    } else {
-        None
-    };
+    let consumer_timeline = Some(unsafe {
+        import_timeline(
+            device,
+            &importer,
+            semaphore_handle_type,
+            shared.released.as_raw_handle() as isize,
+        )?
+    });
     Ok((images, memories, consumer_timeline))
 }
 
@@ -288,7 +285,7 @@ unsafe fn import_timeline(
     device: &ash::Device,
     importer: &ash::khr::external_semaphore_win32::Device,
     handle_type: vk::ExternalSemaphoreHandleTypeFlags,
-    handle: i64,
+    handle: isize,
 ) -> Result<vk::Semaphore, vk::Result> {
     let mut timeline_type =
         vk::SemaphoreTypeCreateInfo::default().semaphore_type(vk::SemaphoreType::TIMELINE);
@@ -301,18 +298,10 @@ unsafe fn import_timeline(
     let import = vk::ImportSemaphoreWin32HandleInfoKHR::default()
         .semaphore(semaphore)
         .handle_type(handle_type)
-        .handle(handle as isize);
-    let import_result = unsafe { importer.import_semaphore_win32_handle(&import) };
-    close_win32_handle(handle);
-    if let Err(error) = import_result {
+        .handle(handle);
+    if let Err(error) = unsafe { importer.import_semaphore_win32_handle(&import) } {
         unsafe { device.destroy_semaphore(semaphore, None) };
         return Err(error);
     }
     Ok(semaphore)
-}
-
-fn close_win32_handle(handle: i64) {
-    if handle != 0 && handle != -1 {
-        unsafe { windows_sys::Win32::Foundation::CloseHandle(handle as _) };
-    }
 }

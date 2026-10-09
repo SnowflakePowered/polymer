@@ -2,7 +2,7 @@ use super::*;
 use std::{
     fs, io, mem,
     net::TcpStream,
-    os::windows::io::{AsRawSocket, FromRawSocket},
+    os::windows::io::{AsRawSocket, FromRawHandle, FromRawSocket, OwnedHandle, RawHandle},
     path::PathBuf,
     sync::{
         Arc, OnceLock,
@@ -100,6 +100,7 @@ impl LocalSocketListener {
         Ok(LocalSocket {
             stream,
             incoming: Vec::new(),
+            resources: None,
         })
     }
 
@@ -134,7 +135,50 @@ impl Drop for ListenerInner {
     }
 }
 
+/// Stream handles the producer duplicated into this process.
+pub struct Win32Resources {
+    pub images: Vec<OwnedHandle>,
+    pub ready: OwnedHandle,
+    pub released: OwnedHandle,
+}
+
+impl Win32Resources {
+    pub(super) fn take(stream: &StreamReady) -> io::Result<Self> {
+        let owned = |raw: i64| {
+            // SAFETY: the producer duplicated these handles into this process
+            // for the receiver of this message, which is their only owner.
+            (raw != 0 && raw != -1)
+                .then(|| unsafe { OwnedHandle::from_raw_handle(raw as isize as RawHandle) })
+        };
+        let count = stream.slot_count as usize;
+        let images: Vec<_> = stream.image_handles[..count.min(MAX_IMAGE_SLOTS)]
+            .iter()
+            .filter_map(|&raw| owned(raw))
+            .collect();
+        let ready = owned(stream.timeline_semaphore_handle);
+        let released = owned(stream.consumer_semaphore_handle);
+        let kind = matches!(
+            stream.image_kind,
+            ExternalImageKind::D3d11Resource | ExternalImageKind::D3d12Resource
+        );
+        match (ready, released) {
+            (Some(ready), Some(released)) if kind && count != 0 && images.len() == count => {
+                Ok(Self {
+                    images,
+                    ready,
+                    released,
+                })
+            }
+            _ => Err(invalid_data("invalid Win32 stream resources")),
+        }
+    }
+}
+
 impl LocalSocket {
+    pub fn take_stream_resources(&mut self) -> Option<Win32Resources> {
+        self.resources.take()
+    }
+
     /// Polls connection termination without consuming control messages or
     /// changing the socket's blocking mode and read/write timeouts.
     pub fn peer_disconnected(&self) -> io::Result<bool> {
@@ -174,6 +218,7 @@ impl LocalSocket {
                 return Ok(Self {
                     stream,
                     incoming: Vec::new(),
+                    resources: None,
                 });
             }
             let error = winsock_error();

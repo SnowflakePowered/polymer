@@ -10,10 +10,14 @@ impl Renderer for VulkanCompositor {
         offer: &SurfaceOffer,
         quarter_turns: u8,
     ) -> Result<(), Box<dyn Error>> {
+        let shared = offer
+            .win32_resources()
+            .ok_or("stream resources were revoked")?;
         VulkanCompositor::import_stream(
             self,
             offer.connection_id(),
             offer.stream(),
+            &shared,
             quarter_turns,
         )?;
         Ok(())

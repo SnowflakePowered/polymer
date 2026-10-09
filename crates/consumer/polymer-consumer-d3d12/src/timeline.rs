@@ -15,9 +15,9 @@ unsafe impl Send for ProducerTimeline {}
 unsafe impl Sync for ProducerTimeline {}
 
 impl ProducerTimeline {
-    /// Opens the stream's ready fence and takes ownership of its handle. Image
-    /// importers never use the ready timeline.
-    pub fn open(stream: &StreamReady) -> windows::core::Result<Self> {
+    /// Opens the stream's ready fence. Image importers never use the ready
+    /// timeline.
+    pub fn open(stream: &StreamReady, shared: &Win32Resources) -> windows::core::Result<Self> {
         unsafe {
             let factory = CreateDXGIFactory2::<IDXGIFactory4>(DXGI_CREATE_FACTORY_FLAGS(0))?;
             let adapter = factory.EnumAdapterByLuid::<IDXGIAdapter1>(LUID {
@@ -28,7 +28,7 @@ impl ProducerTimeline {
             D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_11_0, &mut device)?;
             let device = device.ok_or_else(|| windows::core::Error::from_hresult(E_POINTER))?;
             Ok(Self {
-                fence: open_fence(&device, stream.timeline_semaphore_handle)?,
+                fence: open_fence(&device, &shared.ready)?,
                 completed: CreateEventW(None, false, false, None)?,
                 closed: CreateEventW(None, true, false, None)?,
             })

@@ -5,9 +5,9 @@ mod macos;
 mod windows;
 mod wire;
 #[cfg(windows)]
-pub use windows::LocalSocketListener;
-#[cfg(windows)]
 use windows::Stream;
+#[cfg(windows)]
+pub use windows::{LocalSocketListener, Win32Resources};
 
 #[cfg(target_os = "macos")]
 pub use macos::{LocalSocket, LocalSocketListener};
@@ -91,6 +91,7 @@ pub enum Message {
 pub struct LocalSocket {
     stream: Stream,
     incoming: Vec<u8>,
+    resources: Option<Win32Resources>,
 }
 #[cfg(windows)]
 impl LocalSocket {
@@ -102,6 +103,7 @@ impl LocalSocket {
         Ok(Self {
             stream: self.stream.try_clone()?,
             incoming: Vec::new(),
+            resources: None,
         })
     }
 
@@ -126,7 +128,11 @@ impl LocalSocket {
         let bytes = mem::take(&mut self.incoming);
         let (wire, data) = WireMessage::ref_from_prefix(&bytes)
             .map_err(|_| invalid_data("invalid wire message layout"))?;
-        decode(wire, data.to_vec())
+        let message = decode(wire, data.to_vec())?;
+        if let Message::StreamReady(stream) = &message {
+            self.resources = Some(Win32Resources::take(stream)?);
+        }
+        Ok(message)
     }
 
     // Preserve partial reads across timeouts and polling calls, including blobs

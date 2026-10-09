@@ -2,7 +2,7 @@
 
 use ash::vk;
 use polymer_consumer_vulkan::{ImportError, ImportedImageRing};
-use polymer_ipc::StreamReady;
+use polymer_ipc::{StreamReady, Win32Resources};
 
 /// Vulkan device context dedicated to importing producer stream handles.
 ///
@@ -28,12 +28,17 @@ impl VulkanReceiver {
         }
     }
 
-    pub fn import_stream(&self, stream: &StreamReady) -> Result<ImportedImageRing, ImportError> {
+    pub fn import_stream(
+        &self,
+        stream: &StreamReady,
+        shared: &Win32Resources,
+    ) -> Result<ImportedImageRing, ImportError> {
         ImportedImageRing::import_into(
             &self.instance,
             self.device.clone(),
             self.physical_device,
             stream,
+            shared,
         )
     }
 }

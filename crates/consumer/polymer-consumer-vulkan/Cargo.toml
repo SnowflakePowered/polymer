@@ -8,4 +8,3 @@ license.workspace = true
 ash.workspace = true
 polymer-ipc.workspace = true
 polymer-protocol.workspace = true
-windows-sys.workspace = true

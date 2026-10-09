@@ -42,6 +42,8 @@ pub(crate) struct FrameRouter {
 struct CaptureShared {
     #[cfg(target_os = "macos")]
     resources: DashMap<u64, polymer_ipc::xpc::MetalResources>,
+    #[cfg(windows)]
+    resources: DashMap<u64, Arc<polymer_ipc::Win32Resources>>,
     routes: DashMap<u64, Watchable<Option<FrameReady>>>,
     timelines: DashMap<u64, Arc<ProducerTimeline>>,
     revoked: DashSet<u64>,
@@ -63,6 +65,14 @@ impl FrameRouter {
         &self,
         connection: u64,
     ) -> Option<polymer_ipc::xpc::MetalResources> {
+        self.shared.resources.get(&connection).map(|v| v.clone())
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn win32_resources(
+        &self,
+        connection: u64,
+    ) -> Option<Arc<polymer_ipc::Win32Resources>> {
         self.shared.resources.get(&connection).map(|v| v.clone())
     }
 
@@ -110,7 +120,6 @@ impl CaptureShared {
     }
 
     fn revoke(&self, connection: u64) {
-        #[cfg(target_os = "macos")]
         self.resources.remove(&connection);
         self.revoked.insert(connection);
         self.routes.remove(&connection);
@@ -173,7 +182,6 @@ pub(crate) fn bind(
 ) -> std::io::Result<FrameRouter> {
     let listener = LocalSocketListener::bind(session)?;
     let shared = Arc::new(CaptureShared {
-        #[cfg(target_os = "macos")]
         resources: DashMap::new(),
         routes: DashMap::new(),
         timelines: DashMap::new(),
@@ -293,10 +301,16 @@ fn receive_connection(
                 shared.resources.insert(connection, resources);
                 timeline
             };
-            // Importing the offer consumes the stream's handles, so the
-            // ready timeline is opened first.
             #[cfg(windows)]
-            let timeline = ProducerTimeline::open(&stream).map_err(std::io::Error::other)?;
+            let timeline = {
+                let resources = socket
+                    .take_stream_resources()
+                    .ok_or_else(|| std::io::Error::other("missing Win32 resources"))?;
+                let timeline =
+                    ProducerTimeline::open(&stream, &resources).map_err(std::io::Error::other)?;
+                shared.resources.insert(connection, Arc::new(resources));
+                timeline
+            };
             let (accepted, response) = oneshot::oneshot();
             (callbacks.offer)(connection, stream, accepted);
             // Every offer is resolved, and shutdown rejects pending ones

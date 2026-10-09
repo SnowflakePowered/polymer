@@ -370,30 +370,20 @@ impl InputPublisher {
         })
     }
 
-    pub fn accept(&mut self, control: &mut LocalSocket) -> io::Result<u32> {
-        let Message::Hello(hello) = control.receive()? else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "expected input hello",
-            ));
-        };
+    pub fn map_offer(&self, hello: &Handshake) -> io::Result<MapOffer> {
         if hello.protocol_version != PROTOCOL_VERSION {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "input protocol mismatch",
             ));
         }
-        let handle = self.shared.duplicate_for(hello.process_id)?;
-        control.send(Message::MapOffer(MapOffer {
-            handle,
+        Ok(MapOffer {
+            handle: self.shared.duplicate_for(hello.process_id)?,
             mapping_len: self.shared.mapping_len(),
-        }))?;
-        if control.receive()? != Message::MapAccepted {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "input map was not accepted",
-            ));
-        }
+        })
+    }
+
+    pub fn replay(&mut self) -> io::Result<()> {
         for wire in self
             .connected
             .iter()
@@ -402,7 +392,7 @@ impl InputPublisher {
         {
             self.shared.publish(wire.as_bytes())?;
         }
-        Ok(hello.process_id)
+        Ok(())
     }
 
     pub fn publish(&mut self, message: InputMessage) -> io::Result<()> {
