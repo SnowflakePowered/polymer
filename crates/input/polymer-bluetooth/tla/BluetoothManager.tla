@@ -16,7 +16,11 @@
 (*                  ControllerLinkKeyStore::register / put / remove        *)
 (*   agentAlive     PairingAgent::run task (pairing_task) still running    *)
 (*   queue          HCI events the PairingAgent consumes (host.events())   *)
-(*   phys[a]        physical ACL / GATT link of device a                   *)
+(*   phys[a]        physical ACL / GATT link of device a.  The transport's *)
+(*                  retained state() mirrors it once HID setup subscribed  *)
+(*                  to HCI events; earlier drops fail channel setup.       *)
+(*   teardown       dropped BrEdrHid values whose Drop spawned            *)
+(*                  host.disconnect for a link that is still up            *)
 (*   nextId         next_session_id                                        *)
 (*   overwrote      ghost: finish_connection inserted over a live session  *)
 (*   connectedNoKey ghost: ManagerEvent::Connected for a BR/EDR device     *)
@@ -24,27 +28,32 @@
 (*                                                                         *)
 (* Connect future stages (connection/transport.rs, bredr/hid.rs):          *)
 (*   accept  accept_inbound: persisted-record check, accept_connection     *)
-(*   acl     keys.register + host.connect / BleGatt::connect               *)
-(*   auth    HciHost::authenticate waiting for AuthenticationComplete     *)
-(*           (it ignores DisconnectionComplete; only the timeout ends it)  *)
-(*   hid     L2CAP HID channels (BrEdrHid::finish_connection spawns the    *)
-(*           transport report task) / GATT bond                            *)
+(*   acl     keys.register + BrEdrHid::connect_acl / BleGatt::connect      *)
+(*   auth    HciHost::authenticate / wait_for_encryption.  It captures a   *)
+(*           LinkKeyNotification for the device (op.newKey), ends early on *)
+(*           DisconnectionComplete, and BrEdrHid persists the captured key *)
+(*           before HID setup continues.                                   *)
+(*   hid     L2CAP HID channels / GATT bond                                *)
 (*   sync    ControllerSession::synchronize                                *)
-(*   synced  synchronize returned Ok; keys.register (file I/O), then       *)
-(*           spawn_reports subscribes transport.disconnections() and the  *)
-(*           future returns into finish_connection in the same poll        *)
+(*   synced  synchronize returned Ok; keys.register, then the future       *)
+(*           returns into finish_connection, which subscribes to          *)
+(*           disconnections(), checks state(), inserts the session and     *)
+(*           spawns report forwarding in one actor step                    *)
 (*                                                                         *)
 (* Pairing agent events: lkreq = LinkKeyRequest, pin = PinCodeRequest /    *)
 (* IoCapabilityRequest / UserConfirmationRequest (each needs a reply),     *)
-(* lknotify = LinkKeyNotification.  AuthenticationComplete is broadcast    *)
-(* to authenticate() independently of the agent's queue.  Assumption:      *)
-(* a reply command for a link that is already gone completes with a        *)
-(* non-zero status, so execute_checked errs and run() returns.            *)
+(* lknotify = LinkKeyNotification.  The controller sends                   *)
+(* LinkKeyNotification before AuthenticationComplete, so authenticate()    *)
+(* sees it on its own receiver in order.  The agent logs reply and store   *)
+(* errors and keeps running; it stops only when the HCI host closes,       *)
+(* which is not modelled.                                                  *)
 (*                                                                         *)
 (* Abstracted: scanning/discovery (devices are always discovered),         *)
 (* suspended scans, SDP, player index, external ownership, SendRaw and     *)
 (* other atomic session handlers (take + reinsert within one atomic step), *)
-(* Shutdown, wake_gate, process crash.  BLE bonding is the OS's.           *)
+(* Shutdown, wake_gate, process crash, HCI handle reuse.  BLE bonding is   *)
+(* the OS's.  Inbound attach without host security (DS3, bonded Wii        *)
+(* Remote) is modelled like the authenticated inbound paths.               *)
 (***************************************************************************)
 EXTENDS Integers, Sequences, FiniteSets, TLC
 
@@ -52,27 +61,29 @@ CONSTANTS Addrs, Radio, MaxIds, MaxDrops, MaxFailures, MaxForgets
 
 ASSUME Radio \in [Addrs -> {"ble", "bredr"}]
 
-NoOp == [id |-> 0, kind |-> "none", stage |-> "none", authOk |-> FALSE, reconnect |-> FALSE]
+NoOp == [id |-> 0, kind |-> "none", stage |-> "none", authOk |-> FALSE,
+         newKey |-> FALSE, reconnect |-> FALSE]
 NoRec == [rec |-> FALSE, key |-> FALSE]
 
 VARIABLES sessions, op, connecting, phys, mailbox, wake, store,
-          agentAlive, queue, nextId, drops, failures, forgets,
+          agentAlive, queue, teardown, nextId, drops, failures, forgets,
           overwrote, connectedNoKey
 
 vars == <<sessions, op, connecting, phys, mailbox, wake, store, agentAlive, queue,
-          nextId, drops, failures, forgets, overwrote, connectedNoKey>>
+          teardown, nextId, drops, failures, forgets, overwrote, connectedNoKey>>
 
 Stages == {"none", "accept", "acl", "auth", "hid", "sync", "synced"}
 
 TypeOK ==
   /\ sessions \in [Addrs -> 0..MaxIds]
   /\ op \in [Addrs -> [id : 0..MaxIds, kind : {"none", "out", "in"}, stage : Stages,
-                       authOk : BOOLEAN, reconnect : BOOLEAN]]
+                       authOk : BOOLEAN, newKey : BOOLEAN, reconnect : BOOLEAN]]
   /\ connecting \subseteq {"ble", "bredr"}
   /\ phys \in [Addrs -> {"down", "up"}]
   /\ wake \in [Addrs -> {"none", "armed", "fired"}]
   /\ store \in [Addrs -> [rec : BOOLEAN, key : BOOLEAN]]
   /\ agentAlive \in BOOLEAN
+  /\ teardown \subseteq Addrs
 
 Init ==
   /\ sessions = [a \in Addrs |-> 0]
@@ -84,6 +95,7 @@ Init ==
   /\ store = [a \in Addrs |-> NoRec]
   /\ agentAlive = TRUE
   /\ queue = <<>>
+  /\ teardown = {}
   /\ nextId = 1
   /\ drops = 0 /\ failures = 0 /\ forgets = 0
   /\ overwrote = FALSE /\ connectedNoKey = FALSE
@@ -94,6 +106,10 @@ ArmWake(a) == wake' = ArmWakeF(wake, a)
 
 SetStage(a, s) == op' = [op EXCEPT ![a].stage = s]
 
+NewOp(kind, stage, reconnect) ==
+  [id |-> nextId, kind |-> kind, stage |-> stage, authOk |-> FALSE,
+   newKey |-> FALSE, reconnect |-> reconnect]
+
 \* begin_connect: early Ok if a session exists, error if busy (re-arming a
 \* reconnect), otherwise start the connect future.
 BeginConnect(a, reconnect, w) ==
@@ -101,13 +117,13 @@ BeginConnect(a, reconnect, w) ==
   ELSE IF op[a] # NoOp \/ Radio[a] \in connecting
     THEN /\ wake' = IF reconnect THEN ArmWakeF(w, a) ELSE w
          /\ UNCHANGED <<op, connecting, nextId>>
-  ELSE /\ op' = [op EXCEPT ![a] = [id |-> nextId, kind |-> "out", stage |-> "acl",
-                                   authOk |-> FALSE, reconnect |-> reconnect]]
+  ELSE /\ op' = [op EXCEPT ![a] = NewOp("out", "acl", reconnect)]
        /\ connecting' = connecting \cup {Radio[a]}
        /\ nextId' = nextId + 1
        /\ wake' = w
 
-\* finish_connection with the connect_tasks id matching.
+\* finish_connection with the connect_tasks id matching.  A successful
+\* result is only inserted while the transport still reports a live link.
 FinishConnection(a, ok) ==
   /\ op' = [op EXCEPT ![a] = NoOp]
   /\ connecting' = connecting \ {Radio[a]}
@@ -123,19 +139,18 @@ FinishConnection(a, ok) ==
 Connect(a) ==
   /\ nextId <= MaxIds
   /\ BeginConnect(a, FALSE, wake)
-  /\ UNCHANGED <<sessions, phys, mailbox, store, agentAlive, queue, drops, failures,
-                 forgets, overwrote, connectedNoKey>>
+  /\ UNCHANGED <<sessions, phys, mailbox, store, agentAlive, queue, teardown, drops,
+                 failures, forgets, overwrote, connectedNoKey>>
 
 \* HciLifecycle(ConnectionRequest): device-initiated BR/EDR reconnect.
 HciLifecycle(a) ==
   /\ Radio[a] = "bredr" /\ phys[a] = "down" /\ nextId <= MaxIds
   /\ ~(sessions[a] # 0 \/ op[a] # NoOp \/ "bredr" \in connecting)
-  /\ op' = [op EXCEPT ![a] = [id |-> nextId, kind |-> "in", stage |-> "accept",
-                              authOk |-> FALSE, reconnect |-> FALSE]]
+  /\ op' = [op EXCEPT ![a] = NewOp("in", "accept", FALSE)]
   /\ connecting' = connecting \cup {"bredr"}
   /\ nextId' = nextId + 1
-  /\ UNCHANGED <<sessions, phys, mailbox, wake, store, agentAlive, queue, drops, failures,
-                 forgets, overwrote, connectedNoKey>>
+  /\ UNCHANGED <<sessions, phys, mailbox, wake, store, agentAlive, queue, teardown, drops,
+                 failures, forgets, overwrote, connectedNoKey>>
 
 \* accept_inbound: requires a persisted auto-reconnect record, then accepts.
 AcceptInbound(a) ==
@@ -147,9 +162,9 @@ AcceptInbound(a) ==
             /\ UNCHANGED <<connecting, wake, sessions, overwrote, connectedNoKey>>
        ELSE /\ FinishConnection(a, FALSE)
             /\ UNCHANGED <<phys, queue>>
-  /\ UNCHANGED <<mailbox, store, agentAlive, nextId, drops, failures, forgets>>
+  /\ UNCHANGED <<mailbox, store, agentAlive, teardown, nextId, drops, failures, forgets>>
 
-\* connect(): keys.register, then host.connect (+ authenticate) or BleGatt::connect.
+\* connect(): keys.register, then connect_acl (+ authenticate) or BleGatt::connect.
 Acl(a) ==
   /\ op[a].stage = "acl"
   /\ IF phys[a] = "down"
@@ -163,55 +178,98 @@ Acl(a) ==
             /\ UNCHANGED <<connecting, wake, sessions, overwrote, connectedNoKey>>
        ELSE /\ FinishConnection(a, FALSE)
             /\ UNCHANGED <<phys, store, queue>>
-  /\ UNCHANGED <<mailbox, agentAlive, nextId, drops, failures, forgets>>
+  /\ UNCHANGED <<mailbox, agentAlive, teardown, nextId, drops, failures, forgets>>
+
+\* BrEdrHid::persist: the key captured by authenticate() is written before
+\* HID setup.  A failed write abandons the attempt and disconnects.
+PersistKey(a) ==
+  /\ op[a].stage = "auth" /\ op[a].authOk /\ op[a].newKey
+  /\ \/ /\ store' = [store EXCEPT ![a] = [rec |-> TRUE, key |-> TRUE]]
+        /\ op' = [op EXCEPT ![a].newKey = FALSE]
+        /\ UNCHANGED <<connecting, wake, sessions, phys, failures, overwrote,
+                       connectedNoKey>>
+     \/ /\ failures < MaxFailures
+        /\ failures' = failures + 1
+        /\ FinishConnection(a, FALSE)
+        /\ phys' = [phys EXCEPT ![a] = "down"]
+        /\ UNCHANGED store
+  /\ UNCHANGED <<mailbox, agentAlive, queue, teardown, nextId, drops, forgets>>
+
+\* authenticate() returns on a matching DisconnectionComplete; the attempt
+\* fails without waiting for the 30 s timeout.
+AuthDisconnected(a) ==
+  /\ op[a].stage = "auth" /\ phys[a] = "down"
+  /\ FinishConnection(a, FALSE)
+  /\ UNCHANGED <<phys, mailbox, store, agentAlive, queue, teardown, nextId, drops,
+                 failures, forgets>>
 
 \* BrEdrHid channel setup after authenticate() / GATT bond.
 OpenHid(a) ==
   /\ \/ op[a].stage = "hid"
-     \/ op[a].stage = "auth" /\ op[a].authOk
+     \/ op[a].stage = "auth" /\ op[a].authOk /\ ~op[a].newKey
   /\ IF phys[a] = "up"
        THEN /\ SetStage(a, "sync")
             /\ UNCHANGED <<connecting, wake, sessions, overwrote, connectedNoKey, phys>>
        ELSE /\ FinishConnection(a, FALSE)
             /\ UNCHANGED phys
-  /\ UNCHANGED <<mailbox, store, agentAlive, queue, nextId, drops, failures, forgets>>
+  /\ UNCHANGED <<mailbox, store, agentAlive, queue, teardown, nextId, drops, failures,
+                 forgets>>
 
 \* controller_session.synchronize: Ok, or Err -> transport.disconnect.
 Synchronize(a) ==
   /\ op[a].stage = "sync"
   /\ SetStage(a, "synced")
   /\ UNCHANGED <<sessions, connecting, phys, mailbox, wake, store, agentAlive, queue,
-                 nextId, drops, failures, forgets, overwrote, connectedNoKey>>
+                 teardown, nextId, drops, failures, forgets, overwrote, connectedNoKey>>
 
 SynchronizeFails(a) ==
   /\ op[a].stage = "sync" /\ phys[a] = "down"
   /\ FinishConnection(a, FALSE)
-  /\ UNCHANGED <<phys, mailbox, store, agentAlive, queue, nextId, drops, failures, forgets>>
+  /\ UNCHANGED <<phys, mailbox, store, agentAlive, queue, teardown, nextId, drops,
+                 failures, forgets>>
 
-\* keys.register + spawn_reports + return Ok into finish_connection.
+\* keys.register, then finish_connection: subscribe, check state(), insert
+\* and spawn report forwarding, or drop a transport whose link already ended.
 SpawnReports(a) ==
   /\ op[a].stage = "synced"
   /\ store' = [store EXCEPT ![a].rec = TRUE]
-  /\ FinishConnection(a, TRUE)
-  /\ UNCHANGED <<phys, mailbox, agentAlive, queue, nextId, drops, failures, forgets>>
+  /\ FinishConnection(a, phys[a] = "up")
+  /\ UNCHANGED <<phys, mailbox, agentAlive, queue, teardown, nextId, drops, failures,
+                 forgets>>
 
 \* time::timeout(CONNECTION_ATTEMPT_TIMEOUT): the future is dropped.  A dropped
-\* BrEdrHid closes L2CAP channels but never disconnects the ACL; a dropped
-\* BleGatt releases the peripheral.
+\* BrEdrHid spawns host.disconnect for its live handle; a dropped BleGatt
+\* releases the peripheral.
 Timeout(a) ==
   /\ op[a].stage \in {"accept", "acl", "auth", "hid", "sync"}
   /\ FinishConnection(a, FALSE)
-  /\ phys' = IF Radio[a] = "ble" THEN [phys EXCEPT ![a] = "down"] ELSE phys
+  /\ IF Radio[a] = "ble"
+       THEN /\ phys' = [phys EXCEPT ![a] = "down"]
+            /\ UNCHANGED teardown
+       ELSE /\ teardown' = IF phys[a] = "up" THEN teardown \cup {a} ELSE teardown
+            /\ UNCHANGED phys
   /\ UNCHANGED <<mailbox, store, agentAlive, queue, nextId, drops, failures, forgets>>
 
-\* authenticate()'s own 30 s timeout; finish_outbound_handle disconnects.
+\* authenticate()'s own 30 s timeout; abandon() disconnects.
 AuthTimeout(a) ==
   /\ op[a].stage = "auth" /\ ~op[a].authOk
   /\ FinishConnection(a, FALSE)
   /\ phys' = [phys EXCEPT ![a] = "down"]
-  /\ UNCHANGED <<mailbox, store, agentAlive, queue, nextId, drops, failures, forgets>>
+  /\ UNCHANGED <<mailbox, store, agentAlive, queue, teardown, nextId, drops, failures,
+                 forgets>>
 
-\* PairingAgent::handle for the head of host.events().
+\* The task spawned by BrEdrHid::drop completes host.disconnect.
+Teardown(a) ==
+  /\ a \in teardown
+  /\ teardown' = teardown \ {a}
+  /\ phys' = [phys EXCEPT ![a] = "down"]
+  /\ UNCHANGED <<sessions, op, connecting, mailbox, wake, store, agentAlive, queue,
+                 nextId, drops, failures, forgets, overwrote, connectedNoKey>>
+
+\* PairingAgent::handle for the head of host.events().  Replies to a link
+\* that is already gone fail and are logged.  A pairing exchange produces a
+\* LinkKeyNotification that authenticate() captures before
+\* AuthenticationComplete.
 PairingAgentHandle ==
   /\ agentAlive /\ queue # <<>>
   /\ LET e == Head(queue)
@@ -219,44 +277,46 @@ PairingAgentHandle ==
          authing == op[a].stage = "auth"
      IN
      CASE e.kind \in {"lkreq", "pin"} /\ phys[a] = "down" ->
-            /\ agentAlive' = FALSE
             /\ queue' = Tail(queue)
-            /\ UNCHANGED <<op, store, failures>>
+            /\ UNCHANGED <<op, store>>
        [] e.kind = "lkreq" /\ store[a].key ->
             /\ op' = IF authing THEN [op EXCEPT ![a].authOk = TRUE] ELSE op
             /\ queue' = Tail(queue)
-            /\ UNCHANGED <<agentAlive, store, failures>>
+            /\ UNCHANGED store
        [] e.kind = "lkreq" ->
             /\ queue' = Append(Tail(queue), [kind |-> "pin", addr |-> a])
-            /\ UNCHANGED <<op, agentAlive, store, failures>>
+            /\ UNCHANGED <<op, store>>
        [] e.kind = "pin" ->
             /\ queue' = Append(Tail(queue), [kind |-> "lknotify", addr |-> a])
-            /\ op' = IF authing THEN [op EXCEPT ![a].authOk = TRUE] ELSE op
-            /\ UNCHANGED <<agentAlive, store, failures>>
+            /\ op' = IF authing
+                       THEN [op EXCEPT ![a].authOk = TRUE, ![a].newKey = TRUE]
+                       ELSE op
+            /\ UNCHANGED store
        [] e.kind = "lknotify" ->
             /\ store' = [store EXCEPT ![a] = [rec |-> TRUE, key |-> TRUE]]
             /\ queue' = Tail(queue)
-            /\ UNCHANGED <<op, agentAlive, failures>>
-  /\ UNCHANGED <<sessions, connecting, phys, mailbox, wake, nextId, drops, forgets,
-                 overwrote, connectedNoKey>>
+            /\ UNCHANGED op
+  /\ UNCHANGED <<sessions, connecting, phys, mailbox, wake, agentAlive, teardown, nextId,
+                 drops, failures, forgets, overwrote, connectedNoKey>>
 
-\* ControllerLinkKeyStore::put fails (store I/O); run() returns the error.
+\* The agent's own ControllerLinkKeyStore::put fails; it logs and continues.
 LinkKeyPutFails ==
   /\ agentAlive /\ queue # <<>> /\ Head(queue).kind = "lknotify"
   /\ failures < MaxFailures
   /\ failures' = failures + 1
-  /\ agentAlive' = FALSE
   /\ queue' = Tail(queue)
-  /\ UNCHANGED <<sessions, op, connecting, phys, mailbox, wake, store, nextId, drops,
-                 forgets, overwrote, connectedNoKey>>
+  /\ UNCHANGED <<sessions, op, connecting, phys, mailbox, wake, store, agentAlive,
+                 teardown, nextId, drops, forgets, overwrote, connectedNoKey>>
 
-\* Device or radio drops the link.  The transport report task broadcasts on
-\* `disconnects`; only a session whose spawn_reports already subscribed
-\* turns that into a SessionEnded message.
+\* Device or radio drops the link.  The transport report task stores
+\* DISCONNECTED and broadcasts on `disconnects`; a live session's report
+\* forwarding turns that into a SessionEnded message.  Before insertion the
+\* retained state() is checked by finish_connection instead.
 PhysDrop(a) ==
   /\ phys[a] = "up" /\ drops < MaxDrops
   /\ drops' = drops + 1
   /\ phys' = [phys EXCEPT ![a] = "down"]
+  /\ teardown' = teardown \ {a}
   /\ mailbox' = IF sessions[a] # 0
                   THEN mailbox \cup {[kind |-> "ended", addr |-> a, id |-> sessions[a]]}
                   ELSE mailbox
@@ -271,16 +331,16 @@ SessionEnded(m) ==
        THEN /\ sessions' = [sessions EXCEPT ![m.addr] = 0]
             /\ IF store[m.addr].rec THEN ArmWake(m.addr) ELSE UNCHANGED wake
        ELSE UNCHANGED <<sessions, wake>>
-  /\ UNCHANGED <<op, connecting, phys, store, agentAlive, queue, nextId, drops, failures,
-                 forgets, overwrote, connectedNoKey>>
+  /\ UNCHANGED <<op, connecting, phys, store, agentAlive, queue, teardown, nextId, drops,
+                 failures, forgets, overwrote, connectedNoKey>>
 
 \* arm_ble_wake task finds the advertisement and do_sends WakeDiscovered.
 WakeScan(a) ==
   /\ wake[a] = "armed" /\ phys[a] = "down"
   /\ wake' = [wake EXCEPT ![a] = "fired"]
   /\ mailbox' = mailbox \cup {[kind |-> "wake", addr |-> a, id |-> 0]}
-  /\ UNCHANGED <<sessions, op, connecting, phys, store, agentAlive, queue, nextId, drops,
-                 failures, forgets, overwrote, connectedNoKey>>
+  /\ UNCHANGED <<sessions, op, connecting, phys, store, agentAlive, queue, teardown,
+                 nextId, drops, failures, forgets, overwrote, connectedNoKey>>
 
 \* Handler<WakeDiscovered>: stale task ids are ignored; otherwise begin_connect.
 \* With session ids exhausted the reconnect is dropped (model bound).
@@ -293,8 +353,8 @@ WakeDiscovered(m) ==
          THEN /\ wake' = [wake EXCEPT ![m.addr] = "none"]
               /\ UNCHANGED <<op, connecting, nextId>>
          ELSE UNCHANGED <<op, connecting, nextId, wake>>
-  /\ UNCHANGED <<sessions, phys, store, agentAlive, queue, drops, failures, forgets,
-                 overwrote, connectedNoKey>>
+  /\ UNCHANGED <<sessions, phys, store, agentAlive, queue, teardown, drops, failures,
+                 forgets, overwrote, connectedNoKey>>
 
 \* disconnect_session (Disconnect / Sleep).  Sleep re-arms the BLE wake.
 DisconnectSession(a, sleep) ==
@@ -302,11 +362,12 @@ DisconnectSession(a, sleep) ==
   /\ sessions' = [sessions EXCEPT ![a] = 0]
   /\ phys' = [phys EXCEPT ![a] = "down"]
   /\ IF sleep /\ store[a].rec THEN ArmWake(a) ELSE UNCHANGED wake
-  /\ UNCHANGED <<op, connecting, mailbox, store, agentAlive, queue, nextId, drops,
-                 failures, forgets, overwrote, connectedNoKey>>
+  /\ UNCHANGED <<op, connecting, mailbox, store, agentAlive, queue, teardown, nextId,
+                 drops, failures, forgets, overwrote, connectedNoKey>>
 
-\* Handler<Forget>: abort the connect future, drop the wake task, disconnect
-\* the session, pairing.forget + store.remove.
+\* Handler<Forget>: abort the connect future (a BR/EDR transport's Drop
+\* spawns its disconnect), drop the wake task, disconnect the session,
+\* pairing.forget + store.remove.
 Forget(a) ==
   /\ forgets < MaxForgets
   /\ forgets' = forgets + 1
@@ -316,6 +377,8 @@ Forget(a) ==
   /\ sessions' = [sessions EXCEPT ![a] = 0]
   /\ phys' = IF sessions[a] # 0 \/ (op[a] # NoOp /\ Radio[a] = "ble")
                THEN [phys EXCEPT ![a] = "down"] ELSE phys
+  /\ teardown' = IF sessions[a] = 0 /\ op[a] # NoOp /\ Radio[a] = "bredr" /\ phys[a] = "up"
+                   THEN teardown \cup {a} ELSE teardown
   /\ store' = [store EXCEPT ![a] = NoRec]
   /\ UNCHANGED <<mailbox, agentAlive, queue, nextId, drops, failures, overwrote,
                  connectedNoKey>>
@@ -323,13 +386,14 @@ Forget(a) ==
 Quiet ==
   /\ \A a \in Addrs : op[a] = NoOp
   /\ mailbox = {}
+  /\ teardown = {}
   /\ (queue = <<>> \/ ~agentAlive)
 
 Finished == Quiet /\ UNCHANGED vars
 
 ConnectProgress(a) ==
-  AcceptInbound(a) \/ Acl(a) \/ OpenHid(a) \/ Synchronize(a) \/ SynchronizeFails(a)
-  \/ SpawnReports(a) \/ AuthTimeout(a)
+  AcceptInbound(a) \/ Acl(a) \/ PersistKey(a) \/ AuthDisconnected(a) \/ OpenHid(a)
+  \/ Synchronize(a) \/ SynchronizeFails(a) \/ SpawnReports(a) \/ AuthTimeout(a)
 
 ActorProgress ==
   \/ \E m \in mailbox : SessionEnded(m) \/ WakeDiscovered(m)
@@ -338,14 +402,14 @@ Next ==
   \/ \E a \in Addrs :
        \/ Connect(a) \/ HciLifecycle(a) \/ ConnectProgress(a) \/ PhysDrop(a)
        \/ WakeScan(a) \/ DisconnectSession(a, FALSE) \/ DisconnectSession(a, TRUE)
-       \/ Timeout(a) \/ Forget(a)
+       \/ Timeout(a) \/ Forget(a) \/ Teardown(a)
   \/ PairingAgentHandle \/ LinkKeyPutFails
   \/ ActorProgress
   \/ Finished
 
 Spec ==
   /\ Init /\ [][Next]_vars
-  /\ \A a \in Addrs : WF_vars(ConnectProgress(a))
+  /\ \A a \in Addrs : WF_vars(ConnectProgress(a)) /\ WF_vars(Teardown(a))
   /\ WF_vars(PairingAgentHandle)
   /\ WF_vars(ActorProgress)
 
@@ -365,8 +429,12 @@ KeyPersistedBeforeConnected == ~connectedNoKey
 \* The pairing agent survives a device disappearing mid-pairing.
 PairingAgentAlive == agentAlive
 
-\* No physical link is left without a session or attempt owning it.
-NoOrphanLink == \A a \in Addrs : phys[a] = "up" => sessions[a] # 0 \/ op[a] # NoOp
+\* No physical link is left without a session, attempt or pending teardown.
+NoOrphanLink ==
+  \A a \in Addrs : phys[a] = "up" => sessions[a] # 0 \/ op[a] # NoOp \/ a \in teardown
+
+\* A link handed to teardown is eventually disconnected.
+TeardownCompletes == \A a \in Addrs : a \in teardown ~> phys[a] = "down"
 
 \* A session whose link went down is eventually removed.
 NoStuckSession ==

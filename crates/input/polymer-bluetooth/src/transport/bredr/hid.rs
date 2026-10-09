@@ -17,6 +17,7 @@ use tokio::{
 use crate::{ConnectionState, DeviceAddr, Error, ReportReceiver, Result, Transport};
 
 use super::{
+    LinkKey, LinkKeyStore,
     hci::{Command, Event as HciEvent, HciHost, InquiryResult, L2capFrame},
     l2cap::{Channel, ChannelSender, HID_CONTROL_PSM, HID_INTERRUPT_PSM, Link},
 };
@@ -32,6 +33,8 @@ const CONNECTED: u8 = 2;
 /// passed to [`Transport::send`] follow the same convention; `0xA2` is added.
 pub struct BrEdrHid {
     host: Arc<HciHost>,
+    addr: DeviceAddr,
+    keys: Arc<dyn LinkKeyStore>,
     reports: broadcast::Sender<Bytes>,
     disconnects: broadcast::Sender<()>,
     state: Arc<AtomicU8>,
@@ -46,11 +49,13 @@ pub struct BrEdrHid {
 }
 
 impl BrEdrHid {
-    pub fn new(host: Arc<HciHost>) -> Self {
+    pub fn new(host: Arc<HciHost>, addr: DeviceAddr, keys: Arc<dyn LinkKeyStore>) -> Self {
         let (reports, _) = broadcast::channel(256);
         let (disconnects, _) = broadcast::channel(8);
         Self {
             host,
+            addr,
+            keys,
             reports,
             disconnects,
             state: Arc::new(AtomicU8::new(DISCONNECTED)),
@@ -125,16 +130,18 @@ impl BrEdrHid {
     /// Wii Remote and DualShock 3 reconnection use this direction.
     pub async fn attach_inbound(&mut self, handle: u16) -> Result<()> {
         let frames = self.host.l2cap_frames();
-        self.attach_inbound_with_frames(handle, frames).await
+        let hci_events = self.host.events();
+        self.attach_inbound_with_frames(handle, frames, hci_events)
+            .await
     }
 
     pub async fn attach_inbound_with_frames(
         &mut self,
         handle: u16,
         frames: broadcast::Receiver<L2capFrame>,
+        hci_events: broadcast::Receiver<HciEvent>,
     ) -> Result<()> {
-        self.close_channels();
-        self.state.store(CONNECTING, Ordering::Release);
+        self.adopt(handle);
         let link = Link::new_with_frame_receiver(self.host.clone(), handle, frames);
         let (control, interrupt) = tokio::join!(
             link.accept_channel(HID_CONTROL_PSM),
@@ -142,13 +149,10 @@ impl BrEdrHid {
         );
         match (control, interrupt) {
             (Ok(control), Ok(interrupt)) => {
-                self.finish_connection(handle, link, control, interrupt)
+                self.finish_connection(handle, link, control, interrupt, hci_events)
                     .await
             }
-            (Err(error), _) | (_, Err(error)) => {
-                self.state.store(DISCONNECTED, Ordering::Release);
-                Err(error)
-            }
+            (Err(error), _) | (_, Err(error)) => self.abandon(error).await,
         }
     }
 
@@ -158,13 +162,16 @@ impl BrEdrHid {
         frames: broadcast::Receiver<L2capFrame>,
         mut hci_events: broadcast::Receiver<HciEvent>,
     ) -> Result<()> {
-        self.close_channels();
-        self.state.store(CONNECTING, Ordering::Release);
+        self.adopt(handle);
         let link = Link::new_with_frame_receiver(self.host.clone(), handle, frames);
-        if let Err(error) = wait_for_encryption(&mut hci_events, handle).await {
-            self.state.store(DISCONNECTED, Ordering::Release);
-            return Err(error);
+        let key = match wait_for_encryption(&mut hci_events, handle, self.addr).await {
+            Ok(key) => key,
+            Err(error) => return self.abandon(error).await,
+        };
+        if let Err(error) = self.persist(key) {
+            return self.abandon(error).await;
         }
+        let report_events = hci_events.resubscribe();
         let channels = async {
             tokio::join!(
                 accept_channel_with_retry(&link, HID_CONTROL_PSM),
@@ -177,20 +184,14 @@ impl BrEdrHid {
         };
         let (control, interrupt) = match channel_result {
             Ok(channels) => channels,
-            Err(error) => {
-                self.state.store(DISCONNECTED, Ordering::Release);
-                return Err(error);
-            }
+            Err(error) => return self.abandon(error).await,
         };
         match (control, interrupt) {
             (Ok(control), Ok(interrupt)) => {
-                self.finish_connection(handle, link, control, interrupt)
+                self.finish_connection(handle, link, control, interrupt, report_events)
                     .await
             }
-            (Err(error), _) | (_, Err(error)) => {
-                self.state.store(DISCONNECTED, Ordering::Release);
-                Err(error)
-            }
+            (Err(error), _) | (_, Err(error)) => self.abandon(error).await,
         }
     }
 
@@ -200,47 +201,56 @@ impl BrEdrHid {
         &mut self,
         handle: u16,
         frames: broadcast::Receiver<L2capFrame>,
+        hci_events: broadcast::Receiver<HciEvent>,
     ) -> Result<()> {
-        self.close_channels();
-        self.state.store(CONNECTING, Ordering::Release);
+        self.adopt(handle);
         let link = Link::new_with_frame_receiver(self.host.clone(), handle, frames);
         self.sdp_task = Some(super::sdp::server::Server::spawn(link.clone()));
         let result = async {
-            self.host.authenticate(handle, true).await?;
+            self.authenticate(handle).await?;
             // open_channel also accepts queued/crossed requests from the peer.
             let control = open_channel_with_retry(&link, HID_CONTROL_PSM).await?;
             let interrupt = open_channel_with_retry(&link, HID_INTERRUPT_PSM).await?;
-            self.finish_connection(handle, link, control, interrupt)
+            self.finish_connection(handle, link, control, interrupt, hci_events)
                 .await
         }
         .await;
-        if result.is_err() {
-            self.close_channels();
-            let _ = self.host.disconnect(handle).await;
+        match result {
+            Ok(()) => Ok(()),
+            Err(error) => self.abandon(error).await,
         }
-        result
     }
 
     async fn open_outbound_channels(&mut self, handle: u16) -> Result<()> {
+        let hci_events = self.host.events();
         let link = Link::new(self.host.clone(), handle);
         let control = open_channel_with_retry(&link, HID_CONTROL_PSM).await?;
         let interrupt = open_channel_with_retry(&link, HID_INTERRUPT_PSM).await?;
-        self.finish_connection(handle, link, control, interrupt)
+        self.finish_connection(handle, link, control, interrupt, hci_events)
             .await
     }
 
-    pub async fn connect_discovered(&mut self, device: &InquiryResult) -> Result<()> {
+    /// Opens an ACL link owned by this transport, so dropping the transport
+    /// before HID setup completes still disconnects it.
+    pub async fn connect_acl(&mut self, device: &InquiryResult) -> Result<u16> {
         if self.handle.is_some() {
             self.disconnect().await?;
         }
         self.state.store(CONNECTING, Ordering::Release);
-        let handle = match self.host.connect(device).await {
-            Ok(handle) => handle,
+        match self.host.connect(device).await {
+            Ok(handle) => {
+                self.handle = Some(handle);
+                Ok(handle)
+            }
             Err(error) => {
                 self.state.store(DISCONNECTED, Ordering::Release);
-                return Err(error);
+                Err(error)
             }
-        };
+        }
+    }
+
+    pub async fn connect_discovered(&mut self, device: &InquiryResult) -> Result<()> {
+        let handle = self.connect_acl(device).await?;
         self.finish_outbound_handle(handle).await
     }
 
@@ -253,17 +263,7 @@ impl BrEdrHid {
         &mut self,
         device: &InquiryResult,
     ) -> Result<()> {
-        if self.handle.is_some() {
-            self.disconnect().await?;
-        }
-        self.state.store(CONNECTING, Ordering::Release);
-        let handle = match self.host.connect(device).await {
-            Ok(handle) => handle,
-            Err(error) => {
-                self.state.store(DISCONNECTED, Ordering::Release);
-                return Err(error);
-            }
-        };
+        let handle = self.connect_acl(device).await?;
         self.establish_handle(handle, true).await
     }
 
@@ -274,14 +274,15 @@ impl BrEdrHid {
         handle: u16,
         controller_opens_hid: bool,
     ) -> Result<()> {
+        self.handle = Some(handle);
+        self.state.store(CONNECTING, Ordering::Release);
         if !controller_opens_hid {
             return self.finish_outbound_handle(handle).await;
         }
+        let hci_events = self.host.events();
         let link = Link::new(self.host.clone(), handle);
-        if let Err(error) = self.host.authenticate(handle, true).await {
-            let _ = self.host.disconnect(handle).await;
-            self.state.store(DISCONNECTED, Ordering::Release);
-            return Err(error);
+        if let Err(error) = self.authenticate(handle).await {
+            return self.abandon(error).await;
         }
         let (control, interrupt) = tokio::join!(
             link.accept_channel(HID_CONTROL_PSM),
@@ -289,29 +290,44 @@ impl BrEdrHid {
         );
         match (control, interrupt) {
             (Ok(control), Ok(interrupt)) => {
-                self.finish_connection(handle, link, control, interrupt)
+                self.finish_connection(handle, link, control, interrupt, hci_events)
                     .await
             }
-            (Err(error), _) | (_, Err(error)) => {
-                let _ = self.host.disconnect(handle).await;
-                self.state.store(DISCONNECTED, Ordering::Release);
-                Err(error)
-            }
+            (Err(error), _) | (_, Err(error)) => self.abandon(error).await,
         }
     }
 
     async fn finish_outbound_handle(&mut self, handle: u16) -> Result<()> {
-        if let Err(error) = self.host.authenticate(handle, true).await {
-            let _ = self.host.disconnect(handle).await;
-            self.state.store(DISCONNECTED, Ordering::Release);
-            return Err(error);
+        if let Err(error) = self.authenticate(handle).await {
+            return self.abandon(error).await;
         }
         if let Err(error) = self.open_outbound_channels(handle).await {
-            let _ = self.host.disconnect(handle).await;
-            self.state.store(DISCONNECTED, Ordering::Release);
-            return Err(error);
+            return self.abandon(error).await;
         }
         Ok(())
+    }
+
+    fn adopt(&mut self, handle: u16) {
+        self.close_channels();
+        self.handle = Some(handle);
+        self.state.store(CONNECTING, Ordering::Release);
+    }
+
+    async fn abandon<T>(&mut self, error: Error) -> Result<T> {
+        let _ = self.disconnect().await;
+        Err(error)
+    }
+
+    async fn authenticate(&self, handle: u16) -> Result<()> {
+        let key = self.host.authenticate(handle, self.addr, true).await?;
+        self.persist(key)
+    }
+
+    fn persist(&self, key: Option<LinkKey>) -> Result<()> {
+        match key {
+            Some(key) => self.keys.put(self.addr, key),
+            None => Ok(()),
+        }
     }
 
     async fn finish_connection(
@@ -320,13 +336,14 @@ impl BrEdrHid {
         link: Link,
         control: Channel,
         mut interrupt: Channel,
+        mut hci_events: broadcast::Receiver<HciEvent>,
     ) -> Result<()> {
         let response_sender = self.reports.clone();
         let disconnect_sender = self.disconnects.clone();
         let state = self.state.clone();
-        let mut hci_events = self.host.events();
         let control_sender = control.sender();
         let interrupt_sender = interrupt.sender();
+        self.state.store(CONNECTED, Ordering::Release);
         let report_task = tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -365,7 +382,6 @@ impl BrEdrHid {
         self.control_sender = Some(control_sender);
         self.interrupt_sender = Some(interrupt_sender);
         self.report_task = Some(report_task);
-        self.state.store(CONNECTED, Ordering::Release);
         // Failure to set the latency-oriented flush timeout should not tear down
         // an otherwise working HID link; controllers may reject the command.
         let flush_result = if self.automatic_flush_slots == 0 {
@@ -443,15 +459,22 @@ async fn open_channel_with_retry(link: &Link, psm: u16) -> Result<Channel> {
 async fn wait_for_encryption(
     events: &mut broadcast::Receiver<HciEvent>,
     handle: u16,
-) -> Result<()> {
+    addr: DeviceAddr,
+) -> Result<Option<LinkKey>> {
     tokio::time::timeout(Duration::from_secs(30), async {
+        let mut key = None;
         loop {
             match events.recv().await {
+                Ok(HciEvent::LinkKeyNotification {
+                    addr: event_addr,
+                    key: value,
+                    key_type,
+                }) if event_addr == addr => key = Some(LinkKey { value, key_type }),
                 Ok(HciEvent::EncryptionChange {
                     status: 0,
                     handle: event_handle,
                     enabled: true,
-                }) if event_handle == handle => return Ok(()),
+                }) if event_handle == handle => return Ok(key),
                 Ok(HciEvent::EncryptionChange {
                     status,
                     handle: event_handle,
@@ -504,6 +527,7 @@ impl Transport for BrEdrHid {
         if self.handle.is_some() {
             self.disconnect().await?;
         }
+        self.addr = addr;
         self.state.store(CONNECTING, Ordering::Release);
         let handle = match self.host.connect_addr(addr).await {
             Ok(handle) => handle,
@@ -512,6 +536,7 @@ impl Transport for BrEdrHid {
                 return Err(error);
             }
         };
+        self.handle = Some(handle);
         self.finish_outbound_handle(handle).await
     }
 
@@ -588,6 +613,15 @@ impl Transport for BrEdrHid {
 
 impl Drop for BrEdrHid {
     fn drop(&mut self) {
+        let handle = self
+            .handle
+            .filter(|_| self.state.load(Ordering::Acquire) != DISCONNECTED);
         self.close_channels();
+        if let (Some(handle), Ok(runtime)) = (handle, tokio::runtime::Handle::try_current()) {
+            let host = self.host.clone();
+            runtime.spawn(async move {
+                let _ = host.disconnect(handle).await;
+            });
+        }
     }
 }

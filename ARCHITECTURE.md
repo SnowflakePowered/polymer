@@ -329,4 +329,7 @@ The frontend runtime glues all these parts together and can really be split into
 TODO:
 
 
+## Actors
+
+Polymer relies on the actix framework to do message passing between different parts of the stack. Most communication, especially async communication from the JavaScript APIs, is done via Actors, with each actor acting as the mediator between the JavaScript APIs and the Rust APIs, for their respective domains.
 

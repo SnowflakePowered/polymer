@@ -364,6 +364,7 @@ impl BleGatt {
         let response_uuid = response.as_ref().map(|characteristic| characteristic.uuid);
         let idle_disconnect_timeout = self.profile.idle_disconnect_timeout;
         let monitored_peripheral = peripheral.clone();
+        self.state.store(CONNECTED, Ordering::Release);
         let notification_task = tokio::spawn(async move {
             let mut last_notification = Instant::now();
             let mut connection_check = time::interval_at(
@@ -407,7 +408,6 @@ impl BleGatt {
         self.output = Some(output);
         self.response = response;
         self.notification_task = Some(notification_task);
-        self.state.store(CONNECTED, Ordering::Release);
         Ok(())
     }
 

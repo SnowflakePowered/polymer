@@ -10,6 +10,7 @@ use tokio::{
 use crate::{
     DeviceAddr, Error, Result,
     firmware::{FirmwareIdentity, FirmwareLoader, FirmwareRegistry},
+    transport::bredr::LinkKey,
 };
 
 use super::{
@@ -623,9 +624,15 @@ impl HciHost {
     }
 
     /// Starts BR/EDR authentication and optionally enables link encryption.
+    /// Returns the link key created for `addr` if authentication paired.
     /// Do not call this for DualShock 3; its inbound connection intentionally
     /// skips standard authentication.
-    pub async fn authenticate(&self, handle: u16, encrypt: bool) -> Result<()> {
+    pub async fn authenticate(
+        &self,
+        handle: u16,
+        addr: DeviceAddr,
+        encrypt: bool,
+    ) -> Result<Option<LinkKey>> {
         let mut events = self.events.subscribe();
         self.execute(Command::handle_only(
             Opcode::AUTHENTICATION_REQUESTED,
@@ -633,64 +640,82 @@ impl HciHost {
         ))
         .await?;
         time::timeout(Duration::from_secs(30), async {
-            loop {
-                if let Event::AuthenticationComplete {
-                    status,
-                    handle: event_handle,
-                } = events.recv().await.map_err(|_| Error::ChannelClosed)?
-                {
-                    if event_handle != handle {
-                        continue;
-                    }
-                    if status == 0 {
-                        break;
-                    }
-                    return Err(Error::HciStatus {
-                        operation: "Authentication Requested",
-                        status,
-                    });
-                }
-            }
-            if !encrypt {
-                return Ok(());
-            }
-            self.execute(Command::set_connection_encryption(handle, true))
-                .await?;
+            let mut key = None;
             loop {
                 match events.recv().await.map_err(|_| Error::ChannelClosed)? {
-                    Event::EncryptionChange {
+                    Event::LinkKeyNotification {
+                        addr: event_addr,
+                        key: value,
+                        key_type,
+                    } if event_addr == addr => key = Some(LinkKey { value, key_type }),
+                    Event::AuthenticationComplete {
+                        status: 0,
+                        handle: event_handle,
+                    } if event_handle == handle => break,
+                    Event::AuthenticationComplete {
                         status,
                         handle: event_handle,
-                        enabled,
                     } if event_handle == handle => {
-                        if status == 0 && enabled {
-                            return Ok(());
-                        }
                         return Err(Error::HciStatus {
-                            operation: "Set Connection Encryption",
+                            operation: "Authentication Requested",
                             status,
                         });
                     }
-                    // Enabling encryption on an already encrypted bonded link
-                    // completes as a key refresh on Realtek controllers.
-                    Event::EncryptionKeyRefreshComplete {
-                        status,
+                    Event::DisconnectionComplete {
                         handle: event_handle,
+                        reason,
+                        ..
                     } if event_handle == handle => {
-                        if status == 0 {
-                            return Ok(());
-                        }
                         return Err(Error::HciStatus {
-                            operation: "Refresh Connection Encryption",
-                            status,
+                            operation: "Authentication Requested",
+                            status: reason,
                         });
                     }
                     _ => {}
                 }
             }
+            if encrypt {
+                self.enable_encryption(&mut events, handle).await?;
+            }
+            Ok(key)
         })
         .await
         .map_err(|_| Error::Timeout("BR/EDR authentication"))?
+    }
+
+    async fn enable_encryption(
+        &self,
+        events: &mut broadcast::Receiver<Event>,
+        handle: u16,
+    ) -> Result<()> {
+        self.execute(Command::set_connection_encryption(handle, true))
+            .await?;
+        loop {
+            let (operation, status, enabled) =
+                match events.recv().await.map_err(|_| Error::ChannelClosed)? {
+                    Event::EncryptionChange {
+                        status,
+                        handle: event_handle,
+                        enabled,
+                    } if event_handle == handle => ("Set Connection Encryption", status, enabled),
+                    // Enabling encryption on an already encrypted bonded link
+                    // completes as a key refresh on Realtek controllers.
+                    Event::EncryptionKeyRefreshComplete {
+                        status,
+                        handle: event_handle,
+                    } if event_handle == handle => ("Refresh Connection Encryption", status, true),
+                    Event::DisconnectionComplete {
+                        handle: event_handle,
+                        reason,
+                        ..
+                    } if event_handle == handle => ("Set Connection Encryption", reason, false),
+                    _ => continue,
+                };
+            if status == 0 && enabled {
+                return Ok(());
+            }
+            return Err(Error::HciStatus { operation, status });
+        }
     }
 
     pub async fn execute(&self, command: Command) -> Result<Bytes> {

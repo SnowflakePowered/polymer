@@ -13,11 +13,10 @@ impl BluetoothActor {
             host,
             pairing,
             keys,
-            internal,
             events,
         } = context;
         let mut identity = device.identity.clone();
-        let mut identified_handle = None;
+        let mut identified = None;
         if identity.transport == TransportKind::BrEdr {
             let preliminary = config.controllers.identify(&identity)?;
             if preliminary
@@ -29,7 +28,8 @@ impl BluetoothActor {
                     .bredr
                     .as_ref()
                     .ok_or(Error::InvalidPacket("missing BR/EDR inquiry data"))?;
-                let handle = host.connect(inquiry).await?;
+                let mut hid = BrEdrHid::new(host.clone(), address, keys.clone());
+                let handle = hid.connect_acl(inquiry).await?;
                 match sdp::query_identity(&Link::new(host.clone(), handle)).await {
                     Ok(sdp) => {
                         identity.service_uuids = sdp.services;
@@ -39,7 +39,7 @@ impl BluetoothActor {
                         tracing::debug!(%address, %error, "SDP identity query failed; retaining discovery identity")
                     }
                 }
-                identified_handle = Some(handle);
+                identified = Some((hid, handle));
             }
         }
         let mut controller = config
@@ -88,7 +88,10 @@ impl BluetoothActor {
                         pairing.set_pin(address, pin)?;
                     }
                 }
-                let mut hid = BrEdrHid::new(host.clone());
+                let (mut hid, identified_handle) = match identified.take() {
+                    Some((hid, handle)) => (hid, Some(handle)),
+                    None => (BrEdrHid::new(host.clone(), address, keys.clone()), None),
+                };
                 if let Some(slots) = policy.automatic_flush_slots {
                     hid.set_automatic_flush_slots(slots);
                 }
@@ -154,20 +157,12 @@ impl BluetoothActor {
             auto_reconnect: options.auto_reconnect,
             player_index: options.player_index,
         })?;
-        let report_task = Self::spawn_reports(
-            controller_id,
-            session_id,
-            transport.reports(),
-            transport.disconnections(),
-            events.clone(),
-            internal,
-        );
         let sensor_calibration = controller_session.sensor_calibration();
         let ds3_motion = controller_session.ds3_motion();
         let session = Session {
             transport,
             controller: controller_session,
-            report_task,
+            report_task: None,
             externally_owned: false,
             info: ConnectedController {
                 sensor_calibration,
@@ -189,10 +184,9 @@ impl BluetoothActor {
     pub(in super::super) async fn accept_inbound(
         config: &ManagerConfig,
         host: &Arc<HciHost>,
+        keys: Arc<ControllerLinkKeyStore>,
         address: DeviceAddr,
         session_id: SessionId,
-        events: &broadcast::Sender<ManagerEvent>,
-        internal: Internal,
         discovered: Option<&Discovered>,
     ) -> Result<Session> {
         let mut record = config
@@ -252,23 +246,21 @@ impl BluetoothActor {
         let restore_result = host.set_host_identity("Polymer", [0x0c, 0x01, 0x1c]).await;
         let handle = handle_result?;
         restore_result?;
-        let mut hid = BrEdrHid::new(host.clone());
+        let mut hid = BrEdrHid::new(host.clone(), address, keys);
         if let Some(slots) = policy.automatic_flush_slots {
             hid.set_automatic_flush_slots(slots);
         }
         let attach_result = if policy.host_opens_hid_on_reconnect {
-            hid.attach_inbound_host_hid_with_frames(handle, frames)
+            hid.attach_inbound_host_hid_with_frames(handle, frames, connection_events)
                 .await
         } else if policy.wait_for_encryption_before_inbound_hid {
             hid.attach_inbound_encrypted_with_frames(handle, frames, connection_events)
                 .await
         } else {
-            hid.attach_inbound_with_frames(handle, frames).await
+            hid.attach_inbound_with_frames(handle, frames, connection_events)
+                .await
         };
-        if let Err(error) = attach_result {
-            let _ = host.disconnect(handle).await;
-            return Err(error);
-        }
+        attach_result?;
         let mut transport: Box<dyn Transport> = Box::new(hid);
         let vendor_product = controller.vendor_product(&identity);
         let mut controller_session = controller.connect(&options);
@@ -280,20 +272,12 @@ impl BluetoothActor {
             .serial()
             .or_else(|| controller.serial(&identity));
         let controller_id = ControllerId::new(TransportKind::BrEdr, address);
-        let report_task = Self::spawn_reports(
-            controller_id,
-            session_id,
-            transport.reports(),
-            transport.disconnections(),
-            events.clone(),
-            internal,
-        );
         let sensor_calibration = controller_session.sensor_calibration();
         let ds3_motion = controller_session.ds3_motion();
         Ok(Session {
             transport,
             controller: controller_session,
-            report_task,
+            report_task: None,
             externally_owned: false,
             info: ConnectedController {
                 sensor_calibration,

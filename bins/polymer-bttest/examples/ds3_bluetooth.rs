@@ -2,7 +2,7 @@
 use polymer_bluetooth::{
     DeviceAddr, Transport, TransportKind,
     devices::{ConnectOptions, ControllerRegistry, ProfileId},
-    store::{ControllerStore, SqliteControllerStore},
+    store::{ControllerLinkKeyStore, ControllerStore, SqliteControllerStore},
     transport::bredr::{
         BrEdrHid,
         hci::{AdapterSelector, Event, HciHost},
@@ -21,7 +21,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("usage: ds3_bluetooth <controller Bluetooth address>")?
         .parse()?;
     let dirs = polymer_library::Directories::discover()?;
-    let store = SqliteControllerStore::open(dirs.storage().join("input.db"))?;
+    let store = Arc::new(SqliteControllerStore::open(
+        dirs.storage().join("input.db"),
+    )?);
     let record = store
         .records()?
         .into_iter()
@@ -54,10 +56,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     })
     .await??;
     let handle = host.accept_connection_with_role(addr, true).await?;
-    let mut transport = BrEdrHid::new(host);
+    let mut transport = BrEdrHid::new(host, addr, Arc::new(ControllerLinkKeyStore::new(store)));
     transport.set_automatic_flush_slots(0);
     let result = async {
-        transport.attach_inbound_with_frames(handle, frames).await?;
+        transport
+            .attach_inbound_with_frames(handle, frames, events)
+            .await?;
         let profile = ControllerRegistry::standard()
             .get(&ProfileId::new("sony.dualshock3"))
             .unwrap();

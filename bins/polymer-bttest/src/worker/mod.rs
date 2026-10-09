@@ -26,7 +26,7 @@ use polymer_bluetooth::{
             scan as scan_ble, stop_scan as stop_ble_adapter_scan,
         },
         bredr::{
-            BrEdrHid, PairingAgent, PinCode,
+            BrEdrHid, LinkKeyStore, PairingAgent, PinCode,
             hci::{AdapterSelector, Event as HciEvent, HciHost, InquiryResult},
         },
     },
