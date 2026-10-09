@@ -10,6 +10,7 @@ import type {
     Package,
     Storage,
     RepeatedSection,
+    SaveCheckpointContext,
     UserConfiguration,
 } from "polymer:api";
 import {
@@ -180,4 +181,12 @@ function validUserConfiguration(value: unknown): UserConfiguration {
     return result;
 }
 
-export default { onPluginLoad, onConfigure, onLaunch };
+export function onSaveCheckpoint({ storage, save, changed }: SaveCheckpointContext) {
+    if (storage !== "mlc") return true;
+    const user = `${save.path}/user/`;
+    const committed = `${save.path}/meta/saveinfo.xml`;
+    return !changed.some((entry) => entry.path.startsWith(user))
+        || changed.some((entry) => entry.path === committed);
+}
+
+export default { onPluginLoad, onConfigure, onLaunch, onSaveCheckpoint };

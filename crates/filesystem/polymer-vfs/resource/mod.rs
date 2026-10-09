@@ -1,5 +1,6 @@
 mod exclusive;
 mod lease;
+mod managed;
 mod namespace_file;
 mod prepared;
 mod retry;
@@ -8,7 +9,8 @@ use crate::{Permissions, VfsResult};
 use std::{fmt, sync::Arc};
 
 pub use exclusive::ExclusiveResourceKey;
-pub use lease::{CompositeResourceLease, FinalizationReason, NoopResourceLease, ResourceLease};
+pub use lease::{FinalizationReason, ResourceLease};
+pub use managed::{ManagedResourceLease, MaterializationScope, ResourceFinalizer};
 pub use prepared::PreparedFilesystem;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -52,6 +54,10 @@ impl<T: ?Sized> Resource<T> {
     pub fn materialize(&self) -> VfsResult<Materialized<T>> {
         self.factory.materialize()
     }
+
+    pub fn materialize_in(&self, scope: &mut MaterializationScope) -> VfsResult<Arc<T>> {
+        scope.build(&*self.factory)
+    }
 }
 
 impl<T: ?Sized> fmt::Debug for Resource<T> {
@@ -65,10 +71,26 @@ impl<T: ?Sized> fmt::Debug for Resource<T> {
 }
 
 pub trait ResourceFactory<T: ?Sized>: Send + Sync {
-    fn materialize(&self) -> VfsResult<Materialized<T>>;
+    fn resource_keys(&self) -> Vec<ExclusiveResourceKey> {
+        Vec::new()
+    }
+
+    fn materialize_in(&self, scope: &mut MaterializationScope) -> VfsResult<Arc<T>>;
+
+    fn materialize(&self) -> VfsResult<Materialized<T>> {
+        let mut scope = MaterializationScope::new()?;
+        let backend = scope.build(self)?;
+        Ok(scope.complete(backend))
+    }
 }
 
 pub struct Materialized<T: ?Sized> {
     pub backend: Arc<T>,
-    pub lease: Arc<dyn ResourceLease>,
+    pub lease: ManagedResourceLease,
+}
+
+impl<T: ?Sized> Materialized<T> {
+    pub fn new(backend: Arc<T>, lease: ManagedResourceLease) -> Self {
+        Self { backend, lease }
+    }
 }

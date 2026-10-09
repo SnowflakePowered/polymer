@@ -868,18 +868,26 @@ impl PolymerHost for FrontendServices {
             }
             let (quick_resume, quick_resume_cache) =
                 quickresume::QuickResume::prepare(&handle, &plugin, &path, &mut arguments).await;
-            let storage =
-                match crate::launch_storage(storage, &path, &arguments, notifications).await {
-                    Ok(storage) => storage,
-                    Err(error) => {
-                        let error = polymer_pluginhost::runtime::PluginInvocationError::new(
-                            "Error",
-                            "STORAGE_UNAVAILABLE",
-                            error,
-                        );
-                        return serde_json::json!({ "ok": false, "error": error });
-                    }
-                };
+            let checkpoints = crate::CheckpointSession::default();
+            let storage = match crate::launch_storage(
+                storage,
+                &path,
+                &arguments,
+                notifications,
+                &checkpoints,
+            )
+            .await
+            {
+                Ok(storage) => storage,
+                Err(error) => {
+                    let error = polymer_pluginhost::runtime::PluginInvocationError::new(
+                        "Error",
+                        "STORAGE_UNAVAILABLE",
+                        error,
+                    );
+                    return serde_json::json!({ "ok": false, "error": error });
+                }
+            };
             match handle
                 .invoke_emulator_with_storage_owned(
                     &plugin,
@@ -898,6 +906,7 @@ impl PolymerHost for FrontendServices {
                         }
                     }
                     if let Some(session) = result.controller_session.take() {
+                        checkpoints.attach(session.client());
                         let token = controller_sessions.insert(session);
                         if let Some(object) = result.value.as_object_mut() {
                             object.insert("controllerSession".to_owned(), Value::String(token));

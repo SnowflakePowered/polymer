@@ -9,7 +9,10 @@ pub(in crate::impls::ps2) struct MemoryCard<'a> {
 }
 
 impl<'a> MemoryCard<'a> {
-    pub(super) fn validate(bytes: &[u8], blocks: u32) -> Result<usize, ParseError> {
+    pub(in crate::impls::ps2) fn validate_superblock(
+        bytes: &[u8],
+        blocks: u32,
+    ) -> Result<Superblock<'_>, ParseError> {
         if blocks > MAX_BLOCKS {
             return Err(ParseError::InvalidGeometry(
                 "card exceeds the maximum supported capacity",
@@ -22,6 +25,11 @@ impl<'a> MemoryCard<'a> {
                 "superblock capacity does not match the requested block count",
             ));
         }
+        Ok(superblock)
+    }
+
+    pub(super) fn validate(bytes: &[u8], blocks: u32) -> Result<usize, ParseError> {
+        let superblock = Self::validate_superblock(bytes, blocks)?;
         let data_size = superblock
             .clusters_per_card()
             .checked_mul(superblock.cluster_size())

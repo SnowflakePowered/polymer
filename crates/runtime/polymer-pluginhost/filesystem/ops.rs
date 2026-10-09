@@ -47,10 +47,7 @@ impl JsResource {
         }
     }
 
-    fn storage(name: String, handle: ResourceHandle) -> Self {
-        let ResourceHandle::Tree(handle) = handle else {
-            unreachable!("storage resources are volume factories")
-        };
+    fn storage(name: String, handle: Handle<VolumeResource>) -> Self {
         Self {
             name: Some(name),
             kind: "storage",

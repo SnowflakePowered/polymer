@@ -88,7 +88,7 @@ impl PlatformRepository {
         }
         {
             let profile = id.simple().to_string();
-            let (prefixes, exact) = if kind == StorageKind::Nand {
+            let (prefixes, mut exact) = if kind == StorageKind::Nand {
                 (
                     vec![format!("refs/consoles/components/v2/{profile}/")],
                     vec![format!("refs/consoles/component-transactions/v2/{profile}")],
@@ -105,6 +105,7 @@ impl PlatformRepository {
                     ],
                 )
             };
+            exact.extend([kind.recovered_ref(id), kind.recovering_ref(id)]);
             let references = repo
                 .references()
                 .map_err(|error| Error::git("list profile references", error))?;

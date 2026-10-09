@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -19,8 +18,7 @@ use crate::savegame::{
 };
 use crate::storage::VolumeOverlay;
 use crate::{
-    BoxFuture, EntryKind, Error, SaveCommitOperation, SaveRepo, SaveVersioning, Storage,
-    VersionedStorage, VolumeStorage,
+    BoxFuture, EntryKind, Error, SaveRepo, SaveVersioning, Storage, VersionedStorage, VolumeStorage,
 };
 
 #[async_trait]
@@ -29,7 +27,6 @@ pub trait SaveLayout: std::fmt::Debug + Send + Sync + 'static {
     const SAVE_DIRECTORY: &'static str;
     const SUB_TITLE: &'static str;
     const DETAIL: &'static str;
-    const HAS_STAGING: bool;
     async fn initialize(root: &VersionedStorage, profile_root: &str) -> Result<(), Error>;
     fn claims(profile_root: &str, save_root: &str, path: &str) -> bool;
     fn package_id(package: &Package) -> Option<&str>;
@@ -109,19 +106,6 @@ impl<L: SaveLayout> SonySaveRepo<L> {
         ids.sort_unstable();
         ids.dedup();
         ids
-    }
-
-    fn has_staging(&self) -> bool {
-        if !L::HAS_STAGING {
-            return false;
-        }
-        self.root
-            .read_dir(&self.save_root, false)
-            .is_ok_and(|mut entries| {
-                entries.any(|entry| {
-                    entry.metadata.kind == EntryKind::Directory && entry.name.starts_with('.')
-                })
-            })
     }
 
     fn read_sfo(&self, directory: &str) -> Option<Psf> {
@@ -223,29 +207,6 @@ impl<L: SaveLayout> SaveRepo for SonySaveRepo<L> {
         }
         Ok(None)
     }
-
-    async fn checkpoint_saves(&self) -> Result<bool, Error> {
-        self.versioning().recover(self).await?;
-        if self.has_staging() {
-            return self.versioning().checkpoint_profile().await;
-        }
-        let saves = self.save_ids();
-        let present = saves.iter().copied().collect::<HashSet<_>>();
-        let mut changed = false;
-        for save in saves {
-            changed |= self
-                .versioning()
-                .checkpoint(self, save, SaveCommitOperation::Autosave)
-                .await?
-                .is_some();
-        }
-        changed |= self
-            .versioning()
-            .archive_missing_saves(self, &present)
-            .await?;
-        changed |= self.versioning().checkpoint_profile().await?;
-        Ok(changed)
-    }
 }
 
 impl<L: SaveLayout> SaveGameSink for SonySaveRepo<L> {
@@ -272,12 +233,6 @@ impl<L: SaveLayout> SaveGameSink for SonySaveRepo<L> {
     }
 
     fn export_save<'a>(&self, id: &SaveDepotId) -> Result<SaveDepot, Error> {
-        if self.has_staging() {
-            return Err(Error::HistoryConflict(format!(
-                "Sony save family {:09x} is being published",
-                id.0
-            )));
-        }
         let mut paths = Vec::new();
         for directory in self.canonical_directories(*id) {
             paths.extend(
@@ -316,11 +271,6 @@ impl<L: SaveLayout> SaveGameSink for SonySaveRepo<L> {
     ) -> BoxFuture<'a, Result<SaveDescriptor, Error>> {
         Box::pin(async move {
             let import = super::import::SaveImport::read(blobs, &self.save_root).await?;
-            if self.has_staging() {
-                return Err(Error::HistoryConflict(
-                    "Sony savedata is being published".to_owned(),
-                ));
-            }
             for (target, blob) in import.files {
                 self.root
                     .install_file(Box::new(std::io::Cursor::new(blob.bytes)), &target)

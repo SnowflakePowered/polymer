@@ -14,7 +14,6 @@ impl SaveLayout for Ps3SaveLayout {
     const SAVE_DIRECTORY: &'static str = "savedata";
     const SUB_TITLE: &'static str = "SUB_TITLE";
     const DETAIL: &'static str = "DETAIL";
-    const HAS_STAGING: bool = true;
 
     async fn initialize(root: &VersionedStorage, profile_root: &str) -> Result<(), Error> {
         root.create_dir_all(&format!("{profile_root}/trophy"))?;

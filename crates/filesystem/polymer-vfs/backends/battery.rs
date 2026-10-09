@@ -4,45 +4,37 @@ use polymer_consolestorage::{BatterySaveRepo, BatterySaveView};
 use uuid::Uuid;
 
 use crate::{
-    CompositeResourceLease, DirectoryNode, FinalizationReason, Materialized, Node,
-    NoopResourceLease, ResourceFactory, ResourceLease, VfsError, VfsPath, VfsResult, Volume,
+    DirectoryNode, ExclusiveResourceKey, FinalizationReason, MaterializationScope, Node,
+    ResourceFactory, ResourceFinalizer, VfsError, VfsPath, VfsResult, Volume,
 };
 
-use super::storage::{materialize_file, unrestricted};
+use super::storage::{StorageFileNode, unrestricted};
 
 /// Exposes one battery-backed save as a format-free storage mount.
 pub struct BatteryStorageFactory {
     repository: Arc<BatterySaveRepo>,
-    resource_id: Option<Uuid>,
+    resource_id: Uuid,
 }
 
 impl BatteryStorageFactory {
     pub fn new(repository: Arc<BatterySaveRepo>, resource_id: Uuid) -> Self {
         Self {
             repository,
-            resource_id: Some(resource_id),
-        }
-    }
-
-    /// Creates an adapter whose caller holds the profile lease. This lets an
-    /// outer save-history factory keep exclusivity through its final commit.
-    pub fn with_managed_lease(repository: Arc<BatterySaveRepo>) -> Self {
-        Self {
-            repository,
-            resource_id: None,
+            resource_id,
         }
     }
 }
 
 impl ResourceFactory<dyn Volume> for BatteryStorageFactory {
-    fn materialize(&self) -> VfsResult<Materialized<dyn Volume>> {
-        let ownership = CompositeResourceLease::exclusive(self.resource_id)?;
+    fn resource_keys(&self) -> Vec<ExclusiveResourceKey> {
+        vec![ExclusiveResourceKey::Resource(self.resource_id)]
+    }
+
+    fn materialize_in(&self, scope: &mut MaterializationScope) -> VfsResult<Arc<dyn Volume>> {
         let view = self.repository.mount()?;
         let volume = Arc::new(BatteryStorageVolume { view });
-        Ok(Materialized {
-            backend: volume.clone(),
-            lease: Arc::new(ownership.with(volume)),
-        })
+        scope.push(volume.clone());
+        Ok(volume)
     }
 }
 
@@ -63,15 +55,11 @@ impl Volume for BatteryStorageVolume {
                 "battery storage does not support the '{format}' format"
             )));
         }
-        Ok(Node::File(
-            materialize_file(
-                self.view.storage().clone(),
-                self.view.entry().to_owned(),
-                unrestricted(),
-                Arc::new(NoopResourceLease),
-            )
-            .backend,
-        ))
+        Ok(Node::File(Arc::new(StorageFileNode::new(
+            self.view.storage().clone(),
+            self.view.entry().to_owned(),
+            unrestricted(),
+        ))))
     }
 
     fn rename(&self, _source: &VfsPath, _target: &VfsPath) -> VfsResult<()> {
@@ -81,7 +69,7 @@ impl Volume for BatteryStorageVolume {
     }
 }
 
-impl ResourceLease for BatteryStorageVolume {
+impl ResourceFinalizer for BatteryStorageVolume {
     fn finalize(&self, reason: FinalizationReason) -> VfsResult<()> {
         if reason != FinalizationReason::LaunchFailed {
             self.view.storage().finish(self.view.entry())?;

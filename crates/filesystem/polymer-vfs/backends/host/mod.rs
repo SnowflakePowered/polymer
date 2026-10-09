@@ -1,6 +1,6 @@
 use crate::{
-    ExclusiveResourceKey, FileNode, FinalizationReason, Materialized, Metadata, OpenFile,
-    ResourceFactory, ResourceLease, VfsResult, Volume,
+    ExclusiveResourceKey, FileNode, FinalizationReason, MaterializationScope, Metadata, OpenFile,
+    ResourceFactory, ResourceFinalizer, VfsResult, Volume,
 };
 use parking_lot::Mutex;
 use std::{fs::File, path::PathBuf, sync::Arc};
@@ -28,12 +28,12 @@ impl HostFileFactory {
 }
 
 impl ResourceFactory<dyn FileNode> for HostFileFactory {
-    fn materialize(&self) -> VfsResult<Materialized<dyn FileNode>> {
-        let lease = ExclusiveResourceKey::HostPath(self.path.clone()).acquire()?;
-        Ok(Materialized {
-            backend: Arc::new(HostFile::new(&self.path, self.writable)?),
-            lease,
-        })
+    fn resource_keys(&self) -> Vec<ExclusiveResourceKey> {
+        vec![ExclusiveResourceKey::HostPath(self.path.clone())]
+    }
+
+    fn materialize_in(&self, _scope: &mut MaterializationScope) -> VfsResult<Arc<dyn FileNode>> {
+        Ok(Arc::new(HostFile::new(&self.path, self.writable)?))
     }
 }
 
@@ -58,12 +58,16 @@ impl PackageDirectoryFactory {
 }
 
 impl ResourceFactory<dyn Volume> for PackageDirectoryFactory {
-    fn materialize(&self) -> VfsResult<Materialized<dyn Volume>> {
-        let lease = ExclusiveResourceKey::HostPath(self.root.clone()).acquire()?;
-        Ok(Materialized {
-            backend: Arc::new(HostVolume::new(&self.root, false, self.internal_links)?),
-            lease,
-        })
+    fn resource_keys(&self) -> Vec<ExclusiveResourceKey> {
+        vec![ExclusiveResourceKey::HostPath(self.root.clone())]
+    }
+
+    fn materialize_in(&self, _scope: &mut MaterializationScope) -> VfsResult<Arc<dyn Volume>> {
+        Ok(Arc::new(HostVolume::new(
+            &self.root,
+            false,
+            self.internal_links,
+        )?))
     }
 }
 
@@ -84,12 +88,12 @@ impl HostDirectoryFactory {
 }
 
 impl ResourceFactory<dyn Volume> for HostDirectoryFactory {
-    fn materialize(&self) -> VfsResult<Materialized<dyn Volume>> {
-        let lease = ExclusiveResourceKey::HostPath(self.root.clone()).acquire()?;
-        Ok(Materialized {
-            backend: Arc::new(HostVolume::new(&self.root, self.writable, false)?),
-            lease,
-        })
+    fn resource_keys(&self) -> Vec<ExclusiveResourceKey> {
+        vec![ExclusiveResourceKey::HostPath(self.root.clone())]
+    }
+
+    fn materialize_in(&self, _scope: &mut MaterializationScope) -> VfsResult<Arc<dyn Volume>> {
+        Ok(Arc::new(HostVolume::new(&self.root, self.writable, false)?))
     }
 }
 
@@ -114,7 +118,7 @@ impl Default for TempDirectoryFactory {
 }
 
 impl ResourceFactory<dyn Volume> for TempDirectoryFactory {
-    fn materialize(&self) -> VfsResult<Materialized<dyn Volume>> {
+    fn materialize_in(&self, scope: &mut MaterializationScope) -> VfsResult<Arc<dyn Volume>> {
         let directory = match &self.root {
             Some(root) => {
                 std::fs::create_dir_all(root)?;
@@ -125,16 +129,14 @@ impl ResourceFactory<dyn Volume> for TempDirectoryFactory {
             None => tempfile::tempdir()?,
         };
         let backend = Arc::new(HostVolume::new(directory.path(), true, false)?);
-        Ok(Materialized {
-            backend,
-            lease: Arc::new(TemporaryLease(Mutex::new(Some(directory)))),
-        })
+        scope.push(Arc::new(TemporaryLease(Mutex::new(Some(directory)))));
+        Ok(backend)
     }
 }
 
 struct TemporaryLease(Mutex<Option<tempfile::TempDir>>);
 
-impl ResourceLease for TemporaryLease {
+impl ResourceFinalizer for TemporaryLease {
     fn finalize(&self, _reason: FinalizationReason) -> VfsResult<()> {
         self.0.lock().take();
         Ok(())

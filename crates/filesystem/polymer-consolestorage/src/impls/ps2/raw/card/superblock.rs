@@ -27,7 +27,7 @@ const _: () = assert!(size_of::<RawSuperblock>() == HEADER_SIZE);
 
 /// A validated, borrowed view of a PS2 memory-card superblock.
 #[derive(Clone, Copy)]
-pub(super) struct Superblock<'a> {
+pub(in crate::impls::ps2) struct Superblock<'a> {
     raw: &'a RawSuperblock,
 }
 

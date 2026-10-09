@@ -127,7 +127,11 @@ impl<'a> ComponentHistory<'a> {
             .ok_or(Error::UnclaimedNand)?;
         let root = GitVolumeStorage::root_tree(self.repo, Some(tip))?;
         if !self.storage.inner.working.read().is_empty()
-            || !self.storage.checkout_matches_commit(self.repo, &root)?
+            || !self.storage.checkout_matches_commit(
+                self.repo,
+                &root,
+                &self.storage.target_index(self.repo, &root)?,
+            )?
         {
             return Err(Error::HistoryConflict(
                 "NAND has uncommitted changes".into(),

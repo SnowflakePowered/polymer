@@ -2,7 +2,8 @@ mod dolphin;
 pub mod gci;
 mod raw;
 
-use std::collections::{HashMap, HashSet};
+use std::borrow::Cow;
+use std::collections::HashSet;
 use std::fmt;
 use std::io::Read;
 use std::path::PathBuf;
@@ -16,7 +17,7 @@ use uuid::Uuid;
 use self::dolphin::DolphinMemoryStorage;
 use self::gci::{Region, Save};
 use crate::impls::GameCubeDiscId;
-use crate::impls::memorycard::RawMemoryCardImage;
+use crate::impls::memorycard::{RawMemoryCardImage, WriteBack, WriteBackEntry};
 use crate::savegame::{
     Package, SaveBlob, SaveBlobStream, SaveDepot, SaveDepotId, SaveDescriptor, SaveDescriptors,
     SaveGameSink, SaveWatcher, icons::IconSave,
@@ -193,61 +194,36 @@ impl GameCubeMemoryCard {
         Ok((region, projected))
     }
 
-    fn reconcile(
-        &self,
-        region: Region,
-        projected: &HashMap<Vec<u8>, String>,
-        saves: &[Save<'_>],
-    ) -> Result<(), Error> {
-        let mut decoded = HashMap::new();
-        let mut paths = HashSet::new();
-        for save in saves {
-            if save.region() != region {
-                return Err(Error::Unsupported(
-                    "a GameCube projection cannot contain saves from another region".to_owned(),
-                ));
-            }
-            let path = format!("{SAVE_ROOT}/{}", save.file_name());
-            if decoded.insert(save.identity(), path.clone()).is_some() {
-                return Err(Error::Unsupported(
-                    "a GameCube projection contains duplicate save identities".to_owned(),
-                ));
-            }
-            if !paths.insert(path) {
-                return Err(Error::Unsupported(
-                    "a GameCube projection contains colliding GCI filenames".to_owned(),
-                ));
-            }
-        }
-
-        for save in saves {
-            let path = decoded
-                .get(&save.identity())
-                .expect("decoded saves have canonical paths");
-            self.write_if_changed(path, save.as_bytes())?;
-        }
-        for (identity, path) in projected {
-            if decoded.get(identity) != Some(path) {
-                self.storage.remove(path)?;
-            }
-        }
-        Ok(())
+    fn write_back(&self, projected: &[Save<'_>]) -> WriteBack<Vec<u8>> {
+        WriteBack::new(
+            self.storage.clone(),
+            projected
+                .iter()
+                .map(|save| (save.identity(), vec![Self::save_path(save)])),
+        )
     }
 
-    fn write_if_changed(&self, path: &str, bytes: &[u8]) -> Result<(), Error> {
-        if self
-            .storage
-            .metadata(path)
-            .is_ok_and(|metadata| metadata.len == bytes.len() as u64)
-            && let Ok(mut existing) = self.storage.open_read(path)
-        {
-            let mut current = Vec::with_capacity(bytes.len());
-            if existing.read_to_end(&mut current).is_ok() && current == bytes {
-                return Ok(());
-            }
-        }
-        self.storage.install_bytes(bytes, path)?;
-        Ok(())
+    fn save_path(save: &Save<'_>) -> String {
+        format!("{SAVE_ROOT}/{}", save.file_name())
+    }
+
+    fn reconcile(
+        write_back: &WriteBack<Vec<u8>>,
+        region: Region,
+        saves: &[(Vec<u8>, Option<Save<'_>>)],
+    ) -> Result<(), Error> {
+        let entries = saves
+            .iter()
+            .map(|(identity, save)| WriteBackEntry {
+                identity: identity.clone(),
+                paths: save.iter().map(Self::save_path).collect(),
+                contents: save
+                    .as_ref()
+                    .filter(|save| save.region() == region)
+                    .map(|save| vec![Cow::Borrowed(save.as_bytes())]),
+            })
+            .collect::<Vec<_>>();
+        write_back.pass(&entries)
     }
 
     fn describe_save(&self, save: &Save<'_>) -> Result<SaveDescriptor, Error> {
@@ -329,16 +305,16 @@ impl MemoryCard for GameCubeMemoryCard {
 
     fn reconcile(&self, primary: &[SaveDepotId]) -> Result<crate::Reconcile, Error> {
         let (region, projected) = self.project(primary)?;
-        let projected_paths = projected
-            .iter()
-            .map(|save| (save.identity(), format!("{SAVE_ROOT}/{}", save.file_name())))
-            .collect::<HashMap<_, _>>();
-        let card = self.clone();
+        let write_back = self.write_back(&projected);
         let blocks = u32::from(raw::card::MC251_BLOCKS);
         Ok(Arc::new(move |bytes| {
-            let image = raw::card::MemoryCard::new(bytes, blocks)?;
-            let saves = image.saves()?;
-            card.reconcile(region, &projected_paths, &saves)
+            let Ok(image) = raw::card::MemoryCard::new(bytes, blocks) else {
+                return Ok(());
+            };
+            let Ok(saves) = image.lenient_saves() else {
+                return Ok(());
+            };
+            Self::reconcile(&write_back, region, &saves)
         }))
     }
 
@@ -440,7 +416,7 @@ impl SaveGameSink for GameCubeMemoryCard {
                     ));
                 }
                 let path = format!("{SAVE_ROOT}/{}", save.file_name());
-                self.write_if_changed(&path, save.as_bytes())?;
+                self.storage.write_if_changed(&path, save.as_bytes())?;
                 installed = Some(save.depot_id());
                 representative.get_or_insert(save);
             }

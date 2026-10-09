@@ -52,6 +52,8 @@ async function launch(entrypoint, args, configurationId, explicitDefault) {
   const onQuit = quitReceiver?.onQuit;
   const discReceiver = typeof module.onDiscChange === "function" ? module : receiver;
   const onDiscChange = discReceiver?.onDiscChange;
+  const saveCheckpointReceiver = typeof module.onSaveCheckpoint === "function" ? module : receiver;
+  const onSaveCheckpoint = saveCheckpointReceiver?.onSaveCheckpoint;
   const discChanges = launchSet.length > 1 && typeof onDiscChange === "function";
 
   const result = await Reflect.apply(onLaunch, receiver, [args]);
@@ -67,8 +69,10 @@ async function launch(entrypoint, args, configurationId, explicitDefault) {
   const stateSave = typeof onStateSave === "function";
   const stateResume = typeof onStateResume === "function";
   const quit = typeof onQuit === "function";
+  const saveCheckpoint = typeof onSaveCheckpoint === "function";
 
-  if (controllerChanges || pauseResume || stateSave || stateResume || quit || discChanges) {
+  if (controllerChanges || pauseResume || stateSave || stateResume || quit || discChanges
+    || saveCheckpoint) {
     Object.defineProperty(globalThis, "__polymerActiveEmulator", {
       value: Object.freeze({
         actions,
@@ -84,6 +88,8 @@ async function launch(entrypoint, args, configurationId, explicitDefault) {
         onQuit,
         discReceiver,
         onDiscChange,
+        saveCheckpointReceiver,
+        onSaveCheckpoint,
         launchSet: discs,
         disc: { index: initialDiscIndex },
         saveStateDirectory: args.saveStates.directory,
@@ -174,6 +180,24 @@ async function discChange(index) {
   })]);
 }
 
+async function saveCheckpoint(request) {
+  const active = globalThis.__polymerActiveEmulator;
+  if (active == null || typeof active.onSaveCheckpoint !== "function") return true;
+  const ready = await Reflect.apply(
+    active.onSaveCheckpoint,
+    active.saveCheckpointReceiver,
+    [Object.freeze({
+      storage: request.storage,
+      save: Object.freeze({ ...request.save }),
+      changed: Object.freeze(request.changed.map((entry) => Object.freeze({ ...entry }))),
+    })],
+  );
+  if (typeof ready !== "boolean") {
+    throw new TypeError("onSaveCheckpoint must return a boolean");
+  }
+  return ready;
+}
+
 async function quit() {
   const active = globalThis.__polymerActiveEmulator;
   if (active == null || typeof active.onQuit !== "function") return null;
@@ -198,6 +222,7 @@ Object.defineProperty(globalThis, "__polymerEmulator", {
     stateAction,
     discChange,
     quit,
+    saveCheckpoint,
     refreshConfigurations,
   }),
   configurable: false,

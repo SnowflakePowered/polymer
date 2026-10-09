@@ -58,21 +58,11 @@ impl GitVolumeStorage {
                 })
     }
 
-    fn checkout_is_complete(&self, index: &gix::index::File) -> bool {
-        self.inner.checkout.root().is_dir()
-            && index.entries().iter().all(|entry| {
-                let path = entry.path(index).to_str_lossy();
-                Self::validate(&path).is_ok()
-                    && self
-                        .inner
-                        .checkout
-                        .root()
-                        .join(path.replace('/', std::path::MAIN_SEPARATOR_STR))
-                        .is_file()
-            })
-    }
-
-    pub(super) fn write_index(&self, target: gix::index::File) -> Result<(), Error> {
+    pub(super) fn write_index(
+        &self,
+        target: gix::index::File,
+        pending: &BTreeSet<String>,
+    ) -> Result<(), Error> {
         let parent = self
             .inner
             .index_path
@@ -103,10 +93,14 @@ impl GitVolumeStorage {
                 .checkout
                 .root()
                 .join(relative.replace('/', std::path::MAIN_SEPARATOR_STR));
-            let metadata = gix::index::fs::Metadata::from_path_no_follow(&path)
-                .map_err(|error| Error::io(&path, error))?;
-            let stat = gix::index::entry::Stat::from_fs(&metadata)
-                .map_err(|error| Error::git("record checkout file metadata", error))?;
+            let stat = if pending.contains(relative.as_ref()) {
+                gix::index::entry::Stat::default()
+            } else {
+                let metadata = gix::index::fs::Metadata::from_path_no_follow(&path)
+                    .map_err(|error| Error::io(&path, error))?;
+                gix::index::entry::Stat::from_fs(&metadata)
+                    .map_err(|error| Error::git("record checkout file metadata", error))?
+            };
             let path = format!("{prefix}{relative}");
             index.dangerously_push_entry(
                 stat,
@@ -240,7 +234,7 @@ impl GitVolumeStorage {
         let root = Self::root_tree(repo, tip)?;
         let index = self.target_index(repo, &root)?;
         self.checkout_target(repo, &root, &index)?;
-        self.write_index(index)?;
+        self.write_index(index, &BTreeSet::new())?;
         *self.inner.cache_ready.lock() = true;
         Ok(())
     }
@@ -249,11 +243,11 @@ impl GitVolumeStorage {
         &self,
         repo: &gix::Repository,
         root: &gix::Tree<'_>,
+        index: &gix::index::File,
     ) -> Result<BTreeMap<PathBuf, Option<gix::ObjectId>>, Error> {
-        let index = self.target_index(repo, root)?;
         let mut entries = BTreeMap::new();
         for entry in index.entries() {
-            let path = entry.path(&index).to_str_lossy();
+            let path = entry.path(index).to_str_lossy();
             Self::validate(&path)?;
             entries.insert(PathBuf::from(path.as_ref()), Some(entry.id));
         }
@@ -278,6 +272,7 @@ impl GitVolumeStorage {
         &self,
         repo: &gix::Repository,
         root: &gix::Tree<'_>,
+        target: &gix::index::File,
     ) -> Result<bool, Error> {
         let checkout = self.inner.checkout.root();
         match fs::symlink_metadata(checkout) {
@@ -286,7 +281,7 @@ impl GitVolumeStorage {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
             Err(error) => return Err(Error::io(checkout, error)),
         }
-        let mut expected = self.committed_checkout_entries(repo, root)?;
+        let mut expected = self.committed_checkout_entries(repo, root, target)?;
         let indexed = self.indexed_checkout(repo.object_hash())?;
         let mut directories = vec![checkout.to_path_buf()];
         while let Some(directory) = directories.pop() {
@@ -387,6 +382,9 @@ impl GitVolumeStorage {
             *ready = true;
             return Ok(());
         }
+        if self.recovery_owned_elsewhere(&repo)? {
+            return Ok(());
+        }
         let root = Self::root_tree(&repo, tip)?;
         let target = self.target_index(&repo, &root)?;
         let current = gix::index::File::at(
@@ -395,13 +393,21 @@ impl GitVolumeStorage {
             false,
             gix::index::decode::Options::default(),
         );
-        let reusable = current.as_ref().is_ok_and(|current| {
-            self.volume_index_matches(current, &target) && self.checkout_is_complete(&target)
-        });
-        if !reusable {
-            self.checkout_target(&repo, &root, &target)?;
-            self.write_index(target)?;
+        let present = self.inner.checkout.root().is_dir();
+        let diverged = present && !self.checkout_matches_commit(&repo, &root, &target)?;
+        if diverged {
+            self.preserve_checkout(&repo, tip, &root)?;
         }
+        if !present
+            || diverged
+            || !current
+                .as_ref()
+                .is_ok_and(|current| self.volume_index_matches(current, &target))
+        {
+            self.checkout_target(&repo, &root, &target)?;
+            self.write_index(target, &BTreeSet::new())?;
+        }
+        self.finish_recovery(&repo)?;
         *ready = true;
         Ok(())
     }

@@ -7,7 +7,7 @@ use zerocopy::{
     byteorder::little_endian::{U16, U32},
 };
 
-use crate::impls::memorycard::{CardBytes, RawMemoryCardImage};
+use crate::impls::memorycard::{CardBytes, ClaimCounts, RawMemoryCardImage};
 
 pub(crate) const BLOCK_SIZE: usize = 8 * 1024;
 pub(crate) const FRAME_SIZE: usize = 128;
@@ -206,6 +206,18 @@ pub(crate) struct Save<'a> {
     file_size: usize,
 }
 
+struct Candidate<'a> {
+    native_id: &'a [u8; NATIVE_ID_SIZE],
+    chain: Result<([u8; DATA_BLOCKS], usize), ParseError>,
+    file_size: usize,
+}
+
+struct DecodedSaves<'a> {
+    valid: Vec<Save<'a>>,
+    kept: Vec<(&'a [u8; NATIVE_ID_SIZE], ParseError)>,
+    orphaned: bool,
+}
+
 pub(crate) struct SaveHeader<'a> {
     pub(crate) title: Cow<'a, str>,
 }
@@ -238,10 +250,6 @@ impl<'a> Save<'a> {
 
     pub(crate) fn native_id(&self) -> &'a [u8; NATIVE_ID_SIZE] {
         self.native_id
-    }
-
-    pub(crate) fn byte_len(&self) -> usize {
-        self.blocks().map(<[u8]>::len).sum()
     }
 
     pub(crate) fn block_count(&self) -> usize {
@@ -348,6 +356,91 @@ impl<'a> MemoryCard<'a> {
         }
     }
 
+    fn decode_saves(&self) -> Result<DecodedSaves<'_>, ParseError> {
+        let bytes = self.bytes.as_slice();
+        let info = InfoBlock::new(Block::new(&bytes[..BLOCK_SIZE])?)?;
+        let candidates = info
+            .directory_frames()
+            .enumerate()
+            .filter(|(_, directory)| directory.state() == Some(AllocationState::AllocFirst))
+            .map(|(first, directory)| Candidate {
+                native_id: directory.filename(),
+                chain: Self::allocation_chain(info, first),
+                file_size: directory.filesize() as usize,
+            })
+            .collect::<Vec<_>>();
+        let claims = candidates
+            .iter()
+            .filter_map(|candidate| candidate.chain.as_ref().ok())
+            .flat_map(|(blocks, count)| blocks[..*count].iter().copied())
+            .collect::<ClaimCounts<_>>();
+        let identities = candidates
+            .iter()
+            .map(|candidate| candidate.native_id)
+            .collect::<ClaimCounts<_>>();
+        let orphaned = info
+            .directory_frames()
+            .enumerate()
+            .any(|(block, directory)| {
+                claims.count(&(block as u8)) == 0
+                    && matches!(
+                        directory.state(),
+                        Some(
+                            AllocationState::AllocFirst
+                                | AllocationState::AllocMid
+                                | AllocationState::AllocLast
+                        )
+                    )
+            });
+        let mut decoded = DecodedSaves {
+            valid: Vec::new(),
+            kept: Vec::new(),
+            orphaned,
+        };
+        for candidate in &candidates {
+            match self.resolve(candidate, &identities, &claims) {
+                Ok(save) => decoded.valid.push(save),
+                Err(error) => decoded.kept.push((candidate.native_id, error)),
+            }
+        }
+        Ok(decoded)
+    }
+
+    fn resolve<'card>(
+        &'card self,
+        candidate: &Candidate<'card>,
+        identities: &ClaimCounts<&[u8; NATIVE_ID_SIZE]>,
+        claims: &ClaimCounts<u8>,
+    ) -> Result<Save<'card>, ParseError> {
+        let (blocks, block_count) = candidate.chain.clone()?;
+        let blocks = &blocks[..block_count];
+        if !blocks.iter().all(|block| claims.unique(block)) {
+            return Err(ParseError::Malformed("save allocation chains overlap"));
+        }
+        if !identities.unique(candidate.native_id) {
+            return Err(ParseError::Malformed(
+                "multiple saves have the same native identity",
+            ));
+        }
+        if candidate.file_size > block_count * BLOCK_SIZE {
+            return Err(ParseError::Malformed(
+                "save file size exceeds its allocation chain",
+            ));
+        }
+        let bytes = self.bytes.as_slice();
+        let mut payload = [None; DATA_BLOCKS];
+        for (slot, &block) in payload.iter_mut().zip(blocks) {
+            let start = (usize::from(block) + 1) * BLOCK_SIZE;
+            *slot = Some(&bytes[start..start + BLOCK_SIZE]);
+        }
+        Ok(Save {
+            native_id: candidate.native_id,
+            blocks: payload,
+            block_count: block_count as u8,
+            file_size: candidate.file_size,
+        })
+    }
+
     pub(crate) fn update_checksum(frame: &mut [u8]) {
         frame[FRAME_SIZE - 1] = frame[..FRAME_SIZE - 1]
             .iter()
@@ -357,6 +450,7 @@ impl<'a> MemoryCard<'a> {
 
 impl<'a> RawMemoryCardImage<'a> for MemoryCard<'a> {
     type Error = ParseError;
+    type Identity = [u8; NATIVE_ID_SIZE];
     type Save<'card> = Save<'card>;
 
     const BLOCK_SIZE: u64 = BLOCK_SIZE as u64;
@@ -402,65 +496,31 @@ impl<'a> RawMemoryCardImage<'a> for MemoryCard<'a> {
     }
 
     fn saves(&self) -> Result<Vec<Self::Save<'_>>, Self::Error> {
-        let bytes = self.bytes.as_slice();
-        let info = InfoBlock::new(Block::new(&bytes[..BLOCK_SIZE])?)?;
-        let mut saves = Vec::<Save<'_>>::new();
-        let mut claimed = [false; DATA_BLOCKS];
-
-        for (first, directory) in info.directory_frames().enumerate() {
-            if directory.state() != Some(AllocationState::AllocFirst) {
-                continue;
-            }
-
-            let (blocks, block_count) = Self::allocation_chain(info, first)?;
-            for &block in &blocks[..block_count] {
-                if std::mem::replace(&mut claimed[usize::from(block)], true) {
-                    return Err(ParseError::Malformed("save allocation chains overlap"));
-                }
-            }
-            if saves
-                .iter()
-                .any(|save| save.native_id == directory.filename())
-            {
-                return Err(ParseError::Malformed(
-                    "multiple saves have the same native identity",
-                ));
-            }
-            if directory.filesize() as usize > block_count * BLOCK_SIZE {
-                return Err(ParseError::Malformed(
-                    "save file size exceeds its allocation chain",
-                ));
-            }
-
-            let mut payload = [None; DATA_BLOCKS];
-            for (slot, &block) in payload.iter_mut().zip(&blocks[..block_count]) {
-                let start = (usize::from(block) + 1) * BLOCK_SIZE;
-                *slot = Some(&bytes[start..start + BLOCK_SIZE]);
-            }
-            saves.push(Save {
-                native_id: directory.filename(),
-                blocks: payload,
-                block_count: block_count as u8,
-                file_size: directory.filesize() as usize,
-            });
+        let decoded = self.decode_saves()?;
+        if let Some((_, error)) = decoded.kept.into_iter().next() {
+            return Err(error);
         }
-
-        for (block, directory) in info.directory_frames().enumerate() {
-            if matches!(
-                directory.state(),
-                Some(
-                    AllocationState::AllocFirst
-                        | AllocationState::AllocMid
-                        | AllocationState::AllocLast
-                )
-            ) && !claimed[block]
-            {
-                return Err(ParseError::Malformed(
-                    "allocated block is not part of a save chain",
-                ));
-            }
+        if decoded.orphaned {
+            return Err(ParseError::Malformed(
+                "allocated block is not part of a save chain",
+            ));
         }
-        Ok(saves)
+        Ok(decoded.valid)
+    }
+
+    fn lenient_saves(&self) -> Result<Vec<(Self::Identity, Option<Self::Save<'_>>)>, Self::Error> {
+        let decoded = self.decode_saves()?;
+        Ok(decoded
+            .valid
+            .into_iter()
+            .map(|save| (*save.native_id(), Some(save)))
+            .chain(
+                decoded
+                    .kept
+                    .into_iter()
+                    .map(|(native_id, _)| (*native_id, None)),
+            )
+            .collect())
     }
 
     fn append_save(&mut self, save: Self::Save<'_>) -> Result<(), Self::Error> {

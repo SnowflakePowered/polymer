@@ -5,11 +5,11 @@ use polymer_consolestorage::nand::VirtualNand;
 use uuid::Uuid;
 
 use crate::{
-    CompositeResourceLease, FinalizationReason, Materialized, ResourceFactory, ResourceLease,
-    VfsResult, Volume,
+    ExclusiveResourceKey, FinalizationReason, MaterializationScope, ResourceFactory,
+    ResourceFinalizer, VfsResult, Volume,
 };
 
-use super::storage::{StoragePermissions, materialize_volume};
+use super::storage::{StoragePermissions, StorageVolume};
 
 pub struct NandVolumeFactory<N: ?Sized> {
     nand: Arc<N>,
@@ -31,22 +31,27 @@ impl<N> ResourceFactory<dyn Volume> for NandVolumeFactory<N>
 where
     N: VirtualNand + ?Sized + 'static,
 {
-    fn materialize(&self) -> VfsResult<Materialized<dyn Volume>> {
+    fn resource_keys(&self) -> Vec<ExclusiveResourceKey> {
+        self.resource_ids
+            .iter()
+            .copied()
+            .map(ExclusiveResourceKey::Resource)
+            .collect()
+    }
+
+    fn materialize_in(&self, scope: &mut MaterializationScope) -> VfsResult<Arc<dyn Volume>> {
         let storage = self.storage.clone();
         let nand = self.nand.clone();
         let permissions: StoragePermissions = Arc::new(move |path| nand.permissions(path));
 
-        let lease = CompositeResourceLease::exclusive(self.resource_ids.iter().copied())?.with(
-            Arc::new(NandStorageLease {
-                storage: storage.clone(),
-            }),
-        );
-        Ok(materialize_volume(
+        scope.push(Arc::new(NandStorageLease {
+            storage: storage.clone(),
+        }));
+        Ok(Arc::new(StorageVolume::new(
             storage,
             String::new(),
             permissions,
-            Arc::new(lease),
-        ))
+        )))
     }
 }
 
@@ -54,7 +59,7 @@ struct NandStorageLease {
     storage: Arc<dyn MountableStorage>,
 }
 
-impl ResourceLease for NandStorageLease {
+impl ResourceFinalizer for NandStorageLease {
     fn finalize(&self, _reason: FinalizationReason) -> VfsResult<()> {
         Ok(self.storage.finish("")?)
     }

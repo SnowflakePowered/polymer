@@ -261,6 +261,19 @@ declare module "polymer:api" {
 
     export type OnDiscChange = (context: DiscChangeContext) => void | Promise<void>;
 
+    export type SaveCheckpointChange = Readonly<{
+        path: string,
+        kind: "file" | "directory" | "removed",
+    }>;
+
+    export type SaveCheckpointContext = Readonly<{
+        storage: string,
+        save: Readonly<{ id: string, path: string }>,
+        changed: readonly SaveCheckpointChange[],
+    }>;
+
+    export type OnSaveCheckpoint = (context: SaveCheckpointContext) => boolean | Promise<boolean>;
+
     export type StateContext = ActionsContext & Readonly<{
         slot: number,
         filesystem: Filesystem,

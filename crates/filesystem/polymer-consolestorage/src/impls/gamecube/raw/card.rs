@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use uuid::Uuid;
 
 use super::super::gci::{self, Region, Save};
-use crate::impls::memorycard::{CardBytes, RawMemoryCardImage};
+use crate::impls::memorycard::{CardBytes, ClaimCounts, RawMemoryCardImage};
 
 pub const BLOCK_SIZE: usize = gci::BLOCK_SIZE;
 pub const MC251_BLOCKS: u16 = 251;
@@ -140,6 +140,68 @@ impl<'a> MemoryCard<'a> {
         }
     }
 
+    fn tables(&self) -> Result<(&[u8], &[u8], usize), ParseError> {
+        let directory = self.active_copy(1, 2)?;
+        let bat = self.active_copy(3, 4)?;
+        let allocated_blocks = (0..self.capacity_blocks)
+            .filter(|index| {
+                let offset = 0x0a + usize::from(*index) * 2;
+                bat[offset..offset + 2] != [0, 0]
+            })
+            .count();
+        let recorded_free = u16::from_be_bytes([bat[6], bat[7]]);
+        if usize::from(recorded_free) + allocated_blocks != usize::from(self.capacity_blocks) {
+            return Err(ParseError::InvalidAllocation);
+        }
+        Ok((directory, bat, allocated_blocks))
+    }
+
+    fn entries(directory: &[u8]) -> impl Iterator<Item = &[u8; gci::DIRENT_SIZE]> {
+        directory[..DIRECTORY_ENTRIES * gci::DIRENT_SIZE]
+            .chunks_exact(gci::DIRENT_SIZE)
+            .filter(|entry| entry[..4] != [0xff; 4])
+            .map(|entry| entry.try_into().expect("directory entries are 64 bytes"))
+    }
+
+    fn chain(&self, entry: &[u8], bat: &[u8]) -> Result<Vec<u16>, ParseError> {
+        let count = u16::from_be_bytes([entry[0x38], entry[0x39]]);
+        let mut block = u16::from_be_bytes([entry[0x36], entry[0x37]]);
+        if count == 0 || count > self.capacity_blocks {
+            return Err(ParseError::InvalidAllocation);
+        }
+        let mut chain = Vec::with_capacity(usize::from(count));
+        let mut seen = vec![false; usize::from(self.capacity_blocks)];
+        for index in 0..count {
+            if !(5..self.capacity_blocks + 5).contains(&block)
+                || std::mem::replace(&mut seen[usize::from(block - 5)], true)
+            {
+                return Err(ParseError::InvalidAllocation);
+            }
+            chain.push(block);
+            let map = 0x0a + usize::from(block - 5) * 2;
+            let next = u16::from_be_bytes([bat[map], bat[map + 1]]);
+            if (index + 1 == count) != (next == 0xffff) || next == 0 {
+                return Err(ParseError::InvalidAllocation);
+            }
+            block = next;
+        }
+        Ok(chain)
+    }
+
+    fn read_save(&self, entry: &[u8], chain: &[u16]) -> Result<Save<'static>, ParseError> {
+        let mut bytes = Vec::with_capacity(gci::DIRENT_SIZE + chain.len() * BLOCK_SIZE);
+        bytes.extend_from_slice(entry);
+        for block in chain {
+            let offset = usize::from(*block) * BLOCK_SIZE;
+            bytes.extend_from_slice(&self.bytes.as_slice()[offset..offset + BLOCK_SIZE]);
+        }
+        let save = Save::new(bytes)?;
+        if self.encoding != Some(Self::region_encoding(save.region())?) {
+            return Err(ParseError::EncodingMismatch);
+        }
+        Ok(save)
+    }
+
     fn checksum_matches(data: &[u8], stored: &[u8]) -> bool {
         let (checksum, inverse) = Self::checksum(data);
         stored == [checksum.to_be_bytes(), inverse.to_be_bytes()].concat()
@@ -163,6 +225,7 @@ impl<'a> MemoryCard<'a> {
 
 impl<'a> RawMemoryCardImage<'a> for MemoryCard<'a> {
     type Error = ParseError;
+    type Identity = Vec<u8>;
     type Save<'card> = Save<'card>;
 
     const BLOCK_SIZE: u64 = BLOCK_SIZE as u64;
@@ -227,55 +290,16 @@ impl<'a> RawMemoryCardImage<'a> for MemoryCard<'a> {
     }
 
     fn saves(&self) -> Result<Vec<Self::Save<'_>>, Self::Error> {
-        let directory = self.active_copy(1, 2)?;
-        let bat = self.active_copy(3, 4)?;
-        let allocated_blocks = (0..self.capacity_blocks)
-            .filter(|index| {
-                let offset = 0x0a + usize::from(*index) * 2;
-                bat[offset..offset + 2] != [0, 0]
-            })
-            .count();
-        let recorded_free = u16::from_be_bytes([bat[6], bat[7]]);
-        if usize::from(recorded_free) + allocated_blocks != usize::from(self.capacity_blocks) {
-            return Err(ParseError::InvalidAllocation);
-        }
+        let (directory, bat, allocated_blocks) = self.tables()?;
         let mut used_blocks = HashSet::new();
         let mut identities = HashSet::new();
         let mut saves = Vec::new();
-        for entry in
-            directory[..DIRECTORY_ENTRIES * gci::DIRENT_SIZE].chunks_exact(gci::DIRENT_SIZE)
-        {
-            if entry[..4] == [0xff; 4] {
-                continue;
-            }
-            let count = u16::from_be_bytes([entry[0x38], entry[0x39]]);
-            let mut block = u16::from_be_bytes([entry[0x36], entry[0x37]]);
-            if count == 0 || count > self.capacity_blocks {
+        for entry in Self::entries(directory) {
+            let chain = self.chain(entry, bat)?;
+            if !chain.iter().all(|block| used_blocks.insert(*block)) {
                 return Err(ParseError::InvalidAllocation);
             }
-            let mut bytes = Vec::with_capacity(gci::DIRENT_SIZE + usize::from(count) * BLOCK_SIZE);
-            bytes.extend_from_slice(entry);
-            for index in 0..count {
-                if !(5..self.capacity_blocks + 5).contains(&block) || !used_blocks.insert(block) {
-                    return Err(ParseError::InvalidAllocation);
-                }
-                let offset = usize::from(block) * BLOCK_SIZE;
-                bytes.extend_from_slice(&self.bytes.as_slice()[offset..offset + BLOCK_SIZE]);
-                let map = 0x0a + usize::from(block - 5) * 2;
-                let next = u16::from_be_bytes([bat[map], bat[map + 1]]);
-                if index + 1 == count {
-                    if next != 0xffff {
-                        return Err(ParseError::InvalidAllocation);
-                    }
-                } else if next == 0 || next == 0xffff {
-                    return Err(ParseError::InvalidAllocation);
-                }
-                block = next;
-            }
-            let save = Save::new(bytes)?.into_owned();
-            if self.encoding != Some(Self::region_encoding(save.region())?) {
-                return Err(ParseError::EncodingMismatch);
-            }
+            let save = self.read_save(entry, &chain)?;
             if !identities.insert(save.identity()) {
                 return Err(ParseError::DuplicateIdentity);
             }
@@ -285,6 +309,28 @@ impl<'a> RawMemoryCardImage<'a> for MemoryCard<'a> {
             return Err(ParseError::InvalidAllocation);
         }
         Ok(saves)
+    }
+
+    fn lenient_saves(&self) -> Result<Vec<(Self::Identity, Option<Self::Save<'_>>)>, Self::Error> {
+        let (directory, bat, _) = self.tables()?;
+        let chains = Self::entries(directory)
+            .map(|entry| (entry, self.chain(entry, bat).ok()))
+            .collect::<Vec<_>>();
+        let owners = chains
+            .iter()
+            .filter_map(|(_, chain)| chain.as_ref())
+            .flatten()
+            .copied()
+            .collect::<ClaimCounts<_>>();
+        Ok(chains
+            .into_iter()
+            .map(|(entry, chain)| {
+                let save = chain
+                    .filter(|chain| chain.iter().all(|block| owners.unique(block)))
+                    .and_then(|chain| self.read_save(entry, &chain).ok());
+                (Save::dirent_identity(entry), save)
+            })
+            .collect())
     }
 
     fn append_save(&mut self, save: Self::Save<'_>) -> Result<(), Self::Error> {

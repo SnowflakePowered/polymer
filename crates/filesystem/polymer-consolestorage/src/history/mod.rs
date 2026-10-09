@@ -18,8 +18,11 @@ use jiff::Timestamp;
 use tokio::io::AsyncRead;
 use uuid::Uuid;
 
+use std::collections::HashSet;
+
 use crate::savegame::{SaveDepotId, SaveDescriptor};
-use crate::{Error, SaveRepo};
+use crate::storage::PendingScope;
+use crate::{CheckpointGate, CheckpointRequest, Error, SaveRepo};
 
 const SCHEMA_VERSION: u32 = 1;
 
@@ -198,6 +201,12 @@ impl SaveRefs {
     }
 }
 
+enum Checkpointed {
+    Unchanged,
+    Committed(SaveCommitInfo),
+    Deferred,
+}
+
 struct HistoryInner {
     profile: crate::GitVolumeStorage,
     operation: Arc<crate::storage::operation::StorageOperation>,
@@ -328,6 +337,100 @@ impl SaveVersioning {
         depot: SaveDepotId,
         requested: SaveCommitOperation,
     ) -> Result<Option<SaveCommitInfo>, Error> {
+        let root = owner
+            .enumerate_saves()
+            .find(|save| save.id == depot)
+            .map(|save| save.root_path)
+            .unwrap_or_default();
+        match self
+            .checkpoint_within(owner, depot, &root, requested)
+            .await?
+        {
+            Checkpointed::Committed(info) => Ok(Some(info)),
+            Checkpointed::Unchanged => Ok(None),
+            Checkpointed::Deferred => Err(Error::HistoryConflict(format!(
+                "save depot {:016x} is being written",
+                depot.0
+            ))),
+        }
+    }
+
+    pub(crate) async fn checkpoint_all<R: SaveRepo + ?Sized>(
+        &self,
+        owner: &R,
+        gate: Option<&CheckpointGate>,
+    ) -> Result<bool, Error> {
+        let saves = owner.enumerate_saves().collect::<Vec<_>>();
+        let mut present = saves.iter().map(|save| save.id).collect::<HashSet<_>>();
+        let mut deferred = Vec::new();
+        let mut changed = false;
+        for save in &saves {
+            let outcome = if Self::ready(gate, save.id, &save.root_path, || {
+                self.inner.profile.pending_within(&save.root_path)
+            })
+            .await
+            {
+                self.checkpoint_within(
+                    owner,
+                    save.id,
+                    &save.root_path,
+                    SaveCommitOperation::Autosave,
+                )
+                .await?
+            } else {
+                Checkpointed::Deferred
+            };
+            match outcome {
+                Checkpointed::Committed(_) => changed = true,
+                Checkpointed::Deferred => deferred.push(save.root_path.clone()),
+                Checkpointed::Unchanged => {}
+            }
+        }
+        let vanished = gate
+            .map(|_| self.inner.profile.pending_within(""))
+            .unwrap_or_default();
+        for depot in self.tracked_depots()? {
+            if !present.contains(&depot) && !Self::ready(gate, depot, "", || vanished.clone()).await
+            {
+                present.insert(depot);
+                deferred.push(String::new());
+            }
+        }
+        changed |= self.archive_missing_saves(owner, &present).await?;
+        changed |= self.checkpoint_profile(&deferred).await?;
+        Ok(changed)
+    }
+
+    async fn ready(
+        gate: Option<&CheckpointGate>,
+        save: SaveDepotId,
+        root: &str,
+        changed: impl FnOnce() -> Vec<crate::ChangedEntry>,
+    ) -> bool {
+        let Some(gate) = gate else {
+            return true;
+        };
+        let changed = changed();
+        changed.is_empty()
+            || gate(CheckpointRequest {
+                save,
+                root: root.to_owned(),
+                changed,
+            })
+            .await
+    }
+
+    async fn checkpoint_within<R: SaveRepo + ?Sized>(
+        &self,
+        owner: &R,
+        depot: SaveDepotId,
+        root: &str,
+        requested: SaveCommitOperation,
+    ) -> Result<Checkpointed, Error> {
+        let before = self.inner.profile.activity(root);
+        if !before.settled() {
+            return Ok(Checkpointed::Deferred);
+        }
         let guard = self.inner.operation.gate.lock().await;
         self.recover_locked(owner).await?;
         let exported = owner.export_save(&depot)?;
@@ -335,15 +438,19 @@ impl SaveVersioning {
         let reference = self.refs(depot).head;
         let parent = Self::tip_in(&repo, &reference)?;
         let tree = self.write_snapshot(&repo, &exported.blobs)?;
+        if self.inner.profile.activity(root) != before {
+            return Ok(Checkpointed::Deferred);
+        }
+        let scope = PendingScope::Within(root);
         if let Some(parent) = parent {
             let current_tree = Self::commit_tree(&repo, parent)?;
             if current_tree == tree {
                 self.inner
                     .profile
-                    .commit_pending("Polymer profile autosave", None)?;
+                    .commit_pending_within("Polymer profile autosave", scope)?;
                 drop(guard);
                 owner.save_icon(depot).await?;
-                return Ok(None);
+                return Ok(Checkpointed::Unchanged);
             }
         }
         let operation = if parent.is_none() {
@@ -363,19 +470,19 @@ impl SaveVersioning {
         self.inner.profile.set_save_tip(depot.0, Some(id));
         self.inner
             .profile
-            .commit_pending("Polymer profile autosave", None)?;
+            .commit_pending_within("Polymer profile autosave", scope)?;
         let info = Self::commit_info(&repo, id)?;
         drop(guard);
         owner.save_icon(depot).await?;
-        Ok(Some(info))
+        Ok(Checkpointed::Committed(info))
     }
 
-    pub(crate) async fn checkpoint_profile(&self) -> Result<bool, Error> {
+    async fn checkpoint_profile(&self, deferred: &[String]) -> Result<bool, Error> {
         let _guard = self.inner.operation.gate.lock().await;
         self.ensure_no_pending_journal()?;
         self.inner
             .profile
-            .commit_pending("Polymer profile autosave", None)
+            .commit_pending_within("Polymer profile autosave", PendingScope::Except(deferred))
             .map(|commit| commit.is_some())
     }
 

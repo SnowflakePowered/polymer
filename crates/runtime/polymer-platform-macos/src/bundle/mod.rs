@@ -134,10 +134,14 @@ impl StagedBundle {
 }
 
 impl polymer_vfs::ResourceFactory<dyn polymer_vfs::Volume> for StagedBundle {
-    fn materialize(
+    fn materialize_in(
         &self,
-    ) -> polymer_vfs::VfsResult<polymer_vfs::Materialized<dyn polymer_vfs::Volume>> {
-        polymer_vfs::HostDirectoryFactory::new(self.path().to_owned(), true).materialize()
+        scope: &mut polymer_vfs::MaterializationScope,
+    ) -> polymer_vfs::VfsResult<std::sync::Arc<dyn polymer_vfs::Volume>> {
+        scope.build(&polymer_vfs::HostDirectoryFactory::new(
+            self.path().to_owned(),
+            true,
+        ))
     }
 }
 
@@ -151,28 +155,23 @@ impl BundleFactory {
     }
 }
 impl polymer_vfs::ResourceFactory<dyn polymer_vfs::Volume> for BundleFactory {
-    fn materialize(
+    fn materialize_in(
         &self,
-    ) -> polymer_vfs::VfsResult<polymer_vfs::Materialized<dyn polymer_vfs::Volume>> {
+        scope: &mut polymer_vfs::MaterializationScope,
+    ) -> polymer_vfs::VfsResult<std::sync::Arc<dyn polymer_vfs::Volume>> {
         let staged = StagedBundle::prepare(&self.source, &StagedBundle::cache_root()?)?;
-        let materialized = polymer_vfs::PackageDirectoryFactory::new(staged.path().to_owned())
-            .with_internal_links()
-            .materialize()?;
-        Ok(polymer_vfs::Materialized {
-            backend: materialized.backend,
-            lease: std::sync::Arc::new(BundleLease {
-                lease: materialized.lease,
-                _staged: staged,
-            }),
-        })
+        let factory = polymer_vfs::PackageDirectoryFactory::new(staged.path().to_owned())
+            .with_internal_links();
+        let backend = scope.build(&factory)?;
+        scope.push(std::sync::Arc::new(BundleLease { _staged: staged }));
+        Ok(backend)
     }
 }
 struct BundleLease {
-    lease: std::sync::Arc<dyn polymer_vfs::ResourceLease>,
     _staged: StagedBundle,
 }
-impl polymer_vfs::ResourceLease for BundleLease {
-    fn finalize(&self, reason: polymer_vfs::FinalizationReason) -> polymer_vfs::VfsResult<()> {
-        self.lease.finalize(reason)
+impl polymer_vfs::ResourceFinalizer for BundleLease {
+    fn finalize(&self, _reason: polymer_vfs::FinalizationReason) -> polymer_vfs::VfsResult<()> {
+        Ok(())
     }
 }

@@ -2,6 +2,7 @@ mod raw;
 pub mod vmi;
 pub mod vms;
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::io::Read;
@@ -15,7 +16,8 @@ use uuid::Uuid;
 
 use self::vmi::Vmi;
 use self::vms::Save;
-use crate::impls::{DreamcastProductId, memorycard::RawMemoryCardImage};
+use crate::impls::DreamcastProductId;
+use crate::impls::memorycard::{RawMemoryCardImage, WriteBack, WriteBackEntry};
 use crate::savegame::{
     Package, SaveBlob, SaveBlobStream, SaveDepot, SaveDepotId, SaveDescriptor, SaveDescriptors,
     SaveGameSink, SaveWatcher, icons::IconSave,
@@ -244,68 +246,52 @@ impl DreamcastMemoryCard {
     }
 
     fn reconcile(
-        &self,
+        write_back: &WriteBack<[u8; 12]>,
         primary: DreamcastProductId,
-        projected: &HashMap<[u8; 12], (DreamcastProductId, Vmi<'static>)>,
-        saves: &[Save<'_>],
+        originals: &HashMap<[u8; 12], (DreamcastProductId, Vmi<'static>)>,
+        saves: &[([u8; 12], Option<Save<'_>>)],
     ) -> Result<(), Error> {
-        let mut decoded = Vec::with_capacity(saves.len());
-        let mut identities = HashSet::new();
-        let mut paths = HashSet::new();
-        for save in saves {
-            if !identities.insert(save.identity()) {
-                return Err(Error::Unsupported(
-                    "a Dreamcast VMU contains duplicate native filenames".to_owned(),
-                ));
-            }
-            let (product, vmi) = match projected.get(&save.identity()) {
-                Some((product, original)) => (*product, original.updated_from(save.vmi())?),
-                None => (primary, save.vmi().clone().into_owned()),
-            };
-            let save = Save::from_parts(vmi, save.vms().to_vec())?;
-            let pair = Self::save_paths(product, &save);
-            if !paths.insert(pair.clone()) {
-                return Err(Error::Unsupported(
-                    "a Dreamcast VMU contains colliding VMI resource names".to_owned(),
-                ));
-            }
-            decoded.push((product, save, pair));
-        }
-
-        for (_, save, (vmi_path, vms_path)) in &decoded {
-            self.write_if_changed(vms_path, save.vms())?;
-            self.write_if_changed(vmi_path, save.vmi().as_bytes())?;
-        }
-        for (identity, (product, vmi)) in projected {
-            if !identities.contains(identity) {
-                let (vmi_path, vms_path) = Self::vmi_paths(*product, vmi);
-                self.storage.remove(&vmi_path)?;
-                self.storage.remove(&vms_path)?;
-            }
-        }
-        Ok(())
-    }
-
-    fn write_if_changed(&self, path: &str, bytes: &[u8]) -> Result<(), Error> {
-        if self
-            .storage
-            .metadata(path)
-            .is_ok_and(|metadata| metadata.len == bytes.len() as u64)
-            && let Ok(mut existing) = self.storage.open_read(path)
-        {
-            let mut current = Vec::with_capacity(bytes.len());
-            if existing.read_to_end(&mut current).is_ok() && current == bytes {
-                return Ok(());
-            }
-        }
-        self.storage.install_bytes(bytes, path)?;
-        Ok(())
+        let entries = saves
+            .iter()
+            .map(|(identity, save)| {
+                let canonical = save.as_ref().and_then(|save| {
+                    let (product, vmi) = match originals.get(identity) {
+                        Some((product, original)) => {
+                            (*product, original.updated_from(save.vmi()).ok()?)
+                        }
+                        None => (primary, save.vmi().clone().into_owned()),
+                    };
+                    Save::from_parts(vmi, save.vms().to_vec())
+                        .ok()
+                        .map(|save| (product, save))
+                });
+                let paths = canonical
+                    .iter()
+                    .flat_map(|(product, save)| {
+                        let (vmi_path, vms_path) = Self::save_paths(*product, save);
+                        [vms_path, vmi_path]
+                    })
+                    .collect();
+                WriteBackEntry {
+                    identity: *identity,
+                    paths,
+                    contents: canonical.map(|(_, save)| {
+                        vec![
+                            Cow::Owned(save.vms().to_vec()),
+                            Cow::Owned(save.vmi().as_bytes().to_vec()),
+                        ]
+                    }),
+                }
+            })
+            .collect::<Vec<_>>();
+        write_back.pass(&entries)
     }
 
     fn write_save(&self, product: DreamcastProductId, save: &Save<'_>) -> Result<(), Error> {
         let (vmi_path, vms_path) = Self::save_paths(product, save);
-        self.write_if_changed(&vms_path, save.vms())?;
-        self.write_if_changed(&vmi_path, save.vmi().as_bytes())
+        self.storage.write_if_changed(&vms_path, save.vms())?;
+        self.storage
+            .write_if_changed(&vmi_path, save.vmi().as_bytes())
     }
 
     fn describe_save(
@@ -405,11 +391,21 @@ impl MemoryCard for DreamcastMemoryCard {
             .iter()
             .map(|(product, save)| (save.identity(), (*product, save.vmi().clone().into_owned())))
             .collect::<HashMap<_, _>>();
-        let card = self.clone();
+        let write_back = WriteBack::new(
+            self.storage.clone(),
+            originals.iter().map(|(identity, (product, vmi))| {
+                let (vmi_path, vms_path) = Self::vmi_paths(*product, vmi);
+                (*identity, vec![vms_path, vmi_path])
+            }),
+        );
         Ok(Arc::new(move |bytes| {
-            let image = raw::card::VmuMemory::new(bytes, raw::card::USER_BLOCKS)?;
-            let saves = image.saves()?;
-            card.reconcile(mounted_product, &originals, &saves)
+            let Ok(image) = raw::card::VmuMemory::new(bytes, raw::card::USER_BLOCKS) else {
+                return Ok(());
+            };
+            let Ok(saves) = image.lenient_saves() else {
+                return Ok(());
+            };
+            Self::reconcile(&write_back, mounted_product, &originals, &saves)
         }))
     }
 

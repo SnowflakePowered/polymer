@@ -78,6 +78,32 @@ impl Handler<DiscChange> for ControllerActor {
     }
 }
 
+impl Handler<SaveCheckpoint> for ControllerActor {
+    type Result = AtomicResponse<Self, Result<bool, String>>;
+    fn handle(&mut self, message: SaveCheckpoint, _: &mut Context<Self>) -> Self::Result {
+        let call = ExtensionFunction::argument(self.runtime.js_runtime_mut(), &message.request)
+            .map_err(|e| e.to_string())
+            .and_then(|request| {
+                DenoCall::start(
+                    self,
+                    "saveCheckpoint",
+                    &[request],
+                    message.timeout,
+                    "onSaveCheckpoint",
+                )
+            });
+        match call {
+            Ok(call) => AtomicResponse::new(Box::pin(call.map(|result, actor, _| {
+                let value = result?;
+                deno_core::scope!(scope, actor.runtime.js_runtime_mut());
+                let value = v8::Local::new(scope, value);
+                serde_v8::from_v8::<bool>(scope, value).map_err(|e| e.to_string())
+            }))),
+            Err(error) => AtomicResponse::new(Box::pin(fut::ready(Err(error)))),
+        }
+    }
+}
+
 impl Handler<StateAction> for ControllerActor {
     type Result = AtomicResponse<Self, Result<(), String>>;
     fn handle(&mut self, message: StateAction, _: &mut Context<Self>) -> Self::Result {

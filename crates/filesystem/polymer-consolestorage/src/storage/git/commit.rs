@@ -1,18 +1,53 @@
 use super::*;
 
+#[derive(Clone, Copy)]
+pub(crate) enum PendingScope<'a> {
+    All,
+    Within(&'a str),
+    Except(&'a [String]),
+}
+
+impl PendingScope<'_> {
+    pub(crate) fn includes(self, path: &str) -> bool {
+        match self {
+            Self::All => true,
+            Self::Within(root) => {
+                root.is_empty()
+                    || path
+                        .strip_prefix(root)
+                        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+            }
+            Self::Except(roots) => !roots.iter().any(|root| Self::Within(root).includes(path)),
+        }
+    }
+
+    pub(crate) fn entries<V>(
+        self,
+        map: &BTreeMap<String, V>,
+    ) -> impl Iterator<Item = (&String, &V)> {
+        let prefix = match self {
+            Self::Within(root) => root,
+            Self::All | Self::Except(_) => "",
+        };
+        map.range::<str, _>((
+            std::ops::Bound::Included(prefix),
+            std::ops::Bound::Unbounded,
+        ))
+        .take_while(move |(path, _)| path.starts_with(prefix))
+        .filter(move |(path, _)| self.includes(path))
+    }
+}
+
 impl GitVolumeStorage {
     /// Write blobs for pending files outside the operation lock, so large commits do not
-    /// block readers. A file changed after staging is written again under the lock.
+    /// block readers. A file written while it is staged stays pending for a later commit.
     fn stage_blobs(
         &self,
         context: &InstallContext,
-    ) -> Result<BTreeMap<String, (gix::ObjectId, fs::Metadata)>, Error> {
-        let files = self
-            .inner
-            .working
-            .read()
-            .entries
-            .iter()
+        scope: PendingScope<'_>,
+    ) -> Result<BTreeMap<String, (gix::ObjectId, PathActivity)>, Error> {
+        let files = scope
+            .entries(&self.inner.working.read().entries)
             .filter(|(_, entry)| matches!(entry, OverlayEntry::File))
             .map(|(path, _)| {
                 let source = self.checkout_file(path);
@@ -27,19 +62,24 @@ impl GitVolumeStorage {
         let repo = self.inner.platform.repository().to_thread_local();
         let mut staged = BTreeMap::new();
         for (path, source, metadata) in files {
+            let before = self.inner.activity(&path);
+            if !before.settled() {
+                continue;
+            }
             let file = fs::File::open(&source).map_err(|error| Error::io(&source, error))?;
-            let id = repo
-                .objects
-                .write_stream(
-                    gix::objs::Kind::Blob,
-                    metadata.len(),
-                    &mut Reporting {
-                        inner: file,
-                        context: context.clone(),
-                    },
-                )
-                .map_err(|error| Error::git("write volume blob", error))?;
-            staged.insert(path, (id, metadata));
+            let id = repo.objects.write_stream(
+                gix::objs::Kind::Blob,
+                metadata.len(),
+                &mut Reporting {
+                    inner: file,
+                    context: context.clone(),
+                },
+            );
+            if self.inner.activity(&path) != before {
+                continue;
+            }
+            let id = id.map_err(|error| Error::git("write volume blob", error))?;
+            staged.insert(path, (id, before));
         }
         Ok(staged)
     }
@@ -59,6 +99,14 @@ impl GitVolumeStorage {
         self.commit_pending_reporting(message, extra_parent, &InstallContext::default())
     }
 
+    pub(crate) fn commit_pending_within(
+        &self,
+        message: &str,
+        scope: PendingScope<'_>,
+    ) -> Result<Option<gix::ObjectId>, Error> {
+        self.commit_scoped(message, None, &InstallContext::default(), scope)
+    }
+
     /// Commit pending files, reporting a finalizing phase through `context` while blobs are written.
     pub(crate) fn commit_pending_reporting(
         &self,
@@ -66,7 +114,17 @@ impl GitVolumeStorage {
         extra_parent: Option<gix::ObjectId>,
         context: &InstallContext,
     ) -> Result<Option<gix::ObjectId>, Error> {
-        let staged = self.stage_blobs(context)?;
+        self.commit_scoped(message, extra_parent, context, PendingScope::All)
+    }
+
+    fn commit_scoped(
+        &self,
+        message: &str,
+        extra_parent: Option<gix::ObjectId>,
+        context: &InstallContext,
+        scope: PendingScope<'_>,
+    ) -> Result<Option<gix::ObjectId>, Error> {
+        let staged = self.stage_blobs(context, scope)?;
         let _guard = self.inner.platform.0.operation.lock();
         let reference = self.ref_name();
         let repo = self.inner.platform.repository().to_thread_local();
@@ -86,7 +144,10 @@ impl GitVolumeStorage {
             ));
         }
         let mut state = self.inner.working.write();
-        if extra_parent.is_none() && state.is_empty() {
+        if extra_parent.is_none()
+            && state.metadata.is_empty()
+            && scope.entries(&state.entries).next().is_none()
+        {
             return Ok(None);
         }
         let root = Self::root_tree(&repo, parent)?;
@@ -95,28 +156,19 @@ impl GitVolumeStorage {
             .edit()
             .map_err(|error| Error::git("edit volume tree", error))?;
 
-        for (path, entry) in &state.entries {
+        let mut committed = BTreeSet::new();
+        for (path, entry) in scope.entries(&state.entries) {
             let git_path = format!("files/{path}");
             match entry {
                 OverlayEntry::File => {
-                    let source = self.checkout_file(path);
-                    let mut file =
-                        fs::File::open(&source).map_err(|error| Error::io(&source, error))?;
-                    let metadata = file.metadata().map_err(|error| Error::io(&source, error))?;
-                    let id = match staged.get(path) {
-                        Some((id, before))
-                            if before.len() == metadata.len()
-                                && before.modified().ok() == metadata.modified().ok() =>
-                        {
-                            *id
-                        }
-                        _ => repo
-                            .objects
-                            .write_stream(gix::objs::Kind::Blob, metadata.len(), &mut file)
-                            .map_err(|error| Error::git("write volume blob", error))?,
+                    let Some((id, before)) = staged.get(path) else {
+                        continue;
                     };
+                    if self.inner.activity(path) != *before {
+                        continue;
+                    }
                     editor
-                        .upsert(git_path, gix::objs::tree::EntryKind::Blob, id)
+                        .upsert(git_path, gix::objs::tree::EntryKind::Blob, *id)
                         .map_err(|error| Error::git("update volume file", error))?;
                 }
                 OverlayEntry::Directory => {
@@ -147,7 +199,15 @@ impl GitVolumeStorage {
                     }
                 }
             }
+            committed.insert(path.clone());
         }
+        state.entries.retain(|path, _| !committed.contains(path));
+        let pending = state
+            .entries
+            .iter()
+            .filter(|(_, entry)| matches!(entry, OverlayEntry::File))
+            .map(|(path, _)| path.clone())
+            .collect::<BTreeSet<_>>();
 
         if let Some(info) = &state.metadata.volume {
             PlatformRepository::write_text(&mut editor, "meta/volume/id", &info.id.to_string())?;
@@ -212,9 +272,9 @@ impl GitVolumeStorage {
             .map_err(|error| Error::git("write volume tree", error))?
             .detach();
         if extra_parent.is_none() && tree == root_id {
-            self.write_index(self.target_index(&repo, &root)?)?;
+            self.write_index(self.target_index(&repo, &root)?, &pending)?;
             *self.inner.cache_ready.lock() = true;
-            *state = WorkingState::default();
+            state.metadata = PendingMetadata::default();
             return Ok(None);
         }
         let signature = PlatformRepository::signature();
@@ -252,9 +312,9 @@ impl GitVolumeStorage {
             .map_err(|error| Error::git("read committed volume tree", error))?;
         fs::create_dir_all(self.inner.checkout.root())
             .map_err(|error| Error::io(self.inner.checkout.root(), error))?;
-        self.write_index(self.target_index(&repo, &committed_root)?)?;
+        self.write_index(self.target_index(&repo, &committed_root)?, &pending)?;
         *self.inner.cache_ready.lock() = true;
-        *state = WorkingState::default();
+        state.metadata = PendingMetadata::default();
         Ok(Some(commit))
     }
 }

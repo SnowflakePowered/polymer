@@ -2,15 +2,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
-use parking_lot::Mutex;
+use encoding_rs::SHIFT_JIS;
 
+use crate::impls::memorycard::WriteBack;
 use crate::{
     BoxFuture, Error, InstallResult, MemoryStorage, Metadata, MountableStorage, ReadDir, Storage,
     StorageFile,
 };
 
 use super::psu::Save;
-use super::{Playstation2MemoryCard, raw};
+use super::{DecodedSaves, Playstation2MemoryCard, raw};
 
 const SUPERBLOCK: &str = "_pcsx2_superblock";
 const DELETED_PREFIX: &str = "_pcsx2_deleted_";
@@ -18,8 +19,8 @@ const DELETED_PREFIX: &str = "_pcsx2_deleted_";
 /// An in-memory PCSX2 folder-card projection of PSU-backed saves.
 pub(super) struct Pcsx2MemoryStorage {
     storage: MemoryStorage,
-    card: Playstation2MemoryCard,
-    projected: Mutex<Vec<Vec<u8>>>,
+    write_back: WriteBack<Vec<u8>>,
+    capacity_blocks: u32,
 }
 
 impl Pcsx2MemoryStorage {
@@ -32,13 +33,13 @@ impl Pcsx2MemoryStorage {
         let storage = MemoryStorage::writable([(SUPERBLOCK.to_owned(), superblock)])?;
         let mut projected = Vec::new();
         for save in saves {
-            projected.push(save.name_bytes().to_vec());
             Self::project_save(&storage, &save)?;
+            projected.push(save.name_bytes().to_vec());
         }
         Ok(Self {
             storage,
-            card,
-            projected: Mutex::new(projected),
+            write_back: card.write_back(projected.iter().map(Vec::as_slice)),
+            capacity_blocks,
         })
     }
 
@@ -91,8 +92,10 @@ impl Pcsx2MemoryStorage {
         }
     }
 
-    fn saves(&self) -> Result<Vec<Save<'static>>, Error> {
+    fn saves(&self) -> Option<DecodedSaves<'static>> {
         let entries = self.storage.snapshot_files();
+        raw::card::MemoryCard::validate_superblock(entries.get(SUPERBLOCK)?, self.capacity_blocks)
+            .ok()?;
         let roots = entries
             .keys()
             .filter_map(|path| {
@@ -100,64 +103,63 @@ impl Pcsx2MemoryStorage {
                 (!Self::is_private(root)).then_some(root)
             })
             .collect::<BTreeSet<_>>();
-        let mut saves = Vec::new();
-        for name in roots {
-            let prefix = format!("{name}/");
-            let mut files = entries
-                .iter()
-                .filter_map(|(path, bytes)| {
-                    let child = path.strip_prefix(&prefix)?;
-                    (!child.contains('/') && !Self::is_private(child)).then(|| {
-                        (
-                            child.to_owned(),
-                            Self::dirent(&entries, &format!("{name}/_pcsx2_meta/{child}"), child),
-                            bytes.as_slice(),
-                        )
-                    })
+        Some(
+            roots
+                .into_iter()
+                .map(|name| {
+                    let native = SHIFT_JIS.encode(name).0.into_owned();
+                    (native, Self::save(&entries, name))
                 })
-                .collect::<Vec<_>>();
-            if files.is_empty() {
-                continue;
-            }
-            let index = entries
-                .get(&format!("{name}/_pcsx2_index"))
-                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).ok());
-            files.sort_by_cached_key(|file| {
-                let order = index
-                    .as_ref()
-                    .and_then(|index| index.get(&file.0)?.get("order")?.as_u64())
-                    .unwrap_or(u64::MAX);
-                (order, file.0.clone())
-            });
-            let dirent = Self::dirent(&entries, &format!("{name}/_pcsx2_meta_directory"), name);
-            saves.push(
-                Save::from_files(
-                    name,
-                    dirent,
-                    files
-                        .iter()
-                        .map(|(name, dirent, data)| (name.as_str(), *dirent, *data)),
-                )
-                .map_err(|error| Error::MalformedMetadata {
-                    file: name.to_owned(),
-                    reason: error.to_string(),
-                })?,
-            );
+                .collect(),
+        )
+    }
+
+    fn save(entries: &BTreeMap<String, Vec<u8>>, name: &str) -> Option<Save<'static>> {
+        let prefix = format!("{name}/");
+        let mut files = entries
+            .iter()
+            .filter_map(|(path, bytes)| {
+                let child = path.strip_prefix(&prefix)?;
+                (!child.contains('/') && !Self::is_private(child)).then(|| {
+                    (
+                        child.to_owned(),
+                        Self::dirent(entries, &format!("{name}/_pcsx2_meta/{child}"), child),
+                        bytes.as_slice(),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        if files.is_empty() {
+            return None;
         }
-        Ok(saves)
+        let index = entries
+            .get(&format!("{name}/_pcsx2_index"))
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).ok());
+        files.sort_by_cached_key(|file| {
+            let order = index
+                .as_ref()
+                .and_then(|index| index.get(&file.0)?.get("order")?.as_u64())
+                .unwrap_or(u64::MAX);
+            (order, file.0.clone())
+        });
+        let dirent = Self::dirent(entries, &format!("{name}/_pcsx2_meta_directory"), name);
+        Save::from_files(
+            name,
+            dirent,
+            files
+                .iter()
+                .map(|(name, dirent, data)| (name.as_str(), *dirent, *data)),
+        )
+        .ok()
     }
 }
 
 impl crate::ReconciliableStorage for Pcsx2MemoryStorage {
     fn reconcile(&self) -> Result<(), Error> {
-        let saves = self.saves()?;
-        let mut projected = self.projected.lock();
-        self.card.reconcile(&projected, &saves)?;
-        *projected = saves
-            .iter()
-            .map(|save| save.name_bytes().to_vec())
-            .collect();
-        Ok(())
+        let Some(saves) = self.saves() else {
+            return Ok(());
+        };
+        Playstation2MemoryCard::reconcile(&self.write_back, saves)
     }
 
     fn filter(path: &str) -> bool {

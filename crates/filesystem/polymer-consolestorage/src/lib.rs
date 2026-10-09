@@ -22,7 +22,7 @@ pub use impls::battery::{
     BatteryIdentity, BatteryIdentitySource, BatterySaveRepo, BatterySaveView,
 };
 
-pub use save_repo::SaveRepo;
+pub use save_repo::{ChangeKind, ChangedEntry, CheckpointGate, CheckpointRequest, SaveRepo};
 pub use storage::manifest::{
     ArtifactComponent, ArtifactRegistry, ArtifactRevision, ArtifactSummary, VolumeInfo,
 };

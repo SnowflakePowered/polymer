@@ -1,44 +1,43 @@
 use super::*;
 
-/// A child entry keeps the source volume's lease and authority when mounted elsewhere.
 struct EntryFactory {
     source: Arc<VolumeResource>,
     components: Vec<String>,
 }
 
 impl ResourceFactory<dyn FileNode> for EntryFactory {
-    fn materialize(&self) -> Result<Materialized<dyn FileNode>, VfsError> {
-        let source = self.source.materialize()?;
+    fn materialize_in(
+        &self,
+        scope: &mut polymer_vfs::MaterializationScope,
+    ) -> Result<Arc<dyn FileNode>, VfsError> {
+        let source = self.source.materialize_in(scope)?;
         let (name, parents) = self.components.split_last().ok_or(VfsError::StaleNode)?;
-        let directory = FilesystemState::directory_at(source.backend.root()?, parents)?;
+        let directory = FilesystemState::directory_at(source.root()?, parents)?;
         let backend = match directory.lookup(&VfsComponent::new(name)?)? {
             Some(Node::File(file)) => file,
             Some(_) => return Err(VfsError::IsDirectory(VfsPathBuf::root())),
             None => return Err(VfsError::NotFound(VfsPathBuf::root())),
         };
-        Ok(Materialized {
-            backend,
-            lease: source.lease,
-        })
+        Ok(backend)
     }
 }
 
 impl ResourceFactory<dyn Volume> for EntryFactory {
-    fn materialize(&self) -> Result<Materialized<dyn Volume>, VfsError> {
-        let source = self.source.materialize()?;
-        let directory = FilesystemState::directory_at(source.backend.root()?, &self.components)?;
+    fn materialize_in(
+        &self,
+        scope: &mut polymer_vfs::MaterializationScope,
+    ) -> Result<Arc<dyn Volume>, VfsError> {
+        let source = self.source.materialize_in(scope)?;
+        let directory = FilesystemState::directory_at(source.root()?, &self.components)?;
         let mut path = VfsPathBuf::root();
         for component in &self.components {
             path = path.as_path().join(&VfsComponent::new(component)?);
         }
-        Ok(Materialized {
-            backend: Arc::new(EntryVolume {
-                source: source.backend,
-                directory,
-                path,
-            }),
-            lease: source.lease,
-        })
+        Ok(Arc::new(EntryVolume {
+            source,
+            directory,
+            path,
+        }))
     }
 }
 

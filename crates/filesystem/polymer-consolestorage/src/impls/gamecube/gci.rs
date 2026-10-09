@@ -125,18 +125,27 @@ impl<'a> Save<'a> {
     }
 
     pub fn console_name(&self) -> &[u8] {
-        let name = &self.bytes[8..0x28];
+        Self::dirent_console_name(self.dirent())
+    }
+
+    fn dirent_console_name(dirent: &[u8; DIRENT_SIZE]) -> &[u8] {
+        let name = &dirent[8..0x28];
         &name[..name
             .iter()
             .position(|byte| *byte == 0)
             .unwrap_or(name.len())]
     }
 
-    pub fn identity(&self) -> Vec<u8> {
-        let mut identity = Vec::with_capacity(6 + self.console_name().len());
-        identity.extend_from_slice(&self.bytes[..6]);
-        identity.extend_from_slice(self.console_name());
+    pub fn dirent_identity(dirent: &[u8; DIRENT_SIZE]) -> Vec<u8> {
+        let name = Self::dirent_console_name(dirent);
+        let mut identity = Vec::with_capacity(6 + name.len());
+        identity.extend_from_slice(&dirent[..6]);
+        identity.extend_from_slice(name);
         identity
+    }
+
+    pub fn identity(&self) -> Vec<u8> {
+        Self::dirent_identity(self.dirent())
     }
 
     pub fn file_name(&self) -> String {
