@@ -1,6 +1,6 @@
 use crate::{
-    AdoptHandle, FileKind, FileNode, Materialized, Metadata, MetadataChanges, NoopResourceLease,
-    OpenFile, OpenOptions, ResourceFactory, VfsError, VfsResult,
+    AdoptHandle, FileKind, FileNode, MaterializationScope, Metadata, MetadataChanges, OpenFile,
+    OpenOptions, ResourceFactory, VfsError, VfsResult,
 };
 use parking_lot::Mutex;
 use polymer_consolestorage::{MemoryFile as StorageMemoryFile, StorageFile};
@@ -28,14 +28,11 @@ impl MemoryFileFactory {
 }
 
 impl ResourceFactory<dyn FileNode> for MemoryFileFactory {
-    fn materialize(&self) -> VfsResult<Materialized<dyn FileNode>> {
-        Ok(Materialized {
-            backend: Arc::new(MemoryFile {
-                file: self.file.clone(),
-                writable: self.writable,
-            }),
-            lease: Arc::new(NoopResourceLease),
-        })
+    fn materialize_in(&self, _scope: &mut MaterializationScope) -> VfsResult<Arc<dyn FileNode>> {
+        Ok(Arc::new(MemoryFile {
+            file: self.file.clone(),
+            writable: self.writable,
+        }))
     }
 }
 

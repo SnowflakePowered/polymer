@@ -14,7 +14,6 @@ impl SaveLayout for PspSaveLayout {
     const SAVE_DIRECTORY: &'static str = "SAVEDATA";
     const SUB_TITLE: &'static str = "SAVEDATA_TITLE";
     const DETAIL: &'static str = "SAVEDATA_DETAIL";
-    const HAS_STAGING: bool = false;
 
     async fn initialize(_root: &VersionedStorage, _profile_root: &str) -> Result<(), Error> {
         Ok(())

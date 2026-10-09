@@ -50,6 +50,9 @@ polymer-vfs-winfsp.workspace = true
 [lints]
 workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
+
 
 [target.'cfg(target_os = "macos")'.dependencies]
 polymer-consumer-metal = { path = "../../consumer/polymer-consumer-metal" }

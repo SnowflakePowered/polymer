@@ -1,11 +1,12 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::sync::Arc;
 
 use super::{
-    GameCubeMemoryCard, SAVE_ROOT,
+    GameCubeMemoryCard,
     gci::{self, Region, Save},
 };
+use crate::impls::memorycard::WriteBack;
 use crate::{
     BoxFuture, Error, InstallResult, MemoryStorage, Metadata, MountableStorage, ReadDir, Storage,
     StorageFile,
@@ -13,40 +14,32 @@ use crate::{
 
 pub(super) struct DolphinMemoryStorage {
     storage: MemoryStorage,
-    card: GameCubeMemoryCard,
+    write_back: WriteBack<Vec<u8>>,
     region: Region,
-    projected_paths: HashMap<Vec<u8>, String>,
+    view_identities: HashMap<String, Vec<u8>>,
 }
 
 impl DolphinMemoryStorage {
-    fn saves(&self) -> Result<Option<Vec<Save<'static>>>, Error> {
-        let entries = self.storage.snapshot_files();
-        let mut identities = HashSet::new();
+    fn saves(&self) -> Vec<(Vec<u8>, Option<Save<'static>>)> {
         let mut saves = Vec::new();
-        for (path, bytes) in entries {
+        for (path, bytes) in self.storage.snapshot_files() {
             if !path.to_ascii_lowercase().ends_with(".gci") {
                 continue;
             }
-            if bytes.len() < gci::DIRENT_SIZE {
-                return Ok(None);
+            let header = bytes
+                .first_chunk::<{ gci::DIRENT_SIZE }>()
+                .map(Save::dirent_identity);
+            match Save::new(bytes) {
+                Ok(save) => saves.push((save.identity(), Some(save))),
+                Err(_) => saves.extend(
+                    header
+                        .into_iter()
+                        .chain(self.view_identities.get(&path).cloned())
+                        .map(|identity| (identity, None)),
+                ),
             }
-            let blocks = u16::from_be_bytes([bytes[0x38], bytes[0x39]]);
-            let expected = gci::DIRENT_SIZE + usize::from(blocks) * gci::BLOCK_SIZE;
-            if bytes.len() < expected {
-                return Ok(None);
-            }
-            let save = Save::new(bytes).map_err(|error| Error::MalformedMetadata {
-                file: path.clone(),
-                reason: error.to_string(),
-            })?;
-            if !identities.insert(save.identity()) {
-                return Err(Error::Unsupported(
-                    "a Dolphin memory-card folder contains duplicate save identities".to_owned(),
-                ));
-            }
-            saves.push(save);
         }
-        Ok(Some(saves))
+        saves
     }
 
     pub(super) fn new(
@@ -54,34 +47,28 @@ impl DolphinMemoryStorage {
         region: Region,
         saves: &[Save<'_>],
     ) -> Result<Self, Error> {
-        let projected_paths = saves
-            .iter()
-            .map(|save| (save.identity(), format!("{SAVE_ROOT}/{}", save.file_name())))
-            .collect();
         let mut entries = BTreeMap::new();
+        let mut view_identities = HashMap::new();
         for save in saves {
             let mut name = save.file_name();
             while entries.contains_key(&name) {
                 name.insert(name.len() - 4, '0');
             }
+            view_identities.insert(name.clone(), save.identity());
             entries.insert(name, save.as_bytes().to_vec());
         }
         Ok(Self {
             storage: MemoryStorage::writable(entries)?,
-            card,
+            write_back: card.write_back(saves),
             region,
-            projected_paths,
+            view_identities,
         })
     }
 }
 
 impl crate::ReconciliableStorage for DolphinMemoryStorage {
     fn reconcile(&self) -> Result<(), Error> {
-        if let Some(saves) = self.saves()? {
-            self.card
-                .reconcile(self.region, &self.projected_paths, &saves)?;
-        }
-        Ok(())
+        GameCubeMemoryCard::reconcile(&self.write_back, self.region, &self.saves())
     }
 
     fn filter(_path: &str) -> bool {

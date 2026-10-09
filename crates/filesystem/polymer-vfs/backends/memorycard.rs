@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use parking_lot::Mutex;
 use polymer_consolestorage::savegame::SaveDepotId;
@@ -6,12 +6,12 @@ use polymer_consolestorage::{EntryKind, MemoryCard, MemoryCardView};
 use uuid::Uuid;
 
 use crate::{
-    CompositeResourceLease, FileNode, FinalizationReason, Materialized, Node, NoopResourceLease,
-    PathStr, ResourceFactory, ResourceLease, VfsComponent, VfsError, VfsPath, VfsPathBuf,
-    VfsResult, Volume,
+    ExclusiveResourceKey, FileNode, FinalizationReason, MaterializationScope, Node, PathStr,
+    ResourceFactory, ResourceFinalizer, VfsComponent, VfsError, VfsPath, VfsPathBuf, VfsResult,
+    Volume,
 };
 
-use super::storage::{materialize_file, materialize_volume, unrestricted};
+use super::storage::{StorageFileNode, StorageVolume, unrestricted};
 
 /// Adapts a file entry from a [`MemoryCardView`] into a VFS resource.
 pub struct MemoryCardFileFactory {
@@ -29,18 +29,19 @@ impl MemoryCardFileFactory {
 }
 
 impl ResourceFactory<dyn FileNode> for MemoryCardFileFactory {
-    fn materialize(&self) -> VfsResult<Materialized<dyn FileNode>> {
-        let lease = CompositeResourceLease::exclusive([self.resource_id])?.with(Arc::new(
-            MemoryCardLease {
-                view: self.view.clone(),
-            },
-        ));
-        Ok(materialize_file(
+    fn resource_keys(&self) -> Vec<ExclusiveResourceKey> {
+        vec![ExclusiveResourceKey::Resource(self.resource_id)]
+    }
+
+    fn materialize_in(&self, scope: &mut MaterializationScope) -> VfsResult<Arc<dyn FileNode>> {
+        scope.push(Arc::new(MemoryCardLease {
+            view: self.view.clone(),
+        }));
+        Ok(Arc::new(StorageFileNode::new(
             self.view.storage().clone(),
             self.view.entry().to_owned(),
             unrestricted(),
-            Arc::new(lease),
-        ))
+        )))
     }
 }
 
@@ -60,18 +61,19 @@ impl MemoryCardVolumeFactory {
 }
 
 impl ResourceFactory<dyn Volume> for MemoryCardVolumeFactory {
-    fn materialize(&self) -> VfsResult<Materialized<dyn Volume>> {
-        let lease = CompositeResourceLease::exclusive([self.resource_id])?.with(Arc::new(
-            MemoryCardLease {
-                view: self.view.clone(),
-            },
-        ));
-        Ok(materialize_volume(
+    fn resource_keys(&self) -> Vec<ExclusiveResourceKey> {
+        vec![ExclusiveResourceKey::Resource(self.resource_id)]
+    }
+
+    fn materialize_in(&self, scope: &mut MaterializationScope) -> VfsResult<Arc<dyn Volume>> {
+        scope.push(Arc::new(MemoryCardLease {
+            view: self.view.clone(),
+        }));
+        Ok(Arc::new(StorageVolume::new(
             self.view.storage().clone(),
             self.view.entry().to_owned(),
             unrestricted(),
-            Arc::new(lease),
-        ))
+        )))
     }
 }
 
@@ -79,7 +81,7 @@ struct MemoryCardLease {
     view: MemoryCardView,
 }
 
-impl ResourceLease for MemoryCardLease {
+impl ResourceFinalizer for MemoryCardLease {
     fn finalize(&self, reason: FinalizationReason) -> VfsResult<()> {
         if reason != FinalizationReason::LaunchFailed {
             self.view.storage().finish(self.view.entry())?;
@@ -110,29 +112,30 @@ impl<M> ResourceFactory<dyn Volume> for MemoryCardStorageFactory<M>
 where
     M: MemoryCard + ?Sized + 'static,
 {
-    fn materialize(&self) -> VfsResult<Materialized<dyn Volume>> {
+    fn resource_keys(&self) -> Vec<ExclusiveResourceKey> {
+        vec![ExclusiveResourceKey::Resource(self.resource_id)]
+    }
+
+    fn materialize_in(&self, scope: &mut MaterializationScope) -> VfsResult<Arc<dyn Volume>> {
         let volume = Arc::new(MemoryCardStorageVolume {
             card: self.card.clone(),
             primary: self.primary.clone(),
-            views: Mutex::new(HashMap::new()),
+            view: Mutex::new(None),
         });
-        let lease = CompositeResourceLease::exclusive([self.resource_id])?.with(volume.clone());
-        Ok(Materialized {
-            backend: volume,
-            lease: Arc::new(lease),
-        })
+        scope.push(volume.clone());
+        Ok(volume)
     }
 }
 
 struct MemoryCardStorageVolume<M: ?Sized> {
     card: Arc<M>,
     primary: Vec<SaveDepotId>,
-    views: Mutex<HashMap<String, MountedMemoryCardView>>,
+    view: Mutex<Option<MountedMemoryCardView>>,
 }
 
 struct MountedMemoryCardView {
+    format: String,
     view: MemoryCardView,
-    node: Node,
     volume: Option<Arc<dyn Volume>>,
 }
 
@@ -148,43 +151,37 @@ where
 
     fn mount(&self, format: Option<&str>) -> VfsResult<Node> {
         let format = format.unwrap_or("raw");
-        let mut views = self.views.lock();
-        if let Some(mounted) = views.get(format) {
-            return Ok(mounted.node.clone());
+        let mut mounted = self.view.lock();
+        if let Some(existing) = mounted.as_ref() {
+            return Err(VfsError::Unsupported(format!(
+                "the memory card is already mounted as '{}'",
+                existing.format
+            )));
         }
         let view = self.card.view(&self.primary, format)?;
         let (node, volume) = match view.kind() {
             EntryKind::File => (
-                Node::File(
-                    materialize_file(
-                        view.storage().clone(),
-                        view.entry().to_owned(),
-                        unrestricted(),
-                        Arc::new(NoopResourceLease),
-                    )
-                    .backend,
-                ),
-                None,
-            ),
-            EntryKind::Directory => {
-                let volume = materialize_volume(
+                Node::File(Arc::new(StorageFileNode::new(
                     view.storage().clone(),
                     view.entry().to_owned(),
                     unrestricted(),
-                    Arc::new(NoopResourceLease),
-                )
-                .backend;
+                ))),
+                None,
+            ),
+            EntryKind::Directory => {
+                let volume: Arc<dyn Volume> = Arc::new(StorageVolume::new(
+                    view.storage().clone(),
+                    view.entry().to_owned(),
+                    unrestricted(),
+                ));
                 (Node::Directory(volume.root()?), Some(volume))
             }
         };
-        views.insert(
-            format.to_owned(),
-            MountedMemoryCardView {
-                view,
-                node: node.clone(),
-                volume,
-            },
-        );
+        *mounted = Some(MountedMemoryCardView {
+            format: format.to_owned(),
+            view,
+            volume,
+        });
         Ok(node)
     }
 
@@ -223,9 +220,10 @@ impl<M: ?Sized> MemoryCardStorageVolume<M> {
         #[cfg(unix)]
         let format = bstr::ByteSlice::to_str_lossy(format.as_ref() as &[u8]);
         let volume = self
-            .views
+            .view
             .lock()
-            .get(format.as_ref() as &str)
+            .as_ref()
+            .filter(|mounted| mounted.format == format.as_ref() as &str)
             .and_then(|mounted| mounted.volume.clone())
             .ok_or_else(|| VfsError::NotDirectory(path.to_owned()))?;
         let mut relative = VfsPathBuf::root();
@@ -237,7 +235,7 @@ impl<M: ?Sized> MemoryCardStorageVolume<M> {
     }
 }
 
-impl<M> ResourceLease for MemoryCardStorageVolume<M>
+impl<M> ResourceFinalizer for MemoryCardStorageVolume<M>
 where
     M: MemoryCard + ?Sized,
 {
@@ -245,15 +243,14 @@ where
         if reason == FinalizationReason::LaunchFailed {
             return Ok(());
         }
-        let views = self
-            .views
+        let view = self
+            .view
             .lock()
-            .values()
-            .map(|mounted| mounted.view.clone())
-            .collect::<Vec<_>>();
-        for view in views {
-            view.storage().finish(view.entry())?;
+            .as_ref()
+            .map(|mounted| mounted.view.clone());
+        match view {
+            Some(view) => Ok(view.storage().finish(view.entry())?),
+            None => Ok(()),
         }
-        Ok(())
     }
 }

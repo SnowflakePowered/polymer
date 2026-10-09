@@ -2,7 +2,10 @@ use crate::{
     FileKind, FileNode, Permissions, PreparedFilesystem, Resource, ResourceOrigin,
     TempDirectoryFactory, VfsComponent, VfsError, VfsPathBuf, VfsPathUnit, VfsResult, Volume,
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashSet},
+    sync::Arc,
+};
 
 #[derive(Clone, Debug)]
 pub enum BindingKind {
@@ -154,7 +157,16 @@ pub struct CompiledFilesystem {
 impl CompiledFilesystem {
     fn compile(plan: FilesystemPlan) -> VfsResult<Self> {
         let mut indexed = BTreeMap::<Vec<Vec<VfsPathUnit>>, Binding>::new();
+        let mut storages = HashSet::new();
         for spec in plan.bindings {
+            if let BindingKind::Storage { resource, .. } = spec.kind()
+                && !storages.insert(Arc::as_ptr(&resource) as *const ())
+            {
+                return Err(VfsError::Unsupported(format!(
+                    "storage mounted at {} is already mounted",
+                    spec.at().to_string_lossy()
+                )));
+            }
             let normalized = spec.at().normalized_components()?;
             let authority = match spec.kind() {
                 BindingKind::Tree(resource) => resource.authority(),

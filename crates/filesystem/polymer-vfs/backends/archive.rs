@@ -1,8 +1,7 @@
 use crate::{
     CreateOptions, DirectoryEntry, DirectoryIterator, DirectoryNode, FileKind, FileNode,
-    Materialized, Metadata, MetadataChanges, Node, NoopResourceLease, OpenFile, OpenOptions,
-    RemoveKind, ResourceFactory, VfsComponent, VfsError, VfsPath, VfsPathBuf, VfsPathUnit,
-    VfsResult, Volume,
+    MaterializationScope, Metadata, MetadataChanges, Node, OpenFile, OpenOptions, RemoveKind,
+    ResourceFactory, VfsComponent, VfsError, VfsPath, VfsPathBuf, VfsPathUnit, VfsResult, Volume,
 };
 use asar::{AsarReader, Header};
 use memmap2::{Mmap, MmapOptions};
@@ -25,17 +24,14 @@ impl AsarVolumeFactory {
 }
 
 impl ResourceFactory<dyn Volume> for AsarVolumeFactory {
-    fn materialize(&self) -> VfsResult<Materialized<dyn Volume>> {
+    fn materialize_in(&self, _scope: &mut MaterializationScope) -> VfsResult<Arc<dyn Volume>> {
         let file = File::open(&self.path)?;
         // SAFETY: the read-only mapping owns its operating-system mapping handle.
         let mapping = Arc::new(unsafe { MmapOptions::new().map(&file)? });
         let (header, offset) = Header::read(&mut &mapping[..])?;
         validate_header(&header)?;
         let reader = AsarReader::new_from_header(header, offset, &mapping[..], None)?;
-        Ok(Materialized {
-            backend: Arc::new(AsarVolume::from_reader(mapping.clone(), &reader)?),
-            lease: Arc::new(NoopResourceLease),
-        })
+        Ok(Arc::new(AsarVolume::from_reader(mapping.clone(), &reader)?))
     }
 }
 

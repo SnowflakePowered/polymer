@@ -7,42 +7,74 @@ use polymer_consolestorage::impls::gamecube::GameCubeMemoryCard;
 use polymer_consolestorage::impls::ps1::PlaystationMemoryCard;
 use polymer_consolestorage::impls::ps2::Playstation2MemoryCard;
 use polymer_consolestorage::savegame::{Package, SaveGameSink};
-use polymer_consolestorage::{BatteryIdentity, BatterySaveRepo, SaveRepo};
+use polymer_consolestorage::{
+    BatteryIdentity, BatterySaveRepo, CheckpointGate, CheckpointRequest, SaveRepo,
+};
 use polymer_deno::polymer::{PolymerNotification, PolymerNotificationSender};
 use polymer_library::keys::KeyStore;
 use polymer_library::{
     ConsoleStorage, InstalledArtifact, LaunchableUri, StorageKind, StorageManager,
 };
+use polymer_pluginhost::controller::{
+    ControllerClient, SaveCheckpoint, SaveCheckpointRequest, SaveCheckpointSave,
+};
 use polymer_pluginhost::filesystem::StorageFactories;
 use polymer_vfs::{
-    BatteryStorageFactory, CompositeResourceLease, FinalizationReason, Materialized,
-    MemoryCardStorageFactory, NandVolumeFactory, ResourceFactory, ResourceLease, VfsError,
-    VfsResult, Volume,
+    BatteryStorageFactory, FinalizationReason, MaterializationScope, MemoryCardStorageFactory,
+    NandVolumeFactory, ResourceFactory, ResourceFinalizer, VfsError, VfsResult, Volume,
 };
 use serde_json::Value;
 use uuid::Uuid;
 
+const SAVE_CHECKPOINT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The plugin session asked before mid-session save checkpoints. It is attached once the
+/// emulator's controller session exists; until then, checkpoints proceed without asking.
+#[derive(Clone, Default)]
+pub struct CheckpointSession(Arc<Mutex<Option<ControllerClient>>>);
+
+impl CheckpointSession {
+    pub fn attach(&self, client: ControllerClient) {
+        *self.0.lock() = Some(client);
+    }
+
+    fn gate(&self, storage: String) -> CheckpointGate {
+        let session = self.clone();
+        Box::new(move |request: CheckpointRequest| {
+            let Some(client) = session.0.lock().clone() else {
+                return Box::pin(async { true });
+            };
+            let message = SaveCheckpoint {
+                request: SaveCheckpointRequest {
+                    storage: storage.clone(),
+                    save: SaveCheckpointSave {
+                        id: format!("{:016x}", request.save.0),
+                        path: request.root,
+                    },
+                    changed: request.changed,
+                },
+                timeout: SAVE_CHECKPOINT_TIMEOUT,
+            };
+            Box::pin(async move {
+                match client.send(message).await {
+                    Ok(Ok(ready)) => ready,
+                    Ok(Err(error)) => {
+                        tracing::warn!(%error, "onSaveCheckpoint failed; checkpointing anyway");
+                        true
+                    }
+                    Err(_) => true,
+                }
+            })
+        })
+    }
+}
+
 struct SaveWatchFactory {
     inner: Arc<dyn ResourceFactory<dyn Volume>>,
     saves: Arc<dyn SaveRepo>,
-    exclusive: Option<Uuid>,
     notification: GameSavedNotification,
-}
-
-impl SaveWatchFactory {
-    fn new(
-        inner: Arc<dyn ResourceFactory<dyn Volume>>,
-        saves: Arc<dyn SaveRepo>,
-        exclusive: Option<Uuid>,
-        notification: GameSavedNotification,
-    ) -> Self {
-        Self {
-            inner,
-            saves,
-            exclusive,
-            notification,
-        }
-    }
+    storage: String,
+    checkpoints: CheckpointSession,
 }
 
 #[derive(Clone)]
@@ -67,10 +99,7 @@ impl GameSavedNotification {
 }
 
 impl ResourceFactory<dyn Volume> for SaveWatchFactory {
-    fn materialize(&self) -> VfsResult<Materialized<dyn Volume>> {
-        let ownership = CompositeResourceLease::exclusive(self.exclusive)?;
-        // Register before the emulator can access the mount so no save write
-        // can race watcher creation.
+    fn materialize_in(&self, scope: &mut MaterializationScope) -> VfsResult<Arc<dyn Volume>> {
         let watcher = self.saves.watch_saves(&[])?;
         let baseline_runtime = tokio::runtime::Builder::new_current_thread()
             .enable_time()
@@ -78,46 +107,21 @@ impl ResourceFactory<dyn Volume> for SaveWatchFactory {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_time()
             .build()?;
-        let materialized = self.inner.materialize()?;
-        // Establish a silent baseline before the mounted file becomes visible
-        // to the emulator. This also recovers canonical state left uncommitted
-        // by an interrupted session.
+        let backend = scope.build(&*self.inner)?;
         let baseline_saves = self.saves.clone();
-        let baseline = match std::thread::Builder::new()
+        let baseline = std::thread::Builder::new()
             .name("polymer-save-baseline".to_owned())
-            .spawn(move || baseline_runtime.block_on(baseline_saves.checkpoint_saves()))
-        {
-            Ok(baseline) => baseline,
-            Err(source) => {
-                materialized
-                    .lease
-                    .finalize(FinalizationReason::LaunchFailed)?;
-                return Err(VfsError::Io(source));
-            }
-        };
-        match baseline.join() {
-            Ok(Ok(_)) => {}
-            Ok(Err(error)) => {
-                materialized
-                    .lease
-                    .finalize(FinalizationReason::LaunchFailed)?;
-                return Err(error.into());
-            }
-            Err(_) => {
-                materialized
-                    .lease
-                    .finalize(FinalizationReason::LaunchFailed)?;
-                return Err(VfsError::Unsupported(
-                    "save history baseline panicked".to_owned(),
-                ));
-            }
-        }
+            .spawn(move || baseline_runtime.block_on(baseline_saves.checkpoint_saves()))?;
+        baseline
+            .join()
+            .map_err(|_| VfsError::Unsupported("save history baseline panicked".to_owned()))??;
         let saves = self.saves.clone();
         let notification = self.notification.clone();
+        let gate = self.checkpoints.gate(self.storage.clone());
         let (stop, mut stopped) = tokio::sync::mpsc::unbounded_channel::<
             std::sync::mpsc::SyncSender<Result<(), polymer_consolestorage::Error>>,
         >();
-        let thread = match std::thread::Builder::new()
+        let thread = std::thread::Builder::new()
             .name("polymer-save-history".to_owned())
             .spawn(move || {
                 runtime.block_on(async move {
@@ -140,36 +144,21 @@ impl ResourceFactory<dyn Volume> for SaveWatchFactory {
                                 }
                             },
                             _ = watcher.changed() => {
-                                if checkpoint_saves_logged(&*saves).await {
+                                if checkpoint_saves_logged(&*saves, &gate).await {
                                     notification.publish();
                                 }
                             },
                         }
                     }
                 })
-            }) {
-            Ok(thread) => thread,
-            Err(source) => {
-                materialized
-                    .lease
-                    .finalize(FinalizationReason::LaunchFailed)?;
-                return Err(VfsError::Io(source));
-            }
-        };
-        let history_lease: Arc<dyn ResourceLease> = Arc::new(SaveWatchingLease {
+            })?;
+        scope.push(Arc::new(SaveWatchingLease {
             task: Mutex::new(SaveWatchingTask {
                 stop,
                 thread: Some(thread),
             }),
-        });
-
-        Ok(Materialized {
-            backend: materialized.backend,
-            // Composite leases finalize in reverse: flush the mounted storage,
-            // stop the watcher after one final synchronous checkpoint, then
-            // release any outer profile lock.
-            lease: Arc::new(ownership.with(history_lease).with(materialized.lease)),
-        })
+        }));
+        Ok(backend)
     }
 }
 
@@ -207,7 +196,7 @@ impl SaveWatchingLease {
     }
 }
 
-impl ResourceLease for SaveWatchingLease {
+impl ResourceFinalizer for SaveWatchingLease {
     fn finalize(&self, _reason: FinalizationReason) -> VfsResult<()> {
         self.stop()
     }
@@ -219,8 +208,8 @@ impl Drop for SaveWatchingLease {
     }
 }
 
-async fn checkpoint_saves_logged(saves: &dyn SaveRepo) -> bool {
-    match saves.checkpoint_saves().await {
+async fn checkpoint_saves_logged(saves: &dyn SaveRepo, gate: &CheckpointGate) -> bool {
+    match saves.checkpoint_saves_gated(Some(gate)).await {
         Ok(changed) => changed,
         Err(error) => {
             tracing::error!(%error, "failed to checkpoint console save history");
@@ -232,15 +221,17 @@ async fn checkpoint_saves_logged(saves: &dyn SaveRepo) -> bool {
 fn watch_save_history(
     factory: Arc<dyn ResourceFactory<dyn Volume>>,
     saves: Arc<dyn SaveRepo>,
-    exclusive: Option<Uuid>,
     notification: GameSavedNotification,
+    storage: &str,
+    checkpoints: &CheckpointSession,
 ) -> Arc<dyn ResourceFactory<dyn Volume>> {
-    Arc::new(SaveWatchFactory::new(
-        factory,
+    Arc::new(SaveWatchFactory {
+        inner: factory,
         saves,
-        exclusive,
         notification,
-    ))
+        storage: storage.to_owned(),
+        checkpoints: checkpoints.clone(),
+    })
 }
 
 fn is_emulator_launch(export_path: &[String]) -> bool {
@@ -287,6 +278,7 @@ pub async fn launch_storage(
     export_path: &[String],
     arguments: &[Value],
     notifications: PolymerNotificationSender,
+    checkpoints: &CheckpointSession,
 ) -> Result<StorageFactories, String> {
     if !is_emulator_launch(export_path) {
         return Ok(BTreeMap::new());
@@ -398,15 +390,16 @@ pub async fn launch_storage(
         storage.insert(
             "battery".to_owned(),
             watch_save_history(
-                Arc::new(BatteryStorageFactory::with_managed_lease(battery)),
+                Arc::new(BatteryStorageFactory::new(battery, id)),
                 saves,
-                Some(id),
                 GameSavedNotification {
                     sender: notifications.clone(),
                     kind: StorageKind::Battery,
                     platform: console.to_owned(),
                     id,
                 },
+                "battery",
+                checkpoints,
             ),
         );
     }
@@ -461,13 +454,14 @@ pub async fn launch_storage(
                         vec![save_id, nand_id],
                     )),
                     save,
-                    None,
                     GameSavedNotification {
                         sender: notifications.clone(),
                         kind: StorageKind::SaveRepo,
                         platform: console.to_owned(),
                         id: save_id,
                     },
+                    name,
+                    checkpoints,
                 ),
             );
             continue;
@@ -524,13 +518,14 @@ pub async fn launch_storage(
                             watch_save_history(
                                 Arc::new(MemoryCardStorageFactory::new(card, primary, id)),
                                 saves,
-                                None,
                                 GameSavedNotification {
                                     sender: notifications.clone(),
                                     kind: StorageKind::MemoryCard,
                                     platform: console.to_owned(),
                                     id,
                                 },
+                                name,
+                                checkpoints,
                             ),
                         );
                     }};

@@ -66,9 +66,9 @@ impl FilesystemState {
                 token,
                 format,
             } => {
-                let handle = self.storage_handle(&kind, &token)?;
+                let volume = self.storage_volume(&kind, &token)?;
                 self.plan
-                    .mount_storage(target.clone(), self.volume(handle)?, permissions, format);
+                    .mount_storage(target.clone(), volume, permissions, format);
             }
             MountSource::Bytes { contents } => {
                 let contents = contents.into_vec();

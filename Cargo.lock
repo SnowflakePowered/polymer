@@ -10642,6 +10642,7 @@ dependencies = [
  "rand 0.10.2",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tracing",

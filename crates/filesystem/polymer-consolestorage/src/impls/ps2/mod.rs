@@ -13,14 +13,13 @@ use std::time::Duration;
 use encoding_rs::SHIFT_JIS;
 use futures::StreamExt;
 use jiff::Timestamp;
-use parking_lot::Mutex;
 use uuid::Uuid;
 
 use self::pcsx2::Pcsx2MemoryStorage;
 pub(crate) use self::psu::Save as IconSaveContainer;
 use self::psu::Save;
 use crate::impls::SonyProductCode;
-use crate::impls::memorycard::RawMemoryCardImage;
+use crate::impls::memorycard::{RawMemoryCardImage, WriteBack, WriteBackEntry};
 use crate::savegame::{
     Package, SaveBlob, SaveBlobStream, SaveDepot, SaveDepotId, SaveDescriptor, SaveDescriptors,
     SaveGameSink, SaveWatcher, icons::IconSave,
@@ -34,6 +33,8 @@ use crate::{
 const SAVE_ROOT: &str = "card";
 const CAPACITY_BLOCKS: u32 = 1024;
 const PRODUCT_CODE_SIZE: usize = 12;
+
+type DecodedSaves<'a> = Vec<(Vec<u8>, Option<Save<'a>>)>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SaveDataHandle {
@@ -324,31 +325,34 @@ impl Playstation2MemoryCard {
         Ok(projected)
     }
 
-    fn reconcile(&self, projected: &[Vec<u8>], saves: &[Save<'_>]) -> Result<(), Error> {
-        let decoded = saves
-            .iter()
-            .map(|save| save.name_bytes().to_vec())
-            .collect::<HashSet<_>>();
-        for save in saves {
-            self.write_save(save)?;
-        }
-        for name in projected {
-            if !decoded.contains(name) {
-                let handle = SaveDataHandle::from_name(name).ok_or_else(|| {
-                    Error::InvalidPath(String::from_utf8_lossy(name).into_owned())
-                })?;
-                self.storage.remove(&handle.path())?;
-            }
-        }
-        Ok(())
+    fn write_back<'a>(&self, names: impl IntoIterator<Item = &'a [u8]>) -> WriteBack<Vec<u8>> {
+        WriteBack::new(
+            self.storage.clone(),
+            names
+                .into_iter()
+                .map(|name| (name.to_vec(), Self::save_paths(name))),
+        )
     }
 
-    fn write_save(&self, save: &Save<'_>) -> Result<(), Error> {
-        let handle = SaveDataHandle::from_name(save.name_bytes())
-            .ok_or_else(|| Error::InvalidPath(save.name().into_owned()))?;
-        let path = handle.path();
-        self.storage.install_bytes(save.as_bytes(), &path)?;
-        Ok(())
+    fn save_paths(name: &[u8]) -> Vec<String> {
+        SaveDataHandle::from_name(name)
+            .map(|handle| handle.path())
+            .into_iter()
+            .collect()
+    }
+
+    fn reconcile(write_back: &WriteBack<Vec<u8>>, decoded: DecodedSaves<'_>) -> Result<(), Error> {
+        let entries = decoded
+            .iter()
+            .map(|(name, save)| WriteBackEntry {
+                identity: name.clone(),
+                paths: Self::save_paths(name),
+                contents: save
+                    .as_ref()
+                    .map(|save| vec![Cow::Borrowed(save.as_bytes())]),
+            })
+            .collect::<Vec<_>>();
+        write_back.pass(&entries)
     }
 
     fn snapshot(&self, saves: &[SaveDepotId]) -> Vec<(String, u64, Timestamp)> {
@@ -401,30 +405,16 @@ impl MemoryCard for Playstation2MemoryCard {
 
     fn reconcile(&self, primary: &[SaveDepotId]) -> Result<crate::Reconcile, Error> {
         Self::validate_capacity(CAPACITY_BLOCKS)?;
-        let projected = self
-            .project_saves(primary, CAPACITY_BLOCKS)?
-            .iter()
-            .map(|save| save.name_bytes().to_vec())
-            .collect::<Vec<_>>();
-        let card = self.clone();
-        let owned = Arc::new(Mutex::new(projected));
+        let projected = self.project_saves(primary, CAPACITY_BLOCKS)?;
+        let write_back = self.write_back(projected.iter().map(Save::name_bytes));
         Ok(Arc::new(move |bytes| {
-            let image = raw::card::MemoryCard::new(bytes, CAPACITY_BLOCKS)?;
-            let Ok(mut saves) = image.saves() else {
+            let Ok(image) = raw::card::MemoryCard::new(bytes, CAPACITY_BLOCKS) else {
                 return Ok(());
             };
-            let had_incomplete = saves.iter().any(|save| save.files().len() == 0);
-            saves.retain(|save| save.files().len() != 0);
-            if had_incomplete && saves.is_empty() {
+            let Ok(decoded) = image.lenient_saves() else {
                 return Ok(());
-            }
-            let previous = owned.lock().clone();
-            card.reconcile(&previous, &saves)?;
-            *owned.lock() = saves
-                .iter()
-                .map(|save| save.name_bytes().to_vec())
-                .collect();
-            Ok(())
+            };
+            Self::reconcile(&write_back, decoded)
         }))
     }
 

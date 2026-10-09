@@ -2,6 +2,26 @@ use actix::Message;
 use std::time::Duration;
 
 #[derive(Message)]
+#[rtype(result = "Result<bool, String>")]
+pub struct SaveCheckpoint {
+    pub request: SaveCheckpointRequest,
+    pub timeout: Duration,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct SaveCheckpointRequest {
+    pub storage: String,
+    pub save: SaveCheckpointSave,
+    pub changed: Vec<polymer_consolestorage::ChangedEntry>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct SaveCheckpointSave {
+    pub id: String,
+    pub path: String,
+}
+
+#[derive(Message)]
 #[rtype(result = "Result<(), String>")]
 pub struct AttachAutomation(pub polymer_automation::AutomationClient);
 

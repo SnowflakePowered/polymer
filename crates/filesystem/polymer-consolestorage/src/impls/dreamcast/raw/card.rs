@@ -5,7 +5,7 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 use super::super::vmi::Vmi;
 use super::super::vms::{self, Save};
-use crate::impls::memorycard::{CardBytes, RawMemoryCardImage};
+use crate::impls::memorycard::{CardBytes, ClaimCounts, RawMemoryCardImage};
 
 pub const BLOCK_SIZE: usize = 512;
 pub const USER_BLOCKS: u32 = 200;
@@ -148,6 +148,55 @@ impl VmuMemory<'_> {
         Ok(entries)
     }
 
+    fn decode(&self, entry: &Dirent, blocks: &[u16]) -> Result<Save<'static>, ParseError> {
+        let mut vms = Vec::with_capacity(blocks.len() * BLOCK_SIZE);
+        for block in blocks {
+            let offset = usize::from(*block) * BLOCK_SIZE;
+            vms.extend_from_slice(&self.bytes.as_slice()[offset..offset + BLOCK_SIZE]);
+        }
+
+        let mut resource_name = [0; 8];
+        resource_name.copy_from_slice(&entry.file_name[..8]);
+        for byte in &mut resource_name {
+            if !byte.is_ascii_alphanumeric() && !matches!(*byte, b'_' | b'-') {
+                *byte = b'_';
+            }
+        }
+        if entry.header_offset.get() != u16::from(entry.file_type == FILE_GAME) {
+            return Err(ParseError::InvalidAllocation);
+        }
+        let mode = u16::from(entry.protected != 0) | (u16::from(entry.file_type == FILE_GAME) << 1);
+        let initial = Vmi::synthesize(
+            resource_name,
+            entry.file_name,
+            &entry.file_name,
+            b"Dreamcast VMU",
+            entry.timestamp,
+            mode,
+            vms.len(),
+        )?;
+        let initial_save = Save::from_parts(initial, vms)?;
+        let header = initial_save.header()?;
+        let vmi = Vmi::synthesize(
+            resource_name,
+            entry.file_name,
+            header.long_description_bytes(),
+            header.application_id(),
+            entry.timestamp,
+            mode,
+            initial_save.vms().len(),
+        )?;
+        Save::from_parts(vmi, initial_save.vms().to_vec()).map_err(ParseError::from)
+    }
+
+    fn file_entries(&self) -> Result<Vec<&Dirent>, ParseError> {
+        Ok(self
+            .directory_entries()?
+            .into_iter()
+            .filter(|entry| matches!(entry.file_type, FILE_DATA | FILE_GAME))
+            .collect())
+    }
+
     fn first_free_directory_entry(&self) -> Result<usize, ParseError> {
         let mut visited = 0;
         for block in self.directory_blocks()? {
@@ -172,6 +221,7 @@ impl VmuMemory<'_> {
 
 impl<'a> RawMemoryCardImage<'a> for VmuMemory<'a> {
     type Error = ParseError;
+    type Identity = [u8; 12];
     type Save<'card> = Save<'card>;
 
     const BLOCK_SIZE: u64 = BLOCK_SIZE as u64;
@@ -230,58 +280,54 @@ impl<'a> RawMemoryCardImage<'a> for VmuMemory<'a> {
         let mut saves = Vec::new();
         let mut identities = HashSet::new();
         let mut claimed = HashSet::new();
-        for entry in self.directory_entries()? {
-            if !matches!(entry.file_type, FILE_DATA | FILE_GAME) {
-                continue;
-            }
+        for entry in self.file_entries()? {
             if !identities.insert(entry.file_name) {
                 return Err(ParseError::DuplicateSave);
             }
             let blocks = self.chain(entry.first_block.get(), entry.block_count.get())?;
-            let mut vms = Vec::with_capacity(blocks.len() * BLOCK_SIZE);
-            for block in blocks {
-                if block >= self.capacity_blocks || !claimed.insert(block) {
-                    return Err(ParseError::InvalidAllocation);
-                }
-                let offset = usize::from(block) * BLOCK_SIZE;
-                vms.extend_from_slice(&self.bytes.as_slice()[offset..offset + BLOCK_SIZE]);
-            }
-
-            let mut resource_name = [0; 8];
-            resource_name.copy_from_slice(&entry.file_name[..8]);
-            for byte in &mut resource_name {
-                if !byte.is_ascii_alphanumeric() && !matches!(*byte, b'_' | b'-') {
-                    *byte = b'_';
-                }
-            }
-            if entry.header_offset.get() != u16::from(entry.file_type == FILE_GAME) {
+            if blocks
+                .iter()
+                .any(|block| *block >= self.capacity_blocks || !claimed.insert(*block))
+            {
                 return Err(ParseError::InvalidAllocation);
             }
-            let mode =
-                u16::from(entry.protected != 0) | (u16::from(entry.file_type == FILE_GAME) << 1);
-            let initial = Vmi::synthesize(
-                resource_name,
-                entry.file_name,
-                &entry.file_name,
-                b"Dreamcast VMU",
-                entry.timestamp,
-                mode,
-                vms.len(),
-            )?;
-            let initial_save = Save::from_parts(initial, vms)?;
-            let header = initial_save.header()?;
-            let vmi = Vmi::synthesize(
-                resource_name,
-                entry.file_name,
-                header.long_description_bytes(),
-                header.application_id(),
-                entry.timestamp,
-                mode,
-                initial_save.vms().len(),
-            )?;
-            saves.push(Save::from_parts(vmi, initial_save.vms().to_vec())?);
+            saves.push(self.decode(entry, &blocks)?);
         }
         Ok(saves)
+    }
+
+    fn lenient_saves(&self) -> Result<Vec<(Self::Identity, Option<Self::Save<'_>>)>, Self::Error> {
+        let files = self
+            .file_entries()?
+            .into_iter()
+            .map(|entry| {
+                let blocks = self
+                    .chain(entry.first_block.get(), entry.block_count.get())
+                    .ok()
+                    .filter(|blocks| blocks.iter().all(|block| *block < self.capacity_blocks));
+                (entry, blocks)
+            })
+            .collect::<Vec<_>>();
+        let names = files
+            .iter()
+            .map(|(entry, _)| entry.file_name)
+            .collect::<ClaimCounts<_>>();
+        let claims = files
+            .iter()
+            .flat_map(|(_, blocks)| blocks.iter().flatten().copied())
+            .collect::<ClaimCounts<_>>();
+        Ok(files
+            .into_iter()
+            .map(|(entry, blocks)| {
+                let save = blocks
+                    .filter(|blocks| {
+                        names.unique(&entry.file_name)
+                            && blocks.iter().all(|block| claims.unique(block))
+                    })
+                    .and_then(|blocks| self.decode(entry, &blocks).ok());
+                (entry.file_name, save)
+            })
+            .collect())
     }
 
     fn append_save(&mut self, save: Self::Save<'_>) -> Result<(), Self::Error> {

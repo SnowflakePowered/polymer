@@ -20,12 +20,27 @@ pub(super) struct WorkingState {
     pub(super) metadata: PendingMetadata,
 }
 
+impl PendingMetadata {
+    pub(super) fn is_empty(&self) -> bool {
+        self.volume.is_none() && self.artifacts.is_empty() && self.save_tips.is_empty()
+    }
+}
+
 impl WorkingState {
     pub(super) fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-            && self.metadata.volume.is_none()
-            && self.metadata.artifacts.is_empty()
-            && self.metadata.save_tips.is_empty()
+        self.entries.is_empty() && self.metadata.is_empty()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct PathActivity {
+    pub(crate) writing: usize,
+    pub(crate) generation: u64,
+}
+
+impl PathActivity {
+    pub(crate) fn settled(self) -> bool {
+        self.writing == 0
     }
 }
 
@@ -38,6 +53,44 @@ pub(super) struct GitVolumeInner {
     pub(super) index_path: PathBuf,
     pub(super) cache_ready: Mutex<bool>,
     pub(super) changes: Arc<Notify>,
+    pub(super) activity: Mutex<BTreeMap<String, PathActivity>>,
+    pub(super) passes: std::sync::atomic::AtomicUsize,
+}
+
+pub(crate) struct WritePass(Arc<GitVolumeInner>);
+
+impl Drop for WritePass {
+    fn drop(&mut self) {
+        self.0
+            .passes
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        self.0.changes.notify_one();
+    }
+}
+
+impl GitVolumeInner {
+    pub(super) fn touch(&self, path: &str) {
+        self.activity
+            .lock()
+            .entry(path.to_owned())
+            .or_default()
+            .generation += 1;
+    }
+
+    pub(super) fn activity(&self, root: &str) -> PathActivity {
+        PendingScope::Within(root)
+            .entries(&self.activity.lock())
+            .fold(
+                PathActivity {
+                    writing: self.passes.load(std::sync::atomic::Ordering::SeqCst),
+                    generation: 0,
+                },
+                |total, (_, activity)| PathActivity {
+                    writing: total.writing + activity.writing,
+                    generation: total.generation + activity.generation,
+                },
+            )
+    }
 }
 
 #[derive(Clone)]
@@ -59,18 +112,38 @@ impl fmt::Debug for GitVolumeStorage {
 
 impl GitVolumeStorage {
     pub(super) fn new(platform: PlatformRepository, kind: StorageKind, id: Uuid) -> Self {
-        let checkout_root = platform.checkout_path(kind, id);
-        let index_path = platform.repository().git_dir().join("index");
-        let inner = Arc::new(GitVolumeInner {
-            platform,
+        static VOLUMES: std::sync::OnceLock<
+            dashmap::DashMap<(PathBuf, StorageKind, Uuid), std::sync::Weak<GitVolumeInner>>,
+        > = std::sync::OnceLock::new();
+        let git_dir = platform.repository().git_dir();
+        let key = (
+            fs::canonicalize(git_dir).unwrap_or_else(|_| git_dir.to_owned()),
             kind,
             id,
-            working: RwLock::new(WorkingState::default()),
-            checkout: DirectoryStorage::unmanaged(checkout_root),
-            index_path,
-            cache_ready: Mutex::new(false),
-            changes: Arc::new(Notify::new()),
+        );
+        let mut entry = VOLUMES
+            .get_or_init(dashmap::DashMap::new)
+            .entry(key)
+            .or_default();
+        let inner = entry.upgrade().unwrap_or_else(|| {
+            let checkout_root = platform.checkout_path(kind, id);
+            let index_path = platform.repository().git_dir().join("index");
+            let inner = Arc::new(GitVolumeInner {
+                platform,
+                kind,
+                id,
+                working: RwLock::new(WorkingState::default()),
+                checkout: DirectoryStorage::unmanaged(checkout_root),
+                index_path,
+                cache_ready: Mutex::new(false),
+                changes: Arc::new(Notify::new()),
+                activity: Mutex::new(BTreeMap::new()),
+                passes: std::sync::atomic::AtomicUsize::new(0),
+            });
+            *entry = Arc::downgrade(&inner);
+            inner
         });
+        drop(entry);
         Self {
             artifacts: GitArtifactRegistry(inner.clone()),
             inner,
@@ -147,6 +220,31 @@ impl GitVolumeStorage {
         repo.find_blob(entry.oid())
             .map(|blob| Some(blob.data.clone()))
             .map_err(|error| Error::git("read metadata value", error))
+    }
+
+    pub(crate) fn hold_writes(&self) -> WritePass {
+        self.inner
+            .passes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        WritePass(self.inner.clone())
+    }
+
+    pub(crate) fn activity(&self, root: &str) -> PathActivity {
+        self.inner.activity(root)
+    }
+
+    pub(crate) fn pending_within(&self, root: &str) -> Vec<crate::ChangedEntry> {
+        PendingScope::Within(root)
+            .entries(&self.inner.working.read().entries)
+            .map(|(path, entry)| crate::ChangedEntry {
+                path: path.clone(),
+                kind: match entry {
+                    OverlayEntry::File => crate::ChangeKind::File,
+                    OverlayEntry::Directory => crate::ChangeKind::Directory,
+                    OverlayEntry::Deleted => crate::ChangeKind::Removed,
+                },
+            })
+            .collect()
     }
 
     pub(crate) fn set_save_tip(&self, depot: u64, tip: Option<gix::ObjectId>) {

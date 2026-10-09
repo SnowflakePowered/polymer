@@ -5,8 +5,8 @@ use polymer_consolestorage::{EntryKind, Error as StorageError, MountableStorage,
 
 use crate::{
     AdoptHandle, CreateOptions, DirectoryEntry, DirectoryIterator, DirectoryNode, FileKind,
-    FileNode, Materialized, Metadata, MetadataChanges, Node, OpenFile, OpenOptions, Permissions,
-    RemoveKind, ResourceLease, VfsComponent, VfsError, VfsPath, VfsPathBuf, VfsResult, Volume,
+    FileNode, Metadata, MetadataChanges, Node, OpenFile, OpenOptions, Permissions, RemoveKind,
+    VfsComponent, VfsError, VfsPath, VfsPathBuf, VfsResult, Volume,
 };
 
 pub(crate) type StoragePermissions = Arc<dyn Fn(&str) -> Permissions + Send + Sync>;
@@ -15,42 +15,24 @@ pub(crate) fn unrestricted() -> StoragePermissions {
     Arc::new(|_| Permissions::ALL)
 }
 
-pub(crate) fn materialize_file(
-    storage: Arc<dyn MountableStorage>,
-    path: String,
-    permissions: StoragePermissions,
-    lease: Arc<dyn ResourceLease>,
-) -> Materialized<dyn FileNode> {
-    Materialized {
-        backend: Arc::new(StorageFileNode {
-            storage,
-            path,
-            permissions,
-        }),
-        lease,
-    }
-}
-
-pub(crate) fn materialize_volume(
+pub(super) struct StorageVolume {
     storage: Arc<dyn MountableStorage>,
     root: String,
     permissions: StoragePermissions,
-    lease: Arc<dyn ResourceLease>,
-) -> Materialized<dyn Volume> {
-    Materialized {
-        backend: Arc::new(StorageVolume {
+}
+
+impl StorageVolume {
+    pub(super) fn new(
+        storage: Arc<dyn MountableStorage>,
+        root: String,
+        permissions: StoragePermissions,
+    ) -> Self {
+        Self {
             storage,
             root,
             permissions,
-        }),
-        lease,
+        }
     }
-}
-
-struct StorageVolume {
-    storage: Arc<dyn MountableStorage>,
-    root: String,
-    permissions: StoragePermissions,
 }
 
 impl Volume for StorageVolume {
@@ -166,11 +148,11 @@ impl DirectoryNode for StorageDirectoryNode {
                 .create(&path)
                 .map_err(|error| storage_error(error, &path))?;
         }
-        Ok(Arc::new(StorageFileNode {
-            storage: self.storage.clone(),
+        Ok(Arc::new(StorageFileNode::new(
+            self.storage.clone(),
             path,
-            permissions: self.permissions.clone(),
-        }))
+            self.permissions.clone(),
+        )))
     }
 
     fn create_dir(&self, name: &VfsComponent) -> VfsResult<Arc<dyn DirectoryNode>> {
@@ -223,18 +205,32 @@ fn node(
             path,
             permissions: permissions.clone(),
         })),
-        EntryKind::File => Node::File(Arc::new(StorageFileNode {
-            storage: storage.clone(),
+        EntryKind::File => Node::File(Arc::new(StorageFileNode::new(
+            storage.clone(),
             path,
-            permissions: permissions.clone(),
-        })),
+            permissions.clone(),
+        ))),
     }
 }
 
-struct StorageFileNode {
+pub(super) struct StorageFileNode {
     storage: Arc<dyn MountableStorage>,
     path: String,
     permissions: StoragePermissions,
+}
+
+impl StorageFileNode {
+    pub(super) fn new(
+        storage: Arc<dyn MountableStorage>,
+        path: String,
+        permissions: StoragePermissions,
+    ) -> Self {
+        Self {
+            storage,
+            path,
+            permissions,
+        }
+    }
 }
 
 impl FileNode for StorageFileNode {

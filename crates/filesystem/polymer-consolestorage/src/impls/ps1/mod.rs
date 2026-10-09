@@ -1,5 +1,6 @@
 mod raw;
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fmt;
 use std::io::{Cursor, Read};
@@ -13,7 +14,10 @@ use uuid::Uuid;
 
 pub(crate) use self::raw::Save as IconSaveContainer;
 use self::raw::{BLOCK_SIZE, NATIVE_ID_SIZE};
-use crate::impls::{SonyProductCode, memorycard::RawMemoryCardImage};
+use crate::impls::{
+    SonyProductCode,
+    memorycard::{RawMemoryCardImage, WriteBack, WriteBackEntry},
+};
 use crate::savegame::{
     Package, SaveBlob, SaveBlobStream, SaveDepot, SaveDepotId, SaveDescriptor, SaveDescriptors,
     SaveGameSink, SaveWatcher, icons::IconSave,
@@ -280,55 +284,25 @@ impl PlaystationMemoryCard {
         Ok((card.into_owned(), projected))
     }
 
-    fn reconcile(&self, projected: &[SaveDataHandle], image: &[u8]) -> Result<(), Error> {
+    fn reconcile(write_back: &WriteBack<[u8; NATIVE_ID_SIZE]>, image: &[u8]) -> Result<(), Error> {
         let blocks = <raw::MemoryCard<'_> as RawMemoryCardImage>::MAX_BLOCKS;
-        let card = raw::MemoryCard::new(image, blocks)?;
-        let saves = card.saves()?;
-        let decoded_names: HashSet<[u8; NATIVE_ID_SIZE]> =
-            saves.iter().map(|save| *save.native_id()).collect();
-
-        for raw_save in &saves {
-            self.write_if_changed(
-                &SaveDataHandle::from_native_id(*raw_save.native_id()),
-                raw_save,
-            )?;
-        }
-        for save in projected {
-            if decoded_names.contains(&save.native_id) {
-                continue;
-            }
-            self.storage.remove(&save.data_path())?;
-        }
-        Ok(())
-    }
-
-    fn write_if_changed(
-        &self,
-        save: &SaveDataHandle,
-        raw_save: &raw::Save<'_>,
-    ) -> Result<(), Error> {
-        let path = save.data_path();
-        if self
-            .storage
-            .metadata(&path)
-            .is_ok_and(|metadata| metadata.len == raw_save.byte_len() as u64)
-            && let Ok(mut existing) = self.storage.open_read(&path)
-        {
-            let mut block_buffer = [0; BLOCK_SIZE];
-            let unchanged = raw_save.blocks().all(|block| {
-                existing.read_exact(&mut block_buffer).is_ok() && block_buffer == block
-            });
-            if unchanged {
-                return Ok(());
-            }
-        }
-
-        let mut bytes = Vec::with_capacity(raw_save.byte_len());
-        for block in raw_save.blocks() {
-            bytes.extend_from_slice(block);
-        }
-        self.storage.install_bytes(&bytes, &path)?;
-        Ok(())
+        let Ok(card) = raw::MemoryCard::new(image, blocks) else {
+            return Ok(());
+        };
+        let Ok(saves) = card.lenient_saves() else {
+            return Ok(());
+        };
+        let entries = saves
+            .into_iter()
+            .map(|(native_id, raw_save)| WriteBackEntry {
+                identity: native_id,
+                paths: vec![SaveDataHandle::from_native_id(native_id).data_path()],
+                contents: raw_save.map(|raw_save| {
+                    vec![Cow::Owned(raw_save.blocks().collect::<Vec<_>>().concat())]
+                }),
+            })
+            .collect::<Vec<_>>();
+        write_back.pass(&entries)
     }
 
     fn snapshot(&self, saves: &[SaveDepotId]) -> Vec<(u64, Option<(u64, Timestamp)>)> {
@@ -373,8 +347,13 @@ impl MemoryCard for PlaystationMemoryCard {
 
     fn reconcile(&self, primary: &[SaveDepotId]) -> Result<crate::Reconcile, Error> {
         let (_, projected) = self.project(primary)?;
-        let card = self.clone();
-        Ok(Arc::new(move |bytes| card.reconcile(&projected, bytes)))
+        let write_back = WriteBack::new(
+            self.storage.clone(),
+            projected
+                .iter()
+                .map(|save| (save.native_id, vec![save.data_path()])),
+        );
+        Ok(Arc::new(move |bytes| Self::reconcile(&write_back, bytes)))
     }
 
     fn view(&self, primary: &[SaveDepotId], format: &str) -> Result<MemoryCardView, Error> {

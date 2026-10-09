@@ -26,10 +26,10 @@ pub(crate) use path::Native;
 pub use path::{PathStr, VfsComponent, VfsPath, VfsPathBuf, VfsPathUnit, VfsStr};
 pub use plan::{Binding, BindingKind, BindingSpec, CompiledFilesystem, FilesystemPlan};
 pub use polymer_consolestorage::Permissions;
-pub(crate) use resource::NoopResourceLease;
 pub use resource::{
-    CompositeResourceLease, ExclusiveResourceKey, FinalizationReason, Materialized,
-    PreparedFilesystem, Resource, ResourceFactory, ResourceLease, ResourceOrigin,
+    ExclusiveResourceKey, FinalizationReason, ManagedResourceLease, MaterializationScope,
+    Materialized, PreparedFilesystem, Resource, ResourceFactory, ResourceFinalizer, ResourceLease,
+    ResourceOrigin,
 };
 pub use traits::{
     AdoptHandle, CreateOptions, DirectoryEntry, DirectoryIterator, DirectoryNode, FileKind,

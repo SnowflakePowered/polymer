@@ -8,6 +8,33 @@ use async_trait::async_trait;
 use crate::savegame::{Package, SaveGameSink, icons::SaveIcon};
 use crate::{AttachmentScope, Error, Save, SaveAttachmentKind, SaveVersioning, VolumeStorage};
 
+/// Asks whether a save may be checkpointed now. Returning `false` defers the save,
+/// with its pending changes, to a later checkpoint.
+pub type CheckpointGate =
+    Box<dyn Fn(CheckpointRequest) -> crate::BoxFuture<'static, bool> + Send + Sync>;
+
+#[derive(Clone, Debug)]
+pub struct CheckpointRequest {
+    pub save: crate::savegame::SaveDepotId,
+    /// The save's directory within its storage, or empty for a save that no longer exists.
+    pub root: String,
+    pub changed: Vec<ChangedEntry>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct ChangedEntry {
+    pub path: String,
+    pub kind: ChangeKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChangeKind {
+    File,
+    Directory,
+    Removed,
+}
+
 #[doc(hidden)]
 pub trait DowncastSaveRepo: Any + Send + Sync {
     fn into_any(self: Arc<Self>) -> Arc<dyn Any + Send + Sync>;
@@ -97,29 +124,14 @@ pub trait SaveRepo: VolumeStorage + SaveGameSink + DowncastSaveRepo {
     /// Record the current state of every save and archive histories whose
     /// canonical save has disappeared.
     async fn checkpoint_saves(&self) -> Result<bool, Error> {
+        self.checkpoint_saves_gated(None).await
+    }
+
+    /// Like [`SaveRepo::checkpoint_saves`], but asks `gate` before checkpointing a save
+    /// with pending changes. A save the gate rejects keeps its changes pending.
+    async fn checkpoint_saves_gated(&self, gate: Option<&CheckpointGate>) -> Result<bool, Error> {
         self.versioning().recover(self).await?;
-        let saves = self
-            .enumerate_saves()
-            .map(|save| save.id)
-            .collect::<Vec<_>>();
-        let present = saves
-            .iter()
-            .copied()
-            .collect::<std::collections::HashSet<_>>();
-        let mut changed = false;
-        for save in saves {
-            changed |= self
-                .versioning()
-                .checkpoint(self, save, crate::SaveCommitOperation::Autosave)
-                .await?
-                .is_some();
-        }
-        changed |= self
-            .versioning()
-            .archive_missing_saves(self, &present)
-            .await?;
-        changed |= self.versioning().checkpoint_profile().await?;
-        Ok(changed)
+        self.versioning().checkpoint_all(self, gate).await
     }
 
     fn recently_deleted(&self) -> Result<Vec<crate::DeletedSaveInfo>, Error> {

@@ -29,12 +29,15 @@ mod artifact;
 mod checkout;
 mod commit;
 mod component;
+mod recovery;
 mod registry;
 mod repository;
 mod traits;
 mod volume;
 
 use artifact::*;
+pub(crate) use commit::PendingScope;
+pub(crate) use volume::WritePass;
 use registry::*;
 pub use repository::PlatformRepository;
 pub use volume::GitVolumeStorage;

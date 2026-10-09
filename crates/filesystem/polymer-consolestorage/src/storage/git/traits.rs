@@ -34,6 +34,7 @@ impl Storage for GitVolumeStorage {
                 .insert(directory.as_str().to_owned(), OverlayEntry::Directory);
         }
         drop(working);
+        self.inner.touch(path);
         Ok(())
     }
 
@@ -49,11 +50,13 @@ impl Storage for GitVolumeStorage {
             .write()
             .entries
             .insert(path.to_owned(), OverlayEntry::File);
+        self.inner.touch(path);
         self.inner.changes.notify_one();
-        Ok(Arc::new(GitVolumeFile::new(
+        Ok(Arc::new(GitVolumeFile {
             file,
-            self.inner.changes.clone(),
-        )))
+            volume: self.inner.clone(),
+            path: path.to_owned(),
+        }))
     }
 
     fn open(&self, path: &str, write: bool) -> Result<Arc<dyn StorageFile>, Error> {
@@ -68,10 +71,11 @@ impl Storage for GitVolumeStorage {
                 .insert(path.to_owned(), OverlayEntry::File);
         }
         if write {
-            Ok(Arc::new(GitVolumeFile::new(
+            Ok(Arc::new(GitVolumeFile {
                 file,
-                self.inner.changes.clone(),
-            )))
+                volume: self.inner.clone(),
+                path: path.to_owned(),
+            }))
         } else {
             Ok(file)
         }
@@ -89,6 +93,7 @@ impl Storage for GitVolumeStorage {
             .write()
             .entries
             .insert(path.to_owned(), OverlayEntry::Deleted);
+        self.inner.touch(path);
         self.inner.changes.notify_one();
         Ok(())
     }
@@ -107,6 +112,7 @@ impl Storage for GitVolumeStorage {
             .write()
             .entries
             .insert(dest.to_owned(), OverlayEntry::File);
+        self.inner.touch(dest);
         self.inner.changes.notify_one();
         Ok(result)
     }
@@ -125,7 +131,8 @@ impl Storage for GitVolumeStorage {
                 .working
                 .write()
                 .entries
-                .insert(dest, OverlayEntry::File);
+                .insert(dest.clone(), OverlayEntry::File);
+            self.inner.touch(&dest);
             self.inner.changes.notify_one();
             Ok(result)
         })
@@ -177,6 +184,8 @@ impl MountableStorage for GitVolumeStorage {
             }
         }
         drop(working);
+        self.inner.touch(from);
+        self.inner.touch(to);
         self.inner.changes.notify_one();
         Ok(())
     }
@@ -198,12 +207,31 @@ impl MountableStorage for GitVolumeStorage {
 
 pub(super) struct GitVolumeFile {
     file: Arc<dyn StorageFile>,
-    changes: Arc<Notify>,
+    volume: Arc<GitVolumeInner>,
+    path: String,
 }
 
-impl GitVolumeFile {
-    fn new(file: Arc<dyn StorageFile>, changes: Arc<Notify>) -> Self {
-        Self { file, changes }
+struct WriteCall<'a>(&'a GitVolumeFile);
+
+impl<'a> WriteCall<'a> {
+    fn begin(file: &'a GitVolumeFile) -> Self {
+        file.volume
+            .activity
+            .lock()
+            .entry(file.path.clone())
+            .or_default()
+            .writing += 1;
+        Self(file)
+    }
+}
+
+impl Drop for WriteCall<'_> {
+    fn drop(&mut self) {
+        if let Some(activity) = self.0.volume.activity.lock().get_mut(&self.0.path) {
+            activity.writing -= 1;
+            activity.generation += 1;
+        }
+        self.0.volume.changes.notify_one();
     }
 }
 
@@ -217,28 +245,24 @@ impl StorageFile for GitVolumeFile {
     }
 
     fn write_at(&self, offset: u64, buffer: &[u8]) -> Result<usize, Error> {
-        let written = self.file.write_at(offset, buffer)?;
-        if written != 0 {
-            self.changes.notify_one();
-        }
-        Ok(written)
+        let _call = WriteCall::begin(self);
+        self.file.write_at(offset, buffer)
     }
 
     fn set_len(&self, len: u64) -> Result<(), Error> {
-        self.file.set_len(len)?;
-        self.changes.notify_one();
-        Ok(())
+        let _call = WriteCall::begin(self);
+        self.file.set_len(len)
     }
 
     fn flush(&self) -> Result<(), Error> {
         self.file.flush()?;
-        self.changes.notify_one();
+        self.volume.changes.notify_one();
         Ok(())
     }
 
     fn sync(&self) -> Result<(), Error> {
         self.file.sync()?;
-        self.changes.notify_one();
+        self.volume.changes.notify_one();
         Ok(())
     }
 }
@@ -255,7 +279,8 @@ impl VolumeStorage for GitVolumeStorage {
         if !self.inner.working.read().is_empty() {
             return Ok(true);
         }
-        Ok(!self.checkout_matches_commit(&repo, &root)?)
+        let target = self.target_index(&repo, &root)?;
+        Ok(!self.checkout_matches_commit(&repo, &root, &target)?)
     }
 
     fn recover(&self) -> Result<(), Error> {

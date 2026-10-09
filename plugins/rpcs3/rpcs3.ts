@@ -1,7 +1,7 @@
 import runtime from "pkg:bin/win-x64";
 import { caches } from "polymer:cache";
 import { Rpcs3Configuration } from "pkg:configuration.ts";
-import type { EmulatorLaunchArgs, Storage } from "polymer:api";
+import type { EmulatorLaunchArgs, SaveCheckpointContext, Storage } from "polymer:api";
 
 export const onLaunch = (args: EmulatorLaunchArgs<unknown, Readonly<{ hdd?: Storage, flash?: Storage }>>) => {
     if (!args.storage.hdd) {
@@ -50,4 +50,8 @@ export const onLaunch = (args: EmulatorLaunchArgs<unknown, Readonly<{ hdd?: Stor
     };
 };
 
-export default { onLaunch };
+export const onSaveCheckpoint = ({ storage, changed }: SaveCheckpointContext) =>
+    storage !== "hdd" || !changed.some(({ path }) =>
+        path.split("/").some((part) => part.startsWith(".working_") || part.startsWith(".backup_")));
+
+export default { onLaunch, onSaveCheckpoint };

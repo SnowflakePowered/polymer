@@ -10,7 +10,7 @@ use deno_core::{JsRuntime, OpState, op2};
 use deno_error::JsErrorBox;
 use polymer_vfs::{
     AsarVolumeFactory, DirectoryNode, FileKind, FileNode, FilesystemEndpoint, FilesystemPlan,
-    HostDirectoryFactory, HostFileFactory, Materialized, MemoryFileFactory, Node, OpenOptions,
+    HostDirectoryFactory, HostFileFactory, MemoryFileFactory, Node, OpenOptions,
     PackageDirectoryFactory, Permissions, PreparedFilesystemLaunch, RemoveKind, Resource,
     ResourceFactory, ResourceLease, ResourceOrigin, TempDirectoryFactory, VfsComponent, VfsError,
     VfsPathBuf, Volume,
@@ -36,7 +36,6 @@ pub type StorageFactories = BTreeMap<String, Arc<dyn ResourceFactory<dyn Volume>
 
 type VolumeResource = Resource<dyn Volume>;
 type FileResource = Resource<dyn FileNode>;
-type MaterializedVolume = (Arc<dyn Volume>, Arc<dyn ResourceLease>);
 
 #[derive(Clone)]
 pub struct FilesystemOptions {
@@ -91,32 +90,53 @@ struct CacheResource {
     handle: Option<Handle<VolumeResource>>,
 }
 
-struct SharedVolumeFactory {
-    source: Resource<dyn Volume>,
-    materialized: parking_lot::Mutex<Option<MaterializedVolume>>,
+struct SharedResourceFactory<T: ?Sized> {
+    source: Resource<T>,
+    materialized: parking_lot::Mutex<Option<(Arc<T>, Arc<dyn ResourceLease>)>>,
 }
 
-impl SharedVolumeFactory {
-    fn new(source: Resource<dyn Volume>) -> Self {
-        Self {
-            source,
-            materialized: parking_lot::Mutex::new(None),
+impl<T: ?Sized> SharedResourceFactory<T> {
+    fn shared(&self) -> Result<(Arc<T>, Arc<dyn ResourceLease>), VfsError> {
+        let mut materialized = self.materialized.lock();
+        if materialized.is_none() {
+            let value = self.source.materialize()?;
+            *materialized = Some((value.backend, Arc::new(value.lease)));
         }
+        let (backend, lease) = materialized
+            .as_ref()
+            .expect("shared resource was materialized");
+        Ok((backend.clone(), lease.clone()))
     }
 }
 
-impl ResourceFactory<dyn Volume> for SharedVolumeFactory {
-    fn materialize(&self) -> Result<Materialized<dyn Volume>, VfsError> {
-        let mut shared = self.materialized.lock();
-        if shared.is_none() {
-            let value = self.source.materialize()?;
-            *shared = Some((value.backend, value.lease));
+impl<T: ?Sized + Send + Sync> ResourceFactory<T> for SharedResourceFactory<T> {
+    fn materialize_in(
+        &self,
+        scope: &mut polymer_vfs::MaterializationScope,
+    ) -> Result<Arc<T>, VfsError> {
+        let (backend, lease) = self.shared()?;
+        scope.retain(lease);
+        Ok(backend)
+    }
+}
+
+struct SharedResource<T: ?Sized> {
+    resource: Arc<Resource<T>>,
+    factory: Arc<SharedResourceFactory<T>>,
+}
+
+impl<T: ?Sized + Send + Sync + 'static> SharedResource<T> {
+    fn new(source: Resource<T>) -> Self {
+        let authority = source.authority();
+        let origin = source.origin().clone();
+        let factory = Arc::new(SharedResourceFactory {
+            source,
+            materialized: parking_lot::Mutex::new(None),
+        });
+        Self {
+            resource: Arc::new(Resource::new(factory.clone(), authority, origin)),
+            factory,
         }
-        let (backend, lease) = shared.as_ref().expect("shared resource was initialized");
-        Ok(Materialized {
-            backend: backend.clone(),
-            lease: lease.clone(),
-        })
     }
 }
 
@@ -125,9 +145,10 @@ pub(crate) struct FilesystemState {
     scratch_root: Option<PathBuf>,
     endpoint: FilesystemEndpoint,
     plan: FilesystemPlan,
-    volumes: HashMap<Handle<VolumeResource>, Arc<VolumeResource>>,
-    files: HashMap<Handle<FileResource>, Arc<FileResource>>,
-    storage: BTreeMap<String, ResourceHandle>,
+    volumes: HashMap<Handle<VolumeResource>, SharedResource<dyn Volume>>,
+    files: HashMap<Handle<FileResource>, SharedResource<dyn FileNode>>,
+    storage: BTreeMap<String, Handle<VolumeResource>>,
+    storage_volumes: HashMap<Handle<VolumeResource>, Arc<VolumeResource>>,
     caches: BTreeMap<String, CacheResource>,
     used: bool,
     prepared: Option<Arc<polymer_vfs::PreparedFilesystem>>,
@@ -147,6 +168,7 @@ impl FilesystemState {
             volumes: HashMap::new(),
             files: HashMap::new(),
             storage: BTreeMap::new(),
+            storage_volumes: HashMap::new(),
             caches: BTreeMap::new(),
             used: false,
             prepared: None,
@@ -179,11 +201,11 @@ impl FilesystemState {
         }
         for (name, factory) in options.storage {
             let origin = ResourceOrigin::Other(format!("storage:{name}"));
-            let handle = ResourceHandle::Tree(state.insert_volume(Resource::new(
-                factory,
-                Permissions::ALL,
-                origin,
-            )));
+            let handle = Handle::new();
+            state.storage_volumes.insert(
+                handle,
+                Arc::new(Resource::new(factory, Permissions::ALL, origin)),
+            );
             state.storage.insert(name, handle);
         }
         if let Some(quick_resume) = options.quick_resume {
@@ -264,15 +286,8 @@ impl FilesystemState {
         &mut self,
         resource: Resource<dyn polymer_vfs::Volume>,
     ) -> Handle<Resource<dyn polymer_vfs::Volume>> {
-        let authority = resource.authority();
-        let origin = resource.origin().clone();
-        let resource = Resource::new(
-            Arc::new(SharedVolumeFactory::new(resource)),
-            authority,
-            origin,
-        );
         let handle = Handle::new();
-        let replaced = self.volumes.insert(handle, Arc::new(resource));
+        let replaced = self.volumes.insert(handle, SharedResource::new(resource));
         debug_assert!(replaced.is_none());
         handle
     }
@@ -282,7 +297,7 @@ impl FilesystemState {
         resource: Resource<dyn polymer_vfs::FileNode>,
     ) -> Handle<Resource<dyn polymer_vfs::FileNode>> {
         let handle = Handle::new();
-        let replaced = self.files.insert(handle, Arc::new(resource));
+        let replaced = self.files.insert(handle, SharedResource::new(resource));
         debug_assert!(replaced.is_none());
         handle
     }
@@ -293,15 +308,34 @@ impl FilesystemState {
     ) -> Result<Arc<Resource<dyn polymer_vfs::Volume>>, VfsError> {
         self.volumes
             .get(&handle)
-            .cloned()
+            .map(|shared| shared.resource.clone())
             .ok_or_else(invalid_handle)
+    }
+
+    fn volume_backend(
+        &self,
+        handle: Handle<Resource<dyn polymer_vfs::Volume>>,
+    ) -> Result<Arc<dyn Volume>, VfsError> {
+        let shared = self.volumes.get(&handle).ok_or_else(invalid_handle)?;
+        Ok(shared.factory.shared()?.0)
     }
 
     fn file(
         &self,
         handle: Handle<Resource<dyn polymer_vfs::FileNode>>,
     ) -> Result<Arc<Resource<dyn polymer_vfs::FileNode>>, VfsError> {
-        self.files.get(&handle).cloned().ok_or_else(invalid_handle)
+        self.files
+            .get(&handle)
+            .map(|shared| shared.resource.clone())
+            .ok_or_else(invalid_handle)
+    }
+
+    fn file_backend(
+        &self,
+        handle: Handle<Resource<dyn polymer_vfs::FileNode>>,
+    ) -> Result<Arc<dyn FileNode>, VfsError> {
+        let shared = self.files.get(&handle).ok_or_else(invalid_handle)?;
+        Ok(shared.factory.shared()?.0)
     }
 
     fn package_path(&self, source: &str) -> Result<PathBuf, VfsError> {
@@ -352,26 +386,15 @@ impl FilesystemState {
         }
     }
 
-    fn storage_handle(
-        &self,
-        kind: &str,
-        token: &str,
-    ) -> Result<Handle<Resource<dyn polymer_vfs::Volume>>, VfsError> {
+    fn storage_volume(&self, kind: &str, token: &str) -> Result<Arc<VolumeResource>, VfsError> {
         if kind != "storage" {
             return Err(invalid_handle());
         }
         let token = u64::from_str_radix(token, 16).map_err(|_| invalid_handle())?;
-        let handle = Handle::from_raw(token);
-        self.volume(handle)?;
-        if self
-            .storage
-            .values()
-            .any(|candidate| matches!(candidate, ResourceHandle::Tree(candidate) if *candidate == handle))
-        {
-            Ok(handle)
-        } else {
-            Err(invalid_handle())
-        }
+        self.storage_volumes
+            .get(&Handle::from_raw(token))
+            .cloned()
+            .ok_or_else(invalid_handle)
     }
 
     fn resource_entries(
@@ -389,8 +412,7 @@ impl FilesystemState {
         if !resource.authority().can_read() || !resource.authority().can_execute() {
             return Err(VfsError::PermissionDenied(VfsPathBuf::root()));
         }
-        let materialized = resource.materialize()?;
-        let directory = Self::directory_at(materialized.backend.root()?, components)?;
+        let directory = Self::directory_at(self.volume_backend(handle)?.root()?, components)?;
         let mut entries = directory
             .read_dir()?
             .map(|entry| {
@@ -429,8 +451,7 @@ impl FilesystemState {
                 if !resource.authority().can_read() {
                     return Err(VfsError::PermissionDenied(VfsPathBuf::root()));
                 }
-                let materialized = resource.materialize()?;
-                Ok(materialized.backend)
+                self.file_backend(handle)
             }
             ResourceHandle::Tree(handle) => {
                 let resource = self.volume(handle)?;
@@ -440,8 +461,7 @@ impl FilesystemState {
                 let (name, parents) = components.split_last().ok_or_else(|| {
                     VfsError::Unsupported("cannot read a directory resource as bytes".into())
                 })?;
-                let materialized = resource.materialize()?;
-                let directory = Self::directory_at(materialized.backend.root()?, parents)?;
+                let directory = Self::directory_at(self.volume_backend(handle)?.root()?, parents)?;
                 let component = VfsComponent::new(name)?;
                 match directory.lookup(&component)? {
                     Some(Node::File(file)) => Ok(file),
@@ -478,8 +498,7 @@ impl FilesystemState {
         let (name, parents) = components
             .split_last()
             .ok_or_else(|| VfsError::Unsupported("cannot remove a resource root".into()))?;
-        let materialized = resource.materialize()?;
-        let directory = Self::directory_at(materialized.backend.root()?, parents)?;
+        let directory = Self::directory_at(self.volume_backend(handle)?.root()?, parents)?;
         let component = VfsComponent::new(name)?;
         let kind = match directory.lookup(&component)? {
             Some(Node::File(_)) => RemoveKind::File,

@@ -1,4 +1,7 @@
-use super::{FinalizationReason, Resource, ResourceLease, namespace_file::NamespaceFile};
+use super::{
+    FinalizationReason, MaterializationScope, Resource, ResourceLease,
+    namespace_file::NamespaceFile,
+};
 use crate::{
     CompiledFilesystem, CreateOptions, DirectoryEntry, DirectoryNode, FileNode, MemoryFileFactory,
     Metadata, MetadataChanges, Node, OpenFile, OpenOptions, Permissions, RemoveKind,
@@ -29,27 +32,25 @@ impl PreparedFilesystem {
         if state.is_some() {
             return Ok(());
         }
+        let retry = super::retry::FinalizationRetry::reserve()?;
         let mut volumes = HashMap::new();
         let mut files = HashMap::new();
         let mut storage_mounts = HashMap::new();
-        let mut leases = Vec::new();
+        let mut scope = MaterializationScope::new()?;
         for binding in self.compiled.bindings() {
             match binding.kind() {
                 crate::BindingKind::Tree(resource)
                 | crate::BindingKind::Storage { resource, .. } => {
                     let key = resource_key(resource);
                     if let std::collections::hash_map::Entry::Vacant(entry) = volumes.entry(key) {
-                        let value = resource.materialize()?;
-                        leases.push(value.lease.clone());
-                        entry.insert(value.backend);
+                        entry.insert(resource.materialize_in(&mut scope)?);
                     }
                 }
                 crate::BindingKind::File(resource) => {
                     let key = resource_key(resource);
                     if let std::collections::hash_map::Entry::Vacant(entry) = files.entry(key) {
-                        let value = resource.materialize()?;
-                        leases.push(value.lease.clone());
-                        entry.insert(Arc::new(NamespaceFile::new(value.backend)));
+                        let backend = resource.materialize_in(&mut scope)?;
+                        entry.insert(Arc::new(NamespaceFile::new(backend)));
                     }
                 }
             }
@@ -73,8 +74,10 @@ impl PreparedFilesystem {
             files,
             storage_mounts,
             tree_files: HashMap::new(),
-            leases,
+            leases: vec![scope.into_lease()],
             finalized: false,
+            reason: None,
+            retry: Some(retry),
         });
         Ok(())
     }
@@ -668,11 +671,13 @@ fn materialize_directory(
 impl Drop for PreparedFilesystem {
     fn drop(&mut self) {
         if let Some(mut resources) = self.materialized.get_mut().take()
-            && resources.finalize(FinalizationReason::Cancelled).is_err()
+            && !resources.finalized
         {
-            super::retry::FinalizationRetry::retain(Arc::new(FinalizingResources(Mutex::new(
-                resources,
-            ))));
+            let retry = resources
+                .retry
+                .take()
+                .expect("reserved finalization worker");
+            retry.retain(FinalizingResources(Mutex::new(resources)));
         }
     }
 }
@@ -682,8 +687,10 @@ struct MaterializedResources {
     files: HashMap<usize, Arc<NamespaceFile>>,
     storage_mounts: HashMap<Vec<Vec<VfsPathUnit>>, MaterializedStorageMount>,
     tree_files: HashMap<Vec<Vec<VfsPathUnit>>, Arc<NamespaceFile>>,
-    leases: Vec<Arc<dyn ResourceLease>>,
+    leases: Vec<super::ManagedResourceLease>,
     finalized: bool,
+    reason: Option<FinalizationReason>,
+    retry: Option<super::retry::FinalizationRetry>,
 }
 
 #[derive(Clone)]
@@ -731,6 +738,7 @@ impl MaterializedResources {
         if self.finalized {
             return Ok(());
         }
+        let reason = *self.reason.get_or_insert(reason);
         if reason != FinalizationReason::LaunchFailed {
             for file in self.files.values().chain(self.tree_files.values()) {
                 file.finalize_adoption()?;

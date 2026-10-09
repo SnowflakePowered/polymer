@@ -2,6 +2,7 @@ use super::*;
 
 impl<'a> RawMemoryCardImage<'a> for MemoryCard<'a> {
     type Error = ParseError;
+    type Identity = Vec<u8>;
     type Save<'card> = Save<'card>;
 
     const BLOCK_SIZE: u64 = ERASE_BLOCK_SIZE as u64;
@@ -36,32 +37,23 @@ impl<'a> RawMemoryCardImage<'a> for MemoryCard<'a> {
 
     fn saves(&self) -> Result<Vec<Self::Save<'_>>, Self::Error> {
         let root = self.root_directory()?;
-        let mut saves = Vec::new();
-        for entry in root.entries() {
-            if !entry.is_used()
-                || !entry.is_directory()
-                || matches!(entry.name_bytes(), b"." | b"..")
-            {
-                continue;
-            }
-            let directory = self.directory(entry)?;
-            let files = directory
-                .entries()
-                .filter(|file| file.is_used() && !matches!(file.name_bytes(), b"." | b".."))
-                .collect::<Vec<_>>();
-            if files.iter().any(|file| !file.is_file()) {
-                return Err(ParseError::InvalidDirectory(
-                    "save directory contains a non-file entry",
-                ));
-            }
+        root.entries()
+            .filter(|entry| Self::is_save_entry(entry))
+            .map(|entry| self.decode_save(entry))
+            .collect()
+    }
 
-            let mut encoder = Encoder::new(entry.as_bytes(), files.len())?;
-            for file in files {
-                encoder.file(file.as_bytes(), file.length(), self.file_chunks(file)?)?;
-            }
-            saves.push(encoder.finish()?);
-        }
-        Ok(saves)
+    fn lenient_saves(&self) -> Result<Vec<(Self::Identity, Option<Self::Save<'_>>)>, Self::Error> {
+        let root = self.root_directory()?;
+        Ok(root
+            .entries()
+            .filter(|entry| Self::is_save_entry(entry))
+            .map(|entry| {
+                let save = self.decode_save(entry).ok();
+                let complete = save.filter(|save| save.files().len() != 0);
+                (entry.name_bytes().to_vec(), complete)
+            })
+            .collect())
     }
 
     fn append_save(&mut self, save: Self::Save<'_>) -> Result<(), Self::Error> {
@@ -280,5 +272,27 @@ impl MemoryCard<'_> {
             data = &data[length..];
         }
         Ok(())
+    }
+
+    fn is_save_entry(entry: &Dirent) -> bool {
+        entry.is_used() && entry.is_directory() && !matches!(entry.name_bytes(), b"." | b"..")
+    }
+
+    fn decode_save(&self, entry: &Dirent) -> Result<Save<'static>, ParseError> {
+        let directory = self.directory(entry)?;
+        let files = directory
+            .entries()
+            .filter(|file| file.is_used() && !matches!(file.name_bytes(), b"." | b".."))
+            .collect::<Vec<_>>();
+        if files.iter().any(|file| !file.is_file()) {
+            return Err(ParseError::InvalidDirectory(
+                "save directory contains a non-file entry",
+            ));
+        }
+        let mut encoder = Encoder::new(entry.as_bytes(), files.len())?;
+        for file in files {
+            encoder.file(file.as_bytes(), file.length(), self.file_chunks(file)?)?;
+        }
+        Ok(encoder.finish()?)
     }
 }
