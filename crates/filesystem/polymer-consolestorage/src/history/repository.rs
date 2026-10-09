@@ -24,7 +24,7 @@ impl SaveVersioning {
             ));
         }
         let operation = crate::storage::operation::StorageOperation::open(
-            profile.platform_repository().repository().git_dir(),
+            profile.platform_repository().git_dir(),
             profile.id(),
         )?;
         Ok(Self {

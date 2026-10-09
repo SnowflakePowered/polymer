@@ -41,13 +41,13 @@ impl PreparedFilesystem {
             match binding.kind() {
                 crate::BindingKind::Tree(resource)
                 | crate::BindingKind::Storage { resource, .. } => {
-                    let key = resource_key(resource);
+                    let key = resource.key();
                     if let std::collections::hash_map::Entry::Vacant(entry) = volumes.entry(key) {
                         entry.insert(resource.materialize_in(&mut scope)?);
                     }
                 }
                 crate::BindingKind::File(resource) => {
-                    let key = resource_key(resource);
+                    let key = resource.key();
                     if let std::collections::hash_map::Entry::Vacant(entry) = files.entry(key) {
                         let backend = resource.materialize_in(&mut scope)?;
                         entry.insert(Arc::new(NamespaceFile::new(backend)));
@@ -60,7 +60,7 @@ impl PreparedFilesystem {
                 continue;
             };
             let volume = volumes
-                .get(&resource_key(resource))
+                .get(&resource.key())
                 .cloned()
                 .ok_or(VfsError::StaleNode)?;
             let mounted = volume.mount(format.as_deref())?;
@@ -116,7 +116,7 @@ impl PreparedFilesystem {
         let resources = state.as_mut().ok_or_else(not_materialized)?;
         resources.leases.push(replacement.lease);
         resources.files.insert(
-            resource_key(resource),
+            resource.key(),
             Arc::new(NamespaceFile::new(replacement.backend)),
         );
         Ok(())
@@ -365,7 +365,7 @@ impl PreparedFilesystem {
             .remove(&source.normalized_components()?);
         match target_binding.kind() {
             crate::BindingKind::File(resource) => {
-                resources.files.insert(resource_key(resource), source_file);
+                resources.files.insert(resource.key(), source_file);
             }
             crate::BindingKind::Storage { .. } => {
                 let mounted = resources
@@ -563,7 +563,7 @@ impl PreparedFilesystem {
             .as_ref()
             .ok_or_else(not_materialized)?
             .volumes
-            .get(&resource_key(resource))
+            .get(&resource.key())
             .cloned()
             .ok_or(VfsError::StaleNode)
     }
@@ -577,7 +577,7 @@ impl PreparedFilesystem {
             .as_ref()
             .ok_or_else(not_materialized)?
             .files
-            .get(&resource_key(resource))
+            .get(&resource.key())
             .cloned()
             .ok_or(VfsError::StaleNode)
     }
@@ -592,10 +592,6 @@ impl PreparedFilesystem {
             .cloned()
             .ok_or(VfsError::StaleNode)
     }
-}
-
-fn resource_key<T: ?Sized>(resource: &Arc<Resource<T>>) -> usize {
-    Arc::as_ptr(resource) as *const () as usize
 }
 
 fn not_materialized() -> VfsError {

@@ -160,7 +160,7 @@ impl CompiledFilesystem {
         let mut storages = HashSet::new();
         for spec in plan.bindings {
             if let BindingKind::Storage { resource, .. } = spec.kind()
-                && !storages.insert(Arc::as_ptr(&resource) as *const ())
+                && !storages.insert(resource.key())
             {
                 return Err(VfsError::Unsupported(format!(
                     "storage mounted at {} is already mounted",

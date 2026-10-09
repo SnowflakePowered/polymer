@@ -129,7 +129,7 @@ impl ArtifactRegistry for GitArtifactRegistry {
             let message = format!("Polymer install {}", artifact.id());
             context
                 .spawn_blocking(move |context| {
-                    storage.commit_pending_reporting(&message, None, context)
+                    storage.commit_scoped(&message, context, PendingScope::All)
                 })
                 .await
                 .map_err(|error| Error::Unsupported(format!("commit worker failed: {error}")))??;

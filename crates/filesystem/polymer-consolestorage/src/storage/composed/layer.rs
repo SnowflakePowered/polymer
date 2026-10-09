@@ -73,7 +73,7 @@ impl ComposedLayer {
     pub(super) fn persist_changes(&self) -> Result<(), Error> {
         match &self.persistence {
             Persistence::GitProfile { volume, .. } => {
-                volume.commit_pending("Polymer filesystem update", None)?;
+                volume.commit_pending("Polymer filesystem update")?;
                 Ok(())
             }
             _ => Ok(()),

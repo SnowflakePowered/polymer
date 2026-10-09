@@ -17,10 +17,7 @@ struct MaterializationJournal {
 
 impl SaveVersioning {
     fn journal_ref(&self) -> String {
-        format!(
-            "refs/consoles/transactions/v2/{}",
-            self.inner.volume_id().simple()
-        )
+        crate::storage::operation::StorageOperation::journal_ref(self.inner.volume_id())
     }
 
     fn parse_journal_id(value: Option<String>) -> Result<Option<gix::ObjectId>, Error> {
@@ -226,7 +223,7 @@ impl SaveVersioning {
             .set_save_tip(transition.depot.0, transition.after.map(|state| state.tip));
         self.inner
             .profile
-            .commit_pending("Polymer profile save transition", None)?;
+            .commit_pending("Polymer profile save transition")?;
         self.clear_journal()
     }
 

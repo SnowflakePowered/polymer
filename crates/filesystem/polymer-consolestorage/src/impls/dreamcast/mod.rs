@@ -261,13 +261,13 @@ impl DreamcastMemoryCard {
                         }
                         None => (primary, save.vmi().clone().into_owned()),
                     };
-                    Save::from_parts(vmi, save.vms().to_vec())
+                    Save::from_parts(vmi, save.vms())
                         .ok()
-                        .map(|save| (product, save))
+                        .map(|canonical| (product, canonical, save.vms()))
                 });
                 let paths = canonical
                     .iter()
-                    .flat_map(|(product, save)| {
+                    .flat_map(|(product, save, _)| {
                         let (vmi_path, vms_path) = Self::save_paths(*product, save);
                         [vms_path, vmi_path]
                     })
@@ -275,9 +275,9 @@ impl DreamcastMemoryCard {
                 WriteBackEntry {
                     identity: *identity,
                     paths,
-                    contents: canonical.map(|(_, save)| {
+                    contents: canonical.map(|(_, save, vms)| {
                         vec![
-                            Cow::Owned(save.vms().to_vec()),
+                            Cow::Borrowed(vms),
                             Cow::Owned(save.vmi().as_bytes().to_vec()),
                         ]
                     }),

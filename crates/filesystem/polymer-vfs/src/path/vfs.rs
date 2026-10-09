@@ -120,11 +120,6 @@ impl Native {
             |value| value.to_lowercase().encode_utf16().collect(),
         )
     }
-
-    fn host_path(units: &[VfsPathUnit]) -> std::path::PathBuf {
-        use std::os::windows::ffi::OsStringExt;
-        std::ffi::OsString::from_wide(units).into()
-    }
 }
 
 #[cfg(unix)]
@@ -155,11 +150,6 @@ impl Native {
 
     fn normalize_valid_component(units: &[VfsPathUnit]) -> Vec<VfsPathUnit> {
         units.to_vec()
-    }
-
-    fn host_path(units: &[VfsPathUnit]) -> std::path::PathBuf {
-        use std::os::unix::ffi::OsStringExt;
-        std::ffi::OsString::from_vec(units.to_vec()).into()
     }
 }
 
@@ -271,10 +261,6 @@ impl VfsPath {
     fn from_path_unchecked(path: &NativePath) -> &Self {
         // SAFETY: VfsPath is transparent over the native borrowed path.
         unsafe { &*(path as *const NativePath as *const Self) }
-    }
-
-    pub fn as_inner(&self) -> &NativePath {
-        &self.0
     }
 
     pub fn as_slice(&self) -> &[VfsPathUnit] {
@@ -404,10 +390,6 @@ impl VfsPathBuf {
 
     pub fn to_string_lossy(&self) -> String {
         self.as_path().to_string_lossy()
-    }
-
-    pub fn to_host_path(&self) -> VfsResult<std::path::PathBuf> {
-        Ok(Native::host_path(self.as_slice()))
     }
 }
 

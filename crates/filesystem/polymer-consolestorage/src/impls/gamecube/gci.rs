@@ -136,7 +136,7 @@ impl<'a> Save<'a> {
             .unwrap_or(name.len())]
     }
 
-    pub fn dirent_identity(dirent: &[u8; DIRENT_SIZE]) -> Vec<u8> {
+    pub(crate) fn dirent_identity(dirent: &[u8; DIRENT_SIZE]) -> Vec<u8> {
         let name = Self::dirent_console_name(dirent);
         let mut identity = Vec::with_capacity(6 + name.len());
         identity.extend_from_slice(&dirent[..6]);

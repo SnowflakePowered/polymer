@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
@@ -16,14 +15,20 @@ pub(crate) struct StorageOperation {
 }
 
 impl StorageOperation {
-    pub(crate) fn open(repository: &Path, volume: uuid::Uuid) -> Result<Arc<Self>, Error> {
-        static OPERATIONS: OnceLock<DashMap<PathBuf, Weak<StorageOperation>>> = OnceLock::new();
-        let repository =
-            fs::canonicalize(repository).map_err(|error| Error::io(repository, error))?;
-        let pending = repository
+    pub(crate) fn pending_marker(git_dir: &Path, volume: uuid::Uuid) -> PathBuf {
+        git_dir
             .join("polymer/operations")
             .join(volume.simple().to_string())
-            .join("pending");
+            .join("pending")
+    }
+
+    pub(crate) fn journal_ref(volume: uuid::Uuid) -> String {
+        format!("refs/consoles/transactions/v2/{}", volume.simple())
+    }
+
+    pub(crate) fn open(git_dir: &Path, volume: uuid::Uuid) -> Result<Arc<Self>, Error> {
+        static OPERATIONS: OnceLock<DashMap<PathBuf, Weak<StorageOperation>>> = OnceLock::new();
+        let pending = Self::pending_marker(git_dir, volume);
         let mut entry = OPERATIONS
             .get_or_init(DashMap::new)
             .entry(pending.clone())

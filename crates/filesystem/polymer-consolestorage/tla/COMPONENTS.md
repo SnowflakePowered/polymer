@@ -87,7 +87,7 @@ The audit on 2026-10-08 compared the transitions against these implementation pa
 | Rollback restricted to component ancestry and valid composition | `component/operations.rs`: `restore`; `component/composition.rs`: `compose` |
 | Journal before publication; old/new reference values; checkout/index before clear | `component/transaction.rs`: `transition`, `recover`, `recover_reference` |
 | Deletion intent before reference removal; cleanup before marker removal | `repository/deletion.rs`: `delete`, `finish_deletion`, `recover_deletions` |
-| Pending deletion blocks install recovery | `component/transaction.rs`: `recover`; `commit.rs`: `commit_pending_reporting` |
+| Pending deletion blocks install recovery | `component/transaction.rs`: `recover`; `commit.rs`: `commit_scoped` |
 
 Paths beginning with `component`, `repository`, or `commit` are under
 `src/storage/git`. The remaining paths are under `src`.
