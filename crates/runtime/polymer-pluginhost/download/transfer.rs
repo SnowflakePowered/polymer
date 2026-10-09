@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs,
     io::{Read, Seek, SeekFrom, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 use uuid::Uuid;
@@ -35,7 +35,6 @@ pub(crate) struct DownloadOptions {
 struct Checkpoint {
     url: String,
     etag: Option<String>,
-    last_modified: Option<String>,
     completed: u64,
 }
 
@@ -49,6 +48,35 @@ pub(super) struct Transfer {
     pub job: Option<Arc<JobHandle>>,
     /// The job that requested the download.
     pub parent: Option<Uuid>,
+}
+
+impl Checkpoint {
+    /// A strong validator is the only proof that a resumed tail belongs to the same version.
+    fn validator(&self) -> Option<&str> {
+        self.etag.as_deref().filter(|etag| !etag.starts_with("W/"))
+    }
+
+    /// Whether the server answered a resume request with something that cannot be appended.
+    fn rejected(&self, response: &reqwest::Response) -> bool {
+        match response.status() {
+            StatusCode::RANGE_NOT_SATISFIABLE => true,
+            StatusCode::PARTIAL_CONTENT => {
+                let start = response
+                    .headers()
+                    .get(header::CONTENT_RANGE)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.strip_prefix("bytes "))
+                    .and_then(|value| value.split('-').next())
+                    .and_then(|start| start.parse::<u64>().ok());
+                let etag = response
+                    .headers()
+                    .get(header::ETAG)
+                    .and_then(|value| value.to_str().ok());
+                start != Some(self.completed) || etag != self.validator()
+            }
+            _ => false,
+        }
+    }
 }
 
 impl DownloadOptions {
@@ -86,56 +114,59 @@ impl DownloadOptions {
 
 impl Transfer {
     /// Download the file unless it is already complete, resuming an earlier attempt.
-    /// A resumed file that fails verification is downloaded once more from the start.
+    /// The transfer is written to a `.part` file that replaces the target only once it is
+    /// complete, so the target never holds a partial download. A resumed file that fails
+    /// verification is downloaded once more from the start.
     pub(super) async fn run(&self) -> Result<(), JsErrorBox> {
         let checkable = self.options.checkable();
-        if checkable && self.verified().await? {
+        if checkable && self.verified(&self.path).await? {
             return Ok(());
         }
+        let mut part = self.path.clone().into_os_string();
+        part.push(".part");
+        let part = PathBuf::from(part);
         let resume = self.checkpoint().await.filter(|checkpoint| {
             checkpoint.url == self.url
                 && checkpoint.completed > 0
-                && fs::metadata(&self.path)
-                    .is_ok_and(|metadata| metadata.len() >= checkpoint.completed)
+                && checkpoint.validator().is_some()
+                && fs::metadata(&part).is_ok_and(|metadata| metadata.len() >= checkpoint.completed)
         });
         let resumed = resume.is_some();
-        self.transfer(resume).await?;
-        if !checkable || self.verified().await? {
-            return Ok(());
+        self.transfer(&part, resume).await?;
+        let mut complete = !checkable || self.verified(&part).await?;
+        if !complete && resumed {
+            self.transfer(&part, None).await?;
+            complete = self.verified(&part).await?;
         }
-        if resumed {
-            self.transfer(None).await?;
-            if self.verified().await? {
-                return Ok(());
-            }
+        if !complete {
+            return Err(JsErrorBox::generic(format!(
+                "{} does not match its expected size and digest",
+                self.url
+            )));
         }
-        Err(JsErrorBox::generic(format!(
-            "{} does not match its expected size and digest",
-            self.url
-        )))
+        fs::rename(&part, &self.path).map_err(|error| JsErrorBox::generic(error.to_string()))
     }
 
-    async fn verified(&self) -> Result<bool, JsErrorBox> {
-        let (options, path) = (self.options.clone(), self.path.clone());
+    async fn verified(&self, path: &Path) -> Result<bool, JsErrorBox> {
+        let (options, path) = (self.options.clone(), path.to_path_buf());
         tokio::task::spawn_blocking(move || options.verify(&path))
             .await
             .map_err(|error| JsErrorBox::generic(error.to_string()))?
             .map_err(|error| JsErrorBox::generic(error.to_string()))
     }
 
-    /// Request the file, continuing from `resume` when the server still has the same copy.
-    async fn transfer(&self, resume: Option<Checkpoint>) -> Result<(), JsErrorBox> {
-        let mut request = self.client.get(&self.url);
-        if let Some(resume) = &resume {
-            request = request.header(header::RANGE, format!("bytes={}-", resume.completed));
-            if let Some(validator) = resume.etag.as_ref().or(resume.last_modified.as_ref()) {
-                request = request.header(header::IF_RANGE, validator);
-            }
+    /// Request the file into `part`, continuing from `resume` when the server still has the
+    /// same copy. A resume the server cannot honour is retried once from the start.
+    async fn transfer(&self, part: &Path, resume: Option<Checkpoint>) -> Result<(), JsErrorBox> {
+        let mut response = self.send(resume.as_ref()).await?;
+        let mut resume = resume;
+        if resume
+            .as_ref()
+            .is_some_and(|resume| resume.rejected(&response))
+        {
+            response = self.send(None).await?;
+            resume = None;
         }
-        let mut response = request
-            .send()
-            .await
-            .map_err(|error| JsErrorBox::generic(error.to_string()))?;
         let start = match (response.status(), &resume) {
             (StatusCode::PARTIAL_CONTENT, Some(resume)) => resume.completed,
             (StatusCode::OK, _) => 0,
@@ -156,7 +187,6 @@ impl Transfer {
         let mut checkpoint = Checkpoint {
             url: self.url.clone(),
             etag: text(header::ETAG),
-            last_modified: text(header::LAST_MODIFIED),
             completed: start,
         };
         let total = response
@@ -168,14 +198,14 @@ impl Transfer {
         if total.is_some_and(|total| total > maximum) {
             return Err(oversized());
         }
-        if let Some(parent) = self.path.parent() {
+        if let Some(parent) = part.parent() {
             fs::create_dir_all(parent).map_err(|error| JsErrorBox::generic(error.to_string()))?;
         }
         let mut file = fs::OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
-            .open(&self.path)
+            .open(part)
             .map_err(|error| JsErrorBox::generic(error.to_string()))?;
         file.set_len(start)
             .map_err(|error| JsErrorBox::generic(error.to_string()))?;
@@ -196,15 +226,29 @@ impl Transfer {
             }
             self.report(checkpoint.completed, total).await;
             if checkpoint.completed - saved >= CHECKPOINT_INTERVAL {
-                file.flush()
+                file.sync_all()
                     .map_err(|error| JsErrorBox::generic(error.to_string()))?;
                 self.save(&checkpoint).await?;
                 saved = checkpoint.completed;
             }
         }
-        file.flush()
+        file.sync_all()
             .map_err(|error| JsErrorBox::generic(error.to_string()))?;
         self.save(&checkpoint).await
+    }
+
+    async fn send(&self, resume: Option<&Checkpoint>) -> Result<reqwest::Response, JsErrorBox> {
+        let mut request = self.client.get(&self.url);
+        if let Some(resume) = resume {
+            request = request.header(header::RANGE, format!("bytes={}-", resume.completed));
+            if let Some(validator) = resume.validator() {
+                request = request.header(header::IF_RANGE, validator);
+            }
+        }
+        request
+            .send()
+            .await
+            .map_err(|error| JsErrorBox::generic(error.to_string()))
     }
 
     async fn report(&self, completed: u64, total: Option<u64>) {
