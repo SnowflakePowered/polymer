@@ -51,9 +51,6 @@ impl Actor for JobActor {
             });
         }
         actix::spawn(async move {
-            if let Err(error) = store.abandon(JobKind::Download).await {
-                tracing::warn!(%error, "could not fail interrupted downloads");
-            }
             if importer.is_some()
                 && let Err(error) = store.resume(&[JobKind::Import]).await
             {

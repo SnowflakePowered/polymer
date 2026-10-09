@@ -1,8 +1,5 @@
 use std::{
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use uuid::Uuid;
@@ -15,7 +12,7 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(200);
 pub struct JobHandle {
     store: Arc<JobStore>,
     id: Uuid,
-    finished: AtomicBool,
+    finished: tokio::sync::Mutex<bool>,
     pending: Mutex<(Option<Instant>, Option<JobProgress>)>,
 }
 
@@ -24,7 +21,7 @@ impl JobHandle {
         Self {
             store,
             id,
-            finished: AtomicBool::new(false),
+            finished: tokio::sync::Mutex::new(false),
             pending: Mutex::new((None, None)),
         }
     }
@@ -70,7 +67,10 @@ impl JobHandle {
         };
         if let Some(progress) = ready {
             self.store
-                .modify(self.id, |job| job.apply(progress, JobStore::now()))
+                .modify(self.id, |job| {
+                    job.apply(progress, JobStore::now());
+                    Ok(())
+                })
                 .await?;
         }
         Ok(())
@@ -94,12 +94,22 @@ impl JobHandle {
 
     /// Writes the job's detail immediately, so a resumed job can rely on it.
     pub async fn record(&self, detail: serde_json::Value) -> Result<Job, JobError> {
-        self.store.modify(self.id, |job| job.detail = detail).await
+        self.store
+            .modify(self.id, |job| {
+                job.detail = detail;
+                Ok(())
+            })
+            .await
     }
 
     /// Replaces the job's parameters, recording a choice made while it runs.
     pub async fn reparameterize(&self, params: serde_json::Value) -> Result<Job, JobError> {
-        self.store.modify(self.id, |job| job.params = params).await
+        self.store
+            .modify(self.id, |job| {
+                job.params = params;
+                Ok(())
+            })
+            .await
     }
 
     pub async fn step(
@@ -109,33 +119,46 @@ impl JobHandle {
         error: Option<&str>,
     ) -> Result<Job, JobError> {
         self.store
-            .modify(self.id, |job| job.step(key, state, error, JobStore::now()))
+            .modify(self.id, |job| {
+                job.step(key, state, error, JobStore::now());
+                Ok(())
+            })
             .await
     }
 
     pub async fn finish(&self, state: JobState, error: Option<String>) -> Result<Job, JobError> {
-        self.finished.store(true, Ordering::Release);
+        let mut finished = self.finished.lock().await;
+        if *finished || matches!(state, JobState::Queued | JobState::Running) {
+            return Err(JobError::InvalidState(self.id, state));
+        }
         let pending = self
             .pending
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .1
             .take();
-        self.store
+        let job = self
+            .store
             .modify(self.id, |job| {
+                if job.state != JobState::Running {
+                    return Err(JobError::InvalidState(self.id, job.state));
+                }
                 if let Some(progress) = pending {
                     job.apply(progress, JobStore::now());
                 }
                 job.state = state;
                 job.error = error;
+                Ok(())
             })
-            .await
+            .await?;
+        *finished = true;
+        Ok(job)
     }
 }
 
 impl Drop for JobHandle {
     fn drop(&mut self) {
-        if self.finished.load(Ordering::Acquire) || self.store.interrupt_ephemeral(self.id) {
+        if *self.finished.get_mut() || self.store.interrupt_ephemeral(self.id) {
             return;
         }
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
@@ -145,8 +168,12 @@ impl Drop for JobHandle {
         runtime.spawn(async move {
             let result = store
                 .modify(id, |job| {
+                    if job.state != JobState::Running {
+                        return Err(JobError::InvalidState(id, job.state));
+                    }
                     job.state = JobState::Failed;
                     job.error = Some("Interrupted".to_owned());
+                    Ok(())
                 })
                 .await;
             if let Err(error) = result {

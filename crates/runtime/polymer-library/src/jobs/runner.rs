@@ -42,7 +42,7 @@ impl JobStore {
         let runner = self.runner(*kind)?;
         let mut interrupted = Vec::new();
         for kind in kinds {
-            interrupted.extend(self.recover(*kind).await?.into_iter().map(|job| job.id));
+            interrupted.extend(self.queued(*kind).await?.into_iter().map(|job| job.id));
         }
         if !interrupted.is_empty() {
             runner.run(self, interrupted, true);
@@ -52,11 +52,12 @@ impl JobStore {
 
     /// Fails jobs of `kind` that a previous process left unfinished, for kinds that only
     /// whoever needs their work starts, such as downloads.
-    pub async fn abandon(&self, kind: JobKind) -> Result<(), JobError> {
-        for job in self.recover(kind).await? {
+    pub(super) async fn abandon(&self, kind: JobKind) -> Result<(), JobError> {
+        for job in self.queued(kind).await? {
             self.modify(job.id, |job| {
                 job.state = JobState::Failed;
                 job.error = Some("Interrupted".to_owned());
+                Ok(())
             })
             .await?;
         }
