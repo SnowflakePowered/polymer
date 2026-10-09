@@ -1,64 +1,19 @@
 ----------------------------- MODULE JobStore -----------------------------
-(***************************************************************************)
-(* T8: durable job store, job runner and import jobs.                     *)
-(* Also models polymer-runtime/src/jobs/ (JobActor handlers for           *)
-(* JobsImport / JobsCancel / JobsRetry, JobActor::started, and            *)
-(* Importer::run / Importer::run_job).  All jobs are Import jobs for one  *)
-(* game, i.e. they share one (kind, dedupe = path) key.                   *)
-(*                                                                         *)
-(* Rust mapping (polymer-library/src/jobs/store.rs, runner.rs, handle.rs): *)
-(*   state[j]     jobs.state column of job j ("none" = row not inserted)   *)
-(*   pending[j]   Importer::run spawned run_job(j) tasks not yet past      *)
-(*                JobStore::claim (volatile)                               *)
-(*   working[j]   run_job(j) tasks holding a JobHandle, inside            *)
-(*                Importer::execute (volatile)                             *)
-(*   opPc, opJob  an in-flight JobsCancel / JobsRetry handler between its  *)
-(*                unlocked get() check and its modify() (volatile)         *)
-(*   boot         JobActor::started's spawned resume(&[Import]):           *)
-(*                "recover" = before recover()'s UPDATE running->queued,   *)
-(*                "list" = before recover()'s list() + runner.run(resume), *)
-(*                "up" = done                                              *)
-(*   settled[j]   ghost: terminal transitions since j was last queued      *)
-(*                                                                         *)
-(* Actions:                                                                *)
-(*   Submit       JobStore::submit = enqueue (one IMMEDIATE txn under      *)
-(*                `writes`: active-dedupe SELECT + INSERT) + runner.run    *)
-(*   CancelCheck  JobStore::cancel: get() + Queued|Paused check (no lock)  *)
-(*   CancelModify JobStore::cancel: modify(state = Cancelled)              *)
-(*   RetryCheck   JobStore::retry -> requeue: get(), !active, active()     *)
-(*   RetryModify  requeue's modify(state = Queued) (rejected by the        *)
-(*                jobs_active unique index if another row is active)       *)
-(*                + runner.run(resume)                                     *)
-(*   Claim        JobStore::claim: UPDATE ... WHERE state = 'queued'       *)
-(*   Finish       JobHandle::settle -> finish: modify(state = outcome)     *)
-(*   FinishFails  finish sets `finished` before its modify() fails, so     *)
-(*                Drop does not fail the job; run_job returns Err          *)
-(*   RecoverUpdate JobStore::recover's UPDATE running -> queued            *)
-(*   RecoverList  recover's list() of queued jobs + runner.run(ids, true)  *)
-(*   Crash        process death: tasks and handlers vanish, rows persist   *)
-(*                                                                         *)
-(* Abstracted: Importer::execute (identify, child install jobs, steps,     *)
-(* detail, the `identifying` watch) is the single working phase whose      *)
-(* outcome is Completed or Failed; progress/step/record writes never touch *)
-(* state.  Paused and Partial are never produced for imports.  Ephemeral   *)
-(* jobs, dismiss and abandon(Download) are not modelled.                   *)
-(***************************************************************************)
 EXTENDS Integers, FiniteSets, TLC
 
-CONSTANTS Jobs, Clients, MaxOps, MaxCrashes, MaxFailures, OpsDuringRecovery
-
-ASSUME OpsDuringRecovery \in BOOLEAN
+CONSTANTS Jobs, Clients, MaxOps, MaxCrashes, MaxFailures
 
 Active == {"queued", "running"}
 Terminal == {"completed", "failed", "cancelled"}
 States == {"none"} \cup Active \cup Terminal
 
 VARIABLES state, pending, working, opPc, opJob, boot, settled,
-          ops, crashes, failures
+          ops, crashes, failures, cleanup
 
-vars == <<state, pending, working, opPc, opJob, boot, settled, ops, crashes, failures>>
+vars == <<state, pending, working, opPc, opJob, boot, settled, ops, crashes, failures, cleanup>>
 
 TypeOK ==
+  /\ cleanup \subseteq Jobs
   /\ state \in [Jobs -> States]
   /\ pending \in [Jobs -> Nat] /\ working \in [Jobs -> Nat]
   /\ opPc \in [Clients -> {"idle", "cancel", "retry"}]
@@ -67,6 +22,7 @@ TypeOK ==
   /\ settled \in [Jobs -> Nat]
 
 Init ==
+  /\ cleanup = {}
   /\ state = [j \in Jobs |-> "none"]
   /\ pending = [j \in Jobs |-> 0]
   /\ working = [j \in Jobs |-> 0]
@@ -87,7 +43,7 @@ Write(j, s) ==
 
 StartOp(c) ==
   /\ opPc[c] = "idle" /\ ops < MaxOps
-  /\ (OpsDuringRecovery \/ boot = "up")
+  /\ boot # "recover"
   /\ ops' = ops + 1
 
 Submit(c) ==
@@ -99,35 +55,37 @@ Submit(c) ==
               /\ \A k \in Jobs : state[k] = "none" => k >= j
               /\ Write(j, "queued")
               /\ pending' = [pending EXCEPT ![j] = @ + 1]
-  /\ UNCHANGED <<working, opPc, opJob, boot, crashes, failures>>
+  /\ UNCHANGED <<working, opPc, opJob, boot, crashes, failures, cleanup>>
 
 CancelCheck(c, j) ==
   /\ StartOp(c)
   /\ state[j] = "queued"
   /\ opPc' = [opPc EXCEPT ![c] = "cancel"] /\ opJob' = [opJob EXCEPT ![c] = j]
-  /\ UNCHANGED <<state, pending, working, boot, settled, crashes, failures>>
+  /\ UNCHANGED <<state, pending, working, boot, settled, crashes, failures, cleanup>>
 
 CancelModify(c) ==
   /\ opPc[c] = "cancel"
-  /\ Write(opJob[c], "cancelled")
+  /\ IF state[opJob[c]] = "queued"
+       THEN Write(opJob[c], "cancelled")
+       ELSE UNCHANGED <<state, settled>>
   /\ opPc' = [opPc EXCEPT ![c] = "idle"]
-  /\ UNCHANGED <<pending, working, opJob, boot, ops, crashes, failures>>
+  /\ UNCHANGED <<pending, working, opJob, boot, ops, crashes, failures, cleanup>>
 
 RetryCheck(c, j) ==
   /\ StartOp(c)
   /\ state[j] \in Terminal /\ ~AnyActive
   /\ opPc' = [opPc EXCEPT ![c] = "retry"] /\ opJob' = [opJob EXCEPT ![c] = j]
-  /\ UNCHANGED <<state, pending, working, boot, settled, crashes, failures>>
+  /\ UNCHANGED <<state, pending, working, boot, settled, crashes, failures, cleanup>>
 
 RetryModify(c) ==
   LET j == opJob[c] IN
   /\ opPc[c] = "retry"
-  /\ IF \E k \in Jobs \ {j} : state[k] \in Active
+  /\ IF state[j] \notin Terminal \/ AnyActive
        THEN UNCHANGED <<state, pending, settled>>
        ELSE /\ Write(j, "queued")
             /\ pending' = [pending EXCEPT ![j] = @ + 1]
   /\ opPc' = [opPc EXCEPT ![c] = "idle"]
-  /\ UNCHANGED <<working, opJob, boot, ops, crashes, failures>>
+  /\ UNCHANGED <<working, opJob, boot, ops, crashes, failures, cleanup>>
 
 Claim(j) ==
   /\ pending[j] > 0
@@ -136,33 +94,48 @@ Claim(j) ==
        THEN /\ Write(j, "running")
             /\ working' = [working EXCEPT ![j] = @ + 1]
        ELSE UNCHANGED <<state, settled, working>>
-  /\ UNCHANGED <<opPc, opJob, boot, ops, crashes, failures>>
+  /\ UNCHANGED <<opPc, opJob, boot, ops, crashes, failures, cleanup>>
 
 Finish(j) ==
-  /\ working[j] > 0
+  /\ working[j] > 0 /\ state[j] = "running"
   /\ working' = [working EXCEPT ![j] = @ - 1]
   /\ \E s \in {"completed", "failed"} : Write(j, s)
-  /\ UNCHANGED <<pending, opPc, opJob, boot, ops, crashes, failures>>
+  /\ UNCHANGED <<pending, opPc, opJob, boot, ops, crashes, failures, cleanup>>
 
 FinishFails(j) ==
   /\ working[j] > 0 /\ failures < MaxFailures
   /\ working' = [working EXCEPT ![j] = @ - 1]
   /\ failures' = failures + 1
+  /\ cleanup' = cleanup \cup {j}
   /\ UNCHANGED <<state, pending, opPc, opJob, boot, settled, ops, crashes>>
+
+Cleanup(j) ==
+  /\ j \in cleanup
+  /\ cleanup' = cleanup \ {j}
+  /\ IF state[j] = "running" THEN Write(j, "failed")
+       ELSE UNCHANGED <<state, settled>>
+  /\ UNCHANGED <<pending, working, opPc, opJob, boot, ops, crashes, failures>>
+
+CleanupFails(j) ==
+  /\ j \in cleanup /\ failures < MaxFailures
+  /\ cleanup' = cleanup \ {j}
+  /\ failures' = failures + 1
+  /\ UNCHANGED <<state, pending, working, opPc, opJob, boot, settled, ops, crashes>>
 
 RecoverUpdate ==
   /\ boot = "recover"
   /\ state' = [j \in Jobs |-> IF state[j] = "running" THEN "queued" ELSE state[j]]
   /\ boot' = "list"
-  /\ UNCHANGED <<pending, working, opPc, opJob, settled, ops, crashes, failures>>
+  /\ UNCHANGED <<pending, working, opPc, opJob, settled, ops, crashes, failures, cleanup>>
 
 RecoverList ==
   /\ boot = "list"
   /\ pending' = [j \in Jobs |-> pending[j] + (IF state[j] = "queued" THEN 1 ELSE 0)]
   /\ boot' = "up"
-  /\ UNCHANGED <<state, working, opPc, opJob, settled, ops, crashes, failures>>
+  /\ UNCHANGED <<state, working, opPc, opJob, settled, ops, crashes, failures, cleanup>>
 
 Crash ==
+  /\ cleanup' = {}
   /\ crashes < MaxCrashes
   /\ crashes' = crashes + 1
   /\ pending' = [j \in Jobs |-> 0]
@@ -172,6 +145,7 @@ Crash ==
   /\ UNCHANGED <<state, opJob, settled, ops, failures>>
 
 Finished ==
+  /\ cleanup = {}
   /\ boot = "up"
   /\ \A j \in Jobs : pending[j] = 0 /\ working[j] = 0
   /\ \A c \in Clients : opPc[c] = "idle"
@@ -180,12 +154,12 @@ Finished ==
 Next ==
   \/ \E c \in Clients : Submit(c) \/ CancelModify(c) \/ RetryModify(c)
                         \/ \E j \in Jobs : CancelCheck(c, j) \/ RetryCheck(c, j)
-  \/ \E j \in Jobs : Claim(j) \/ Finish(j) \/ FinishFails(j)
+  \/ \E j \in Jobs : Claim(j) \/ Finish(j) \/ FinishFails(j) \/ Cleanup(j) \/ CleanupFails(j)
   \/ RecoverUpdate \/ RecoverList \/ Crash \/ Finished
 
 Spec == Init /\ [][Next]_vars
           /\ WF_vars(RecoverUpdate) /\ WF_vars(RecoverList)
-          /\ \A j \in Jobs : WF_vars(Claim(j)) /\ WF_vars(Finish(j))
+          /\ \A j \in Jobs : WF_vars(Claim(j)) /\ WF_vars(Finish(j)) /\ WF_vars(Cleanup(j))
           /\ \A c \in Clients : WF_vars(CancelModify(c)) /\ WF_vars(RetryModify(c))
 
 \* What the jobs_active unique index promises.

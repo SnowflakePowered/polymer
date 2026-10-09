@@ -93,6 +93,17 @@ impl JobStore {
                 )));
             }
         }
+        let mut connection = store.connection().await?;
+        let transaction = connection.transaction().await?;
+        transaction.execute("UPDATE job_steps SET state = 'queued', error = NULL WHERE state = 'running' AND job_id IN (SELECT id FROM jobs WHERE state = 'running')", ()).await?;
+        transaction
+            .execute(
+                "UPDATE jobs SET state = 'queued' WHERE state = 'running'",
+                (),
+            )
+            .await?;
+        transaction.commit().await?;
+        store.abandon(JobKind::Download).await?;
         Ok(Arc::new(store))
     }
 
@@ -102,6 +113,7 @@ impl JobStore {
 
     /// Creates a queued job, or returns the active job with the same dedupe key.
     pub async fn enqueue(&self, spec: JobSpec) -> Result<(Job, bool), JobError> {
+        let _write = self.writes.lock().await;
         let job = Job::new(Uuid::now_v7(), &spec, Self::now());
         if !spec.persistent {
             if let Some(dedupe) = spec.dedupe {
@@ -120,7 +132,6 @@ impl JobStore {
             self.publish(&job);
             return Ok((job, true));
         }
-        let _write = self.writes.lock().await;
         let mut connection = self.connection().await?;
         let transaction = connection
             .transaction_with_behavior(turso::transaction::TransactionBehavior::Immediate)
@@ -154,6 +165,7 @@ impl JobStore {
 
     /// Moves a queued job to running and returns the handle that reports on it.
     pub async fn claim(self: &Arc<Self>, id: Uuid) -> Result<Option<JobHandle>, JobError> {
+        let _write = self.writes.lock().await;
         let claimed = match self.ephemeral.get_mut(&id) {
             Some(mut job) if job.state == JobState::Queued => {
                 job.state = JobState::Running;
@@ -161,7 +173,6 @@ impl JobStore {
             }
             Some(_) => false,
             None => {
-                let _write = self.writes.lock().await;
                 self.connection()
                     .await?
                     .execute(
@@ -233,36 +244,7 @@ impl JobStore {
         Ok(jobs)
     }
 
-    /// Requeues persistent jobs of `kind` that a previous process left running.
-    pub async fn recover(&self, kind: JobKind) -> Result<Vec<Job>, JobError> {
-        let write = self.writes.lock().await;
-        let connection = self.connection().await?;
-        let mut rows = connection
-            .query(
-                "SELECT id FROM jobs WHERE kind = ?1 AND state = 'running'",
-                [SqlValue::from(kind.as_str())],
-            )
-            .await?;
-        let mut running = Vec::new();
-        while let Some(row) = rows.next().await? {
-            running.push(row.get_value(0)?);
-        }
-        drop(rows);
-        for id in running {
-            connection
-                .execute(
-                    "UPDATE job_steps SET state = 'queued', error = NULL WHERE job_id = ?1 AND state = 'running'",
-                    [id],
-                )
-                .await?;
-        }
-        connection
-            .execute(
-                "UPDATE jobs SET state = 'queued' WHERE kind = ?1 AND state = 'running'",
-                [SqlValue::from(kind.as_str())],
-            )
-            .await?;
-        drop(write);
+    pub(super) async fn queued(&self, kind: JobKind) -> Result<Vec<Job>, JobError> {
         Ok(self
             .list()
             .await?
@@ -273,6 +255,7 @@ impl JobStore {
 
     /// Makes a finished job queued again, unless another active job has taken its dedupe key.
     pub(super) async fn requeue(&self, id: Uuid) -> Result<Job, JobError> {
+        let _write = self.writes.lock().await;
         let job = self.get(id).await?.ok_or(JobError::NotFound(id))?;
         if job.state.active() {
             return Err(JobError::InvalidState(id, job.state));
@@ -285,9 +268,10 @@ impl JobStore {
                 self.ephemeral_dedupe.insert((job.kind, dedupe.clone()), id);
             }
         }
-        self.modify(id, |job| {
+        self.modify_locked(id, |job| {
             job.state = JobState::Queued;
             job.error = None;
+            Ok(())
         })
         .await
     }
@@ -351,20 +335,23 @@ impl JobStore {
     }
 
     pub async fn cancel(&self, id: Uuid) -> Result<Job, JobError> {
-        let job = self.get(id).await?.ok_or(JobError::NotFound(id))?;
-        if !matches!(job.state, JobState::Queued | JobState::Paused) {
-            return Err(JobError::InvalidState(id, job.state));
-        }
-        self.modify(id, |job| job.state = JobState::Cancelled).await
+        self.modify(id, |job| {
+            if !matches!(job.state, JobState::Queued | JobState::Paused) {
+                return Err(JobError::InvalidState(id, job.state));
+            }
+            job.state = JobState::Cancelled;
+            Ok(())
+        })
+        .await
     }
 
     pub async fn dismiss(&self, id: Uuid) -> Result<(), JobError> {
+        let _write = self.writes.lock().await;
         let job = self.get(id).await?.ok_or(JobError::NotFound(id))?;
         if job.state.active() {
             return Err(JobError::InvalidState(id, job.state));
         }
         if self.ephemeral.remove(&id).is_none() {
-            let _write = self.writes.lock().await;
             self.connection()
                 .await?
                 .execute("DELETE FROM jobs WHERE id = ?1", [Self::id(id)])
@@ -376,18 +363,26 @@ impl JobStore {
     pub(super) async fn modify(
         &self,
         id: Uuid,
-        change: impl FnOnce(&mut Job),
+        change: impl FnOnce(&mut Job) -> Result<(), JobError>,
+    ) -> Result<Job, JobError> {
+        let _write = self.writes.lock().await;
+        self.modify_locked(id, change).await
+    }
+
+    async fn modify_locked(
+        &self,
+        id: Uuid,
+        change: impl FnOnce(&mut Job) -> Result<(), JobError>,
     ) -> Result<Job, JobError> {
         if let Some(mut job) = self.ephemeral.get_mut(&id) {
-            change(&mut job);
+            change(&mut job)?;
             job.updated_at = Self::now();
             let job = job.clone();
             self.publish(&job);
             return Ok(job);
         }
-        let _write = self.writes.lock().await;
         let mut job = self.get(id).await?.ok_or(JobError::NotFound(id))?;
-        change(&mut job);
+        change(&mut job)?;
         job.updated_at = Self::now();
         let mut connection = self.connection().await?;
         let transaction = connection.transaction().await?;
@@ -408,6 +403,9 @@ impl JobStore {
         let Some(mut job) = self.ephemeral.get_mut(&id) else {
             return false;
         };
+        if job.state != JobState::Running {
+            return true;
+        }
         job.state = JobState::Failed;
         job.error = Some("Interrupted".to_owned());
         job.updated_at = Self::now();
