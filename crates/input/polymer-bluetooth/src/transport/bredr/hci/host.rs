@@ -21,6 +21,8 @@ use super::{
 };
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(6);
+const CONNECTION_TIMEOUT: Duration = Duration::from_secs(12);
+const ABANDONED_CONNECTION_TIMEOUT: Duration = Duration::from_secs(40);
 const EVENT_MASK: u64 = 0x3dbf_f807_fffb_ffff;
 
 #[derive(Clone, Debug)]
@@ -70,7 +72,7 @@ pub struct HciHost {
     acl_worker: mpsc::Sender<AclWorkerMessage>,
     events: broadcast::Sender<Event>,
     l2cap_frames: broadcast::Sender<L2capFrame>,
-    links: Arc<DashMap<u16, u64>>,
+    links: Arc<DashMap<u16, (u64, DeviceAddr)>>,
     connection_gate: RwLock<()>,
     info: ControllerInfo,
     tasks: Vec<JoinHandle<()>>,
@@ -595,7 +597,24 @@ impl HciHost {
                 Err(error) => return Err(error),
             }
         }
-        wait_connection_complete(&mut events, addr).await
+        let result = self.wait_connection_complete(&mut events, addr).await;
+        if matches!(result, Err(Error::Timeout(_))) {
+            let cancel = self
+                .execute_checked(
+                    Command::address_only(Opcode::CREATE_CONNECTION_CANCEL, addr),
+                    "Create Connection Cancel",
+                )
+                .await;
+            match cancel {
+                Ok(_) => self.abandon_connection(&mut events, addr).await,
+                Err(_) => {
+                    if let Some(handle) = self.connected_handle(addr) {
+                        let _ = self.disconnect(handle).await;
+                    }
+                }
+            }
+        }
+        result
     }
 
     /// Accepts an inbound ACL connection without requesting authentication.
@@ -614,7 +633,74 @@ impl HciHost {
         let mut events = self.events.subscribe();
         self.execute(Command::accept_connection(addr, become_master))
             .await?;
-        wait_connection_complete(&mut events, addr).await
+        let result = self.wait_connection_complete(&mut events, addr).await;
+        if matches!(result, Err(Error::Timeout(_))) {
+            self.abandon_connection(&mut events, addr).await;
+        }
+        result
+    }
+
+    fn connected_handle(&self, addr: DeviceAddr) -> Option<u16> {
+        self.links
+            .iter()
+            .find(|link| link.1 == addr)
+            .map(|link| *link.key())
+    }
+
+    async fn wait_connection_complete(
+        &self,
+        events: &mut broadcast::Receiver<Event>,
+        addr: DeviceAddr,
+    ) -> Result<u16> {
+        time::timeout(CONNECTION_TIMEOUT, self.connection_complete(events, addr))
+            .await
+            .map_err(|_| Error::Timeout("ACL connection"))?
+    }
+
+    async fn connection_complete(
+        &self,
+        events: &mut broadcast::Receiver<Event>,
+        expected: DeviceAddr,
+    ) -> Result<u16> {
+        loop {
+            match events.recv().await {
+                Ok(Event::ConnectionComplete {
+                    status,
+                    handle,
+                    addr,
+                    ..
+                }) if addr == expected => {
+                    if status == 0 {
+                        return Ok(handle);
+                    }
+                    return Err(Error::HciStatus {
+                        operation: "Create/Accept Connection",
+                        status,
+                    });
+                }
+                Ok(_) => {}
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    if let Some(handle) = self.connected_handle(expected) {
+                        return Ok(handle);
+                    }
+                }
+                Err(broadcast::error::RecvError::Closed) => return Err(Error::ChannelClosed),
+            }
+        }
+    }
+
+    /// Holds the connection gate until a connection the host gave up on
+    /// reaches its final ConnectionComplete, and disconnects it if it
+    /// completed late.
+    async fn abandon_connection(&self, events: &mut broadcast::Receiver<Event>, addr: DeviceAddr) {
+        let completion = time::timeout(
+            ABANDONED_CONNECTION_TIMEOUT,
+            self.connection_complete(events, addr),
+        )
+        .await;
+        if let Ok(Ok(handle)) = completion {
+            let _ = self.disconnect(handle).await;
+        }
     }
 
     pub async fn reject_connection(&self, addr: DeviceAddr) -> Result<()> {
@@ -629,7 +715,7 @@ impl HciHost {
     /// Identifies the ACL currently using `handle`. The controller may assign
     /// a freed handle to a later connection, which gets a new identity.
     pub fn link(&self, handle: u16) -> Option<u64> {
-        self.links.get(&handle).map(|link| *link)
+        self.links.get(&handle).map(|link| link.0)
     }
 
     /// Disconnects `handle` only while it still names the ACL `link`. No ACL
@@ -823,36 +909,6 @@ impl HciHost {
     }
 }
 
-async fn wait_connection_complete(
-    events: &mut broadcast::Receiver<Event>,
-    expected: DeviceAddr,
-) -> Result<u16> {
-    time::timeout(Duration::from_secs(12), async {
-        loop {
-            if let Event::ConnectionComplete {
-                status,
-                handle,
-                addr,
-                ..
-            } = events.recv().await.map_err(|_| Error::ChannelClosed)?
-            {
-                if addr != expected {
-                    continue;
-                }
-                if status == 0 {
-                    return Ok(handle);
-                }
-                return Err(Error::HciStatus {
-                    operation: "Create/Accept Connection",
-                    status,
-                });
-            }
-        }
-    })
-    .await
-    .map_err(|_| Error::Timeout("ACL connection"))?
-}
-
 impl Drop for HciHost {
     fn drop(&mut self) {
         for task in &self.tasks {
@@ -867,7 +923,7 @@ async fn dispatch_events(
     events: broadcast::Sender<Event>,
     l2cap_frames: broadcast::Sender<L2capFrame>,
     acl_worker: mpsc::Sender<AclWorkerMessage>,
-    links: Arc<DashMap<u16, u64>>,
+    links: Arc<DashMap<u16, (u64, DeviceAddr)>>,
 ) {
     let mut reassembler = AclReassembler::default();
     let mut next_link = 0u64;
@@ -884,9 +940,14 @@ async fn dispatch_events(
                     };
                     if credit_worker_stopped { break; }
                     match &event {
-                        Event::ConnectionComplete { status: 0, handle, .. } => {
+                        Event::ConnectionComplete {
+                            status: 0,
+                            handle,
+                            addr,
+                            ..
+                        } => {
                             next_link += 1;
-                            links.insert(*handle, next_link);
+                            links.insert(*handle, (next_link, *addr));
                         }
                         Event::DisconnectionComplete { status, handle, .. } => {
                             if *status == 0 {
