@@ -1,5 +1,9 @@
 #![allow(unsafe_code)]
 
+mod raw;
+
+pub use raw::RawKeyboard;
+
 use parking_lot::{Mutex, RwLock};
 use polymer_hook_input::HookInput;
 use polymer_ipc::input::{InputMessage, WireHostKey, WireHostPointer};
@@ -44,6 +48,7 @@ pub struct Runtime {
     logged_key_rejection: AtomicBool,
     cursor_position: Mutex<Option<(i32, i32)>>,
     window_messages: WindowMessageForwarder,
+    raw_keyboard: RawKeyboard,
 }
 
 impl Runtime {
@@ -58,6 +63,7 @@ impl Runtime {
             logged_key_rejection: AtomicBool::new(false),
             cursor_position: Mutex::new(None),
             window_messages: WindowMessageForwarder::default(),
+            raw_keyboard: RawKeyboard::default(),
         }
     }
 
@@ -87,6 +93,10 @@ impl Runtime {
             .read()
             .as_ref()
             .is_some_and(|input| input.connected())
+    }
+
+    pub fn raw_keyboard(&self) -> &RawKeyboard {
+        &self.raw_keyboard
     }
 
     pub fn cursor_position(&self) -> Option<(i32, i32)> {
@@ -134,16 +144,21 @@ impl Runtime {
     }
 
     fn apply_wire_key(&self, event: WireHostKey) {
-        self.apply_raw_key(RawKeyInput {
-            target_window: event.target_window,
-            virtual_key: u32::from(event.virtual_key),
-            scan_code: event.scan_code,
-            extended: event.extended,
-            pressed: event.pressed,
-            repeat: event.repeat,
-            timestamp: event.timestamp_ms,
-            sequence: event.sequence,
-        });
+        let action =
+            polymer_input::KeyCode::from_wire(event.code) == polymer_input::KeyCode::new("hotkey");
+        self.apply_raw_key(
+            action,
+            RawKeyInput {
+                target_window: event.target_window,
+                virtual_key: u32::from(event.virtual_key),
+                scan_code: event.scan_code,
+                extended: event.extended,
+                pressed: event.pressed,
+                repeat: event.repeat,
+                timestamp: event.timestamp_ms,
+                sequence: event.sequence,
+            },
+        );
     }
 
     fn apply(&self, event: PointerInput) {
@@ -174,7 +189,7 @@ impl Runtime {
         }
     }
 
-    fn apply_raw_key(&self, event: RawKeyInput) {
+    fn apply_raw_key(&self, action: bool, event: RawKeyInput) {
         let window = NativeWindow(event.target_window as isize);
         if event.target_window == 0
             || !is_process_window(window, ProcessId(unsafe { GetCurrentProcessId() }))
@@ -198,6 +213,15 @@ impl Runtime {
             event.pressed,
             event.repeat,
         );
+        if action {
+            self.raw_keyboard.post(
+                window,
+                event.virtual_key,
+                event.scan_code,
+                event.extended,
+                event.pressed,
+            );
+        }
         if !self.logged_key_receive.swap(true, Ordering::AcqRel) {
             tracing::debug!(
                 window = event.target_window,

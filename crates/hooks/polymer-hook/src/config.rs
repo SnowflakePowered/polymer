@@ -13,9 +13,10 @@ pub const D3D11_LOG_FILE: &str = "POLYMER_D3D11_LOG_FILE";
 pub const D3D12_LOG_FILE: &str = "POLYMER_D3D12_LOG_FILE";
 pub const OPENGL_LOG_FILE: &str = "POLYMER_OPENGL_LOG_FILE";
 pub const BLUETOOTH_API_LOG_FILE: &str = "POLYMER_BLUETOOTH_API_LOG_FILE";
+pub const XINPUT_LOG_FILE: &str = "POLYMER_XINPUT_LOG_FILE";
 pub const RENDER_CONFIGURATION: &str = "POLYMER_RENDER_CONFIGURATION";
 
-pub const LOG_FILES: [(&str, &str); 9] = [
+pub const LOG_FILES: [(&str, &str); 10] = [
     (LAYER_LOG_FILE, "polymer-layer.log"),
     (DINPUT_LOG_FILE, "polymer-dinput.log"),
     (WIN32_LOG_FILE, "polymer-win32.log"),
@@ -25,6 +26,7 @@ pub const LOG_FILES: [(&str, &str); 9] = [
     (D3D12_LOG_FILE, "polymer-d3d12.log"),
     (OPENGL_LOG_FILE, "polymer-opengl.log"),
     (BLUETOOTH_API_LOG_FILE, "polymer-bluetooth-api.log"),
+    (XINPUT_LOG_FILE, "polymer-xinput.log"),
 ];
 
 static RENDER: LazyLock<Result<RenderConfiguration, String>> = LazyLock::new(|| {

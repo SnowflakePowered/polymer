@@ -7,12 +7,13 @@ license.workspace = true
 [dependencies]
 tracing.workspace = true
 parking_lot.workspace = true
+dashmap.workspace = true
 polymer-input.workspace = true
 polymer-ipc.workspace = true
 polymer-hook-input.workspace = true
 polymer-platform-windows.workspace = true
 polymer-protocol.workspace = true
-windows-sys = { workspace = true, features = ["Win32_System_SystemServices"] }
+windows-sys = { workspace = true, features = ["Win32_System_SystemServices", "Win32_UI_Input"] }
 
 [lints]
 workspace = true

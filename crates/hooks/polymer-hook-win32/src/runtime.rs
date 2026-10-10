@@ -6,7 +6,10 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
-use windows_sys::Win32::Foundation::POINT;
+use windows_sys::Win32::{
+    Foundation::POINT,
+    UI::Input::{HRAWINPUT, RAWINPUTDEVICE},
+};
 
 pub(crate) struct Runtime {
     logged_cursor_poll: AtomicBool,
@@ -46,4 +49,41 @@ pub(crate) unsafe fn get_cursor_pos(
         return 1;
     }
     polymer_hook::next!(next, point)
+}
+
+pub(crate) unsafe fn register_raw_input_devices(
+    devices: *const RAWINPUTDEVICE,
+    count: u32,
+    size: u32,
+    mut next: crate::hooks::RegisterRawInputDevicesContext<'_>,
+) -> i32 {
+    let state = next.state.clone();
+    let registered = polymer_hook::next!(next, devices, count, size);
+    if registered != 0
+        && !devices.is_null()
+        && size as usize == size_of::<RAWINPUTDEVICE>()
+    {
+        let devices = unsafe { std::slice::from_raw_parts(devices, count as usize) };
+        state.input.raw_keyboard().register(devices);
+    }
+    registered
+}
+
+pub(crate) unsafe fn get_raw_input_data(
+    input: HRAWINPUT,
+    command: u32,
+    data: *mut core::ffi::c_void,
+    size: *mut u32,
+    header_size: u32,
+    mut next: crate::hooks::GetRawInputDataContext<'_>,
+) -> u32 {
+    if let Some(result) = unsafe {
+        next.state
+            .input
+            .raw_keyboard()
+            .data(input, command, data, size, header_size)
+    } {
+        return result;
+    }
+    polymer_hook::next!(next, input, command, data, size, header_size)
 }
