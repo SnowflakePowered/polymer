@@ -148,20 +148,19 @@ impl ShellHost {
         Ok((host, started))
     }
 
-    /// One turn of the shell thread. Commands may run script, and painting
-    /// publishes layout to script, so the Deno event loop is polled again
-    /// after either until neither has more to do.
+    /// One turn of the shell thread: commands, one event-loop pass, and at
+    /// most one paint. Painting publishes layout to script, so it wakes the
+    /// next turn to poll the event loop again after handling commands.
     fn poll(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         if self.receive(cx) {
             return Poll::Ready(());
         }
-        loop {
-            self.runtime.poll_event_loop(cx);
-            self.report_reload();
-            if !self.paint(cx) {
-                return Poll::Pending;
-            }
+        self.runtime.poll_event_loop(cx);
+        self.report_reload();
+        if self.paint(cx) {
+            cx.waker().wake_by_ref();
         }
+        Poll::Pending
     }
 
     /// Handles every queued command. Consecutive pointer moves collapse into

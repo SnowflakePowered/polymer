@@ -1,8 +1,9 @@
 use std::{collections::VecDeque, sync::Arc, time::Duration};
 
 use bytes::Bytes;
+use dashmap::DashMap;
 use tokio::{
-    sync::{Mutex, broadcast, mpsc, oneshot},
+    sync::{Mutex, RwLock, broadcast, mpsc, oneshot},
     task::JoinHandle,
     time,
 };
@@ -69,6 +70,8 @@ pub struct HciHost {
     acl_worker: mpsc::Sender<AclWorkerMessage>,
     events: broadcast::Sender<Event>,
     l2cap_frames: broadcast::Sender<L2capFrame>,
+    links: Arc<DashMap<u16, u64>>,
+    connection_gate: RwLock<()>,
     info: ControllerInfo,
     tasks: Vec<JoinHandle<()>>,
 }
@@ -89,6 +92,7 @@ impl HciHost {
         let (event_sender, _) = broadcast::channel(256);
         let (l2cap_sender, _) = broadcast::channel(1024);
         let (acl_worker_sender, acl_worker_rx) = mpsc::channel(256);
+        let links = Arc::new(DashMap::new());
 
         // Temporary credit capacity lets initialization run before the actual
         // Read Buffer Size result is known. No ACL packet is sent during init.
@@ -99,6 +103,7 @@ impl HciHost {
             event_sender.clone(),
             l2cap_sender.clone(),
             acl_worker_sender.clone(),
+            links.clone(),
         ));
 
         let mut host = Self {
@@ -107,6 +112,8 @@ impl HciHost {
             acl_worker: acl_worker_sender,
             events: event_sender,
             l2cap_frames: l2cap_sender,
+            links,
+            connection_gate: RwLock::new(()),
             info: ControllerInfo {
                 usb_vendor_id,
                 usb_product_id,
@@ -562,6 +569,7 @@ impl HciHost {
     }
 
     async fn connect_with_clock(&self, addr: DeviceAddr, clock_offset: u16) -> Result<u16> {
+        let _gate = self.connection_gate.read().await;
         let mut events = self.events.subscribe();
         match self.cancel_inquiry().await {
             Ok(())
@@ -602,6 +610,7 @@ impl HciHost {
         addr: DeviceAddr,
         become_master: bool,
     ) -> Result<u16> {
+        let _gate = self.connection_gate.read().await;
         let mut events = self.events.subscribe();
         self.execute(Command::accept_connection(addr, become_master))
             .await?;
@@ -617,7 +626,24 @@ impl HciHost {
         Ok(())
     }
 
-    pub async fn disconnect(&self, handle: u16) -> Result<()> {
+    /// Identifies the ACL currently using `handle`. The controller may assign
+    /// a freed handle to a later connection, which gets a new identity.
+    pub fn link(&self, handle: u16) -> Option<u64> {
+        self.links.get(&handle).map(|link| *link)
+    }
+
+    /// Disconnects `handle` only while it still names the ACL `link`. No ACL
+    /// can be created until the controller acknowledges the Disconnect, so a
+    /// freed handle cannot be reassigned between the check and the command.
+    pub async fn disconnect_link(&self, handle: u16, link: u64) -> Result<()> {
+        let _gate = self.connection_gate.write().await;
+        if self.link(handle) != Some(link) {
+            return Ok(());
+        }
+        self.disconnect(handle).await
+    }
+
+    async fn disconnect(&self, handle: u16) -> Result<()> {
         self.execute_checked(Command::disconnect(handle, 0x13), "Disconnect")
             .await?; // remote user terminated
         self.forget_handle(handle).await
@@ -625,6 +651,8 @@ impl HciHost {
 
     /// Starts BR/EDR authentication and optionally enables link encryption.
     /// Returns the link key created for `addr` if authentication paired.
+    /// `events` must be subscribed before the peer could start pairing, so
+    /// its LinkKeyNotification is not missed.
     /// Do not call this for DualShock 3; its inbound connection intentionally
     /// skips standard authentication.
     pub async fn authenticate(
@@ -632,8 +660,8 @@ impl HciHost {
         handle: u16,
         addr: DeviceAddr,
         encrypt: bool,
+        mut events: broadcast::Receiver<Event>,
     ) -> Result<Option<LinkKey>> {
-        let mut events = self.events.subscribe();
         self.execute(Command::handle_only(
             Opcode::AUTHENTICATION_REQUESTED,
             handle,
@@ -839,8 +867,10 @@ async fn dispatch_events(
     events: broadcast::Sender<Event>,
     l2cap_frames: broadcast::Sender<L2capFrame>,
     acl_worker: mpsc::Sender<AclWorkerMessage>,
+    links: Arc<DashMap<u16, u64>>,
 ) {
     let mut reassembler = AclReassembler::default();
+    let mut next_link = 0u64;
     loop {
         tokio::select! {
             result = event_rx.receive() => match result {
@@ -853,9 +883,19 @@ async fn dispatch_events(
                         _ => false,
                     };
                     if credit_worker_stopped { break; }
-                    if let Event::DisconnectionComplete { handle, .. } = &event {
-                        reassembler.discard_handle(*handle);
-                        let _ = acl_worker.send(AclWorkerMessage::Forget(*handle)).await;
+                    match &event {
+                        Event::ConnectionComplete { status: 0, handle, .. } => {
+                            next_link += 1;
+                            links.insert(*handle, next_link);
+                        }
+                        Event::DisconnectionComplete { status, handle, .. } => {
+                            if *status == 0 {
+                                links.remove(handle);
+                            }
+                            reassembler.discard_handle(*handle);
+                            let _ = acl_worker.send(AclWorkerMessage::Forget(*handle)).await;
+                        }
+                        _ => {}
                     }
                     let _ = events.send(event);
                 }

@@ -17,13 +17,9 @@ pub(super) enum HeldInput {
         physical_key: Option<String>,
         pressed: bool,
     },
-    /// A pointer event, with the shell button state it changed so an
-    /// unclaimed press or release can be reverted.
     Pointer {
         phase: PointerPhase,
         button: u32,
-        flag: u8,
-        flag_was_set: bool,
     },
     Wheel {
         horizontal: i32,
@@ -86,6 +82,11 @@ impl InputHold {
             released.push((held.input, held.outcome.unwrap_or_default()));
         }
         released
+    }
+
+    /// Drops everything still held. Outcomes that arrive later are ignored.
+    pub(super) fn clear(&mut self) {
+        self.queue.clear();
     }
 
     pub(super) fn deadline(&self) -> Option<Instant> {

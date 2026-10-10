@@ -19,8 +19,6 @@
 (*   animAge        now - ShellDocument.last_animation_frame, capped       *)
 (*   pubAge         now - time of the last published ShellEvent::Frame     *)
 (*   timerArmed     ShellHost.frame_timer reset to a future due            *)
-(*   structRev      ShellDocument.dom_structure_revision                   *)
-(*   publishedRev   structure_revision of the last published Frame         *)
 (*   spacingOk      history: every published frame was >= MinFrameSpacing  *)
 (*                  after the previous one                                 *)
 (*                                                                         *)
@@ -34,7 +32,7 @@
 (***************************************************************************)
 EXTENDS Integers, FiniteSets, TLC
 
-CONSTANTS MinFrameSpacing, AnimInterval, MaxRev, TimeInTurn
+CONSTANTS MinFrameSpacing, AnimInterval, TimeInTurn
 
 ASSUME 1 <= MinFrameSpacing /\ MinFrameSpacing <= AnimInterval
 ASSUME TimeInTurn \in BOOLEAN
@@ -44,17 +42,15 @@ CommandKinds == {"Wake", "Invalidate", "Input"}
 
 VARIABLES pc, woken, cmds, paintRequested, dirty, arrived, animating,
           scriptReady, frameAge, animAge, pubAge, timerArmed,
-          structRev, publishedRev, spacingOk
+          spacingOk
 
 vars == <<pc, woken, cmds, paintRequested, dirty, arrived, animating,
-          scriptReady, frameAge, animAge, pubAge, timerArmed,
-          structRev, publishedRev, spacingOk>>
+          scriptReady, frameAge, animAge, pubAge, timerArmed, spacingOk>>
 
 TypeOK ==
   /\ pc \in {"sleeping", "receive", "eventloop", "paint", "layout"}
   /\ cmds \subseteq CommandKinds
   /\ frameAge \in 0..Cap /\ animAge \in 0..Cap /\ pubAge \in 0..Cap
-  /\ structRev \in 0..MaxRev /\ publishedRev \in 0..MaxRev
 
 AnimDue == animating /\ animAge >= AnimInterval
 NeedsPaint == dirty \/ AnimDue
@@ -69,16 +65,14 @@ Init ==
   /\ dirty \in BOOLEAN /\ arrived = FALSE /\ animating \in BOOLEAN
   /\ scriptReady \in BOOLEAN
   /\ frameAge = MinFrameSpacing /\ animAge = 0 /\ pubAge = Cap
-  /\ timerArmed = FALSE
-  /\ structRev = 0 /\ publishedRev = 0 /\ spacingOk = TRUE
+  /\ timerArmed = FALSE /\ spacingOk = TRUE
 
 Inc(x) == IF x < Cap THEN x + 1 ELSE x
 
 \* Script run by Input dispatch, Deno tasks, or publish_layout's syncLayout.
 ScriptEffects(wasDirty) ==
-  \E mutates \in BOOLEAN, restructures \in BOOLEAN, anim \in BOOLEAN :
-    /\ dirty' = (wasDirty \/ mutates \/ restructures)
-    /\ structRev' = IF restructures /\ structRev < MaxRev THEN structRev + 1 ELSE structRev
+  \E mutates \in BOOLEAN, anim \in BOOLEAN :
+    /\ dirty' = (wasDirty \/ mutates)
     /\ animating' = anim
 
 -----------------------------------------------------------------------------
@@ -88,27 +82,26 @@ Tick ==
   /\ TimeInTurn \/ pc = "sleeping"
   /\ frameAge' = Inc(frameAge) /\ animAge' = Inc(animAge) /\ pubAge' = Inc(pubAge)
   /\ UNCHANGED <<pc, woken, cmds, paintRequested, dirty, arrived, animating,
-                 scriptReady, timerArmed, structRev, publishedRev, spacingOk>>
+                 scriptReady, timerArmed, spacingOk>>
 
 SendCommand(k) ==
   /\ k \notin cmds
   /\ cmds' = cmds \cup {k} /\ woken' = TRUE
   /\ arrived' = (arrived \/ k = "Wake")
   /\ UNCHANGED <<pc, paintRequested, dirty, animating, scriptReady, frameAge,
-                 animAge, pubAge, timerArmed, structRev, publishedRev, spacingOk>>
+                 animAge, pubAge, timerArmed, spacingOk>>
 
 ScriptTimerDue ==
   /\ ~scriptReady
   /\ scriptReady' = TRUE /\ woken' = TRUE
   /\ UNCHANGED <<pc, cmds, paintRequested, dirty, arrived, animating, frameAge,
-                 animAge, pubAge, timerArmed, structRev, publishedRev, spacingOk>>
+                 animAge, pubAge, timerArmed, spacingOk>>
 
 TimerFires ==
   /\ timerArmed /\ DueNow
   /\ timerArmed' = FALSE /\ woken' = TRUE
   /\ UNCHANGED <<pc, cmds, paintRequested, dirty, arrived, animating,
-                 scriptReady, frameAge, animAge, pubAge, structRev,
-                 publishedRev, spacingOk>>
+                 scriptReady, frameAge, animAge, pubAge, spacingOk>>
 
 -----------------------------------------------------------------------------
 \* Shell thread
@@ -117,8 +110,7 @@ Wakeup ==
   /\ pc = "sleeping" /\ woken
   /\ pc' = "receive" /\ woken' = FALSE
   /\ UNCHANGED <<cmds, paintRequested, dirty, arrived, animating, scriptReady,
-                 frameAge, animAge, pubAge, timerArmed, structRev,
-                 publishedRev, spacingOk>>
+                 frameAge, animAge, pubAge, timerArmed, spacingOk>>
 
 Receive ==
   /\ pc = "receive"
@@ -127,10 +119,10 @@ Receive ==
   /\ IF "Input" \in cmds
        THEN ScriptEffects(dirty \/ "Invalidate" \in cmds)
        ELSE /\ dirty' = (dirty \/ "Invalidate" \in cmds)
-            /\ UNCHANGED <<structRev, animating>>
+            /\ UNCHANGED animating
   /\ pc' = "eventloop"
   /\ UNCHANGED <<woken, arrived, scriptReady, frameAge, animAge, pubAge,
-                 timerArmed, publishedRev, spacingOk>>
+                 timerArmed, spacingOk>>
 
 PollEventLoop ==
   /\ pc = "eventloop"
@@ -139,36 +131,34 @@ PollEventLoop ==
             /\ \E requeue \in BOOLEAN :
                  /\ scriptReady' = requeue
                  /\ woken' = (woken \/ requeue)
-       ELSE UNCHANGED <<dirty, structRev, animating, scriptReady, woken>>
+       ELSE UNCHANGED <<dirty, animating, scriptReady, woken>>
   /\ pc' = "paint"
   /\ UNCHANGED <<cmds, paintRequested, arrived, frameAge, animAge, pubAge,
-                 timerArmed, publishedRev, spacingOk>>
+                 timerArmed, spacingOk>>
 
 PaintIdle ==
   /\ pc = "paint" /\ ~DueNow
   /\ pc' = "sleeping"
   /\ timerArmed' = (timerArmed \/ AnyDue)
   /\ UNCHANGED <<woken, cmds, paintRequested, dirty, arrived, animating,
-                 scriptReady, frameAge, animAge, pubAge, structRev,
-                 publishedRev, spacingOk>>
+                 scriptReady, frameAge, animAge, pubAge, spacingOk>>
 
 Paint ==
   /\ pc = "paint" /\ DueNow
   /\ paintRequested' = FALSE /\ frameAge' = 0
   /\ IF Produces
        THEN /\ animAge' = 0 /\ arrived' = FALSE /\ pubAge' = 0 /\ dirty' = FALSE
-            /\ publishedRev' = structRev
             /\ spacingOk' = (spacingOk /\ pubAge >= MinFrameSpacing)
-       ELSE UNCHANGED <<animAge, arrived, pubAge, dirty, publishedRev, spacingOk>>
+       ELSE UNCHANGED <<animAge, arrived, pubAge, dirty, spacingOk>>
   /\ pc' = "layout"
-  /\ UNCHANGED <<woken, cmds, animating, scriptReady, timerArmed, structRev>>
+  /\ UNCHANGED <<woken, cmds, animating, scriptReady, timerArmed>>
 
 PublishLayout ==
   /\ pc = "layout"
   /\ ScriptEffects(dirty)
-  /\ pc' = "eventloop"
-  /\ UNCHANGED <<woken, cmds, paintRequested, arrived, scriptReady, frameAge,
-                 animAge, pubAge, timerArmed, publishedRev, spacingOk>>
+  /\ pc' = "sleeping" /\ woken' = TRUE
+  /\ UNCHANGED <<cmds, paintRequested, arrived, scriptReady, frameAge,
+                 animAge, pubAge, timerArmed, spacingOk>>
 
 -----------------------------------------------------------------------------
 
@@ -186,8 +176,6 @@ Spec ==
 \* Properties
 
 FrameSpacing == spacingOk
-
-RevisionMonotonic == [][publishedRev' >= publishedRev]_publishedRev
 
 TurnTerminates == (pc \in {"receive", "eventloop", "paint", "layout"}) ~> (pc = "sleeping")
 

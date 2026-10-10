@@ -52,6 +52,7 @@ impl ActiveController {
 
 pub(super) struct PendingInbound {
     pub(super) handle: u16,
+    pub(super) link: Option<u64>,
     pub(super) slot: usize,
     pub(super) task: JoinHandle<()>,
 }

@@ -9586,6 +9586,7 @@ dependencies = [
  "btleplug",
  "bytes",
  "crc32fast",
+ "dashmap",
  "futures",
  "hidapi",
  "nusb",

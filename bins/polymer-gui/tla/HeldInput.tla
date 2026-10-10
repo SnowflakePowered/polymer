@@ -5,7 +5,7 @@
 (* Rust mapping:                                                           *)
 (*   held          app/held_input.rs InputHold.queue (Held entries;        *)
 (*                 .set/.claimed/.over = Held.outcome, .expired =          *)
-(*                 now - arrived >= HOLD_TIMEOUT, .wasSet = flag_was_set)  *)
+(*                 now - arrived >= HOLD_TIMEOUT)                          *)
 (*   nextSeq       InputHold.next_sequence                                 *)
 (*   mask          input.rs InputState.mouse_buttons (set_mouse_button)    *)
 (*   priority      InputState.priority (replace_priority)                  *)
@@ -33,16 +33,18 @@
 (*   ShellKeyboard        coordinator_input.rs shell_keyboard              *)
 (*   ShellMouse           handle_mouse_button/handle_cursor_moved ->       *)
 (*                        shell_mouse                                      *)
-(*   SetInputPriority     set_input_priority (prepare_priority_change,     *)
+(*   SetInputPriority     set_input_priority (InputHold::clear,            *)
+(*                        prepare_priority_change,                         *)
 (*                        cancel_pointer_connection)                       *)
 (*   Expire               time passing HOLD_TIMEOUT for the oldest entry   *)
 (*   ReleaseHeldInput     one iteration of release_held_input /            *)
 (*                        InputHold::release                               *)
 (*   DrainShell           coordinator_presentation.rs drain_shell          *)
 (*                        (ShellSession::drain + InputHold::settle)        *)
-(*   ReloadShell          app.rs reload_shell: take_reload, drop of        *)
-(*                        ActiveShell (Shutdown + join), activate_shell    *)
-(*                        succeeding or failing (disable)                  *)
+(*   StopShell            app.rs reload_shell: take_reload, ActiveShell    *)
+(*                        drop sends Shutdown and blocks in join           *)
+(*   ReloadShell          join returns, activate_shell succeeding or       *)
+(*                        failing (disable)                                *)
 (*   Receive              shell/host/mod.rs receive(): poll_recv loop      *)
 (*   Dispatch             receive(): one batch element (coalesce or        *)
 (*                        dispatch + InputSettled for replaced and self)   *)
@@ -76,11 +78,16 @@ gameVars == <<gameKey, gameBtn, gPress, gRel, gbPress, gbRel>>
 shellVars == <<shellUp, reloadReported, reloadPending, chan, batch, replaced, outbox, settledLog>>
 
 Cmd(s, kind) == [seq |-> s, kind |-> kind]
-Entry(s, kind, id, pressed, cycle, wasSet) ==
+Entry(s, kind, id, pressed, cycle) ==
   [seq |-> s, kind |-> kind, id |-> id, pressed |-> pressed, cycle |-> cycle,
-   wasSet |-> wasSet, set |-> FALSE, claimed |-> FALSE, over |-> FALSE, expired |-> FALSE]
+   set |-> FALSE, claimed |-> FALSE, over |-> FALSE, expired |-> FALSE]
 Settled(s, o) == [type |-> "settled", seq |-> s, claimed |-> o.claimed, over |-> o.over]
 ReloadEvt == [type |-> "reload", seq |-> 0, claimed |-> FALSE, over |-> FALSE]
+ShutdownCmd == Cmd(0, "shutdown")
+
+Pending == batch \o chan
+Stopping == \E i \in DOMAIN Pending : Pending[i].kind = "shutdown"
+Exited == batch # <<>> /\ Head(batch).kind = "shutdown"
 
 Init ==
   /\ phys = [k \in Keys |-> FALSE]
@@ -126,17 +133,21 @@ ShellKeyboard(k) ==
      IN /\ phys' = [phys EXCEPT ![k] = pressed]
         /\ keyCycle' = [keyCycle EXCEPT ![k] = cycle]
         /\ IF ~shellUp
-             THEN /\ IF gameOwned THEN DeliverKey(k, pressed, cycle) ELSE UNCHANGED gameVars
-                  /\ UNCHANGED <<chan, held, nextSeq>>
-             ELSE /\ UNCHANGED gameVars
+             THEN /\ UNCHANGED <<gameVars, chan>>
                   /\ IF gameOwned
                        THEN /\ nextSeq' = nextSeq + 1
-                            /\ held' = Append(held, Entry(nextSeq + 1, "key", k, pressed, cycle, FALSE))
+                            /\ held' = Append(held, [Entry(nextSeq + 1, "key", k, pressed, cycle) EXCEPT !.set = TRUE])
+                            /\ shellOutcome' = [shellOutcome EXCEPT ![nextSeq + 1] = [set |-> TRUE, claimed |-> FALSE, over |-> FALSE]]
+                       ELSE UNCHANGED <<held, nextSeq, shellOutcome>>
+             ELSE /\ UNCHANGED <<gameVars, shellOutcome>>
+                  /\ IF gameOwned
+                       THEN /\ nextSeq' = nextSeq + 1
+                            /\ held' = Append(held, Entry(nextSeq + 1, "key", k, pressed, cycle))
                             /\ chan' = Append(chan, Cmd(nextSeq + 1, "key"))
                        ELSE /\ chan' = Append(chan, Cmd(0, "key"))
                             /\ UNCHANGED <<held, nextSeq>>
   /\ UNCHANGED <<physBtn, btnCycle, priority, mask, shellUp, reloadReported, reloadPending,
-                 batch, replaced, outbox, relCount, shellOutcome, settledLog, moves, flips, reloads>>
+                 batch, replaced, outbox, relCount, settledLog, moves, flips, reloads>>
 
 \* handle_mouse_button -> shell_mouse(Some(pressed))
 ShellMouseButton(b) ==
@@ -150,7 +161,7 @@ ShellMouseButton(b) ==
              THEN UNCHANGED <<mask, held, nextSeq, chan>>
              ELSE /\ mask' = [mask EXCEPT ![b] = pressed]
                   /\ nextSeq' = nextSeq + 1
-                  /\ held' = Append(held, Entry(nextSeq + 1, "btn", b, pressed, cycle, mask[b]))
+                  /\ held' = Append(held, Entry(nextSeq + 1, "btn", b, pressed, cycle))
                   /\ chan' = Append(chan, Cmd(nextSeq + 1, "btn"))
   /\ UNCHANGED <<phys, keyCycle, priority, shellUp, reloadReported, reloadPending,
                  batch, replaced, outbox, relCount, shellOutcome, settledLog, moves, flips, reloads>>
@@ -163,7 +174,7 @@ ShellMouseMove ==
   /\ IF ~shellUp
        THEN UNCHANGED <<held, nextSeq, chan>>
        ELSE /\ nextSeq' = nextSeq + 1
-            /\ held' = Append(held, Entry(nextSeq + 1, "move", NoId, FALSE, 0, FALSE))
+            /\ held' = Append(held, Entry(nextSeq + 1, "move", NoId, FALSE, 0))
             /\ chan' = Append(chan, Cmd(nextSeq + 1, "move"))
   /\ UNCHANGED <<phys, physBtn, keyCycle, btnCycle, priority, mask, shellUp, reloadReported,
                  reloadPending, batch, replaced, outbox, relCount, shellOutcome, settledLog,
@@ -171,16 +182,19 @@ ShellMouseMove ==
   /\ UNCHANGED gameVars
 
 \* set_input_priority with a different priority: cancel_pointer_connection
-\* (PointerPhase::Cancel clears buttons) and prepare_priority_change (FocusLost).
+\* (PointerPhase::Cancel clears buttons), prepare_priority_change (FocusLost),
+\* and InputHold::clear, which cancels everything still held.
 SetInputPriority ==
   /\ flips < MaxFlips
   /\ flips' = flips + 1
   /\ priority' = IF priority = "Game" THEN "Ui" ELSE "Game"
   /\ gameKey' = [k \in Keys |-> FALSE]
   /\ gameBtn' = [b \in Buttons |-> FALSE]
+  /\ held' = <<>>
+  /\ relCount' = [s \in Seqs |-> IF \E i \in DOMAIN held : held[i].seq = s THEN relCount[s] + 1 ELSE relCount[s]]
   /\ UNCHANGED <<gPress, gRel, gbPress, gbRel>>
   /\ UNCHANGED <<phys, physBtn, keyCycle, btnCycle, shellUp, reloadReported, reloadPending,
-                 chan, batch, replaced, outbox, held, nextSeq, mask, relCount, shellOutcome,
+                 chan, batch, replaced, outbox, nextSeq, mask, shellOutcome,
                  settledLog, inputs, moves, reloads>>
 
 \* Time passes HOLD_TIMEOUT for the oldest entry not yet expired (arrival order).
@@ -195,6 +209,7 @@ Expire ==
   /\ UNCHANGED gameVars
 
 \* release_held_input: pop the front once settled or expired and route it.
+\* A press routes when unclaimed; a release routes when the game holds it.
 ReleaseHeldInput ==
   /\ held # <<>>
   /\ LET h == Head(held)
@@ -204,13 +219,13 @@ ReleaseHeldInput ==
         /\ held' = Tail(held)
         /\ relCount' = [relCount EXCEPT ![h.seq] = @ + 1]
         /\ CASE h.kind = "key" ->
-                  /\ IF ~claimed /\ priority = "Game"
+                  /\ IF IF h.pressed THEN ~claimed /\ priority = "Game" ELSE gameKey[h.id]
                        THEN DeliverKey(h.id, h.pressed, h.cycle)
                        ELSE UNCHANGED gameVars
                   /\ UNCHANGED mask
              [] h.kind = "btn" ->
-                  /\ mask' = IF ~claimed THEN [mask EXCEPT ![h.id] = h.wasSet] ELSE mask
-                  /\ IF ~claimed /\ over
+                  /\ UNCHANGED mask
+                  /\ IF IF h.pressed THEN ~claimed /\ over ELSE gameBtn[h.id]
                        THEN DeliverButton(h.id, h.pressed, h.cycle)
                        ELSE UNCHANGED gameVars
              [] h.kind = "move" ->
@@ -243,18 +258,28 @@ DrainShell ==
                  inputs, moves, flips, reloads>>
   /\ UNCHANGED gameVars
 
-\* reload_shell: take_reload drops ActiveShell (Shutdown, join; its event
-\* receiver is dropped with it), then activate_shell succeeds or disables.
-ReloadShell ==
+\* ActiveShell::drop: Shutdown goes after every queued command; the window
+\* thread then blocks in join until the shell thread reaches it.
+StopShell ==
   /\ shellUp /\ reloadPending
   /\ reloads' = reloads + 1
+  /\ chan' = Append(chan, ShutdownCmd)
+  /\ UNCHANGED <<phys, physBtn, keyCycle, btnCycle, priority, shellUp, reloadReported,
+                 reloadPending, batch, replaced, outbox, held, nextSeq, mask, relCount,
+                 shellOutcome, settledLog, inputs, moves, flips>>
+  /\ UNCHANGED gameVars
+
+\* join returns once receive() hits Shutdown; the event receiver is dropped
+\* with ActiveShell, then activate_shell succeeds or disables.
+ReloadShell ==
+  /\ Exited
   /\ shellUp' \in ReloadResults
   /\ reloadReported' = FALSE
   /\ reloadPending' = FALSE
   /\ chan' = <<>> /\ batch' = <<>> /\ replaced' = <<>> /\ outbox' = <<>>
   /\ settledLog' = <<>>
   /\ UNCHANGED <<phys, physBtn, keyCycle, btnCycle, priority, held, nextSeq, mask, relCount,
-                 shellOutcome, inputs, moves, flips>>
+                 shellOutcome, inputs, moves, flips, reloads>>
   /\ UNCHANGED gameVars
 
 \* receive(): poll_recv until Pending; anything sent later lands in the next batch.
@@ -274,6 +299,7 @@ Receive ==
 Dispatch ==
   /\ shellUp
   /\ batch # <<>>
+  /\ ~Exited
   /\ batch' = Tail(batch)
   /\ LET c == Head(batch) IN
        IF c.kind = "move" /\ Len(batch) > 1 /\ batch[2].kind = "move"
@@ -294,6 +320,7 @@ Dispatch ==
 
 ReportReload ==
   /\ shellUp
+  /\ ~Exited
   /\ ~reloadReported
   /\ reloads < MaxReloads
   /\ reloadReported' = TRUE
@@ -310,15 +337,18 @@ Finished ==
   /\ Quiescent
   /\ UNCHANGED vars
 
+\* While blocked in join the window thread does nothing; time still passes.
 WindowNext ==
-  \/ \E k \in Keys : ShellKeyboard(k)
-  \/ \E b \in Buttons : ShellMouseButton(b)
-  \/ ShellMouseMove
-  \/ SetInputPriority
   \/ Expire
-  \/ ReleaseHeldInput
-  \/ DrainShell
   \/ ReloadShell
+  \/ /\ ~Stopping
+     /\ \/ \E k \in Keys : ShellKeyboard(k)
+        \/ \E b \in Buttons : ShellMouseButton(b)
+        \/ ShellMouseMove
+        \/ SetInputPriority
+        \/ ReleaseHeldInput
+        \/ DrainShell
+        \/ StopShell
 
 ShellNext == Receive \/ Dispatch \/ ReportReload
 
@@ -326,8 +356,9 @@ Next == WindowNext \/ ShellNext \/ Finished
 
 WindowFairness ==
   /\ WF_vars(Expire)
-  /\ WF_vars(ReleaseHeldInput)
-  /\ WF_vars(DrainShell)
+  /\ WF_vars(~Stopping /\ ReleaseHeldInput)
+  /\ WF_vars(~Stopping /\ DrainShell)
+  /\ WF_vars(~Stopping /\ StopShell)
   /\ WF_vars(ReloadShell)
 
 \* The script may stall forever: no fairness on the shell thread.
@@ -373,6 +404,12 @@ SettledInOrder ==
 OnlyConsecutiveMovesCoalesce ==
   /\ \A i \in DOMAIN replaced : replaced[i].kind = "move"
   /\ replaced # <<>> => (batch # <<>> /\ Head(batch).kind = "move")
+
+\* S2: nothing is queued behind Shutdown, and the shell stops with every
+\* superseded move already settled.
+ShutdownLast ==
+  /\ \A i \in DOMAIN Pending : Pending[i].kind = "shutdown" => i = Len(Pending)
+  /\ Exited => replaced = <<>>
 
 \* S2: a settled outcome in the hold is what dispatch produced for that sequence.
 NoStaleOutcome ==

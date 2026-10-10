@@ -54,15 +54,12 @@ impl ShellCoordinator {
             4 => 16,
             _ => 0,
         };
-        let flag_was_set = self.input.mouse_buttons() & flag != 0;
         if let Some(pressed) = pressed {
             self.input.set_mouse_button(flag, pressed);
         }
         let sequence = self.held.hold(HeldInput::Pointer {
             phase,
             button: game_button,
-            flag: if pressed.is_some() { flag } else { 0 },
-            flag_was_set,
         });
         let input = self.pointer_input(kind, button);
         self.shell.input(Some(sequence), input);
@@ -90,7 +87,12 @@ impl ShellCoordinator {
         let game_owned = self.input.priority() == InputPriority::Game;
         if !self.shell.is_active() {
             if game_owned {
-                self.route_keyboard_to_game(Some(code), pressed);
+                let sequence = self.held.hold(HeldInput::Key {
+                    physical_key: Some(code),
+                    pressed,
+                });
+                self.held.settle(sequence, InputOutcome::default());
+                self.release_held_input(Instant::now());
             }
             return;
         }
@@ -113,26 +115,33 @@ impl ShellCoordinator {
     }
 
     /// Routes held input the shell has settled, or that waited too long, to
-    /// the game in arrival order.
+    /// the game in arrival order. A release reaches the game whenever the game
+    /// holds its press, whatever script decided.
     pub(super) fn release_held_input(&mut self, now: Instant) {
         for (input, outcome) in self.held.release(now) {
             match input {
                 HeldInput::Key {
+                    physical_key: Some(key),
+                    pressed: false,
+                } if self.input.game_key_down(&key) => {
+                    self.route_keyboard_to_game(Some(key), false);
+                }
+                HeldInput::Key {
                     physical_key,
-                    pressed,
+                    pressed: true,
                 } if !outcome.claimed && self.input.priority() == InputPriority::Game => {
-                    self.route_keyboard_to_game(physical_key, pressed);
+                    self.route_keyboard_to_game(physical_key, true);
                 }
                 HeldInput::Pointer {
-                    phase,
+                    phase: PointerPhase::ButtonUp,
                     button,
-                    flag,
-                    flag_was_set,
-                } if !outcome.claimed => {
-                    self.input.set_mouse_button(flag, flag_was_set);
-                    if outcome.over_tracked_surface {
-                        self.route_pointer(phase, button, 0, 0);
-                    }
+                } if self.input.captured_connection().is_some() => {
+                    self.route_pointer(PointerPhase::ButtonUp, button, 0, 0);
+                }
+                HeldInput::Pointer { phase, button }
+                    if !outcome.claimed && outcome.over_tracked_surface =>
+                {
+                    self.route_pointer(phase, button, 0, 0);
                 }
                 HeldInput::Wheel {
                     horizontal,
@@ -194,6 +203,7 @@ impl ShellCoordinator {
         if let Some(connection) = self.input.captured_connection() {
             self.cancel_pointer_connection(connection);
         }
+        self.held.clear();
         self.input.prepare_priority_change();
         self.input
             .set_game_input_enabled(priority == InputPriority::Game);
@@ -239,6 +249,7 @@ impl ShellCoordinator {
         if let Some(connection) = self.input.captured_connection() {
             self.cancel_pointer_connection(connection);
         }
+        self.held.clear();
         for (button, _) in self.input.focus_lost_buttons() {
             let input = self.pointer_input("mouseup", button);
             self.shell.input(None, input);

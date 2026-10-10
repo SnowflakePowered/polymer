@@ -632,8 +632,8 @@ pub(super) async fn run(
                         for (_, pending) in pending_inbound.drain() {
                             pending.task.abort();
                             let _ = pending.task.await;
-                            if let Some(host) = &host {
-                                let _ = host.disconnect(pending.handle).await;
+                            if let (Some(host), Some(link)) = (&host, pending.link) {
+                                let _ = host.disconnect_link(pending.handle, link).await;
                             }
                         }
                         sleep_all_for_controller_order(&mut active, &events).await;
@@ -698,7 +698,9 @@ pub(super) async fn run(
                         }
                         if let Some(pending) = pending_inbound.remove(&device.addr) {
                             pending.task.abort();
-                            let _ = host.disconnect(pending.handle).await;
+                            if let Some(link) = pending.link {
+                                let _ = host.disconnect_link(pending.handle, link).await;
+                            }
                         }
                         stop_active(&mut active, device.addr).await;
                         profile_id = identities.get(&device.addr)
@@ -1005,8 +1007,8 @@ pub(super) async fn run(
                     Command::Forget(addr) => {
                         if let Some(pending) = pending_inbound.remove(&addr) {
                             pending.task.abort();
-                            if let Some(host) = &host {
-                                let _ = host.disconnect(pending.handle).await;
+                            if let (Some(host), Some(link)) = (&host, pending.link) {
+                                let _ = host.disconnect_link(pending.handle, link).await;
                             }
                         }
                         stop_active(&mut active, addr).await;
@@ -1137,6 +1139,7 @@ pub(super) async fn run(
                         let become_master = identity.policy(addr, 0).become_master;
                         match host.accept_connection_with_role(addr, become_master).await {
                             Ok(handle) => {
+                                let link = host.link(handle);
                                 let mut transport =
                                     BrEdrHid::new(host.clone(), addr, link_keys.clone());
                                 if identity.is_wii_remote() {
@@ -1201,8 +1204,8 @@ pub(super) async fn run(
                                         })
                                     }
                                     .await;
-                                    if result.is_err() {
-                                        let _ = task_host.disconnect(handle).await;
+                                    if let (Err(_), Some(link)) = (&result, link) {
+                                        let _ = task_host.disconnect_link(handle, link).await;
                                     }
                                     let _ = completion_tx.send(InboundResult {
                                         addr,
@@ -1212,7 +1215,7 @@ pub(super) async fn run(
                                         result,
                                     });
                                 });
-                                pending_inbound.insert(addr, PendingInbound { handle, slot, task });
+                                pending_inbound.insert(addr, PendingInbound { handle, link, slot, task });
                             }
                             Err(error) => { let _ = events.send(Event::Error(error.to_string())); }
                         }
@@ -1280,8 +1283,8 @@ pub(super) async fn run(
     stop_ble_recovery(&mut ble_recovery_task).await;
     for (_, pending) in pending_inbound.drain() {
         pending.task.abort();
-        if let Some(host) = &host {
-            let _ = host.disconnect(pending.handle).await;
+        if let (Some(host), Some(link)) = (&host, pending.link) {
+            let _ = host.disconnect_link(pending.handle, link).await;
         }
     }
     for (_, pending) in pending_outbound.drain() {

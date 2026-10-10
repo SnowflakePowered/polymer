@@ -29,8 +29,11 @@
 (*   cmds[g]       ShellChannel / UnboundedReceiver<ShellCommand> of g     *)
 (*   evs[g]        ShellOutbox.events / ActiveShell.events of g            *)
 (*   reported[g]   ShellHost.reload_reported                               *)
-(*   launch*       emulator.rs Handler<Launch>: validate_launch, then      *)
-(*                 state.launch with the reply (unwrap_or(None))           *)
+(*   launch*       emulator.rs Handler<Launch>: validate_launch returns    *)
+(*                 the shell generation with the reply; state.launch       *)
+(*                 rejects when that generation is no longer current or    *)
+(*                 the reply was dropped                                   *)
+(*   launchGen     generation validate_launch was sent to, 0 = no shell    *)
 (*   validatedBy   shell generation that answered ValidateLaunch,          *)
 (*                 0 = resolved None (no shell / reply dropped)            *)
 (*   launchedUnder shell generation Active when state.launch ran, 0=none   *)
@@ -44,6 +47,10 @@
 (* Start* = ShellHost::run/start; Receive = receive/handle;                *)
 (* ScriptRequestsReload = poll_event_loop + report_reload;                 *)
 (* ScriptLoops = a script task that never returns to poll_event_loop.      *)
+(* Terminate = ActiveShell::drop calling terminate_execution after         *)
+(* Shutdown; the host stops once the script unwinds.                       *)
+(* StartDeadline = activate's start timeout calling terminate_execution    *)
+(* through the isolate handle published before document scripts run.      *)
 (* Abstracted: frames, ShellUpdated wake coalescing (S3), input payloads,  *)
 (* coalescing (S2), held-input timeouts (S1), exit while not idle.         *)
 (***************************************************************************)
@@ -71,7 +78,7 @@ TypeOK ==
   /\ joinFor \in {"none", "reload", "exit"}
   /\ shell \in [Gens -> {"none", "starting", "running", "looping", "exited"}]
   /\ startOk \in [Gens -> {"pending", "ok", "err"}]
-  /\ launch \in {"none", "validating", "launching", "done"}
+  /\ launch \in {"none", "validating", "launching", "done", "rejected"}
 
 Init ==
   /\ slot = "Awaiting" /\ activeGen = 0 /\ gen = 0 /\ reloadReq = FALSE
@@ -176,15 +183,17 @@ LaunchBegin ==
             /\ cmds' = [cmds EXCEPT ![activeGen] = Append(@, Cmd("Validate"))]
             /\ UNCHANGED validatedBy
        [] OTHER ->
-            /\ launch' = "launching" /\ validatedBy' = 0
-            /\ UNCHANGED <<cmds, launchGen>>
+            /\ launch' = "launching" /\ validatedBy' = 0 /\ launchGen' = 0
+            /\ UNCHANGED cmds
   /\ UNCHANGED <<slot, activeGen, gen, reloadReq, win, joinFor, exitReq, shell,
                  startOk, evs, reported, loops, inputs, launchedUnder, staleSettle>>
 
 LaunchApply ==
   /\ launch = "launching" /\ win = "idle"
-  /\ launch' = "done"
-  /\ launchedUnder' = IF slot = "Active" THEN activeGen ELSE 0
+  /\ LET current == IF slot = "Active" THEN activeGen ELSE 0 IN
+       IF launchGen = current /\ validatedBy = launchGen
+         THEN /\ launch' = "done" /\ launchedUnder' = current
+         ELSE /\ launch' = "rejected" /\ UNCHANGED launchedUnder
   /\ UNCHANGED <<slot, activeGen, gen, reloadReq, win, joinFor, exitReq, Shells,
                  inputs, launchGen, validatedBy, staleSettle>>
 
@@ -247,6 +256,24 @@ ScriptLoops(g) ==
   /\ UNCHANGED <<slot, activeGen, gen, reloadReq, win, joinFor, exitReq, startOk,
                  cmds, evs, reported, inputs, Launches, staleSettle>>
 
+ShutdownQueued(g) == \E i \in 1..Len(cmds[g]) : cmds[g][i].kind = "Shutdown"
+
+Terminate(g) ==
+  /\ shell[g] = "looping" /\ ShutdownQueued(g)
+  /\ shell' = [shell EXCEPT ![g] = "exited"]
+  /\ DropPendingValidate(g)
+  /\ UNCHANGED <<slot, activeGen, gen, reloadReq, win, joinFor, exitReq, startOk,
+                 cmds, evs, reported, loops, inputs, launchGen, launchedUnder,
+                 staleSettle>>
+
+StartDeadline(g) ==
+  /\ win = "awaitStart" /\ gen = g /\ startOk[g] = "pending"
+  /\ shell[g] \in {"starting", "looping"}
+  /\ shell' = [shell EXCEPT ![g] = "exited"]
+  /\ startOk' = [startOk EXCEPT ![g] = "err"]
+  /\ UNCHANGED <<slot, activeGen, gen, reloadReq, win, joinFor, exitReq, cmds,
+                 evs, reported, loops, inputs, Launches, staleSettle>>
+
 -----------------------------------------------------------------------------
 
 Window == Activate \/ SourceMissing \/ ActivateStarted \/ ActivateFailed
@@ -256,13 +283,15 @@ Next ==
   \/ Window \/ LaunchBegin \/ LaunchApply \/ Finished
   \/ \E g \in Gens : \/ StartOk(g) \/ StartFail(g) \/ StartLoops(g)
                      \/ Receive(g) \/ ScriptRequestsReload(g) \/ ScriptLoops(g)
+                     \/ Terminate(g) \/ StartDeadline(g)
 
 Fairness ==
   /\ WF_vars(Activate \/ SourceMissing)
   /\ WF_vars(ActivateStarted) /\ WF_vars(ActivateFailed)
   /\ WF_vars(Drain) /\ WF_vars(TakeReload) /\ WF_vars(JoinDone)
   /\ WF_vars(LaunchApply)
-  /\ \A g \in Gens : WF_vars(StartOk(g) \/ StartFail(g)) /\ WF_vars(Receive(g))
+  /\ \A g \in Gens : /\ WF_vars(StartOk(g) \/ StartFail(g)) /\ WF_vars(Receive(g))
+                    /\ WF_vars(Terminate(g)) /\ WF_vars(StartDeadline(g))
 
 Spec == Init /\ [][Next]_vars /\ Fairness
 
@@ -284,5 +313,6 @@ ExitCompletes == exitReq ~> (win = "exited")
 
 LaunchResolves ==
   (launch \in {"validating", "launching"})
-    ~> (launch = "done" \/ win = "exited")
+    ~> (launch \in {"done", "rejected"} \/ win = "exited"
+        \/ (launch = "validating" /\ shell[launchGen] = "looping"))
 =============================================================================
