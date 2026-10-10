@@ -6,7 +6,7 @@ use crate::inspector::InspectorWindow;
 use crate::instance_events;
 use crate::launch::AttachedLaunchPlan;
 use crate::metrics::{TurnPhase, TurnProfile};
-use crate::shell::protocol::{PointerSample, ShellCommand, ShellEvent, ShellInput};
+use crate::shell::protocol::{InputOutcome, PointerSample, ShellCommand, ShellEvent, ShellInput};
 use crate::shell::{ShellSession, ShellSessionFactory, ShellSource};
 use crate::shell::runtime::{InstanceToken, PolymerNotification, PolymerNotificationSender};
 use crate::window_manager::{
@@ -201,6 +201,7 @@ impl ShellCoordinator {
         if !self.shell.take_reload() {
             return;
         }
+        self.inspector = None;
         let (source, error) = match self.theme.reload_document().await {
             Ok(source) => (Some(source), None),
             Err(error) => (None, Some(error.to_string())),

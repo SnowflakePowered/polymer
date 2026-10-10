@@ -52,7 +52,7 @@ impl BrIdentity {
         }
         // Sony models share names. Resolve their Device ID record on the same
         // ACL used for HID, before choosing a session or persisting its identity.
-        let handle = host.connect(device).await?;
+        let handle = transport.connect_acl(device).await?;
         let result = async {
             let discovered = sdp::query_identity(&Link::new(host.clone(), handle)).await?;
             self.refine(device.addr, discovered)?;
@@ -67,7 +67,7 @@ impl BrIdentity {
         }
         .await;
         if result.is_err() {
-            let _ = host.disconnect(handle).await;
+            let _ = transport.disconnect().await;
         }
         result
     }

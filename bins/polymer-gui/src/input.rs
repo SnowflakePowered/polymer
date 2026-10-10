@@ -229,6 +229,10 @@ impl InputRouter {
         code.as_str() != "Unidentified"
     }
 
+    pub fn game_key_down(&self, key: &str) -> bool {
+        self.keyboard.sample.keys.contains(KeyCode::new(key))
+    }
+
     pub const fn priority(&self) -> InputPriority {
         self.priority
     }

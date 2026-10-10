@@ -39,6 +39,8 @@ pub struct BrEdrHid {
     disconnects: broadcast::Sender<()>,
     state: Arc<AtomicU8>,
     handle: Option<u16>,
+    acl: Option<u64>,
+    security_events: Option<broadcast::Receiver<HciEvent>>,
     link: Option<Link>,
     control: Option<Arc<super::control::Control>>,
     control_sender: Option<ChannelSender>,
@@ -60,6 +62,8 @@ impl BrEdrHid {
             disconnects,
             state: Arc::new(AtomicU8::new(DISCONNECTED)),
             handle: None,
+            acl: None,
+            security_events: None,
             link: None,
             control: None,
             control_sender: None,
@@ -204,6 +208,8 @@ impl BrEdrHid {
         hci_events: broadcast::Receiver<HciEvent>,
     ) -> Result<()> {
         self.adopt(handle);
+        let report_events = hci_events.resubscribe();
+        self.security_events = Some(hci_events);
         let link = Link::new_with_frame_receiver(self.host.clone(), handle, frames);
         self.sdp_task = Some(super::sdp::server::Server::spawn(link.clone()));
         let result = async {
@@ -211,7 +217,7 @@ impl BrEdrHid {
             // open_channel also accepts queued/crossed requests from the peer.
             let control = open_channel_with_retry(&link, HID_CONTROL_PSM).await?;
             let interrupt = open_channel_with_retry(&link, HID_INTERRUPT_PSM).await?;
-            self.finish_connection(handle, link, control, interrupt, hci_events)
+            self.finish_connection(handle, link, control, interrupt, report_events)
                 .await
         }
         .await;
@@ -237,9 +243,11 @@ impl BrEdrHid {
             self.disconnect().await?;
         }
         self.state.store(CONNECTING, Ordering::Release);
+        let security_events = self.host.events();
         match self.host.connect(device).await {
             Ok(handle) => {
-                self.handle = Some(handle);
+                self.own(handle);
+                self.security_events = Some(security_events);
                 Ok(handle)
             }
             Err(error) => {
@@ -274,8 +282,9 @@ impl BrEdrHid {
         handle: u16,
         controller_opens_hid: bool,
     ) -> Result<()> {
-        self.handle = Some(handle);
-        self.state.store(CONNECTING, Ordering::Release);
+        if self.handle != Some(handle) {
+            self.own(handle);
+        }
         if !controller_opens_hid {
             return self.finish_outbound_handle(handle).await;
         }
@@ -309,7 +318,12 @@ impl BrEdrHid {
 
     fn adopt(&mut self, handle: u16) {
         self.close_channels();
+        self.own(handle);
+    }
+
+    fn own(&mut self, handle: u16) {
         self.handle = Some(handle);
+        self.acl = self.host.link(handle);
         self.state.store(CONNECTING, Ordering::Release);
     }
 
@@ -318,8 +332,15 @@ impl BrEdrHid {
         Err(error)
     }
 
-    async fn authenticate(&self, handle: u16) -> Result<()> {
-        let key = self.host.authenticate(handle, self.addr, true).await?;
+    async fn authenticate(&mut self, handle: u16) -> Result<()> {
+        let events = self
+            .security_events
+            .take()
+            .unwrap_or_else(|| self.host.events());
+        let key = self
+            .host
+            .authenticate(handle, self.addr, true, events)
+            .await?;
         self.persist(key)
     }
 
@@ -341,11 +362,14 @@ impl BrEdrHid {
         let response_sender = self.reports.clone();
         let disconnect_sender = self.disconnects.clone();
         let state = self.state.clone();
+        let host = self.host.clone();
+        let acl = self.acl;
         let control_sender = control.sender();
         let interrupt_sender = interrupt.sender();
         self.state.store(CONNECTED, Ordering::Release);
         let report_task = tokio::spawn(async move {
-            loop {
+            let mut live = acl.is_some() && host.link(handle) == acl;
+            while live {
                 tokio::select! {
                     result = interrupt.receive() => {
                         let report = match result {
@@ -365,11 +389,13 @@ impl BrEdrHid {
                             );
                         }
                     }
-                    event = hci_events.recv() => match event {
-                        Ok(HciEvent::DisconnectionComplete { handle: event_handle, .. })
-                            if event_handle == handle => break,
-                        Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
-                        Err(broadcast::error::RecvError::Closed) => break,
+                    event = hci_events.recv() => live = match event {
+                        Ok(HciEvent::DisconnectionComplete { handle: event_handle, .. }) => {
+                            event_handle != handle
+                        }
+                        Ok(_) => true,
+                        Err(broadcast::error::RecvError::Lagged(_)) => host.link(handle) == acl,
+                        Err(broadcast::error::RecvError::Closed) => false,
                     },
                 }
             }
@@ -432,6 +458,8 @@ impl BrEdrHid {
         self.control = None;
         self.link = None;
         self.handle = None;
+        self.acl = None;
+        self.security_events = None;
         self.state.store(DISCONNECTED, Ordering::Release);
     }
 }
@@ -529,6 +557,7 @@ impl Transport for BrEdrHid {
         }
         self.addr = addr;
         self.state.store(CONNECTING, Ordering::Release);
+        let security_events = self.host.events();
         let handle = match self.host.connect_addr(addr).await {
             Ok(handle) => handle,
             Err(error) => {
@@ -536,7 +565,8 @@ impl Transport for BrEdrHid {
                 return Err(error);
             }
         };
-        self.handle = Some(handle);
+        self.own(handle);
+        self.security_events = Some(security_events);
         self.finish_outbound_handle(handle).await
     }
 
@@ -594,10 +624,10 @@ impl Transport for BrEdrHid {
     }
 
     async fn disconnect(&mut self) -> Result<()> {
-        let handle = self.handle;
+        let target = self.handle.zip(self.acl);
         self.close_channels();
-        if let Some(handle) = handle {
-            self.host.disconnect(handle).await?;
+        if let Some((handle, acl)) = target {
+            self.host.disconnect_link(handle, acl).await?;
         }
         Ok(())
     }
@@ -613,14 +643,13 @@ impl Transport for BrEdrHid {
 
 impl Drop for BrEdrHid {
     fn drop(&mut self) {
-        let handle = self
-            .handle
-            .filter(|_| self.state.load(Ordering::Acquire) != DISCONNECTED);
+        let target = self.handle.zip(self.acl);
         self.close_channels();
-        if let (Some(handle), Ok(runtime)) = (handle, tokio::runtime::Handle::try_current()) {
+        if let (Some((handle, acl)), Ok(runtime)) = (target, tokio::runtime::Handle::try_current())
+        {
             let host = self.host.clone();
             runtime.spawn(async move {
-                let _ = host.disconnect(handle).await;
+                let _ = host.disconnect_link(handle, acl).await;
             });
         }
     }
