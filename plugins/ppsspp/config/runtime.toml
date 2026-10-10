@@ -1,0 +1,127 @@
+[bool_style.ppsspp]
+true = "True"
+false = "False"
+
+[targets.settings]
+output = { format = "ini", path = "ppsspp.ini" }
+
+[targets.settings.General]
+[targets.settings.Graphics]
+[targets.settings.Control]
+
+[sections.general]
+title = "General"
+target = "settings.General"
+
+[[sections.general.options]]
+key = "FirstRun"
+title = "FirstRun"
+type = "bool"
+default = false
+emit = { key = "FirstRun", bool_style = "ppsspp" }
+
+[[sections.general.options]]
+key = "CheckForNewVersion"
+title = "CheckForNewVersion"
+type = "bool"
+default = false
+emit = { key = "CheckForNewVersion", bool_style = "ppsspp" }
+
+[[sections.general.options]]
+key = "DiscordRichPresence"
+title = "DiscordRichPresence"
+type = "bool"
+default = false
+emit = { key = "DiscordRichPresence", bool_style = "ppsspp" }
+
+[[sections.general.options]]
+key = "PauseOnLostFocus"
+title = "PauseOnLostFocus"
+type = "bool"
+default = false
+emit = { key = "PauseOnLostFocus", bool_style = "ppsspp" }
+
+[[sections.general.options]]
+key = "AskForExitConfirmationAfterSeconds"
+title = "AskForExitConfirmationAfterSeconds"
+type = "int"
+default = 0
+emit = { key = "AskForExitConfirmationAfterSeconds" }
+
+[[sections.general.options]]
+key = "FullscreenOnDoubleclick"
+title = "FullscreenOnDoubleclick"
+type = "bool"
+default = false
+emit = { key = "FullscreenOnDoubleclick", bool_style = "ppsspp" }
+
+[[sections.general.options]]
+key = "StateSlot"
+title = "StateSlot"
+type = "int"
+default = 0
+emit = { key = "StateSlot" }
+
+[[sections.general.options]]
+key = "SaveStateSlotCount"
+title = "SaveStateSlotCount"
+type = "int"
+default = 11
+emit = { key = "SaveStateSlotCount" }
+
+[[sections.general.options]]
+key = "EnableStateUndo"
+title = "EnableStateUndo"
+type = "bool"
+default = false
+emit = { key = "EnableStateUndo", bool_style = "ppsspp" }
+
+[[sections.general.options]]
+key = "ConfirmLoadState"
+title = "ConfirmLoadState"
+type = "bool"
+default = false
+emit = { key = "ConfirmLoadState", bool_style = "ppsspp" }
+
+[sections.graphics]
+title = "Graphics"
+target = "settings.Graphics"
+
+[[sections.graphics.options]]
+key = "GraphicsBackend"
+title = "GraphicsBackend"
+type = "string"
+default = "DIRECT3D11"
+emit = { key = "GraphicsBackend" }
+
+[[sections.graphics.options]]
+key = "DisabledGraphicsBackends"
+title = "DisabledGraphicsBackends"
+type = "string"
+default = "VULKAN"
+emit = { key = "DisabledGraphicsBackends" }
+
+[sections.control]
+title = "Control"
+target = "settings.Control"
+
+[[sections.control.options]]
+key = "AllowXInput"
+title = "AllowXInput"
+type = "bool"
+default = true
+emit = { key = "AllowXInput", bool_style = "ppsspp" }
+
+[[sections.control.options]]
+key = "AllowDInput"
+title = "AllowDInput"
+type = "bool"
+default = false
+emit = { key = "AllowDInput", bool_style = "ppsspp" }
+
+[[sections.control.options]]
+key = "AllowHIDInput"
+title = "AllowHIDInput"
+type = "bool"
+default = false
+emit = { key = "AllowHIDInput", bool_style = "ppsspp" }

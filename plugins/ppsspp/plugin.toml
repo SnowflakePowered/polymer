@@ -1,0 +1,19 @@
+[plugin]
+id = "ppsspp"
+version = "0.0.1"
+class = "emulator"
+main = "ppsspp.ts"
+
+[[plugin.caches]]
+key = "saves"
+label = "PSP save data"
+
+[emulator]
+platforms = ["SONY_PSP"]
+
+[emulator.configuration]
+definitions = ["config/runtime.toml", "config/actions.toml", "config/input.toml"]
+
+[emulator.savestates]
+max = 10
+revision = "1.20.4"
