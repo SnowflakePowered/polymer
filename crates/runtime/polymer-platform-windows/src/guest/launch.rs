@@ -219,6 +219,13 @@ impl GuestPlatform {
                 c"PolymerInstallBluetoothApiWin32Hook",
             ));
         }
+        if input_hooks.contains(&InputHook::Xinput) {
+            libraries.push(InjectionLibrary::new(
+                "XInput",
+                "polymer_hook_xinput.dll",
+                c"PolymerInstallXinputHook",
+            ));
+        }
         if input_hooks.contains(&InputHook::Sdl3) {
             libraries.push(InjectionLibrary::new(
                 "SDL3",

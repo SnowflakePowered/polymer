@@ -46,6 +46,7 @@ pub enum InputHook {
     Sdl2,
     Sdl3,
     BluetoothApiWin32,
+    Xinput,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]

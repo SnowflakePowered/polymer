@@ -1,0 +1,23 @@
+[package]
+name = "polymer-hook-xinput"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+parking_lot.workspace = true
+polymer-hook.workspace = true
+polymer-hook-input.workspace = true
+polymer-input.workspace = true
+polymer-platform-windows.workspace = true
+tracing.workspace = true
+windows-sys = { workspace = true, features = [
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Input_XboxController",
+] }
+
+[lints]
+workspace = true
