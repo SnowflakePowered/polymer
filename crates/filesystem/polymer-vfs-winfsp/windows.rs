@@ -104,7 +104,6 @@ impl FilesystemHost for WinFspFilesystemHost {
                 .persistent_acls(false)
                 .read_only_volume(false)
                 .allow_open_in_kernel_mode(true)
-                .post_cleanup_when_modified_only(true)
                 .flush_and_purge_on_cleanup(true)
                 .post_disposition_only_when_necessary(true)
                 .supports_posix_unlink_rename(true);
@@ -138,7 +137,7 @@ struct PolymerFileContext {
     path: RwLock<VfsPathBuf>,
     kind: FileKind,
     metadata: RwLock<Metadata>,
-    file: Option<Box<dyn OpenFile>>,
+    file: RwLock<Option<Box<dyn OpenFile>>>,
     directory_buffer: OnceLock<DirBuffer>,
     can_write: bool,
     delete_pending: AtomicBool,
@@ -188,7 +187,7 @@ impl PolymerFileSystem {
             path: RwLock::new(path),
             kind: metadata.kind,
             metadata: RwLock::new(metadata),
-            file,
+            file: RwLock::new(file),
             directory_buffer: OnceLock::new(),
             can_write,
             delete_pending: AtomicBool::new(false),
@@ -196,10 +195,41 @@ impl PolymerFileSystem {
     }
 
     fn context_metadata(&self, context: &PolymerFileContext) -> winfsp::Result<Metadata> {
-        match &context.file {
-            Some(file) => file.metadata().map_err(map_vfs_error),
-            None => Ok(context.metadata.read().clone()),
+        match context.kind {
+            FileKind::File => self.with_file(context, |file| file.metadata()),
+            FileKind::Directory => Ok(context.metadata.read().clone()),
         }
+    }
+
+    fn with_file<T>(
+        &self,
+        context: &PolymerFileContext,
+        operation: impl FnOnce(&dyn OpenFile) -> polymer_vfs::VfsResult<T>,
+    ) -> winfsp::Result<T> {
+        if context.kind != FileKind::File {
+            return Err(STATUS_FILE_IS_A_DIRECTORY.into());
+        }
+        let file = context.file.upgradable_read();
+        let file = match file.as_deref() {
+            Some(_) => parking_lot::RwLockUpgradableReadGuard::downgrade(file),
+            None => {
+                let mut file = parking_lot::RwLockUpgradableReadGuard::upgrade(file);
+                let reopened = self
+                    .filesystem
+                    .open(
+                        &context.path.read(),
+                        OpenOptions {
+                            read: true,
+                            write: context.can_write,
+                            truncate: false,
+                        },
+                    )
+                    .map_err(map_vfs_error)?;
+                *file = Some(reopened);
+                parking_lot::RwLockWriteGuard::downgrade(file)
+            }
+        };
+        operation(file.as_deref().expect("file contexts hold an open file")).map_err(map_vfs_error)
     }
 
     fn context_file_info(&self, context: &PolymerFileContext) -> winfsp::Result<FileInfo> {
@@ -346,7 +376,7 @@ impl FileSystemContext for PolymerFileSystem {
             // Open first: setting READONLY before opening would incorrectly reject the
             // write access granted as part of the same create request.
             let context = self.open_path(path.clone(), create_options, granted_access)?;
-            if let Some(file) = &context.file {
+            if let Some(file) = context.file.read().as_deref() {
                 let _ = file.set_sparse();
             }
             if file_attributes & FILE_ATTRIBUTE_READONLY.0 != 0 {
@@ -372,7 +402,7 @@ impl FileSystemContext for PolymerFileSystem {
     }
 
     fn cleanup(&self, context: &Self::FileContext, _file_name: Option<&U16CStr>, flags: u32) {
-        if let Some(file) = &context.file {
+        if let Some(file) = context.file.write().take() {
             let _ = file.flush();
         }
         let delete = context.delete_pending.swap(false, AtomicOrdering::AcqRel)
@@ -395,8 +425,8 @@ impl FileSystemContext for PolymerFileSystem {
         let Some(context) = context else {
             return Ok(());
         };
-        if let Some(file) = &context.file {
-            file.sync().map_err(map_vfs_error)?;
+        if context.kind == FileKind::File {
+            self.with_file(context, |file| file.sync())?;
         }
         *file_info = self.context_file_info(context)?;
         Ok(())
@@ -434,12 +464,7 @@ impl FileSystemContext for PolymerFileSystem {
         if !context.can_write {
             return Err(STATUS_ACCESS_DENIED.into());
         }
-        context
-            .file
-            .as_ref()
-            .ok_or_else(|| FspError::from(STATUS_FILE_IS_A_DIRECTORY))?
-            .truncate(0)
-            .map_err(map_vfs_error)?;
+        self.with_file(context, |file| file.truncate(0))?;
         self.filesystem
             .set_metadata(
                 &context.path.read(),
@@ -558,12 +583,7 @@ impl FileSystemContext for PolymerFileSystem {
         }
         let current = self.context_metadata(context)?;
         if !set_allocation_size || new_size < current.len {
-            context
-                .file
-                .as_ref()
-                .ok_or_else(|| FspError::from(STATUS_FILE_IS_A_DIRECTORY))?
-                .truncate(new_size)
-                .map_err(map_vfs_error)?;
+            self.with_file(context, |file| file.truncate(new_size))?;
         }
         *file_info = self.context_file_info(context)?;
         Ok(())
@@ -578,12 +598,7 @@ impl FileSystemContext for PolymerFileSystem {
         // Windows has already checked the user handle's granted access. Cached
         // write-only handles can issue paging reads here, so rechecking the
         // original user access would incorrectly fail Cache Manager I/O.
-        let read = context
-            .file
-            .as_ref()
-            .ok_or_else(|| FspError::from(STATUS_FILE_IS_A_DIRECTORY))?
-            .read(offset, buffer)
-            .map_err(map_vfs_error)?;
+        let read = self.with_file(context, |file| file.read(offset, buffer))?;
         if read == 0 && !buffer.is_empty() {
             return Err(STATUS_END_OF_FILE.into());
         }
@@ -613,12 +628,7 @@ impl FileSystemContext for PolymerFileSystem {
         } else {
             buffer
         };
-        let written = context
-            .file
-            .as_ref()
-            .ok_or_else(|| FspError::from(STATUS_FILE_IS_A_DIRECTORY))?
-            .write(offset, buffer)
-            .map_err(map_vfs_error)?;
+        let written = self.with_file(context, |file| file.write(offset, buffer))?;
         *file_info = self.context_file_info(context)?;
         u32::try_from(written).map_err(|_| STATUS_INVALID_DEVICE_REQUEST.into())
     }

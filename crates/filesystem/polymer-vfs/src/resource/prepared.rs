@@ -74,6 +74,8 @@ impl PreparedFilesystem {
             files,
             storage_mounts,
             tree_files: HashMap::new(),
+            mutations: Vec::new(),
+            generation: 0,
             leases: vec![scope.into_lease()],
             finalized: false,
             reason: None,
@@ -224,9 +226,10 @@ impl PreparedFilesystem {
         if self.compiled.is_mount_point(path)? {
             return Err(VfsError::AlreadyExists(path.clone()));
         }
+        let generation = self.generation()?;
         let parent = self.writable_parent(path)?;
         let file = parent.directory.create_file(&parent.name, options)?;
-        self.remember_tree_file(path, file)?;
+        self.remember_tree_file(path, file, generation)?;
         Ok(())
     }
 
@@ -242,9 +245,10 @@ impl PreparedFilesystem {
     pub fn remove(&self, path: &VfsPathBuf, kind: RemoveKind) -> VfsResult<()> {
         self.validate_remove(path, kind)?;
         let parent = self.writable_parent(path)?;
-        parent.directory.remove(&parent.name, kind)?;
-        self.forget_tree_files(path)?;
-        Ok(())
+        self.begin_mutation(&[path])?;
+        let removed = parent.directory.remove(&parent.name, kind);
+        self.end_mutation(&[path])?;
+        removed
     }
 
     pub fn validate_remove(&self, path: &VfsPathBuf, kind: RemoveKind) -> VfsResult<()> {
@@ -310,19 +314,20 @@ impl PreparedFilesystem {
         if !Arc::ptr_eq(&source.volume, &target.volume) {
             return Err(VfsError::CrossDevice);
         }
-        if replace_if_exists {
+        self.begin_mutation(&[&source_path, &target_path])?;
+        let renamed = if replace_if_exists {
             source.volume.replace(
                 source.child_relative.as_path(),
                 target.child_relative.as_path(),
-            )?;
+            )
         } else {
             source.volume.rename(
                 source.child_relative.as_path(),
                 target.child_relative.as_path(),
-            )?;
-        }
-        self.forget_renamed_tree_files(source_path, target_path)?;
-        Ok(())
+            )
+        };
+        self.end_mutation(&[&source_path, &target_path])?;
+        renamed
     }
 
     fn adopt_source_node(&self, source: &VfsPathBuf, target: &VfsPathBuf) -> VfsResult<()> {
@@ -383,14 +388,28 @@ impl PreparedFilesystem {
         Ok(())
     }
 
+    fn generation(&self) -> VfsResult<u64> {
+        let state = self.materialized.lock();
+        Ok(state.as_ref().ok_or_else(not_materialized)?.generation)
+    }
+
     fn remember_tree_file(
         &self,
         path: &VfsPathBuf,
         backend: Arc<dyn FileNode>,
+        generation: u64,
     ) -> VfsResult<Arc<NamespaceFile>> {
         let key = path.normalized_components()?;
         let mut state = self.materialized.lock();
         let resources = state.as_mut().ok_or_else(not_materialized)?;
+        if resources.generation != generation
+            || resources
+                .mutations
+                .iter()
+                .any(|prefix| key.starts_with(prefix))
+        {
+            return Ok(Arc::new(NamespaceFile::new(backend)));
+        }
         Ok(resources
             .tree_files
             .entry(key)
@@ -398,29 +417,31 @@ impl PreparedFilesystem {
             .clone())
     }
 
-    fn forget_tree_files(&self, path: &VfsPathBuf) -> VfsResult<()> {
-        let prefix = path.normalized_components()?;
+    fn begin_mutation(&self, paths: &[&VfsPathBuf]) -> VfsResult<()> {
+        let prefixes = paths
+            .iter()
+            .map(|path| path.normalized_components())
+            .collect::<VfsResult<Vec<_>>>()?;
         let mut state = self.materialized.lock();
         let resources = state.as_mut().ok_or_else(not_materialized)?;
-        resources
-            .tree_files
-            .retain(|path, _| !path.starts_with(&prefix));
+        resources.forget(&prefixes);
+        resources.mutations.extend(prefixes);
         Ok(())
     }
 
-    fn forget_renamed_tree_files(&self, source: VfsPathBuf, target: VfsPathBuf) -> VfsResult<()> {
-        let source = source.normalized_components()?;
-        let target = target.normalized_components()?;
+    fn end_mutation(&self, paths: &[&VfsPathBuf]) -> VfsResult<()> {
+        let prefixes = paths
+            .iter()
+            .map(|path| path.normalized_components())
+            .collect::<VfsResult<Vec<_>>>()?;
         let mut state = self.materialized.lock();
         let resources = state.as_mut().ok_or_else(not_materialized)?;
-        // File nodes supplied by storage-backed volumes are bound to the path
-        // at which they were materialized. Moving their cache entries would
-        // leave the destination backed by a node that still resolves the old
-        // path. Existing open handles retain their own Arc, so only invalidate
-        // namespace cache entries and materialize fresh nodes on the next walk.
-        resources
-            .tree_files
-            .retain(|path, _| !path.starts_with(&source) && !path.starts_with(&target));
+        for prefix in &prefixes {
+            if let Some(index) = resources.mutations.iter().position(|active| active == prefix) {
+                resources.mutations.swap_remove(index);
+            }
+        }
+        resources.forget(&prefixes);
         Ok(())
     }
 
@@ -464,6 +485,7 @@ impl PreparedFilesystem {
                 Err(VfsError::NotFound(path.clone()))
             };
         };
+        let generation = self.generation()?;
         let permissions = binding.permissions();
         let relative_components = path
             .components()
@@ -506,7 +528,7 @@ impl PreparedFilesystem {
                 }
                 let (node, namespace_file) = match node {
                     Node::File(file) => {
-                        let file = self.remember_tree_file(path, file)?;
+                        let file = self.remember_tree_file(path, file, generation)?;
                         (Node::File(file.clone()), Some(file))
                     }
                     node => (node, None),
@@ -539,7 +561,7 @@ impl PreparedFilesystem {
                     namespace_file = None;
                 }
                 if let Node::File(file) = node {
-                    let file = namespace_file.unwrap_or(self.remember_tree_file(path, file)?);
+                    let file = namespace_file.unwrap_or(self.remember_tree_file(path, file, generation)?);
                     node = Node::File(file.clone());
                     namespace_file = Some(file);
                 }
@@ -683,10 +705,20 @@ struct MaterializedResources {
     files: HashMap<usize, Arc<NamespaceFile>>,
     storage_mounts: HashMap<Vec<Vec<VfsPathUnit>>, MaterializedStorageMount>,
     tree_files: HashMap<Vec<Vec<VfsPathUnit>>, Arc<NamespaceFile>>,
+    mutations: Vec<Vec<Vec<VfsPathUnit>>>,
+    generation: u64,
     leases: Vec<super::ManagedResourceLease>,
     finalized: bool,
     reason: Option<FinalizationReason>,
     retry: Option<super::retry::FinalizationRetry>,
+}
+
+impl MaterializedResources {
+    fn forget(&mut self, prefixes: &[Vec<Vec<VfsPathUnit>>]) {
+        self.tree_files
+            .retain(|path, _| !prefixes.iter().any(|prefix| path.starts_with(prefix)));
+        self.generation = self.generation.wrapping_add(1);
+    }
 }
 
 #[derive(Clone)]
