@@ -10105,6 +10105,7 @@ dependencies = [
 name = "polymer-hook-input-win32"
 version = "0.1.0"
 dependencies = [
+ "dashmap",
  "parking_lot",
  "polymer-hook-input",
  "polymer-input",
@@ -10202,6 +10203,19 @@ version = "0.1.0"
 dependencies = [
  "polymer-hook",
  "polymer-hook-input-win32",
+ "polymer-platform-windows",
+ "tracing",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "polymer-hook-xinput"
+version = "0.1.0"
+dependencies = [
+ "parking_lot",
+ "polymer-hook",
+ "polymer-hook-input",
+ "polymer-input",
  "polymer-platform-windows",
  "tracing",
  "windows-sys 0.61.2",

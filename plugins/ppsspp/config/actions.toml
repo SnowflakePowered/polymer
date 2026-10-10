@@ -1,0 +1,8 @@
+[actions]
+target = "controls.ControlMapping"
+
+[actions.map]
+pause = { expression = "1-135", name = "Pause (no menu)" }
+save_state = { expression = "1-136", name = "Save State" }
+load_state = { expression = "1-137", name = "Load State" }
+next_slot = { expression = "1-139", name = "Next Slot" }

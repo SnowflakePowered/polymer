@@ -92,3 +92,37 @@ fn launch_applies_working_directory_and_environment_on_both_desktops() {
         );
     }
 }
+
+#[test]
+#[ignore = "requires WinFSP"]
+fn mounted_directories_holding_closed_files_can_be_renamed() {
+    let root = tempfile::tempdir().unwrap();
+    let host = WinFspFilesystemHost::default();
+    let endpoint = host.allocate_endpoint();
+    let mut plan = FilesystemPlan::default();
+    let permissions = "rwx".parse::<Permissions>().unwrap();
+    plan.mount_tree(
+        "/NAND".parse().unwrap(),
+        Arc::new(Resource::new(
+            Arc::new(polymer_vfs::HostDirectoryFactory::new(root.path().to_owned(), true)),
+            permissions,
+            ResourceOrigin::HostFile,
+        )),
+        permissions,
+    );
+    let filesystem = host
+        .mount(endpoint, Arc::new(plan.seal().unwrap()))
+        .unwrap();
+    let nand = std::path::PathBuf::from(
+        filesystem
+            .endpoint()
+            .project("/NAND".parse::<polymer_vfs::VfsPathBuf>().unwrap().as_path()),
+    );
+    std::fs::create_dir_all(nand.join("staging/flash0/font")).unwrap();
+    std::fs::write(nand.join("staging/flash0/font/ltn0.pgf"), b"font").unwrap();
+    std::fs::rename(nand.join("staging/flash0"), nand.join("flash0")).unwrap();
+    assert_eq!(
+        std::fs::read(root.path().join("flash0/font/ltn0.pgf")).unwrap(),
+        b"font"
+    );
+}

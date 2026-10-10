@@ -1,0 +1,49 @@
+[targets.controls]
+output = { format = "ini", path = "controls.ini" }
+
+[targets.controls.ControlMapping]
+
+[input]
+driver = "xinput"
+device = "2{index}"
+
+[input.mapping]
+"button.a" = "{device}-96"
+"button.b" = "{device}-97"
+"button.x" = "{device}-99"
+"button.y" = "{device}-100"
+"button.select" = "{device}-109"
+"button.start" = "{device}-108"
+"button.l" = "{device}-102"
+"button.r" = "{device}-103"
+"directional.n" = "{device}-19"
+"directional.s" = "{device}-20"
+"directional.w" = "{device}-21"
+"directional.e" = "{device}-22"
+"analog.stick.left.x+" = "{device}-4000"
+"analog.stick.left.x-" = "{device}-4001"
+"analog.stick.left.y+" = "{device}-4002"
+"analog.stick.left.y-" = "{device}-4003"
+
+[input.layouts.PSP_LAYOUT]
+"button.a" = "Cross"
+"button.b" = "Circle"
+"button.x" = "Square"
+"button.y" = "Triangle"
+"button.select" = "Select"
+"button.start" = "Start"
+"button.l" = "L"
+"button.r" = "R"
+"directional.n" = "Up"
+"directional.s" = "Down"
+"directional.w" = "Left"
+"directional.e" = "Right"
+"analog.stick.left.x+" = "An.Right"
+"analog.stick.left.x-" = "An.Left"
+"analog.stick.left.y+" = "An.Up"
+"analog.stick.left.y-" = "An.Down"
+
+[platforms.SONY_PSP.ports.layout.0]
+target = "controls.ControlMapping"
+layouts = ["PSP_LAYOUT"]
+emit = {}

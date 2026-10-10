@@ -43,21 +43,19 @@ class PauseRegistry {
 
   #sync(launch: LaunchInstance, entry: PauseEntry): Promise<void> {
     entry.sync ??= (async () => {
-      try {
-        while (entry.paused !== entry.leases > 0) {
-          const pause = entry.leases > 0;
-          await launch.setPauseState(pause ? "pause" : "resume");
-          entry.paused = pause;
-        }
-      } finally {
-        entry.sync = undefined;
-        // Closing the last overlay must restore input even if resume fails.
-        if (entry.leases === 0) {
-          launch.activateInput();
-          if (!entry.paused) this.#entries.delete(launch);
-        }
+      while (entry.paused !== entry.leases > 0) {
+        const pause = entry.leases > 0;
+        await launch.setPauseState(pause ? "pause" : "resume");
+        entry.paused = pause;
       }
-    })();
+    })().finally(() => {
+      entry.sync = undefined;
+      // Closing the last overlay must restore input even if resume fails.
+      if (entry.leases === 0) {
+        launch.activateInput();
+        if (!entry.paused) this.#entries.delete(launch);
+      }
+    });
     return entry.sync;
   }
 }

@@ -145,3 +145,50 @@ fn explicit_parent_keeps_its_contents_and_permissions_in_either_order() {
         ));
     }
 }
+
+#[test]
+fn directories_holding_previously_written_files_can_be_renamed() {
+    let permissions = Permissions::READ | Permissions::WRITE | Permissions::EXECUTE;
+    let root = tempfile::tempdir().unwrap();
+    let mut plan = FilesystemPlan::default();
+    plan.mount_tree(
+        "/NAND".parse().unwrap(),
+        Arc::new(Resource::new(
+            Arc::new(HostDirectoryFactory::new(root.path().to_owned(), true)),
+            permissions,
+            ResourceOrigin::HostFile,
+        )),
+        permissions,
+    );
+    let filesystem = plan.seal().unwrap();
+    filesystem.materialize().unwrap();
+    for directory in ["/NAND/staging", "/NAND/staging/flash0", "/NAND/staging/flash0/font"] {
+        filesystem.create_dir(&directory.parse().unwrap()).unwrap();
+    }
+    let path = "/NAND/staging/flash0/font/ltn0.pgf".parse().unwrap();
+    filesystem
+        .create_file(&path, CreateOptions::default())
+        .unwrap();
+    filesystem
+        .open(
+            &path,
+            OpenOptions {
+                read: true,
+                write: true,
+                truncate: false,
+            },
+        )
+        .unwrap()
+        .write(0, b"font")
+        .unwrap();
+    filesystem
+        .rename(
+            &"/NAND/staging/flash0".parse().unwrap(),
+            &"/NAND/flash0".parse().unwrap(),
+        )
+        .unwrap();
+    assert_eq!(
+        std::fs::read(root.path().join("flash0/font/ltn0.pgf")).unwrap(),
+        b"font"
+    );
+}

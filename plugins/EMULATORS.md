@@ -19,6 +19,7 @@ adding plugins so its registry discovers their manifests.
 | RPCS3 | 0.0.42-20032-3efbf060 | Vulkan / SDL3 | Select a PS3 NAND and save repository for `hdd`, with installed system software. An optional `flash` selection overrides the firmware partitions. Installed PKGs boot from the HDD's `USRDIR/EBOOT.BIN`; licenses come from the composed keystore layer. |
 | Ymir | 0.3.3 AVX2 | D3D11 / SDL3 | Import a Saturn BIOS. Internal backup memory persists in the plugin's `saves` cache. Requires an AVX2-capable CPU. |
 | ares | v148 | OpenGL / SDL3 | Uses the selected console's firmware store and v148 firmware hashes. PS1 card 1, Game Gear/Master System RAM and Neo Geo Pocket flash use managed storage when supplied. Other cartridge, RTC and system save files persist in the plugin's `saves` cache. |
+| PPSSPP | Local Windows build (not pinned in `runtimes.json`) | D3D11 / XInput (`xinput` hook); DirectInput and HID pads disabled | Save data persists in the plugin's `saves` cache, mounted at `memstick/PSP/SAVEDATA`; the rest of the memory stick is launch-local. Pause, ten save-state slots and Quick Resume use PPSSPP's keymap through synthesized raw keyboard input. |
 
 Ares and Ymir's `saves` caches contain actual saves, not disposable shader data;
 retain them when clearing caches. Ares's multiple save-file formats cannot all

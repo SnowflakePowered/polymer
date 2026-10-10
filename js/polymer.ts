@@ -3,7 +3,7 @@ export interface HTMLTrackedSurfaceElement extends HTMLElement {
 }
 
 export type GraphicsHook = "vulkan" | "d3d11" | "d3d12" | "opengl";
-export type InputHook = "sdl2" | "sdl3" | "bluetooth-api-win32";
+export type InputHook = "sdl2" | "sdl3" | "bluetooth-api-win32" | "xinput";
 export type ProjectionMode = "name" | "position" | "custom";
 export type PointerMode = "none" | "relative" | "absoluteDevice" | "absoluteScreen";
 
