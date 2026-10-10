@@ -9,6 +9,7 @@ impl Opcode {
     pub const INQUIRY: Self = Self::new(0x01, 0x0001);
     pub const INQUIRY_CANCEL: Self = Self::new(0x01, 0x0002);
     pub const CREATE_CONNECTION: Self = Self::new(0x01, 0x0005);
+    pub const CREATE_CONNECTION_CANCEL: Self = Self::new(0x01, 0x0008);
     pub const ACCEPT_CONNECTION_REQUEST: Self = Self::new(0x01, 0x0009);
     pub const REJECT_CONNECTION_REQUEST: Self = Self::new(0x01, 0x000a);
     pub const DISCONNECT: Self = Self::new(0x01, 0x0006);
