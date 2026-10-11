@@ -208,7 +208,9 @@ h1, h2, h3, p { margin: 0; font-weight: inherit; }
 .vp-panel-section { display: flex; flex-direction: column; gap: 8px; margin-bottom: 24px; }
 .vp-panel-section-title { font-size: 16px; line-height: 22px; font-weight: 600; letter-spacing: .5px; text-transform: uppercase; color: rgba(255, 255, 255, .7); }
 .vp-panel-section .vp-button { width: 100%; }
-.vp-quick-access-title { padding: 6px 0 16px; font-size: 22px; line-height: 28px; font-weight: 700; color: var(--vp-white); }
+.vp-quick-access-title { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 6px 0 16px; font-size: 22px; line-height: 28px; font-weight: 700; color: var(--vp-white); }
+.vp-quick-access-title img { flex: none; width: 48px; height: 48px; object-fit: contain; border-radius: 4px; }
+.vp-quick-access-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Tabs */
 .vp-tabs { position: relative; display: flex; align-items: center; justify-content: center; min-height: 58px; padding: 0 calc(var(--vp-gutter) + 40px); }
@@ -266,6 +268,8 @@ h1, h2, h3, p { margin: 0; font-weight: inherit; }
 .vp-hero-title { position: absolute; top: 0; left: var(--vp-gutter); right: var(--vp-gutter); height: clamp(260px, 25vw, 480px); display: flex; align-items: center; justify-content: center; padding-top: 40px; }
 .vp-hero-title h1 { font-size: 44px; line-height: 52px; font-weight: 800; color: var(--vp-white); text-align: center; }
 .vp-hero-logo { max-width: 711px; max-height: 271px; object-fit: contain; }
+.vp-hero-banner { position: absolute; left: calc(var(--vp-gutter) - 95px); top: calc(clamp(260px, 25vw, 480px) - 240px); width: 400px; height: 240px; object-fit: contain; }
+.vp-hero-banner[src^="data:application/x-wii-banner"] { left: calc(var(--vp-gutter) - 15px); top: calc(clamp(260px, 25vw, 480px) - 150px); width: 240px; height: 135px; border-radius: 8px; overflow: hidden; }
 .vp-playbar { display: flex; align-items: center; gap: 16px; padding: 16px var(--vp-gutter); background: rgba(14, 20, 27, .25); }
 .vp-playbar-stat { display: flex; flex-direction: column; margin-left: 16px; }
 .vp-playbar-stat small { font-size: 12px; line-height: 16px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase; color: var(--vp-tertiary); }

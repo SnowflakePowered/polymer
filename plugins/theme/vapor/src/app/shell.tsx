@@ -16,6 +16,9 @@ export type Phase =
   | { kind: "preparing"; name: string }
   | { kind: "launching"; name: string };
 export type LibrarySort = "title" | "platform" | "added";
+export const DUAL_SCREEN_PLATFORMS = ["NINTENDO_3DS", "NINTENDO_N3DS"];
+export const SCREEN_LAYOUTS = { stacked: "Top and bottom", "side-by-side": "Side by side", hybrid: "Hybrid" } as const;
+export type ScreenLayout = keyof typeof SCREEN_LAYOUTS;
 export type ShellState = {
   phase: Phase;
   games: LibraryEntry[];
@@ -32,6 +35,7 @@ export type ShellState = {
   audio: { available: boolean; volume: number; muted: boolean };
   notifications: Record<string, Notification>;
   menu: "main" | "quick" | "order" | null;
+  screenLayout: ScreenLayout;
 };
 
 const startup = new StartupRequests(window.Polymer.scraping);
@@ -54,7 +58,7 @@ export class Shell {
       phase: { kind: "idle" }, games: [], total: 0, filtered: false, activities: [], platforms: [],
       query: { text: "", platform: null, sort: "title" }, recent: [],
       launchableId: null, draft: null, request: null, launch: window.Polymer.emulator.activeLaunch,
-      audio: { available: false, volume: 1, muted: false }, notifications: {}, menu: null,
+      audio: { available: false, volume: 1, muted: false }, notifications: {}, menu: null, screenLayout: "stacked",
     });
     this.state = state;
     this.set = set as (...args: any[]) => void;

@@ -36,11 +36,12 @@ export function CapsuleGrid(props: ParentProps<{ class?: string }>) {
 }
 
 /** Game details header: blurred backdrop, hero art and a logo or title over a gradient. */
-export function Hero(props: ParentProps<{ title: string; art?: string; logo?: string }>) {
+export function Hero(props: ParentProps<{ title: string; art?: string; logo?: string; banner?: string }>) {
   return <header class="vp-hero">
     <Artwork class="vp-hero-art" src={props.art} fallback={<span class="vp-hero-art vp-hero-fallback" />} />
     <span class="vp-hero-shade" />
     <div class="vp-hero-title"><Artwork class="vp-hero-logo" src={props.logo} alt={props.title} fallback={<h1>{props.title}</h1>} /></div>
+    <Show when={props.banner}>{banner => <img class="vp-hero-banner" src={banner()} alt="" />}</Show>
     {props.children}
   </header>;
 }
