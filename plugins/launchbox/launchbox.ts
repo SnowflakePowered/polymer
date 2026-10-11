@@ -269,7 +269,7 @@ async function buildIndex(job: Job): Promise<void> {
       CREATE INDEX images_game ON images(game_id, key, ordinal);
       CREATE INDEX aliases_match ON aliases(normalized, region, game_id);
       CREATE TABLE IF NOT EXISTS content_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-      INSERT OR REPLACE INTO content_state VALUES ('ready', '3');
+      INSERT OR REPLACE INTO content_state VALUES ('ready', '4');
       COMMIT;
     `);
     console.info("LaunchBox: metadata index ready");
@@ -288,6 +288,7 @@ function imageKey(type: string): string | undefined {
   if (type === "Box - Full") return "media.boxart.full";
   if (type === "Clear Logo") return "media.logo";
   if (type === "Banner") return "media.banner";
+  if (type === "Fanart - Background") return "media.background";
   if (type.startsWith("Disc")) return "media.label.disc";
   if (type.startsWith("Cart - Front")) return "media.label.cart";
   return undefined;
@@ -311,7 +312,7 @@ export const updateContents: UpdateContents = async () => {
 export const onPluginLoad: OnPluginLoad = async () => {
   const db = await connect();
   try {
-    return (await db.prepare("SELECT value FROM content_state WHERE key = 'ready'").get<{ value: string }>())?.value === "3";
+    return (await db.prepare("SELECT value FROM content_state WHERE key = 'ready'").get<{ value: string }>())?.value === "4";
   } catch {
     return false;
   } finally {
@@ -387,7 +388,7 @@ class ArtworkRegions {
     const name = normalize(value);
     const aliases: Record<string, string> = {
       usa: "north america", us: "north america", "united states": "north america", canada: "north america",
-      japan: "japan", jp: "japan", europe: "europe", eur: "europe",
+      w: "world", japan: "japan", jp: "japan", europe: "europe", eur: "europe",
       australia: "australia", aus: "australia", au: "australia", korea: "korea", southkorea: "korea", kr: "korea",
       eu: "europe", as: "asia", cn: "china", tw: "taiwan", hk: "hong kong", de: "germany", fr: "france",
       es: "spain", it: "italy", gb: "united kingdom", ru: "russia", br: "brazil", nl: "the netherlands",
@@ -408,7 +409,7 @@ class ArtworkRegions {
     };
     const best = new Map<string, number>();
     for (const image of images) best.set(image.key, Math.min(best.get(image.key) ?? 2, rank(image)));
-    return images.filter(image => rank(image) < 2 && rank(image) === best.get(image.key));
+    return images.filter(image => rank(image) === best.get(image.key));
   }
 }
 

@@ -125,7 +125,7 @@ export class NavigationRouter extends EventTarget {
 
   private path() {
     const overlay = this.scopes.filter(scope => scope.overlay).at(-1);
-    const active = document.activeElement;
+    const active = document.activeElement === document.body ? null : document.activeElement;
     const scopes = this.scopes.filter(scope => scope.root?.isConnected && (!overlay || this.contains(overlay, scope.root)));
     const focused = scopes.filter(scope => active && this.contains(scope, active));
     focused.sort((a, b) => a.root === b.root ? Number(!!a.navigation) - Number(!!b.navigation) : a.root!.contains(b.root!) ? 1 : -1);
