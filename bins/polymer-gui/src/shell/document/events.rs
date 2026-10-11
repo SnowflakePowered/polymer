@@ -1,6 +1,6 @@
 use super::{SharedShellDocument, ShellDocument, ShellHitSnapshot};
 use crate::shell::runtime::{CoalescedPointer, ShellRuntime};
-use blitz_dom::{EventDriver, EventHandler, NodeId};
+use blitz_dom::{BaseDocument, EventDriver, EventHandler, NodeId, local_name};
 use blitz_traits::events::{
     BlitzImeEvent, BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, BlitzWheelDelta,
     BlitzWheelEvent, DomEvent, DomEventData, EventState, KeyState, MouseEventButton,
@@ -72,12 +72,38 @@ impl EventHandler for DenoEventHandler<'_> {
         if self.target_override.is_some() && matches!(event.data, DomEventData::Click(_)) {
             event_state.prevent_default();
         }
+        if matches!(event.data, DomEventData::Click(_)) && Self::keeps_focus(&document.inner(), event.target) {
+            event_state.prevent_default();
+        }
         if result.propagation_stopped {
             event_state.stop_propagation();
         }
         if result.default_prevented || (result.handled && self.ordinary_dom_hit) {
             self.claimed.set(true);
         }
+    }
+}
+
+impl DenoEventHandler<'_> {
+    /// Whether the nearest focusable ancestor of `target` is a control whose click Blitz
+    /// gives no default action: not a form field, label, summary, link or submit button.
+    fn keeps_focus(document: &BaseDocument, target: NodeId) -> bool {
+        let mut current = Some(target);
+        while let Some(node) = current.and_then(|id| document.get_node(id)) {
+            if let Some(element) = node.element_data() {
+                if element.attr(local_name!("disabled")).is_some() {
+                    return false;
+                }
+                match &*element.name.local {
+                    "input" | "select" | "textarea" | "label" | "summary" | "a" => return false,
+                    "button" if element.is_submit_button() => return false,
+                    _ if node.is_focussable() => return true,
+                    _ => {}
+                }
+            }
+            current = node.parent;
+        }
+        false
     }
 }
 

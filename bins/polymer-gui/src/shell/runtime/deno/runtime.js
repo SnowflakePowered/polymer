@@ -1179,9 +1179,14 @@
       const constructors = { mouse: MouseEvent, pointer: PointerEvent, wheel: WheelEvent, keyboard: KeyboardEvent, focus: FocusEvent, input: InputEvent, composition: CompositionEvent };
       const Constructor = constructors[eventClass] || Event;
       const eventInit = { bubbles, cancelable, ...init };
-      dispatch(target, eventClass === "pointer" ? createPointerEvent(type, eventInit) : new Constructor(type, eventInit));
+      const event = eventClass === "pointer" ? createPointerEvent(type, eventInit) : new Constructor(type, eventInit);
+      dispatch(target, event);
       // Proc the microtask queue before propagating DOM effects.
       runMicrotasks();
+      const pressed = type === "mousedown" && !Number(init.button) && !event.defaultPrevented && target instanceof Element
+        ? target.closest("button, a[href], [tabindex], input, select, textarea, label") : null;
+      if (pressed && !pressed.hasAttribute("disabled") && (["BUTTON", "A"].includes(pressed.tagName) || Number(pressed.getAttribute("tabindex")) >= 0)
+        && !["INPUT", "SELECT", "TEXTAREA", "LABEL"].includes(pressed.tagName)) pressed.focus({ preventScroll: true });
       if (eventClass === "pointer" && (type === "pointerup" || type === "pointercancel")) {
         const pointerId = Number(init.pointerId) || 1;
         target.__capturedPointers?.delete(pointerId);
