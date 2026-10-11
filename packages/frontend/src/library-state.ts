@@ -14,6 +14,8 @@ export type LibraryEntry = {
   missingKey?: { id: string };
 };
 
+/** Wide artwork for presenting one game, when its scrapers or package provide it. */
+export type LibraryShowcase = { background?: string; logo?: string };
 export type LibraryActivity = { id: string; title: string; message: string; state: "running" | "complete" | "error"; completed?: number; total?: number };
 /** Activities contain running jobs and newly completed notices, not notification history. */
 export type LibrarySnapshot = { games: LibraryEntry[]; total: number; filtered: boolean; status: string; activities: LibraryActivity[] };
@@ -31,6 +33,7 @@ export class LibraryState {
   private limit = PAGE_SIZE;
   private total = 0;
   private artwork = new Map<string, Promise<string>>();
+  private showcases = new Map<string, Promise<LibraryShowcase>>();
   private licenses = new Map<string, Promise<boolean>>();
   private loadingMore = false;
   private jobs = new Map<string, Job>();
@@ -145,7 +148,30 @@ export class LibraryState {
     }
   }
 
-  private refresh = () => void this.load(0, this.limit, true);
+  private refresh = () => {
+    this.showcases.clear();
+    void this.load(0, this.limit, true);
+  };
+
+  /** Fetches a game's background and logo by launchable path, preferring scraped media over package banners. */
+  showcase(path: string): Promise<LibraryShowcase> {
+    let showcase = this.showcases.get(path);
+    if (!showcase) {
+      showcase = (async () => {
+        const launchable = await this.library.launchables.find(path);
+        const game = launchable && await this.library.games.get(launchable.parentBinaryId ?? launchable.binaryId);
+        if (!game) return {};
+        const [background, logo] = await Promise.all([
+          this.media(game, ["media.background", "banner.background"], false),
+          this.media(game, ["media.logo", "banner.logo"], false),
+        ]);
+        return { background: background?.url, logo: logo?.url };
+      })();
+      this.showcases.set(path, showcase);
+      showcase.catch(() => this.showcases.delete(path));
+    }
+    return showcase;
+  }
 
   private load(offset: number, limit: number, fresh = false): Promise<void> {
     const revision = offset ? this.revision : ++this.revision;

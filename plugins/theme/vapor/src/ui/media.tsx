@@ -9,17 +9,18 @@ export function Artwork(props: { src?: string; alt?: string; class?: string; fal
   }</Show>;
 }
 
-export type CapsuleProps = JSX.ButtonHTMLAttributes<HTMLButtonElement> & { title: string; subtitle?: string; art?: string; ratio?: number; badge?: string; progress?: number; wide?: boolean };
+export type CapsuleProps = JSX.ButtonHTMLAttributes<HTMLButtonElement> & { title: string; subtitle?: string; art?: string; logo?: string; ratio?: number; badge?: string; progress?: number; wide?: boolean };
 
 /** A library capsule sized to its cover art that grows and gains a light frame on focus. */
 export function Capsule(props: CapsuleProps) {
-  const [local, rest] = splitProps(props, ["title", "subtitle", "art", "ratio", "badge", "progress", "wide", "class", "style"]);
+  const [local, rest] = splitProps(props, ["title", "subtitle", "art", "logo", "ratio", "badge", "progress", "wide", "class", "style"]);
   const [measured, setMeasured] = createSignal<number>();
   const ratio = () => local.wide ? undefined : local.ratio ?? measured();
   return <button type="button" {...rest} class={`vp-capsule ${local.class ?? ""}`} data-wide={local.wide || undefined} aria-label={local.subtitle ? `${local.title}, ${local.subtitle}` : local.title}
     style={ratio() ? { width: `${Math.round(258 * Math.min(2.4, Math.max(.5, ratio()!)))}px` } : undefined}>
     <span class="vp-capsule-art">
       <Artwork src={local.art} onRatio={setMeasured} fallback={<span class="vp-capsule-fallback"><span>{local.title}</span></span>} />
+      <Show when={local.logo}>{logo => <span class="vp-capsule-logo"><img src={logo()} alt="" /></span>}</Show>
       <Show when={local.badge}><span class="vp-capsule-badge">{local.badge}</span></Show>
       <Show when={local.progress !== undefined}><span class="vp-capsule-progress"><i style={{ width: `${Math.round((local.progress ?? 0) * 100)}%` }} /></span></Show>
     </span>

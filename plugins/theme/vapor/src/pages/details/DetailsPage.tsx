@@ -1,4 +1,4 @@
-import { For, Match, Show, Switch, createMemo, createSignal } from "solid-js";
+import { For, Match, Show, Switch, createMemo, createResource, createSignal } from "solid-js";
 import type { ConfigurationLayoutOption } from "@polymer-fe/frontend";
 import { useShell } from "../../app/shell";
 import { DropdownField, Field, Hero, NumberField, Page, PlayBar, PlayButton, SliderField, Tabs, TextField, ToggleField } from "../../ui";
@@ -23,6 +23,7 @@ export function DetailsPage() {
   const game = () => shell.state.draft;
   const emulator = () => shell.emulator();
   const entry = createMemo(() => shell.state.games.find(item => item.path === game()?.path) ?? shell.state.recent.find(item => item.path === game()?.path));
+  const [showcase] = createResource(() => game()?.path, path => shell.library.showcase(path));
   const layouts = new Map(window.Polymer.controllers.layouts.map(layout => [String(layout.id), String(layout.name)]));
   const tabs = createMemo(() => [
     { id: "emulation", title: "Emulation" },
@@ -40,7 +41,7 @@ export function DetailsPage() {
     shell.closeDetails();
     return true;
   }}>
-    <Hero title={entry()?.name ?? draft().name} art={entry()?.artwork}>
+    <Hero title={entry()?.name ?? draft().name} art={showcase()?.background} logo={showcase()?.logo}>
       <PlayBar action={<PlayButton data-autofocus state={shell.state.phase.kind === "idle" ? "play" : "launching"} onClick={() => void shell.launch()} />}
         stats={[{ label: "Platform", value: platformName(draft().platform) }, { label: "Last played", value: lastPlayed() }, { label: "Emulator", value: emulator()?.id ?? "None" }]} />
     </Hero>
