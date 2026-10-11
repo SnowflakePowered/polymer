@@ -1,5 +1,5 @@
 import { Match, Switch } from "solid-js";
-import type { ConfigurationLayoutOption } from "../../../../../../js/polymer";
+import type { ConfigurationLayoutOption } from "@polymer-fe/frontend";
 import { NumberField, Select, TextField, Toggle } from "../../ui";
 
 /** Adapter from the emulator's scalar configuration schema into UI fields. */

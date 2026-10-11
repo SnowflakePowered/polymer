@@ -1,5 +1,5 @@
 import { createEffect, onCleanup, type ParentProps } from "solid-js";
-import { PauseRegistry, type PauseRelease } from "../../../../../../js/pause";
+import { PauseRegistry, type PauseRelease } from "@polymer-fe/frontend/pause";
 import { useShell } from "../../app/shell-context";
 
 const pauseRegistry = new PauseRegistry();

@@ -1,7 +1,7 @@
 import { EnvironmentProvider } from "@ark-ui/solid";
 import "./index.css";
 import { render } from "solid-js/web";
-import "../../../../js/polymer";
+import "@polymer-fe/frontend";
 import { ShellRouter } from "./app/ShellRouter";
 
 const root = document.getElementById("root");

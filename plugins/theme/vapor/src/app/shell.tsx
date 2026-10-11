@@ -1,12 +1,12 @@
 import { createContext, createEffect, onCleanup, onMount, useContext, type ParentProps } from "solid-js";
 import { createStore, produce, reconcile, unwrap } from "solid-js/store";
 import { useNavigate } from "@solidjs/router";
-import { LibraryState, type LibraryActivity, type LibraryEntry } from "../../../../../js/library-state";
-import { GameLauncher } from "../../../../../js/launch";
-import { NotificationCenter, type Notification } from "../../../../../js/notifications";
-import { StartupRequests, type StartupRequest } from "../../../../../js/startup";
-import { PauseRegistry } from "../../../../../js/pause";
-import type { EmulatorConfiguration, LaunchInstance, LaunchRequest, PackageConfiguration } from "../../../../../js/polymer";
+import { LibraryState, type LibraryActivity, type LibraryEntry } from "@polymer-fe/frontend/library-state";
+import { GameLauncher } from "@polymer-fe/frontend/launch";
+import { NotificationCenter, type Notification } from "@polymer-fe/frontend/notifications";
+import { StartupRequests, type StartupRequest } from "@polymer-fe/frontend/startup";
+import { PauseRegistry } from "@polymer-fe/frontend/pause";
+import type { EmulatorConfiguration, LaunchInstance, LaunchRequest, PackageConfiguration } from "@polymer-fe/frontend";
 
 const RECENT_KEY = "polymer.vapor.recent";
 const RECENT_LIMIT = 30;

@@ -1,5 +1,5 @@
-import type { LibraryActivity, LibraryEntry } from "../../../../../js/library-state";
-import type { LaunchInstance, LaunchRequest, PackageConfiguration } from "../../../../../js/polymer";
+import type { LibraryActivity, LibraryEntry } from "@polymer-fe/frontend/library-state";
+import type { LaunchInstance, LaunchRequest, PackageConfiguration } from "@polymer-fe/frontend";
 import type { ColorMode } from "../ui";
 
 export type RecentGame = LibraryEntry;

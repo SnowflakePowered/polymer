@@ -1,5 +1,5 @@
 import { createSignal, onCleanup } from "solid-js";
-import type { LaunchInstance } from "../../../../../../js/polymer";
+import type { LaunchInstance } from "@polymer-fe/frontend";
 import { ActionDialog, ActionRow, Icon } from "../../ui";
 
 export function DiscPicker(props: { launch: LaunchInstance }) {

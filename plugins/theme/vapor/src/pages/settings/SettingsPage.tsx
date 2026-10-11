@@ -1,5 +1,5 @@
 import { For, Show, createResource, createSignal, onCleanup, onMount } from "solid-js";
-import type { ManagedControllerDevice, PlatformConfiguration } from "../../../../../../js/polymer";
+import type { ManagedControllerDevice, PlatformConfiguration } from "@polymer-fe/frontend";
 import { useShell } from "../../app/shell";
 import { Button, DropdownField, Field, Page, PagedSettings, ProgressBar, Throbber } from "../../ui";
 import { platformName } from "../library/platform";

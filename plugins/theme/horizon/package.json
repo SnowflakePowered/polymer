@@ -10,6 +10,9 @@
     "preview": "vite preview --host 127.0.0.1 --port 5174"
   },
   "dependencies": {
+    "@polymer-fe/frontend": "file:../../../packages/frontend",
+    "@polymer-fe/solid": "file:../../../packages/solid",
+    "@polymer-fe/types": "file:../../../packages/types",
     "@ark-ui/solid": "5.38.1",
     "@solidjs/router": "0.10.10",
     "solid-js": "1.9.14"

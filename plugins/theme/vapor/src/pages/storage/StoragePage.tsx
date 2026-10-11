@@ -1,6 +1,6 @@
 import { For, Show, createResource, createSignal, onCleanup, onMount } from "solid-js";
 import { useSearchParams } from "@solidjs/router";
-import type { ConsoleStorageVolume, DepotType, Job, StorageArtifact, StorageInspection, StorageRemovalPlan } from "../../../../../../js/polymer";
+import type { ConsoleStorageVolume, DepotType, Job, StorageArtifact, StorageInspection, StorageRemovalPlan } from "@polymer-fe/frontend";
 import { useShell } from "../../app/shell";
 import { Button, ConfirmModal, EmptyState, Field, Icon, Modal, Page, PagedSettings, ProgressBar, Throbber } from "../../ui";
 import { platformName } from "../library/platform";

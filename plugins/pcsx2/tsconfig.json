@@ -1,0 +1,12 @@
+{
+  "extends": "../../packages/plugin-api/tsconfig.plugin.json",
+  "compilerOptions": {
+    "paths": {
+      "polymer:*": ["../../packages/plugin-api/src/*"],
+      "@polymer-fe/types": ["../../packages/types/src/index.ts"],
+      "pkg:*.ts": ["./*.ts"]
+    }
+  },
+  "include": ["**/*.ts", "../../packages/plugin-api/src/ambient.d.ts"],
+  "exclude": ["bin"]
+}

@@ -1,5 +1,5 @@
 import { createContext, useContext, type Context } from "solid-js";
-import type { PackageConfiguration } from "../../../../../js/polymer";
+import type { PackageConfiguration } from "@polymer-fe/frontend";
 import type { LibraryQueryState, RecentGame, ShellModel } from "./models";
 
 export type ShellContextValue = {

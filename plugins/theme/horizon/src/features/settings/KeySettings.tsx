@@ -1,6 +1,6 @@
 import { For, Show, createEffect, createMemo, createResource, createSignal, onCleanup } from "solid-js";
 import { Section, DetailList, Icon, IconButton, ListRow, Select, TextField, ConfirmDialog } from "../../ui";
-import type { ImportedKey } from "../../../../../../js/polymer";
+import type { ImportedKey } from "@polymer-fe/frontend";
 import { useShell } from "../../app/shell-context";
 import "./KeySettings.css";
 

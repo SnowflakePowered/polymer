@@ -1,5 +1,5 @@
 import { For, Show, createSignal, onCleanup, onMount } from "solid-js";
-import type { ManagedControllerDevice } from "../../../../../../js/polymer";
+import type { ManagedControllerDevice } from "@polymer-fe/frontend";
 import { css } from "../../../styled-system/css";
 import { ActionRow, ControllerIllustration, Dialog } from "../../ui";
 

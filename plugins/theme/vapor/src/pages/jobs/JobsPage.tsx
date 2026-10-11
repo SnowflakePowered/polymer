@@ -1,5 +1,5 @@
 import { For, Show, createMemo, createSignal } from "solid-js";
-import type { Job, JobKind } from "../../../../../../js/polymer";
+import type { Job, JobKind } from "@polymer-fe/frontend";
 import { useShell } from "../../app/shell";
 import { Button, EmptyState, Field, Icon, Page, ProgressBar, type IconName } from "../../ui";
 import { active, pending, useJobs } from "./jobs";

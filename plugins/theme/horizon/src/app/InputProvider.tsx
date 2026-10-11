@@ -1,5 +1,5 @@
 import { onCleanup, onMount, type ParentProps } from "solid-js";
-import { InputActionSource } from "../../../../../js/input-actions";
+import { InputActionSource } from "@polymer-fe/frontend/input-actions";
 import { NavigationController, NavigationProvider } from "../ui/input";
 export type { InputAction } from "../ui/input";
 

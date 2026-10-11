@@ -1,5 +1,5 @@
 import { For, Show, createResource, createSignal, createEffect, on } from "solid-js";
-import type { ConsoleStorageVolume, SaveCommitOperation, StorageSave } from "../../../../../../js/polymer";
+import type { ConsoleStorageVolume, SaveCommitOperation, StorageSave } from "@polymer-fe/frontend";
 import { css } from "../../../styled-system/css";
 import { Dialog, ConfirmDialog, Button, TextField, Spinner, ErrorState, DetailList, Icon, BannerImage } from "../../ui";
 

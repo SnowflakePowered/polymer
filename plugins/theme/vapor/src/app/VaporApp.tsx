@@ -1,6 +1,6 @@
 import { For, Show, createMemo, onCleanup, onMount, type ParentProps } from "solid-js";
 import { MemoryRouter, Route, createMemoryHistory, useLocation } from "@solidjs/router";
-import { InputActionSource } from "../../../../../js/input-actions";
+import { InputActionSource } from "@polymer-fe/frontend/input-actions";
 import { FooterLegend, NavigationController, NavigationProvider, Toast, TopBar, useInputScope } from "../ui";
 import { HomePage } from "../pages/library/HomePage";
 import { LibraryPage } from "../pages/library/LibraryPage";

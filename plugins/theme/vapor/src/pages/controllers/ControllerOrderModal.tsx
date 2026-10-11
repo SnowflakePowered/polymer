@@ -1,6 +1,6 @@
 import { For, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
-import { ControllerOrder } from "../../../../../../js/controller-order";
-import type { ManagedControllerDevice } from "../../../../../../js/polymer";
+import { ControllerOrder } from "@polymer-fe/frontend/controller-order";
+import type { ManagedControllerDevice } from "@polymer-fe/frontend";
 import { useShell } from "../../app/shell";
 import { Button, Icon, Modal, ProgressBar, Throbber } from "../../ui";
 import "./controllers.css";

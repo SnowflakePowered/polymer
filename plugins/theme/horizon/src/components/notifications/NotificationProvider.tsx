@@ -1,6 +1,6 @@
 import { createEffect, onCleanup, onMount, untrack, type ParentProps } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
-import { NotificationCenter, type Notification } from "../../../../../../js/notifications";
+import { NotificationCenter, type Notification } from "@polymer-fe/frontend/notifications";
 import { useShell } from "../../app/shell-context";
 import { NotificationContext } from "./notification-context";
 

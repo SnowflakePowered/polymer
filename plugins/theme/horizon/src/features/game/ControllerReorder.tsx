@@ -1,7 +1,7 @@
 import { DialogParts as Dialog, Button, Spinner, ControllerIllustration, ButtonChord, ButtonGlyph } from "../../ui";
 import { For, Show, createSignal, onCleanup, onMount } from "solid-js";
-import type { InputSourceSelector, ManagedControllerDevice } from "../../../../../../js/polymer";
-import { ControllerOrder } from "../../../../../../js/controller-order";
+import type { InputSourceSelector, ManagedControllerDevice } from "@polymer-fe/frontend";
+import { ControllerOrder } from "@polymer-fe/frontend/controller-order";
 import buttonA from "../../assets/switch/button-a.svg";
 import buttonB from "../../assets/switch/button-b.svg";
 import buttonL from "../../assets/switch/button-l.svg";
@@ -13,7 +13,7 @@ import controllerSwitch from "../../assets/switch/controller-switch.svg";
 import { useShell } from "../../app/shell-context";
 import { OverlayPortal, type InputAction } from "../../ui";
 import { PauseDecorator } from "./PauseDecorator";
-import type { PauseRelease } from "../../../../../../js/pause";
+import type { PauseRelease } from "@polymer-fe/frontend/pause";
 import "./ControllerReorder.css";
 
 const NAVIGATION_KEYS = new Set(["Escape", "Enter", "Tab", " ", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
