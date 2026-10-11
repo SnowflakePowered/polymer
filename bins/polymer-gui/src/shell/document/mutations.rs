@@ -24,6 +24,7 @@ impl ShellDocument {
     fn attach_custom_widgets(&mut self, root: NodeId) {
         let mut widgets: Vec<(NodeId, Box<dyn Widget>)> = Vec::new();
         let mut images = Vec::new();
+        let mut media = Vec::new();
         let mut pending = vec![root];
         while let Some(id) = pending.pop() {
             let Some(node) = self.document.as_ref().get_node(id) else {
@@ -40,6 +41,8 @@ impl ShellDocument {
                 widgets.push((id, Box::new(TrackedSurfaceWidget::new(source))));
             } else if element.name.local == local_name!("img") {
                 images.push(id);
+            } else if element.name.local == local_name!("audio") {
+                media.push(id);
             }
         }
         for (node, widget) in widgets {
@@ -47,6 +50,9 @@ impl ShellDocument {
         }
         for node in images {
             ImageWidget::attach(self.document.as_mut(), &self.image_loader, node);
+        }
+        for node in media {
+            self.load_media(node);
         }
     }
 
@@ -106,6 +112,7 @@ impl ShellDocument {
         if !self.exists(&[node]) {
             return;
         }
+        self.detach_media(node);
         self.document.as_mut().mutate().set_inner_html(node, html);
         self.attach_custom_widgets(node);
         self.mark_structure_changed();
@@ -142,6 +149,7 @@ impl ShellDocument {
     }
 
     pub(crate) fn remove_child(&mut self, parent: NodeId, child: NodeId) {
+        self.detach_media(child);
         let document = self.document.as_mut();
         if document.get_node(child).and_then(|node| node.parent) != Some(parent) {
             return;
@@ -222,6 +230,7 @@ impl ShellDocument {
         if ImageWidget::is_trigger(&name) {
             ImageWidget::attach(self.document.as_mut(), &self.image_loader, node);
         }
+        self.media_attribute_changed(node, &name);
         self.attribute_changed(&name, previous.as_deref(), Some(value));
     }
 
@@ -234,6 +243,7 @@ impl ShellDocument {
             .as_mut()
             .mutate()
             .clear_attribute(node, QualName::new(None, ns!(), name.clone()));
+        self.media_attribute_changed(node, &name);
         self.attribute_changed(&name, Some(&previous), None);
     }
 

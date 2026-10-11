@@ -34,3 +34,6 @@ pub use window_lifetime::WindowLifetime;
 
 mod guest;
 pub use guest::GuestPlatform;
+
+mod output_watcher;
+pub use output_watcher::DefaultOutputWatcher;

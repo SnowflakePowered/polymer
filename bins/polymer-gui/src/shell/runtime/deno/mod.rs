@@ -7,6 +7,7 @@
 
 mod dom;
 mod input;
+mod media;
 mod modules;
 mod runtime;
 mod scroll;

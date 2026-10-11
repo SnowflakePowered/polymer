@@ -17,6 +17,10 @@ use super::dom::{
     op_dom_text, op_dom_text_content,
 };
 use super::input::{EventResult, op_event_result};
+use super::media::{
+    op_media_configure, op_media_load, op_media_pause, op_media_play, op_media_seek,
+    op_media_state,
+};
 use super::modules::{BrowserModuleLoader, document_scripts, execute_document_script};
 use super::scroll::op_dom_scroll;
 use super::state::{BridgeState, op_post_message, op_shell_reload};
@@ -63,6 +67,12 @@ deno_core::extension!(
         op_dom_focus,
         op_dom_scroll,
         op_dom_take_layout,
+        op_media_load,
+        op_media_play,
+        op_media_pause,
+        op_media_seek,
+        op_media_configure,
+        op_media_state,
         op_post_message,
         op_shell_reload,
         op_event_result,

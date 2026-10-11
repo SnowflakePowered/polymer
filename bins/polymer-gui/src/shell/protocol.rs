@@ -1,7 +1,7 @@
 //! Messages exchanged between the window thread and the shell thread.
 
 use crate::inspector::elements::{Dispatch, ProtocolError, Reply};
-use crate::shell::document::GameViewStyle;
+use crate::shell::document::{GameViewStyle, MediaSignal};
 use kurbo::Rect;
 use std::time::Instant;
 use tokio::sync::{mpsc::UnboundedSender, oneshot};
@@ -109,6 +109,7 @@ pub(crate) enum ShellCommand {
         dispatch: Dispatch,
         reply: oneshot::Sender<Result<Reply, ProtocolError>>,
     },
+    Media(MediaSignal),
     Wake,
     Shutdown,
 }

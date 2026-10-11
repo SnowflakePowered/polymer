@@ -818,6 +818,121 @@
       });
     }
   }
+  const EMPTY_MEDIA = Object.freeze({ source: null, currentTime: 0, duration: null, paused: true, ended: false, ready: false, error: false, volume: 1, muted: false });
+  class HTMLMediaElement extends HTMLElement {
+    constructor(id, info) {
+      super(id, info);
+      this.__media = ops.op_media_state(this.__id) ?? EMPTY_MEDIA;
+      this.__pendingPlay = [];
+    }
+    get src() { return this.getAttribute("src") || ""; }
+    set src(value) { this.setAttribute("src", value); }
+    get currentSrc() { return this.__media.source ?? ""; }
+    get currentTime() { return this.__media.currentTime; }
+    set currentTime(value) {
+      const currentTime = ops.op_media_seek(this.__id, Math.max(0, Number(value) || 0));
+      this.__media = { ...this.__media, currentTime, ended: false };
+      this.__fire("seeking", "timeupdate", "seeked");
+    }
+    get duration() { return this.__media.duration ?? NaN; }
+    get paused() { return this.__media.paused; }
+    get ended() { return this.__media.ended; }
+    get readyState() { return this.__media.ready ? 4 : 0; }
+    get error() { return this.__media.error ? { code: 4, message: "" } : null; }
+    get volume() { return this.__media.volume; }
+    set volume(value) {
+      const volume = Number(value);
+      if (!(volume >= 0 && volume <= 1)) throw new DOMException("The volume must be between 0 and 1", "IndexSizeError");
+      this.__configure({ volume });
+    }
+    get muted() { return this.__media.muted; }
+    set muted(value) { this.__configure({ muted: Boolean(value) }); }
+    get loop() { return this.hasAttribute("loop"); }
+    set loop(value) { this.toggleAttribute("loop", Boolean(value)); }
+    get autoplay() { return this.hasAttribute("autoplay"); }
+    set autoplay(value) { this.toggleAttribute("autoplay", Boolean(value)); }
+    canPlayType(type) {
+      return /^audio\/(wav|x-wav|wave|mpeg|mp3|ogg|flac|x-flac|mp4|aac|x-m4a)\b/i.test(String(type)) ? "maybe" : "";
+    }
+    load() {
+      ops.op_media_load(this.__id);
+      this.__sourceChanged();
+    }
+    play() {
+      if (this.__media.error) {
+        return Promise.reject(new DOMException("The element has no supported sources", "NotSupportedError"));
+      }
+      if (!this.__media.paused && this.__media.ready) return Promise.resolve();
+      const promise = new Promise((resolve, reject) => this.__pendingPlay.push({ resolve, reject }));
+      if (this.__media.paused) {
+        const ended = this.__media.ended;
+        this.__media = { ...this.__media, paused: false, ended: false, currentTime: ended ? 0 : this.__media.currentTime };
+        ops.op_media_play(this.__id);
+        this.__fire("play", ...(this.__media.ready ? ["playing"] : []));
+      }
+      return promise;
+    }
+    pause() {
+      if (this.__media.paused) return;
+      const currentTime = ops.op_media_pause(this.__id);
+      this.__media = { ...this.__media, paused: true, currentTime };
+      this.__rejectPlay("AbortError", "The play() request was interrupted by a call to pause()");
+      this.__fire("pause");
+    }
+    setAttribute(name, value) {
+      const unchanged = this.getAttribute(name) === String(value);
+      super.setAttribute(name, value);
+      if (this.__attributeName(name) !== "src") return;
+      if (unchanged) ops.op_media_load(this.__id);
+      this.__sourceChanged();
+    }
+    removeAttribute(name) {
+      const present = this.hasAttribute(name);
+      super.removeAttribute(name);
+      if (present && this.__attributeName(name) === "src") this.__sourceChanged();
+    }
+    __sourceChanged() {
+      this.__rejectPlay("AbortError", "The play() request was interrupted by a new load request");
+      this.__media = ops.op_media_state(this.__id) ?? EMPTY_MEDIA;
+      if (this.__media.error) this.__fire("error");
+      else if (this.__media.source) this.__fire("emptied", "loadstart", ...(this.__media.paused ? [] : ["play"]));
+    }
+    __configure(changes) {
+      const { volume, muted } = { ...this.__media, ...changes };
+      ops.op_media_configure(this.__id, volume, muted);
+      this.__media = { ...this.__media, volume, muted };
+      this.__fire("volumechange");
+    }
+    __syncMedia(state) {
+      this.__media = state;
+    }
+    __settle(type) {
+      if (type === "error") this.__rejectPlay("NotSupportedError", "The element has no supported sources");
+      if (type !== "playing") return;
+      const pending = this.__pendingPlay;
+      this.__pendingPlay = [];
+      for (const { resolve } of pending) resolve();
+    }
+    __rejectPlay(name, message) {
+      const pending = this.__pendingPlay;
+      this.__pendingPlay = [];
+      for (const { reject } of pending) reject(new DOMException(message, name));
+    }
+    __fire(...types) {
+      queueMicrotask(() => {
+        for (const type of types) {
+          this.dispatchEvent(new Event(type));
+          this.__settle(type);
+        }
+      });
+    }
+  }
+  class HTMLAudioElement extends HTMLMediaElement {}
+  function Audio(src) {
+    const audio = documentNode.createElement("audio");
+    if (src !== undefined) audio.src = src;
+    return audio;
+  }
   class HTMLHeadElement extends HTMLElement {}
   class HTMLBodyElement extends HTMLElement {}
   class HTMLTemplateElement extends HTMLElement {
@@ -991,6 +1106,7 @@
       case "tracked-surface": return new HTMLTrackedSurfaceElement(id, info);
       case "template": return new HTMLTemplateElement(id, info);
       case "img": return new HTMLImageElement(id, info);
+      case "audio": return new HTMLAudioElement(id, info);
       case "head": return new HTMLHeadElement(id, info);
       case "body": return new HTMLBodyElement(id, info);
       default: return new HTMLElement(id, info);
@@ -1071,6 +1187,9 @@
     Element,
     HTMLElement,
     HTMLImageElement,
+    HTMLMediaElement,
+    HTMLAudioElement,
+    Audio,
     HTMLHeadElement,
     HTMLBodyElement,
     HTMLDivElement: HTMLElement,
@@ -1176,11 +1295,15 @@
       if (eventClass === "input" && target instanceof Element) {
         target.__value = init.data;
       }
+      if (eventClass === "media" && target instanceof HTMLMediaElement) {
+        target.__syncMedia(init);
+      }
       const constructors = { mouse: MouseEvent, pointer: PointerEvent, wheel: WheelEvent, keyboard: KeyboardEvent, focus: FocusEvent, input: InputEvent, composition: CompositionEvent };
       const Constructor = constructors[eventClass] || Event;
       const eventInit = { bubbles, cancelable, ...init };
       const event = eventClass === "pointer" ? createPointerEvent(type, eventInit) : new Constructor(type, eventInit);
       dispatch(target, event);
+      if (eventClass === "media" && target instanceof HTMLMediaElement) target.__settle(type);
       // Proc the microtask queue before propagating DOM effects.
       runMicrotasks();
       const pressed = type === "mousedown" && !Number(init.button) && !event.defaultPrevented && target instanceof Element
