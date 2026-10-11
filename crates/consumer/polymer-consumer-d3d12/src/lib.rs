@@ -3,23 +3,81 @@
 
 use polymer_ipc::{StreamReady, Win32Resources};
 use polymer_protocol::{AdapterLuid, ExternalImageKind, MAX_IMAGE_SLOTS};
-use std::os::windows::io::{AsRawHandle, OwnedHandle};
+use std::{
+    fmt::Write as _,
+    os::windows::io::{AsRawHandle, OwnedHandle},
+};
 use windows::Win32::{
     Foundation::{CloseHandle, E_INVALIDARG, E_POINTER, HANDLE, LUID, WAIT_OBJECT_0},
     Graphics::{
         Direct3D::D3D_FEATURE_LEVEL_11_0,
         Direct3D12::{
-            D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC,
-            D3D12_COMMAND_QUEUE_FLAG_NONE, D3D12CreateDevice, ID3D12CommandQueue, ID3D12Device,
-            ID3D12Fence, ID3D12Resource,
+            D3D12_AUTO_BREADCRUMB_NODE, D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC,
+            D3D12_COMMAND_QUEUE_FLAG_NONE, D3D12_DRED_ALLOCATION_NODE,
+            D3D12_DRED_ENABLEMENT_FORCED_ON, D3D12CreateDevice, D3D12GetDebugInterface,
+            ID3D12CommandQueue, ID3D12Device, ID3D12DeviceRemovedExtendedData,
+            ID3D12DeviceRemovedExtendedDataSettings, ID3D12Fence, ID3D12Resource,
         },
         Dxgi::{CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, IDXGIAdapter1, IDXGIFactory4},
     },
     System::Threading::CreateEventW,
 };
+use windows::core::{Interface, PCWSTR, w};
 
 mod timeline;
 pub use timeline::ProducerTimeline;
+
+const BREADCRUMB_OPS: [&str; 49] = [
+    "SETMARKER",
+    "BEGINEVENT",
+    "ENDEVENT",
+    "DRAWINSTANCED",
+    "DRAWINDEXEDINSTANCED",
+    "EXECUTEINDIRECT",
+    "DISPATCH",
+    "COPYBUFFERREGION",
+    "COPYTEXTUREREGION",
+    "COPYRESOURCE",
+    "COPYTILES",
+    "RESOLVESUBRESOURCE",
+    "CLEARRENDERTARGETVIEW",
+    "CLEARUNORDEREDACCESSVIEW",
+    "CLEARDEPTHSTENCILVIEW",
+    "RESOURCEBARRIER",
+    "EXECUTEBUNDLE",
+    "PRESENT",
+    "RESOLVEQUERYDATA",
+    "BEGINSUBMISSION",
+    "ENDSUBMISSION",
+    "DECODEFRAME",
+    "PROCESSFRAMES",
+    "ATOMICCOPYBUFFERUINT",
+    "ATOMICCOPYBUFFERUINT64",
+    "RESOLVESUBRESOURCEREGION",
+    "WRITEBUFFERIMMEDIATE",
+    "DECODEFRAME1",
+    "SETPROTECTEDRESOURCESESSION",
+    "DECODEFRAME2",
+    "PROCESSFRAMES1",
+    "BUILDRAYTRACINGACCELERATIONSTRUCTURE",
+    "EMITRAYTRACINGACCELERATIONSTRUCTUREPOSTBUILDINFO",
+    "COPYRAYTRACINGACCELERATIONSTRUCTURE",
+    "DISPATCHRAYS",
+    "INITIALIZEMETACOMMAND",
+    "EXECUTEMETACOMMAND",
+    "ESTIMATEMOTION",
+    "RESOLVEMOTIONVECTORHEAP",
+    "SETPIPELINESTATE1",
+    "INITIALIZEEXTENSIONCOMMAND",
+    "EXECUTEEXTENSIONCOMMAND",
+    "DISPATCHMESH",
+    "ENCODEFRAME",
+    "RESOLVEENCODEROUTPUTMETADATA",
+    "BARRIER",
+    "BEGIN_COMMAND_LIST",
+    "DISPATCHGRAPH",
+    "SETPROGRAM",
+];
 
 pub struct D3d12ConsumerDevice {
     factory: IDXGIFactory4,
@@ -57,11 +115,12 @@ impl D3d12ConsumerDevice {
         adapter: IDXGIAdapter1,
     ) -> windows::core::Result<Self> {
         let desc = unsafe { adapter.GetDesc1()? };
+        Self::enable_removal_diagnostics();
         let mut device = None;
         unsafe { D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_11_0, &mut device)? };
         let device: ID3D12Device =
             device.ok_or_else(|| windows::core::Error::from_hresult(E_POINTER))?;
-        let queue = unsafe {
+        let queue: ID3D12CommandQueue = unsafe {
             device.CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC {
                 Type: D3D12_COMMAND_LIST_TYPE_DIRECT,
                 Priority: 0,
@@ -69,6 +128,7 @@ impl D3d12ConsumerDevice {
                 NodeMask: 0,
             })?
         };
+        unsafe { queue.SetName(w!("Polymer consumer queue"))? };
         Ok(Self {
             factory,
             adapter,
@@ -79,6 +139,103 @@ impl D3d12ConsumerDevice {
                 high_part: desc.AdapterLuid.HighPart,
             },
         })
+    }
+
+    /// Describes why the device was removed: the removal reason and, when DRED is enabled in
+    /// debug builds, the command lists that did not finish and any page-faulting allocation.
+    pub fn removal_report(&self) -> String {
+        Self::removal_report_for(&self.device)
+    }
+
+    /// Enables DRED breadcrumbs and page-fault tracking for D3D12 devices created afterwards,
+    /// in debug builds. The setting is process-wide, so call it before creating any device.
+    pub fn enable_removal_diagnostics() {
+        if !cfg!(debug_assertions) {
+            return;
+        }
+        let mut settings: Option<ID3D12DeviceRemovedExtendedDataSettings> = None;
+        if unsafe { D3D12GetDebugInterface(&mut settings) }.is_ok()
+            && let Some(settings) = settings
+        {
+            unsafe {
+                settings.SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+                settings.SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+            }
+        }
+    }
+
+    /// [`Self::removal_report`] for any D3D12 device, such as one owned by wgpu.
+    pub fn removal_report_for(device: &ID3D12Device) -> String {
+        let mut report = match unsafe { device.GetDeviceRemovedReason() } {
+            Ok(()) => "device is not removed".to_owned(),
+            Err(error) => format!("reason {error}"),
+        };
+        let Ok(dred) = device.cast::<ID3D12DeviceRemovedExtendedData>() else {
+            return report;
+        };
+        let name = |name: PCWSTR| {
+            if name.is_null() {
+                "unnamed".to_owned()
+            } else {
+                unsafe { name.to_string() }.unwrap_or_default()
+            }
+        };
+        if let Ok(output) = unsafe { dred.GetAutoBreadcrumbsOutput() } {
+            let mut node = output.pHeadAutoBreadcrumbNode;
+            while let Some(breadcrumbs) = unsafe { node.as_ref() } {
+                let completed = unsafe { breadcrumbs.pLastBreadcrumbValue.as_ref() }
+                    .copied()
+                    .unwrap_or(0);
+                if completed < breadcrumbs.BreadcrumbCount {
+                    let history = unsafe {
+                        std::slice::from_raw_parts(
+                            breadcrumbs.pCommandHistory,
+                            breadcrumbs.BreadcrumbCount as usize,
+                        )
+                    };
+                    let operations = history.iter().enumerate().map(|(index, op)| {
+                        let label = BREADCRUMB_OPS
+                            .get(op.0 as usize)
+                            .copied()
+                            .unwrap_or("UNKNOWN");
+                        if index == completed as usize {
+                            format!(">>{label}<<")
+                        } else {
+                            label.to_owned()
+                        }
+                    });
+                    let _ = write!(
+                        report,
+                        "; command list {} on queue {} stopped after {completed} of {}: [{}]",
+                        name(breadcrumbs.pCommandListDebugNameW),
+                        name(breadcrumbs.pCommandQueueDebugNameW),
+                        breadcrumbs.BreadcrumbCount,
+                        operations.collect::<Vec<_>>().join(", "),
+                    );
+                }
+                node = breadcrumbs.pNext as *const D3D12_AUTO_BREADCRUMB_NODE;
+            }
+        }
+        if let Ok(fault) = unsafe { dred.GetPageFaultAllocationOutput() }
+            && fault.PageFaultVA != 0
+        {
+            let _ = write!(report, "; page fault at {:#x}", fault.PageFaultVA);
+            for (label, mut node) in [
+                ("existing", fault.pHeadExistingAllocationNode),
+                ("freed", fault.pHeadRecentFreedAllocationNode),
+            ] {
+                while let Some(allocation) = unsafe { node.as_ref() } {
+                    let _ = write!(
+                        report,
+                        ", {label} {} ({:?})",
+                        name(allocation.ObjectNameW),
+                        allocation.AllocationType
+                    );
+                    node = allocation.pNext as *const D3D12_DRED_ALLOCATION_NODE;
+                }
+            }
+        }
+        report
     }
 
     pub fn import(

@@ -221,6 +221,7 @@ impl D3d12Compositor {
                 &allocators[0],
                 Some(&content_pipeline),
             )?;
+            command_list.SetName(windows::core::w!("Polymer compositor"))?;
             command_list.Close()?;
             let fence = consumer.device().CreateFence(0, D3D12_FENCE_FLAG_NONE)?;
             let fence_event = CreateEventW(None, false, false, None)?;
@@ -233,6 +234,7 @@ impl D3d12Compositor {
                 present_interval,
                 frame_latency_waitable,
                 frame_permit: false,
+                removal_reported: false,
                 extent,
                 backbuffers,
                 rtv_heap,

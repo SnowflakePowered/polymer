@@ -24,8 +24,9 @@ use windows::{
             Direct3D::{D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST, Fxc::D3DCompile, ID3DBlob},
             Direct3D11::{
                 D3D11_BIND_SHADER_RESOURCE, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                D3D11_FILTER_MIN_MAG_MIP_POINT, D3D11_SAMPLER_DESC, D3D11_TEXTURE_ADDRESS_CLAMP,
-                D3D11_VIEWPORT, ID3D11Device, ID3D11DeviceContext, ID3D11PixelShader,
+                D3D11_FENCE_FLAG_NONE, D3D11_FILTER_MIN_MAG_MIP_POINT, D3D11_SAMPLER_DESC,
+                D3D11_TEXTURE_ADDRESS_CLAMP, D3D11_VIEWPORT, ID3D11Device, ID3D11Device5,
+                ID3D11DeviceContext, ID3D11DeviceContext4, ID3D11Fence, ID3D11PixelShader,
                 ID3D11RenderTargetView, ID3D11Resource, ID3D11SamplerState,
                 ID3D11ShaderResourceView, ID3D11Texture2D, ID3D11VertexShader,
             },
@@ -79,11 +80,14 @@ impl ChunkSurface {
 pub(super) struct ChunkSurfaces {
     device: ID3D11On12Device,
     d3d11: ID3D11Device,
-    context: ID3D11DeviceContext,
+    context: ID3D11DeviceContext4,
     graphics: CompositionGraphicsDevice,
     vertex: ID3D11VertexShader,
     pixel: ID3D11PixelShader,
     sampler: ID3D11SamplerState,
+    fence: ID3D11Fence,
+    signalled: u64,
+    retired: Vec<(u64, WrappedSource)>,
 }
 
 impl ChunkSurfaces {
@@ -133,14 +137,26 @@ impl ChunkSurfaces {
                 Some(&mut sampler),
             )?;
         }
+        let mut fence: Option<ID3D11Fence> = None;
+        // SAFETY: the fence is created on the live layered device.
+        unsafe {
+            d3d11
+                .cast::<ID3D11Device5>()?
+                .CreateFence(0, D3D11_FENCE_FLAG_NONE, &mut fence)?
+        };
         Ok(Self {
             device: d3d11.cast()?,
             d3d11,
-            context: immediate.ok_or("D3D11On12 returned no device context")?,
+            context: immediate
+                .ok_or("D3D11On12 returned no device context")?
+                .cast()?,
             graphics,
             vertex: vertex.ok_or("D3D11 returned no vertex shader")?,
             pixel: pixel.ok_or("D3D11 returned no pixel shader")?,
             sampler: sampler.ok_or("D3D11 returned no sampler")?,
+            fence: fence.ok_or("D3D11 returned no fence")?,
+            signalled: 0,
+            retired: Vec::new(),
         })
     }
 
@@ -243,7 +259,7 @@ impl ChunkSurfaces {
     /// reference created on the rasterizer's device, left in the
     /// `UNORDERED_ACCESS` state by Vello.
     pub(super) unsafe fn update(
-        &self,
+        &mut self,
         chunk: &mut ChunkSurface,
         resource: *mut c_void,
         width: u32,
@@ -257,7 +273,9 @@ impl ChunkSurfaces {
             .as_ref()
             .is_none_or(|source| source.identity != identity)
         {
-            chunk.source = Some(self.wrap(resource, identity)?);
+            let previous = chunk.source.replace(self.wrap(resource, identity)?);
+            self.retired
+                .extend(previous.map(|source| (self.signalled + 1, source)));
         }
         let size = (width.max(1), height.max(1));
         if chunk.size != size {
@@ -310,9 +328,25 @@ impl ChunkSurfaces {
         Ok(())
     }
 
-    /// Submits every pending draw to the rasterizer's queue.
-    pub(super) fn flush(&self) {
-        // SAFETY: flushing only submits work recorded on this device.
-        unsafe { self.context.Flush() };
+    /// Keeps a removed chunk's source alive until the queue has finished
+    /// every draw that read it.
+    pub(super) fn retire(&mut self, chunk: ChunkSurface) {
+        self.retired
+            .extend(chunk.source.map(|source| (self.signalled + 1, source)));
+    }
+
+    /// Submits every pending draw to the rasterizer's queue, then releases
+    /// sources whose last use the queue has completed.
+    pub(super) fn flush(&mut self) -> windows::core::Result<()> {
+        self.signalled += 1;
+        // SAFETY: flushing and signalling only submit work recorded on this
+        // device, and the fence belongs to it.
+        let completed = unsafe {
+            self.context.Flush();
+            self.context.Signal(&self.fence, self.signalled)?;
+            self.fence.GetCompletedValue()
+        };
+        self.retired.retain(|(value, _)| *value > completed);
+        Ok(())
     }
 }

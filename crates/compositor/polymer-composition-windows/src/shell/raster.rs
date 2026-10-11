@@ -9,6 +9,7 @@ use polymer_banner::BannerTextures;
 use polymer_composition::{
     CompositionScene as ShellFrame, RasterChunkId, RasterChunkLayout, ShellCompositionGroup,
 };
+use polymer_consumer_d3d12::D3d12ConsumerDevice;
 use polymer_mipmap::MipTextures;
 use polymer_protocol::AdapterLuid;
 use std::{
@@ -19,7 +20,10 @@ use std::{
 };
 use vello::wgpu;
 use vello::{AaConfig, AaSupport, RenderParams, Renderer as VelloRenderer, RendererOptions};
-use windows::core::{IUnknown, Interface};
+use windows::{
+    Win32::Graphics::Direct3D12::ID3D12Device,
+    core::{IUnknown, Interface},
+};
 
 /// Vello GPU state owned by the shell compositor.
 pub(crate) struct ShellRasterizer {
@@ -194,6 +198,27 @@ impl ShellRasterizer {
             })
             .await
             .map_err(|error| format!("shell chrome could not open a D3D12 device: {error}"))?;
+        if let Some(hal) = unsafe { queue.as_hal::<wgpu_hal::api::Dx12>() } {
+            let _ = unsafe {
+                hal.as_raw()
+                    .SetName(windows_wgpu::core::w!("Polymer shell chrome queue"))
+            };
+        }
+        // SAFETY: the raw device is only read while wgpu reports it lost, before it is destroyed.
+        if let Some(raw) = unsafe { device.as_hal::<wgpu_hal::api::Dx12>() }
+            .map(|hal| windows_wgpu::core::Interface::as_raw(hal.raw_device()) as usize)
+        {
+            device.set_device_lost_callback(move |reason, message| {
+                if reason == wgpu::DeviceLostReason::Destroyed {
+                    return;
+                }
+                let raw = raw as *mut std::ffi::c_void;
+                let report = unsafe { ID3D12Device::from_raw_borrowed(&raw) }
+                    .map(D3d12ConsumerDevice::removal_report_for)
+                    .unwrap_or_default();
+                tracing::error!("polymer: shell chrome D3D12 device lost: {message}; {report}");
+            });
+        }
         let renderer = VelloRenderer::new(
             &device,
             RendererOptions {
@@ -232,6 +257,7 @@ impl ShellRasterizer {
     pub(crate) async fn new_for_adapter(
         desired: Option<AdapterLuid>,
     ) -> Result<Self, Box<dyn Error>> {
+        D3d12ConsumerDevice::enable_removal_diagnostics();
         let instance = wgpu::Instance::new(shell_instance_options());
         let adapter = if let Some(desired) = desired {
             let mut selected = None;

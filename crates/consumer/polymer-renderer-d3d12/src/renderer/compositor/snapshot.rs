@@ -43,6 +43,7 @@ impl D3d12Compositor {
         let list: ID3D12GraphicsCommandList = unsafe {
             device.CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &allocator, None)?
         };
+        unsafe { list.SetName(windows::core::w!("Polymer compositor snapshot"))? };
         unsafe {
             transition(&list, &texture, state, D3D12_RESOURCE_STATE_COPY_SOURCE);
             let mut destination = D3D12_TEXTURE_COPY_LOCATION {

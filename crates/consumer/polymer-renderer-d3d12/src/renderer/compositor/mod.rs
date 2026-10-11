@@ -116,6 +116,7 @@ pub struct D3d12Compositor {
     present_interval: u32,
     frame_latency_waitable: Option<HANDLE>,
     frame_permit: bool,
+    removal_reported: bool,
     extent: (u32, u32),
     backbuffers: Vec<ID3D12Resource>,
     rtv_heap: ID3D12DescriptorHeap,

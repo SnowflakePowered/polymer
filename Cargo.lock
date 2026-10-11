@@ -9838,6 +9838,7 @@ dependencies = [
  "pollster",
  "polymer-banner",
  "polymer-composition",
+ "polymer-consumer-d3d12",
  "polymer-mipmap",
  "polymer-platform-windows",
  "polymer-protocol",

@@ -7,6 +7,10 @@ impl D3d12Compositor {
         mut webrtc: Option<&mut WebRtcCompositor>,
         record: impl FnOnce(&mut D3d12RenderPass<'_>) -> Result<(), Box<dyn Error>>,
     ) -> Result<bool, Box<dyn Error>> {
+        self.ensure_device()?;
+        if self.backbuffers.is_empty() {
+            return Err("swapchain has no back buffers".into());
+        }
         self.poll_display_latency();
         if webrtc
             .as_deref()
