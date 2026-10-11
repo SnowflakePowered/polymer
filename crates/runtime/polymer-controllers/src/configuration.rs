@@ -52,10 +52,26 @@ struct HubState {
 
 impl HubState {
     fn configuration(&self) -> InputConfiguration {
+        let priority = self
+            .machine
+            .as_deref()
+            .and_then(|machine| MachineSpec::try_from(machine).ok())
+            .map(|machine| {
+                machine
+                    .input_groups()
+                    .map(|group| group.name())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let mut ports = self.ports.values().cloned().collect::<Vec<_>>();
+        ports.sort_by_key(|port| {
+            let rank = priority.iter().position(|group| *group == port.port.group);
+            (rank.unwrap_or(priority.len()), port.port.index)
+        });
         InputConfiguration {
             revision: self.revision,
             machine: self.machine.clone(),
-            ports: self.ports.values().cloned().collect(),
+            ports,
             assignments: self
                 .assignments
                 .iter()

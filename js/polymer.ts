@@ -94,7 +94,9 @@ export interface ConnectionSession extends EventTarget {
   readonly discovery: Readonly<{ active: boolean }>;
   readonly candidates: readonly ManagedControllerDevice[];
   readonly players: readonly ControllerPlayer[];
+  readonly joinRequests: readonly ManagedControllerDevice[];
   connect(id: string): Promise<void>;
+  join(source: InputSourceSelector, target: Readonly<{ index: number; group?: string | null }>): Promise<void>;
   commit(): Promise<void>;
 }
 

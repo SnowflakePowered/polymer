@@ -12,7 +12,7 @@
   display: grid;
   min-width: 0;
   min-height: 0;
-  grid-template-rows: minmax(9.5rem, 26.5%) minmax(0, 1fr) minmax(4.5rem, 10%);
+  grid-template-rows: minmax(0, 1fr) minmax(4.5rem, 10%);
   overflow: hidden;
   color: var(--hz-text);
   background: var(--hz-surface);
@@ -70,78 +70,12 @@
   animation: horizon-order-pairing-spin 0.75s linear infinite;
 }
 
-.horizon-order-modes {
-  display: flex;
-  min-height: 0;
-  align-items: center;
-  justify-content: center;
-  gap: clamp(1.2rem, 3.5vw, 4.5rem);
-  padding: 1.15rem 4rem;
-  color: white;
-  background: #898e93;
-}
-
-.horizon-order-mode {
-  display: grid;
-  width: clamp(8rem, 15vw, 13rem);
-  height: 100%;
-  place-items: center;
-}
-
-.horizon-order-mode > img {
-  width: clamp(6.3rem, 9vw, 9.5rem);
-  height: clamp(6.3rem, 9vw, 9.5rem);
-}
-
-.horizon-order-mode.selected {
-  position: relative;
-  width: clamp(22rem, 34vw, 31rem);
-  grid-template-rows: minmax(0, 1fr) auto;
-  padding: 0.65rem 2rem 0.8rem;
-  border-radius: 0.3rem;
-  background: #5d6165;
-  box-shadow: inset 0 0 0 2px rgb(255 255 255 / 10%);
-}
-
-.horizon-order-mode.selected::before {
-  position: absolute;
-  top: 50%;
-  left: -1.4rem;
-  width: 0;
-  height: 0;
-  border-top: 1.15rem solid transparent;
-  border-right: 1.5rem solid #5d6165;
-  border-bottom: 1.15rem solid transparent;
-  content: "";
-  transform: translateY(-50%);
-}
-
-.horizon-order-sideways {
-  display: flex;
-  min-height: 0;
-  align-items: center;
-  justify-content: center;
-  gap: clamp(2.2rem, 5vw, 5.5rem);
-}
-
-.horizon-order-sideways img {
-  width: clamp(5rem, 7.2vw, 7.4rem);
-  height: clamp(5rem, 7.2vw, 7.4rem);
-  transform: rotate(90deg);
-}
-
-.horizon-order-mode strong {
-  margin-top: -0.45rem;
-  font-size: clamp(1rem, 1.65vw, 1.6rem);
-  font-weight: 400;
-  white-space: nowrap;
-}
-
 .horizon-order-main {
   display: grid;
   min-height: 0;
   overflow: auto;
-  grid-template-rows: auto minmax(8rem, 1fr) auto auto auto;
+  grid-template-rows: auto auto auto auto auto;
+  align-content: center;
   justify-items: center;
   gap: clamp(0.6rem, 1.6vh, 1.2rem);
   padding: clamp(1rem, 4vh, 2.5rem) clamp(2rem, 8vw, 8rem) clamp(0.75rem, 2vh, 1.5rem);
@@ -154,7 +88,7 @@
   justify-content: center;
   gap: 0.55rem;
   margin: 0;
-  color: #313337;
+  color: var(--hz-text);
   font-size: clamp(1.25rem, 2.3vw, 2.25rem);
   line-height: 1;
 }
@@ -173,46 +107,81 @@
 
 .horizon-order-players {
   display: grid;
-  width: 100%;
-  min-height: 0;
-  grid-template-columns: repeat(4, minmax(8rem, 1fr));
+  --horizon-order-slot-size: clamp(8rem, 17vw, 15rem);
+  grid-template-columns: repeat(var(--horizon-order-columns, 4), var(--horizon-order-slot-size));
   gap: clamp(0.9rem, 2vw, 1.8rem);
 }
 
-.horizon-order-slot-wrap {
-  position: relative;
-  display: grid;
-  min-width: 0;
-  min-height: 0;
+.horizon-order-main:focus {
+  outline: 0;
 }
 
-.horizon-order-slot {
-  display: flex;
-  min-width: 0;
-  min-height: 0;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
+.horizon-order-roster {
+  display: grid;
+  max-width: 100%;
   gap: 0.6rem;
-  padding: 1rem;
-  border: 2px solid #bebfc1;
+}
+
+.horizon-order-lesser-groups {
+  display: flex;
+  justify-content: flex-start;
+  gap: 0.6rem;
+}
+
+.horizon-order-lesser {
+  display: flex;
+  gap: 0.3rem;
+  padding: 0.35rem;
+  border: 1px solid var(--hz-divider);
   border-radius: 0;
-  color: #b7b8ba;
   background: var(--hz-panel);
   box-shadow: none;
 }
 
-.horizon-order-slot:disabled {
-  opacity: 1;
+.horizon-order-lesser.selected,
+.horizon-order-lesser:focus-visible {
+  border-color: var(--hz-action);
+  outline: 0;
+  box-shadow: inset 0 0 0 2px var(--hz-action);
 }
 
-.horizon-order-slot:not(:disabled):hover,
-.horizon-order-slot.selected,
-.horizon-order-slot:focus {
-  border-color: #2459dc;
-  background: #f4f7ff;
-  outline: 0;
-  box-shadow: inset 0 0 0 2px rgb(36 89 220 / 12%);
+.horizon-order-lesser > span {
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  place-items: center;
+  border: 1px solid var(--hz-divider);
+  color: var(--hz-muted);
+  font-size: 0.9rem;
+}
+
+.horizon-order-lesser > span[data-connected] {
+  border-color: var(--hz-action);
+  color: white;
+  background: var(--hz-action);
+}
+
+.horizon-order-players[data-inactive] {
+  opacity: 0.45;
+}
+
+.horizon-order-slot {
+  display: flex;
+  width: var(--horizon-order-slot-size);
+  aspect-ratio: 1;
+  min-width: 0;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-evenly;
+  padding: 0.6rem;
+  border: 1px solid var(--hz-divider);
+  color: var(--hz-muted);
+  background: var(--hz-panel);
+}
+
+.horizon-order-slot[data-connected] {
+  border: 3px solid var(--hz-text);
+  background: var(--hz-surface);
 }
 
 .horizon-order-player-number {
@@ -221,23 +190,30 @@
   line-height: 1;
 }
 
-.horizon-order-slot-wrap.assigned .horizon-order-player-number {
-  color: #2459dc;
-  font-size: clamp(1.5rem, 2.2vw, 2.25rem);
+.horizon-order-player-lights {
+  display: flex;
+  gap: 0.3rem;
 }
 
-.horizon-order-assigned-controller {
-  width: clamp(3.5rem, 5vw, 5.5rem);
-  height: clamp(3.5rem, 5vw, 5.5rem);
-  padding: 0.4rem;
-  border-radius: 50%;
-  background: #898e93;
+.horizon-order-player-lights > i {
+  width: 0.7rem;
+  height: 0.7rem;
+  background: var(--hz-divider);
+}
+
+.horizon-order-player-lights > i[data-lit] {
+  background: #6cd400;
+}
+
+.horizon-order-slot .hz-controller-illustration {
+  width: 70%;
+  height: auto;
 }
 
 .horizon-order-slot strong {
   width: 100%;
   overflow: hidden;
-  color: #4a4d51;
+  color: var(--hz-text);
   font-size: clamp(0.72rem, 1.1vw, 1rem);
   font-weight: 700;
   text-align: center;
@@ -315,8 +291,9 @@
   justify-content: center;
   gap: 0.5rem;
   padding: 0.2rem 0.6rem;
+  margin: 0;
   border: 0;
-  color: #323438;
+  color: var(--hz-text);
   background: transparent;
   font-size: clamp(1.15rem, 2vw, 1.9rem);
 }
@@ -329,14 +306,7 @@
   background: #33363a;
 }
 
-.horizon-order-ready:hover:not(:disabled),
-.horizon-order-ready:focus {
-  color: #2459dc;
-  outline: 0;
-}
-
-.horizon-order-ready:disabled {
-  cursor: default;
+.horizon-order-ready[data-disabled] {
   opacity: 0.45;
 }
 
@@ -436,16 +406,7 @@
 
 @media (max-width: 880px), (max-height: 650px) {
   .horizon-order-screen {
-    grid-template-rows: minmax(7.5rem, 24%) minmax(0, 1fr) minmax(4rem, 10%);
-  }
-
-  .horizon-order-modes {
-    padding: 0.7rem 2rem;
-  }
-
-  .horizon-order-mode.selected {
-    width: clamp(17rem, 34vw, 24rem);
-    padding: 0.35rem 1rem 0.45rem;
+    grid-template-rows: minmax(0, 1fr) minmax(4rem, 10%);
   }
 
   .horizon-order-main {
@@ -458,7 +419,7 @@
   }
 
   .horizon-order-slot {
-    padding: 0.55rem;
+    padding: 0.4rem;
   }
 
   .horizon-order-radio-status > span {
@@ -471,30 +432,12 @@
 }
 
 @media (max-width: 650px) {
-  .horizon-order-modes {
-    gap: 0.5rem;
-    padding-inline: 1rem;
-  }
-
-  .horizon-order-mode {
-    width: 5rem;
-  }
-
-  .horizon-order-mode.selected {
-    width: 14rem;
-  }
-
-  .horizon-order-mode strong,
-  .horizon-order-radio-status {
-    display: none;
-  }
-
   .horizon-order-main {
     padding-inline: 1rem;
   }
 
   .horizon-order-players {
-    grid-template-columns: repeat(4, minmax(4rem, 1fr));
+    --horizon-order-slot-size: clamp(4rem, 20vw, 8rem);
   }
 
   .horizon-order-footer {

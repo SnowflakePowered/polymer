@@ -1,6 +1,6 @@
-import { DialogParts as Dialog, Button, Spinner, ControllerSlot, ControllerIllustration, ButtonChord, ButtonGlyph } from "../../ui";
+import { DialogParts as Dialog, Button, Spinner, ControllerIllustration, ButtonChord, ButtonGlyph } from "../../ui";
 import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js";
-import type { ConnectionSession, ManagedControllerDevice } from "../../../../../../js/polymer";
+import type { ConnectionSession, ControllerMapping, InputSourceSelector, ManagedControllerDevice } from "../../../../../../js/polymer";
 import buttonA from "../../assets/switch/button-a.svg";
 import buttonB from "../../assets/switch/button-b.svg";
 import buttonL from "../../assets/switch/button-l.svg";
@@ -9,14 +9,14 @@ import buttonPlus from "../../assets/switch/button-plus.svg";
 import buttonR from "../../assets/switch/button-r.svg";
 import controllerPro from "../../assets/switch/controller-pro.svg";
 import controllerSwitch from "../../assets/switch/controller-switch.svg";
-import joyconLeft from "../../assets/switch/joycon-left-horizontal.svg";
-import joyconRight from "../../assets/switch/joycon-right-horizontal.svg";
 import { useShell } from "../../app/shell-context";
-import { OverlayPortal } from "../../ui";
+import { OverlayPortal, type InputAction } from "../../ui";
 import { PauseDecorator, type PauseRelease } from "./PauseDecorator";
 import "./ControllerReorder.css";
 
 const DISCOVERED_CONTROLLER_LIMIT = 8;
+const PLAYER_LIMIT = 8;
+const NAVIGATION_KEYS = new Set(["Escape", "Enter", "Tab", " ", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
 
 export function ControllerReorder(props: { onClose?: () => void }) {
   const shell = useShell();
@@ -50,6 +50,30 @@ export function ControllerReorder(props: { onClose?: () => void }) {
     return session()?.discovery.active ?? false;
   };
   const isPairing = (candidate: ManagedControllerDevice) => candidate.pairing === true;
+  const groups = createMemo(() => {
+    const grouped = new Map<string, ControllerMapping[]>();
+    for (const mapping of (shell.model.request ?? shell.model.launch?.request)?.controllerTopology.mappings ?? []) {
+      grouped.set(mapping.target.group, [...grouped.get(mapping.target.group) ?? [], mapping]);
+    }
+    return [...grouped.values()];
+  });
+  const [lesserGroup, setLesserGroup] = createSignal<string | null>(null);
+  const controllerAt = (index: number) => players().find((player) => player.index === index)?.controller ?? null;
+  const slots = () => groups()[0]?.map((mapping) => mapping.gamepad) ?? players().map((player) => player.index);
+
+  const join = async (source: InputSourceSelector) => {
+    const group = groups().find((mappings) => mappings[0].target.group === lesserGroup()) ?? groups()[0];
+    const target = group?.find((mapping) => !controllerAt(mapping.gamepad));
+    const index = group
+      ? target?.gamepad
+      : Array.from({ length: PLAYER_LIMIT }, (_, index) => index).find((index) => !controllerAt(index));
+    if (index === undefined) return;
+    try {
+      await session()?.join(source, { index, group: target?.target.group });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
 
   const closeOverlay = () => {
     if (props.onClose) props.onClose();
@@ -93,6 +117,7 @@ export function ControllerReorder(props: { onClose?: () => void }) {
 
   onMount(() => {
     const changed = () => setRevision((value) => value + 1);
+    const requested = (event: Event) => void join({ kind: "device", deviceId: (event as CustomEvent<ManagedControllerDevice>).detail.id });
     window.Polymer.controllers.addEventListener("statechange", changed);
     void (async () => {
       try {
@@ -104,8 +129,9 @@ export function ControllerReorder(props: { onClose?: () => void }) {
         }
         setSession(active);
         active.addEventListener("change", changed);
+        active.addEventListener("joinrequest", requested);
         setRevision((value) => value + 1);
-        requestAnimationFrame(() => content?.querySelector<HTMLElement>(".horizon-order-ready")?.focus());
+        requestAnimationFrame(() => content?.querySelector<HTMLElement>(".horizon-order-main")?.focus());
       } catch (reason) {
         if (!disposed) setError(reason instanceof Error ? reason.message : String(reason));
       }
@@ -114,6 +140,7 @@ export function ControllerReorder(props: { onClose?: () => void }) {
       disposed = true;
       window.Polymer.controllers.removeEventListener("statechange", changed);
       session()?.removeEventListener("change", changed);
+      session()?.removeEventListener("joinrequest", requested);
       if (!leaving && session()?.active) void session()!.commit();
     });
   });
@@ -121,11 +148,20 @@ export function ControllerReorder(props: { onClose?: () => void }) {
   return <PauseDecorator releaseRef={(release) => { releasePause = release; }}>
     <Dialog.Root open onOpenChange={details => { if (!details.open && !pending()) void commit(); }} closeOnEscape={!pending()} preventScroll={false}>
       <OverlayPortal><Dialog.Positioner class="horizon-order-positioner">
-        <Dialog.Content ref={content} class="horizon-order-screen horizon-input-scope" onKeyDown={(event: KeyboardEvent) => {
+        <Dialog.Content ref={content} class="horizon-order-screen horizon-input-scope" onAction={(action: InputAction) => {
+          if (action.type !== "activate" || pending() || !session()) return false;
+          const enter = action.event instanceof KeyboardEvent && action.event.key === "Enter";
+          if (!enter && document.activeElement?.closest("button") && content?.contains(document.activeElement)) return false;
+          void commit();
+          return true;
+        }} onKeyDown={(event: KeyboardEvent) => {
           if (event.key === "Escape") {
             event.preventDefault();
             event.stopPropagation();
             if (!pending()) void commit();
+          } else if (!NAVIGATION_KEYS.has(event.key) && !event.repeat && session() && !pending()
+            && !players().some((player) => player.controller?.id === "keyboardMouse")) {
+            void join({ kind: "keyboardMouse" });
           }
         }}>
           <Dialog.Title class="horizon-order-visually-hidden">Change Grip / Order</Dialog.Title>
@@ -138,20 +174,38 @@ export function ControllerReorder(props: { onClose?: () => void }) {
               <p>Applying the new controller configuration…</p>
             </section>
           }>
-          <header class="horizon-order-modes" aria-hidden="true">
-            <div class="horizon-order-mode"><img src={controllerSwitch} alt="" /></div>
-            <div class="horizon-order-mode selected">
-              <span class="horizon-order-sideways"><img src={joyconLeft} alt="" /><img src={joyconRight} alt="" /></span>
-              <strong>Two players also supported.</strong>
-            </div>
-            <div class="horizon-order-mode"><img src={controllerPro} alt="" /></div>
-          </header>
-
-          <main class="horizon-order-main">
+          <main class="horizon-order-main" tabindex="-1" data-input-default>
             <p class="horizon-order-join-prompt">Press <ButtonChord buttons={["l", "r"]} /> on the controller.</p>
-            <section class="horizon-order-players" aria-label="Player order">
-              <For each={players()}>{player => <ControllerSlot player={player.index} connected={!!player.controller} name={player.controller?.name}><Show when={player.controller}><ControllerIllustration kind="pro" /></Show></ControllerSlot>}</For>
-            </section>
+            <div class="horizon-order-roster">
+              <Show when={groups().length > 1}>
+                <div class="horizon-order-lesser-groups">
+                  <For each={groups().slice(1)}>{(group) => <Button
+                    type="button"
+                    class="horizon-order-lesser"
+                    classList={{ selected: lesserGroup() === group[0].target.group }}
+                    aria-pressed={lesserGroup() === group[0].target.group}
+                    aria-label={`Connect ${group[0].target.group} controllers`}
+                    onClick={() => setLesserGroup(lesserGroup() === group[0].target.group ? null : group[0].target.group)}
+                  >
+                    <For each={group}>{(mapping) => <span
+                      data-connected={!!controllerAt(mapping.gamepad) || undefined}
+                      title={controllerAt(mapping.gamepad)?.name ?? `${mapping.target.group} ${mapping.target.port + 1}`}
+                    >{mapping.target.port + 1}</span>}</For>
+                  </Button>}</For>
+                </div>
+              </Show>
+              <section class="horizon-order-players" aria-label="Player order" data-inactive={lesserGroup() !== null || undefined} style={{ "--horizon-order-columns": Math.min(slots().length, 4) }}>
+                <For each={slots()}>{(index, position) => <div class="horizon-order-slot" data-connected={!!controllerAt(index) || undefined}>
+                  <Show when={controllerAt(index)} fallback={<span class="horizon-order-player-number">{position() + 1}</span>}>{(controller) => <>
+                    <span class="horizon-order-player-lights" aria-label={`Player ${position() + 1}`}>
+                      <For each={[0, 1, 2, 3]}>{(light) => <i data-lit={light <= position() || undefined} />}</For>
+                    </span>
+                    <ControllerIllustration kind="pro" label={controller().name} />
+                    <strong>{controller().name}</strong>
+                  </>}</Show>
+                </div>}</For>
+              </section>
+            </div>
 
             <Show when={candidates().length > 0}>
               <section class="horizon-order-unassigned" aria-label="Discovered controllers">
@@ -171,9 +225,9 @@ export function ControllerReorder(props: { onClose?: () => void }) {
 
             <Show when={!session()}><p class="horizon-order-loading">{error() || "Preparing controllers…"}</p></Show>
             <Show when={error() && session()}><p class="horizon-order-error" role="alert">{error()}</p></Show>
-            <Button type="button" class="horizon-order-ready" data-input-default disabled={!session() || pending()} onClick={() => void commit()}>
+            <p class="horizon-order-ready" data-disabled={!session() || pending() || undefined}>
               Press <ButtonGlyph button="a" /> when you're ready.
-            </Button>
+            </p>
           </main>
 
           <footer class="horizon-order-footer">

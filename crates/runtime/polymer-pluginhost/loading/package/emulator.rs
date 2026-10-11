@@ -102,7 +102,15 @@ impl PluginPackage<EmulatorBlock> {
             .platforms
             .get(console)
             .ok_or_else(|| PackageError::UnknownPlatform(console.to_owned()))?;
-        Ok(platform
+        let priority = consolespec::MachineSpec::try_from(console)
+            .map(|machine| {
+                machine
+                    .input_groups()
+                    .map(|group| group.name().to_owned())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let mut ports = platform
             .iter()
             .flat_map(|(group, ports)| {
                 ports.iter().map(|port| EmulatorPort {
@@ -112,7 +120,12 @@ impl PluginPackage<EmulatorBlock> {
                     pointer: polymer_controllers::topology::PointerMode::Relative,
                 })
             })
-            .collect())
+            .collect::<Vec<_>>();
+        ports.sort_by_key(|port| {
+            let rank = priority.iter().position(|group| *group == port.group);
+            (rank.unwrap_or(priority.len()), port.index)
+        });
+        Ok(ports)
     }
 
     /// Maps viewer pad layouts onto the unique compatible port group in order.
