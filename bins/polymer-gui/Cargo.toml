@@ -15,11 +15,11 @@ dashmap.workspace = true
 image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 rayon = "1.12.0"
 base64.workspace = true
-blitz-dom = { path = "../../../blitz/packages/blitz-dom", features = ["custom-widget"] }
-blitz-html = { path = "../../../blitz/packages/blitz-html" }
-blitz-net = { path = "../../../blitz/packages/blitz-net" }
-blitz-paint = { path = "../../../blitz/packages/blitz-paint", features = ["custom-widget"] }
-blitz-traits = { path = "../../../blitz/packages/blitz-traits" }
+blitz-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "c3af502c03fd67e6c1861a55a22f28b093d435f7", features = ["custom-widget"] }
+blitz-html = { git = "https://github.com/DioxusLabs/blitz", rev = "c3af502c03fd67e6c1861a55a22f28b093d435f7" }
+blitz-net = { git = "https://github.com/DioxusLabs/blitz", rev = "c3af502c03fd67e6c1861a55a22f28b093d435f7" }
+blitz-paint = { git = "https://github.com/DioxusLabs/blitz", rev = "c3af502c03fd67e6c1861a55a22f28b093d435f7", features = ["custom-widget"] }
+blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "c3af502c03fd67e6c1861a55a22f28b093d435f7" }
 arboard = "3.6.1"
 clap = "4.6.1"
 consolespec.workspace = true
