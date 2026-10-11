@@ -69,9 +69,18 @@ class ConnectionSession extends EventTarget {
   get discovery() { return this.active ? this.#controllers.sessionState.discovery : Object.freeze({ active: false }); }
   get candidates() { return this.active ? this.#controllers.sessionState.candidates : Object.freeze([]); }
   get players() { return this.active ? this.#controllers.players : Object.freeze([]); }
+  get joinRequests() { return this.active ? this.#controllers.sessionState.joinRequests : Object.freeze([]); }
 
   connect(id) {
     return this.#controllers.sessionCommand("connect", this.#id, { id: String(id) });
+  }
+
+  join(source, target) {
+    return this.#controllers.sessionCommand("join", this.#id, {
+      source: source.kind === "device" ? { kind: "device", deviceId: String(source.deviceId) } : { kind: "keyboardMouse" },
+      index: Number(target.index),
+      group: target.group == null ? null : String(target.group),
+    });
   }
 
   commit() {
@@ -82,7 +91,7 @@ class ConnectionSession extends EventTarget {
 class ControllersClient extends EventTarget {
   #state;
   #session = null;
-  #sessionState = Object.freeze({ discovery: Object.freeze({ active: false }), candidates: Object.freeze([]) });
+  #sessionState = Object.freeze({ discovery: Object.freeze({ active: false }), candidates: Object.freeze([]), joinRequests: Object.freeze([]) });
 
   constructor(initial) {
     super();
@@ -173,6 +182,7 @@ class ControllersClient extends EventTarget {
   publish(state) {
     const previous = this.#state;
     const previousSession = this.#session;
+    const previousRequests = new Set(this.#sessionState.joinRequests.map((device) => device.id));
     this.#state = freezeState(state?.controllers || state);
     this.#syncSession();
     if (JSON.stringify(previous.availability) !== JSON.stringify(this.availability)) {
@@ -217,6 +227,9 @@ class ControllersClient extends EventTarget {
       previousSession.dispatchEvent(new CustomEvent("close"));
     }
     if (this.#session?.active) {
+      for (const device of this.#sessionState.joinRequests) {
+        if (!previousRequests.has(device.id)) this.#session.dispatchEvent(new CustomEvent("joinrequest", { detail: device }));
+      }
       this.#session.dispatchEvent(new CustomEvent("change", { detail: this.#session }));
     }
     this.dispatchEvent(new CustomEvent("statechange", { detail: this.#state }));
@@ -227,6 +240,9 @@ class ControllersClient extends EventTarget {
     this.#sessionState = Object.freeze({
       discovery: Object.freeze({ active: Boolean(state?.discovery?.active) }),
       candidates: Object.freeze((state?.candidates || []).map(freezeDevice)),
+      joinRequests: Object.freeze((state?.joinRequests || [])
+        .map((id) => this.#state.devices.find((device) => device.id === id))
+        .filter(Boolean)),
     });
     if (!state) {
       this.#session = null;

@@ -10,6 +10,13 @@ enum ControllerCommand {
     CommitSession { session_id: String },
     #[serde(rename = "controllers.session.connect")]
     ConnectSession { session_id: String, id: String },
+    #[serde(rename = "controllers.session.join")]
+    JoinSession {
+        session_id: String,
+        source: polymer_config::input::SourceSelector,
+        index: u8,
+        group: Option<String>,
+    },
     #[serde(rename = "controllers.disconnect")]
     Disconnect { id: String },
     #[serde(rename = "controllers.forget")]
@@ -51,6 +58,8 @@ impl ControllerManager {
                     id,
                     committing: false,
                     assignments: Vec::new(),
+                    join_requests: Vec::new(),
+                    keyboard: None,
                 });
                 Ok(ControllerCommandOutcome {
                     response: self.snapshot(),
@@ -95,6 +104,21 @@ impl ControllerManager {
                     return Err("controller connection session is committing".to_owned());
                 }
                 Ok(self.outcome(vec![ControllerManagerEffect::Connect(id)], false))
+            }
+            ControllerCommand::JoinSession {
+                session_id,
+                source,
+                index,
+                group,
+            } => {
+                self.session
+                    .as_ref()
+                    .filter(|session| session.id == session_id && !session.committing)
+                    .ok_or_else(|| {
+                        "unknown or committing controller connection session".to_owned()
+                    })?;
+                self.join(source, index, group.as_deref())?;
+                Ok(self.outcome(Vec::new(), false))
             }
             ControllerCommand::Disconnect { id } => {
                 if let (Some(hub), Some((_, descriptor))) = (

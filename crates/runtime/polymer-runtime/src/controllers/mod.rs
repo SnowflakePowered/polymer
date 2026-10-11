@@ -141,6 +141,8 @@ struct ControllerConnectionSession {
     id: String,
     committing: bool,
     assignments: Vec<SourceAssignment>,
+    join_requests: Vec<DeviceId>,
+    keyboard: Option<u8>,
 }
 
 impl ControllerManager {
@@ -324,7 +326,28 @@ impl ControllerManager {
                 })
             })
             .collect::<Vec<_>>();
-        let player_count = if devices.iter().any(|device| {
+        let keyboard = self
+            .session
+            .as_ref()
+            .and_then(|session| session.keyboard)
+            .map(|index| {
+                serde_json::json!({
+                    "index": index,
+                    "id": "keyboardMouse",
+                    "name": "Keyboard and mouse",
+                    "profile": null,
+                    "vendorId": null,
+                    "productId": null,
+                    "serial": null,
+                    "role": "Whole",
+                    "capabilities": [],
+                    "connected": true,
+                    "pairing": false,
+                    "battery": null,
+                })
+            });
+        let controllers = devices.iter().chain(keyboard.iter()).collect::<Vec<_>>();
+        let player_count = if controllers.iter().any(|device| {
             device["connected"].as_bool() == Some(true)
                 && device["index"].as_u64().is_some_and(|index| index >= 4)
         }) {
@@ -334,9 +357,10 @@ impl ControllerManager {
         };
         let players = (0..player_count)
             .map(|index| {
-                let controller = devices
+                let controller = controllers
                     .iter()
                     .find(|device| device["index"].as_u64() == Some(index))
+                    .copied()
                     .cloned();
                 serde_json::json!({ "index": index, "controller": controller })
             })
@@ -349,6 +373,7 @@ impl ControllerManager {
                 "id": session.id,
                 "active": true,
                 "committing": session.committing,
+                "joinRequests": session.join_requests.iter().map(DeviceId::as_str).collect::<Vec<_>>(),
                 "discovery": { "active": false },
                 "candidates": [],
             })),
@@ -396,7 +421,7 @@ impl ControllerManager {
     }
 
     pub fn observe_session(&mut self) -> bool {
-        let Some(session) = self.session.as_ref() else {
+        let Some(session) = self.session.as_mut() else {
             return false;
         };
         let Some(hub) = self.hub.as_ref() else {
@@ -405,30 +430,76 @@ impl ControllerManager {
         if session.committing {
             return false;
         }
-        let mut changed = false;
+        let previous = std::mem::take(&mut session.join_requests);
         for (index, descriptor, state, connected) in hub.device_snapshots() {
             if !connected || index.is_some() {
                 continue;
             }
-            let eligible = Self::join_eligible(&descriptor, state.gamepad.buttons);
-            if !eligible {
+            if !Self::join_eligible(&descriptor, state.gamepad.buttons) {
                 self.join_neutral.insert(descriptor.id);
-                continue;
-            }
-            if !self.join_neutral.remove(&descriptor.id) {
-                continue;
-            }
-            let Some(index) = (0..8)
-                .map(polymer_input::PlayerIndex::new)
-                .find(|index| hub.assignments().iter().all(|(used, _)| used != index))
-            else {
-                break;
-            };
-            if hub.assign(&descriptor.id, Some(index)).is_ok() {
-                changed = true;
+            } else if self.join_neutral.remove(&descriptor.id) || previous.contains(&descriptor.id)
+            {
+                session.join_requests.push(descriptor.id);
             }
         }
-        changed
+        session.join_requests != previous
+    }
+
+    fn join(
+        &mut self,
+        source: SourceSelector,
+        index: u8,
+        group: Option<&str>,
+    ) -> Result<(), String> {
+        self.validate_join_target(index, group)?;
+        let hub = self
+            .hub
+            .as_ref()
+            .ok_or_else(|| "controller input is unavailable".to_owned())?;
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| "no controller connection session is active".to_owned())?;
+        let player = polymer_input::PlayerIndex::new(index);
+        if session.keyboard == Some(index)
+            || hub.assignments().iter().any(|(used, _)| *used == player)
+        {
+            return Err(format!("player {} is already assigned", index + 1));
+        }
+        let SourceSelector::Device { device_id } = source else {
+            session.keyboard = Some(index);
+            return Ok(());
+        };
+        let descriptor = hub
+            .devices()
+            .into_iter()
+            .map(|(_, descriptor)| descriptor)
+            .find(|descriptor| descriptor.id.as_str() == device_id)
+            .ok_or_else(|| format!("unknown controller {device_id}"))?;
+        hub.assign(&descriptor.id, Some(player))
+            .map_err(|error| error.to_string())?;
+        session
+            .join_requests
+            .retain(|request| *request != descriptor.id);
+        Ok(())
+    }
+
+    fn validate_join_target(&self, index: u8, group: Option<&str>) -> Result<(), String> {
+        if index >= 8 {
+            return Err("controller player index must be below 8".to_owned());
+        }
+        let Some(topology) = &self.applied else {
+            return Ok(());
+        };
+        let group = group.ok_or_else(|| "a controller group is required in game".to_owned())?;
+        if !topology
+            .mappings
+            .iter()
+            .any(|mapping| mapping.gamepad == index && mapping.target.group == group)
+        {
+            return Err(format!("player {index} is not a port of group {group}"));
+        }
+        Ok(())
     }
 
     fn clear_assignments(&mut self) -> Result<(), String> {
@@ -459,6 +530,14 @@ impl ControllerManager {
     }
 
     fn source_assignments(&self) -> Vec<SourceAssignment> {
+        let keyboard = self
+            .session
+            .as_ref()
+            .and_then(|session| session.keyboard)
+            .map(|index| SourceAssignment {
+                index,
+                source: SourceSelector::KeyboardMouse,
+            });
         self.hub
             .as_ref()
             .map(|hub| {
@@ -470,9 +549,12 @@ impl ControllerManager {
                             device_id: device.to_string(),
                         },
                     })
-                    .collect()
+                    .collect::<Vec<_>>()
             })
             .unwrap_or_default()
+            .into_iter()
+            .chain(keyboard)
+            .collect()
     }
 
     fn join_eligible(descriptor: &DeviceDescriptor, buttons: u32) -> bool {
