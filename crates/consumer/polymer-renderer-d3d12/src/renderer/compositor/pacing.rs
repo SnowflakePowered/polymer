@@ -87,6 +87,7 @@ impl D3d12Compositor {
         if size.width == 0 || size.height == 0 {
             return Ok(false);
         }
+        self.ensure_device()?;
         self.wait_idle()?;
         self.backbuffers.clear();
         unsafe {
@@ -107,6 +108,21 @@ impl D3d12Compositor {
         self.frame_permit = false;
         self.extent = (size.width, size.height);
         Ok(true)
+    }
+
+    /// Fails once the device is removed, logging why on the first failure.
+    pub(super) fn ensure_device(&mut self) -> Result<(), Box<dyn Error>> {
+        if unsafe { self.receiver.device().GetDeviceRemovedReason() }.is_ok() {
+            return Ok(());
+        }
+        if !self.removal_reported {
+            self.removal_reported = true;
+            tracing::error!(
+                "polymer: D3D12 compositor device removed: {}",
+                self.receiver.removal_report()
+            );
+        }
+        Err("D3D12 device removed".into())
     }
 
     pub(super) fn wait_frame(&self, index: usize) -> windows::core::Result<()> {

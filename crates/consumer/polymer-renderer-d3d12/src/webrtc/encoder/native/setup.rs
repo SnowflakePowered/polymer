@@ -345,12 +345,14 @@ pub(super) unsafe fn create_queue(
     kind: D3D12_COMMAND_LIST_TYPE,
 ) -> windows::core::Result<ID3D12CommandQueue> {
     unsafe {
-        device.CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC {
+        let queue: ID3D12CommandQueue = device.CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC {
             Type: kind,
             Priority: 0,
             Flags: D3D12_COMMAND_QUEUE_FLAG_NONE,
             NodeMask: 0,
-        })
+        })?;
+        queue.SetName(windows::core::w!("Polymer WebRTC queue"))?;
+        Ok(queue)
     }
 }
 

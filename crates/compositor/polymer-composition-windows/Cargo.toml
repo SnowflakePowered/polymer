@@ -12,6 +12,7 @@ polymer-composition.workspace = true
 polymer-banner = { workspace = true, features = ["render"] }
 polymer-mipmap = { workspace = true, features = ["render"] }
 polymer-renderer = { path = "../../consumer/polymer-renderer" }
+polymer-consumer-d3d12 = { path = "../../consumer/polymer-consumer-d3d12" }
 polymer-renderer-d3d12 = { path = "../../consumer/polymer-renderer-d3d12" }
 anyrender = "0.14.0"
 anyrender_vello = "0.15.0"

@@ -248,7 +248,9 @@ impl ShellCompositor {
             .map(|chunk| chunk.id)
             .collect::<HashSet<_>>();
         let surface_count = self.raster.surfaces.len();
-        self.raster.surfaces.retain(|id, _| live.contains(id));
+        for (_, chunk) in self.raster.surfaces.extract_if(|id, _| !live.contains(id)) {
+            self.raster.chunk_surfaces.retire(chunk);
+        }
         let mut created = self.raster.surfaces.len() != surface_count;
         let pixels_changed = !result.updates.is_empty();
         for (id, resource) in result.updates {
@@ -271,7 +273,7 @@ impl ShellCompositor {
                 )?;
             }
         }
-        self.raster.chunk_surfaces.flush();
+        self.raster.chunk_surfaces.flush()?;
         self.pixels_dirty |= pixels_changed;
         self.content_dirty |= created
             || self.raster.chunks != result.raster_chunks
