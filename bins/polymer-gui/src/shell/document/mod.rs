@@ -14,6 +14,7 @@ mod events;
 mod hit_test;
 mod image;
 mod image_levels;
+mod media;
 mod mutations;
 mod providers;
 mod scrolling;
@@ -32,6 +33,7 @@ use blitz_dom::NodeId;
 use blitz_dom::local_name;
 use blitz_traits::net::{NetProvider, NetWaker};
 pub use events::{DomKeyboardEvent, DomMouseEvent, DomWheelEvent};
+pub(crate) use media::{MediaEvents, MediaPlayers, MediaSignal, MediaState};
 use hit_test::{node_is_within_tracked_surface, pointer_hit};
 use image_levels::ImageLevels;
 use providers::NativeShellProvider;
@@ -105,6 +107,7 @@ pub struct ShellDocument {
     placements: Vec<GamePlacement>,
     images: ImageLevels,
     image_loader: Arc<image::ImageLoader>,
+    media: MediaPlayers,
     width: u32,
     height: u32,
     scale_factor: f32,
@@ -199,6 +202,7 @@ impl ShellDocumentFactory {
             Arc::new(providers::ShellNetProvider::new(waker.clone()));
         let level_shell = shell.clone();
         let images = ImageLevels::new(move || level_shell.wake());
+        let media_shell = shell.clone();
         let shell_provider: Arc<dyn blitz_traits::shell::ShellProvider> = Arc::new(
             NativeShellProvider::new(self.event_proxy.clone(), shell),
         );
@@ -212,6 +216,7 @@ impl ShellDocumentFactory {
                 ..Default::default()
             },
         );
+        let media = MediaPlayers::new(net.clone(), document.as_ref().id(), &base_url, media_shell);
         let image_loader = Arc::new(image::ImageLoader::new(
             net,
             waker,
@@ -227,6 +232,7 @@ impl ShellDocumentFactory {
             placements: Vec::new(),
             images,
             image_loader,
+            media,
             width: 0,
             height: 0,
             scale_factor: 1.0,
@@ -240,6 +246,7 @@ impl ShellDocumentFactory {
             pointer_hover_path: Vec::new(),
         };
         document.resize(width, height, scale_factor);
+        document.load_document_media();
         // Scripts run after parsing, with a complete DOM just like deferred
         // document scripts. Resolve once first so geometry APIs have useful
         // values during initialisation.

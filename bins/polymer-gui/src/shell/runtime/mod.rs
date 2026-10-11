@@ -106,6 +106,16 @@ impl ShellRuntime {
         self.dispatch_dom(kind, target, event_class, &init, bubbles, cancelable)
     }
 
+    pub fn dispatch_media(&mut self, events: crate::shell::document::MediaEvents) {
+        let Ok(state) = serde_json::to_value(events.state) else {
+            return;
+        };
+        let target = events.node.as_u64() as usize;
+        for kind in events.kinds {
+            self.dispatch_dom(kind, target, "media", &state, false, false);
+        }
+    }
+
     pub fn poll_event_loop(&mut self, cx: &mut std::task::Context<'_>) {
         if let std::task::Poll::Ready(Err(error)) = self.runtime.poll_event_loop(cx) {
             tracing::error!("polymer: polling shell JavaScript failed: {error}");

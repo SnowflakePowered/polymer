@@ -221,6 +221,12 @@ impl ShellHost {
             ShellCommand::Inspect { dispatch, reply } => {
                 let _ = reply.send(Ok(dispatch.handle(&self.document.0.borrow())));
             }
+            ShellCommand::Media(signal) => {
+                let events = self.document.0.borrow_mut().media_signal(signal);
+                if let Some(events) = events {
+                    self.runtime.dispatch_media(events);
+                }
+            }
             ShellCommand::Wake => self.paint_requested = true,
             ShellCommand::Input { .. } | ShellCommand::Shutdown => {}
         }
