@@ -1,0 +1,4 @@
+.vp-details { background: var(--vp-details); }
+.vp-details-body { display: flex; flex-direction: column; gap: 16px; padding: 8px 0 48px; }
+.vp-details-panel { display: flex; flex-direction: column; width: 100%; max-width: 1180px; margin: 0 auto; padding: 0 var(--vp-gutter); }
+.vp-details-description { margin-bottom: 10px; font-size: 12px; line-height: 16px; color: var(--vp-secondary); }

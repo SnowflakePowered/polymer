@@ -9,7 +9,8 @@ import { NotificationProvider } from "../components/notifications/NotificationPr
 import { ToastRegion } from "../components/notifications/ToastRegion";
 import { InputNavigation } from "../components/InputNavigation";
 import { ColorModeProvider, type ColorMode } from "../ui";
-import { onLaunch, resolveGame } from "./launch";
+import { GameLauncher } from "../../../../../js/launch";
+import { StartupRequests, type StartupRequest } from "../../../../../js/startup";
 import type { LibraryQueryState, RecentGame, ShellModel } from "./models";
 import "./ShellProvider.css";
 
@@ -18,22 +19,8 @@ const COLOR_MODE_KEY = "polymer.horizon.colorMode";
 const RECENT_LIMIT = 100;
 const DEFAULT_AUDIO = { available: false, volume: 1, muted: false };
 
-type StartupRequest =
-  | { kind: "scrape"; path: string }
-  | { kind: "package"; path: string; emulator?: string }
-  | { kind: "launch"; options: LaunchRequest };
-
-const startupQueue: StartupRequest[] = [];
-let startupHandler: ((request: StartupRequest) => void) | null = null;
-const requestListener = (event: Event) => {
-  const request = (event as CustomEvent<StartupRequest>).detail;
-  if (startupHandler) startupHandler(request);
-  else startupQueue.push(request);
-};
-window.Polymer.scraping.addEventListener("request", requestListener);
-import.meta.hot?.dispose(() => {
-  window.Polymer.scraping.removeEventListener("request", requestListener);
-});
+const startup = new StartupRequests(window.Polymer.scraping);
+import.meta.hot?.dispose(() => startup.dispose());
 
 async function readRecent(): Promise<RecentGame[]> {
   try {
@@ -92,6 +79,7 @@ export function ShellProvider(props: ParentProps) {
       setModel("recent", recent);
     });
   });
+  const games = new GameLauncher(window.Polymer);
   let detection: AbortController | null = null;
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -149,7 +137,7 @@ export function ShellProvider(props: ParentProps) {
       go("/game/launching");
     }
     try {
-      const resolved = await resolveGame(path, emulator, preparation.signal);
+      const resolved = await games.resolve(path, emulator, preparation.signal);
       if (preparation.signal.aborted) return;
       setModel("launchableId", resolved.launchableId);
       setModel("draft", resolved.draft);
@@ -169,7 +157,7 @@ export function ShellProvider(props: ParentProps) {
     setModel("launcher", { kind: "launching", name: draft.name });
     go(gamePath("launching"), true);
     try {
-      const request = await onLaunch(launchableId, draft);
+      const request = await games.launch(launchableId, draft);
       if (signal?.aborted) return;
       setModel("surfaces", structuredClone(request.surfaces));
       setModel("request", request);
@@ -243,8 +231,7 @@ export function ShellProvider(props: ParentProps) {
     setModel("launcher", { kind: "launching", name: request.options.command });
     go(gamePath("launching"), true);
   };
-  startupHandler = acceptStartup;
-  for (const request of startupQueue.splice(0)) acceptStartup(request);
+  onCleanup(startup.accept(acceptStartup));
 
   createEffect(() => {
     const entries = model.recent;
@@ -264,7 +251,6 @@ export function ShellProvider(props: ParentProps) {
     if (toastTimer) clearTimeout(toastTimer);
     clearTimeout(queryTimer);
     window.Polymer.controllers.removeEventListener("playerchange", playersChanged);
-    if (startupHandler === acceptStartup) startupHandler = null;
   });
 
   return (

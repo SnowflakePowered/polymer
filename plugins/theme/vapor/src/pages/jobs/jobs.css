@@ -1,0 +1,4 @@
+.vp-jobs { background: var(--vp-content); }
+.vp-jobs-body { display: flex; flex-direction: column; width: 100%; max-width: 1180px; margin: 0 auto; padding: 64px var(--vp-gutter) 62px; }
+.vp-jobs-title { margin-bottom: 10px; font-size: 22px; line-height: 28px; font-weight: 700; color: var(--vp-white); }
+.vp-jobs .vp-field[data-below] .vp-field-children { grid-column: 2 / -1; }

@@ -1,0 +1,11 @@
+[plugin]
+id = "vapor"
+version = "0.1.0"
+class = "theme"
+main = "dist/index.html"
+
+[theme]
+
+[theme.debug]
+serve = "vite --host 127.0.0.1 --port 5175"
+url = "http://127.0.0.1:5175"

@@ -1,0 +1,18 @@
+.vp-home { position: relative; }
+.vp-recent { position: relative; display: flex; flex-direction: column; min-height: 454px; padding-top: 54px; margin-bottom: 24px; }
+.vp-recent-backdrop { position: absolute; top: 0; left: 0; right: 0; height: 454px; overflow: hidden; mask-image: linear-gradient(#000000 0%, rgba(0, 0, 0, .6) 70%, transparent 100%); pointer-events: none; }
+.vp-recent-backdrop img { width: 100%; height: 100%; object-fit: cover; animation: vp-fade .3s var(--vp-ease-focus); }
+.vp-recent-backdrop span { position: absolute; inset: 0; background: linear-gradient(to right, rgba(14, 20, 27, .8), rgba(0, 0, 0, .5) 15%, rgba(0, 0, 0, .5) 85%, rgba(14, 20, 27, .8)); }
+.vp-recent > :not(.vp-recent-backdrop) { position: relative; }
+.vp-recent .vp-shelf-row { padding-bottom: 8px; }
+.vp-recent-label { display: flex; flex-direction: column; gap: 4px; height: 52px; padding: 6px calc(var(--vp-gutter) + 8px) 0; }
+.vp-recent-label strong { font-size: 18px; line-height: 24px; font-weight: 800; color: var(--vp-white); }
+.vp-recent-label span { display: flex; align-items: center; gap: 6px; font-size: 12px; line-height: 14px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase; color: rgba(255, 255, 255, .5); }
+.vp-library { overflow: hidden; padding-bottom: 0; }
+.vp-library-header { flex: none; display: flex; flex-direction: column; padding-top: var(--vp-header); background: rgba(0, 0, 0, .5); box-shadow: 0 4px 8px rgba(0, 0, 0, .5); z-index: 2; }
+.vp-library-tools { display: flex; align-items: center; gap: 12px; padding: 0 var(--vp-gutter) 12px; }
+.vp-library-search { flex: 1; max-width: 420px; }
+.vp-library-sort { height: 40px; padding: 10px 16px; border-radius: 2px; background: var(--vp-control); white-space: nowrap; }
+.vp-library-sort:focus { background: var(--vp-white); color: var(--vp-field); }
+.vp-library-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 0 var(--vp-footer); }
+.vp-library-count { padding: 0 var(--vp-gutter) 8px; font-size: 12px; line-height: 22px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase; color: var(--vp-tertiary); }
