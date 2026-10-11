@@ -4,7 +4,7 @@ import { produce, unwrap } from "solid-js/store";
 import { Icon } from "../../ui";
 import { OverlayPortal } from "../../ui";
 import { useShell } from "../../app/shell-context";
-import type { EmulatorConfiguration, PackageConfiguration } from "../../../../../../js/polymer";
+import type { EmulatorConfiguration, PackageConfiguration } from "@polymer-fe/frontend";
 import { SettingsSection } from "./SettingsSection";
 import "./GameDetailsPage.css";
 

@@ -1,8 +1,8 @@
 import { Show, batch, createEffect, createMemo, createSignal, onCleanup, type ParentProps } from "solid-js";
 import { unwrap } from "solid-js/store";
 import { useMatch } from "@solidjs/router";
-import type { LaunchInstance } from "../../../../../../js/polymer";
-import { GameLauncher } from "../../../../../../js/launch";
+import type { LaunchInstance } from "@polymer-fe/frontend";
+import { GameLauncher } from "@polymer-fe/frontend/launch";
 import { useShell } from "../../app/shell-context";
 import { DUAL_SCREEN_LAYOUTS, DUAL_SCREEN_PLATFORMS, DualScreenStage, type DualScreenLayout } from "./DualScreenStage";
 import { SurfaceStage } from "./SurfaceStage";

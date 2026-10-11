@@ -1,5 +1,5 @@
 import { createSignal, onCleanup, onMount } from "solid-js";
-import type { Job } from "../../../../../../js/polymer";
+import type { Job } from "@polymer-fe/frontend";
 
 export const active = (job: Job) => job.state === "running";
 export const pending = (job: Job) => job.state === "queued" || job.state === "paused";

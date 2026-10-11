@@ -1,5 +1,5 @@
 import { For, Show, createEffect, createMemo, createResource, createSignal, on } from "solid-js";
-import type { ConsoleStorageVolume, SaveCommitOperation, StorageSave } from "../../../../../../js/polymer";
+import type { ConsoleStorageVolume, SaveCommitOperation, StorageSave } from "@polymer-fe/frontend";
 import { useShell } from "../../app/shell";
 import { Button, ConfirmModal, ContextMenu, EmptyState, Field, Icon, Modal, Page, PagedSettings, Tabs, TextField, Throbber, type MenuAction } from "../../ui";
 import { platformName } from "../library/platform";

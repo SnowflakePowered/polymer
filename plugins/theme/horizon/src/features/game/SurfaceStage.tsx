@@ -1,7 +1,7 @@
 import { FloatingPanel } from "../../ui";
 import { For, Show, createSignal } from "solid-js";
 import { useMatch } from "@solidjs/router";
-import type { LaunchRequest } from "../../../../../../js/polymer";
+import type { LaunchRequest } from "@polymer-fe/frontend";
 import { useShell } from "../../app/shell-context";
 import { Icon } from "../../ui";
 import { ClassicSurfaceBackdrop } from "./ClassicSurfaceBackdrop";

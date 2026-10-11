@@ -1,5 +1,5 @@
 import { For, Show, createMemo, createSignal } from "solid-js";
-import type { EmulatorConfiguration, PackageConfiguration } from "../../../../../../js/polymer";
+import type { EmulatorConfiguration, PackageConfiguration } from "@polymer-fe/frontend";
 import { CategoryNavigation, Select, SettingRow } from "../../ui";
 import { useInputScope, useNavigation } from "../../ui/input";
 import { OptionControl } from "./OptionControl";

@@ -1,7 +1,7 @@
 import { createContext, createEffect, createSignal, onCleanup, onMount, useContext, type Accessor, type ParentProps } from "solid-js";
-import { NavigationRouter, type ScopeOptions } from "../../../../../js/navigation";
-export { embeddedRuntime } from "../../../../../js/navigation";
-export type { ActionHint, ActionName, Direction, InputAction, ScopeOptions } from "../../../../../js/navigation";
+import { NavigationRouter, type ScopeOptions } from "@polymer-fe/frontend/navigation";
+export { embeddedRuntime } from "@polymer-fe/frontend/navigation";
+export type { ActionHint, ActionName, Direction, InputAction, ScopeOptions } from "@polymer-fe/frontend/navigation";
 
 export class NavigationController extends NavigationRouter {
   private readonly signals = {

@@ -3,6 +3,7 @@
 /bins/polymer-gui/frontend/dist/
 /bins/polymer-gui/frontend/*.tsbuildinfo
 /plugins/theme/*/node_modules/
+/packages/*/node_modules/
 /plugins/theme/*/dist/
 /plugins/theme/*/*.tsbuildinfo
 /plugins/ares/bin/

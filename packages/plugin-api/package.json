@@ -1,0 +1,19 @@
+{
+  "name": "@polymer-fe/plugin-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./tsconfig.plugin.json": "./tsconfig.plugin.json",
+    "./*": "./src/*.d.ts"
+  },
+  "scripts": {
+    "check": "node check.mjs"
+  },
+  "dependencies": {
+    "@polymer-fe/types": "file:../types"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2"
+  }
+}

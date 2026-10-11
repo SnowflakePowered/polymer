@@ -1,6 +1,6 @@
 import { For, Show, createResource, createSignal, onCleanup, onMount } from "solid-js";
 import { useSearchParams } from "@solidjs/router";
-import type { ConsoleStorageVolume, DepotType, Job, StorageArtifact, StorageInspection, StorageRemovalPlan } from "../../../../../../js/polymer";
+import type { ConsoleStorageVolume, DepotType, Job, StorageArtifact, StorageInspection, StorageRemovalPlan } from "@polymer-fe/frontend";
 import { css } from "../../../styled-system/css";
 import { Screen, ScreenHeader, MasterDetail, CategoryNavigation, TileGrid, Tile, Icon, DetailList, Section, Button, ActionGroup, Dialog, ConfirmDialog, ActionHints, EmptyState, ErrorState, Progress, Spinner, BannerImage } from "../../ui";
 import { AppSidebar } from "../../components/AppSidebar";

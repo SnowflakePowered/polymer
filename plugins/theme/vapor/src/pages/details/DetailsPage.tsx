@@ -1,5 +1,5 @@
 import { For, Match, Show, Switch, createMemo, createSignal } from "solid-js";
-import type { ConfigurationLayoutOption } from "../../../../../../js/polymer";
+import type { ConfigurationLayoutOption } from "@polymer-fe/frontend";
 import { useShell } from "../../app/shell";
 import { DropdownField, Field, Hero, NumberField, Page, PlayBar, PlayButton, SliderField, Tabs, TextField, ToggleField } from "../../ui";
 import { platformName } from "../library/platform";

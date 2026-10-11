@@ -1,6 +1,6 @@
 import { For, Show, createResource } from "solid-js";
 import { Section, Select, SettingRow } from "../../ui";
-import type { PlatformConfiguration } from "../../../../../../js/polymer";
+import type { PlatformConfiguration } from "@polymer-fe/frontend";
 import { useShell } from "../../app/shell-context";
 
 export function PlatformSettings() {

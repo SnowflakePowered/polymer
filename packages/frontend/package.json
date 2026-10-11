@@ -1,0 +1,13 @@
+{
+  "name": "@polymer-fe/frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/polymer.ts",
+    "./*": "./src/*.ts"
+  },
+  "dependencies": {
+    "@polymer-fe/types": "file:../types"
+  }
+}

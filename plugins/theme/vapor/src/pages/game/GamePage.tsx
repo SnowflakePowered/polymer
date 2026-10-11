@@ -1,6 +1,6 @@
 import { For, Show, createEffect, createMemo, onCleanup } from "solid-js";
 import { unwrap } from "solid-js/store";
-import type { LaunchInstance } from "../../../../../../js/polymer";
+import type { LaunchInstance } from "@polymer-fe/frontend";
 import { useShell } from "../../app/shell";
 import { Throbber, useInputScope } from "../../ui";
 import { QuickAccess } from "./QuickAccess";

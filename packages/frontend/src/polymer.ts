@@ -256,7 +256,7 @@ export type PluginEvent<T = unknown> = Readonly<{
   detail: T;
 }>;
 
-import type { Package as PackageData, Digestible } from "./package.ts";
+import type { Package as PackageData, Digestible } from "@polymer-fe/types";
 
 export interface Package extends PackageData, Digestible {
   readonly binary: Digestible;
@@ -328,8 +328,8 @@ export type {
   ConfigurationLayout,
   ConfigurationLayoutOption,
   UserConfiguration,
-} from "./configuration.ts";
-import type { ConfigurationLayout, UserConfiguration } from "./configuration.ts";
+} from "@polymer-fe/types";
+import type { ConfigurationLayout, UserConfiguration } from "@polymer-fe/types";
 
 export type ConfigurationPort = {
   index: number;

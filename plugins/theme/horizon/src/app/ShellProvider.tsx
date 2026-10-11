@@ -1,16 +1,16 @@
 import { ShellContext } from "./shell-context";
-import { LibraryState } from "../../../../../js/library-state";
+import { LibraryState } from "@polymer-fe/frontend/library-state";
 import { useNavigate } from "@solidjs/router";
 import { createEffect, onCleanup, onMount, type ParentProps } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
-import type { LaunchRequest, PackageConfiguration } from "../../../../../js/polymer";
-import type { ControllerDevice } from "../../../../../js/polymer";
+import type { LaunchRequest, PackageConfiguration } from "@polymer-fe/frontend";
+import type { ControllerDevice } from "@polymer-fe/frontend";
 import { NotificationProvider } from "../components/notifications/NotificationProvider";
 import { ToastRegion } from "../components/notifications/ToastRegion";
 import { InputNavigation } from "../components/InputNavigation";
 import { ColorModeProvider, type ColorMode } from "../ui";
-import { GameLauncher } from "../../../../../js/launch";
-import { StartupRequests, type StartupRequest } from "../../../../../js/startup";
+import { GameLauncher } from "@polymer-fe/frontend/launch";
+import { StartupRequests, type StartupRequest } from "@polymer-fe/frontend/startup";
 import type { LibraryQueryState, RecentGame, ShellModel } from "./models";
 import "./ShellProvider.css";
 

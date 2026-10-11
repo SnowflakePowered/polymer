@@ -1,5 +1,5 @@
 import { For, Show, createMemo, createSignal } from "solid-js";
-import type { LibraryEntry } from "../../../../../../js/library-state";
+import type { LibraryEntry } from "@polymer-fe/frontend/library-state";
 import { useShell } from "../../app/shell";
 import { Capsule, CapsuleGrid, EmptyState, Icon, Page, Shelf } from "../../ui";
 import { platformName } from "./platform";

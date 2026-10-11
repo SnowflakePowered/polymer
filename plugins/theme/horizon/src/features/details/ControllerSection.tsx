@@ -1,5 +1,5 @@
 import { For, Show } from "solid-js";
-import type { EmulatorConfiguration } from "../../../../../../js/polymer";
+import type { EmulatorConfiguration } from "@polymer-fe/frontend";
 import { Select, SettingRow } from "../../ui";
 import "./ControllerSection.css";
 

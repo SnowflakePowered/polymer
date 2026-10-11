@@ -1,6 +1,6 @@
 import { EnvironmentProvider } from "@ark-ui/solid";
 import { render } from "solid-js/web";
-import "../../../../js/polymer";
+import "@polymer-fe/frontend";
 import "./ui/vapor.css";
 import { VaporApp } from "./app/VaporApp";
 
