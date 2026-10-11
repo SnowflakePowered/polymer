@@ -1,0 +1,33 @@
+{
+  "name": "polymer-theme-vapor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5175",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 5175"
+  },
+  "dependencies": {
+    "@ark-ui/solid": "5.38.1",
+    "@solidjs/router": "0.10.10",
+    "solid-js": "1.9.14"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.1",
+    "typescript": "7.0.2",
+    "vite": "8.1.5",
+    "vite-plugin-solid": "2.11.14"
+  },
+  "overrides": {
+    "@ark-ui/solid": {
+      "solid-js": "$solid-js"
+    },
+    "@zag-js/solid": {
+      "solid-js": "$solid-js"
+    },
+    "@solid-primitives/keyed": {
+      "solid-js": "$solid-js"
+    }
+  }
+}

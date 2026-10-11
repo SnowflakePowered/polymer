@@ -673,6 +673,10 @@ export interface WebRtcApi extends EventTarget {
 }
 
 declare global {
+  interface Navigator {
+    clearImageMipChains(): void;
+  }
+
   interface Window {
     readonly Polymer: Readonly<{
       /** UI-only host metadata; unavailable in plugin isolates. */

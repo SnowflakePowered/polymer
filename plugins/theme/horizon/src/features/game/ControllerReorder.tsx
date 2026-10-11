@@ -1,6 +1,7 @@
 import { DialogParts as Dialog, Button, Spinner, ControllerIllustration, ButtonChord, ButtonGlyph } from "../../ui";
-import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js";
-import type { ConnectionSession, ControllerMapping, InputSourceSelector, ManagedControllerDevice } from "../../../../../../js/polymer";
+import { For, Show, createSignal, onCleanup, onMount } from "solid-js";
+import type { InputSourceSelector, ManagedControllerDevice } from "../../../../../../js/polymer";
+import { ControllerOrder } from "../../../../../../js/controller-order";
 import buttonA from "../../assets/switch/button-a.svg";
 import buttonB from "../../assets/switch/button-b.svg";
 import buttonL from "../../assets/switch/button-l.svg";
@@ -11,69 +12,35 @@ import controllerPro from "../../assets/switch/controller-pro.svg";
 import controllerSwitch from "../../assets/switch/controller-switch.svg";
 import { useShell } from "../../app/shell-context";
 import { OverlayPortal, type InputAction } from "../../ui";
-import { PauseDecorator, type PauseRelease } from "./PauseDecorator";
+import { PauseDecorator } from "./PauseDecorator";
+import type { PauseRelease } from "../../../../../../js/pause";
 import "./ControllerReorder.css";
 
-const DISCOVERED_CONTROLLER_LIMIT = 8;
-const PLAYER_LIMIT = 8;
 const NAVIGATION_KEYS = new Set(["Escape", "Enter", "Tab", " ", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
 
 export function ControllerReorder(props: { onClose?: () => void }) {
   const shell = useShell();
-  const [session, setSession] = createSignal<ConnectionSession | null>(null);
+  const order = new ControllerOrder(window.Polymer.controllers, (shell.model.request ?? shell.model.launch?.request)?.controllerTopology.mappings ?? []);
   const [revision, setRevision] = createSignal(0);
   const [pending, setPending] = createSignal(false);
   const [configuring, setConfiguring] = createSignal(false);
   const [error, setError] = createSignal("");
   let leaving = false;
-  let disposed = false;
   let releasePause: PauseRelease | undefined;
   let content: HTMLDivElement | undefined;
 
-  const players = createMemo(() => {
-    revision();
-    return session()?.players ?? window.Polymer.controllers.players;
-  });
-  const candidates = createMemo(() => {
-    revision();
-    const assigned = new Set(players().flatMap((player) => player.controller ? [player.controller.id] : []));
-    return (session()?.candidates ?? [])
-      .filter((candidate) => !candidate.connected && !assigned.has(candidate.id))
-      .slice(0, DISCOVERED_CONTROLLER_LIMIT);
-  });
-  const availability = () => {
-    revision();
-    return window.Polymer.controllers.availability;
-  };
-  const discoveryActive = () => {
-    revision();
-    return session()?.discovery.active ?? false;
-  };
+  const session = () => { revision(); return order.session; };
+  const players = () => { revision(); return order.players; };
+  const candidates = () => { revision(); return order.candidates; };
+  const availability = () => { revision(); return order.availability; };
+  const discoveryActive = () => { revision(); return order.discovering; };
+  const lesserGroup = () => { revision(); return order.lesserGroup; };
+  const groups = () => order.groups;
+  const controllerAt = (index: number) => { revision(); return order.controllerAt(index); };
+  const slots = () => { revision(); return order.slots; };
   const isPairing = (candidate: ManagedControllerDevice) => candidate.pairing === true;
-  const groups = createMemo(() => {
-    const grouped = new Map<string, ControllerMapping[]>();
-    for (const mapping of (shell.model.request ?? shell.model.launch?.request)?.controllerTopology.mappings ?? []) {
-      grouped.set(mapping.target.group, [...grouped.get(mapping.target.group) ?? [], mapping]);
-    }
-    return [...grouped.values()];
-  });
-  const [lesserGroup, setLesserGroup] = createSignal<string | null>(null);
-  const controllerAt = (index: number) => players().find((player) => player.index === index)?.controller ?? null;
-  const slots = () => groups()[0]?.map((mapping) => mapping.gamepad) ?? players().map((player) => player.index);
-
-  const join = async (source: InputSourceSelector) => {
-    const group = groups().find((mappings) => mappings[0].target.group === lesserGroup()) ?? groups()[0];
-    const target = group?.find((mapping) => !controllerAt(mapping.gamepad));
-    const index = group
-      ? target?.gamepad
-      : Array.from({ length: PLAYER_LIMIT }, (_, index) => index).find((index) => !controllerAt(index));
-    if (index === undefined) return;
-    try {
-      await session()?.join(source, { index, group: target?.target.group });
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    }
-  };
+  const fail = (reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason));
+  const join = (source: InputSourceSelector) => order.join(source).catch(fail);
 
   const closeOverlay = () => {
     if (props.onClose) props.onClose();
@@ -92,14 +59,14 @@ export function ControllerReorder(props: { onClose?: () => void }) {
       await new Promise<void>((resolve) => {
         requestAnimationFrame(() => setTimeout(resolve, 0));
       });
-      if (session()?.active) await session()!.commit();
+      await order.commit();
       await releasePause?.();
       closeOverlay();
     } catch (reason) {
       leaving = false;
       setPending(false);
       setConfiguring(false);
-      setError(reason instanceof Error ? reason.message : String(reason));
+      fail(reason);
     }
   };
 
@@ -107,9 +74,9 @@ export function ControllerReorder(props: { onClose?: () => void }) {
     setPending(true);
     setError("");
     try {
-      await session()?.connect(candidate.id);
+      await order.connect(candidate.id);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      fail(reason);
     } finally {
       setPending(false);
     }
@@ -117,31 +84,14 @@ export function ControllerReorder(props: { onClose?: () => void }) {
 
   onMount(() => {
     const changed = () => setRevision((value) => value + 1);
-    const requested = (event: Event) => void join({ kind: "device", deviceId: (event as CustomEvent<ManagedControllerDevice>).detail.id });
-    window.Polymer.controllers.addEventListener("statechange", changed);
-    void (async () => {
-      try {
-        const active = window.Polymer.controllers.activeConnectionSession
-          ?? await window.Polymer.controllers.startConnectionSession();
-        if (disposed) {
-          if (active.active) await active.commit();
-          return;
-        }
-        setSession(active);
-        active.addEventListener("change", changed);
-        active.addEventListener("joinrequest", requested);
-        setRevision((value) => value + 1);
-        requestAnimationFrame(() => content?.querySelector<HTMLElement>(".horizon-order-main")?.focus());
-      } catch (reason) {
-        if (!disposed) setError(reason instanceof Error ? reason.message : String(reason));
-      }
-    })();
+    const failed = (event: Event) => fail((event as CustomEvent<unknown>).detail);
+    order.addEventListener("change", changed);
+    order.addEventListener("error", failed);
+    void order.start().then(() => requestAnimationFrame(() => content?.querySelector<HTMLElement>(".horizon-order-main")?.focus()), fail);
     onCleanup(() => {
-      disposed = true;
-      window.Polymer.controllers.removeEventListener("statechange", changed);
-      session()?.removeEventListener("change", changed);
-      session()?.removeEventListener("joinrequest", requested);
-      if (!leaving && session()?.active) void session()!.commit();
+      order.removeEventListener("change", changed);
+      order.removeEventListener("error", failed);
+      order.dispose();
     });
   });
 
@@ -185,7 +135,7 @@ export function ControllerReorder(props: { onClose?: () => void }) {
                     classList={{ selected: lesserGroup() === group[0].target.group }}
                     aria-pressed={lesserGroup() === group[0].target.group}
                     aria-label={`Connect ${group[0].target.group} controllers`}
-                    onClick={() => setLesserGroup(lesserGroup() === group[0].target.group ? null : group[0].target.group)}
+                    onClick={() => order.setLesserGroup(lesserGroup() === group[0].target.group ? null : group[0].target.group)}
                   >
                     <For each={group}>{(mapping) => <span
                       data-connected={!!controllerAt(mapping.gamepad) || undefined}

@@ -1,0 +1,4 @@
+.vp-game { position: absolute; inset: 0; background: #000000; }
+.vp-game-surface { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: contain; object-position: center; background: transparent; }
+.vp-game-surface + .vp-game-surface { inset: auto 1.5rem 1.5rem auto; width: 30%; height: 30%; box-shadow: 0 0 0 2px #3d4450; }
+.vp-launching { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1.5rem; background: var(--vp-bg-gradient); font-size: 1.25rem; color: var(--vp-text-soft); }
