@@ -47,7 +47,7 @@ dependencies = [
  "once_cell",
  "parking_lot",
  "pin-project-lite",
- "smallvec",
+ "smallvec 1.16.3",
  "tokio",
  "tokio-util",
 ]
@@ -341,7 +341,7 @@ dependencies = [
  "kurbo",
  "peniko",
  "raw-window-handle",
- "smallvec",
+ "smallvec 1.16.3",
 ]
 
 [[package]]
@@ -410,7 +410,7 @@ dependencies = [
  "clipboard-win",
  "image 0.25.6",
  "log",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
  "objc2-core-graphics",
@@ -1170,6 +1170,7 @@ dependencies = [
 [[package]]
 name = "blitz-dom"
 version = "0.3.0-beta.2"
+source = "git+https://github.com/DioxusLabs/blitz?rev=c3af502c03fd67e6c1861a55a22f28b093d435f7#c3af502c03fd67e6c1861a55a22f28b093d435f7"
 dependencies = [
  "accesskit",
  "anyrender",
@@ -1180,22 +1181,26 @@ dependencies = [
  "color",
  "cssparser 0.38.0",
  "cursor-icon",
- "debug_timer 0.1.3",
+ "debug_timer 0.1.3 (git+https://github.com/DioxusLabs/blitz?rev=c3af502c03fd67e6c1861a55a22f28b093d435f7)",
  "euclid",
  "html-escape",
+ "icu_casemap",
+ "icu_locale_core",
+ "icu_properties",
+ "icu_segmenter",
  "image 0.25.6",
  "keyboard-types",
  "kurbo",
  "linebender_resource_handle",
  "markup5ever",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "parley",
  "percent-encoding",
  "rayon",
  "selectors",
  "skrifa",
  "slotmap",
- "smallvec",
+ "smallvec 1.16.3",
  "stylo",
  "stylo_dom",
  "stylo_static_prefs",
@@ -1208,12 +1213,14 @@ dependencies = [
  "url",
  "usvg",
  "web-time",
+ "writeable",
  "wuff",
 ]
 
 [[package]]
 name = "blitz-html"
 version = "0.3.0-beta.2"
+source = "git+https://github.com/DioxusLabs/blitz?rev=c3af502c03fd67e6c1861a55a22f28b093d435f7#c3af502c03fd67e6c1861a55a22f28b093d435f7"
 dependencies = [
  "blitz-dom",
  "blitz-traits",
@@ -1224,6 +1231,7 @@ dependencies = [
 [[package]]
 name = "blitz-net"
 version = "0.3.0-beta.2"
+source = "git+https://github.com/DioxusLabs/blitz?rev=c3af502c03fd67e6c1861a55a22f28b093d435f7#c3af502c03fd67e6c1861a55a22f28b093d435f7"
 dependencies = [
  "blitz-traits",
  "data-url",
@@ -1235,6 +1243,7 @@ dependencies = [
 [[package]]
 name = "blitz-paint"
 version = "0.3.0-beta.2"
+source = "git+https://github.com/DioxusLabs/blitz?rev=c3af502c03fd67e6c1861a55a22f28b093d435f7#c3af502c03fd67e6c1861a55a22f28b093d435f7"
 dependencies = [
  "anyrender",
  "anyrender_svg",
@@ -1247,7 +1256,7 @@ dependencies = [
  "parley",
  "peniko",
  "skrifa",
- "smallvec",
+ "smallvec 1.16.3",
  "stylo",
  "taffy 0.14.0",
  "usvg",
@@ -1256,6 +1265,7 @@ dependencies = [
 [[package]]
 name = "blitz-traits"
 version = "0.3.0-beta.2"
+source = "git+https://github.com/DioxusLabs/blitz?rev=c3af502c03fd67e6c1861a55a22f28b093d435f7#c3af502c03fd67e6c1861a55a22f28b093d435f7"
 dependencies = [
  "atomic_refcell",
  "bitflags 2.13.1",
@@ -1340,7 +1350,7 @@ version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cdeb9d870516001442e364c5220d3574d2da8dc765554b4a617230d33fa58ef5"
 dependencies = [
- "objc2 0.6.4",
+ "objc2 0.6.5",
 ]
 
 [[package]]
@@ -2484,7 +2494,7 @@ dependencies = [
  "futures-core",
  "parking_lot",
  "pointers",
- "smallvec",
+ "smallvec 1.16.3",
 ]
 
 [[package]]
@@ -2548,7 +2558,7 @@ dependencies = [
  "dtoa-short",
  "itoa",
  "phf 0.13.1",
- "smallvec",
+ "smallvec 1.16.3",
 ]
 
 [[package]]
@@ -2561,7 +2571,7 @@ dependencies = [
  "dtoa-short",
  "itoa",
  "phf 0.13.1",
- "smallvec",
+ "smallvec 1.16.3",
 ]
 
 [[package]]
@@ -2575,7 +2585,7 @@ dependencies = [
  "itoa",
  "phf 0.14.0",
  "serde",
- "smallvec",
+ "smallvec 1.16.3",
 ]
 
 [[package]]
@@ -2847,12 +2857,13 @@ dependencies = [
 [[package]]
 name = "debug_timer"
 version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da220af51a1a335e9a930beaaef53d261e41ea9eecfb3d973a3ddae1a7284b9c"
 
 [[package]]
 name = "debug_timer"
 version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da220af51a1a335e9a930beaaef53d261e41ea9eecfb3d973a3ddae1a7284b9c"
+source = "git+https://github.com/DioxusLabs/blitz?rev=c3af502c03fd67e6c1861a55a22f28b093d435f7#c3af502c03fd67e6c1861a55a22f28b093d435f7"
 
 [[package]]
 name = "debugid"
@@ -2966,7 +2977,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_v8",
- "smallvec",
+ "smallvec 1.16.3",
  "sourcemap",
  "static_assertions",
  "sys_traits",
@@ -3590,7 +3601,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "serde",
- "smallvec",
+ "smallvec 1.16.3",
  "strck",
  "syn 3.0.3",
 ]
@@ -3640,7 +3651,7 @@ dependencies = [
  "bitflags 2.13.1",
  "block2 0.6.2",
  "libc",
- "objc2 0.6.4",
+ "objc2 0.6.5",
 ]
 
 [[package]]
@@ -4344,20 +4355,21 @@ dependencies = [
 
 [[package]]
 name = "fontique"
-version = "0.11.0"
-source = "git+https://github.com/linebender/parley?rev=e41dfea5cf50669ac67c5a8aca8d1664ffb72904#e41dfea5cf50669ac67c5a8aca8d1664ffb72904"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbf1df16263783918b7da396077521f92b729ef7c429444dfcf03581f1448b77"
 dependencies = [
  "hashbrown 0.17.1",
  "linebender_resource_handle",
  "memmap2",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-core-text",
  "objc2-foundation 0.3.2",
  "parlance",
  "read-fonts",
  "roxmltree 0.21.1",
- "smallvec",
+ "smallvec 1.16.3",
  "windows 0.62.2",
  "windows-core 0.62.2",
  "yeslogic-fontconfig-sys",
@@ -4756,7 +4768,7 @@ dependencies = [
  "parking_lot",
  "regex",
  "signal-hook 0.4.4",
- "smallvec",
+ "smallvec 1.16.3",
  "thiserror 2.0.20",
 ]
 
@@ -4796,7 +4808,7 @@ dependencies = [
  "gix-path",
  "gix-quote",
  "gix-trace",
- "smallvec",
+ "smallvec 1.16.3",
  "thiserror 2.0.20",
  "unicode-bom",
 ]
@@ -4826,7 +4838,7 @@ dependencies = [
  "gix-trace",
  "gix-traverse",
  "gix-worktree",
- "smallvec",
+ "smallvec 1.16.3",
  "thiserror 2.0.20",
 ]
 
@@ -4880,7 +4892,7 @@ dependencies = [
  "gix-ref",
  "gix-sec",
  "gix-utils",
- "smallvec",
+ "smallvec 1.16.3",
  "thiserror 2.0.20",
  "unicode-bom",
 ]
@@ -5034,7 +5046,7 @@ dependencies = [
  "gix-quote",
  "gix-trace",
  "gix-utils",
- "smallvec",
+ "smallvec 1.16.3",
  "thiserror 2.0.20",
 ]
 
@@ -5133,7 +5145,7 @@ dependencies = [
  "libc",
  "memmap2",
  "rustix 1.1.4",
- "smallvec",
+ "smallvec 1.16.3",
  "thiserror 2.0.20",
 ]
 
@@ -5189,7 +5201,7 @@ dependencies = [
  "gix-utils",
  "gix-validate",
  "itoa",
- "smallvec",
+ "smallvec 1.16.3",
  "thiserror 2.0.20",
 ]
 
@@ -5231,7 +5243,7 @@ dependencies = [
  "gix-path",
  "gix-zlib",
  "memmap2",
- "smallvec",
+ "smallvec 1.16.3",
  "thiserror 2.0.20",
  "uluru",
 ]
@@ -5350,7 +5362,7 @@ dependencies = [
  "gix-hash",
  "gix-revision",
  "gix-validate",
- "smallvec",
+ "smallvec 1.16.3",
  "thiserror 2.0.20",
 ]
 
@@ -5385,7 +5397,7 @@ dependencies = [
  "gix-hash",
  "gix-hashtable",
  "gix-object",
- "smallvec",
+ "smallvec 1.16.3",
  "thiserror 2.0.20",
 ]
 
@@ -5505,7 +5517,7 @@ dependencies = [
  "gix-hashtable",
  "gix-object",
  "gix-revwalk",
- "smallvec",
+ "smallvec 1.16.3",
  "thiserror 2.0.20",
 ]
 
@@ -5708,7 +5720,7 @@ dependencies = [
  "glutin_glx_sys",
  "glutin_wgl_sys",
  "libloading",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
@@ -5772,16 +5784,6 @@ dependencies = [
  "presser",
  "thiserror 2.0.20",
  "windows 0.62.2",
-]
-
-[[package]]
-name = "granit-parser"
-version = "0.0.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d03f81ad4732830d85cfd417a9f62cde6dadda4354d37d078a6084a19560aa2d"
-dependencies = [
- "arraydeque",
- "smallvec",
 ]
 
 [[package]]
@@ -6025,7 +6027,7 @@ dependencies = [
  "bitflags 2.13.1",
  "bytemuck",
  "read-fonts",
- "smallvec",
+ "smallvec 1.16.3",
 ]
 
 [[package]]
@@ -6088,6 +6090,15 @@ dependencies = [
  "allocator-api2 0.2.21",
  "equivalent",
  "foldhash 0.2.0",
+]
+
+[[package]]
+name = "hashlink"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7382cf6263419f2d8df38c55d7da83da5c18aef87fc7a7fc1fb1e344edfe14c1"
+dependencies = [
+ "hashbrown 0.15.5",
 ]
 
 [[package]]
@@ -6191,7 +6202,7 @@ dependencies = [
  "rand 0.9.5",
  "resolv-conf",
  "serde",
- "smallvec",
+ "smallvec 1.16.3",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
@@ -6351,7 +6362,7 @@ dependencies = [
  "httpdate",
  "itoa",
  "pin-project-lite",
- "smallvec",
+ "smallvec 1.16.3",
  "tokio",
  "want",
 ]
@@ -6470,6 +6481,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc00caaa3fb3201ff7a18aa458e8c3ab042b9da154cfdf948bdde3936c31c36e"
 
 [[package]]
+name = "icu_casemap"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2edfd120d8445de853cf53a1abec916f638f933a70a6f4bf8f7e2d7b7f884e9"
+dependencies = [
+ "icu_casemap_data",
+ "icu_collections",
+ "icu_locale_core",
+ "icu_properties",
+ "icu_provider",
+ "potential_utf",
+ "writeable",
+ "zerovec",
+]
+
+[[package]]
+name = "icu_casemap_data"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "059fcda0fc8d33effc6633a8cf0d8a3c17caf7d7c91918fba9918744f501e4e8"
+
+[[package]]
 name = "icu_collator"
 version = "2.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6482,7 +6515,7 @@ dependencies = [
  "icu_normalizer",
  "icu_properties",
  "icu_provider",
- "smallvec",
+ "smallvec 1.16.3",
  "utf16_iter",
  "utf8_iter",
  "zerovec",
@@ -6502,6 +6535,7 @@ checksum = "fa68d21081c4a05d5a901a1c62add574c77048b6a1c67be3b50ce0b60d4ca513"
 dependencies = [
  "displaydoc",
  "potential_utf",
+ "serde",
  "utf8_iter",
  "yoke",
  "zerofrom",
@@ -6573,7 +6607,7 @@ dependencies = [
  "icu_normalizer_data",
  "icu_properties",
  "icu_provider",
- "smallvec",
+ "smallvec 1.16.3",
  "utf16_iter",
  "utf8_iter",
  "write16",
@@ -6636,7 +6670,7 @@ dependencies = [
  "icu_provider",
  "icu_segmenter_data",
  "potential_utf",
- "smallvec",
+ "smallvec 1.16.3",
  "utf8_iter",
  "zerovec",
 ]
@@ -6660,7 +6694,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3b0875f23caa03898994f6ddc501886a45c7d3d62d04d2d90788d47be1b1e4de"
 dependencies = [
  "idna_adapter",
- "smallvec",
+ "smallvec 1.16.3",
  "utf8_iter",
 ]
 
@@ -7196,7 +7230,7 @@ dependencies = [
  "arrayvec",
  "euclid",
  "polycool",
- "smallvec",
+ "smallvec 1.16.3",
 ]
 
 [[package]]
@@ -7719,7 +7753,7 @@ dependencies = [
  "equivalent",
  "parking_lot",
  "portable-atomic",
- "smallvec",
+ "smallvec 1.16.3",
  "tagptr",
  "uuid",
 ]
@@ -7985,7 +8019,7 @@ dependencies = [
  "num-iter",
  "num-traits",
  "rand 0.8.5",
- "smallvec",
+ "smallvec 1.16.3",
  "zeroize",
 ]
 
@@ -8191,9 +8225,9 @@ dependencies = [
 
 [[package]]
 name = "objc2"
-version = "0.6.4"
+version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a12a8ed07aefc768292f076dc3ac8c48f3781c8f2d5851dd3d98950e8c5a89f"
+checksum = "08849bbd4767dfae9457696856ae1c84fe4e0281bbe4a7abff2d0e06fb7981f8"
 dependencies = [
  "objc2-encode",
 ]
@@ -8223,7 +8257,7 @@ dependencies = [
  "bitflags 2.13.1",
  "block2 0.6.2",
  "libc",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-cloud-kit 0.3.2",
  "objc2-core-data 0.3.2",
  "objc2-core-foundation",
@@ -8255,7 +8289,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "73ad74d880bb43877038da939b7427bba67e9dd42004a18b809ba7d87cee241c"
 dependencies = [
  "bitflags 2.13.1",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-foundation 0.3.2",
 ]
 
@@ -8279,7 +8313,7 @@ dependencies = [
  "block2 0.6.2",
  "dispatch2",
  "libc",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-audio-types",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
@@ -8292,7 +8326,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a89f2ec274a0cf4a32642b2991e8b351a404d290da87bb6a9a9d8632490bd1c"
 dependencies = [
  "bitflags 2.13.1",
- "objc2 0.6.4",
+ "objc2 0.6.5",
 ]
 
 [[package]]
@@ -8325,7 +8359,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b402a653efbb5e82ce4df10683b6b28027616a2715e90009947d50b8dd298fa"
 dependencies = [
  "bitflags 2.13.1",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-foundation 0.3.2",
 ]
 
@@ -8339,7 +8373,7 @@ dependencies = [
  "block2 0.6.2",
  "dispatch2",
  "libc",
- "objc2 0.6.4",
+ "objc2 0.6.5",
 ]
 
 [[package]]
@@ -8352,7 +8386,7 @@ dependencies = [
  "block2 0.6.2",
  "dispatch2",
  "libc",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-io-surface",
  "objc2-metal 0.3.2",
@@ -8376,7 +8410,7 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5d563b38d2b97209f8e861173de434bd0214cf020e3423a52624cd1d989f006"
 dependencies = [
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-foundation 0.3.2",
 ]
 
@@ -8401,7 +8435,7 @@ dependencies = [
  "bitflags 2.13.1",
  "block2 0.6.2",
  "dispatch2",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-audio",
  "objc2-core-audio-types",
  "objc2-core-foundation",
@@ -8415,7 +8449,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cde0dfb48d25d2b4862161a4d5fcc0e3c24367869ad306b0c9ec0073bfed92d"
 dependencies = [
  "bitflags 2.13.1",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-core-graphics",
 ]
@@ -8428,7 +8462,7 @@ checksum = "d425caf1df73233f29fd8a5c3e5edbc30d2d4307870f802d18f00d83dc5141a6"
 dependencies = [
  "bitflags 2.13.1",
  "block2 0.6.2",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-io-surface",
@@ -8463,7 +8497,7 @@ dependencies = [
  "bitflags 2.13.1",
  "block2 0.6.2",
  "libc",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-foundation",
 ]
 
@@ -8476,7 +8510,7 @@ dependencies = [
  "bitflags 2.13.1",
  "block2 0.6.2",
  "libc",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-foundation 0.3.2",
 ]
 
@@ -8488,7 +8522,7 @@ checksum = "180788110936d59bab6bd83b6060ffdfffb3b922ba1396b312ae795e1de9d81d"
 dependencies = [
  "bitflags 2.13.1",
  "libc",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
 ]
@@ -8499,7 +8533,7 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a1e6550c4caed348956ce3370c9ffeca70bb1dbed4fa96112e7c6170e074586"
 dependencies = [
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-foundation",
 ]
 
@@ -8536,7 +8570,7 @@ dependencies = [
  "bitflags 2.13.1",
  "block2 0.6.2",
  "dispatch2",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
  "objc2-io-surface",
@@ -8564,7 +8598,7 @@ dependencies = [
  "bitflags 2.13.1",
  "block2 0.6.2",
  "libc",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-core-video",
@@ -8579,7 +8613,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "709fe137109bd1e8b5a99390f77a7d8b2961dafc1a1c5db8f2e60329ad6d895a"
 dependencies = [
  "bitflags 2.13.1",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-foundation",
 ]
 
@@ -8646,7 +8680,7 @@ checksum = "05bf9a3c14831a7d9641b0d81d87dd913ee238a012b2fde27db5a84b56f5df3e"
 dependencies = [
  "bitflags 2.13.1",
  "block2 0.6.2",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-core-media",
@@ -8663,7 +8697,7 @@ checksum = "b2e5aaab980c433cf470df9d7af96a7b46a9d892d521a2cbbb2f8a4c16751e7f"
 dependencies = [
  "bitflags 2.13.1",
  "block2 0.6.2",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
@@ -9047,35 +9081,38 @@ dependencies = [
  "cfg-if",
  "libc",
  "redox_syscall 0.5.18",
- "smallvec",
+ "smallvec 1.16.3",
  "windows-link 0.2.1",
 ]
 
 [[package]]
 name = "parlance"
-version = "0.1.0"
-source = "git+https://github.com/linebender/parley?rev=e41dfea5cf50669ac67c5a8aca8d1664ffb72904#e41dfea5cf50669ac67c5a8aca8d1664ffb72904"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73072a9470554c8e794778acece2312661218aaabb635600957d952cf01c716e"
 dependencies = [
  "bytemuck",
 ]
 
 [[package]]
 name = "parley"
-version = "0.11.0"
-source = "git+https://github.com/linebender/parley?rev=e41dfea5cf50669ac67c5a8aca8d1664ffb72904#e41dfea5cf50669ac67c5a8aca8d1664ffb72904"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "61bd0c0c1737f0b3d3726dc06b225083af213b61913e4fbae1670613a106c6ce"
 dependencies = [
  "fontique",
  "hashbrown 0.17.1",
  "linebender_resource_handle",
  "parlance",
  "parley_engine",
- "smallvec",
+ "smallvec 1.16.3",
 ]
 
 [[package]]
 name = "parley_data"
-version = "0.11.0"
-source = "git+https://github.com/linebender/parley?rev=e41dfea5cf50669ac67c5a8aca8d1664ffb72904#e41dfea5cf50669ac67c5a8aca8d1664ffb72904"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c43b63f808f6cc8f4a3b07de0d62a977bddd2e0bb5c232bd9e93ba8ef92e5e4b"
 dependencies = [
  "icu_collections",
  "icu_properties",
@@ -9083,13 +9120,15 @@ dependencies = [
 
 [[package]]
 name = "parley_emoji"
-version = "0.11.0"
-source = "git+https://github.com/linebender/parley?rev=e41dfea5cf50669ac67c5a8aca8d1664ffb72904#e41dfea5cf50669ac67c5a8aca8d1664ffb72904"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c4482d912d7671a7cd2089794f90ef3bb5f5f8c738230fb0fcd50fa020f0ed3"
 
 [[package]]
 name = "parley_engine"
-version = "0.11.0"
-source = "git+https://github.com/linebender/parley?rev=e41dfea5cf50669ac67c5a8aca8d1664ffb72904#e41dfea5cf50669ac67c5a8aca8d1664ffb72904"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b74c0d373e462e504ad4436710a39f099e18e848e1ee711f70cd2dcd5a69b290"
 dependencies = [
  "fontique",
  "harfrust",
@@ -9157,7 +9196,7 @@ dependencies = [
  "color",
  "kurbo",
  "linebender_resource_handle",
- "smallvec",
+ "smallvec 1.16.3",
 ]
 
 [[package]]
@@ -9645,7 +9684,7 @@ dependencies = [
  "egui",
  "egui-winit",
  "kurbo",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-core-graphics",
  "objc2-foundation 0.3.2",
@@ -9775,7 +9814,7 @@ name = "polymer-consumer-metal"
 version = "0.1.0"
 dependencies = [
  "block2 0.6.2",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-io-surface",
  "objc2-metal 0.3.2",
  "polymer-ipc",
@@ -9912,7 +9951,7 @@ dependencies = [
  "image 0.25.6",
  "keyboard-types",
  "kurbo",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "objc2-web-kit",
@@ -9968,7 +10007,7 @@ name = "polymer-hook"
 version = "0.1.0"
 dependencies = [
  "dashmap",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "parking_lot",
  "paste",
  "polymer-protocol",
@@ -9986,7 +10025,7 @@ name = "polymer-hook-appkit"
 version = "0.1.0"
 dependencies = [
  "dispatch2",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
  "objc2-core-graphics",
@@ -10122,7 +10161,7 @@ version = "0.1.0"
 dependencies = [
  "block2 0.6.2",
  "dashmap",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "objc2-metal 0.3.2",
@@ -10276,7 +10315,7 @@ dependencies = [
  "dashmap",
  "libc",
  "memmap2",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-foundation 0.3.2",
  "objc2-io-surface",
  "objc2-metal 0.3.2",
@@ -10357,7 +10396,7 @@ dependencies = [
  "libc",
  "libloading",
  "mach2",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-audio",
  "objc2-core-foundation",
  "objc2-core-graphics",
@@ -10488,7 +10527,7 @@ dependencies = [
 name = "polymer-producer-metal"
 version = "0.1.0"
 dependencies = [
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-foundation 0.3.2",
  "objc2-io-surface",
  "objc2-metal 0.3.2",
@@ -10580,7 +10619,7 @@ version = "0.1.0"
 dependencies = [
  "block2 0.6.2",
  "egui",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
  "objc2-core-media",
@@ -10750,7 +10789,7 @@ dependencies = [
  "block2 0.6.2",
  "dashmap",
  "libc",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-foundation 0.3.2",
  "objc2-fs-kit",
  "parking_lot",
@@ -11282,7 +11321,7 @@ version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40d213455a5f1dc59214213c7330e074ddf8114c9a42411eb890c767357ce135"
 dependencies = [
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
  "objc2-quartz-core 0.3.2",
@@ -11649,9 +11688,9 @@ dependencies = [
  "bitflags 2.13.1",
  "fallible-iterator",
  "fallible-streaming-iterator",
- "hashlink",
+ "hashlink 0.12.1",
  "libsqlite3-sys",
- "smallvec",
+ "smallvec 1.16.3",
  "sqlite-wasm-rs",
 ]
 
@@ -11955,6 +11994,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "saphyr-parser"
+version = "0.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fb771b59f6b1985d1406325ec28f97cfb14256abcec4fdfb37b36a1766d6af7"
+dependencies = [
+ "arraydeque",
+ "hashlink 0.10.0",
+]
+
+[[package]]
 name = "schannel"
 version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12109,7 +12158,7 @@ dependencies = [
  "precomputed-hash",
  "rustc-hash 2.1.3",
  "servo_arc",
- "smallvec",
+ "smallvec 1.16.3",
  "to_shmem",
  "to_shmem_derive",
 ]
@@ -12147,20 +12196,20 @@ dependencies = [
 
 [[package]]
 name = "serde-saphyr"
-version = "0.0.29"
+version = "0.0.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7bd22781911de0ca6debda95f073c8f18bec65d1a94f1fa9573f3102e514cea4"
+checksum = "45400dbf0a2c4c2af106c08eb1028b3e45bea3cd45517d3a0e8170b86597122f"
 dependencies = [
  "ahash",
  "annotate-snippets",
  "base64 0.22.1",
  "encoding_rs_io",
- "getrandom 0.3.4",
- "granit-parser",
  "nohash-hasher",
  "num-traits",
- "serde_core",
- "smallvec",
+ "saphyr-parser",
+ "serde",
+ "serde_json",
+ "smallvec 2.0.0-beta.2",
  "zmij",
 ]
 
@@ -12262,7 +12311,7 @@ dependencies = [
  "deno_v8",
  "num-bigint",
  "serde",
- "smallvec",
+ "smallvec 1.16.3",
  "thiserror 2.0.20",
 ]
 
@@ -12470,7 +12519,7 @@ dependencies = [
  "rand_core 0.6.4",
  "rand_pcg 0.3.1",
  "scoped-tls",
- "smallvec",
+ "smallvec 1.16.3",
  "tracing",
 ]
 
@@ -12614,9 +12663,15 @@ checksum = "9b0e903ee191d8f7a8fbf0d712c3a1699d19e04ceba5ad1eb673053c7d938a09"
 
 [[package]]
 name = "smallvec"
-version = "1.15.2"
+version = "1.16.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
+checksum = "5b3dc8af474f516a851ff4bd12db780f948b9250ad37211e4eec0bccea54e01b"
+
+[[package]]
+name = "smallvec"
+version = "2.0.0-beta.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ea3c9b717472722a7bf1def25b976350fc5d2f57bd710e83d96de1f211e035cf"
 
 [[package]]
 name = "smartstring"
@@ -13064,7 +13119,7 @@ dependencies = [
  "serde",
  "servo_arc",
  "smallbitvec",
- "smallvec",
+ "smallvec 1.16.3",
  "static_assertions",
  "string_cache",
  "strum 0.28.0",
@@ -13131,7 +13186,7 @@ dependencies = [
  "selectors",
  "servo_arc",
  "smallbitvec",
- "smallvec",
+ "smallvec 1.16.3",
  "string_cache",
  "thin-vec",
  "void",
@@ -13149,6 +13204,7 @@ dependencies = [
 [[package]]
 name = "stylo_taffy"
 version = "0.3.0-beta.2"
+source = "git+https://github.com/DioxusLabs/blitz?rev=c3af502c03fd67e6c1861a55a22f28b093d435f7#c3af502c03fd67e6c1861a55a22f28b093d435f7"
 dependencies = [
  "bitflags 2.13.1",
  "stylo",
@@ -13352,7 +13408,7 @@ dependencies = [
  "rustc-hash 2.1.3",
  "seq-macro",
  "serde",
- "smallvec",
+ "smallvec 1.16.3",
  "smartstring",
  "stacker",
  "swc_atoms",
@@ -13617,7 +13673,7 @@ dependencies = [
  "lazy_static",
  "log",
  "num-complex 0.4.6",
- "smallvec",
+ "smallvec 1.16.3",
 ]
 
 [[package]]
@@ -13735,11 +13791,11 @@ dependencies = [
 [[package]]
 name = "taffy"
 version = "0.14.0"
-source = "git+https://github.com/DioxusLabs/taffy?rev=4142c9d8cac05d8b39eac9632856ed04f7623d52#4142c9d8cac05d8b39eac9632856ed04f7623d52"
+source = "git+https://github.com/DioxusLabs/taffy?rev=7d33901cc383489d9945ae796a1ceed0a935ef66#7d33901cc383489d9945ae796a1ceed0a935ef66"
 dependencies = [
  "serde",
  "slotmap",
- "smallvec",
+ "smallvec 1.16.3",
 ]
 
 [[package]]
@@ -14033,7 +14089,7 @@ dependencies = [
  "cssparser 0.38.0",
  "servo_arc",
  "smallbitvec",
- "smallvec",
+ "smallvec 1.16.3",
  "string_cache",
  "thin-vec",
 ]
@@ -14394,7 +14450,7 @@ dependencies = [
  "once_cell",
  "regex-automata",
  "sharded-slab",
- "smallvec",
+ "smallvec 1.16.3",
  "thread_local",
  "tracing",
  "tracing-core",
@@ -14537,7 +14593,7 @@ dependencies = [
  "shuttle",
  "simdutf8",
  "simsimd",
- "smallvec",
+ "smallvec 1.16.3",
  "strum 0.26.3",
  "strum_macros 0.26.4",
  "tempfile",
@@ -15007,7 +15063,7 @@ dependencies = [
  "guillotiere",
  "peniko",
  "skrifa",
- "smallvec",
+ "smallvec 1.16.3",
 ]
 
 [[package]]
@@ -15224,7 +15280,7 @@ dependencies = [
  "downcast-rs",
  "rustix 1.1.4",
  "scoped-tls",
- "smallvec",
+ "smallvec 1.16.3",
  "wayland-sys",
 ]
 
@@ -15402,7 +15458,7 @@ dependencies = [
  "jni 0.22.4",
  "log",
  "ndk-context",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "url",
@@ -15667,7 +15723,7 @@ dependencies = [
  "portable-atomic",
  "profiling",
  "raw-window-handle",
- "smallvec",
+ "smallvec 1.16.3",
  "static_assertions",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -15701,7 +15757,7 @@ dependencies = [
  "profiling",
  "raw-window-handle",
  "rustc-hash 1.1.0",
- "smallvec",
+ "smallvec 1.16.3",
  "thiserror 2.0.20",
  "wgpu-core-deps-apple",
  "wgpu-core-deps-emscripten",
@@ -15766,7 +15822,7 @@ dependencies = [
  "naga",
  "naga-types",
  "ndk-sys",
- "objc2 0.6.4",
+ "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-foundation 0.3.2",
@@ -15782,7 +15838,7 @@ dependencies = [
  "raw-window-handle",
  "raw-window-metal 1.1.0",
  "renderdoc-sys",
- "smallvec",
+ "smallvec 1.16.3",
  "static_assertions",
  "thiserror 2.0.20",
  "wasm-bindgen",
