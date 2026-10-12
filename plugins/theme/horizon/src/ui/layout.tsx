@@ -33,7 +33,7 @@ export function DetailList(props: { items: readonly { label: string; value: JSX.
 export function Divider() { return <hr class="hz-divider" />; }
 const keys = { move: "↑↓←→", activate: "Enter", back: "Esc", details: "Shift", pause: "Esc", previous: "PageUp", next: "PageDown" };
 const glyphs = { move: "dpad", activate: "a", back: "b", details: "x", pause: "home", previous: "l", next: "r" } as const;
-export function ActionHints(props: { hints?: readonly ActionHint[] }) {
+export function ActionHints(props: { hints?: readonly ActionHint[]; floating?: boolean }) {
   const navigation = useNavigation();
-  return <footer class="hz-hints"><For each={props.hints ?? navigation.hints()}>{hint => <span><Show when={navigation.origin() === "controller"} fallback={<kbd>{hint.keyboard ?? keys[hint.action]}</kbd>}><ButtonGlyph button={glyphs[hint.action]} /></Show>{hint.label}</span>}</For></footer>;
+  return <footer class="hz-hints" data-floating={props.floating || undefined}><For each={props.hints ?? navigation.hints()}>{hint => <span><Show when={navigation.origin() === "controller"} fallback={<kbd>{hint.keyboard ?? keys[hint.action]}</kbd>}><ButtonGlyph button={glyphs[hint.action]} /></Show>{hint.label}</span>}</For></footer>;
 }

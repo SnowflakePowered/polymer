@@ -1,5 +1,6 @@
 import type { LibraryActivity, LibraryEntry } from "@polymer-fe/frontend/library-state";
 import type { LaunchInstance, LaunchRequest, PackageConfiguration } from "@polymer-fe/frontend";
+import type { PlatformShader } from "@polymer-fe/frontend/shaders";
 import type { ColorMode } from "../ui";
 
 export type RecentGame = LibraryEntry;
@@ -35,6 +36,7 @@ export type ShellModel = {
   selectedGame: string | null;
   gamepadOpen: boolean;
   pauseOpen: boolean;
+  shader: PlatformShader;
   controllerToast: { name: string; index: number } | null;
   colorMode: ColorMode;
 };

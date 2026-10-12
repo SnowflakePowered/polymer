@@ -1,6 +1,7 @@
 import { For, Show, createEffect, createMemo, onCleanup } from "solid-js";
 import { unwrap } from "solid-js/store";
 import type { LaunchInstance } from "@polymer-fe/frontend";
+import type { ShaderTarget } from "@polymer-fe/frontend/shaders";
 import { DUAL_SCREEN_PLATFORMS, useShell } from "../../app/shell";
 import { Throbber, useInputScope } from "../../ui";
 import { QuickAccess } from "./QuickAccess";
@@ -10,6 +11,9 @@ export function GamePage() {
   const shell = useShell();
   const elements = new Map<number, HTMLElement>();
   const surfaces = createMemo(() => shell.state.request?.surfaces ?? shell.state.launch?.request.surfaces ?? []);
+  const dualScreen = () => DUAL_SCREEN_PLATFORMS.includes(shell.state.draft?.platform ?? "");
+  let group: HTMLElement | undefined;
+  const shaderTarget = () => (dualScreen() ? group : elements.get(surfaces()[0]?.index ?? 0)) as unknown as ShaderTarget | undefined;
   let sequence = 0, bound = -1, unbind = () => {};
   onCleanup(() => { sequence++; unbind(); });
 
@@ -18,10 +22,14 @@ export function GamePage() {
     unbind();
     bound = instance.id;
     unbind = shell.games.watch(instance, {
-      ready: () => shell.started(instance),
+      ready: () => {
+        shell.started(instance);
+        const platform = instance.request.machine ?? shell.state.draft?.platform;
+        if (platform) shell.shaders.start(platform, shaderTarget).then(setting => shell.update("shader", setting), shell.fail);
+      },
       audio: state => shell.update("audio", state),
       surfaces: () => {},
-      finished: error => shell.finished(error),
+      finished: error => { shell.shaders.stop(); shell.finished(error); },
     });
   };
   createEffect(() => { if (shell.state.launch) bind(shell.state.launch); });
@@ -40,13 +48,13 @@ export function GamePage() {
 
   const register = (index: number) => (element: HTMLElement) => { element.setAttribute("src", String(index)); elements.set(index, element); };
   return <main class="vp-game">
-    <Show when={DUAL_SCREEN_PLATFORMS.includes(shell.state.draft?.platform ?? "")} fallback={
+    <Show when={dualScreen()} fallback={
       <For each={surfaces().length ? surfaces() : [{ index: 0 }]}>{surface =>
         <tracked-surface ref={register(surface.index)} src={String(surface.index)} class="vp-game-surface" data-index={String(surface.index)} />
       }</For>
     }>
       <section class="vp-dual-screen">
-        <tracked-surface-group class="vp-dual-screen-frame" attr:data-layout={shell.state.screenLayout}>
+        <tracked-surface-group ref={element => { group = element; }} class="vp-dual-screen-frame" attr:data-layout={shell.state.screenLayout}>
           <tracked-surface ref={register(0)} src="0" data-index="0" class="vp-dual-screen-surface" attr:data-screen="top" />
           <tracked-surface ref={register(1)} src="1" data-index="1" class="vp-dual-screen-surface" attr:data-screen="bottom" />
           <Show when={shell.state.screenLayout === "hybrid"}>

@@ -21,6 +21,7 @@ export function QuickAccess() {
       <PanelSection title="Game">
         <Button primary data-autofocus onClick={close}>Resume game</Button>
         <Button onClick={() => shell.update("menu", "order")}>Controller order</Button>
+        <Button onClick={() => shell.update("menu", "shader")}>Shader</Button>
         <Button danger onClick={() => setConfirm(true)}>Exit game</Button>
       </PanelSection>
       <Show when={DUAL_SCREEN_PLATFORMS.includes(shell.state.draft?.platform ?? "")}>

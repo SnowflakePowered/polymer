@@ -1,9 +1,11 @@
 import { createContext, useContext, type Context } from "solid-js";
 import type { PackageConfiguration } from "@polymer-fe/frontend";
+import type { PlatformShaders } from "@polymer-fe/frontend/shaders";
 import type { LibraryQueryState, RecentGame, ShellModel } from "./models";
 
 export type ShellContextValue = {
   model: ShellModel;
+  shaders: PlatformShaders;
   setModel: (...path: any[]) => void;
   navigate(path: string, replace?: boolean): void;
   gamePath(page: "launching" | "play" | "reorder"): string;

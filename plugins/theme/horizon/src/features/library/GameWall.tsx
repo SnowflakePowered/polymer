@@ -5,12 +5,14 @@ import { useInputScope } from "../../ui";
 import { CoverLayout } from "./cover-layout";
 import { GameTile } from "./GameTile";
 import { GameContextMenu } from "./GameContextMenu";
+import { GameInfoCard } from "./GameInfoCard";
 import { gameId, nearestInDirection, type Direction } from "./spatial-navigation";
 import "./GameWall.css";
 
 export function GameWall(props: { games: RecentGame[]; onEnd?: () => void }) {
   const shell = useShell();
   const [context, setContext] = createSignal<{ game: RecentGame }>();
+  const [info, setInfo] = createSignal<RecentGame>();
   const [zoom, setZoom] = createSignal(1);
   const [viewport, setViewport] = createSignal({ width: 1, height: 800 });
   const [ratios, setRatios] = createSignal<Record<string, number>>({});
@@ -79,7 +81,7 @@ export function GameWall(props: { games: RecentGame[]; onEnd?: () => void }) {
         return true;
       }
       if (action.type === "activate") { const game = gameFor(current); if (game) shell.launchRecent(game); return true; }
-      if (action.type === "details") { const game = gameFor(current); if (game) shell.showDetails(game); return true; }
+      if (action.type === "details") { const game = gameFor(current); if (game) setInfo(game); return true; }
       return false;
     },
   }));
@@ -98,5 +100,6 @@ export function GameWall(props: { games: RecentGame[]; onEnd?: () => void }) {
     }}</For>
     </div>
     <Show when={context()}>{value => <GameContextMenu {...value()} onClose={() => setContext(undefined)} />}</Show>
+    <Show when={info()} keyed>{game => <GameInfoCard game={game} returnFocus={() => elements.get(gameId(game))} onClose={() => setInfo(undefined)} />}</Show>
   </section>;
 }

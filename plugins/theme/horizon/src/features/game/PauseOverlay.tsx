@@ -4,6 +4,7 @@ import { SidePanel, ConfirmDialog, ActionRow, SettingRow, Toggle, Icon, ActionHi
 import { VolumeSlider } from "./VolumeSlider";
 import { PauseDecorator } from "./PauseDecorator";
 import { ScreenLayoutPicker } from "./ScreenLayoutPicker";
+import { ShaderPicker } from "./ShaderPicker";
 import { DiscPicker } from "./DiscPicker";
 import { DUAL_SCREEN_PLATFORMS } from "./DualScreenStage";
 import { useMatch } from "@solidjs/router";
@@ -23,6 +24,7 @@ export function PauseOverlay() {
       <SettingRow><VolumeSlider value={shell.model.audio.volume} onChange={setVolume} /></SettingRow>
       <Show when={(shell.model.launch?.getLaunchSet().length ?? 0) > 1 && shell.model.launch}>{launch => <DiscPicker launch={launch()} />}</Show>
       <ScreenLayoutPicker />
+      <ShaderPicker />
       <Show when={shell.model.surfaces.length > 1 && !dualScreen()}><SettingRow><Toggle label="Gamepad display" checked={shell.model.gamepadOpen} onCheckedChange={open => shell.setModel("gamepadOpen", open)} /></SettingRow></Show>
       <ActionRow onClick={() => { resume(); shell.navigate(shell.gamePath("reorder")); }}><Icon name="gamepad" tone="action" /> Change controller order</ActionRow>
       <ActionRow appearance="danger" onClick={() => setConfirmClose(true)}><Icon name="close" tone="danger" /> Close game</ActionRow>

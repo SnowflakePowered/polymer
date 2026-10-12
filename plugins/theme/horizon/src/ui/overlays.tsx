@@ -1,16 +1,16 @@
 import { Dialog as ArkDialog, Popover as ArkPopover, FloatingPanel as ArkFloating, Menu, useDialogContext, usePopoverContext, useFloatingPanelContext, useMenu } from "@ark-ui/solid";
 import { For, Show, createEffect, createSignal, splitProps, type JSX, type ParentProps } from "solid-js";
 import { Button, ActionRow } from "./actions";
-import { embeddedRuntime, useInputScope, type InputAction } from "./input";
+import { embeddedRuntime, useInputScope, type ActionHint, type InputAction } from "./input";
 import { OverlayPortal } from "./portal";
 
-function DialogContent(props: ArkDialog.ContentProps & { onAction?: (action: InputAction) => boolean; returnFocus?: () => HTMLElement | null | undefined }) {
-  const [local, rest] = splitProps(props, ["ref", "class", "onAction", "returnFocus"]);
+function DialogContent(props: ArkDialog.ContentProps & { onAction?: (action: InputAction) => boolean; returnFocus?: () => HTMLElement | null | undefined; hints?: () => readonly ActionHint[] }) {
+  const [local, rest] = splitProps(props, ["ref", "class", "onAction", "returnFocus", "hints"]);
   const api = useDialogContext();
   let root!: HTMLDivElement;
   useInputScope(() => ({ root, enabled: api().open, overlay: true, navigation: true, returnFocus: local.returnFocus,
     initialFocus: () => root.contains(document.activeElement) ? document.activeElement as HTMLElement : root.querySelector<HTMLElement>("[data-input-default], [autofocus]"),
-    hints: () => [{ action: "activate", label: "Select" }, { action: "back", label: "Back" }],
+    hints: () => local.hints?.() ?? [{ action: "activate", label: "Select" }, { action: "back", label: "Back" }],
     handle: action => { if (local.onAction?.(action)) return true; if (action.type !== "back") return false; api().setOpen(false); return true; } }));
   return <ArkDialog.Content {...rest} class={`hz-dialog ${local.class ?? ""}`} ref={element => { root = element; if (typeof local.ref === "function") local.ref(element); }} />;
 }
