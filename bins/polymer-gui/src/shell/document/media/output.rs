@@ -60,13 +60,16 @@ impl OutputThread {
         let _watcher = DefaultOutputWatcher::new(move || {
             let _ = changes.send(OutputCommand::DefaultChanged);
         })
-        .inspect_err(|error| tracing::warn!(%error, "polymer: watching the default audio output failed"))
+        .inspect_err(
+            |error| tracing::warn!(%error, "polymer: watching the default audio output failed"),
+        )
         .ok();
         loop {
             self.generation += 1;
             let output = self.open();
             let mixer = output.as_ref().map(|output| output.mixer().clone());
-            self.shell.send(ShellCommand::Media(MediaSignal::Output(mixer)));
+            self.shell
+                .send(ShellCommand::Media(MediaSignal::Output(mixer)));
             if !self.wait(output.is_some()) {
                 return;
             }

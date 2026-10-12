@@ -221,6 +221,7 @@ pub struct FrontendServices {
     deno_input: Arc<DenoInputListener>,
     input_listener: ListenerHandle,
     calibration_captures: Mutex<HashMap<DeviceId, CalibrationCapture>>,
+    shaders: polymer_library::ShaderLibrary,
 }
 
 struct DenoInputListener {
@@ -523,6 +524,7 @@ impl FrontendServices {
         controller_api: ControllerApiState,
         commands: FrontendCommands,
         notifications: PolymerNotificationSender,
+        shaders: polymer_library::ShaderLibrary,
     ) -> Self {
         let deno_input = Arc::new(DenoInputListener::new(
             input_sources.clone(),
@@ -642,6 +644,7 @@ impl FrontendServices {
             deno_input,
             input_listener,
             calibration_captures: Mutex::new(HashMap::new()),
+            shaders,
         }
     }
 }
@@ -937,6 +940,10 @@ impl PolymerHost for FrontendServices {
             .map_err(Clone::clone)
     }
 
+    fn shaders(&self) -> Result<polymer_library::ShaderLibrary, String> {
+        Ok(self.shaders.clone())
+    }
+
     fn jobs(&self) -> Result<polymer_deno::polymer::Jobs, String> {
         self.job_service
             .as_ref()
@@ -1110,5 +1117,4 @@ impl PolymerHost for FrontendServices {
             },
         );
     }
-
 }

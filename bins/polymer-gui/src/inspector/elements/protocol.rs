@@ -334,12 +334,7 @@ impl<'a> DocumentProtocol<'a> {
         node.attrs()
             .into_iter()
             .flatten()
-            .flat_map(|attribute| {
-                [
-                    attribute.name.local.to_string(),
-                    attribute.value.clone(),
-                ]
-            })
+            .flat_map(|attribute| [attribute.name.local.to_string(), attribute.value.clone()])
             .collect()
     }
 }

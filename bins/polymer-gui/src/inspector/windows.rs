@@ -39,8 +39,7 @@ impl InspectorWindow {
         shell: crate::shell::protocol::ShellInbox,
     ) -> Result<Self, Box<dyn Error>> {
         let target = inspector_target(inspector_address)?;
-        let elements =
-            elements::Bridge::start(target.web_socket_debugger_url, target.url, shell)?;
+        let elements = elements::Bridge::start(target.web_socket_debugger_url, target.url, shell)?;
         let frontend = format!(
             "{DEVTOOLS_FRONTEND_BASE}?ws={}&experiments=true",
             elements.websocket_target()

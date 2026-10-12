@@ -83,7 +83,13 @@ impl ShellCoordinator {
 
     /// Sends a key to the shell thread. While the game owns the keyboard the
     /// key is held, and reaches the game unless script cancels it.
-    pub(super) fn shell_keyboard(&mut self, pressed: bool, key: String, code: String, repeat: bool) {
+    pub(super) fn shell_keyboard(
+        &mut self,
+        pressed: bool,
+        key: String,
+        code: String,
+        repeat: bool,
+    ) {
         let game_owned = self.input.priority() == InputPriority::Game;
         if !self.shell.is_active() {
             if game_owned {

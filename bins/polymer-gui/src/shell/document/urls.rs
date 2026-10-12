@@ -45,6 +45,10 @@ impl ShellUrls {
         }
     }
 
+    pub fn directories(&self) -> &Directories {
+        &self.directories
+    }
+
     pub fn resolve(&self, url: &Url) -> Option<Url> {
         match url.scheme() {
             "theme" => self.theme(url),

@@ -192,7 +192,12 @@ impl MediaPlayers {
                 .and_then(|url| url.to_file_path().ok())
                 .filter(|path| path.is_file())
                 .map(MediaData::File);
-            NodeSignal::send(&self.shell, node, generation, MediaSignalKind::Fetched(file));
+            NodeSignal::send(
+                &self.shell,
+                node,
+                generation,
+                MediaSignalKind::Fetched(file),
+            );
             return;
         }
         let url = resolved.unwrap_or(url);
@@ -202,7 +207,8 @@ impl MediaPlayers {
             generation,
             delivered: false,
         };
-        self.net.fetch(self.doc_id, Request::get(url), Box::new(fetch));
+        self.net
+            .fetch(self.doc_id, Request::get(url), Box::new(fetch));
     }
 
     fn element(&mut self, node: NodeId, video: bool, muted: bool) -> &mut MediaElement {
@@ -215,7 +221,11 @@ impl MediaPlayers {
                     self.mixer.as_ref(),
                 ))
             } else {
-                Box::new(AudioPlayback::new(node, self.shell.clone(), self.mixer.as_ref()))
+                Box::new(AudioPlayback::new(
+                    node,
+                    self.shell.clone(),
+                    self.mixer.as_ref(),
+                ))
             };
             MediaElement {
                 status: MediaStatus::new(muted),
@@ -229,12 +239,16 @@ impl MediaPlayers {
             return false;
         }
         let generation = self.next_generation();
-        let source = attributes
-            .source
-            .as_deref()
-            .and_then(|source| Url::options().base_url(self.base.as_ref()).parse(source).ok());
+        let source = attributes.source.as_deref().and_then(|source| {
+            Url::options()
+                .base_url(self.base.as_ref())
+                .parse(source)
+                .ok()
+        });
         let element = self.element(node, video, attributes.muted);
-        element.status.reload(generation, source.clone(), &attributes);
+        element
+            .status
+            .reload(generation, source.clone(), &attributes);
         element.playback.reload(&element.status);
         element.playback.configure(&element.status);
         let Some(url) = source else {
@@ -272,7 +286,9 @@ impl MediaPlayers {
         let target = Duration::try_from_secs_f64(seconds).unwrap_or_default();
         let position = element.status.clamp(target);
         element.status.ended = false;
-        element.playback.seek(&mut element.status, position, generation);
+        element
+            .playback
+            .seek(&mut element.status, position, generation);
         position.as_secs_f64()
     }
 
