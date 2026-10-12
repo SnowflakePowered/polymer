@@ -9,6 +9,8 @@ use librashader::runtime::{FilterChainParameters, Size, Viewport};
 use polymer_renderer::renderer::ShaderViewport;
 
 const MAXIMUM_CANVAS: f32 = 4096.0;
+const SETTLE_FRAMES: u32 = 120;
+const IDLE_FRAME: Duration = Duration::from_millis(100);
 const CANVAS_TARGET: u32 = FRAME_COUNT as u32;
 const OUTPUT_TARGET: u32 = FRAME_COUNT as u32 + 1;
 pub(super) const SHADER_TARGETS: u32 = 2;
@@ -21,6 +23,7 @@ pub struct ShaderStage {
     aspect_ratio: f32,
     frame_count: usize,
     fresh: bool,
+    settle: u32,
     last_frame: Option<std::time::Instant>,
     frame_delta: Duration,
     canvas: Option<ShaderTarget>,
@@ -55,6 +58,7 @@ impl ShaderStage {
             aspect_ratio,
             frame_count: 0,
             fresh: true,
+            settle: 0,
             last_frame: None,
             frame_delta: Duration::ZERO,
             canvas: None,
@@ -70,18 +74,35 @@ impl ShaderStage {
         self.chain.parameters().set_passes_enabled(count);
     }
 
-    /// Options for the next frame; only presents carrying a guest frame advance time.
+    /// Whether the chain still needs redraws to converge after its history
+    /// was cleared, while no guest frames arrive to drive it.
+    pub fn settling(&self) -> bool {
+        self.settle > 0
+            && self
+                .last_frame
+                .is_none_or(|last| last.elapsed() >= IDLE_FRAME)
+    }
+
+    /// Options for the next frame; presents carrying a guest frame advance
+    /// time, as do redraws while the chain settles.
     fn advance(&mut self, carried: bool) -> FrameOptions {
+        let clear_history = std::mem::take(&mut self.fresh);
+        if clear_history {
+            self.settle = SETTLE_FRAMES;
+        }
         if carried {
             let now = std::time::Instant::now();
             if let Some(last) = self.last_frame.replace(now) {
                 self.frame_delta = now - last;
             }
+        }
+        if carried || self.settle > 0 {
             self.frame_count += 1;
         }
+        self.settle = self.settle.saturating_sub(1);
         let seconds = self.frame_delta.as_secs_f32();
         FrameOptions {
-            clear_history: std::mem::take(&mut self.fresh),
+            clear_history,
             aspect_ratio: self.aspect_ratio,
             frametime_delta: self.frame_delta.as_millis() as u32,
             frames_per_second: if seconds > 0.0 { seconds.recip() } else { 1.0 },
