@@ -74,4 +74,7 @@ pub struct ShellCompositionGroup {
     pub z_order: i32,
     pub opacity: f32,
     pub shadow: Option<CompositionShadowStyle>,
+    /// Standard deviation, in physical pixels, of a blur applied by the native
+    /// compositor to everything beneath the group's bounds.
+    pub backdrop_blur: Option<f32>,
 }

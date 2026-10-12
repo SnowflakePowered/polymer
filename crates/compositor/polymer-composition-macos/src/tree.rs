@@ -1,7 +1,11 @@
 use crate::{raster::RasterLayer, surfaces::Surfaces};
-use objc2::{MainThreadMarker, rc::Retained};
+use objc2::{MainThreadMarker, rc::Retained, runtime::AnyObject};
 use objc2_app_kit::NSView;
-use objc2_foundation::{NSPoint as CGPoint, NSRect as CGRect, NSSize as CGSize};
+use objc2_core_image::CIFilter;
+use objc2_foundation::{
+    NSArray, NSNumber, NSObjectNSKeyValueCoding, NSPoint as CGPoint, NSRect as CGRect,
+    NSSize as CGSize, ns_string,
+};
 use objc2_quartz_core::{CALayer, CATransaction};
 use polymer_composition::{CompositionScene, RasterChunkId, ShellCompositionGroup, SurfaceLayer};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -45,6 +49,22 @@ impl Group {
         } else {
             self.outer.setShadowOpacity(0.);
         }
+        let filters = group.backdrop_blur.and_then(|blur| {
+            let radius = NSNumber::new_f64(f64::from(blur) / scale);
+            let radius: &AnyObject = &radius;
+            // SAFETY: CIGaussianBlur is a built-in filter whose `inputRadius`
+            // takes an NSNumber; macOS leaves inputs undefined until defaulted.
+            let filter = unsafe {
+                let filter = CIFilter::filterWithName(ns_string!("CIGaussianBlur"))?;
+                filter.setDefaults();
+                filter.setValue_forKey(Some(radius), ns_string!("inputRadius"));
+                filter
+            };
+            let object: &AnyObject = &filter;
+            Some(NSArray::from_slice(&[object]))
+        });
+        // SAFETY: the array holds only CIFilter instances.
+        unsafe { self.outer.setBackgroundFilters(filters.as_deref()) };
     }
 }
 impl Drop for Group {
@@ -69,6 +89,7 @@ impl LayerTree {
         root.setGeometryFlipped(true);
         view.setWantsLayer(true);
         view.setLayer(Some(&root));
+        view.setLayerUsesCoreImageFilters(true);
         Ok(Self {
             root,
             groups: HashMap::new(),

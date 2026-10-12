@@ -672,6 +672,10 @@ impl ShellDocument {
                     shadow.blur_radius *= self.scale_factor;
                     shadow
                 }),
+                backdrop_blur: group
+                    .backdrop_blur
+                    .filter(|_| group_first_z.contains_key(&group.id))
+                    .map(|blur| blur * self.scale_factor),
             })
             .collect();
         Some(ShellFrame {
