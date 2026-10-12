@@ -1,5 +1,5 @@
 use super::MediaSignal;
-use crate::shell::protocol::{ShellChannel, ShellCommand};
+use crate::shell::protocol::{ShellCommand, ShellInbox};
 #[cfg(target_os = "macos")]
 use polymer_platform_macos::DefaultOutputWatcher;
 #[cfg(windows)]
@@ -23,7 +23,7 @@ pub(super) struct MediaOutput {
 }
 
 impl MediaOutput {
-    pub(super) fn spawn(shell: ShellChannel) -> Self {
+    pub(super) fn spawn(shell: ShellInbox) -> Self {
         let (commands, receiver) = mpsc::channel();
         let thread = OutputThread {
             shell,
@@ -48,7 +48,7 @@ impl Drop for MediaOutput {
 }
 
 struct OutputThread {
-    shell: ShellChannel,
+    shell: ShellInbox,
     errors: Sender<OutputCommand>,
     receiver: Receiver<OutputCommand>,
     generation: u64,

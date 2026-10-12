@@ -23,7 +23,7 @@ impl ShellCoordinator {
         window: Window,
         address: std::net::SocketAddr,
     ) {
-        let Some(shell) = self.shell.channel() else {
+        let Some(shell) = self.shell.inbox() else {
             return;
         };
         let result = InspectorWindow::open(window, address, shell);

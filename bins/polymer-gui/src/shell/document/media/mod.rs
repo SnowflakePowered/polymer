@@ -5,10 +5,7 @@ mod status;
 mod video;
 
 use super::{ShellDocument, urls::ShellUrls};
-use crate::shell::{
-    ShellOutbox,
-    protocol::{ShellChannel, ShellCommand},
-};
+use crate::shell::protocol::{ShellCommand, ShellInbox, ShellOutbox};
 use audio::{AudioPlayback, DecodedSource};
 use blitz_dom::{LocalName, Node, NodeId, local_name, node::ElementData};
 use blitz_traits::net::{Bytes, NetHandler, NetProvider, Request, Url};
@@ -47,7 +44,7 @@ enum MediaSignalKind {
 }
 
 impl NodeSignal {
-    fn send(shell: &ShellChannel, node: NodeId, generation: u64, kind: MediaSignalKind) {
+    fn send(shell: &ShellInbox, node: NodeId, generation: u64, kind: MediaSignalKind) {
         shell.send(ShellCommand::Media(MediaSignal::Node(Self {
             node,
             generation,
@@ -86,7 +83,7 @@ struct MediaAttributes {
 }
 
 struct MediaFetch {
-    shell: ShellChannel,
+    shell: ShellInbox,
     node: NodeId,
     generation: u64,
     delivered: bool,
@@ -147,7 +144,7 @@ pub(crate) struct MediaPlayers {
     net: Arc<dyn NetProvider>,
     doc_id: usize,
     base: Option<Url>,
-    shell: ShellChannel,
+    shell: ShellInbox,
     outbox: ShellOutbox,
     urls: Arc<ShellUrls>,
     _output: MediaOutput,
@@ -165,7 +162,7 @@ impl MediaPlayers {
         net: Arc<dyn NetProvider>,
         doc_id: usize,
         base_url: &str,
-        shell: ShellChannel,
+        shell: ShellInbox,
         outbox: ShellOutbox,
         urls: Arc<ShellUrls>,
     ) -> Self {

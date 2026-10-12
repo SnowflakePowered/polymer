@@ -5,9 +5,9 @@
 mod input;
 
 use super::{
-    ShellOutbox, ShellSessionFactory, ShellSource,
+    ShellSessionFactory, ShellSource,
     document::SharedShellDocument,
-    protocol::{LaunchSurfaceGroups, ShellChannel, ShellCommand, ShellEvent},
+    protocol::{LaunchSurfaceGroups, ShellCommand, ShellEvent, ShellInbox, ShellOutbox},
     runtime::{PolymerNotificationSender, ShellRuntime, ShellRuntimeOptions},
 };
 use std::{
@@ -32,6 +32,8 @@ pub(super) struct ShellStart {
     pub factory: ShellSessionFactory,
     pub source: ShellSource,
     pub commands: polymer_runtime::FrontendCommands,
+    pub inbox: ShellInbox,
+    pub received: UnboundedReceiver<ShellCommand>,
     pub outbox: ShellOutbox,
 }
 
@@ -57,23 +59,16 @@ pub(super) struct ShellHost {
 impl ShellHost {
     pub(super) fn spawn(
         start: ShellStart,
-        channel: ShellChannel,
-        commands: UnboundedReceiver<ShellCommand>,
     ) -> std::io::Result<(std::thread::JoinHandle<()>, StartReceiver)> {
         let (ready, started) = oneshot::channel();
         let thread = std::thread::Builder::new()
             .name("polymer-shell".into())
             .stack_size(SHELL_STACK_SIZE)
-            .spawn(move || Self::run(start, channel, commands, ready))?;
+            .spawn(move || Self::run(start, ready))?;
         Ok((thread, started))
     }
 
-    fn run(
-        start: ShellStart,
-        channel: ShellChannel,
-        commands: UnboundedReceiver<ShellCommand>,
-        ready: StartReply,
-    ) {
+    fn run(start: ShellStart, ready: StartReply) {
         let executor = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -85,7 +80,7 @@ impl ShellHost {
             }
         };
         executor.block_on(async move {
-            match Self::start(start, channel, commands).await {
+            match Self::start(start).await {
                 Ok((mut host, started)) => {
                     let _ = ready.send(Ok(started));
                     std::future::poll_fn(|cx| host.poll(cx)).await;
@@ -97,20 +92,18 @@ impl ShellHost {
         });
     }
 
-    async fn start(
-        start: ShellStart,
-        channel: ShellChannel,
-        commands: UnboundedReceiver<ShellCommand>,
-    ) -> Result<(Self, ShellStarted), Box<dyn Error>> {
+    async fn start(start: ShellStart) -> Result<(Self, ShellStarted), Box<dyn Error>> {
         let ShellStart {
             factory,
             source,
             commands: frontend,
+            inbox,
+            received,
             outbox,
         } = start;
         let document = SharedShellDocument(Rc::new(RefCell::new(factory.document.create(
             &source,
-            channel,
+            inbox,
             outbox.clone(),
         ))));
         let (runtime, notifications) = ShellRuntime::start(
@@ -135,7 +128,7 @@ impl ShellHost {
         let host = Self {
             document,
             runtime,
-            commands,
+            commands: received,
             outbox,
             frame_timer: Box::pin(tokio::time::sleep(Duration::ZERO)),
             last_frame: Instant::now() - MIN_FRAME_SPACING,

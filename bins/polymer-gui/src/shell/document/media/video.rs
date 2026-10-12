@@ -1,10 +1,7 @@
 use super::{
     MediaData, MediaPlayback, MediaSignalKind, NodeSignal, feed::AudioFeed, status::MediaStatus,
 };
-use crate::shell::{
-    ShellOutbox,
-    protocol::{ShellChannel, ShellEvent, TrackedSource, VideoRequest},
-};
+use crate::shell::protocol::{ShellEvent, ShellInbox, ShellOutbox, TrackedSource, VideoRequest};
 use blitz_dom::NodeId;
 use blitz_traits::net::Url;
 use polymer_composition::{VideoControl, VideoEvent, VideoSink, VideoSource};
@@ -14,7 +11,7 @@ use std::{sync::Arc, time::Duration};
 pub(super) struct VideoPlayback {
     node: NodeId,
     id: u64,
-    shell: ShellChannel,
+    shell: ShellInbox,
     outbox: ShellOutbox,
     mixer: Option<Mixer>,
     feed: Option<AudioFeed>,
@@ -28,7 +25,7 @@ pub(super) struct VideoPlayback {
 impl VideoPlayback {
     pub fn new(
         node: NodeId,
-        shell: ShellChannel,
+        shell: ShellInbox,
         outbox: ShellOutbox,
         mixer: Option<&Mixer>,
     ) -> Self {

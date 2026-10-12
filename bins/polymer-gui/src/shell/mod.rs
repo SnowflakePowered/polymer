@@ -11,44 +11,11 @@ mod host;
 pub(crate) mod protocol;
 pub(crate) mod runtime;
 
-use crate::{
-    app::UserEvent,
-    window_manager::{EventLoopProxy, WindowCommand},
-};
+use crate::{app::UserEvent, window_manager::EventLoopProxy};
 use document::ShellDocumentFactory;
-use protocol::{ShellChannel, ShellCommand, ShellEvent, ShellInput};
-use std::{
-    error::Error,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc::{Receiver, Sender},
-    },
-    thread::JoinHandle,
-};
+use protocol::{ShellCommand, ShellEvent, ShellEvents, ShellInbox, ShellInput, ShellOutbox};
+use std::{error::Error, thread::JoinHandle};
 use tokio::sync::oneshot;
-
-/// Delivers shell events to the window thread, posting at most one wake per
-/// drain so a burst of frames and input outcomes costs one message.
-#[derive(Clone)]
-struct ShellOutbox {
-    events: Sender<ShellEvent>,
-    signalled: Arc<AtomicBool>,
-    proxy: EventLoopProxy<UserEvent>,
-}
-
-impl ShellOutbox {
-    fn send(&self, event: ShellEvent) {
-        if self.events.send(event).is_err() {
-            return;
-        }
-        if !self.signalled.swap(true, Ordering::AcqRel) {
-            let _ = self
-                .proxy
-                .send_event(UserEvent::Window(WindowCommand::ShellUpdated));
-        }
-    }
-}
 
 pub(crate) struct ShellSession {
     slot: ShellDocumentSlot,
@@ -61,9 +28,8 @@ enum ShellDocumentSlot {
 }
 
 struct ActiveShell {
-    channel: ShellChannel,
-    events: Receiver<ShellEvent>,
-    signalled: Arc<AtomicBool>,
+    inbox: ShellInbox,
+    events: ShellEvents,
     thread: Option<JoinHandle<()>>,
     factory: ShellSessionFactory,
     inspector_address: std::net::SocketAddr,
@@ -72,7 +38,7 @@ struct ActiveShell {
 
 impl Drop for ActiveShell {
     fn drop(&mut self) {
-        self.channel.send(ShellCommand::Shutdown);
+        self.inbox.send(ShellCommand::Shutdown);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -107,8 +73,8 @@ impl ShellSession {
         self.active().is_some()
     }
 
-    pub(crate) fn channel(&self) -> Option<ShellChannel> {
-        self.active().map(|active| active.channel.clone())
+    pub(crate) fn inbox(&self) -> Option<ShellInbox> {
+        self.active().map(|active| active.inbox.clone())
     }
 
     pub(crate) fn inspector_address(&self) -> Option<std::net::SocketAddr> {
@@ -126,25 +92,16 @@ impl ShellSession {
             self.slot = slot;
             return Ok(None);
         };
-        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
-        let channel = ShellChannel(sender);
-        let (events_sender, events) = std::sync::mpsc::channel();
-        let signalled = Arc::new(AtomicBool::new(false));
-        let outbox = ShellOutbox {
-            events: events_sender,
-            signalled: signalled.clone(),
-            proxy: factory.event_proxy.clone(),
-        };
-        let (thread, started) = host::ShellHost::spawn(
-            host::ShellStart {
-                factory: (*factory).clone(),
-                source,
-                commands,
-                outbox,
-            },
-            channel.clone(),
-            receiver,
-        )?;
+        let (inbox, received) = ShellInbox::new();
+        let (outbox, events) = ShellOutbox::new(factory.event_proxy.clone());
+        let (thread, started) = host::ShellHost::spawn(host::ShellStart {
+            factory: (*factory).clone(),
+            source,
+            commands,
+            inbox: inbox.clone(),
+            received,
+            outbox,
+        })?;
         let started = match started.await {
             Ok(Ok(started)) => started,
             Ok(Err(error)) => {
@@ -157,9 +114,8 @@ impl ShellSession {
             }
         };
         self.slot = ShellDocumentSlot::Active(Box::new(ActiveShell {
-            channel,
+            inbox,
             events,
-            signalled,
             thread: Some(thread),
             factory: *factory,
             inspector_address: started.inspector_address,
@@ -170,7 +126,7 @@ impl ShellSession {
 
     pub fn send(&self, command: ShellCommand) {
         if let Some(active) = self.active() {
-            active.channel.send(command);
+            active.inbox.send(command);
         }
     }
 
@@ -183,9 +139,8 @@ impl ShellSession {
         let ShellDocumentSlot::Active(active) = &mut self.slot else {
             return Vec::new();
         };
-        active.signalled.store(false, Ordering::Release);
         let mut events = Vec::new();
-        for event in active.events.try_iter() {
+        for event in active.events.drain() {
             if matches!(event, ShellEvent::ReloadRequested) {
                 active.reload_requested = true;
             } else {
@@ -205,7 +160,7 @@ impl ShellSession {
         let (reply, response) = oneshot::channel();
         match self.active() {
             Some(active) => active
-                .channel
+                .inbox
                 .send(ShellCommand::ValidateLaunch { options, reply }),
             None => {
                 let _ = reply.send(Ok(protocol::LaunchSurfaceGroups::new()));

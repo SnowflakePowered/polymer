@@ -1,8 +1,5 @@
 use super::{ShellDocument, enclosing_surface_group, is_tracked_surface_element};
-use crate::shell::{
-    ShellOutbox,
-    protocol::{ShaderTarget, ShellEvent, SurfaceGroupBounds},
-};
+use crate::shell::protocol::{ShaderTarget, ShellEvent, ShellOutbox, SurfaceGroupBounds};
 use blitz_dom::{NodeId, local_name};
 use blitz_traits::net::Url;
 use librashader::presets::{ShaderFeatures, ShaderPreset, ShaderPresetPack, context::VideoDriver};

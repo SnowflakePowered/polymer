@@ -19,7 +19,7 @@ impl InspectorWindow {
     pub(crate) fn open(
         window: Window,
         address: SocketAddr,
-        shell: crate::shell::protocol::ShellChannel,
+        shell: crate::shell::protocol::ShellInbox,
     ) -> Result<Self, Box<dyn Error>> {
         let target = inspector_target(address)?;
         let bridge =
