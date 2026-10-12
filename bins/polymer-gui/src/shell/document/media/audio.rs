@@ -1,4 +1,6 @@
-use super::{MediaPlayback, MediaSignalKind, NodeSignal, feed::AudioFeed, status::MediaStatus};
+use super::{
+    MediaData, MediaPlayback, MediaSignalKind, NodeSignal, feed::AudioFeed, status::MediaStatus,
+};
 use crate::shell::protocol::ShellChannel;
 use blitz_dom::NodeId;
 use blitz_traits::net::{Bytes, Url};
@@ -14,8 +16,15 @@ pub(super) struct DecodedSource {
 }
 
 impl DecodedSource {
-    fn open(bytes: &Bytes, offset: Duration) -> Option<Box<Self>> {
-        let mut decoder = Self::decoder(bytes)?;
+    fn open(data: &MediaData, offset: Duration) -> Option<Box<Self>> {
+        let bytes = match data {
+            MediaData::Memory(bytes) => bytes.clone(),
+            MediaData::File(path) => std::fs::read(path)
+                .map(Bytes::from)
+                .inspect_err(|error| tracing::warn!(%error, "polymer: reading shell audio failed"))
+                .ok()?,
+        };
+        let mut decoder = Self::decoder(&bytes)?;
         let duration = decoder.total_duration();
         if offset.is_zero() || decoder.try_seek(offset).is_ok() {
             return Some(Box::new(Self {
@@ -25,7 +34,7 @@ impl DecodedSource {
             }));
         }
         Some(Box::new(Self {
-            decoder: Self::decoder(bytes)?,
+            decoder: Self::decoder(&bytes)?,
             offset: Duration::ZERO,
             duration,
         }))
@@ -46,7 +55,7 @@ pub(super) struct AudioPlayback {
     node: NodeId,
     shell: ShellChannel,
     feed: AudioFeed,
-    bytes: Option<Bytes>,
+    data: Option<MediaData>,
     released: bool,
     installed: bool,
     offset: Duration,
@@ -58,7 +67,7 @@ impl AudioPlayback {
             node,
             shell,
             feed: AudioFeed::new(mixer.cloned(), 1.0),
-            bytes: None,
+            data: None,
             released: false,
             installed: false,
             offset: Duration::ZERO,
@@ -72,13 +81,13 @@ impl AudioPlayback {
 
     fn release(&mut self, status: &MediaStatus) {
         if status.source.is_some() {
-            self.bytes = None;
+            self.data = None;
             self.released = true;
         }
     }
 
     fn decode(&mut self, status: &mut MediaStatus, generation: u64) {
-        let Some(bytes) = self.bytes.clone() else {
+        let Some(data) = self.data.clone() else {
             return;
         };
         self.stop();
@@ -87,7 +96,7 @@ impl AudioPlayback {
         let spawned = std::thread::Builder::new()
             .name("polymer-media-decode".into())
             .spawn(move || {
-                let source = DecodedSource::open(&bytes, offset);
+                let source = DecodedSource::open(&data, offset);
                 NodeSignal::send(&shell, node, generation, MediaSignalKind::Decoded(source));
             });
         if let Err(error) = spawned {
@@ -138,7 +147,7 @@ impl AudioPlayback {
 impl MediaPlayback for AudioPlayback {
     fn reload(&mut self, _status: &MediaStatus) {
         self.stop();
-        self.bytes = None;
+        self.data = None;
         self.released = false;
         self.offset = Duration::ZERO;
     }
@@ -187,8 +196,8 @@ impl MediaPlayback for AudioPlayback {
         connected: bool,
     ) -> Vec<&'static str> {
         match kind {
-            MediaSignalKind::Fetched(Some(bytes)) => {
-                self.bytes = Some(bytes);
+            MediaSignalKind::Fetched(Some(data)) => {
+                self.data = Some(data);
                 self.released = false;
                 self.decode(status, generation);
                 Vec::new()

@@ -1,12 +1,11 @@
 use super::reader::{VideoFormat, VideoFrame};
-use polymer_consumer_d3d12::ImportedD3d12Stream;
+use polymer_consumer_d3d12::{FenceWaiter, ImportedD3d12Stream};
 use polymer_protocol::FrameReady;
 use polymer_renderer_d3d12::renderer::compositor::create_texture;
 use std::mem::ManuallyDrop;
 use windows::Win32::{
-    Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0},
     Graphics::{Direct3D12::*, Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM},
-    System::Threading::{CreateEventW, INFINITE, WaitForSingleObject},
+    System::Threading::INFINITE,
 };
 use windows::core::Interface;
 
@@ -19,7 +18,7 @@ pub(super) struct FrameRing {
     copied: ID3D12Fence,
     copied_value: u64,
     released: ID3D12Fence,
-    event: HANDLE,
+    waiter: FenceWaiter,
     slots: Vec<ID3D12Resource>,
     slot_values: [u64; SLOTS],
     sequence: u64,
@@ -69,7 +68,7 @@ impl FrameRing {
                     copied: device.CreateFence(0, D3D12_FENCE_FLAG_NONE)?,
                     copied_value: 0,
                     released,
-                    event: CreateEventW(None, false, false, None)?,
+                    waiter: FenceWaiter::new()?,
                     slots,
                     slot_values: [0; SLOTS],
                     sequence: 0,
@@ -80,25 +79,13 @@ impl FrameRing {
         }
     }
 
-    fn wait(
-        &self,
-        fence: &ID3D12Fence,
-        value: u64,
-        timeout_ms: u32,
-    ) -> windows::core::Result<bool> {
-        unsafe {
-            if fence.GetCompletedValue() >= value {
-                return Ok(true);
-            }
-            fence.SetEventOnCompletion(value, self.event)?;
-            Ok(WaitForSingleObject(self.event, timeout_ms) == WAIT_OBJECT_0)
-        }
-    }
-
     pub fn publish(&mut self, frame: &VideoFrame) -> windows::core::Result<Option<FrameReady>> {
         let sequence = self.sequence + 1;
         let slot = (sequence % SLOTS as u64) as usize;
-        if !self.wait(&self.released, self.slot_values[slot], 0)? {
+        if !self
+            .waiter
+            .wait(&self.released, self.slot_values[slot], 0)?
+        {
             return Ok(None);
         }
         unsafe {
@@ -130,7 +117,8 @@ impl FrameRing {
             self.copied_value += 1;
             self.queue.Signal(&self.copied, self.copied_value)?;
         }
-        self.wait(&self.copied, self.copied_value, INFINITE)?;
+        self.waiter
+            .wait(&self.copied, self.copied_value, INFINITE)?;
         self.sequence = sequence;
         let ready = FrameReady {
             slot: slot as u32,
@@ -139,13 +127,5 @@ impl FrameRing {
         };
         self.slot_values[slot] = ready.sync_value;
         Ok(Some(ready))
-    }
-}
-
-impl Drop for FrameRing {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = CloseHandle(self.event);
-        }
     }
 }

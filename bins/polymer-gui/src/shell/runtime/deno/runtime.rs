@@ -16,6 +16,7 @@ use super::dom::{
     op_dom_set_inner_html, op_dom_set_text, op_dom_take_layout, op_dom_template_content,
     op_dom_text, op_dom_text_content,
 };
+use super::assets::{op_shell_read_asset, op_shell_resolve_asset};
 use super::input::{EventResult, op_event_result};
 use super::media::{
     op_media_configure, op_media_load, op_media_pause, op_media_play, op_media_seek,
@@ -75,6 +76,8 @@ deno_core::extension!(
         op_media_state,
         op_post_message,
         op_shell_reload,
+        op_shell_resolve_asset,
+        op_shell_read_asset,
         op_event_result,
     ],
     esm_entry_point = "ext:polymer_shell_runtime/bootstrap.js",

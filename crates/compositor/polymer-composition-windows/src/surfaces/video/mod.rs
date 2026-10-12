@@ -1,7 +1,7 @@
 mod reader;
 mod ring;
 
-use polymer_composition::{VideoBytes, VideoControl, VideoEvent, VideoSink};
+use polymer_composition::{VideoControl, VideoEvent, VideoSink, VideoSource};
 use polymer_renderer::layout::Rect;
 use polymer_renderer::{CompositingPlan, Extent, Renderer, SurfaceContent, SurfacePlacement};
 use polymer_renderer_d3d12::D3d12Compositor;
@@ -35,7 +35,7 @@ impl VideoSurface {
     pub fn spawn(
         id: u64,
         compositor: D3d12Compositor,
-        bytes: VideoBytes,
+        source: VideoSource,
         sink: VideoSink,
     ) -> Result<Self, Box<dyn Error>> {
         let content = compositor.composition_content()?;
@@ -48,12 +48,11 @@ impl VideoSurface {
                     let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
                     let _ = MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET);
                 }
-                let result = VideoSession::open(id, compositor, (*bytes).as_ref(), sink).and_then(
-                    |mut session| {
-                        drop(bytes);
+                let result =
+                    VideoSession::open(id, compositor, &source, sink).and_then(|mut session| {
+                        drop(source);
                         session.run(&receiver)
-                    },
-                );
+                    });
                 if let Err(error) = result {
                     tracing::warn!(%error, "polymer: playing shell video {id} failed");
                     events(VideoEvent::Failed(error.to_string()));
@@ -132,10 +131,10 @@ impl VideoSession {
     fn open(
         id: u64,
         mut compositor: D3d12Compositor,
-        bytes: &[u8],
+        source: &VideoSource,
         sink: VideoSink,
     ) -> Result<Self, Box<dyn Error>> {
-        let reader = MediaReader::open(compositor.d3d12_device(), bytes)?;
+        let reader = MediaReader::open(compositor.d3d12_device(), source)?;
         let (ring, plan) = Self::attach(id, &mut compositor, &reader)?;
         let session = Self {
             id,

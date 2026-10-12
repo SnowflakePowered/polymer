@@ -126,7 +126,7 @@ pub trait Compositor {
     fn open_video(
         &mut self,
         id: u64,
-        bytes: VideoBytes,
+        source: VideoSource,
         sink: VideoSink,
     ) -> Result<(), Box<dyn Error>>;
     fn control_video(&mut self, id: u64, control: VideoControl);

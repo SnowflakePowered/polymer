@@ -122,7 +122,6 @@ impl Handler<MetadataUrl> for LibraryReader {
 
     fn handle(&mut self, MetadataUrl { id }: MetadataUrl, _: &mut Context<Self>) -> Self::Result {
         let catalog = self.catalog.clone();
-        let server = self.media.clone();
         self.read(async move {
             let id = Self::uuid(&id)?;
             let media = catalog.media(id).await.map_err(|error| {
@@ -139,10 +138,10 @@ impl Handler<MetadataUrl> for LibraryReader {
                     media.media_type,
                     STANDARD.encode(bytes)
                 )),
-                MediaData::Object(_) => {
-                    let hash = blake3::Hash::from_bytes(media.content_blake3).to_hex();
-                    Ok(server.url(media.metadata_id, hash.as_str()))
-                }
+                MediaData::Object(_) => Ok(format!(
+                    "library://media/{}",
+                    blake3::Hash::from_bytes(media.content_blake3).to_hex()
+                )),
             }
         })
     }

@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 #[derive(Clone, Copy, Debug)]
 pub enum VideoControl {
@@ -32,4 +32,7 @@ pub struct VideoSink {
     pub audio: Box<dyn VideoAudio>,
 }
 
-pub type VideoBytes = Box<dyn AsRef<[u8]> + Send>;
+pub enum VideoSource {
+    Memory(Box<dyn AsRef<[u8]> + Send>),
+    File(PathBuf),
+}

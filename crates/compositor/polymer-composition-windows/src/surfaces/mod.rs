@@ -87,13 +87,13 @@ impl RenderDevice {
         &mut self,
         window: &impl polymer_renderer::RenderWindow,
         id: u64,
-        bytes: polymer_composition::VideoBytes,
+        source: polymer_composition::VideoSource,
         sink: polymer_composition::VideoSink,
     ) -> Result<(), Box<dyn Error>> {
         self.videos.remove(&id);
         let compositor = self.create_surface_compositor(window, id, 1, 1)?;
         self.videos
-            .insert(id, VideoSurface::spawn(id, compositor, bytes, sink)?);
+            .insert(id, VideoSurface::spawn(id, compositor, source, sink)?);
         Ok(())
     }
     pub(crate) fn control_video(&self, id: u64, control: polymer_composition::VideoControl) {

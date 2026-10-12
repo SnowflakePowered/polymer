@@ -151,8 +151,6 @@ impl Encoder {
             )?;
             readback_list.Close()?;
             let fence = device.CreateFence(0, D3D12_FENCE_FLAG_NONE)?;
-            let fence_event =
-                OwnedHandle::from_raw_handle(CreateEventW(None, false, false, None)?.0);
 
             Ok(Self {
                 codec,
@@ -183,7 +181,7 @@ impl Encoder {
                 readback_allocator,
                 readback_list,
                 fence,
-                fence_event,
+                fence_waiter: FenceWaiter::new()?,
                 fence_value: 0,
                 width,
                 height,

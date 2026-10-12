@@ -2,7 +2,7 @@ use super::plugin::{PackageError, PluginClass, PluginPackage};
 use crate::theme::ThemePluginInstance;
 use deno_core::ModuleSpecifier;
 use serde::Deserialize;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, Deserialize)]
 pub struct ThemeBlock {
@@ -10,6 +10,26 @@ pub struct ThemeBlock {
     manifest_debug: Option<ThemeDebugBlock>,
     #[serde(skip)]
     debug: Option<ThemeDebug>,
+    #[serde(default)]
+    root: Option<PathBuf>,
+    #[serde(default)]
+    assets: Option<PathBuf>,
+}
+
+impl ThemeBlock {
+    fn validate(path: Option<&PathBuf>) -> Result<(), PackageError> {
+        let Some(path) = path else {
+            return Ok(());
+        };
+        let relative = path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_) | Component::CurDir));
+        if relative && path.components().next().is_some() {
+            Ok(())
+        } else {
+            Err(PackageError::EscapesPackage(path.clone()))
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -49,6 +69,8 @@ impl PluginClass for ThemeBlock {
                 })
             })
             .transpose()?;
+        ThemeBlock::validate(package.block().root.as_ref())?;
+        ThemeBlock::validate(package.block().assets.as_ref())?;
         package.block_mut().debug = debug;
         Ok(())
     }
@@ -57,6 +79,14 @@ impl PluginClass for ThemeBlock {
 impl PluginPackage<ThemeBlock> {
     pub fn debug(&self) -> Option<&ThemeDebug> {
         self.block().debug.as_ref()
+    }
+
+    pub fn theme_root(&self) -> Option<&Path> {
+        self.block().root.as_deref()
+    }
+
+    pub fn assets(&self) -> Option<&Path> {
+        self.block().assets.as_deref()
     }
 }
 
@@ -71,5 +101,13 @@ impl ThemePluginInstance for PluginPackage<ThemeBlock> {
 
     fn debug(&self) -> Option<&ThemeDebug> {
         self.debug()
+    }
+
+    fn theme_root(&self) -> Option<&Path> {
+        self.theme_root()
+    }
+
+    fn assets(&self) -> Option<&Path> {
+        self.assets()
     }
 }

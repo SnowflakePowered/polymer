@@ -19,6 +19,7 @@ mod mutations;
 mod providers;
 mod scrolling;
 mod tracked_surface;
+mod urls;
 
 use crate::shell::protocol::{
     RasterChunkId, ShellChannel, ShellCompositionGroup, ShellFrame, ShellRasterChunk,
@@ -34,6 +35,7 @@ use blitz_dom::local_name;
 use blitz_traits::net::{NetProvider, NetWaker};
 pub use events::{DomKeyboardEvent, DomMouseEvent, DomWheelEvent};
 pub(crate) use media::{MediaEvents, MediaPlayers, MediaSignal, MediaState};
+pub(crate) use urls::{ShellUrls, ThemeLocation};
 use hit_test::{node_is_within_tracked_surface, pointer_hit};
 use image_levels::ImageLevels;
 use providers::NativeShellProvider;
@@ -108,6 +110,7 @@ pub struct ShellDocument {
     images: ImageLevels,
     image_loader: Arc<image::ImageLoader>,
     media: MediaPlayers,
+    urls: Arc<ShellUrls>,
     width: u32,
     height: u32,
     scale_factor: f32,
@@ -176,11 +179,18 @@ impl SharedShellDocument {
 #[derive(Clone)]
 pub struct ShellDocumentFactory {
     event_proxy: crate::window_manager::EventLoopProxy<crate::app::UserEvent>,
+    directories: polymer_library::Directories,
 }
 
 impl ShellDocumentFactory {
-    pub fn new(event_proxy: crate::window_manager::EventLoopProxy<crate::app::UserEvent>) -> Self {
-        Self { event_proxy }
+    pub fn new(
+        event_proxy: crate::window_manager::EventLoopProxy<crate::app::UserEvent>,
+        directories: polymer_library::Directories,
+    ) -> Self {
+        Self {
+            event_proxy,
+            directories,
+        }
     }
 
     pub(in crate::shell) fn create(
@@ -196,8 +206,13 @@ impl ShellDocumentFactory {
             let _ = sender.send(());
             arrival_shell.wake();
         });
+        let urls = Arc::new(ShellUrls::new(
+            &base_url,
+            source.theme.clone(),
+            self.directories.clone(),
+        ));
         let net: Arc<dyn NetProvider> =
-            Arc::new(providers::ShellNetProvider::new(waker.clone()));
+            Arc::new(providers::ShellNetProvider::new(waker.clone(), urls.clone()));
         let level_shell = shell.clone();
         let images = ImageLevels::new(move || level_shell.wake());
         let media_shell = shell.clone();
@@ -220,6 +235,7 @@ impl ShellDocumentFactory {
             &base_url,
             media_shell,
             outbox,
+            urls.clone(),
         );
         let image_loader = Arc::new(image::ImageLoader::new(
             net,
@@ -237,6 +253,7 @@ impl ShellDocumentFactory {
             images,
             image_loader,
             media,
+            urls,
             width: 0,
             height: 0,
             scale_factor: 1.0,
@@ -260,6 +277,10 @@ impl ShellDocumentFactory {
 }
 
 impl ShellDocument {
+    pub(crate) fn urls(&self) -> Arc<ShellUrls> {
+        self.urls.clone()
+    }
+
     pub(crate) fn runtime_context(&self) -> (&blitz_dom::BaseDocument, u32, u32, f32) {
         let (width, height) = self.logical_size();
         (self.document.as_ref(), width, height, self.scale_factor)

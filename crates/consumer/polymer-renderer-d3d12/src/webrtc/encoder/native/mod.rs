@@ -4,21 +4,20 @@
 use std::{
     ffi::c_void,
     mem::{ManuallyDrop, size_of},
-    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     ptr,
 };
 
 use windows::{
     Win32::{
-        Foundation::{E_POINTER, HANDLE, RECT, WAIT_OBJECT_0},
+        Foundation::{E_POINTER, RECT},
         Graphics::{Direct3D12::*, Dxgi::Common::*},
         Media::MediaFoundation::*,
-        System::Threading::{CreateEventW, WaitForSingleObject},
     },
     core::Interface,
 };
 
 use super::super::D3d12Frame;
+use polymer_consumer_d3d12::FenceWaiter;
 use polymer_renderer::webrtc::{Codec, NativeEncoder};
 
 mod bitstream;
@@ -26,7 +25,6 @@ mod setup;
 mod submit;
 mod support;
 use bitstream::*;
-use submit::*;
 use support::*;
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -101,7 +99,7 @@ pub(crate) struct Encoder {
     readback_allocator: ID3D12CommandAllocator,
     readback_list: ID3D12GraphicsCommandList,
     fence: ID3D12Fence,
-    fence_event: OwnedHandle,
+    fence_waiter: FenceWaiter,
     fence_value: u64,
     width: u32,
     height: u32,
@@ -167,13 +165,7 @@ impl NativeEncoder for Encoder {
 
 impl Drop for Encoder {
     fn drop(&mut self) {
-        let _ = unsafe {
-            wait_fence(
-                &self.fence,
-                self.fence_value,
-                HANDLE(self.fence_event.as_raw_handle()),
-            )
-        };
+        let _ = self.wait_readback();
     }
 }
 

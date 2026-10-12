@@ -8,6 +8,10 @@ use uuid::Uuid;
 use super::{GameCatalog, GameCatalogError, PreparedObject};
 
 impl GameCatalog {
+    pub fn media_key(blake3: &str) -> String {
+        format!("library/media/{}/{blake3}", &blake3[..2])
+    }
+
     pub(super) async fn store_object(
         &self,
         source: &Path,
@@ -44,7 +48,7 @@ impl GameCatalog {
             GameCatalogError::InvalidData(format!("media hashing task failed: {error}"))
         })??;
         let encoded = blake3::Hash::from_bytes(digest).to_hex().to_string();
-        let key = ObjectPath::from(format!("library/media/{}/{encoded}", &encoded[..2]));
+        let key = ObjectPath::from(Self::media_key(&encoded));
         match self.objects.head(&key).await {
             Ok(existing) if existing.size == byte_length => {}
             Ok(_) | Err(object_store::Error::NotFound { .. }) => {

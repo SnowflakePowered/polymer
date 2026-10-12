@@ -16,4 +16,5 @@ pub(crate) enum UserEvent {
 pub(crate) struct ShellDocumentSource {
     pub(crate) html: String,
     pub(crate) base_url: String,
+    pub(crate) theme: crate::shell::document::ThemeLocation,
 }

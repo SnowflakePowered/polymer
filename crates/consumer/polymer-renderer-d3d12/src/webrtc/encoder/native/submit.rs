@@ -491,11 +491,7 @@ impl Encoder {
 
     pub(super) unsafe fn read_bitstream(&self) -> Result<Vec<u8>, Error> {
         unsafe {
-            wait_fence(
-                &self.fence,
-                self.fence_value,
-                HANDLE(self.fence_event.as_raw_handle()),
-            )?;
+            self.wait_readback()?;
             let desc = self.bitstream_readback.GetDesc();
             let mut mapped = ptr::null_mut();
             self.bitstream_readback.Map(0, None, Some(&mut mapped))?;
@@ -528,18 +524,15 @@ impl Encoder {
 /// removed) must surface as an error instead of freezing the encoder thread.
 pub(super) const GPU_WAIT_TIMEOUT_MS: u32 = 5_000;
 
-pub(super) unsafe fn wait_fence(
-    fence: &ID3D12Fence,
-    value: u64,
-    event: HANDLE,
-) -> Result<(), Error> {
-    unsafe {
-        if value != 0 && fence.GetCompletedValue() < value {
-            fence.SetEventOnCompletion(value, event)?;
-            if WaitForSingleObject(event, GPU_WAIT_TIMEOUT_MS) != WAIT_OBJECT_0 {
-                return Err("timed out waiting for D3D12 video fence".into());
-            }
+impl Encoder {
+    pub(super) fn wait_readback(&self) -> Result<(), Error> {
+        if self
+            .fence_waiter
+            .wait(&self.fence, self.fence_value, GPU_WAIT_TIMEOUT_MS)?
+        {
+            Ok(())
+        } else {
+            Err("timed out waiting for D3D12 video fence".into())
         }
     }
-    Ok(())
 }

@@ -224,7 +224,6 @@ impl D3d12Compositor {
             command_list.SetName(windows::core::w!("Polymer compositor"))?;
             command_list.Close()?;
             let fence = consumer.device().CreateFence(0, D3D12_FENCE_FLAG_NONE)?;
-            let fence_event = CreateEventW(None, false, false, None)?;
 
             Ok(Self {
                 receiver: D3d12Receiver::from_consumer(consumer),
@@ -247,7 +246,7 @@ impl D3d12Compositor {
                 allocators,
                 command_list,
                 fence,
-                fence_event,
+                fence_waiter: FenceWaiter::new()?,
                 fence_value: 0,
                 frame_values: [0; FRAME_COUNT],
                 frame_garbage: std::array::from_fn(|_| Vec::new()),
