@@ -72,6 +72,17 @@ impl Directories {
         self.storage.join("objects")
     }
 
+    pub fn library_media(&self, blake3: &str) -> Option<PathBuf> {
+        let digest = blake3.len() == 64
+            && blake3
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+        digest.then(|| {
+            self.object_storage()
+                .join(crate::GameCatalog::media_key(blake3))
+        })
+    }
+
     pub fn firmware(&self) -> PathBuf {
         self.storage.join("firmware")
     }

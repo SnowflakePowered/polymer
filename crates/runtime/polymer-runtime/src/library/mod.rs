@@ -1,5 +1,4 @@
 pub(crate) mod api;
-mod server;
 
 use std::{rc::Rc, sync::Arc};
 
@@ -29,7 +28,6 @@ impl Drop for LibraryActorLifetime {
 struct LibraryReader {
     catalog: Arc<GameCatalog>,
     scraping: polymer_scraping::ScrapingEngine,
-    media: Arc<server::MediaServer>,
     _lifetime: Rc<LibraryActorLifetime>,
 }
 
@@ -80,7 +78,6 @@ impl LibraryService {
         jobs: Arc<JobStore>,
         directories: Directories,
     ) -> Result<Self, std::io::Error> {
-        let media = server::MediaServer::start(catalog.clone()).await?;
         let firmware_root = directories.firmware();
         let key_root = directories.keys();
         let scraping =
@@ -109,7 +106,6 @@ impl LibraryService {
                     let reader = LibraryReader {
                         catalog: actor_catalog.clone(),
                         scraping: actor_scraping.clone(),
-                        media: Arc::new(media),
                         _lifetime: lifetime.clone(),
                     }
                     .start();

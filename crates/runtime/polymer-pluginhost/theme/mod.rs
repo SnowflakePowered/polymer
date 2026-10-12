@@ -10,4 +10,6 @@ pub trait ThemePluginInstance: PluginInstance {
     fn root(&self) -> &Path;
     fn main(&self) -> &Path;
     fn debug(&self) -> Option<&ThemeDebug>;
+    fn theme_root(&self) -> Option<&Path>;
+    fn assets(&self) -> Option<&Path>;
 }

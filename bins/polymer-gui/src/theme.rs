@@ -1,10 +1,11 @@
 use crate::commands::ShellDocumentSource;
+use crate::shell::document::ThemeLocation;
 use deno_core::ModuleSpecifier;
 use polymer_pluginhost::theme::ThemePluginInstance;
 use std::{
     error::Error,
     ffi::OsString,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::Arc,
     time::{Duration, Instant},
@@ -42,7 +43,10 @@ impl SelectedTheme {
             ensure_debug_address_available(&debug.url).await?;
             self.server = Some(ThemeServer::spawn(self.plugin.root(), &debug.serve)?);
             self.url = Some(debug.url.clone());
-            return self.load_debug_document(&debug.url).await;
+            return self
+                .load_debug_document(&debug.url)
+                .await
+                .map(|source| self.with_assets(source));
         }
 
         let main = self.plugin.main().canonicalize().map_err(|error| {
@@ -64,7 +68,33 @@ impl SelectedTheme {
         let url = ModuleSpecifier::from_file_path(&main)
             .map_err(|_| format!("could not convert {} to a file URL", main.display()))?;
         self.url = Some(url.clone());
-        load_document(&url).await
+        load_document(&url)
+            .await
+            .map(|source| self.with_assets(source))
+    }
+
+    fn with_assets(&self, source: ShellDocumentSource) -> ShellDocumentSource {
+        let package = self.plugin.root();
+        let root = self
+            .plugin
+            .theme_root()
+            .filter(|_| !self.debug)
+            .map(|root| package.join(root));
+        let assets = self.plugin.assets().and_then(|assets| {
+            let prefix = assets
+                .components()
+                .filter_map(|component| match component {
+                    Component::Normal(part) => Some(part.to_str()),
+                    _ => None,
+                })
+                .collect::<Option<Vec<_>>>()?
+                .join("/");
+            Some((format!("{prefix}/"), package.join(assets)))
+        });
+        ShellDocumentSource {
+            theme: ThemeLocation { root, assets },
+            ..source
+        }
     }
 
     pub(crate) async fn reload_document(&self) -> Result<ShellDocumentSource, Box<dyn Error>> {
@@ -72,7 +102,9 @@ impl SelectedTheme {
             .url
             .as_ref()
             .ok_or("the theme document was never loaded")?;
-        load_document(url).await
+        load_document(url)
+            .await
+            .map(|source| self.with_assets(source))
     }
 
     async fn load_debug_document(
@@ -167,6 +199,7 @@ async fn load_document(url: &ModuleSpecifier) -> Result<ShellDocumentSource, Box
     Ok(ShellDocumentSource {
         html,
         base_url: url.to_string(),
+        theme: ThemeLocation::default(),
     })
 }
 

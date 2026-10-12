@@ -243,11 +243,11 @@ impl polymer_composition::Compositor for WindowsCompositor {
     fn open_video(
         &mut self,
         id: u64,
-        bytes: VideoBytes,
+        source: VideoSource,
         sink: VideoSink,
     ) -> Result<(), Box<dyn Error>> {
         self.surfaces
-            .open_video(&self.window.surface(1, 1), id, bytes, sink)
+            .open_video(&self.window.surface(1, 1), id, source, sink)
     }
     fn control_video(&mut self, id: u64, control: VideoControl) {
         self.surfaces.control_video(id, control);

@@ -143,13 +143,9 @@ impl D3d12Compositor {
     }
 
     pub(super) fn wait_value(&self, value: u64) -> windows::core::Result<()> {
-        unsafe {
-            if value != 0 && self.fence.GetCompletedValue() < value {
-                self.fence.SetEventOnCompletion(value, self.fence_event)?;
-                WaitForSingleObject(self.fence_event, INFINITE);
-            }
-        }
-        Ok(())
+        self.fence_waiter
+            .wait(&self.fence, value, INFINITE)
+            .map(drop)
     }
 }
 

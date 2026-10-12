@@ -1,11 +1,13 @@
-use super::{MediaPlayback, MediaSignalKind, NodeSignal, feed::AudioFeed, status::MediaStatus};
+use super::{
+    MediaData, MediaPlayback, MediaSignalKind, NodeSignal, feed::AudioFeed, status::MediaStatus,
+};
 use crate::shell::{
     ShellOutbox,
     protocol::{ShellChannel, ShellEvent, TrackedSource, VideoRequest},
 };
 use blitz_dom::NodeId;
-use blitz_traits::net::{Bytes, Url};
-use polymer_composition::{VideoControl, VideoEvent, VideoSink};
+use blitz_traits::net::Url;
+use polymer_composition::{VideoControl, VideoEvent, VideoSink, VideoSource};
 use rodio::mixer::Mixer;
 use std::{sync::Arc, time::Duration};
 
@@ -62,10 +64,12 @@ impl VideoPlayback {
         }
     }
 
-    fn open(&mut self, bytes: Option<Bytes>, status: &mut MediaStatus) -> Vec<&'static str> {
+    fn open(&mut self, data: Option<MediaData>, status: &mut MediaStatus) -> Vec<&'static str> {
         self.fetching = false;
-        let Some(bytes) = bytes else {
-            return status.fail();
+        let source = match data {
+            Some(MediaData::Memory(bytes)) => VideoSource::Memory(Box::new(bytes)),
+            Some(MediaData::File(path)) => VideoSource::File(path),
+            None => return status.fail(),
         };
         let (shell, node, generation) = (self.shell.clone(), self.node, status.generation);
         let events = Arc::new(move |event| {
@@ -79,7 +83,7 @@ impl VideoPlayback {
         self.feed = Some(feed);
         self.outbox.send(ShellEvent::Video(VideoRequest::Open {
             id: self.id,
-            bytes: Box::new(bytes),
+            source,
             sink,
         }));
         if !self.position.is_zero() {
@@ -187,7 +191,7 @@ impl MediaPlayback for VideoPlayback {
         _connected: bool,
     ) -> Vec<&'static str> {
         match kind {
-            MediaSignalKind::Fetched(bytes) => self.open(bytes, status),
+            MediaSignalKind::Fetched(data) => self.open(data, status),
             MediaSignalKind::Video(event) => self.event(event, status),
             _ => Vec::new(),
         }

@@ -5,9 +5,9 @@ use polymer_composition::VideoEvent;
 impl GameHost {
     pub fn handle_video(&mut self, request: VideoRequest) {
         match request {
-            VideoRequest::Open { id, bytes, sink } => {
+            VideoRequest::Open { id, source, sink } => {
                 let events = sink.events.clone();
-                let opened = self.compositor.borrow_mut().open_video(id, bytes, sink);
+                let opened = self.compositor.borrow_mut().open_video(id, source, sink);
                 if let Err(error) = opened {
                     events(VideoEvent::Failed(error.to_string()));
                 }

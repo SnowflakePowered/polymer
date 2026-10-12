@@ -7,7 +7,7 @@ use std::time::Instant;
 use tokio::sync::{mpsc::UnboundedSender, oneshot};
 
 pub use polymer_composition::{RasterChunkId, ShellCompositionGroup, ShellRasterChunk};
-use polymer_composition::{VideoBytes, VideoControl, VideoSink};
+use polymer_composition::{VideoControl, VideoSink, VideoSource};
 
 /// Paint output published by Blitz without exposing its document or renderer.
 #[derive(Clone)]
@@ -166,7 +166,7 @@ pub(crate) enum ShellEvent {
 pub(crate) enum VideoRequest {
     Open {
         id: u64,
-        bytes: VideoBytes,
+        source: VideoSource,
         sink: VideoSink,
     },
     Control {

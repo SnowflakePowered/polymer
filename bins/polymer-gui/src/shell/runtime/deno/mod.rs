@@ -5,6 +5,7 @@
 //! through synchronous Deno ops. Script only runs while Rust holds no borrow
 //! of the document.
 
+mod assets;
 mod dom;
 mod input;
 mod media;

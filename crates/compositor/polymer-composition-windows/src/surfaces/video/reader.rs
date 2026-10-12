@@ -1,3 +1,4 @@
+use polymer_composition::VideoSource;
 use std::{ffi::c_void, mem::size_of, ptr, time::Duration};
 use windows::{
     Win32::{
@@ -6,7 +7,7 @@ use windows::{
         Media::MediaFoundation::*,
         System::Com::{STREAM_SEEK_SET, StructuredStorage::CreateStreamOnHGlobal},
     },
-    core::{GUID, Interface},
+    core::{GUID, HSTRING, Interface},
 };
 
 const VIDEO_STREAM: u32 = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
@@ -92,20 +93,38 @@ pub(super) struct MediaReader {
 }
 
 impl MediaReader {
-    pub fn open(device: &ID3D12Device, bytes: &[u8]) -> windows::core::Result<Self> {
+    unsafe fn byte_stream(source: &VideoSource) -> windows::core::Result<IMFByteStream> {
+        let bytes = match source {
+            VideoSource::File(path) => {
+                return unsafe {
+                    MFCreateFile(
+                        MF_ACCESSMODE_READ,
+                        MF_OPENMODE_FAIL_IF_NOT_EXIST,
+                        MF_FILEFLAGS_NONE,
+                        &HSTRING::from(path.as_os_str()),
+                    )
+                };
+            }
+            VideoSource::Memory(bytes) => (**bytes).as_ref(),
+        };
+        unsafe {
+            let stream = CreateStreamOnHGlobal(HGLOBAL::default(), true)?;
+            stream
+                .Write(bytes.as_ptr().cast::<c_void>(), bytes.len() as u32, None)
+                .ok()?;
+            stream.Seek(0, STREAM_SEEK_SET, None)?;
+            MFCreateMFByteStreamOnStream(&stream)
+        }
+    }
+
+    pub fn open(device: &ID3D12Device, source: &VideoSource) -> windows::core::Result<Self> {
         unsafe {
             let mut token = 0;
             let mut manager = None;
             MFCreateDXGIDeviceManager(&mut token, &mut manager)?;
             let manager = manager.ok_or_else(|| windows::core::Error::from_hresult(E_POINTER))?;
             manager.ResetDevice(device, token)?;
-
-            let stream = CreateStreamOnHGlobal(HGLOBAL::default(), true)?;
-            stream
-                .Write(bytes.as_ptr().cast::<c_void>(), bytes.len() as u32, None)
-                .ok()?;
-            stream.Seek(0, STREAM_SEEK_SET, None)?;
-            let byte_stream = MFCreateMFByteStreamOnStream(&stream)?;
+            let byte_stream = Self::byte_stream(source)?;
 
             let mut attributes = None;
             MFCreateAttributes(&mut attributes, 3)?;

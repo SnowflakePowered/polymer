@@ -83,6 +83,7 @@ impl Drop for ActiveShell {
 pub(crate) struct ShellSource {
     pub html: String,
     pub base_url: String,
+    pub theme: document::ThemeLocation,
     pub width: u32,
     pub height: u32,
     pub scale_factor: f32,
@@ -257,6 +258,7 @@ impl ShellSessionFactory {
         jobs: Option<std::sync::Arc<polymer_library::jobs::JobStore>>,
         event_proxy: EventLoopProxy<UserEvent>,
     ) -> Self {
+        let document = ShellDocumentFactory::new(event_proxy.clone(), directories.clone());
         let plugin_runtime = polymer_pluginhost::runtime::PluginRuntime::new(
             plugin_registry,
             directories,
@@ -267,7 +269,7 @@ impl ShellSessionFactory {
         );
         Self {
             debug,
-            document: ShellDocumentFactory::new(event_proxy.clone()),
+            document,
             event_proxy,
             plugin_runtime: std::sync::Arc::new(plugin_runtime),
             local_storage,

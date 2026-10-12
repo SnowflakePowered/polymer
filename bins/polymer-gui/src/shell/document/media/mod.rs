@@ -4,7 +4,7 @@ mod output;
 mod status;
 mod video;
 
-use super::ShellDocument;
+use super::{ShellDocument, urls::ShellUrls};
 use crate::shell::{
     ShellOutbox,
     protocol::{ShellChannel, ShellCommand},
@@ -17,7 +17,7 @@ use polymer_composition::VideoEvent;
 use rodio::mixer::Mixer;
 use serde::Serialize;
 use status::MediaStatus;
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 use video::VideoPlayback;
 
 pub(crate) enum MediaSignal {
@@ -31,8 +31,14 @@ pub(crate) struct NodeSignal {
     kind: MediaSignalKind,
 }
 
+#[derive(Clone)]
+enum MediaData {
+    Memory(Bytes),
+    File(PathBuf),
+}
+
 enum MediaSignalKind {
-    Fetched(Option<Bytes>),
+    Fetched(Option<MediaData>),
     Decoded(Option<Box<DecodedSource>>),
     TimeUpdate,
     Ended,
@@ -89,7 +95,7 @@ struct MediaFetch {
 impl NetHandler for MediaFetch {
     fn bytes(mut self: Box<Self>, _resolved_url: String, bytes: Bytes) {
         self.delivered = true;
-        let kind = MediaSignalKind::Fetched(Some(bytes));
+        let kind = MediaSignalKind::Fetched(Some(MediaData::Memory(bytes)));
         NodeSignal::send(&self.shell, self.node, self.generation, kind);
     }
 }
@@ -143,6 +149,7 @@ pub(crate) struct MediaPlayers {
     base: Option<Url>,
     shell: ShellChannel,
     outbox: ShellOutbox,
+    urls: Arc<ShellUrls>,
     _output: MediaOutput,
     mixer: Option<Mixer>,
     generation: u64,
@@ -156,6 +163,7 @@ impl MediaPlayers {
         base_url: &str,
         shell: ShellChannel,
         outbox: ShellOutbox,
+        urls: Arc<ShellUrls>,
     ) -> Self {
         Self {
             net,
@@ -164,6 +172,7 @@ impl MediaPlayers {
             _output: MediaOutput::spawn(shell.clone()),
             shell,
             outbox,
+            urls,
             mixer: None,
             generation: 0,
             elements: HashMap::new(),
@@ -176,6 +185,16 @@ impl MediaPlayers {
     }
 
     fn fetch(&self, node: NodeId, generation: u64, url: Url) {
+        let resolved = self.urls.resolve(&url);
+        if resolved.as_ref().is_none_or(|url| url.scheme() == "file") {
+            let file = resolved
+                .and_then(|url| url.to_file_path().ok())
+                .filter(|path| path.is_file())
+                .map(MediaData::File);
+            NodeSignal::send(&self.shell, node, generation, MediaSignalKind::Fetched(file));
+            return;
+        }
+        let url = resolved.unwrap_or(url);
         let fetch = MediaFetch {
             shell: self.shell.clone(),
             node,

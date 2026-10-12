@@ -12,7 +12,7 @@ use std::{
     time::Duration,
 };
 
-use polymer_consumer_d3d12::D3d12ConsumerDevice;
+use polymer_consumer_d3d12::{D3d12ConsumerDevice, FenceWaiter};
 use polymer_ipc::StreamReady;
 use polymer_protocol::{AdapterLuid, FrameReady, RELEASE_ALL_SYNC_VALUE};
 use polymer_renderer::renderer::{CompositingPlan, ReceivedSurface, RenderWindow, SwapchainMode};
@@ -25,7 +25,7 @@ use windows::{
             Direct3D12::*,
             Dxgi::{Common::*, *},
         },
-        System::Threading::{CreateEventW, INFINITE, WaitForSingleObject},
+        System::Threading::{INFINITE, WaitForSingleObject},
     },
     core::{Interface, PCSTR},
 };
@@ -131,7 +131,7 @@ pub struct D3d12Compositor {
     allocators: Vec<ID3D12CommandAllocator>,
     command_list: ID3D12GraphicsCommandList,
     fence: ID3D12Fence,
-    fence_event: HANDLE,
+    fence_waiter: FenceWaiter,
     fence_value: u64,
     frame_values: [u64; FRAME_COUNT],
     frame_garbage: [Vec<ID3D12Resource>; FRAME_COUNT],
@@ -228,9 +228,8 @@ impl D3d12Compositor {
 impl Drop for D3d12Compositor {
     fn drop(&mut self) {
         let _ = self.release_imported_streams();
-        unsafe {
-            let _ = CloseHandle(self.fence_event);
-            if let Some(handle) = self.frame_latency_waitable {
+        if let Some(handle) = self.frame_latency_waitable {
+            unsafe {
                 let _ = CloseHandle(handle);
             }
         }

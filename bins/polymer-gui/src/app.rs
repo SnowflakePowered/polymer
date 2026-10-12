@@ -169,6 +169,7 @@ impl ShellCoordinator {
             let source = ShellSource {
                 html: shell_source.html.clone(),
                 base_url: shell_source.base_url.clone(),
+                theme: shell_source.theme.clone(),
                 width: size.width,
                 height: size.height,
                 scale_factor,

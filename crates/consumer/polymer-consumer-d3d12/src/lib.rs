@@ -24,7 +24,9 @@ use windows::Win32::{
 };
 use windows::core::{Interface, PCWSTR, w};
 
+mod fence;
 mod timeline;
+pub use fence::FenceWaiter;
 pub use timeline::ProducerTimeline;
 
 const BREADCRUMB_OPS: [&str; 49] = [

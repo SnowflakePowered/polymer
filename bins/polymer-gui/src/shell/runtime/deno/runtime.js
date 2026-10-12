@@ -1256,6 +1256,18 @@
   Object.defineProperty(globalThis, "CSS", { value: Object.freeze({
     escape(value) { return String(value).replace(/[^a-zA-Z0-9_-]/g, (character) => `\\${character}`); },
   }) });
+  const nativeFetch = globalThis.fetch;
+  globalThis.fetch = async function fetch(input, init) {
+    const url = input instanceof Request ? input.url : String(input);
+    if (!/^(theme|library):/i.test(url)) return nativeFetch(input, init);
+    const resolved = ops.op_shell_resolve_asset(url);
+    if (resolved === null) throw new TypeError(`Failed to fetch ${url}`);
+    if (!resolved.startsWith("file:")) return nativeFetch(new Request(resolved, new Request(input, init)));
+    const asset = await ops.op_shell_read_asset(url);
+    const response = new Response(asset.body, { headers: { "content-type": asset.contentType } });
+    Object.defineProperty(response, "url", { value: url });
+    return response;
+  };
   let nextAnimationFrame = 0;
   const animationFrames = new Map();
   globalThis.requestAnimationFrame = (callback) => {
