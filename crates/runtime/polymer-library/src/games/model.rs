@@ -14,12 +14,6 @@ pub struct Game {
     pub updates: std::collections::BTreeMap<Uuid, Vec<serde_json::Value>>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PlatformSettings {
-    pub emulator: Option<String>,
-}
-
 #[derive(Clone, Copy, Debug, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GameSort {

@@ -1,6 +1,7 @@
 use crate::library::api::LibraryApi;
 use dashmap::DashMap;
-use polymer_library::{GameCatalog, PlatformSettings};
+use polymer_deno::{polymer::PlatformSettings, webstorage::LocalStorage};
+use polymer_library::GameCatalog;
 use polymer_pluginhost::{emulator::EmulatorPluginInstance, runtime::PluginRuntimeHandle};
 use polymer_scraping::Package;
 use serde_json::{Value, json};
@@ -10,8 +11,11 @@ use uuid::Uuid;
 
 pub(crate) type ConfigurationLocks = Arc<DashMap<(Uuid, String), Arc<Mutex<()>>>>;
 
+const PLATFORM_SETTINGS_KEY: &str = "polymer.platformSettings";
+
 pub(crate) struct LaunchableConfigurations {
     catalog: Arc<GameCatalog>,
+    storage: LocalStorage,
     plugins: PluginRuntimeHandle,
     locks: ConfigurationLocks,
 }
@@ -53,11 +57,13 @@ impl LaunchableConfigurations {
 
     pub(crate) fn new(
         catalog: Arc<GameCatalog>,
+        storage: LocalStorage,
         plugins: PluginRuntimeHandle,
         locks: ConfigurationLocks,
     ) -> Self {
         Self {
             catalog,
+            storage,
             plugins,
             locks,
         }
@@ -145,16 +151,10 @@ impl LaunchableConfigurations {
         platform: &str,
         description: &mut Value,
     ) -> Result<(), String> {
-        let game = self
-            .catalog
-            .launchable_emulator(id)
-            .await
-            .map_err(|error| error.to_string())?;
+        let game = self.load(&Self::emulator_key(id)).await?;
         let fallback = self
-            .catalog
             .platform_settings()
-            .await
-            .map_err(|error| error.to_string())?
+            .await?
             .remove(platform)
             .and_then(|settings| settings.emulator);
         let selected = [&game, &fallback].into_iter().flatten().find(|emulator| {
@@ -196,19 +196,19 @@ impl LaunchableConfigurations {
     pub(crate) async fn select(&self, id: &str, emulator: Option<String>) -> Result<(), String> {
         let package = self.package(id).await?;
         self.validate_emulator(&package.platform, emulator.as_deref())?;
-        let uuid = Uuid::parse_str(id).map_err(|error| error.to_string())?;
-        self.catalog
-            .set_launchable_emulator(uuid, emulator.as_deref())
-            .await
-            .map_err(|error| error.to_string())
+        let key = Self::emulator_key(Uuid::parse_str(id).map_err(|error| error.to_string())?);
+        match emulator.filter(|emulator| !emulator.is_empty()) {
+            Some(emulator) => self.save(&key, &emulator).await,
+            None => self
+                .storage
+                .remove_item(&key)
+                .await
+                .map_err(|error| error.to_string()),
+        }
     }
 
     pub(crate) async fn platforms(&self) -> Result<Value, String> {
-        let mut settings = self
-            .catalog
-            .platform_settings()
-            .await
-            .map_err(|error| error.to_string())?;
+        let mut settings = self.platform_settings().await?;
         let mut platforms = BTreeMap::<String, Vec<String>>::new();
         for plugin in self
             .plugins
@@ -240,11 +240,13 @@ impl LaunchableConfigurations {
         if emulators.is_empty() {
             return Err(format!("No loaded emulator plugin supports {platform}."));
         }
+        if settings.emulator.as_deref() == Some("") {
+            return Err("emulator must be nonempty".into());
+        }
         self.validate_emulator(platform, settings.emulator.as_deref())?;
-        self.catalog
-            .save_platform_settings(platform, &settings)
-            .await
-            .map_err(|error| error.to_string())?;
+        let mut stored = self.platform_settings().await?;
+        stored.insert(platform.to_owned(), settings.clone());
+        self.save(PLATFORM_SETTINGS_KEY, &stored).await?;
         Ok(json!({ "platform": platform, "emulators": emulators, "settings": settings }))
     }
 
@@ -264,11 +266,11 @@ impl LaunchableConfigurations {
             .filter(|value| !value.is_empty())
             .ok_or("configuration must declare a nonempty schema")?
             .to_owned();
-        let stored = self
-            .catalog
-            .configuration(id, emulator, &schema)
-            .await
-            .map_err(|error| error.to_string())?;
+        let key = Self::configuration_key(id, emulator, &schema);
+        let stored = self.load::<Value>(&key).await?;
+        if let Some(stored) = &stored {
+            Self::validate_configuration(stored)?;
+        }
         let reconfigure = stored.is_some() || supplied.is_some();
         let mut retained = stored.unwrap_or_else(|| json!({}));
         if let Some(values) = supplied {
@@ -287,16 +289,13 @@ impl LaunchableConfigurations {
             return Err("plugin configuration schema changed during configuration".into());
         }
         Self::merge(&mut retained, &configured["values"])?;
-        self.catalog
-            .save_configuration(id, emulator, &schema, &retained)
-            .await
-            .map_err(|error| error.to_string())?;
+        self.save(&key, &retained).await?;
         configured["values"] = retained;
         Ok(configured)
     }
 
     fn merge(retained: &mut Value, values: &Value) -> Result<(), String> {
-        GameCatalog::validate_configuration(values).map_err(|error| error.to_string())?;
+        Self::validate_configuration(values)?;
         for (group, options) in values.as_object().unwrap() {
             let target = retained
                 .as_object_mut()
@@ -309,5 +308,56 @@ impl LaunchableConfigurations {
                 .extend(options.as_object().unwrap().clone());
         }
         Ok(())
+    }
+
+    fn validate_configuration(values: &Value) -> Result<(), String> {
+        let valid = values.as_object().is_some_and(|groups| {
+            groups.values().all(|group| {
+                group.as_object().is_some_and(|options| {
+                    options.values().all(|value| {
+                        matches!(
+                            value,
+                            Value::Null | Value::Bool(_) | Value::String(_) | Value::Number(_)
+                        )
+                    })
+                })
+            })
+        });
+        if !valid {
+            return Err("configuration must contain groups of scalar values".into());
+        }
+        Ok(())
+    }
+
+    fn emulator_key(id: Uuid) -> String {
+        format!("polymer.emulator.{}", id.simple())
+    }
+
+    fn configuration_key(id: Uuid, emulator: &str, schema: &str) -> String {
+        format!(
+            "polymer.configuration.{}",
+            json!([id.simple().to_string(), emulator, schema])
+        )
+    }
+
+    async fn platform_settings(&self) -> Result<BTreeMap<String, PlatformSettings>, String> {
+        Ok(self.load(PLATFORM_SETTINGS_KEY).await?.unwrap_or_default())
+    }
+
+    async fn load<T: serde::de::DeserializeOwned>(&self, key: &str) -> Result<Option<T>, String> {
+        self.storage
+            .get_item(key)
+            .await
+            .map_err(|error| error.to_string())?
+            .map(|value| serde_json::from_str(&value).map_err(|error| error.to_string()))
+            .transpose()
+    }
+
+    async fn save<T: serde::Serialize>(&self, key: &str, value: &T) -> Result<(), String> {
+        let value = serde_json::to_string(value).map_err(|error| error.to_string())?;
+        self.storage
+            .set_item(key, &value)
+            .await
+            .map_err(|error| error.to_string())
     }
 }

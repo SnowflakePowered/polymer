@@ -518,6 +518,7 @@ impl FrontendServices {
         plugins: Arc<polymer_pluginhost::runtime::PluginRuntime>,
         configuration: Option<ConfigurationDefaults>,
         library: Option<LibraryService>,
+        local_storage: Option<polymer_deno::webstorage::LocalStorage>,
         input_sources: InputHub,
         controller_api: ControllerApiState,
         commands: FrontendCommands,
@@ -576,15 +577,20 @@ impl FrontendServices {
         plugins
             .handle()
             .load::<dyn polymer_pluginhost::platform::PlatformPluginInstance>();
-        let launchable_configurations = library.as_ref().map(|library| {
-            Arc::new(
-                crate::launchable_configuration::LaunchableConfigurations::new(
-                    library.catalog(),
-                    plugins.handle(),
-                    library.configuration_locks(),
-                ),
-            )
-        });
+        let launchable_configurations =
+            library
+                .as_ref()
+                .zip(local_storage)
+                .map(|(library, storage)| {
+                    Arc::new(
+                        crate::launchable_configuration::LaunchableConfigurations::new(
+                            library.catalog(),
+                            storage,
+                            plugins.handle(),
+                            library.configuration_locks(),
+                        ),
+                    )
+                });
         let storage = polymer_library::StorageManager::shared().ok();
         let storage_service = crate::StorageService::start(
             storage.clone(),
@@ -740,7 +746,7 @@ impl PolymerHost for FrontendServices {
     fn update_platform_settings(
         &self,
         platform: String,
-        settings: polymer_library::PlatformSettings,
+        settings: polymer_deno::polymer::PlatformSettings,
     ) -> ApiFuture<Result<Value, String>> {
         let service = self.launchable_configurations.clone();
         Box::pin(async move {

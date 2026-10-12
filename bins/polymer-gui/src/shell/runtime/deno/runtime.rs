@@ -164,6 +164,7 @@ impl Runtime {
                     plugin_runtime.clone(),
                     Some(polymer_runtime::ConfigurationDefaults::default()),
                     library.clone(),
+                    local_storage.clone(),
                     input_sources.clone(),
                     controller_api.clone(),
                     commands,

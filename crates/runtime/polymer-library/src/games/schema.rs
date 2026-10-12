@@ -56,21 +56,6 @@ CREATE INDEX IF NOT EXISTS launchables_binary ON launchables(binary_id);
 CREATE INDEX IF NOT EXISTS metadata_parent ON metadata(parent_binary_id, key, source, ordinal);
 CREATE INDEX IF NOT EXISTS metadata_producer ON metadata(parent_binary_id, producer);
 CREATE INDEX IF NOT EXISTS metadata_object ON metadata(object_blake3);
-CREATE TABLE IF NOT EXISTS launchable_configurations (
-    launchable_id BLOB NOT NULL REFERENCES launchables(id) ON DELETE CASCADE,
-    plugin_id TEXT NOT NULL CHECK (length(plugin_id) > 0),
-    schema TEXT NOT NULL CHECK (length(schema) > 0),
-    values_json TEXT NOT NULL,
-    PRIMARY KEY (launchable_id, plugin_id, schema)
-) STRICT;
-CREATE TABLE IF NOT EXISTS launchable_emulators (
-    launchable_id BLOB PRIMARY KEY NOT NULL REFERENCES launchables(id) ON DELETE CASCADE,
-    plugin_id TEXT NOT NULL CHECK (length(plugin_id) > 0)
-) STRICT;
-CREATE TABLE IF NOT EXISTS platform_settings (
-    platform TEXT PRIMARY KEY NOT NULL CHECK (length(platform) > 0),
-    emulator TEXT CHECK (emulator IS NULL OR length(emulator) > 0)
-) STRICT;
 CREATE TABLE IF NOT EXISTS launchable_manifests (
     launchable_id BLOB PRIMARY KEY NOT NULL REFERENCES launchables(id) ON DELETE CASCADE,
     revision TEXT NOT NULL,
