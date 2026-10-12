@@ -125,7 +125,6 @@ impl CapturedSurface {
 struct ActivePresentation {
     token: crate::shell::runtime::InstanceToken,
     options: AttachedLaunchPlan,
-    webrtc: bool,
     controller_session: Option<polymer_pluginhost::controller::ControllerSession>,
     automation: Option<polymer_automation::AutomationSession>,
     save_states: Option<polymer_runtime::SaveStateManager>,

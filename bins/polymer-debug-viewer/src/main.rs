@@ -39,18 +39,6 @@ use gui::{LauncherState, draw_gamepad_window, draw_launcher_window, draw_layout_
 #[cfg(target_os = "macos")]
 use polymer_platform_macos::{performance_counter, performance_frequency};
 use polymer_renderer::egui::{EguiPainter, RenderTargetExtent, draw_statistics_graph};
-#[cfg(windows)]
-use polymer_renderer_d3d12::D3d12EguiPainter;
-#[cfg(target_os = "macos")]
-use polymer_renderer_metal::MetalCompositor;
-#[cfg(target_os = "macos")]
-use polymer_renderer_metal::MetalEguiPainter;
-#[cfg(windows)]
-use polymer_renderer_vulkan::VulkanEguiPainter;
-#[cfg(target_os = "macos")]
-type WebRtcCompositor = std::convert::Infallible;
-#[cfg(windows)]
-use polymer_renderer::webrtc;
 use polymer_renderer::{
     CompositingPlan, Presentation, Renderer, SurfaceCapture, SurfaceCaptureEvent,
     cli::{
@@ -62,14 +50,18 @@ use polymer_renderer::{
 #[cfg(windows)]
 use polymer_renderer_d3d12::D3d12Compositor;
 #[cfg(windows)]
+use polymer_renderer_d3d12::D3d12EguiPainter;
+#[cfg(target_os = "macos")]
+use polymer_renderer_metal::MetalCompositor;
+#[cfg(target_os = "macos")]
+use polymer_renderer_metal::MetalEguiPainter;
+#[cfg(windows)]
 use polymer_renderer_vulkan::VulkanCompositor;
 #[cfg(windows)]
-mod video;
+use polymer_renderer_vulkan::VulkanEguiPainter;
 use polymer_statistics::{
     FrameMetrics, LiveStatistics, PresentationMetrics, RecorderHandle, StatisticsSnapshot,
 };
-#[cfg(windows)]
-use video::WebRtcCompositor;
 
 use input::{
     dinput::{InputEndpoint, cancel_pointer_connection},
@@ -265,59 +257,25 @@ fn d3d12_consumable(stream: &StreamReady) -> bool {
 }
 
 impl ViewerCompositor {
-    fn new(
-        window: &Window,
-        api: ViewerApi,
-        publish_video: bool,
-    ) -> Result<(Self, Option<WebRtcCompositor>), Box<dyn Error>> {
+    fn new(window: &Window, api: ViewerApi) -> Result<Self, Box<dyn Error>> {
         match api {
             #[cfg(target_os = "macos")]
-            ViewerApi::Metal if !publish_video => {
-                let compositor = MetalCompositor::new(window)?;
-                Ok((
-                    Self::Metal(Box::new(MetalViewer {
-                        painter: MetalEguiPainter::default(),
-                        compositor,
-                    })),
-                    None,
-                ))
-            }
+            ViewerApi::Metal => Ok(Self::Metal(Box::new(MetalViewer {
+                painter: MetalEguiPainter::default(),
+                compositor: MetalCompositor::new(window)?,
+            }))),
             #[cfg(target_os = "macos")]
-            _ => Err(
-                "macOS requires --api metal; WebRTC capture is not implemented for Metal".into(),
-            ),
+            _ => Err("macOS requires --api metal".into()),
             #[cfg(windows)]
             ViewerApi::Metal => Err("Metal is available only on macOS".into()),
             #[cfg(windows)]
-            ViewerApi::D3d12 if publish_video => {
-                let (compositor, webrtc) = D3d12Compositor::new_default_with_webrtc(window)?;
-                Ok((
-                    Self::D3d12(Box::new(d3d12_viewer(compositor)?)),
-                    Some(WebRtcCompositor::D3d12(webrtc)),
-                ))
-            }
+            ViewerApi::D3d12 => Ok(Self::D3d12(Box::new(d3d12_viewer(
+                D3d12Compositor::new_default(window)?,
+            )?))),
             #[cfg(windows)]
-            ViewerApi::D3d12 => Ok((
-                Self::D3d12(Box::new(d3d12_viewer(D3d12Compositor::new_default(
-                    window,
-                )?)?)),
-                None,
-            )),
-            #[cfg(windows)]
-            ViewerApi::Vulkan if publish_video => {
-                let (compositor, webrtc) = VulkanCompositor::new_with_webrtc(window, None)?;
-                Ok((
-                    Self::Vulkan(Box::new(vulkan_viewer(compositor)?)),
-                    Some(WebRtcCompositor::Vulkan(webrtc)),
-                ))
-            }
-            #[cfg(windows)]
-            ViewerApi::Vulkan => Ok((
-                Self::Vulkan(Box::new(vulkan_viewer(VulkanCompositor::new(
-                    window, None,
-                )?)?)),
-                None,
-            )),
+            ViewerApi::Vulkan => Ok(Self::Vulkan(Box::new(vulkan_viewer(
+                VulkanCompositor::new(window, None)?,
+            )?))),
         }
     }
 
@@ -326,10 +284,7 @@ impl ViewerCompositor {
         window: &Window,
         offer: &polymer_runtime::SurfaceOffer,
         api: ViewerApi,
-        publish_video: bool,
-        publish_stream: bool,
         quarter_turns: u8,
-        video: &mut Option<WebRtcCompositor>,
     ) -> Result<(), Box<dyn Error>> {
         #[cfg(target_os = "macos")]
         {
@@ -340,7 +295,6 @@ impl ViewerCompositor {
         }
         #[cfg(windows)]
         {
-            let connection = offer.connection_id();
             let stream = offer.stream();
             if api == ViewerApi::D3d12 && !d3d12_consumable(stream) {
                 return Err(format!(
@@ -356,29 +310,16 @@ impl ViewerCompositor {
                         if value.compositor.adapter_luid() == stream.adapter_luid
                 );
                 if !matches {
-                    *video = None;
                     drop(std::mem::replace(self, Self::Empty));
-                    if publish_video {
-                        let (compositor, webrtc) =
-                            D3d12Compositor::new_with_webrtc(window, stream.adapter_luid)?;
-                        *self = Self::D3d12(Box::new(d3d12_viewer(compositor)?));
-                        *video = Some(WebRtcCompositor::D3d12(webrtc));
-                    } else {
-                        *self = Self::D3d12(Box::new(d3d12_viewer(D3d12Compositor::new(
-                            window,
-                            stream.adapter_luid,
-                        )?)?));
-                        *video = None;
-                    }
+                    *self = Self::D3d12(Box::new(d3d12_viewer(D3d12Compositor::new(
+                        window,
+                        stream.adapter_luid,
+                    )?)?));
                 }
                 let Self::D3d12(value) = self else {
                     unreachable!()
                 };
-                Renderer::import_surface_offer(&mut value.compositor, offer, quarter_turns)?;
-                if publish_stream && let Some(video) = video {
-                    Renderer::import_surface_offer(video, offer, quarter_turns)?;
-                }
-                return Ok(());
+                return Renderer::import_surface_offer(&mut value.compositor, offer, quarter_turns);
             }
 
             let adapter = stream.adapter_luid;
@@ -386,30 +327,17 @@ impl ViewerCompositor {
             if ((adapter.low_part == 0 && adapter.high_part == 0)
                     || value.compositor.matches_adapter(adapter)));
             if !matches {
-                *video = None;
                 drop(std::mem::replace(self, Self::Empty));
                 let preferred =
                     (adapter.low_part != 0 || adapter.high_part != 0).then_some(adapter);
-                if publish_video {
-                    let (compositor, webrtc) =
-                        VulkanCompositor::new_with_webrtc(window, preferred)?;
-                    *self = Self::Vulkan(Box::new(vulkan_viewer(compositor)?));
-                    *video = Some(WebRtcCompositor::Vulkan(webrtc));
-                } else {
-                    *self = Self::Vulkan(Box::new(vulkan_viewer(VulkanCompositor::new(
-                        window, preferred,
-                    )?)?));
-                    *video = None;
-                }
+                *self = Self::Vulkan(Box::new(vulkan_viewer(VulkanCompositor::new(
+                    window, preferred,
+                )?)?));
             }
             let Self::Vulkan(value) = self else {
                 unreachable!()
             };
-            Renderer::import_surface_offer(&mut value.compositor, offer, quarter_turns)?;
-            if publish_stream && let Some(video) = video {
-                Renderer::import_surface_offer(video, offer, quarter_turns)?;
-            }
-            Ok(())
+            Renderer::import_surface_offer(&mut value.compositor, offer, quarter_turns)
         }
     }
 
@@ -475,15 +403,7 @@ impl ViewerCompositor {
         }
     }
 
-    fn disconnect_stream(
-        &mut self,
-        connection: u64,
-        video: &mut Option<WebRtcCompositor>,
-    ) -> Result<(), Box<dyn Error>> {
-        #[cfg(windows)]
-        if let Some(video) = video {
-            Renderer::disconnect_stream(video, connection)?;
-        }
+    fn disconnect_stream(&mut self, connection: u64) -> Result<(), Box<dyn Error>> {
         match self {
             #[cfg(windows)]
             Self::Vulkan(value) => Renderer::disconnect_stream(&mut value.compositor, connection),
@@ -500,7 +420,6 @@ impl ViewerCompositor {
         output: &egui::FullOutput,
         primitives: &[egui::ClippedPrimitive],
         plan: &CompositingPlan,
-        video: Option<&mut WebRtcCompositor>,
     ) -> Result<bool, Box<dyn Error>> {
         match self {
             #[cfg(target_os = "macos")]
@@ -519,11 +438,7 @@ impl ViewerCompositor {
                     compositor,
                 } = value.as_mut();
                 painter.prepare(compositor, output)?;
-                let video = match video {
-                    Some(WebRtcCompositor::Vulkan(value)) => Some(value),
-                    _ => None,
-                };
-                compositor.present_with(plan, video, |pass| painter.paint(pass, output, primitives))
+                compositor.present_with(plan, |pass| painter.paint(pass, output, primitives))
             }
             #[cfg(windows)]
             Self::D3d12(value) => {
@@ -532,11 +447,7 @@ impl ViewerCompositor {
                     compositor,
                 } = value.as_mut();
                 painter.prepare(compositor, output)?;
-                let video = match video {
-                    Some(WebRtcCompositor::D3d12(value)) => Some(value),
-                    _ => None,
-                };
-                compositor.present_with(plan, video, |pass| painter.paint(pass, output, primitives))
+                compositor.present_with(plan, |pass| painter.paint(pass, output, primitives))
             }
             Self::Empty => Ok(false),
         }
@@ -544,13 +455,8 @@ impl ViewerCompositor {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let default_filter = if std::env::var_os("POLYMER_WEBRTC_TRACE").is_some() {
-        "info,webrtc=trace"
-    } else {
-        "info"
-    };
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_filter));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     tracing_subscriber::fmt().with_env_filter(filter).init();
     let statistics_recorder = polymer_statistics::install()?;
     let options = parse_target()?;
@@ -567,25 +473,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     // IDs encode this entry order, so reconnect and arrival order cannot move
     // a rotation to another tracked target.
     let mut render_target_rotations = launcher.render_target_rotations();
-    let webrtc_targets = options.webrtc.clone();
-    let surface_limit = options.surfaces.max(
-        webrtc_targets
-            .as_ref()
-            .and_then(|targets| targets.iter().max().copied())
-            .map_or(1, |index| index.saturating_add(1)),
-    );
-    #[cfg(target_os = "macos")]
-    if options.webrtc.is_some() {
-        return Err("Metal WebRTC capture is not implemented".into());
-    }
+    let surface_limit = options.surfaces.max(1);
     let viewer_api = options.api;
-    #[cfg(windows)]
-    let webrtc = webrtc_targets
-        .as_ref()
-        .map(|targets| {
-            webrtc::Publisher::start(options.bind_webrtc, targets).map(std::sync::Arc::new)
-        })
-        .transpose()?;
     let executable_dir = env::current_exe()?
         .parent()
         .ok_or("viewer executable has no parent directory")?
@@ -653,12 +542,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             window.theme(),
             None,
         );
-        #[cfg(windows)]
-        let publish_video = webrtc.is_some();
-        #[cfg(target_os = "macos")]
-        let publish_video = false;
-        let (mut compositor, mut video_compositor) =
-            ViewerCompositor::new(&window, viewer_api, publish_video)?;
+        let mut compositor = ViewerCompositor::new(&window, viewer_api)?;
         let frequency = performance_frequency().unwrap_or(1) as f64;
         let mut stats = Statistics::new(statistics_recorder, viewer_api);
         let mut pointer_routing = PointerRoutingState::new(Instant::now());
@@ -849,8 +733,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             .collect::<Vec<_>>()
                         {
                             stats.remove_surface(connection);
-                            let _ = compositor
-                                .disconnect_stream(connection, &mut video_compositor);
+                            let _ = compositor.disconnect_stream(connection);
                         }
                         stream_indices.clear();
                         active_backend = "Waiting";
@@ -882,9 +765,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     let source = NativeWindow(stream.source_window as isize);
                                     backing_window.store(source.0, Ordering::Release);
                                 }
-                                let publish_stream = webrtc_targets
-                                    .as_ref()
-                                    .is_some_and(|targets| targets.contains(&stream_index));
                                 let quarter_turns = render_target_rotations
                                     .get(stream_index as usize)
                                     .copied()
@@ -893,19 +773,13 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     &window,
                                     &offer,
                                     viewer_api,
-                                    publish_video,
-                                    publish_stream,
                                     quarter_turns,
-                                    &mut video_compositor,
                                 ) {
                                     Ok(()) => {
                                         let accepted = match capture.accept(offer) {
                                             Ok(accepted) => accepted,
                                             Err(error) => {
-                                                let _ = compositor.disconnect_stream(
-                                                    connection,
-                                                    &mut video_compositor,
-                                                );
+                                                let _ = compositor.disconnect_stream(connection);
                                                 tracing::error!(
                                                     "polymer: capture stream {connection} disappeared while it was being imported: {error}"
                                                 );
@@ -930,15 +804,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                                             );
                                             stream_indices.remove(&existing);
                                             stats.remove_surface(existing);
-                                            #[cfg(windows)]
-if let Some(publisher) = &webrtc {
-                                                publisher.remove_stream(existing);
-                                            }
                                             capture.revoke(existing);
-                                            if let Err(error) = compositor.disconnect_stream(
-                                                existing,
-                                                &mut video_compositor,
-                                            ) {
+                                            if let Err(error) = compositor.disconnect_stream(existing) {
                                                 tracing::error!(
                                                     "polymer: failed to replace prior stream: {error}"
                                                 );
@@ -951,10 +818,6 @@ if let Some(publisher) = &webrtc {
                                             stream_index,
                                             Extent::new(stream.width, stream.height),
                                         );
-                                        #[cfg(windows)]
-if publish_stream && let Some(publisher) = &webrtc {
-                                            publisher.add_stream(connection, stream_index);
-                                        }
                                         // A deferred or replaced graphics backend has no copy
                                         // of textures emitted to its predecessor. A fresh egui
                                         // context guarantees that Managed(0) is emitted as a full
@@ -1011,8 +874,6 @@ if publish_stream && let Some(publisher) = &webrtc {
                                 }
                                 stats.observe_frame(connection, frame, frequency);
                                 compositor.set_latest(connection, frame);
-                                #[cfg(windows)]
-                                if let Some(video) = &mut video_compositor { Renderer::set_latest(video, connection, frame); }
                                 if active_backend == "D3D11" {
                                     // Keyed-mutex frames must be consumed and released in order;
                                     // do not overwrite one with a newer socket message.
@@ -1021,10 +882,6 @@ if publish_stream && let Some(publisher) = &webrtc {
                             }
                             SurfaceCaptureEvent::Removed { connection, .. } => {
                                 stats.remove_surface(connection);
-                                #[cfg(windows)]
-if let Some(publisher) = &webrtc {
-                                    publisher.remove_stream(connection);
-                                }
                                 let size = window.inner_size();
                                 let presentation =
                                     compositor.presentation(Extent::new(size.width, size.height));
@@ -1039,9 +896,7 @@ if let Some(publisher) = &webrtc {
                                 if stream_indices.remove(&connection).is_none() {
                                     continue;
                                 }
-                                if let Err(error) = compositor
-                                    .disconnect_stream(connection, &mut video_compositor)
-                                {
+                                if let Err(error) = compositor.disconnect_stream(connection) {
                                     tracing::error!("polymer: stream disconnect failed: {error}");
                                 }
                             }
@@ -1050,8 +905,6 @@ if let Some(publisher) = &webrtc {
                     let has_pending_frame = compositor.has_pending_frame();
                     stats.sample();
                     let input = egui_state.take_egui_input(&window);
-                    #[cfg(windows)]
-let webrtc_stats = webrtc.as_ref().map(|publisher| publisher.stats());
                     let last_pointer_sent = pointer_routing.last_sent();
                     let mut launch_requested = false;
                     let mut close_requested = false;
@@ -1215,66 +1068,6 @@ let webrtc_stats = webrtc.as_ref().map(|publisher| publisher.stats());
                                 &stats.snapshot.input.combined(),
                             );
                         }
-                        #[cfg(windows)]
-if let Some(webrtc_stats) = &webrtc_stats
-                            && webrtc_stats.connected_clients > 0
-                        {
-                            let webrtc_frame = egui::Frame::window(&context.style())
-                                .fill(egui::Color32::TRANSPARENT)
-                                .stroke(egui::Stroke::new(
-                                    1.0_f32,
-                                    egui::Color32::from_white_alpha(48),
-                                ))
-                                .shadow(egui::epaint::Shadow::NONE);
-                            egui::Window::new("WebRTC Stats")
-                                .default_pos(egui::pos2(12.0, 270.0))
-                                .resizable(false)
-                                .collapsible(true)
-                                .frame(webrtc_frame)
-                                .show(context, |ui| {
-                                    egui::Grid::new("webrtc_statistics_grid")
-                                        .num_columns(2)
-                                        .spacing(egui::vec2(16.0, 4.0))
-                                        .show(ui, |ui| {
-                                            ui.label("Encode bitrate");
-                                            ui.monospace(format!(
-                                                "{:.2} Mbps",
-                                                webrtc_stats.bitrate_bps / 1_000_000.0
-                                            ));
-                                            ui.end_row();
-                                            ui.label("Encode latency");
-                                            ui.monospace(format!(
-                                                "{:.2} ms",
-                                                webrtc_stats.encode_latency_ms
-                                            ));
-                                            ui.end_row();
-                                            ui.label("Connected clients");
-                                            ui.monospace(
-                                                webrtc_stats.connected_clients.to_string(),
-                                            );
-                                            ui.end_row();
-                                            ui.label("Render targets encoded");
-                                            ui.monospace(
-                                                webrtc_stats.render_targets.to_string(),
-                                            );
-                                            ui.end_row();
-                                            ui.label("Encoder");
-                                            ui.monospace(if webrtc_stats.encoders.is_empty() {
-                                                "Waiting for frames"
-                                            } else {
-                                                &webrtc_stats.encoders
-                                            });
-                                            ui.end_row();
-                                            ui.label("Codec");
-                                            ui.monospace(if webrtc_stats.codecs.is_empty() {
-                                                "Waiting for frames"
-                                            } else {
-                                                &webrtc_stats.codecs
-                                            });
-                                            ui.end_row();
-                                        });
-                                });
-                        }
                     });
                     if close_requested {
                         if let Some(mut active) = active_target.take() {
@@ -1328,7 +1121,6 @@ if let Some(webrtc_stats) = &webrtc_stats
                         &output,
                         &primitives,
                         &composition_plan,
-                        video_compositor.as_mut(),
                     ) {
                         Ok(true) => stats.presentation.record_present(has_pending_frame),
                         Ok(false) => {
@@ -1339,16 +1131,6 @@ if let Some(webrtc_stats) = &webrtc_stats
                         }
                         Err(error) => {
                             tracing::error!("polymer: direct composition failed: {error}");
-                            target.exit();
-                        }
-                    }
-                    #[cfg(windows)]
-if let (Some(publisher), Some(video_compositor)) =
-                        (&webrtc, &mut video_compositor)
-                    {
-                        video_compositor.set_publisher(publisher.clone());
-                        if let Err(error) = Renderer::present(video_compositor, &composition_plan) {
-                            tracing::error!("polymer: video publication failed: {error}");
                             target.exit();
                         }
                     }

@@ -110,7 +110,6 @@ pub trait Compositor {
         connection: u64,
         frames: SurfaceFrameReceiver,
     ) -> Result<(), Box<dyn Error>>;
-    fn register_surface(&mut self, connection: u64, target: u32) -> Result<(), Box<dyn Error>>;
     fn remove_surface(&mut self, connection: u64);
     fn set_latest(&mut self, connection: u64, frame: polymer_protocol::FrameReady);
     fn received_surfaces(&self, connection: u64) -> Vec<ReceivedSurface>;
@@ -122,13 +121,6 @@ pub trait Compositor {
         permit_wait: Duration,
     ) -> Result<Option<bool>, String>;
     fn snapshot(&mut self, connection: u64) -> Result<Option<RgbaScreenshot>, String>;
-    fn start_webrtc(
-        &mut self,
-        bind: std::net::SocketAddr,
-        targets: &[u32],
-        streams: &[(u64, u32)],
-    ) -> Result<(), Box<dyn Error>>;
-    fn stop_webrtc(&mut self);
     fn open_video(
         &mut self,
         id: u64,

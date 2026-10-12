@@ -1,5 +1,5 @@
-//! Shared rendering contracts, capture layout, and backend-neutral WebRTC publishing.
-//! GPU compositors and hardware encoders live in the polymer-renderer-* crates.
+//! Shared rendering contracts and capture layout.
+//! GPU compositors live in the polymer-renderer-* crates.
 
 pub mod capture;
 pub mod cli;
@@ -8,7 +8,6 @@ pub mod input;
 pub mod layout;
 pub mod pointer;
 pub mod renderer;
-pub mod webrtc;
 
 pub use capture::{AcceptedSurface, SurfaceCapture, SurfaceCaptureEvent, SurfacePointerSender};
 pub use layout::Extent;

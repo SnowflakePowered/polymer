@@ -23,7 +23,6 @@ pub(super) struct ImportedSurface {
     pub flip_y: bool,
     pub quarter_turns: u8,
     pub cache: Option<ID3D12Resource>,
-    pub video_cache: Option<ID3D12Resource>,
     pub frames: SurfaceFrames,
 }
 
@@ -53,7 +52,6 @@ impl ImportedSurface {
             flip_y: identity.flip_y,
             quarter_turns: quarter_turns % 4,
             cache: None,
-            video_cache: None,
             frames: SurfaceFrames::default(),
         };
         if needs_cache {

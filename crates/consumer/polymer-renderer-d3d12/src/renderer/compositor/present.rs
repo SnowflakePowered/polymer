@@ -4,7 +4,6 @@ impl D3d12Compositor {
     pub fn present_with(
         &mut self,
         plan: &CompositingPlan,
-        mut webrtc: Option<&mut WebRtcCompositor>,
         record: impl FnOnce(&mut D3d12RenderPass<'_>) -> Result<(), Box<dyn Error>>,
     ) -> Result<bool, Box<dyn Error>> {
         self.ensure_device()?;
@@ -12,12 +11,6 @@ impl D3d12Compositor {
             return Err("swapchain has no back buffers".into());
         }
         self.poll_display_latency();
-        if webrtc
-            .as_deref()
-            .is_some_and(|webrtc| !webrtc.d3d12_matches(self.adapter_luid()))
-        {
-            return Err("WebRTC compositor belongs to a different D3D12 adapter".into());
-        }
         let frame_index = unsafe { self.swapchain.GetCurrentBackBufferIndex() } as usize;
         self.wait_frame(frame_index)?;
         self.target = self.extent;
@@ -34,32 +27,11 @@ impl D3d12Compositor {
         }
 
         let mut release_values = Vec::new();
-        let mut video_captures = Vec::new();
-        // Only publish video when every previously published frame has
-        // resolved its completion value, and never more per draw than the
-        // encoder channel can buffer. Out-of-order completion signals would
-        // rewind the fence (dropped frames host-signal immediately while an
-        // in-flight frame signals its older value later), and a rewound
-        // fence leaves the compositor queue waiting forever.
-        let video_publish_ready = webrtc.as_deref().is_some_and(WebRtcCompositor::d3d12_ready);
-        let mut video_publish_budget = if video_publish_ready {
-            webrtc.as_deref().map_or(0, WebRtcCompositor::available)
-        } else {
-            0
-        };
         for index in 0..self.surfaces.len() {
-            let mut surface = self.surfaces.remove(index);
+            let surface = self.surfaces.remove(index);
             // Always reinsert the surface, including on recording errors: its
             // retained slot and native resources must survive failed frames.
             let result = (|| -> Result<(), Box<dyn Error>> {
-                if surface.cache.is_some()
-                    && let Some(video) = webrtc.as_deref()
-                {
-                    // Cached textures may be read by an encoder even on a
-                    // redraw without a new producer frame.
-                    video.wait_d3d12_stream(self.receiver.queue(), surface.connection)?;
-                }
-                let mut captured = None;
                 if let Some(frame) = surface.frames.pending() {
                     let source = surface
                         .imported
@@ -69,42 +41,9 @@ impl D3d12Compositor {
                     if let Some(cache) = &surface.cache {
                         ImportedSurface::copy(&self.command_list, &source, cache);
                     }
-                    captured = Some(frame);
                     if let Some(value) = surface.frames.release_value(surface.retention()) {
                         release_values.push((surface.connection, value));
                     }
-                }
-                if video_publish_budget > 0
-                    && captured.is_some()
-                    && webrtc
-                        .as_deref()
-                        .is_some_and(|video| video.accepts_d3d12_stream(surface.connection))
-                {
-                    let texture = if let Some(cache) = &surface.cache {
-                        cache.clone()
-                    } else {
-                        // Encoding owns a private snapshot. It must never
-                        // outlive the lease on a producer's displayed slot.
-                        if surface.video_cache.is_none() {
-                            surface.video_cache =
-                                Some(surface.create_cache(self.receiver.device())?);
-                        }
-                        let cache = surface.video_cache.as_ref().expect("video cache");
-                        ImportedSurface::copy(
-                            &self.command_list,
-                            surface.texture().expect("displayed texture"),
-                            cache,
-                        );
-                        cache.clone()
-                    };
-                    video_publish_budget -= 1;
-                    video_captures.push((
-                        surface.connection,
-                        texture,
-                        surface.imported.width,
-                        surface.imported.height,
-                        DXGI_FORMAT(surface.imported.format as i32),
-                    ));
                 }
                 if let Some(texture) = surface.texture() {
                     unsafe {
@@ -207,21 +146,6 @@ impl D3d12Compositor {
                 .queue()
                 .Signal(&self.fence, self.fence_value)?;
             self.frame_values[frame_index] = self.fence_value;
-            for (connection, resource, width, height, format) in video_captures {
-                if let Some(webrtc) = webrtc.as_deref_mut() {
-                    webrtc.present_d3d12(
-                        connection,
-                        self.receiver.device().clone(),
-                        resource,
-                        D3D12_RESOURCE_STATE_COMMON,
-                        format,
-                        width,
-                        height,
-                        self.fence.clone(),
-                        self.fence_value,
-                    );
-                }
-            }
             self.swapchain
                 .Present(self.present_interval, DXGI_PRESENT(0))
                 .ok()?;
@@ -242,16 +166,8 @@ impl D3d12Compositor {
         Ok(true)
     }
 
-    pub fn present_with_webrtc(
-        &mut self,
-        plan: &CompositingPlan,
-        webrtc: Option<&mut WebRtcCompositor>,
-    ) -> Result<bool, Box<dyn Error>> {
-        self.present_with(plan, webrtc, |_| Ok(()))
-    }
-
     pub fn present(&mut self, plan: &CompositingPlan) -> Result<bool, Box<dyn Error>> {
-        self.present_with_webrtc(plan, None)
+        self.present_with(plan, |_| Ok(()))
     }
 
     pub(super) fn draw_content(

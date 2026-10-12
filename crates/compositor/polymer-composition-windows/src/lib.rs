@@ -198,7 +198,7 @@ impl polymer_composition::Compositor for WindowsCompositor {
         self.surfaces.arrange_group(group, layout);
     }
     fn accepts_detached_frames(&self) -> bool {
-        self.surfaces.accepts_detached_frames()
+        true
     }
     fn attach_surface_frames(
         &mut self,
@@ -206,9 +206,6 @@ impl polymer_composition::Compositor for WindowsCompositor {
         frames: SurfaceFrameReceiver,
     ) -> Result<(), Box<dyn Error>> {
         self.surfaces.start_worker(connection, frames)
-    }
-    fn register_surface(&mut self, connection: u64, target: u32) -> Result<(), Box<dyn Error>> {
-        self.surfaces.register(connection, target)
     }
     fn remove_surface(&mut self, connection: u64) {
         self.surfaces.remove(connection);
@@ -234,17 +231,6 @@ impl polymer_composition::Compositor for WindowsCompositor {
     }
     fn snapshot(&mut self, connection: u64) -> Result<Option<RgbaScreenshot>, String> {
         self.surfaces.snapshot(connection)
-    }
-    fn start_webrtc(
-        &mut self,
-        bind: std::net::SocketAddr,
-        targets: &[u32],
-        streams: &[(u64, u32)],
-    ) -> Result<(), Box<dyn Error>> {
-        self.surfaces.start_webrtc(bind, targets, streams)
-    }
-    fn stop_webrtc(&mut self) {
-        self.surfaces.stop_webrtc();
     }
     fn open_video(
         &mut self,

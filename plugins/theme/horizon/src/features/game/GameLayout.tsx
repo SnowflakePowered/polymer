@@ -13,7 +13,7 @@ export function GameLayout(props: ParentProps) {
   const [revision, setRevision] = createSignal(0);
   const games = new GameLauncher(window.Polymer);
   const elements = new Map<number, HTMLElement>();
-  const surfaces = createMemo(() => shell.model.surfaces.length ? shell.model.surfaces : [{ index: 0, rotation: 0, webrtc: false }]);
+  const surfaces = createMemo(() => shell.model.surfaces.length ? shell.model.surfaces : [{ index: 0, rotation: 0 }]);
   const dualScreen = useMatch(() => "/game/:platform/*", { platform: DUAL_SCREEN_PLATFORMS });
   const layoutRoute = useMatch(() => "/game/:platform/:game/play/:layout", { layout: [...DUAL_SCREEN_LAYOUTS] });
   const layout = () => (layoutRoute()?.params.layout ?? "stacked") as DualScreenLayout;

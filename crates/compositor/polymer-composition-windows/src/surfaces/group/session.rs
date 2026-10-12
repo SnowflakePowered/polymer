@@ -287,7 +287,7 @@ impl GroupSession {
             return Ok(());
         }
         self.stale = false;
-        self.compositor.present_with_webrtc(&self.plan, None)?;
+        self.compositor.present(&self.plan)?;
         Ok(())
     }
 }

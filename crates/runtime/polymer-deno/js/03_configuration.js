@@ -122,7 +122,6 @@ export function createConfiguration(pluginApi) {
       }
       const prepared = await Configuration.prepare(launchSet[0], { ...selection, launchSet });
       const plugin = await pluginApi.open(prepared.plugin).onLaunch(prepared.arguments);
-      const targets = new Set(prepared.webrtcTargets || []);
       const launch = Object.freeze({
         command: plugin.command,
         workingDirectory: plugin.workingDirectory,
@@ -138,11 +137,9 @@ export function createConfiguration(pluginApi) {
           rotation: surface.rotation || 0,
           resolution: surface.resolution,
           selector: surface.pattern,
-          webrtc: targets.has(surface.index),
         })),
         controllerTopology: plugin.controllerTopology ?? prepared.controllerTopology,
         machine: prepared.machine,
-        webrtcBind: prepared.webrtcBind,
         preparedFilesystem: plugin.preparedFilesystem,
         controllerSession: plugin.controllerSession,
         launchSet: Object.freeze([...prepared.launchSet]),

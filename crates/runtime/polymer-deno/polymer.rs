@@ -9,9 +9,7 @@ use deno_error::JsErrorBox;
 use serde_json::Value;
 use std::{
     cell::RefCell,
-    collections::HashSet,
     future::{Future, poll_fn},
-    net::SocketAddr,
     pin::Pin,
     rc::Rc,
     sync::Arc,
@@ -181,13 +179,6 @@ pub trait PolymerHost: Send + Sync {
     fn controller_device_command(&self, _command: Value) -> Result<Value, String> {
         Err("controller devices are unavailable".to_owned())
     }
-    fn webrtc_start(
-        &self,
-        token: InstanceToken,
-        bind: SocketAddr,
-        targets: Vec<u32>,
-    ) -> ApiFuture<Result<(), String>>;
-    fn webrtc_stop(&self, token: InstanceToken) -> ApiFuture<Result<(), String>>;
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -545,40 +536,6 @@ fn op_controller_device_command(
         .map_err(JsErrorBox::type_error)
 }
 
-#[op2]
-async fn op_webrtc_start(
-    state: Rc<RefCell<OpState>>,
-    token: u32,
-    #[string] bind: String,
-    #[serde] targets: Vec<u32>,
-) -> Result<(), JsErrorBox> {
-    let bind = bind
-        .parse::<SocketAddr>()
-        .map_err(|error| JsErrorBox::type_error(format!("invalid WebRTC bind address: {error}")))?;
-    if targets.is_empty() {
-        return Err(JsErrorBox::type_error(
-            "WebRTC publication requires at least one render target",
-        ));
-    }
-    if targets.iter().copied().collect::<HashSet<_>>().len() != targets.len() {
-        return Err(JsErrorBox::type_error(
-            "WebRTC render-target indices must be unique",
-        ));
-    }
-    let host = state.borrow().borrow::<Arc<dyn PolymerHost>>().clone();
-    host.webrtc_start(InstanceToken(token), bind, targets)
-        .await
-        .map_err(JsErrorBox::generic)
-}
-
-#[op2]
-async fn op_webrtc_stop(state: Rc<RefCell<OpState>>, token: u32) -> Result<(), JsErrorBox> {
-    let host = state.borrow().borrow::<Arc<dyn PolymerHost>>().clone();
-    host.webrtc_stop(InstanceToken(token))
-        .await
-        .map_err(JsErrorBox::generic)
-}
-
 deno_core::extension!(
     polymer_api,
     ops = [
@@ -646,8 +603,6 @@ deno_core::extension!(
         op_controller_api_command,
         op_input_get,
         op_controller_device_command,
-        op_webrtc_start,
-        op_webrtc_stop,
         op_polymer_next_notification,
     ],
     esm_entry_point = "ext:polymer_api/99_main.js",
@@ -658,7 +613,6 @@ deno_core::extension!(
         "02_plugin.js",
         "03_configuration.js",
         "04_input.js",
-        "05_webrtc.js",
         "06_emulator.js",
         "07_controllers.js",
         "08_consolestorage.js",

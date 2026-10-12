@@ -3,7 +3,6 @@ import { createScraping } from "./01_scraping.js";
 import { createPlugin } from "./02_plugin.js";
 import { createConfiguration } from "./03_configuration.js";
 import { createInput } from "./04_input.js";
-import { createWebRtc } from "./05_webrtc.js";
 import { createEmulator } from "./06_emulator.js";
 import { createConsoleStorage } from "./08_consolestorage.js";
 import { createControllers } from "./07_controllers.js";
@@ -17,8 +16,7 @@ const configuration = createConfiguration(plugin.Plugin);
 const initialControllerApi = op_controller_api_snapshot();
 const input = createInput();
 const controllers = createControllers(initialControllerApi.controllers);
-const webrtc = createWebRtc();
-const emulator = createEmulator(webrtc);
+const emulator = createEmulator();
 const library = createLibrary();
 const consolestorage = createConsoleStorage(library);
 const jobs = createJobs();
@@ -31,7 +29,6 @@ const Polymer = Object.freeze({
   scraping: scraping.Scraping,
   configuration,
   emulator: emulator.Emulator,
-  webrtc: webrtc.WebRTC,
   consolestorage: consolestorage.ConsoleStorage,
   library: library.Library,
   jobs: jobs.Jobs,

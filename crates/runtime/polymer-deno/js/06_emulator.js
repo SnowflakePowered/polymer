@@ -15,7 +15,7 @@ import { attachmentFor } from "./00_infra.js";
 
 // Deno owns launch object identity and lifecycle. Native code owns process,
 // input, audio, capture, and compositor state behind the op boundary.
-export function createEmulator(webrtc) {
+export function createEmulator() {
   const Emulator = new EventTarget();
   let activeLaunch = null;
   let nextLaunchId = 0;
@@ -165,15 +165,6 @@ export function createEmulator(webrtc) {
         if (this.#closeRequested) {
           op_emulator_close(this.id);
           return;
-        }
-        const targets = this.request.surfaces
-          .filter((surface) => surface.webrtc)
-          .map((surface) => surface.index);
-        if (targets.length > 0) {
-          await webrtc.startForInstance(this, {
-            bind: this.request.webrtcBind,
-            targets,
-          });
         }
       } catch (value) {
         const error = value instanceof Error ? value : new Error(String(value));
@@ -331,7 +322,6 @@ export function createEmulator(webrtc) {
         this.#state = "closed";
         this.saveStates = Object.freeze([]);
         this.surfaces = Object.freeze([]);
-        webrtc.instanceClosed(this);
         if (activeLaunch === this) publishActiveLaunch(null);
         this.#resolveClosed();
       }

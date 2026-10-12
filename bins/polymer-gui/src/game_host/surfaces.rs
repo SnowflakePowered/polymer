@@ -165,12 +165,11 @@ impl GameHost {
         };
         let registration = {
             let mut compositor = self.compositor.borrow_mut();
-            let worker = if let Some(frames) = frames {
+            if let Some(frames) = frames {
                 compositor.attach_surface_frames(connection, frames)
             } else {
                 Ok(())
-            };
-            worker.and_then(|()| compositor.register_surface(connection, target_index))
+            }
         };
         if let Err(error) = registration {
             self.compositor.borrow_mut().remove_surface(connection);
@@ -243,7 +242,6 @@ impl GameHost {
     pub fn finish_active_game(&mut self) -> Option<FinishedGame> {
         let mut active = self.active.take()?;
         let connections = self.surfaces.keys().copied().collect::<Vec<_>>();
-        self.compositor.borrow_mut().stop_webrtc();
         for &connection in &connections {
             self.compositor.borrow_mut().remove_surface(connection);
             self.capture.revoke(connection);

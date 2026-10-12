@@ -282,7 +282,7 @@ impl VideoSession {
         if Renderer::has_pending_frame(&self.compositor)
             && self.compositor.begin_frame_within(Duration::ZERO)
         {
-            self.compositor.present_with_webrtc(&self.plan, None)?;
+            self.compositor.present(&self.plan)?;
         }
         if self.clock.playing() {
             self.report(now)?;

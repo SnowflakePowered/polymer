@@ -20,7 +20,7 @@ export function SurfaceStage(props: {
   const shell = useShell();
   const [position, setPosition] = createSignal({ x: 300, y: 100 });
   const [size, setSize] = createSignal({ width: 520, height: 340 });
-  const primary = () => props.surfaces[0] || { index: 0, rotation: 0, webrtc: false };
+  const primary = () => props.surfaces[0] || { index: 0, rotation: 0 };
   const game = useMatch(() => "/game/:platform/*");
   const cursor = () => POINTER_PLATFORMS.has(game()?.params.platform ?? "") ? "hidden" : undefined;
   return <section class="horizon-surface-stage">

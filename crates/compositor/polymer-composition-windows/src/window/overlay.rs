@@ -79,11 +79,11 @@ impl EguiOverlay {
 
         self.painter.prepare(&self.compositor, &frame.output)?;
         let painter = &mut self.painter;
-        let presented =
-            self.compositor
-                .present_with(&CompositingPlan::new([0.; 4], vec![]), None, |pass| {
-                    painter.paint(pass, &frame.output, &frame.primitives)
-                })?;
+        let presented = self
+            .compositor
+            .present_with(&CompositingPlan::new([0.; 4], vec![]), |pass| {
+                painter.paint(pass, &frame.output, &frame.primitives)
+            })?;
         if presented {
             self.pending = None;
         } else {

@@ -10,14 +10,6 @@ impl D3d12Compositor {
         )
     }
 
-    pub fn new_default_with_webrtc(
-        window: &impl RenderWindow,
-    ) -> Result<(Self, WebRtcCompositor), Box<dyn Error>> {
-        let compositor = Self::new_default(window)?;
-        let webrtc = WebRtcCompositor::new_d3d12(&compositor)?;
-        Ok((compositor, webrtc))
-    }
-
     /// Creates a compositor whose swapchain can be attached to an
     /// `IDCompositionVisual` with [`Self::composition_content`].
     pub fn new_default_for_composition(window: &impl RenderWindow) -> Result<Self, Box<dyn Error>> {
@@ -66,14 +58,6 @@ impl D3d12Compositor {
         )
     }
 
-    pub fn new_default_for_composition_with_webrtc(
-        window: &impl RenderWindow,
-    ) -> Result<(Self, WebRtcCompositor), Box<dyn Error>> {
-        let compositor = Self::new_default_for_composition(window)?;
-        let webrtc = WebRtcCompositor::new_d3d12(&compositor)?;
-        Ok((compositor, webrtc))
-    }
-
     pub fn new(window: &impl RenderWindow, adapter: AdapterLuid) -> Result<Self, Box<dyn Error>> {
         Self::with_consumer(
             window,
@@ -81,15 +65,6 @@ impl D3d12Compositor {
             swapchain_target(window)?,
             SwapchainMode::Shared,
         )
-    }
-
-    pub fn new_with_webrtc(
-        window: &impl RenderWindow,
-        adapter: AdapterLuid,
-    ) -> Result<(Self, WebRtcCompositor), Box<dyn Error>> {
-        let compositor = Self::new(window, adapter)?;
-        let webrtc = WebRtcCompositor::new_d3d12(&compositor)?;
-        Ok((compositor, webrtc))
     }
 
     /// Creates an adapter-specific composition swapchain dedicated to one

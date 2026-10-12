@@ -8,10 +8,7 @@ pub mod emulator;
 pub mod input;
 mod packages;
 mod quickresume;
-pub mod webrtc;
-pub use commands::{
-    EmulatorRecipients, FrontendCommands, FrontendRecipients, InputRecipients, WebRtcRecipients,
-};
+pub use commands::{EmulatorRecipients, FrontendCommands, FrontendRecipients, InputRecipients};
 
 use crate::ControllerProfiles;
 use crate::{ConfigurationDefaults, LibraryService};
@@ -29,7 +26,6 @@ use polymer_library::StorageManager;
 use serde_json::Value;
 use std::{
     collections::HashMap,
-    net::SocketAddr,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -1109,28 +1105,4 @@ impl PolymerHost for FrontendServices {
         );
     }
 
-    fn webrtc_start(
-        &self,
-        token: InstanceToken,
-        bind: SocketAddr,
-        targets: Vec<u32>,
-    ) -> ApiFuture<Result<(), String>> {
-        self.commands.request(
-            |recipients| &recipients.webrtc.start,
-            webrtc::Start {
-                token,
-                bind,
-                targets,
-            },
-            "WebRTC host is unavailable",
-        )
-    }
-
-    fn webrtc_stop(&self, token: InstanceToken) -> ApiFuture<Result<(), String>> {
-        self.commands.request(
-            |recipients| &recipients.webrtc.stop,
-            webrtc::Stop { token },
-            "WebRTC host is unavailable",
-        )
-    }
 }

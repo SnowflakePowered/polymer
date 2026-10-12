@@ -143,7 +143,7 @@ impl Runtime {
         input_sources: polymer_input::InputHub,
         controller_api: polymer_runtime::ControllerApiState,
     ) -> Result<(Self, PolymerNotificationSender), Box<dyn std::error::Error>> {
-        // This process also links WebRTC's ring-backed rustls feature, while
+        // This process also links ring-backed rustls through Deno's QUIC stack, while
         // the selected Deno fetch/websocket extensions use aws-lc-rs. With both providers compiled rustls
         // requires the embedder to choose one before fetch creates a client.
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
