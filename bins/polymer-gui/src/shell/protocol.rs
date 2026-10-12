@@ -7,6 +7,7 @@ use std::time::Instant;
 use tokio::sync::{mpsc::UnboundedSender, oneshot};
 
 pub use polymer_composition::{RasterChunkId, ShellCompositionGroup, ShellRasterChunk};
+use polymer_composition::{VideoBytes, VideoControl, VideoSink};
 
 /// Paint output published by Blitz without exposing its document or renderer.
 #[derive(Clone)]
@@ -23,13 +24,41 @@ pub(crate) struct ShellFrame {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct TrackedSurfaceLayout {
     pub node_id: usize,
-    pub source_id: u64,
+    pub source: TrackedSource,
     pub bounds: Rect,
     pub z_order: i32,
     pub group: Option<u64>,
     pub corner_radius: f32,
     pub style: Option<GameViewStyle>,
     pub opacity: f32,
+}
+
+const VIDEO_SOURCE_BIT: u64 = 1 << 62;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum TrackedSource {
+    Target(u64),
+    Video(u64),
+}
+
+impl TrackedSource {
+    pub(crate) fn video(node: blitz_dom::NodeId) -> Self {
+        Self::Video(VIDEO_SOURCE_BIT | node.as_u64())
+    }
+
+    pub(crate) fn from_id(id: u64) -> Self {
+        if id & VIDEO_SOURCE_BIT == 0 {
+            Self::Target(id)
+        } else {
+            Self::Video(id)
+        }
+    }
+
+    pub(crate) fn id(self) -> u64 {
+        match self {
+            Self::Target(id) | Self::Video(id) => id,
+        }
+    }
 }
 
 /// A pointer position in physical pixels and when the window received it.
@@ -131,6 +160,27 @@ pub(crate) enum ShellEvent {
         outcome: InputOutcome,
     },
     ReloadRequested,
+    Video(VideoRequest),
+}
+
+pub(crate) enum VideoRequest {
+    Open {
+        id: u64,
+        bytes: VideoBytes,
+        sink: VideoSink,
+    },
+    Control {
+        id: u64,
+        control: VideoControl,
+    },
+    Extent {
+        id: u64,
+        width: u32,
+        height: u32,
+    },
+    Close {
+        id: u64,
+    },
 }
 
 /// Sends commands to the shell thread. Every command wakes it.

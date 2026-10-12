@@ -818,7 +818,7 @@
       });
     }
   }
-  const EMPTY_MEDIA = Object.freeze({ source: null, currentTime: 0, duration: null, paused: true, ended: false, ready: false, error: false, volume: 1, muted: false });
+  const EMPTY_MEDIA = Object.freeze({ source: null, currentTime: 0, duration: null, paused: true, ended: false, ready: false, error: false, volume: 1, muted: false, width: 0, height: 0 });
   class HTMLMediaElement extends HTMLElement {
     constructor(id, info) {
       super(id, info);
@@ -928,6 +928,13 @@
     }
   }
   class HTMLAudioElement extends HTMLMediaElement {}
+  class HTMLVideoElement extends HTMLMediaElement {
+    get videoWidth() { return this.__media.width; }
+    get videoHeight() { return this.__media.height; }
+    canPlayType(type) {
+      return /^video\/(mp4|quicktime|x-matroska|webm)\b/i.test(String(type)) ? "maybe" : "";
+    }
+  }
   function Audio(src) {
     const audio = documentNode.createElement("audio");
     if (src !== undefined) audio.src = src;
@@ -1107,6 +1114,7 @@
       case "template": return new HTMLTemplateElement(id, info);
       case "img": return new HTMLImageElement(id, info);
       case "audio": return new HTMLAudioElement(id, info);
+      case "video": return new HTMLVideoElement(id, info);
       case "head": return new HTMLHeadElement(id, info);
       case "body": return new HTMLBodyElement(id, info);
       default: return new HTMLElement(id, info);
@@ -1189,6 +1197,7 @@
     HTMLImageElement,
     HTMLMediaElement,
     HTMLAudioElement,
+    HTMLVideoElement,
     Audio,
     HTMLHeadElement,
     HTMLBodyElement,

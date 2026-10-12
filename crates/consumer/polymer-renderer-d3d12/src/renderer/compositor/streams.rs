@@ -8,6 +8,35 @@ impl D3d12Compositor {
         shared: &polymer_ipc::Win32Resources,
         quarter_turns: u8,
     ) -> Result<(), Box<dyn Error>> {
+        let identity = SurfaceIdentity {
+            surface_id: stream.surface_id.0,
+            target_window: stream.source_window,
+            flip_y: stream.bottom_up,
+        };
+        let imported = self.receiver.import_stream(stream, shared)?;
+        self.attach_stream(connection, imported, identity, quarter_turns)
+    }
+
+    pub fn import_local_stream(
+        &mut self,
+        connection: u64,
+        imported: ImportedD3d12Stream,
+    ) -> Result<(), Box<dyn Error>> {
+        let identity = SurfaceIdentity {
+            surface_id: connection,
+            target_window: 0,
+            flip_y: false,
+        };
+        self.attach_stream(connection, imported, identity, 0)
+    }
+
+    fn attach_stream(
+        &mut self,
+        connection: u64,
+        imported: ImportedD3d12Stream,
+        identity: SurfaceIdentity,
+        quarter_turns: u8,
+    ) -> Result<(), Box<dyn Error>> {
         if !self.mode.accepts(connection) {
             return Err(
                 format!("connection {connection} does not belong to {:?}", self.mode).into(),
@@ -19,11 +48,10 @@ impl D3d12Compositor {
         {
             return Err("D3D12 surface descriptor heap is full".into());
         }
-        let imported = self.receiver.import_stream(stream, shared)?;
         self.surfaces.push(ImportedSurface::new(
             self.receiver.device(),
             imported,
-            stream,
+            identity,
             connection,
             quarter_turns,
         )?);

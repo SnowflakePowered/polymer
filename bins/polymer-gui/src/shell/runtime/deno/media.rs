@@ -44,7 +44,5 @@ pub(super) fn op_media_seek(state: &OpState, node: f64, seconds: f64) -> f64 {
 pub(super) fn op_media_configure(state: &OpState, node: f64, volume: f32, muted: bool) {
     let shared = state.borrow::<SharedShellDocument>();
     let mut shell = shared.0.borrow_mut();
-    shell
-        .media()
-        .configure(NodeId::from_script(node), volume, muted);
+    shell.configure_media(NodeId::from_script(node), volume, muted);
 }

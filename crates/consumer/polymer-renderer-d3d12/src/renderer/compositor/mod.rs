@@ -31,7 +31,8 @@ use windows::{
 };
 
 use super::D3d12Receiver;
-use super::surface::{ImportedSurface, SURFACE_DESCRIPTORS};
+use super::surface::{ImportedSurface, SURFACE_DESCRIPTORS, SurfaceIdentity};
+use polymer_consumer_d3d12::ImportedD3d12Stream;
 
 mod pacing;
 mod present;
@@ -41,7 +42,8 @@ mod snapshot;
 mod streams;
 use pacing::*;
 use resources::*;
-pub(super) use resources::{create_srv, create_texture, transition};
+pub use resources::create_texture;
+pub(super) use resources::{create_srv, transition};
 use setup::*;
 
 const FRAME_COUNT: usize = 2;

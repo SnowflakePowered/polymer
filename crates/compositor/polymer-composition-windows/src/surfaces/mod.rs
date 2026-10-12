@@ -12,12 +12,15 @@ use windows::{
     Win32::Graphics::Direct3D12::ID3D12Device,
     core::{IUnknown, Interface},
 };
+mod video;
 mod worker;
+use video::VideoSurface;
 use worker::SurfacePresentationWorker;
 pub(crate) struct RenderDevice {
     adapter: AdapterLuid,
     device: IUnknown,
     surface_compositors: HashMap<u64, SurfaceCompositor>,
+    videos: HashMap<u64, VideoSurface>,
     events: mpsc::Receiver<SurfaceFrameEvent>,
     sender: mpsc::Sender<SurfaceFrameEvent>,
     publication: Option<polymer_renderer_d3d12::webrtc::Publication>,
@@ -46,6 +49,7 @@ impl RenderDevice {
             sender,
             publication: None,
             surface_compositors: HashMap::new(),
+            videos: HashMap::new(),
         }
     }
 
@@ -77,6 +81,28 @@ impl RenderDevice {
         self.surface_compositors
             .get(&connection)
             .map(|output| output.content.clone())
+            .or_else(|| self.videos.get(&connection).map(VideoSurface::content))
+    }
+    pub(crate) fn open_video(
+        &mut self,
+        window: &impl polymer_renderer::RenderWindow,
+        id: u64,
+        bytes: polymer_composition::VideoBytes,
+        sink: polymer_composition::VideoSink,
+    ) -> Result<(), Box<dyn Error>> {
+        self.videos.remove(&id);
+        let compositor = self.create_surface_compositor(window, id, 1, 1)?;
+        self.videos
+            .insert(id, VideoSurface::spawn(id, compositor, bytes, sink)?);
+        Ok(())
+    }
+    pub(crate) fn control_video(&self, id: u64, control: polymer_composition::VideoControl) {
+        if let Some(video) = self.videos.get(&id) {
+            video.control(control);
+        }
+    }
+    pub(crate) fn close_video(&mut self, id: u64) {
+        self.videos.remove(&id);
     }
     pub(crate) fn import(
         &mut self,

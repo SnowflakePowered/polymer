@@ -205,6 +205,7 @@ impl ShellCoordinator {
     /// script's decisions about held input.
     pub(super) fn drain_shell(&mut self) {
         let mut latest = None;
+        let mut videos = false;
         for event in self.shell.drain() {
             match event {
                 ShellEvent::Frame {
@@ -215,7 +216,14 @@ impl ShellCoordinator {
                     self.held.settle(sequence, outcome);
                 }
                 ShellEvent::ReloadRequested => {}
+                ShellEvent::Video(request) => {
+                    self.game_host.handle_video(request);
+                    videos = true;
+                }
             }
+        }
+        if videos {
+            self.sync_shell_visuals();
         }
         self.release_held_input(Instant::now());
         if let Some((frame, structure_revision)) = latest {

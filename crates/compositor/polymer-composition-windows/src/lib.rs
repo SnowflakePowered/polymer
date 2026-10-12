@@ -240,4 +240,19 @@ impl polymer_composition::Compositor for WindowsCompositor {
     fn stop_webrtc(&mut self) {
         self.surfaces.stop_webrtc();
     }
+    fn open_video(
+        &mut self,
+        id: u64,
+        bytes: VideoBytes,
+        sink: VideoSink,
+    ) -> Result<(), Box<dyn Error>> {
+        self.surfaces
+            .open_video(&self.window.surface(1, 1), id, bytes, sink)
+    }
+    fn control_video(&mut self, id: u64, control: VideoControl) {
+        self.surfaces.control_video(id, control);
+    }
+    fn close_video(&mut self, id: u64) {
+        self.surfaces.close_video(id);
+    }
 }
