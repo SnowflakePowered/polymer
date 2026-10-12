@@ -8,6 +8,7 @@ import { createConsoleStorage } from "./08_consolestorage.js";
 import { createControllers } from "./07_controllers.js";
 import { createLibrary } from "./09_library.js";
 import { createJobs } from "./10_jobs.js";
+import { createShaders } from "./11_shaders.js";
 import { op_controller_api_snapshot, op_machine, op_polymer_next_notification } from "ext:core/ops";
 
 const scraping = createScraping();
@@ -20,6 +21,7 @@ const emulator = createEmulator();
 const library = createLibrary();
 const consolestorage = createConsoleStorage(library);
 const jobs = createJobs();
+const shaders = createShaders();
 
 const Polymer = Object.freeze({
   meta: { debug: false },
@@ -32,6 +34,7 @@ const Polymer = Object.freeze({
   consolestorage: consolestorage.ConsoleStorage,
   library: library.Library,
   jobs: jobs.Jobs,
+  shaders,
   machine: (id) => op_machine(String(id)),
 });
 

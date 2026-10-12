@@ -34,6 +34,10 @@ use consolestorage::{
     op_consolestorage_set_label, op_consolestorage_supports, op_consolestorage_uninstall,
 };
 
+#[path = "shaders.rs"]
+mod shaders;
+use shaders::{op_shaders_resolve, op_shaders_search};
+
 #[path = "jobs/mod.rs"]
 pub mod jobs;
 pub use jobs::Jobs;
@@ -48,13 +52,12 @@ pub mod library;
 pub use library::Library;
 use library::{
     op_library_games_delete, op_library_games_get, op_library_games_list,
-    op_library_games_platforms, op_library_import_key, op_library_keys_list,
-    op_library_keys_licensed, op_library_keys_platforms, op_library_keys_remove,
-    op_library_launchables_add,
-    op_library_launchables_delete, op_library_launchables_find, op_library_metadata_add,
-    op_library_metadata_delete, op_library_metadata_replace, op_library_metadata_text,
-    op_library_metadata_update, op_library_metadata_url, op_scraping_refresh, op_scraping_scrapers,
-    op_scraping_start,
+    op_library_games_platforms, op_library_import_key, op_library_keys_licensed,
+    op_library_keys_list, op_library_keys_platforms, op_library_keys_remove,
+    op_library_launchables_add, op_library_launchables_delete, op_library_launchables_find,
+    op_library_metadata_add, op_library_metadata_delete, op_library_metadata_replace,
+    op_library_metadata_text, op_library_metadata_update, op_library_metadata_url,
+    op_scraping_refresh, op_scraping_scrapers, op_scraping_start,
 };
 
 pub type ApiFuture<T> = Pin<Box<dyn Future<Output = T> + 'static>>;
@@ -139,6 +142,7 @@ pub trait PolymerHost: Send + Sync {
     fn consolestorage(&self) -> Result<ConsoleStorage, String>;
     fn library(&self) -> Result<Library, String>;
     fn jobs(&self) -> Result<Jobs, String>;
+    fn shaders(&self) -> Result<polymer_library::ShaderLibrary, String>;
     fn emulator_launch(
         &self,
         token: InstanceToken,
@@ -545,6 +549,8 @@ fn op_controller_device_command(
 deno_core::extension!(
     polymer_api,
     ops = [
+        op_shaders_search,
+        op_shaders_resolve,
         op_machine,
         op_scraping_package_from_path,
         op_configuration_describe,
@@ -624,6 +630,7 @@ deno_core::extension!(
         "08_consolestorage.js",
         "09_library.js",
         "10_jobs.js",
+        "11_shaders.js",
         "99_main.js",
     ],
     options = {

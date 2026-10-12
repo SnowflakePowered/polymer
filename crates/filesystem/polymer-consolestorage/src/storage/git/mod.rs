@@ -37,10 +37,10 @@ mod volume;
 
 use artifact::*;
 pub(crate) use commit::PendingScope;
-pub(crate) use volume::WritePass;
 use registry::*;
 pub use repository::PlatformRepository;
 pub use volume::GitVolumeStorage;
+pub(crate) use volume::WritePass;
 use volume::*;
 
 const SCHEMA_VERSION: u32 = 2;

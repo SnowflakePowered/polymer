@@ -83,6 +83,10 @@ impl Directories {
         })
     }
 
+    pub fn shaders(&self) -> PathBuf {
+        self.storage.join("shaders_slang")
+    }
+
     pub fn firmware(&self) -> PathBuf {
         self.storage.join("firmware")
     }

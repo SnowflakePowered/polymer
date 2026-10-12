@@ -27,8 +27,8 @@ mod scratch;
 
 pub(crate) use composed::ComposedLayer;
 pub use composed::ComposedStorage;
-pub(crate) use git::{PendingScope, WritePass};
 pub use git::{GitVolumeStorage, PlatformRepository};
+pub(crate) use git::{PendingScope, WritePass};
 pub use keystore::{KeyProjection, KeyStoreStorage};
 pub use memory::{MemoryFile, MemoryStorage};
 pub use reconcile::{ReconcileStorage, ReconciliableStorage};

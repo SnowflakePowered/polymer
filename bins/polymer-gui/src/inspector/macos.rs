@@ -22,8 +22,7 @@ impl InspectorWindow {
         shell: crate::shell::protocol::ShellInbox,
     ) -> Result<Self, Box<dyn Error>> {
         let target = inspector_target(address)?;
-        let bridge =
-            elements::Bridge::start(target.web_socket_debugger_url, target.url, shell)?;
+        let bridge = elements::Bridge::start(target.web_socket_debugger_url, target.url, shell)?;
         let main = MainThreadMarker::new().ok_or("inspector requires the AppKit thread")?;
         let RawWindowHandle::AppKit(handle) = window.window_handle()?.as_raw() else {
             return Err("inspector requires an AppKit window".into());

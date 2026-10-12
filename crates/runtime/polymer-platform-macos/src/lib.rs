@@ -7,8 +7,8 @@ mod output_watcher;
 pub mod spaces;
 
 pub use audio::SystemAudioState;
-pub use output_watcher::DefaultOutputWatcher;
 pub use bundle::{BundleFactory, StagedBundle};
+pub use output_watcher::DefaultOutputWatcher;
 
 mod guest;
 mod window;

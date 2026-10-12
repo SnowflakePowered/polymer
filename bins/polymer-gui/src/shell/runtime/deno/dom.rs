@@ -512,13 +512,13 @@ impl LayoutSnapshot {
 
     fn image_identity(node: &Node) -> u64 {
         match &node.data {
-            NodeData::Element(element) if element.custom_widget_data().is_some() => element
-                .attr(local_name!("src"))
-                .map_or(0, |source| {
+            NodeData::Element(element) if element.custom_widget_data().is_some() => {
+                element.attr(local_name!("src")).map_or(0, |source| {
                     let mut hasher = std::hash::DefaultHasher::new();
                     std::hash::Hash::hash(source, &mut hasher);
                     std::hash::Hasher::finish(&hasher)
-                }),
+                })
+            }
             NodeData::Element(element) => element
                 .raster_image_data()
                 .map_or(0, |image| image.data.id()),

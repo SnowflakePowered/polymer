@@ -73,7 +73,9 @@ impl EventHandler for DenoEventHandler<'_> {
         if self.target_override.is_some() && matches!(event.data, DomEventData::Click(_)) {
             event_state.prevent_default();
         }
-        if matches!(event.data, DomEventData::Click(_)) && Self::keeps_focus(&document.inner(), event.target) {
+        if matches!(event.data, DomEventData::Click(_))
+            && Self::keeps_focus(&document.inner(), event.target)
+        {
             event_state.prevent_default();
         }
         if result.propagation_stopped {

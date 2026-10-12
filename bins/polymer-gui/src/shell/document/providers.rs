@@ -22,13 +22,14 @@ impl ShellNetProvider {
 
 struct CompletedAssetHandler {
     handler: Box<dyn NetHandler>,
+    requested: String,
     waker: Arc<dyn NetWaker>,
     doc_id: usize,
 }
 
 impl NetHandler for CompletedAssetHandler {
-    fn bytes(self: Box<Self>, resolved_url: String, bytes: Bytes) {
-        self.handler.bytes(resolved_url, bytes);
+    fn bytes(self: Box<Self>, _resolved_url: String, bytes: Bytes) {
+        self.handler.bytes(self.requested, bytes);
         // blitz-net wakes before decoding; wake again once the image is available.
         self.waker.wake(self.doc_id);
     }
@@ -42,13 +43,14 @@ impl NetProvider for ShellNetProvider {
             self.waker.wake(doc_id);
             return;
         };
-        request.url = url;
+        let requested = std::mem::replace(&mut request.url, url).to_string();
         if request.url.scheme() != "file" {
             self.remote.fetch(
                 doc_id,
                 request,
                 Box::new(CompletedAssetHandler {
                     handler,
+                    requested,
                     waker: self.waker.clone(),
                     doc_id,
                 }),
@@ -75,7 +77,7 @@ impl NetProvider for ShellNetProvider {
                     Bytes::new()
                 }
             };
-            handler.bytes(request.url.to_string(), bytes);
+            handler.bytes(requested, bytes);
             waker.wake(doc_id);
         });
     }

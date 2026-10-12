@@ -26,7 +26,6 @@ use crate::shell::protocol::{
     ShellFrame, ShellInbox, SurfaceGroupBounds, TrackedSource, TrackedSurfaceLayout,
 };
 use crate::shell::runtime::ShellRuntime;
-use polymer_composition::{RasterChunkId, ShellCompositionGroup, ShellRasterChunk};
 use crate::shell::runtime::deno::ScrollCommand;
 use anyrender::PaintScene as _;
 use bands::BandedScene;
@@ -35,12 +34,12 @@ use blitz_dom::NodeId;
 use blitz_dom::local_name;
 use blitz_traits::net::{NetProvider, NetWaker};
 pub use events::{DomKeyboardEvent, DomMouseEvent, DomWheelEvent};
-pub(crate) use media::{MediaEvents, MediaPlayers, MediaSignal, MediaState};
-pub(crate) use shaders::{LoadedPreset, PresetOptions, PresetParameter, ShaderPresets};
-pub(crate) use urls::{ShellUrls, ThemeLocation};
 use hit_test::{node_is_within_tracked_surface, pointer_hit};
 use image_levels::ImageLevels;
+pub(crate) use media::{MediaEvents, MediaPlayers, MediaSignal, MediaState};
+use polymer_composition::{RasterChunkId, ShellCompositionGroup, ShellRasterChunk};
 use providers::NativeShellProvider;
+pub(crate) use shaders::{LoadedPreset, PresetOptions, PresetParameter, ShaderPresets};
 use std::{
     cell::{Ref, RefCell, RefMut},
     collections::HashMap,
@@ -54,6 +53,7 @@ use tracked_surface::{
     apply_tracked_surface_styles, enclosing_surface_group, initialise_tracked_surfaces,
     is_tracked_surface_element,
 };
+pub(crate) use urls::{ShellUrls, ThemeLocation};
 
 /// How many times a paint will re-resolve to pick up assets that only became
 /// reachable through an asset it just loaded.
@@ -215,14 +215,15 @@ impl ShellDocumentFactory {
             source.theme.clone(),
             self.directories.clone(),
         ));
-        let net: Arc<dyn NetProvider> =
-            Arc::new(providers::ShellNetProvider::new(waker.clone(), urls.clone()));
+        let net: Arc<dyn NetProvider> = Arc::new(providers::ShellNetProvider::new(
+            waker.clone(),
+            urls.clone(),
+        ));
         let level_shell = shell.clone();
         let images = ImageLevels::new(move || level_shell.wake());
         let media_shell = shell.clone();
-        let shell_provider: Arc<dyn blitz_traits::shell::ShellProvider> = Arc::new(
-            NativeShellProvider::new(self.event_proxy.clone(), shell),
-        );
+        let shell_provider: Arc<dyn blitz_traits::shell::ShellProvider> =
+            Arc::new(NativeShellProvider::new(self.event_proxy.clone(), shell));
         let mut document = blitz_html::HtmlDocument::from_html(
             &source.html,
             blitz_dom::DocumentConfig {

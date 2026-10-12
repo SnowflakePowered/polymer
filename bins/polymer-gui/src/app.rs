@@ -10,8 +10,8 @@ use crate::shell::protocol::{
     InputOutcome, LaunchSurfaceGroups, PointerKind, PointerSample, ShellCommand, ShellEvent,
     ShellInput,
 };
-use crate::shell::{ShellSession, ShellSessionFactory, ShellSource};
 use crate::shell::runtime::{InstanceToken, PolymerNotification, PolymerNotificationSender};
+use crate::shell::{ShellSession, ShellSessionFactory, ShellSource};
 use crate::window_manager::{
     EventLoopProxy, LoopDirective, ShellDeviceEvent, ShellImeEvent, ShellWindowEvent, WindowCommand,
 };
