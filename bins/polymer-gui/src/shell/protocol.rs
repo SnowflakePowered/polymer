@@ -18,11 +18,11 @@ use tokio::sync::{
     oneshot,
 };
 
-pub use polymer_composition::{RasterChunkId, ShellCompositionGroup, ShellRasterChunk};
-use polymer_composition::{ShaderControl, VideoControl, VideoSink, VideoSource};
+use polymer_composition::{
+    ShaderControl, ShellCompositionGroup, ShellRasterChunk, VideoControl, VideoSink, VideoSource,
+};
 
 /// Paint output published by Blitz without exposing its document or renderer.
-#[derive(Clone)]
 pub(crate) struct ShellFrame {
     pub raster_chunks: Vec<ShellRasterChunk>,
     pub composition_groups: Vec<ShellCompositionGroup>,
@@ -30,6 +30,7 @@ pub(crate) struct ShellFrame {
     pub width: u32,
     pub height: u32,
     pub mip_generation: u64,
+    pub structure_revision: u64,
 }
 
 /// Immutable compositor-facing layout published by the shell DOM.
@@ -55,43 +56,14 @@ pub(crate) struct SurfaceGroupBounds {
     pub parent: Option<u64>,
 }
 
-impl SurfaceGroupBounds {
-    pub(crate) fn id_for(node: blitz_dom::NodeId) -> u64 {
-        SURFACE_GROUP_BIT | node.as_u64()
-    }
-}
-
-/// Index of each launch surface that composes into a surface group.
-pub(crate) type LaunchSurfaceGroups = std::collections::HashMap<u32, u64>;
-
-const VIDEO_SOURCE_BIT: u64 = 1 << 62;
-const SURFACE_GROUP_BIT: u64 = 1 << 61;
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum TrackedSource {
     Target(u64),
     Video(u64),
 }
 
-impl TrackedSource {
-    pub(crate) fn video(node: blitz_dom::NodeId) -> Self {
-        Self::Video(VIDEO_SOURCE_BIT | node.as_u64())
-    }
-
-    pub(crate) fn from_id(id: u64) -> Self {
-        if id & VIDEO_SOURCE_BIT == 0 {
-            Self::Target(id)
-        } else {
-            Self::Video(id)
-        }
-    }
-
-    pub(crate) fn id(self) -> u64 {
-        match self {
-            Self::Target(id) | Self::Video(id) => id,
-        }
-    }
-}
+/// Index of each launch surface that composes into a surface group.
+pub(crate) type LaunchSurfaceGroups = std::collections::HashMap<u32, u64>;
 
 /// A pointer position in physical pixels and when the window received it.
 #[derive(Clone, Copy, Debug)]
@@ -101,10 +73,19 @@ pub(crate) struct PointerSample {
     pub at: Instant,
 }
 
+/// A window pointer transition. Blitz derives click, over, out, enter, and
+/// leave from these.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum PointerKind {
+    Down,
+    Up,
+    Move,
+}
+
 /// Window input in physical pixels, dispatched to the document in order.
 pub(crate) enum ShellInput {
     Pointer {
-        kind: &'static str,
+        kind: PointerKind,
         sample: PointerSample,
         button: u8,
         buttons: u8,
@@ -138,7 +119,7 @@ impl ShellInput {
     pub(crate) fn pointer_move(&self) -> Option<PointerSample> {
         match self {
             Self::Pointer {
-                kind: "mousemove",
+                kind: PointerKind::Move,
                 sample,
                 ..
             } => Some(*sample),
@@ -183,16 +164,15 @@ pub(crate) struct InputOutcome {
 }
 
 pub(crate) enum ShellEvent {
-    Frame {
-        frame: ShellFrame,
-        structure_revision: u64,
-    },
+    Frame(ShellFrame),
     InputSettled {
         sequence: u64,
         outcome: InputOutcome,
     },
-    ReloadRequested,
-    Video(VideoRequest),
+    Video {
+        id: u64,
+        request: VideoRequest,
+    },
     Shader {
         target: ShaderTarget,
         control: ShaderControl,
@@ -210,22 +190,15 @@ pub(crate) enum ShaderTarget {
 
 pub(crate) enum VideoRequest {
     Open {
-        id: u64,
         source: VideoSource,
         sink: VideoSink,
     },
-    Control {
-        id: u64,
-        control: VideoControl,
-    },
+    Control(VideoControl),
     Extent {
-        id: u64,
         width: u32,
         height: u32,
     },
-    Close {
-        id: u64,
-    },
+    Close,
 }
 
 /// Sends commands to the shell thread. Every command wakes it.
@@ -253,6 +226,7 @@ impl ShellInbox {
 pub(crate) struct ShellOutbox {
     events: mpsc::Sender<ShellEvent>,
     signalled: Arc<AtomicBool>,
+    reload: Arc<AtomicBool>,
     proxy: EventLoopProxy<UserEvent>,
 }
 
@@ -260,9 +234,11 @@ impl ShellOutbox {
     pub(super) fn new(proxy: EventLoopProxy<UserEvent>) -> (Self, ShellEvents) {
         let (events, received) = mpsc::channel();
         let signalled = Arc::new(AtomicBool::new(false));
+        let reload = Arc::new(AtomicBool::new(false));
         let outbox = Self {
             events,
             signalled: signalled.clone(),
+            reload: reload.clone(),
             proxy,
         };
         (
@@ -270,14 +246,24 @@ impl ShellOutbox {
             ShellEvents {
                 events: received,
                 signalled,
+                reload,
             },
         )
     }
 
     pub(crate) fn send(&self, event: ShellEvent) {
-        if self.events.send(event).is_err() {
-            return;
+        if self.events.send(event).is_ok() {
+            self.signal();
         }
+    }
+
+    /// Tells the window thread that script asked for the shell to reload.
+    pub(super) fn request_reload(&self) {
+        self.reload.store(true, Ordering::Release);
+        self.signal();
+    }
+
+    fn signal(&self) {
         if !self.signalled.swap(true, Ordering::AcqRel) {
             let _ = self
                 .proxy
@@ -290,6 +276,7 @@ impl ShellOutbox {
 pub(super) struct ShellEvents {
     events: mpsc::Receiver<ShellEvent>,
     signalled: Arc<AtomicBool>,
+    reload: Arc<AtomicBool>,
 }
 
 impl ShellEvents {
@@ -297,5 +284,9 @@ impl ShellEvents {
     pub(super) fn drain(&self) -> mpsc::TryIter<'_, ShellEvent> {
         self.signalled.store(false, Ordering::Release);
         self.events.try_iter()
+    }
+
+    pub(super) fn reload_requested(&self) -> bool {
+        self.reload.load(Ordering::Acquire)
     }
 }

@@ -37,7 +37,7 @@ impl ShellCoordinator {
     /// claim it; otherwise it reaches the game if it landed on a game surface.
     fn shell_mouse(
         &mut self,
-        kind: &'static str,
+        kind: PointerKind,
         button: u16,
         pressed: Option<bool>,
         phase: PointerPhase,
@@ -65,7 +65,7 @@ impl ShellCoordinator {
         self.shell.input(Some(sequence), input);
     }
 
-    fn pointer_input(&self, kind: &'static str, button: u16) -> ShellInput {
+    fn pointer_input(&self, kind: PointerKind, button: u16) -> ShellInput {
         let (x, y) = self.input.cursor();
         ShellInput::Pointer {
             kind,
@@ -251,7 +251,7 @@ impl ShellCoordinator {
         }
         self.held.clear();
         for (button, _) in self.input.focus_lost_buttons() {
-            let input = self.pointer_input("mouseup", button);
+            let input = self.pointer_input(PointerKind::Up, button);
             self.shell.input(None, input);
         }
         self.input.finish_focus_lost();
@@ -267,7 +267,7 @@ impl ShellCoordinator {
         if consumed {
             return;
         }
-        self.shell_mouse("mousemove", 0, None, PointerPhase::Move, 0);
+        self.shell_mouse(PointerKind::Move, 0, None, PointerPhase::Move, 0);
     }
 
     pub(super) fn handle_mouse_button(
@@ -287,9 +287,9 @@ impl ShellCoordinator {
             value => value.saturating_sub(1),
         };
         let (kind, phase) = if pressed {
-            ("mousedown", PointerPhase::ButtonDown)
+            (PointerKind::Down, PointerPhase::ButtonDown)
         } else {
-            ("mouseup", PointerPhase::ButtonUp)
+            (PointerKind::Up, PointerPhase::ButtonUp)
         };
         self.shell_mouse(kind, dom_button, Some(pressed), phase, u32::from(button));
     }

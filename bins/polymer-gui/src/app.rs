@@ -7,7 +7,8 @@ use crate::instance_events;
 use crate::launch::AttachedLaunchPlan;
 use crate::metrics::{TurnPhase, TurnProfile};
 use crate::shell::protocol::{
-    InputOutcome, LaunchSurfaceGroups, PointerSample, ShellCommand, ShellEvent, ShellInput,
+    InputOutcome, LaunchSurfaceGroups, PointerKind, PointerSample, ShellCommand, ShellEvent,
+    ShellInput,
 };
 use crate::shell::{ShellSession, ShellSessionFactory, ShellSource};
 use crate::shell::runtime::{InstanceToken, PolymerNotification, PolymerNotificationSender};

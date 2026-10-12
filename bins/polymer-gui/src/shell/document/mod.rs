@@ -23,10 +23,10 @@ mod tracked_surface;
 mod urls;
 
 use crate::shell::protocol::{
-    RasterChunkId, ShellCompositionGroup, ShellFrame, ShellInbox, ShellRasterChunk,
-    SurfaceGroupBounds, TrackedSource, TrackedSurfaceLayout,
+    ShellFrame, ShellInbox, SurfaceGroupBounds, TrackedSource, TrackedSurfaceLayout,
 };
 use crate::shell::runtime::ShellRuntime;
+use polymer_composition::{RasterChunkId, ShellCompositionGroup, ShellRasterChunk};
 use crate::shell::runtime::deno::ScrollCommand;
 use anyrender::PaintScene as _;
 use bands::BandedScene;
@@ -305,10 +305,6 @@ impl ShellDocument {
         };
         !anonymous(Some(current))
             && !anonymous(current.parent.and_then(|parent| document.get_node(parent)))
-    }
-
-    pub(crate) const fn dom_structure_revision(&self) -> u64 {
-        self.dom_structure_revision
     }
 
     pub(crate) fn logical_size(&self) -> (u32, u32) {
@@ -684,6 +680,7 @@ impl ShellDocument {
             width: self.width,
             height: self.height,
             mip_generation: polymer_mipmap::MipImages::generation(),
+            structure_revision: self.dom_structure_revision,
         })
     }
 }
