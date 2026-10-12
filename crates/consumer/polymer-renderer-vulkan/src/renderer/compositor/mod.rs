@@ -5,7 +5,6 @@ use polymer_protocol::{AdapterLuid, FrameReady};
 use polymer_renderer::renderer::{CompositingPlan, RenderWindow, SurfacePlacement};
 use std::error::Error;
 
-use crate::webrtc::{self, VulkanVideoCache, WebRtcCompositor};
 use polymer_renderer::renderer::SwapchainMode;
 use polymer_renderer::{ReceivedSurface, surface_sort_key};
 
@@ -16,7 +15,6 @@ mod present;
 mod setup;
 mod streams;
 mod swapchain;
-pub(crate) use streams::create_vulkan_video_cache;
 use streams::*;
 
 const FRAMES_IN_FLIGHT: usize = 2;

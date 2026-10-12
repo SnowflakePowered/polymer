@@ -62,14 +62,10 @@ pluginhost depends on shell types.
 
 There is no foreground proxy, linked document, shared UI bus, or structured
 remote-value codec. `Polymer.input`, `Polymer.plugin`, `Polymer.scraping`,
-`Polymer.configuration`, `Polymer.emulator`, and `Polymer.webrtc` are
-same-realm APIs. `Polymer.emulator.launch()` synchronously returns a
-`LaunchInstance`; its promises and events own pending, ready, error, and closed
-lifecycle state. Emulator launch, WebRTC publication control, and plugin
-invocation cross asynchronous Deno op boundaries. Deno owns WebRTC lifecycle
-and launch association; `polymer-renderer` keeps signaling, peer sessions,
-GPU composition, encoding, and frame publication together in the native data
-plane.
+`Polymer.configuration`, and `Polymer.emulator` are same-realm APIs.
+`Polymer.emulator.launch()` synchronously returns a `LaunchInstance`; its
+promises and events own pending, ready, error, and closed lifecycle state.
+Emulator launch and plugin invocation cross asynchronous Deno op boundaries.
 
 Native feature producers send owned `PolymerNotification` values directly
 to the inbox. A single pending Deno op feeds those values to the JavaScript

@@ -5,28 +5,14 @@ impl VulkanCompositor {
         window: &impl RenderWindow,
         preferred_adapter: Option<AdapterLuid>,
     ) -> Result<Self, Box<dyn Error>> {
-        Self::with_mode(window, preferred_adapter, false, SwapchainMode::Shared)
-            .map(|(compositor, _)| compositor)
-    }
-
-    pub fn new_with_webrtc(
-        window: &impl RenderWindow,
-        preferred_adapter: Option<AdapterLuid>,
-    ) -> Result<(Self, WebRtcCompositor), Box<dyn Error>> {
-        let (compositor, webrtc) =
-            Self::with_mode(window, preferred_adapter, true, SwapchainMode::Shared)?;
-        Ok((
-            compositor,
-            webrtc.expect("WebRTC was requested during Vulkan device creation"),
-        ))
+        Self::with_mode(window, preferred_adapter, SwapchainMode::Shared)
     }
 
     pub(super) fn with_mode(
         window: &impl RenderWindow,
         preferred_adapter: Option<AdapterLuid>,
-        publish_video: bool,
         mode: SwapchainMode,
-    ) -> Result<(Self, Option<WebRtcCompositor>), Box<dyn Error>> {
+    ) -> Result<Self, Box<dyn Error>> {
         // SAFETY: all Vulkan children are owned by Self and destroyed in reverse
         // dependency order after the device becomes idle.
         unsafe {
@@ -52,7 +38,7 @@ impl VulkanCompositor {
                 ash::khr::external_semaphore_win32::NAME,
                 ash::khr::timeline_semaphore::NAME,
             ];
-            let (physical_device, queue_family, video_queue_family) = instance
+            let (physical_device, queue_family) = instance
                 .enumerate_physical_devices()?
                 .into_iter()
                 .find_map(|physical| {
@@ -72,21 +58,7 @@ impl VulkanCompositor {
                     if !supports_extensions {
                         return None;
                     }
-                    let video_extensions = [
-                        ash::khr::video_queue::NAME,
-                        ash::khr::video_encode_queue::NAME,
-                        ash::khr::video_encode_h264::NAME,
-                        ash::khr::synchronization2::NAME,
-                    ];
-                    let supports_video_extensions = publish_video
-                        && video_extensions.iter().all(|required| {
-                            available.iter().any(|property| {
-                                std::ffi::CStr::from_ptr(property.extension_name.as_ptr())
-                                    == *required
-                            })
-                        });
                     let families = instance.get_physical_device_queue_family_properties(physical);
-                    let video_operations = queue_family_video_operations(&instance, physical);
                     let graphics_family =
                         families
                             .iter()
@@ -103,67 +75,18 @@ impl VulkanCompositor {
                                     .ok()?;
                                 (graphics && present).then_some(index as u32)
                             })?;
-                    let video_family = (supports_video_extensions
-                        && families[graphics_family as usize].queue_count >= 2)
-                        .then(|| {
-                            families
-                                .iter()
-                                .enumerate()
-                                .find(|(index, properties)| {
-                                    *index as u32 != graphics_family
-                                        && properties
-                                            .queue_flags
-                                            .contains(vk::QueueFlags::VIDEO_ENCODE_KHR)
-                                        && video_operations[*index]
-                                            .contains(vk::VideoCodecOperationFlagsKHR::ENCODE_H264)
-                                })
-                                .map(|(index, _)| index as u32)
-                        })
-                        .flatten();
-                    Some((physical, graphics_family, video_family))
+                    Some((physical, graphics_family))
                 })
                 .ok_or("no Vulkan device supports capture import and presentation")?;
 
-            if publish_video && video_queue_family.is_none() {
-                return Err("Vulkan hardware video encoding is unavailable".into());
-            }
-            let priorities = if video_queue_family.is_some() {
-                vec![1.0, 1.0]
-            } else {
-                vec![1.0]
-            };
-            let video_priorities = [1.0];
-            let queue_info = vk::DeviceQueueCreateInfo::default()
+            let priorities = [1.0];
+            let queue_infos = [vk::DeviceQueueCreateInfo::default()
                 .queue_family_index(queue_family)
-                .queue_priorities(&priorities);
-            let video_queue_info = video_queue_family.map(|family| {
-                vk::DeviceQueueCreateInfo::default()
-                    .queue_family_index(family)
-                    .queue_priorities(&video_priorities)
-            });
-            let mut queue_infos = vec![queue_info];
-            if let Some(info) = video_queue_info {
-                queue_infos.push(info);
-            }
-            let mut extension_names = required
+                .queue_priorities(&priorities)];
+            let extension_names = required
                 .iter()
                 .map(|name| name.as_ptr())
                 .collect::<Vec<_>>();
-            if video_queue_family.is_some() {
-                extension_names.extend([
-                    ash::khr::video_queue::NAME.as_ptr(),
-                    ash::khr::video_encode_queue::NAME.as_ptr(),
-                    ash::khr::video_encode_h264::NAME.as_ptr(),
-                    ash::khr::synchronization2::NAME.as_ptr(),
-                ]);
-                let available = instance.enumerate_device_extension_properties(physical_device)?;
-                if available.iter().any(|property| {
-                    std::ffi::CStr::from_ptr(property.extension_name.as_ptr())
-                        == ash::khr::video_encode_h265::NAME
-                }) {
-                    extension_names.push(ash::khr::video_encode_h265::NAME.as_ptr());
-                }
-            }
             let mut timeline_features =
                 vk::PhysicalDeviceTimelineSemaphoreFeatures::default().timeline_semaphore(true);
             let device = instance.create_device(
@@ -175,21 +98,6 @@ impl VulkanCompositor {
                 None,
             )?;
             let queue = device.get_device_queue(queue_family, 0);
-            let video_queue = video_queue_family.map(|family| device.get_device_queue(family, 0));
-            let video_conversion_queue =
-                video_queue_family.map(|_| device.get_device_queue(queue_family, 1));
-            let (video_ready, video_completion) = if video_queue.is_some() {
-                let mut timeline = vk::SemaphoreTypeCreateInfo::default()
-                    .semaphore_type(vk::SemaphoreType::TIMELINE)
-                    .initial_value(0);
-                let create = vk::SemaphoreCreateInfo::default().push_next(&mut timeline);
-                (
-                    Some(device.create_semaphore(&create, None)?),
-                    Some(device.create_semaphore(&create, None)?),
-                )
-            } else {
-                (None, None)
-            };
             let swapchain_loader = ash::khr::swapchain::Device::new(&instance, &device);
             let capabilities = surface_loader
                 .get_physical_device_surface_capabilities(physical_device, surface)?;
@@ -313,71 +221,36 @@ impl VulkanCompositor {
             }
             let initialized_count = swapchain_images.len();
             let receiver = VulkanReceiver::new(instance.clone(), device.clone(), physical_device);
-            let webrtc = publish_video.then(|| {
-                WebRtcCompositor::new_vulkan(
-                    instance.clone(),
-                    physical_device,
-                    device.clone(),
-                    video_queue,
-                    video_queue_family,
-                    video_conversion_queue,
-                    queue_family,
-                    video_ready,
-                    video_completion,
-                )
-            });
-            Ok((
-                Self {
-                    _entry: entry,
-                    instance,
-                    surface_loader,
-                    surface,
-                    physical_device,
-                    device,
-                    queue,
-                    queue_family,
-                    swapchain_loader,
-                    swapchain,
-                    swapchain_images,
-                    swapchain_views,
-                    swapchain_initialized: vec![false; initialized_count],
-                    surface_format,
-                    extent,
-                    render_pass,
-                    framebuffers,
-                    command_pool,
-                    command_buffers,
-                    image_available,
-                    render_finished,
-                    fences,
-                    frame_index: 0,
-                    receiver,
-                    mode,
-                    surfaces: Vec::new(),
-                    composition_pipeline,
-                },
-                webrtc,
-            ))
+            Ok(Self {
+                _entry: entry,
+                instance,
+                surface_loader,
+                surface,
+                physical_device,
+                device,
+                queue,
+                queue_family,
+                swapchain_loader,
+                swapchain,
+                swapchain_images,
+                swapchain_views,
+                swapchain_initialized: vec![false; initialized_count],
+                surface_format,
+                extent,
+                render_pass,
+                framebuffers,
+                command_pool,
+                command_buffers,
+                image_available,
+                render_finished,
+                fences,
+                frame_index: 0,
+                receiver,
+                mode,
+                surfaces: Vec::new(),
+                composition_pipeline,
+            })
         }
-    }
-}
-
-pub(crate) unsafe fn queue_family_video_operations(
-    instance: &ash::Instance,
-    physical_device: vk::PhysicalDevice,
-) -> Vec<vk::VideoCodecOperationFlagsKHR> {
-    unsafe {
-        let count = instance.get_physical_device_queue_family_properties2_len(physical_device);
-        let mut video = vec![vk::QueueFamilyVideoPropertiesKHR::default(); count];
-        let mut properties = vec![vk::QueueFamilyProperties2::default(); count];
-        for (properties, video) in properties.iter_mut().zip(&mut video) {
-            properties.p_next = (video as *mut vk::QueueFamilyVideoPropertiesKHR<'_>).cast();
-        }
-        instance.get_physical_device_queue_family_properties2(physical_device, &mut properties);
-        video
-            .into_iter()
-            .map(|properties| properties.video_codec_operations)
-            .collect()
     }
 }
 

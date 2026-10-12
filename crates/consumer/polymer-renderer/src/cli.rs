@@ -3,7 +3,7 @@
 use clap::ValueEnum;
 use clap::{ArgAction, ArgMatches, Command, CommandFactory, FromArgMatches, Parser};
 pub use polymer_runtime::GraphicsHook;
-use std::{collections::HashSet, error::Error, net::SocketAddr};
+use std::{collections::HashSet, error::Error};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum ViewerApi {
@@ -93,8 +93,6 @@ pub struct ViewerOptions {
     pub isolate: bool,
     pub api: ViewerApi,
     pub hooks: Vec<GraphicsHook>,
-    pub webrtc: Option<Vec<u32>>,
-    pub bind_webrtc: SocketAddr,
 }
 
 #[derive(Parser)]
@@ -123,26 +121,6 @@ struct ViewerArguments {
     /// layout. Example: `display: flex; flex-direction: row; gap: 12px`.
     #[arg(long, value_name = "CSS")]
     pub(crate) layout_css: Option<String>,
-    /// Publish selected render-target indices as tracks on one WebRTC stream.
-    #[arg(
-        long,
-        num_args = 0..,
-        default_missing_value = "0",
-        value_delimiter = ',',
-        value_name = "INDEXES",
-        value_parser = parse_webrtc_target
-    )]
-    pub(crate) webrtc: Option<Vec<u32>>,
-
-    /// Address for the WebRTC HTTP signaling server.
-    #[arg(
-        long,
-        default_value = "127.0.0.1:8080",
-        value_name = "IP:PORT",
-        requires = "webrtc"
-    )]
-    pub(crate) bind_webrtc: SocketAddr,
-
     /// Maximum number of capture surfaces to display.
     #[arg(
         long,
@@ -199,12 +177,6 @@ impl ViewerArguments {
             hooks.extend(AUTO_HOOKS);
         }
         self.validate_presentation()?;
-        if let Some(targets) = &self.webrtc {
-            let mut unique = HashSet::new();
-            if targets.iter().any(|target| !unique.insert(*target)) {
-                return Err("WebRTC render-target indices must be unique".into());
-            }
-        }
         if let Some(targets) = &self.track_render_targets {
             let mut unique = HashSet::new();
             if targets.iter().any(|target| !unique.insert(target.index)) {
@@ -227,8 +199,6 @@ impl ViewerArguments {
             isolate: !self.no_isolate,
             api: self.api,
             hooks,
-            webrtc: self.webrtc,
-            bind_webrtc: self.bind_webrtc,
         })
     }
 }
@@ -322,18 +292,6 @@ fn parse_render_target_index(value: &str) -> Result<TrackedRenderTarget, String>
             .filter(|pattern| !pattern.is_empty())
             .map(str::to_owned),
     })
-}
-
-fn parse_webrtc_target(value: &str) -> Result<u32, String> {
-    let index = value
-        .parse::<u32>()
-        .map_err(|_| format!("invalid WebRTC render-target index '{value}'"))?;
-    if index >= 16 {
-        return Err(format!(
-            "invalid WebRTC render-target index '{value}'; expected 0..=15"
-        ));
-    }
-    Ok(index)
 }
 
 fn parse_surface_count(value: &str) -> Result<u32, String> {

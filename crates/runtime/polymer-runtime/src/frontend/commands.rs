@@ -1,6 +1,6 @@
 //! Native Actix recipients for the application-owned GUI services.
 
-use super::{emulator, input, webrtc};
+use super::{emulator, input};
 use actix::{Message, Recipient};
 use polymer_deno::polymer::ApiFuture;
 use std::sync::Arc;
@@ -10,7 +10,6 @@ use std::sync::Arc;
 pub struct FrontendRecipients {
     pub emulator: EmulatorRecipients,
     pub input: InputRecipients,
-    pub webrtc: WebRtcRecipients,
 }
 
 #[derive(Clone)]
@@ -32,12 +31,6 @@ pub struct EmulatorRecipients {
 pub struct InputRecipients {
     pub configure: Recipient<input::Configure>,
     pub controller_api: Recipient<input::ControllerApi>,
-}
-
-#[derive(Clone)]
-pub struct WebRtcRecipients {
-    pub start: Recipient<webrtc::Start>,
-    pub stop: Recipient<webrtc::Stop>,
 }
 
 #[derive(Clone)]

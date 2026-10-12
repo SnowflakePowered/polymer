@@ -4,16 +4,8 @@ impl VulkanCompositor {
     pub fn present_with(
         &mut self,
         plan: &CompositingPlan,
-        webrtc: Option<&mut WebRtcCompositor>,
         record: impl FnOnce(&mut VulkanRenderPass<'_>) -> Result<(), Box<dyn Error>>,
     ) -> Result<bool, Box<dyn Error>> {
-        let mut video_parts = webrtc.and_then(WebRtcCompositor::vulkan_parts_mut);
-        if video_parts
-            .as_ref()
-            .is_some_and(|(_, video)| video.physical_device != self.physical_device)
-        {
-            return Err("WebRTC compositor belongs to a different Vulkan device".into());
-        }
         // SAFETY: frame fences protect command and semaphore reuse; acquisition
         // owns the destination image; the external timeline gates source reads.
         unsafe {
@@ -72,27 +64,8 @@ impl VulkanCompositor {
                     &[color_range()],
                 );
             }
-            let mut video_copies = Vec::new();
-            // A timeline semaphore must be signaled in strictly increasing
-            // order, but published frames resolve out of order: dropped frames
-            // host-signal immediately while accepted frames signal from the
-            // encoder later. Publishing only while no completion value is
-            // outstanding keeps the timeline monotonic.
-            let video_publish_ready = match video_parts.as_ref() {
-                Some((_, video)) => match video.completion {
-                    Some(semaphore) => {
-                        self.device.get_semaphore_counter_value(semaphore)?
-                            >= video.completion_value
-                    }
-                    None => true,
-                },
-                None => false,
-            };
-            let mut video_publish_budget = video_parts
-                .as_ref()
-                .map_or(0, |(swapchain, _)| swapchain.available());
             let mut surface_draws = Vec::new();
-            for (surface_index, surface) in self.surfaces.iter_mut().enumerate() {
+            for surface in self.surfaces.iter_mut() {
                 if surface.frames.has_pending() {
                     surface.release_displayed(&self.device, command, self.queue_family);
                     surface.copy_single_slot(&self.device, command, self.queue_family);
@@ -128,73 +101,6 @@ impl VulkanCompositor {
                         &[],
                         &[to_source],
                     );
-                    if surface.frames.has_pending()
-                        && video_publish_ready
-                        && video_publish_budget > 0
-                        && let Some(cache) = video_parts
-                            .as_mut()
-                            .and_then(|(_, video)| video.streams.get_mut(&surface.connection))
-                            .and_then(|stream| stream.cache.as_mut())
-                    {
-                        video_publish_budget -= 1;
-                        let cache_to_destination = vk::ImageMemoryBarrier::default()
-                            .src_access_mask(if cache.initialized {
-                                vk::AccessFlags::TRANSFER_READ
-                            } else {
-                                vk::AccessFlags::empty()
-                            })
-                            .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                            .old_layout(if cache.initialized {
-                                vk::ImageLayout::TRANSFER_SRC_OPTIMAL
-                            } else {
-                                vk::ImageLayout::UNDEFINED
-                            })
-                            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                            .image(cache.image)
-                            .subresource_range(color_range());
-                        self.device.cmd_pipeline_barrier(
-                            command,
-                            vk::PipelineStageFlags::TRANSFER,
-                            vk::PipelineStageFlags::TRANSFER,
-                            vk::DependencyFlags::empty(),
-                            &[],
-                            &[],
-                            &[cache_to_destination],
-                        );
-                        self.device.cmd_copy_image(
-                            command,
-                            source,
-                            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                            cache.image,
-                            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                            &[vk::ImageCopy::default()
-                                .src_subresource(color_layers())
-                                .dst_subresource(color_layers())
-                                .extent(vk::Extent3D {
-                                    width: imported.width,
-                                    height: imported.height,
-                                    depth: 1,
-                                })],
-                        );
-                        let cache_to_source = vk::ImageMemoryBarrier::default()
-                            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-                            .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
-                            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                            .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-                            .image(cache.image)
-                            .subresource_range(color_range());
-                        self.device.cmd_pipeline_barrier(
-                            command,
-                            vk::PipelineStageFlags::TRANSFER,
-                            vk::PipelineStageFlags::TRANSFER,
-                            vk::DependencyFlags::empty(),
-                            &[],
-                            &[],
-                            &[cache_to_source],
-                        );
-                        video_copies.push(surface_index);
-                    }
-
                     let placement = plan
                         .placements()
                         .find(|placement| {
@@ -337,29 +243,9 @@ impl VulkanCompositor {
             );
             self.device.end_command_buffer(command)?;
 
-            let mut waits = vec![self.image_available[flight]];
-            let mut wait_values = vec![0];
-            let mut wait_stages = vec![vk::PipelineStageFlags::TRANSFER];
-            let video_wait_value = video_parts.as_ref().map_or(0, |(_, video)| {
-                self.surfaces
-                    .iter()
-                    .filter(|surface| surface.frames.has_pending())
-                    .filter_map(|surface| video.streams.get(&surface.connection))
-                    .filter(|stream| stream.cache.is_some())
-                    .map(|stream| stream.completion_value)
-                    .max()
-                    .unwrap_or(0)
-            });
-            if video_wait_value != 0 {
-                waits.push(
-                    video_parts
-                        .as_ref()
-                        .and_then(|(_, video)| video.completion)
-                        .expect("video completion semaphore"),
-                );
-                wait_values.push(video_wait_value);
-                wait_stages.push(vk::PipelineStageFlags::TRANSFER);
-            }
+            let waits = [self.image_available[flight]];
+            let wait_values = [0];
+            let wait_stages = [vk::PipelineStageFlags::TRANSFER];
             let commands = [command];
             // Presentation may continue using its wait semaphore after the
             // render fence signals. Indexing by acquired image guarantees that
@@ -367,23 +253,6 @@ impl VulkanCompositor {
             let render_complete = self.render_finished[image_index as usize];
             let mut signals = vec![render_complete];
             let mut signal_values = vec![0];
-            let hardware_video = video_parts.as_ref().is_some_and(|(_, video)| {
-                video_copies.iter().any(|index| {
-                    video
-                        .streams
-                        .get(&self.surfaces[*index].connection)
-                        .is_some_and(|stream| stream.cache.is_some())
-                })
-            });
-            if hardware_video {
-                let video = &mut video_parts
-                    .as_mut()
-                    .expect("hardware video requires a WebRTC compositor")
-                    .1;
-                video.ready_value += 1;
-                signals.push(video.ready.expect("video ready semaphore"));
-                signal_values.push(video.ready_value);
-            }
             for surface in &self.surfaces {
                 if let Some(value) = surface.frames.release_value(surface.retention())
                     && let Some(semaphore) = surface.imported.consumer_timeline()
@@ -407,55 +276,6 @@ impl VulkanCompositor {
             for surface in &mut self.surfaces {
                 surface.commit();
             }
-            for index in video_copies {
-                let Some((video_swapchain, video)) = video_parts.as_mut() else {
-                    continue;
-                };
-                let connection = self.surfaces[index].connection;
-                let cached_image = video
-                    .streams
-                    .get_mut(&connection)
-                    .and_then(|stream| stream.cache.as_mut())
-                    .map(|cache| {
-                        cache.initialized = true;
-                        cache.image
-                    });
-                if let Some(image) = cached_image {
-                    video.completion_value += 1;
-                    let completion_value = video.completion_value;
-                    if let Some(stream) = video.streams.get_mut(&connection) {
-                        stream.completion_value = completion_value;
-                    }
-                    let session = video.encoders.entry(connection).or_default().clone();
-                    let frame = webrtc::encoder::Session::frame(
-                        session,
-                        connection,
-                        self.surfaces[index].imported.width,
-                        self.surfaces[index].imported.height,
-                        webrtc::VulkanFrame {
-                            instance: self.instance.clone(),
-                            physical_device: self.physical_device,
-                            device: self.device.clone(),
-                            queue: video.queue.expect("video queue"),
-                            queue_family: video.queue_family.expect("video queue family"),
-                            conversion_queue: video
-                                .conversion_queue
-                                .expect("video conversion queue"),
-                            conversion_queue_family: video.conversion_queue_family,
-                            image,
-                            format: self.surfaces[index].imported.format,
-                            layout: vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                            ready: video.ready.expect("video ready semaphore"),
-                            ready_value: video.ready_value,
-                            completion: video.completion.expect("video completion semaphore"),
-                            completion_value,
-                            completion_submitted: false,
-                        },
-                    );
-
-                    let _ = video_swapchain.present(frame);
-                }
-            }
             let swapchains = [self.swapchain];
             let indices = [image_index];
             let present_suboptimal = match self.swapchain_loader.queue_present(
@@ -475,16 +295,8 @@ impl VulkanCompositor {
         }
     }
 
-    pub fn present_with_webrtc(
-        &mut self,
-        plan: &CompositingPlan,
-        webrtc: Option<&mut WebRtcCompositor>,
-    ) -> Result<bool, Box<dyn Error>> {
-        self.present_with(plan, webrtc, |_| Ok(()))
-    }
-
     pub fn present(&mut self, plan: &CompositingPlan) -> Result<bool, Box<dyn Error>> {
-        self.present_with_webrtc(plan, None)
+        self.present_with(plan, |_| Ok(()))
     }
 }
 
@@ -559,14 +371,5 @@ pub(super) unsafe fn draw_surface_content(
             );
             device.cmd_draw(command, 6, 1, 0, 0);
         }
-    }
-}
-
-pub(super) fn color_layers() -> vk::ImageSubresourceLayers {
-    vk::ImageSubresourceLayers {
-        aspect_mask: vk::ImageAspectFlags::COLOR,
-        mip_level: 0,
-        base_array_layer: 0,
-        layer_count: 1,
     }
 }

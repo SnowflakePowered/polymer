@@ -186,7 +186,6 @@ export type TrackedSurface = {
   rotation: number;
   selector?: string;
   attach: HTMLTrackedSurfaceElement;
-  webrtc: boolean;
 };
 
 export type ControllerMapping = {
@@ -239,7 +238,6 @@ type LaunchFields = {
   }>;
   controllerTopology: ControllerTopology;
   machine: string;
-  webrtcBind?: string;
   preparedFilesystem?: string;
   controllerSession?: string;
   launchSet?: readonly LibraryLaunchable[];
@@ -667,17 +665,6 @@ export interface LibraryApi extends EventTarget {
   }>;
 }
 
-export type WebRtcPublicationState = "starting" | "active" | "closing" | "closed" | "error";
-
-export interface WebRtcPublication extends EventTarget {
-  readonly instance: LaunchInstance;
-  readonly bind: string;
-  readonly targets: readonly number[];
-  readonly state: WebRtcPublicationState;
-  readonly error: Error | null;
-  close(): Promise<void>;
-}
-
 export interface MachineFirmware {
   names: string[];
   md5: string | null;
@@ -715,15 +702,6 @@ export interface MachineSpec {
   sysupdates: MachineFirmware[];
 }
 
-export interface WebRtcApi extends EventTarget {
-  readonly activePublication: WebRtcPublication | null;
-  start(options: {
-    instance: LaunchInstance;
-    bind?: string;
-    targets: number[];
-  }): Promise<WebRtcPublication>;
-}
-
 declare global {
   interface Navigator {
     clearImageMipChains(): void;
@@ -738,7 +716,6 @@ declare global {
       readonly consolestorage: ConsoleStorageApi;
       readonly emulator: EmulatorApi;
       readonly plugin: PluginApi;
-      readonly webrtc: WebRtcApi;
       readonly input: InputApi;
       readonly controllers: ControllersApi;
       readonly library: LibraryApi;

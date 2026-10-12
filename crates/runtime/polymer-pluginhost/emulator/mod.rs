@@ -67,7 +67,7 @@ impl EmulatorLaunchArguments {
 pub use polymer_protocol::{GraphicsHook, Hooks, InputHook};
 
 /// The plugin-facing description of an emulator surface. Viewer-only state,
-/// such as a Blitz attachment ID or WebRTC publication, is added downstream.
+/// such as a Blitz attachment ID, is added downstream.
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackedSurface {

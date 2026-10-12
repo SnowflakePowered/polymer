@@ -132,58 +132,12 @@ impl GameHost {
             token,
             current_disc_index: options.initial_disc_index,
             options,
-            webrtc: false,
             controller_session,
             automation,
             save_states,
             closing: false,
         });
         Ok(())
-    }
-
-    pub fn start_webrtc(
-        &mut self,
-        token: crate::shell::runtime::InstanceToken,
-        bind: std::net::SocketAddr,
-        targets: &[u32],
-    ) -> Result<(), String> {
-        let Some(active) = self.active.as_mut().filter(|active| active.token == token) else {
-            return Err("the emulator instance is not active".to_owned());
-        };
-        if active.webrtc {
-            return Err("the emulator instance already has a WebRTC publication".to_owned());
-        }
-        if let Some(target) = targets.iter().find(|target| {
-            !active
-                .options
-                .surfaces
-                .iter()
-                .any(|surface| surface.index == **target)
-        }) {
-            return Err(format!(
-                "WebRTC render target {target} is not part of the emulator launch"
-            ));
-        }
-        let streams = self
-            .surfaces
-            .iter()
-            .map(|(&connection, surface)| (connection, surface.index))
-            .collect::<Vec<_>>();
-        self.compositor
-            .borrow_mut()
-            .start_webrtc(bind, targets, &streams)
-            .map_err(|error| error.to_string())?;
-        active.webrtc = true;
-        Ok(())
-    }
-
-    pub fn stop_webrtc(&mut self, token: crate::shell::runtime::InstanceToken) -> bool {
-        let Some(active) = self.active.as_mut().filter(|active| active.token == token) else {
-            return false;
-        };
-        let active_publication = std::mem::replace(&mut active.webrtc, false);
-        self.compositor.borrow_mut().stop_webrtc();
-        active_publication
     }
 
     pub fn input_endpoint(&self) -> Option<polymer_ipc::input::host::InputIpcListener> {

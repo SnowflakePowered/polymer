@@ -20,16 +20,12 @@ use std::{
 #[derive(Clone, Debug)]
 pub struct ConfigurationDefaults {
     pub gamepads: Vec<DefaultGamepad>,
-    pub webrtc_targets: Option<Vec<u32>>,
-    pub webrtc_bind: std::net::SocketAddr,
 }
 
 impl Default for ConfigurationDefaults {
     fn default() -> Self {
         Self {
             gamepads: Vec::new(),
-            webrtc_targets: None,
-            webrtc_bind: std::net::SocketAddr::from(([127, 0, 0, 1], 8080)),
         }
     }
 }
@@ -131,8 +127,6 @@ struct PreparedConfiguration {
     arguments: serde_json::Value,
     controller_topology: ControllerTopology,
     machine: String,
-    webrtc_bind: Option<String>,
-    webrtc_targets: Vec<u32>,
 }
 
 pub async fn describe_api(
@@ -237,7 +231,6 @@ pub(crate) fn prepare_api_with_sources(
         gamepad.source = controller_assignments.source_for(gamepad.slot);
         gamepad.force_mouse = matches!(gamepad.source, Some(SourceSelector::KeyboardMouse));
     }
-    let webrtc_targets = prepared.viewer.webrtc_targets.clone().unwrap_or_default();
     let controller_manager = ControllerManager::with_profiles(controller_profiles.clone());
     let selected = prepared
         .viewer
@@ -268,12 +261,6 @@ pub(crate) fn prepare_api_with_sources(
         arguments,
         controller_topology: topology,
         machine: prepared.machine,
-        webrtc_bind: prepared
-            .viewer
-            .webrtc_targets
-            .as_ref()
-            .map(|_| prepared.viewer.webrtc_bind.to_string()),
-        webrtc_targets,
     })
     .map_err(|error| error.to_string())
 }

@@ -3,7 +3,6 @@
 mod emulator;
 mod input;
 mod state;
-mod webrtc;
 
 use super::{ControllerChange, ShellCoordinator, UserEvent};
 use actix::{Actor, ActorContext, Addr, Context, Handler, Message};
@@ -139,10 +138,6 @@ impl GuiActors {
                 input: frontend::InputRecipients {
                     configure: self.input.clone().recipient(),
                     controller_api: self.input.clone().recipient(),
-                },
-                webrtc: frontend::WebRtcRecipients {
-                    start: self.control.clone().recipient(),
-                    stop: self.control.clone().recipient(),
                 },
             },
             move || {

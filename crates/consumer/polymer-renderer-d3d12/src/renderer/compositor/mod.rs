@@ -1,8 +1,6 @@
 //! Native D3D12/DXGI viewer compositor.
 #![allow(unsafe_code)]
 
-use crate::webrtc::WebRtcCompositor;
-
 use std::{
     collections::VecDeque,
     error::Error,
@@ -42,8 +40,8 @@ mod shader;
 mod snapshot;
 mod streams;
 use pacing::*;
-use resources::*;
 pub use resources::create_texture;
+use resources::*;
 pub(super) use resources::{create_srv, transition};
 use setup::*;
 pub use shader::ShaderStage;

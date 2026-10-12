@@ -5,7 +5,6 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-axum = "0.8.8"
 egui = "0.29.1"
 clap = { version = "4.6.1", features = ["derive"] }
 crossfire.workspace = true
@@ -19,10 +18,7 @@ polymer-ipc.workspace = true
 polymer-protocol.workspace = true
 polymer-runtime.workspace = true
 polymer-statistics.workspace = true
-tokio = { version = "1.32", features = ["rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
-webrtc = "0.14.0"
-webrtc-ice = "0.14.0"
 winit.workspace = true
 
 [lints]

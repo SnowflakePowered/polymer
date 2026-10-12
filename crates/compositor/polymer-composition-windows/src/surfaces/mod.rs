@@ -8,10 +8,7 @@ use polymer_renderer::{
 use polymer_renderer_d3d12::D3d12Compositor;
 use polymer_runtime::{SurfaceFrameReceiver, SurfaceOffer};
 use std::{collections::HashMap, error::Error, sync::mpsc, time::Duration};
-use windows::{
-    Win32::Graphics::Direct3D12::ID3D12Device,
-    core::{IUnknown, Interface},
-};
+use windows::core::IUnknown;
 mod group;
 mod video;
 use group::{GroupEvents, SurfaceGroup};
@@ -19,14 +16,13 @@ use polymer_composition::{ShaderContent, ShaderControl, SurfaceGroupLayout, Surf
 use video::VideoSurface;
 pub(crate) struct RenderDevice {
     adapter: AdapterLuid,
-    device: IUnknown,
+    _device: IUnknown,
     surface_compositors: HashMap<u64, SurfaceCompositor>,
     videos: HashMap<u64, VideoSurface>,
     groups: HashMap<u64, SurfaceGroup>,
     events: mpsc::Receiver<SurfaceFrameEvent>,
     shader_contents: mpsc::Receiver<ShaderContent>,
     group_events: GroupEvents,
-    publication: Option<polymer_renderer_d3d12::webrtc::Publication>,
 }
 
 struct SurfaceCompositor {
@@ -65,23 +61,14 @@ impl RenderDevice {
         let (shaders, shader_contents) = mpsc::channel();
         Self {
             adapter,
-            device,
+            _device: device,
             events,
             shader_contents,
             group_events: GroupEvents { frames, shaders },
-            publication: None,
             surface_compositors: HashMap::new(),
             videos: HashMap::new(),
             groups: HashMap::new(),
         }
-    }
-
-    pub(crate) fn accepts_detached_frames(&self) -> bool {
-        self.publication.is_none()
-    }
-
-    fn d3d12_device(&self) -> Result<ID3D12Device, windows::core::Error> {
-        self.device.cast()
     }
 
     fn create_surface_compositor(
@@ -141,7 +128,6 @@ impl RenderDevice {
         } else {
             (stream.width, stream.height)
         };
-        let group = group.filter(|_| self.accepts_detached_frames());
         let (compositor, content) = if let Some(group) = group {
             (None, self.import_into_group(window, offer, turns, group)?)
         } else {
@@ -258,12 +244,6 @@ impl RenderDevice {
         output.worker = Some(worker);
         Ok(())
     }
-    pub(crate) fn register(&mut self, connection: u64, target: u32) -> Result<(), Box<dyn Error>> {
-        if let Some(publication) = &mut self.publication {
-            publication.add_stream(connection, target)?;
-        }
-        Ok(())
-    }
     pub(crate) fn remove(&mut self, connection: u64) {
         let group = self
             .surface_compositors
@@ -276,9 +256,6 @@ impl RenderDevice {
             if surfaces.is_empty() {
                 self.groups.remove(&group);
             }
-        }
-        if let Some(publication) = &mut self.publication {
-            publication.remove_stream(connection);
         }
     }
     pub(crate) fn set_latest(&mut self, connection: u64, frame: polymer_protocol::FrameReady) {
@@ -345,40 +322,11 @@ impl RenderDevice {
             })
             .map_err(|error| error.to_string())
     }
-    pub(crate) fn start_webrtc(
-        &mut self,
-        bind: std::net::SocketAddr,
-        targets: &[u32],
-        streams: &[(u64, u32)],
-    ) -> Result<(), Box<dyn Error>> {
-        let mut publication = polymer_renderer_d3d12::webrtc::Publication::start_d3d12_device(
-            bind,
-            targets,
-            self.adapter,
-            &self.d3d12_device()?,
-        )?;
-        for &(connection, target) in streams {
-            publication.add_stream(connection, target)?;
-        }
-        self.publication = Some(publication);
-        Ok(())
-    }
-    pub(crate) fn stop_webrtc(&mut self) {
-        self.publication = None;
-    }
     pub(crate) fn replace(
         &mut self,
         context: (AdapterLuid, IUnknown),
     ) -> Result<(), Box<dyn Error>> {
-        let mut replacement = Self::new(context);
-        if let Some(publication) = &mut self.publication {
-            publication.reattach_d3d12_device(replacement.adapter, &replacement.d3d12_device()?)?;
-            for &connection in self.surface_compositors.keys() {
-                publication.remove_stream(connection);
-            }
-        }
-        replacement.publication = self.publication.take();
-        *self = replacement;
+        *self = Self::new(context);
         Ok(())
     }
     pub fn draw(
@@ -386,7 +334,6 @@ impl RenderDevice {
         corners: &[(u64, f32)],
         permit_wait: Duration,
     ) -> Result<Option<bool>, String> {
-        let mut publication = self.publication.as_mut();
         let mut presented = false;
         let mut deferred = false;
         for (&connection, output) in &mut self.surface_compositors {
@@ -415,15 +362,9 @@ impl RenderDevice {
             );
             placement.content = SurfaceContent::fill(rectangle);
             let plan = CompositingPlan::new([0.0, 0.0, 0.0, 1.0], vec![placement]);
-            if let Some(publication) = publication.as_deref_mut() {
-                publication
-                    .present_d3d12(compositor, &plan)
-                    .map_err(|error| error.to_string())?;
-            } else {
-                compositor
-                    .present_with_webrtc(&plan, None)
-                    .map_err(|error| error.to_string())?;
-            }
+            compositor
+                .present(&plan)
+                .map_err(|error| error.to_string())?;
             presented = true;
         }
         if presented {

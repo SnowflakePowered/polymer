@@ -305,9 +305,6 @@ impl Compositor for MacosCompositor {
     ) -> Result<(), Box<dyn Error>> {
         Err("Metal composition receives frames through the frontend capture dispatcher".into())
     }
-    fn register_surface(&mut self, connection: u64, target: u32) -> Result<(), Box<dyn Error>> {
-        self.surfaces.register(connection, target)
-    }
     fn remove_surface(&mut self, connection: u64) {
         self.reconciled = None;
         self.surfaces.remove(connection);
@@ -346,17 +343,6 @@ impl Compositor for MacosCompositor {
             .map_or(Ok(None), |s| {
                 s.renderer.snapshot(connection).map_err(|e| e.to_string())
             })
-    }
-    fn start_webrtc(
-        &mut self,
-        bind: std::net::SocketAddr,
-        targets: &[u32],
-        streams: &[(u64, u32)],
-    ) -> Result<(), Box<dyn Error>> {
-        self.surfaces.start_webrtc(bind, targets, streams)
-    }
-    fn stop_webrtc(&mut self) {
-        self.surfaces.stop_webrtc();
     }
     fn open_video(
         &mut self,
