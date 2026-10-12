@@ -22,6 +22,7 @@
 
 use anyrender::{
     Filter, Glyph, NormalizedCoord, Paint, PaintRef, PaintScene, RenderContext,
+    filters::FilterEffect,
     recording::RenderCommand,
 };
 use kurbo::{Affine, BezPath, Rect, Shape, Stroke, Vec2};
@@ -41,6 +42,10 @@ const CLIP_TOLERANCE: f64 = 0.05;
 /// Compositing group ids for isolated layers, disjoint from tracked-surface
 /// source ids.
 const ISOLATED_GROUP: u64 = 1 << 63;
+
+/// Compositing group ids for layers whose backdrop blur is applied by the
+/// native compositor, disjoint from isolated and tracked-surface ids.
+const BACKDROP_GROUP: u64 = 1 << 62;
 
 /// Computed CSS properties the GPU compositor needs for a game view.
 #[derive(Debug, Clone, PartialEq)]
@@ -100,6 +105,7 @@ pub struct CompositingGroup {
     pub bounds: Rect,
     pub opacity: f32,
     pub shadow: Option<CompositionShadowStyle>,
+    pub backdrop_blur: Option<f32>,
 }
 
 pub struct CompositingOutput {
@@ -143,6 +149,12 @@ pub struct BandedScene<'a, S> {
     /// Paint-order ordinal of the next isolated layer, for embedded surfaces
     /// that share a source with another placement.
     next_isolated_group: u64,
+    /// Paint-order ordinal of the next natively blurred layer.
+    next_backdrop_group: u64,
+    /// Compositing group id to the standard deviation of its backdrop blur.
+    /// Guest frames are not part of any chrome scene, so only the native
+    /// compositor can sample them beneath a `backdrop-filter`.
+    backdrop_blurs: HashMap<u64, f32>,
 }
 
 impl<'a, S: PaintScene + Default> BandedScene<'a, S> {
@@ -165,6 +177,8 @@ impl<'a, S: PaintScene + Default> BandedScene<'a, S> {
             command_meta: (0..band_count).map(|_| Vec::new()).collect(),
             promoted_layers: HashMap::new(),
             next_isolated_group: 0,
+            next_backdrop_group: 0,
+            backdrop_blurs: HashMap::new(),
         }
     }
 
@@ -293,6 +307,7 @@ impl BandedScene<'_, anyrender::Scene> {
                                 // separately from raster content.
                                 opacity: 1.0,
                                 shadow: None,
+                                backdrop_blur: self.backdrop_blurs.get(&group_id).copied(),
                             });
                             source_groups.push(Some(group_id));
                         } else {
@@ -403,7 +418,9 @@ impl<S: PaintScene + Default> PaintScene for BandedScene<'_, S> {
         self.current = 0;
         self.next_layer_id = 1;
         self.next_isolated_group = 0;
+        self.next_backdrop_group = 0;
         self.promoted_layers.clear();
+        self.backdrop_blurs.clear();
         for metadata in &mut self.command_meta {
             metadata.clear();
         }
@@ -426,6 +443,21 @@ impl<S: PaintScene + Default> PaintScene for BandedScene<'_, S> {
         let clip = clip.into_path(CLIP_TOLERANCE);
         let id = self.next_layer_id;
         self.next_layer_id += 1;
+        let blur = backdrop_filter.as_ref().and_then(|filter| {
+            filter.nodes().iter().find_map(|node| match &node.effect {
+                FilterEffect::GaussianBlur(blur) => Some(blur.std_deviation),
+                _ => None,
+            })
+        });
+        let backdrop_filter = if let Some(blur) = blur {
+            let group = BACKDROP_GROUP | self.next_backdrop_group;
+            self.next_backdrop_group += 1;
+            self.promoted_layers.insert(id, group);
+            self.backdrop_blurs.insert(group, blur.max(0.0));
+            None
+        } else {
+            backdrop_filter
+        };
         self.band().push_layer(
             fill,
             blend,
@@ -529,8 +561,11 @@ impl<S: PaintScene + Default> PaintScene for BandedScene<'_, S> {
                 group,
                 surface_group: None,
             });
-            if let (Some(layer), Some(group)) = (self.stack.last(), group) {
-                self.promoted_layers.insert(layer.id, group);
+            if let (Some(layer), Some(group)) = (self.stack.last(), group)
+                && let Some(previous) = self.promoted_layers.insert(layer.id, group)
+                && let Some(blur) = self.backdrop_blurs.remove(&previous)
+            {
+                self.backdrop_blurs.insert(group, blur);
             }
             self.advance_band();
             return;

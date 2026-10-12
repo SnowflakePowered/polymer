@@ -64,7 +64,7 @@ impl GroupSession {
         messages: &mpsc::Receiver<GroupMessage>,
     ) -> Result<(), Box<dyn Error>> {
         loop {
-            let wait = if self.stale || Renderer::has_pending_frame(&self.compositor) {
+            let wait = if self.redraw_due() {
                 Duration::ZERO
             } else {
                 self.measure_due.map_or(IDLE_WAIT, |due| {
@@ -280,9 +280,14 @@ impl GroupSession {
         self.stale = true;
     }
 
+    fn redraw_due(&self) -> bool {
+        self.stale
+            || Renderer::has_pending_frame(&self.compositor)
+            || self.compositor.shader().is_some_and(ShaderStage::settling)
+    }
+
     fn present(&mut self) -> Result<(), Box<dyn Error>> {
-        if !(self.stale || Renderer::has_pending_frame(&self.compositor))
-            || !self.compositor.begin_frame_within(PERMIT_WAIT)
+        if !self.redraw_due() || !self.compositor.begin_frame_within(PERMIT_WAIT)
         {
             return Ok(());
         }

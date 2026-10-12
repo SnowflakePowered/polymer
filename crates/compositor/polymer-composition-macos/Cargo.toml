@@ -21,6 +21,7 @@ objc2-app-kit.workspace = true
 objc2-foundation.workspace = true
 objc2-quartz-core = "0.3.2"
 objc2-core-graphics = "0.3.2"
+objc2-core-image = "0.3.2"
 objc2-metal = "0.3.2"
 raw-window-handle.workspace = true
 cursor-icon = "1.2.0"

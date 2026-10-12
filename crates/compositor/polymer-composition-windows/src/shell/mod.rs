@@ -1,5 +1,6 @@
 //! Retained shell raster and WUC composition ownership.
 
+mod backdrop;
 mod chrome;
 mod chunk;
 mod raster;
@@ -7,6 +8,7 @@ mod raster;
 pub(crate) use raster::ShellRasterizer;
 
 use crate::surfaces::RenderDevice;
+use backdrop::BackdropBlurs;
 use chunk::{ChunkSurface, ChunkSurfaces};
 use polymer_composition::{
     CompositionScene as ShellFrame, CompositionShadowStyle, RasterChunkId, RasterChunkLayout,
@@ -82,6 +84,7 @@ struct CompositionGroup {
     height: f32,
     opacity: f32,
     shadow: Option<CompositionShadowStyle>,
+    backdrop_blur: Option<f32>,
 }
 
 struct CompositionContents {
@@ -91,6 +94,7 @@ struct CompositionContents {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum CompositionNodeId {
+    Backdrop(u64),
     Group(u64),
     Layer(CompositionLayerId),
 }
@@ -151,6 +155,7 @@ pub(crate) struct ShellCompositor {
     visuals: HashMap<CompositionLayerId, CompositionVisual>,
     swapchain_surfaces: HashMap<usize, (IUnknown, windows::UI::Composition::ICompositionSurface)>,
     group_visuals: HashMap<u64, CompositionGroupVisual>,
+    backdrops: BackdropBlurs,
     child_orders: HashMap<Option<u64>, Vec<CompositionNodeId>>,
     raster: RasterDomain,
     publication_ready: Arc<dyn Fn() + Send + Sync>,
@@ -177,6 +182,7 @@ impl ShellCompositor {
             visuals: HashMap::new(),
             swapchain_surfaces: HashMap::new(),
             group_visuals: HashMap::new(),
+            backdrops: BackdropBlurs::default(),
             child_orders: HashMap::new(),
             raster,
             publication_ready,
@@ -317,6 +323,7 @@ impl ShellCompositor {
                     height: group.bounds.height() as f32,
                     opacity: group.opacity,
                     shadow: group.shadow,
+                    backdrop_blur: group.backdrop_blur,
                 }
             })
             .collect();
@@ -489,6 +496,18 @@ impl ShellCompositor {
             if let Some(stored) = self.group_visuals.get_mut(&group.id) {
                 stored.shadow = shadow;
             }
+            if let Some(blur) = group.backdrop_blur {
+                let backdrop = self.backdrops.update(&self.compositor, group.id, blur)?;
+                backdrop.SetOffset(Vector3 {
+                    X: group.x,
+                    Y: group.y,
+                    Z: 0.0,
+                })?;
+                backdrop.SetSize(Vector2 {
+                    X: group.width.max(0.0),
+                    Y: group.height.max(0.0),
+                })?;
+            }
         }
 
         for layer in &content.layers {
@@ -549,10 +568,11 @@ impl ShellCompositor {
 
         let mut desired = HashMap::<Option<u64>, Vec<(i32, CompositionNodeId)>>::new();
         for group in &content.groups {
-            desired
-                .entry(group.parent)
-                .or_default()
-                .push((group.z_order, CompositionNodeId::Group(group.id)));
+            let children = desired.entry(group.parent).or_default();
+            if group.backdrop_blur.is_some() {
+                children.push((group.z_order, CompositionNodeId::Backdrop(group.id)));
+            }
+            children.push((group.z_order, CompositionNodeId::Group(group.id)));
         }
         for layer in &content.layers {
             desired
@@ -620,6 +640,13 @@ impl ShellCompositor {
             .map(|layer| layer.id)
             .collect::<HashSet<_>>();
         self.group_visuals.retain(|id, _| live_groups.contains(id));
+        let blurred = content
+            .groups
+            .iter()
+            .filter(|group| group.backdrop_blur.is_some())
+            .map(|group| group.id)
+            .collect::<HashSet<_>>();
+        self.backdrops.retain(|id| blurred.contains(&id));
         self.visuals.retain(|id, _| live_layers.contains(id));
         let live_contents = content
             .layers
@@ -633,6 +660,7 @@ impl ShellCompositor {
 
     fn node_visual(&self, id: CompositionNodeId) -> Option<Visual> {
         match id {
+            CompositionNodeId::Backdrop(id) => self.backdrops.visual(id)?.cast().ok(),
             CompositionNodeId::Group(id) => self.group_visuals.get(&id)?.visual.cast().ok(),
             CompositionNodeId::Layer(id) => self.visuals.get(&id)?.visual.cast().ok(),
         }
