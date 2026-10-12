@@ -30,6 +30,7 @@ use tokio::sync::oneshot;
 
 /// Delivers shell events to the window thread, posting at most one wake per
 /// drain so a burst of frames and input outcomes costs one message.
+#[derive(Clone)]
 struct ShellOutbox {
     events: Sender<ShellEvent>,
     signalled: Arc<AtomicBool>,

@@ -1,7 +1,7 @@
 use super::ShellDocument;
 use super::image::ImageWidget;
 use super::scrolling::Scroller;
-use super::tracked_surface::{TrackedSurfaceWidget, is_tracked_surface_element};
+use super::tracked_surface::TrackedSurfaceWidget;
 use crate::shell::runtime::deno::{ScrollBehavior, ScrollCommand};
 use blitz_dom::node::NodeData;
 use blitz_dom::node::Widget;
@@ -34,14 +34,14 @@ impl ShellDocument {
             let Some(element) = node.element_data() else {
                 continue;
             };
-            if is_tracked_surface_element(element) {
-                let source = element
-                    .attr(local_name!("src"))
-                    .and_then(|source| source.parse().ok());
-                widgets.push((id, Box::new(TrackedSurfaceWidget::new(source))));
-            } else if element.name.local == local_name!("img") {
+            if let Some(widget) = TrackedSurfaceWidget::for_element(id, element) {
+                widgets.push((id, Box::new(widget)));
+            }
+            if element.name.local == local_name!("img") {
                 images.push(id);
-            } else if element.name.local == local_name!("audio") {
+            } else if element.name.local == local_name!("audio")
+                || element.name.local == local_name!("video")
+            {
                 media.push(id);
             }
         }

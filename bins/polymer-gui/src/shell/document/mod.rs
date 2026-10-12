@@ -22,7 +22,7 @@ mod tracked_surface;
 
 use crate::shell::protocol::{
     RasterChunkId, ShellChannel, ShellCompositionGroup, ShellFrame, ShellRasterChunk,
-    TrackedSurfaceLayout,
+    TrackedSource, TrackedSurfaceLayout,
 };
 use crate::shell::runtime::ShellRuntime;
 use crate::shell::runtime::deno::ScrollCommand;
@@ -183,15 +183,13 @@ impl ShellDocumentFactory {
         Self { event_proxy }
     }
 
-    pub fn create(
+    pub(in crate::shell) fn create(
         &self,
-        html: &str,
-        base_url: String,
-        width: u32,
-        height: u32,
-        scale_factor: f32,
+        source: &crate::shell::ShellSource,
         shell: ShellChannel,
+        outbox: crate::shell::ShellOutbox,
     ) -> ShellDocument {
+        let base_url = source.base_url.clone();
         let (sender, arrivals) = channel();
         let arrival_shell = shell.clone();
         let waker: Arc<dyn NetWaker> = Arc::new(move |_| {
@@ -207,7 +205,7 @@ impl ShellDocumentFactory {
             NativeShellProvider::new(self.event_proxy.clone(), shell),
         );
         let mut document = blitz_html::HtmlDocument::from_html(
-            html,
+            &source.html,
             blitz_dom::DocumentConfig {
                 base_url: Some(base_url.clone()),
                 net_provider: Some(net.clone()),
@@ -216,7 +214,13 @@ impl ShellDocumentFactory {
                 ..Default::default()
             },
         );
-        let media = MediaPlayers::new(net.clone(), document.as_ref().id(), &base_url, media_shell);
+        let media = MediaPlayers::new(
+            net.clone(),
+            document.as_ref().id(),
+            &base_url,
+            media_shell,
+            outbox,
+        );
         let image_loader = Arc::new(image::ImageLoader::new(
             net,
             waker,
@@ -245,7 +249,7 @@ impl ShellDocumentFactory {
             pending_scrolls: Vec::new(),
             pointer_hover_path: Vec::new(),
         };
-        document.resize(width, height, scale_factor);
+        document.resize(source.width, source.height, source.scale_factor);
         document.load_document_media();
         // Scripts run after parsing, with a complete DOM just like deferred
         // document scripts. Resolve once first so geometry APIs have useful
@@ -588,7 +592,7 @@ impl ShellDocument {
                 let node_id = node_id.as_u64() as usize;
                 surface_layout.push(TrackedSurfaceLayout {
                     node_id,
-                    source_id: placement.source_id,
+                    source: TrackedSource::from_id(placement.source_id),
                     bounds: scaled_rect(placement.rect, f64::from(self.scale_factor)),
                     z_order,
                     group: placement.group,

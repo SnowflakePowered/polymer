@@ -83,7 +83,10 @@ impl D3d12Compositor {
     }
 
     pub(crate) fn resize(&mut self, window: &impl RenderWindow) -> Result<bool, Box<dyn Error>> {
-        let size = window.render_extent();
+        self.resize_to(window.render_extent())
+    }
+
+    pub fn resize_to(&mut self, size: polymer_renderer::Extent) -> Result<bool, Box<dyn Error>> {
         if size.width == 0 || size.height == 0 {
             return Ok(false);
         }

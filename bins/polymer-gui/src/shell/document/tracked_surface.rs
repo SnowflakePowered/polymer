@@ -1,25 +1,37 @@
 use super::{GamePlacement, GameViewStyle};
+use crate::shell::protocol::TrackedSource;
 use anyrender::PaintScene as _;
-use blitz_dom::LocalName;
-use blitz_dom::local_name;
-use blitz_dom::node::Widget;
+use blitz_dom::node::{ElementData, Widget};
+use blitz_dom::{LocalName, NodeId, local_name};
 use std::collections::HashMap;
 
 #[derive(Default)]
 pub(super) struct TrackedSurfaceWidget {
-    source_id: Option<u64>,
+    source: Option<TrackedSource>,
 }
 
 impl TrackedSurfaceWidget {
-    pub(super) fn new(source_id: Option<u64>) -> Self {
-        Self { source_id }
+    pub(super) fn for_element(node: NodeId, element: &ElementData) -> Option<Self> {
+        if element.name.local == local_name!("video") {
+            return Some(Self {
+                source: Some(TrackedSource::video(node)),
+            });
+        }
+        is_tracked_surface_element(element).then(|| Self {
+            source: element
+                .attr(local_name!("src"))
+                .and_then(|source| source.parse().ok())
+                .map(TrackedSource::Target),
+        })
     }
 }
 
 impl Widget for TrackedSurfaceWidget {
     fn attribute_changed(&mut self, name: &str, _old_value: Option<&str>, new_value: Option<&str>) {
-        if name == "src" {
-            self.source_id = new_value.and_then(|value| value.parse().ok());
+        if name == "src" && !matches!(self.source, Some(TrackedSource::Video(_))) {
+            self.source = new_value
+                .and_then(|value| value.parse().ok())
+                .map(TrackedSource::Target);
         }
     }
 
@@ -32,9 +44,9 @@ impl Widget for TrackedSurfaceWidget {
         _scale: f64,
     ) -> anyrender::Scene {
         let mut scene = anyrender::Scene::new();
-        if let Some(source_id) = self.source_id {
+        if let Some(source) = self.source {
             let paint = anyrender::Paint::Resource(peniko::ImageBrush {
-                image: anyrender::ResourceId::from_ffi(source_id),
+                image: anyrender::ResourceId::from_ffi(source.id()),
                 sampler: Default::default(),
             });
             scene.fill(
@@ -58,10 +70,9 @@ pub(super) fn apply_tracked_surface_styles(
         .iter()
         .filter_map(|(node_id, node)| {
             let element = node.element_data()?;
-            if !is_tracked_surface_element(element) {
-                return None;
-            }
-            let source = element.attr(local_name!("src"))?.parse::<u64>().ok()?;
+            let source = TrackedSurfaceWidget::for_element(node_id, element)?
+                .source?
+                .id();
             let radius = element
                 .attr(LocalName::from("data-corner-radius"))
                 .and_then(|value| value.parse::<f32>().ok())
@@ -122,18 +133,12 @@ pub(super) fn initialise_tracked_surfaces(document: &mut blitz_html::HtmlDocumen
         .tree()
         .iter()
         .filter_map(|(node, current)| {
-            let element = current.element_data()?;
-            if &*element.name.local != "tracked-surface" {
-                return None;
-            }
-            let source = element.attr(local_name!("src"))?.parse::<u64>().ok()?;
-            Some((node, source))
+            let widget = TrackedSurfaceWidget::for_element(node, current.element_data()?)?;
+            Some((node, widget))
         })
         .collect::<Vec<_>>();
-    for (node, source) in surfaces {
-        document
-            .as_mut()
-            .set_custom_widget(node, Box::new(TrackedSurfaceWidget::new(Some(source))));
+    for (node, widget) in surfaces {
+        document.as_mut().set_custom_widget(node, Box::new(widget));
     }
 }
 

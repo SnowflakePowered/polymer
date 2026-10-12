@@ -263,13 +263,13 @@ impl D3d12ConsumerDevice {
                     return Err(windows::core::Error::from_hresult(E_INVALIDARG));
                 }
             }
-            Ok(ImportedD3d12Stream {
+            Ok(ImportedD3d12Stream::new(
                 resources,
                 consumer,
-                width: stream.width,
-                height: stream.height,
-                format: stream.format,
-            })
+                stream.width,
+                stream.height,
+                stream.format,
+            ))
         }
     }
 
@@ -303,6 +303,22 @@ pub struct ImportedD3d12Stream {
 }
 
 impl ImportedD3d12Stream {
+    pub fn new(
+        resources: Vec<ID3D12Resource>,
+        consumer: ID3D12Fence,
+        width: u32,
+        height: u32,
+        format: u32,
+    ) -> Self {
+        Self {
+            resources,
+            consumer,
+            width,
+            height,
+            format,
+        }
+    }
+
     pub fn resource(&self, slot: u32) -> Option<&ID3D12Resource> {
         self.resources.get(slot as usize)
     }

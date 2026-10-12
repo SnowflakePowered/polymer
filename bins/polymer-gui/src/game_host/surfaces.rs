@@ -286,13 +286,20 @@ impl GameHost {
 
     pub fn apply_tracked_layout(&mut self, placements: &[TrackedSurfaceLayout]) -> bool {
         let mut placed = HashMap::<u64, Vec<SurfaceGeometry>>::new();
+        let mut videos = HashMap::<u64, Vec<SurfaceGeometry>>::new();
         for placement in placements {
-            let Some((&connection, _)) = self
-                .surfaces
-                .iter()
-                .find(|(_, surface)| u64::from(surface.index) == placement.source_id)
-            else {
-                continue;
+            let (connection, video) = match placement.source {
+                TrackedSource::Video(id) => (id, true),
+                TrackedSource::Target(index) => {
+                    let Some((&connection, _)) = self
+                        .surfaces
+                        .iter()
+                        .find(|(_, surface)| u64::from(surface.index) == index)
+                    else {
+                        continue;
+                    };
+                    (connection, false)
+                }
             };
             // Keep the guest visual in the tracked element's full coordinate
             // space. Shrinking this rectangle to the accumulated paint clip
@@ -302,18 +309,22 @@ impl GameHost {
             // visuals at the window boundary; finer clips belong on the WUC
             // visual itself, not in its layout geometry.
             let rect = placement.bounds;
-            placed.entry(connection).or_default().push(SurfaceGeometry {
-                x: rect.x0.round() as i32,
-                y: rect.y0.round() as i32,
-                width: rect.width().round().max(0.0) as u32,
-                height: rect.height().round().max(0.0) as u32,
-                pointer_events: true,
-                z_index: placement.z_order,
-                group: placement.group,
-                corner_radius: placement.corner_radius,
-                style: placement.style.clone(),
-                opacity: placement.opacity,
-            });
+            let geometries = if video { &mut videos } else { &mut placed };
+            geometries
+                .entry(connection)
+                .or_default()
+                .push(SurfaceGeometry {
+                    x: rect.x0.round() as i32,
+                    y: rect.y0.round() as i32,
+                    width: rect.width().round().max(0.0) as u32,
+                    height: rect.height().round().max(0.0) as u32,
+                    pointer_events: !video,
+                    z_index: placement.z_order,
+                    group: placement.group,
+                    corner_radius: placement.corner_radius,
+                    style: placement.style.clone(),
+                    opacity: placement.opacity,
+                });
         }
 
         let requested = self
@@ -328,7 +339,8 @@ impl GameHost {
                     .collect::<HashSet<_>>()
             })
             .unwrap_or_default();
-        let mut changed = false;
+        let mut changed = self.video_layout != videos;
+        self.video_layout = videos;
         for (connection, surface) in &mut self.surfaces {
             let geometries = match placed.remove(connection) {
                 Some(geometries) => geometries,

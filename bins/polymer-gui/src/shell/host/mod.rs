@@ -109,12 +109,9 @@ impl ShellHost {
             outbox,
         } = start;
         let document = SharedShellDocument(Rc::new(RefCell::new(factory.document.create(
-            &source.html,
-            source.base_url.clone(),
-            source.width,
-            source.height,
-            source.scale_factor,
+            &source,
             channel,
+            outbox.clone(),
         ))));
         let (runtime, notifications) = ShellRuntime::start(
             document.clone(),

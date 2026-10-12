@@ -356,4 +356,14 @@ impl Compositor for MacosCompositor {
     fn stop_webrtc(&mut self) {
         self.surfaces.stop_webrtc();
     }
+    fn open_video(
+        &mut self,
+        _id: u64,
+        _bytes: VideoBytes,
+        _sink: VideoSink,
+    ) -> Result<(), Box<dyn Error>> {
+        Err("video playback is not supported on macOS yet".into())
+    }
+    fn control_video(&mut self, _id: u64, _control: VideoControl) {}
+    fn close_video(&mut self, _id: u64) {}
 }

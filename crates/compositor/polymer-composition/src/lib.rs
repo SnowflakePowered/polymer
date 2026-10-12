@@ -3,6 +3,7 @@
 mod events;
 pub mod overlay;
 mod scene;
+mod video;
 pub use events::*;
 use polymer_renderer::ReceivedSurface;
 use polymer_renderer::egui::InputDiagnostics;
@@ -16,6 +17,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+pub use video::*;
 use winit::{
     event::WindowEvent,
     window::{Window, WindowId},
@@ -121,4 +123,12 @@ pub trait Compositor {
         streams: &[(u64, u32)],
     ) -> Result<(), Box<dyn Error>>;
     fn stop_webrtc(&mut self);
+    fn open_video(
+        &mut self,
+        id: u64,
+        bytes: VideoBytes,
+        sink: VideoSink,
+    ) -> Result<(), Box<dyn Error>>;
+    fn control_video(&mut self, id: u64, control: VideoControl);
+    fn close_video(&mut self, id: u64);
 }

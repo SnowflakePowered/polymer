@@ -4,7 +4,9 @@
 //! models are contained here; the shell coordinator only forwards commands.
 
 use crate::{
-    launch::AttachedLaunchPlan, shell::document::GameViewStyle, shell::protocol::TrackedSurfaceLayout,
+    launch::AttachedLaunchPlan,
+    shell::document::GameViewStyle,
+    shell::protocol::{TrackedSource, TrackedSurfaceLayout},
 };
 use polymer_composition::{CompositorHandle, SurfaceLayer as CapturedSurfaceSnapshot};
 use polymer_pluginhost::controller::AttachAutomation;
@@ -27,6 +29,7 @@ mod commands;
 mod geometry;
 mod launch;
 mod surfaces;
+mod videos;
 
 pub(crate) use geometry::*;
 
@@ -106,6 +109,8 @@ pub(crate) struct GameHost {
     dirty: Arc<AtomicBool>,
     work_pending: bool,
     surfaces: HashMap<u64, CapturedSurface>,
+    video_layout: HashMap<u64, Vec<SurfaceGeometry>>,
+    video_extents: HashMap<u64, Extent>,
     pending_offer: Option<polymer_runtime::SurfaceOffer>,
     /// Adapter-local capture device and imported captured streams.
     compositor: CompositorHandle,
@@ -126,6 +131,8 @@ impl GameHost {
             dirty: Arc::new(AtomicBool::new(false)),
             work_pending: false,
             surfaces: HashMap::new(),
+            video_layout: HashMap::new(),
+            video_extents: HashMap::new(),
             pending_offer: None,
             compositor,
             composition_revision: 0,
@@ -134,13 +141,20 @@ impl GameHost {
     }
 
     pub(crate) fn captured_surface_snapshots(&self) -> Vec<CapturedSurfaceSnapshot> {
-        let mut snapshots = Vec::new();
-        for (&connection, surface) in &self.surfaces {
+        let captured = self.surfaces.iter().map(|(&connection, surface)| {
             let source = Extent::new(
                 surface.preferred_width.max(1),
                 surface.preferred_height.max(1),
             );
-            for (instance, geometry) in surface.geometries.iter().enumerate() {
+            (connection, source, &surface.geometries)
+        });
+        let videos = self.video_layout.iter().map(|(&id, geometries)| {
+            let source = self.video_extents.get(&id).copied();
+            (id, source.unwrap_or(Extent::new(1, 1)), geometries)
+        });
+        let mut snapshots = Vec::new();
+        for (connection, source, geometries) in captured.chain(videos) {
+            for (instance, geometry) in geometries.iter().enumerate() {
                 let rectangle = Rect::new(geometry.x, geometry.y, geometry.width, geometry.height);
                 snapshots.push(CapturedSurfaceSnapshot {
                     connection,

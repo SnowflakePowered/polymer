@@ -1,5 +1,4 @@
 use polymer_consumer_d3d12::ImportedD3d12Stream;
-use polymer_ipc::StreamReady;
 use polymer_protocol::MAX_IMAGE_SLOTS;
 use windows::Win32::Graphics::{Direct3D12::*, Dxgi::Common::DXGI_FORMAT};
 
@@ -7,6 +6,13 @@ use super::compositor::{create_srv, create_texture, transition};
 use polymer_renderer::renderer::frame_ownership::{Retention, SurfaceFrames};
 
 pub(super) const SURFACE_DESCRIPTORS: u32 = MAX_IMAGE_SLOTS as u32 + 1;
+
+#[derive(Clone, Copy)]
+pub(super) struct SurfaceIdentity {
+    pub surface_id: u64,
+    pub target_window: i64,
+    pub flip_y: bool,
+}
 
 pub(super) struct ImportedSurface {
     pub connection: u64,
@@ -25,7 +31,7 @@ impl ImportedSurface {
     pub fn new(
         device: &ID3D12Device,
         imported: ImportedD3d12Stream,
-        stream: &StreamReady,
+        identity: SurfaceIdentity,
         connection: u64,
         quarter_turns: u8,
     ) -> windows::core::Result<Self> {
@@ -40,11 +46,11 @@ impl ImportedSurface {
             });
         let mut surface = Self {
             connection,
-            surface_id: stream.surface_id.0,
-            target_window: stream.source_window,
+            surface_id: identity.surface_id,
+            target_window: identity.target_window,
             descriptor: 0,
             imported,
-            flip_y: stream.bottom_up,
+            flip_y: identity.flip_y,
             quarter_turns: quarter_turns % 4,
             cache: None,
             video_cache: None,

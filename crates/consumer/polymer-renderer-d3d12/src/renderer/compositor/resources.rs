@@ -113,7 +113,7 @@ impl UploadArena {
     }
 }
 
-pub(crate) unsafe fn create_texture(
+pub unsafe fn create_texture(
     device: &ID3D12Device,
     width: u32,
     height: u32,
