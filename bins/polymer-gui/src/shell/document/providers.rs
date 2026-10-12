@@ -83,14 +83,14 @@ impl NetProvider for ShellNetProvider {
 
 pub(super) struct NativeShellProvider {
     proxy: crate::window_manager::EventLoopProxy<crate::app::UserEvent>,
-    shell: crate::shell::protocol::ShellChannel,
+    shell: crate::shell::protocol::ShellInbox,
     clipboard: Mutex<Option<arboard::Clipboard>>,
 }
 
 impl NativeShellProvider {
     pub(super) fn new(
         proxy: crate::window_manager::EventLoopProxy<crate::app::UserEvent>,
-        shell: crate::shell::protocol::ShellChannel,
+        shell: crate::shell::protocol::ShellInbox,
     ) -> Self {
         Self {
             proxy,

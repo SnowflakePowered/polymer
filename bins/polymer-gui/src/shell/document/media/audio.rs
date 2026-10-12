@@ -1,7 +1,7 @@
 use super::{
     MediaData, MediaPlayback, MediaSignalKind, NodeSignal, feed::AudioFeed, status::MediaStatus,
 };
-use crate::shell::protocol::ShellChannel;
+use crate::shell::protocol::ShellInbox;
 use blitz_dom::NodeId;
 use blitz_traits::net::{Bytes, Url};
 use rodio::{Decoder, Source, mixer::Mixer, source::EmptyCallback};
@@ -53,7 +53,7 @@ impl DecodedSource {
 
 pub(super) struct AudioPlayback {
     node: NodeId,
-    shell: ShellChannel,
+    shell: ShellInbox,
     feed: AudioFeed,
     data: Option<MediaData>,
     released: bool,
@@ -62,7 +62,7 @@ pub(super) struct AudioPlayback {
 }
 
 impl AudioPlayback {
-    pub fn new(node: NodeId, shell: ShellChannel, mixer: Option<&Mixer>) -> Self {
+    pub fn new(node: NodeId, shell: ShellInbox, mixer: Option<&Mixer>) -> Self {
         Self {
             node,
             shell,

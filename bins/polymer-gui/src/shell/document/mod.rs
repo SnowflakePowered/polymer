@@ -23,7 +23,7 @@ mod tracked_surface;
 mod urls;
 
 use crate::shell::protocol::{
-    RasterChunkId, ShellChannel, ShellCompositionGroup, ShellFrame, ShellRasterChunk,
+    RasterChunkId, ShellCompositionGroup, ShellFrame, ShellInbox, ShellRasterChunk,
     SurfaceGroupBounds, TrackedSource, TrackedSurfaceLayout,
 };
 use crate::shell::runtime::ShellRuntime;
@@ -200,8 +200,8 @@ impl ShellDocumentFactory {
     pub(in crate::shell) fn create(
         &self,
         source: &crate::shell::ShellSource,
-        shell: ShellChannel,
-        outbox: crate::shell::ShellOutbox,
+        shell: ShellInbox,
+        outbox: crate::shell::protocol::ShellOutbox,
     ) -> ShellDocument {
         let base_url = source.base_url.clone();
         let (sender, arrivals) = channel();

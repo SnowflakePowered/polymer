@@ -1,7 +1,7 @@
 //! WebSocket proxy and inspector bridge lifetime.
 
 use super::protocol::{Dispatch, ProtocolError, Reply};
-use crate::shell::protocol::{ShellChannel, ShellCommand};
+use crate::shell::protocol::{ShellCommand, ShellInbox};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use std::{
@@ -23,7 +23,7 @@ impl Bridge {
     pub(crate) fn start(
         upstream: String,
         target_url: String,
-        shell: ShellChannel,
+        shell: ShellInbox,
     ) -> Result<Self, Box<dyn Error>> {
         let listener = TcpListener::bind(("127.0.0.1", 0))?;
         let address = listener.local_addr()?;
@@ -86,7 +86,7 @@ struct Server {
     listener: TcpListener,
     upstream: String,
     target_url: String,
-    shell: ShellChannel,
+    shell: ShellInbox,
     events: broadcast::Sender<Value>,
     shutdown: oneshot::Receiver<()>,
 }
@@ -127,7 +127,7 @@ impl Server {
 struct Session {
     upstream: String,
     target_url: String,
-    shell: ShellChannel,
+    shell: ShellInbox,
 }
 
 impl Session {

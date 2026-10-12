@@ -1,10 +1,22 @@
 //! Messages exchanged between the window thread and the shell thread.
 
+use crate::app::UserEvent;
 use crate::inspector::elements::{Dispatch, ProtocolError, Reply};
 use crate::shell::document::{GameViewStyle, MediaSignal};
+use crate::window_manager::{EventLoopProxy, WindowCommand};
 use kurbo::Rect;
-use std::time::Instant;
-use tokio::sync::{mpsc::UnboundedSender, oneshot};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    time::Instant,
+};
+use tokio::sync::{
+    mpsc::{UnboundedReceiver, UnboundedSender},
+    oneshot,
+};
 
 pub use polymer_composition::{RasterChunkId, ShellCompositionGroup, ShellRasterChunk};
 use polymer_composition::{ShaderControl, VideoControl, VideoSink, VideoSource};
@@ -218,14 +230,72 @@ pub(crate) enum VideoRequest {
 
 /// Sends commands to the shell thread. Every command wakes it.
 #[derive(Clone)]
-pub(crate) struct ShellChannel(pub(super) UnboundedSender<ShellCommand>);
+pub(crate) struct ShellInbox(UnboundedSender<ShellCommand>);
 
-impl ShellChannel {
+impl ShellInbox {
+    pub(super) fn new() -> (Self, UnboundedReceiver<ShellCommand>) {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        (Self(sender), receiver)
+    }
+
     pub(crate) fn send(&self, command: ShellCommand) {
         let _ = self.0.send(command);
     }
 
     pub(crate) fn wake(&self) {
         self.send(ShellCommand::Wake);
+    }
+}
+
+/// Delivers shell events to the window thread, posting at most one wake per
+/// drain so a burst of frames and input outcomes costs one message.
+#[derive(Clone)]
+pub(crate) struct ShellOutbox {
+    events: mpsc::Sender<ShellEvent>,
+    signalled: Arc<AtomicBool>,
+    proxy: EventLoopProxy<UserEvent>,
+}
+
+impl ShellOutbox {
+    pub(super) fn new(proxy: EventLoopProxy<UserEvent>) -> (Self, ShellEvents) {
+        let (events, received) = mpsc::channel();
+        let signalled = Arc::new(AtomicBool::new(false));
+        let outbox = Self {
+            events,
+            signalled: signalled.clone(),
+            proxy,
+        };
+        (
+            outbox,
+            ShellEvents {
+                events: received,
+                signalled,
+            },
+        )
+    }
+
+    pub(crate) fn send(&self, event: ShellEvent) {
+        if self.events.send(event).is_err() {
+            return;
+        }
+        if !self.signalled.swap(true, Ordering::AcqRel) {
+            let _ = self
+                .proxy
+                .send_event(UserEvent::Window(WindowCommand::ShellUpdated));
+        }
+    }
+}
+
+/// The window thread's end of a `ShellOutbox`.
+pub(super) struct ShellEvents {
+    events: mpsc::Receiver<ShellEvent>,
+    signalled: Arc<AtomicBool>,
+}
+
+impl ShellEvents {
+    /// Takes every event published since the last drain, re-arming the wake.
+    pub(super) fn drain(&self) -> mpsc::TryIter<'_, ShellEvent> {
+        self.signalled.store(false, Ordering::Release);
+        self.events.try_iter()
     }
 }
