@@ -41,6 +41,24 @@ export interface ShaderPresetConstructor {
   new (url: string | URL, options?: ShaderPresetOptions): ShaderPreset;
 }
 
+/** A preset found in the shader folder. */
+export interface ShaderPresetEntry {
+  readonly name: string;
+  /** Folder of the preset inside the shader folder, with `/` separators. */
+  readonly category: string;
+  /** Path of the preset inside the shader folder, with `/` separators. */
+  readonly relativePath: string;
+  readonly url: string;
+}
+
+/** The `shaders_slang` folder in Polymer storage, read on every call. */
+export interface ShadersApi {
+  list(): Promise<ShaderPresetEntry[]>;
+  /** Presets whose name and folder contain every whitespace-separated term. */
+  search(query: string, options?: { limit?: number }): Promise<ShaderPresetEntry[]>;
+  resolve(relativePath: string): Promise<ShaderPresetEntry | null>;
+}
+
 /** A preset attached to an element, rendering in the compositor. */
 export interface FilterChain {
   /** Whether this preset is still the one attached to its element. */
@@ -720,6 +738,7 @@ declare global {
       readonly controllers: ControllersApi;
       readonly library: LibraryApi;
       readonly jobs: JobsApi;
+      readonly shaders: ShadersApi;
       machine(id: string): MachineSpec | null;
     }>;
   }

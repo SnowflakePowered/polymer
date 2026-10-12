@@ -6,6 +6,7 @@ import { GameLauncher } from "@polymer-fe/frontend/launch";
 import { NotificationCenter, type Notification } from "@polymer-fe/frontend/notifications";
 import { StartupRequests, type StartupRequest } from "@polymer-fe/frontend/startup";
 import { PauseRegistry } from "@polymer-fe/frontend/pause";
+import { PlatformShaders, type PlatformShader } from "@polymer-fe/frontend/shaders";
 import type { EmulatorConfiguration, LaunchInstance, LaunchRequest, PackageConfiguration } from "@polymer-fe/frontend";
 
 const RECENT_KEY = "polymer.vapor.recent";
@@ -34,8 +35,9 @@ export type ShellState = {
   launch: LaunchInstance | null;
   audio: { available: boolean; volume: number; muted: boolean };
   notifications: Record<string, Notification>;
-  menu: "main" | "quick" | "order" | null;
+  menu: "main" | "quick" | "order" | "shader" | null;
   screenLayout: ScreenLayout;
+  shader: PlatformShader;
 };
 
 const startup = new StartupRequests(window.Polymer.scraping);
@@ -48,6 +50,7 @@ export class Shell {
   private readonly set: (...args: any[]) => void;
   readonly games = new GameLauncher(window.Polymer);
   readonly pauses = new PauseRegistry();
+  readonly shaders = new PlatformShaders();
   readonly library: LibraryState;
   readonly notifications: NotificationCenter;
   private preparation: AbortController | null = null;
@@ -59,6 +62,7 @@ export class Shell {
       query: { text: "", platform: null, sort: "title" }, recent: [],
       launchableId: null, draft: null, request: null, launch: window.Polymer.emulator.activeLaunch,
       audio: { available: false, volume: 1, muted: false }, notifications: {}, menu: null, screenLayout: "stacked",
+      shader: { preset: null, enabled: true },
     });
     this.state = state;
     this.set = set as (...args: any[]) => void;

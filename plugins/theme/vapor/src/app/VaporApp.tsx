@@ -11,6 +11,7 @@ import { MainMenu } from "../pages/menu/MainMenu";
 import { StoragePage } from "../pages/storage/StoragePage";
 import { SavesPage } from "../pages/saves/SavesPage";
 import { ControllerOrderModal } from "../pages/controllers/ControllerOrderModal";
+import { ShaderModal } from "../pages/game/ShaderModal";
 import { JobsPage } from "../pages/jobs/JobsPage";
 import { active, useJobs } from "../pages/jobs/jobs";
 import { ShellProvider, useShell } from "./shell";
@@ -45,6 +46,7 @@ function Frame(props: ParentProps) {
     <Show when={!playing() || shell.state.menu}><FooterLegend menuLabel="Menu" onMenu={toggleMenu} /></Show>
     <MainMenu />
     <ControllerOrderModal />
+    <ShaderModal />
     <Toasts />
   </div>;
 }

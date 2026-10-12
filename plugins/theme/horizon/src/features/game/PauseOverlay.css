@@ -12,3 +12,4 @@
 .horizon-quick-menu .hz-actions { margin-top: auto; padding-top: 0; }
 .horizon-quick-menu .hz-hints { flex: 1; border-top: 1px solid var(--hz-divider); }
 }
+.horizon-shader-dialog { width: min(40rem, 100%); height: min(36rem, calc(100vh - 4rem)); }

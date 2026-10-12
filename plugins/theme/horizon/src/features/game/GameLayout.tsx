@@ -3,6 +3,7 @@ import { unwrap } from "solid-js/store";
 import { useMatch } from "@solidjs/router";
 import type { LaunchInstance } from "@polymer-fe/frontend";
 import { GameLauncher } from "@polymer-fe/frontend/launch";
+import type { ShaderTarget } from "@polymer-fe/frontend/shaders";
 import { useShell } from "../../app/shell-context";
 import { DUAL_SCREEN_LAYOUTS, DUAL_SCREEN_PLATFORMS, DualScreenStage, type DualScreenLayout } from "./DualScreenStage";
 import { SurfaceStage } from "./SurfaceStage";
@@ -13,10 +14,12 @@ export function GameLayout(props: ParentProps) {
   const [revision, setRevision] = createSignal(0);
   const games = new GameLauncher(window.Polymer);
   const elements = new Map<number, HTMLElement>();
+  let group: HTMLElement | undefined;
   const surfaces = createMemo(() => shell.model.surfaces.length ? shell.model.surfaces : [{ index: 0, rotation: 0 }]);
   const dualScreen = useMatch(() => "/game/:platform/*", { platform: DUAL_SCREEN_PLATFORMS });
   const layoutRoute = useMatch(() => "/game/:platform/:game/play/:layout", { layout: [...DUAL_SCREEN_LAYOUTS] });
   const layout = () => (layoutRoute()?.params.layout ?? "stacked") as DualScreenLayout;
+  const shaderTarget = () => (dualScreen() ? group : elements.get(surfaces()[0].index)) as unknown as ShaderTarget | undefined;
   const register = (index: number, element: HTMLElement) => {
     element.setAttribute("src", String(index));
     element.setAttribute("data-index", String(index));
@@ -29,6 +32,7 @@ export function GameLayout(props: ParentProps) {
   onCleanup(() => { sequence++; unbind(); });
 
   const finish = (message?: string) => {
+    shell.shaders.stop();
     batch(() => {
       if (message) shell.setModel("error", message);
       shell.setModel("request", null);
@@ -45,7 +49,14 @@ export function GameLayout(props: ParentProps) {
     unbind();
     boundId = instance.id;
     unbind = games.watch(instance, {
-      ready: () => { shell.setModel("launcher", { kind: "idle" }); shell.setModel("error", ""); shell.rememberGame(); shell.navigate(shell.gamePath("play"), true); },
+      ready: () => {
+        shell.setModel("launcher", { kind: "idle" });
+        shell.setModel("error", "");
+        shell.rememberGame();
+        shell.navigate(shell.gamePath("play"), true);
+        const platform = shell.model.request?.machine ?? shell.model.draft?.platform;
+        if (platform) shell.shaders.start(platform, shaderTarget).then(setting => shell.setModel("shader", setting), error => console.error("Failed to apply shader", error));
+      },
       audio: state => shell.setModel("audio", state),
       surfaces: () => setRevision((value) => value + 1),
       finished: finish,
@@ -73,7 +84,7 @@ export function GameLayout(props: ParentProps) {
 
   return <main class="horizon-game-layout">
     <Show when={dualScreen()} fallback={<SurfaceStage surfaces={surfaces()} revision={revision()} register={register} find={(index) => elements.get(index)} />}>
-      <DualScreenStage layout={layout()} register={register} />
+      <DualScreenStage layout={layout()} register={register} registerGroup={element => { group = element; }} />
     </Show>
     {props.children}
   </main>;

@@ -3,21 +3,10 @@ import { useLocation } from "@solidjs/router";
 import { AppSidebar } from "../../components/AppSidebar";
 import { ActionHints, EmptyState } from "../../ui";
 import { useShell } from "../../app/shell-context";
-import { gameId } from "./spatial-navigation";
-import { css } from "../../../styled-system/css";
 import { EmptyLibrary } from "./EmptyLibrary";
 import { GameWall } from "./GameWall";
 import { LibrarySearch } from "./LibrarySearch";
 import "./LibraryPage.css";
-
-const toolbar = css({
-  display: "flex", flex: "none", alignItems: "center", gap: "2rem", height: "4rem", marginInline: "1.5rem", paddingInline: ".5rem",
-  borderTop: "1px solid token(colors.divider)",
-  "& .hz-hints": { flex: "1", minWidth: "0", height: "100%", padding: "0", borderTop: "0" },
-});
-const selection = css({ display: "flex", minWidth: "0", flex: "0 1 auto", alignItems: "baseline", gap: ".75rem", overflow: "hidden", whiteSpace: "nowrap" });
-const selectionTitle = css({ overflow: "hidden", textOverflow: "ellipsis", fontSize: "1.25rem", fontWeight: "500" });
-const selectionPlatform = css({ flex: "none", color: "muted", fontSize: ".95rem" });
 
 export function LibraryPage(props: ParentProps) {
   const shell = useShell();
@@ -31,7 +20,6 @@ export function LibraryPage(props: ParentProps) {
   });
   const filtered = () => shell.model.libraryFiltered;
   const games = () => filtered() ? shell.model.libraryGames : [...shell.model.libraryGames, ...shell.model.recent.filter(game => !shell.model.libraryGames.some(item => item.path === game.path))];
-  const selectedGame = () => games().find(game => gameId(game) === shell.model.selectedGame) ?? games()[0];
   return <><main class="horizon-library" inert={settingsOpen()} aria-hidden={settingsOpen() ? "true" : undefined}>
     <AppSidebar />
     <section class="horizon-library-content" data-drop-active={dropActive()}>
@@ -39,10 +27,7 @@ export function LibraryPage(props: ParentProps) {
       <Show when={games().length > 0} fallback={<Show when={filtered()} fallback={<EmptyLibrary dropActive={dropActive()} />}><EmptyState title="No games match these filters." /></Show>}>
         <GameWall games={games()} onEnd={shell.loadMoreGames} />
       </Show>
-      <footer class={toolbar}>
-        <Show when={selectedGame()}>{game => <div class={selection}><span class={selectionTitle}>{game().name}</span><span class={selectionPlatform}>{window.Polymer.machine(game().platform)?.name ?? game().platform}</span></div>}</Show>
-        <ActionHints />
-      </footer>
+      <ActionHints floating />
     </section>
   </main>{props.children}</>;
 }

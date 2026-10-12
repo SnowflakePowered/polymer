@@ -10,6 +10,7 @@ import { ToastRegion } from "../components/notifications/ToastRegion";
 import { InputNavigation } from "../components/InputNavigation";
 import { ColorModeProvider, type ColorMode } from "../ui";
 import { GameLauncher } from "@polymer-fe/frontend/launch";
+import { PlatformShaders } from "@polymer-fe/frontend/shaders";
 import { StartupRequests, type StartupRequest } from "@polymer-fe/frontend/startup";
 import type { LibraryQueryState, RecentGame, ShellModel } from "./models";
 import "./ShellProvider.css";
@@ -62,6 +63,7 @@ export function ShellProvider(props: ParentProps) {
     selectedGame: null,
     gamepadOpen: false,
     pauseOpen: false,
+    shader: { preset: null, enabled: true },
     controllerToast: null,
     colorMode: "light",
   });
@@ -80,6 +82,7 @@ export function ShellProvider(props: ParentProps) {
     });
   });
   const games = new GameLauncher(window.Polymer);
+  const shaders = new PlatformShaders();
   let detection: AbortController | null = null;
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -255,6 +258,7 @@ export function ShellProvider(props: ParentProps) {
 
   return (
     <ShellContext.Provider value={{
+      shaders,
       model,
       setModel,
       navigate: go,
