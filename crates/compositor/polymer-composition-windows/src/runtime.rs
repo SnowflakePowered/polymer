@@ -117,7 +117,7 @@ impl NativeEventLoop {
         let result =
             unsafe { MsgWaitForMultipleObjectsEx(None, timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE) };
         if result == WAIT_FAILED {
-            return Err(windows::core::Error::from_win32().into());
+            return Err(windows::core::Error::from_thread().into());
         }
         Ok(())
     }

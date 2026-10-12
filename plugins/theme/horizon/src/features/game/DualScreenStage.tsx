@@ -10,12 +10,12 @@ export function DualScreenStage(props: {
   register(index: number, element: HTMLElement): void;
 }) {
   return <section class="horizon-dual-screen-stage">
-    <div class="horizon-dual-screen-frame" data-layout={props.layout}>
+    <tracked-surface-group class="horizon-dual-screen-frame" attr:data-layout={props.layout}>
       <tracked-surface ref={(element: HTMLElement) => props.register(0, element)} src="0" data-index="0" class="horizon-game-surface horizon-dual-screen" attr:data-screen="top" />
       <tracked-surface ref={(element: HTMLElement) => props.register(1, element)} src="1" data-index="1" class="horizon-game-surface horizon-dual-screen" attr:data-screen="bottom" />
       <Show when={props.layout === "hybrid"}>
         <tracked-surface attr:src="0" class="horizon-game-surface horizon-dual-screen" attr:data-screen="mirror" />
       </Show>
-    </div>
+    </tracked-surface-group>
   </section>;
 }

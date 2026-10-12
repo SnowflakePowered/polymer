@@ -12,6 +12,17 @@ pub(super) struct SurfaceGeometry {
     pub(super) corner_radius: f32,
     pub(super) style: Option<GameViewStyle>,
     pub(super) opacity: f32,
+    pub(super) surface_group: Option<SurfaceGroupGeometry>,
+    /// The shell element painting this geometry.
+    pub(super) node: u64,
+}
+
+/// The `<tracked-surface-group>` box around a tracked surface, in window pixels.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) struct SurfaceGroupGeometry {
+    pub(super) id: u64,
+    pub(super) bounds: Rect,
+    pub(super) parent: Option<u64>,
 }
 
 impl SurfaceGeometry {
@@ -27,6 +38,8 @@ impl SurfaceGeometry {
             corner_radius: 0.0,
             style: None,
             opacity: 1.0,
+            surface_group: None,
+            node: 0,
         }
     }
 }

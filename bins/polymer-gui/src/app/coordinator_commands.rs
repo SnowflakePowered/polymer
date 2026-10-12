@@ -16,7 +16,7 @@ impl ShellCoordinator {
         options: serde_json::Value,
         prepared_filesystem: Option<polymer_vfs::PreparedFilesystemLaunch>,
         controller_session: Option<polymer_pluginhost::controller::ControllerSession>,
-        invalid_attachment: Option<u32>,
+        surface_groups: Result<LaunchSurfaceGroups, u32>,
     ) -> Result<(), String> {
         let options = serde_json::from_value::<AttachedLaunchPlan>(options)
             .map_err(|error| format!("invalid emulator launch options: {error}"))
@@ -30,7 +30,7 @@ impl ShellCoordinator {
                 options,
                 prepared_filesystem,
                 controller_session,
-                invalid_attachment,
+                surface_groups,
             )
         })
     }

@@ -289,10 +289,12 @@ impl Compositor for MacosCompositor {
         &mut self,
         offer: &SurfaceOffer,
         quarter_turns: u8,
-    ) -> Result<(), Box<dyn Error>> {
+        _group: Option<u64>,
+    ) -> Result<Option<u64>, Box<dyn Error>> {
         self.reconciled = None;
-        self.surfaces.import(offer, quarter_turns)
+        self.surfaces.import(offer, quarter_turns).map(|()| None)
     }
+    fn arrange_surface_group(&mut self, _group: u64, _layout: SurfaceGroupLayout) {}
     fn accepts_detached_frames(&self) -> bool {
         false
     }
@@ -366,4 +368,10 @@ impl Compositor for MacosCompositor {
     }
     fn control_video(&mut self, _id: u64, _control: VideoControl) {}
     fn close_video(&mut self, _id: u64) {}
+    fn control_shader(&mut self, _target: u64, _control: ShaderControl) -> bool {
+        false
+    }
+    fn try_shader_content(&mut self) -> Option<ShaderContent> {
+        None
+    }
 }

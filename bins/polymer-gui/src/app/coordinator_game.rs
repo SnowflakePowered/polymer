@@ -4,10 +4,10 @@ impl ShellCoordinator {
     pub(super) fn launch_game(
         &mut self,
         token: InstanceToken,
-        options: AttachedLaunchPlan,
+        mut options: AttachedLaunchPlan,
         prepared_filesystem: Option<polymer_vfs::PreparedFilesystemLaunch>,
         controller_session: Option<polymer_pluginhost::controller::ControllerSession>,
-        invalid_attachment: Option<u32>,
+        surface_groups: Result<LaunchSurfaceGroups, u32>,
     ) -> Result<(), String> {
         let host = polymer_runtime::filesystem_host();
         let mounted_filesystem = match prepared_filesystem
@@ -28,11 +28,17 @@ impl ShellCoordinator {
             self.emit_instance_event(token, "closed", &serde_json::Value::Null);
             return Err(error);
         }
-        if let Some(index) = invalid_attachment {
-            let error = format!("surface {index} does not attach to its shell tracked-surface");
-            self.emit_instance_event(token, "error", &instance_events::error(&error));
-            self.emit_instance_event(token, "closed", &serde_json::Value::Null);
-            return Err(error);
+        let surface_groups = match surface_groups {
+            Ok(surface_groups) => surface_groups,
+            Err(index) => {
+                let error = format!("surface {index} does not attach to its shell tracked-surface");
+                self.emit_instance_event(token, "error", &instance_events::error(&error));
+                self.emit_instance_event(token, "closed", &serde_json::Value::Null);
+                return Err(error);
+            }
+        };
+        for surface in &mut options.surfaces {
+            surface.group = surface_groups.get(&surface.index).copied();
         }
         self.emit_instance_event(token, "start", &serde_json::Value::Null);
         if let Err(error) = self

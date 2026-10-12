@@ -1,7 +1,7 @@
 use super::*;
 
 impl D3d12Compositor {
-    pub(crate) fn import_stream(
+    pub fn import_stream(
         &mut self,
         connection: u64,
         stream: &StreamReady,
@@ -44,7 +44,7 @@ impl D3d12Compositor {
         }
         self.disconnect_stream(connection)?;
         if FIRST_CONTENT_DESCRIPTOR + (self.surfaces.len() as u32 + 1) * SURFACE_DESCRIPTORS
-            > DESCRIPTOR_COUNT
+            > SHADER_OUTPUT_DESCRIPTOR
         {
             return Err("D3D12 surface descriptor heap is full".into());
         }

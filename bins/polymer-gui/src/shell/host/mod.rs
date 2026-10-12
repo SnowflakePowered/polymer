@@ -7,7 +7,7 @@ mod input;
 use super::{
     ShellOutbox, ShellSessionFactory, ShellSource,
     document::SharedShellDocument,
-    protocol::{ShellChannel, ShellCommand, ShellEvent},
+    protocol::{LaunchSurfaceGroups, ShellChannel, ShellCommand, ShellEvent},
     runtime::{PolymerNotificationSender, ShellRuntime, ShellRuntimeOptions},
 };
 use std::{
@@ -213,7 +213,7 @@ impl ShellHost {
                 .resize(&mut self.runtime, width, height, scale_factor),
             ShellCommand::Invalidate => self.document.0.borrow_mut().invalidate(),
             ShellCommand::ValidateLaunch { options, reply } => {
-                let _ = reply.send(self.invalid_attachment(options));
+                let _ = reply.send(self.launch_surface_groups(options));
             }
             ShellCommand::Inspect { dispatch, reply } => {
                 let _ = reply.send(Ok(dispatch.handle(&self.document.0.borrow())));
@@ -229,13 +229,24 @@ impl ShellHost {
         }
     }
 
-    fn invalid_attachment(&self, options: serde_json::Value) -> Option<u32> {
-        let plan = serde_json::from_value::<crate::launch::AttachedLaunchPlan>(options).ok()?;
+    fn launch_surface_groups(
+        &self,
+        options: serde_json::Value,
+    ) -> Result<LaunchSurfaceGroups, u32> {
+        let Ok(plan) = serde_json::from_value::<crate::launch::AttachedLaunchPlan>(options) else {
+            return Ok(LaunchSurfaceGroups::new());
+        };
         let document = self.document.0.borrow();
         plan.surfaces
             .iter()
-            .find(|surface| !document.validates_attachment(surface.attach, surface.index))
-            .map(|surface| surface.index)
+            .filter_map(|surface| {
+                if !document.validates_attachment(surface.attach, surface.index) {
+                    return Some(Err(surface.index));
+                }
+                let group = document.attachment_surface_group(surface.attach)?;
+                Some(Ok((surface.index, group)))
+            })
+            .collect()
     }
 
     fn report_reload(&mut self) {

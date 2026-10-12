@@ -195,16 +195,20 @@ impl ShellSession {
         events
     }
 
-    /// Asks the shell thread which launch surface, if any, does not attach
-    /// to its tracked-surface element. Resolves to `None` without a shell.
-    pub fn validate_launch(&self, options: serde_json::Value) -> oneshot::Receiver<Option<u32>> {
+    /// Asks the shell thread which surface group each launch surface composes
+    /// into, failing with the first surface that does not attach to its
+    /// tracked-surface element. Resolves to no groups without a shell.
+    pub fn validate_launch(
+        &self,
+        options: serde_json::Value,
+    ) -> oneshot::Receiver<Result<protocol::LaunchSurfaceGroups, u32>> {
         let (reply, response) = oneshot::channel();
         match self.active() {
             Some(active) => active
                 .channel
                 .send(ShellCommand::ValidateLaunch { options, reply }),
             None => {
-                let _ = reply.send(None);
+                let _ = reply.send(Ok(protocol::LaunchSurfaceGroups::new()));
             }
         }
         response

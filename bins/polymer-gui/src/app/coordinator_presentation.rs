@@ -205,7 +205,7 @@ impl ShellCoordinator {
     /// script's decisions about held input.
     pub(super) fn drain_shell(&mut self) {
         let mut latest = None;
-        let mut videos = false;
+        let mut visuals = false;
         for event in self.shell.drain() {
             match event {
                 ShellEvent::Frame {
@@ -218,11 +218,15 @@ impl ShellCoordinator {
                 ShellEvent::ReloadRequested => {}
                 ShellEvent::Video(request) => {
                     self.game_host.handle_video(request);
-                    videos = true;
+                    visuals = true;
+                }
+                ShellEvent::Shader { target, control } => {
+                    self.game_host.control_shader(target, control);
+                    visuals = true;
                 }
             }
         }
-        if videos {
+        if visuals {
             self.sync_shell_visuals();
         }
         self.release_held_input(Instant::now());

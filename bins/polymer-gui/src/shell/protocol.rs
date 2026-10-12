@@ -7,7 +7,7 @@ use std::time::Instant;
 use tokio::sync::{mpsc::UnboundedSender, oneshot};
 
 pub use polymer_composition::{RasterChunkId, ShellCompositionGroup, ShellRasterChunk};
-use polymer_composition::{VideoControl, VideoSink, VideoSource};
+use polymer_composition::{ShaderControl, VideoControl, VideoSink, VideoSource};
 
 /// Paint output published by Blitz without exposing its document or renderer.
 #[derive(Clone)]
@@ -31,9 +31,29 @@ pub(crate) struct TrackedSurfaceLayout {
     pub corner_radius: f32,
     pub style: Option<GameViewStyle>,
     pub opacity: f32,
+    pub surface_group: Option<SurfaceGroupBounds>,
 }
 
+/// The `<tracked-surface-group>` box that encloses a tracked surface.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SurfaceGroupBounds {
+    pub id: u64,
+    pub bounds: Rect,
+    /// Nearest composition group that contains the whole surface group.
+    pub parent: Option<u64>,
+}
+
+impl SurfaceGroupBounds {
+    pub(crate) fn id_for(node: blitz_dom::NodeId) -> u64 {
+        SURFACE_GROUP_BIT | node.as_u64()
+    }
+}
+
+/// Index of each launch surface that composes into a surface group.
+pub(crate) type LaunchSurfaceGroups = std::collections::HashMap<u32, u64>;
+
 const VIDEO_SOURCE_BIT: u64 = 1 << 62;
+const SURFACE_GROUP_BIT: u64 = 1 << 61;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum TrackedSource {
@@ -128,11 +148,11 @@ pub(crate) enum ShellCommand {
         scale_factor: f32,
     },
     Invalidate,
-    /// Replies with the index of the first launch surface that does not
-    /// attach to its shell tracked-surface element.
+    /// Replies with each launch surface's group, or the index of the first
+    /// launch surface that does not attach to its shell tracked-surface element.
     ValidateLaunch {
         options: serde_json::Value,
-        reply: oneshot::Sender<Option<u32>>,
+        reply: oneshot::Sender<Result<LaunchSurfaceGroups, u32>>,
     },
     Inspect {
         dispatch: Dispatch,
@@ -161,6 +181,19 @@ pub(crate) enum ShellEvent {
     },
     ReloadRequested,
     Video(VideoRequest),
+    Shader {
+        target: ShaderTarget,
+        control: ShaderControl,
+    },
+}
+
+/// The shell element a shader preset is attached to.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum ShaderTarget {
+    /// A `<tracked-surface-group>`, by its surface-group id.
+    Group(u64),
+    /// A `<tracked-surface>` presented on its own, by its node id.
+    Surface(u64),
 }
 
 pub(crate) enum VideoRequest {

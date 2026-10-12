@@ -1,5 +1,5 @@
 use super::{GamePlacement, GameViewStyle};
-use crate::shell::protocol::TrackedSource;
+use crate::shell::protocol::{SurfaceGroupBounds, TrackedSource};
 use anyrender::PaintScene as _;
 use blitz_dom::node::{ElementData, Widget};
 use blitz_dom::{LocalName, NodeId, local_name};
@@ -68,6 +68,7 @@ pub(super) fn apply_tracked_surface_styles(
     let styles = document
         .tree()
         .iter()
+        .filter(|(_, node)| node.flags.is_in_document())
         .filter_map(|(node_id, node)| {
             let element = node.element_data()?;
             let source = TrackedSurfaceWidget::for_element(node_id, element)?
@@ -80,6 +81,19 @@ pub(super) fn apply_tracked_surface_styles(
                 .max(0.0);
             let styles = node.primary_styles()?;
             let origin = node.absolute_position(0.0, 0.0);
+            let surface_group = enclosing_surface_group(document, node_id).map(|group| {
+                let group_node = document.get_node(group).expect("enclosing group exists");
+                let group_origin = group_node.absolute_position(0.0, 0.0);
+                let size = group_node.final_layout().size;
+                (
+                    SurfaceGroupBounds::id_for(group),
+                    kurbo::Vec2::new(
+                        f64::from(group_origin.x - origin.x),
+                        f64::from(group_origin.y - origin.y),
+                    ),
+                    kurbo::Size::new(f64::from(size.width), f64::from(size.height)),
+                )
+            });
             Some((
                 source,
                 TrackedNode {
@@ -90,6 +104,7 @@ pub(super) fn apply_tracked_surface_styles(
                         object_position: styles.clone_object_position(),
                     },
                     origin: kurbo::Point::new(f64::from(origin.x), f64::from(origin.y)),
+                    surface_group,
                 },
             ))
         })
@@ -116,6 +131,14 @@ pub(super) fn apply_tracked_surface_styles(
             .min(maximum);
         placement.style = entry.map(|entry| entry.style.clone());
         placement.node_id = entry.map(|entry| entry.node_id);
+        placement.surface_group =
+            entry
+                .and_then(|entry| entry.surface_group)
+                .map(|(id, offset, size)| SurfaceGroupBounds {
+                    id,
+                    bounds: kurbo::Rect::from_origin_size(origin + offset, size),
+                    parent: placement.group,
+                });
         placement.opacity = placement.opacity.clamp(0.0, 1.0);
     }
 }
@@ -125,6 +148,7 @@ struct TrackedNode {
     radius: f32,
     style: GameViewStyle,
     origin: kurbo::Point,
+    surface_group: Option<(u64, kurbo::Vec2, kurbo::Size)>,
 }
 
 pub(super) fn initialise_tracked_surfaces(document: &mut blitz_html::HtmlDocument) {
@@ -144,4 +168,20 @@ pub(super) fn initialise_tracked_surfaces(document: &mut blitz_html::HtmlDocumen
 
 pub(super) fn is_tracked_surface_element(element: &blitz_dom::node::ElementData) -> bool {
     &*element.name.local == "tracked-surface"
+}
+
+/// The nearest `<tracked-surface-group>` ancestor that composes this surface.
+pub(super) fn enclosing_surface_group(
+    document: &blitz_dom::BaseDocument,
+    node: blitz_dom::NodeId,
+) -> Option<blitz_dom::NodeId> {
+    std::iter::successors(document.get_node(node)?.parent, |&parent| {
+        document.get_node(parent)?.parent
+    })
+    .find(|&ancestor| {
+        document
+            .get_node(ancestor)
+            .and_then(blitz_dom::Node::element_data)
+            .is_some_and(|element| &*element.name.local == "tracked-surface-group")
+    })
 }

@@ -80,6 +80,8 @@ pub struct GamePlacement {
     /// Nearest retained paint layer shared with this view. Chrome fragments
     /// carrying the same id can move independently from unrelated content.
     pub group: Option<u64>,
+    /// Enclosing `<tracked-surface-group>`, in the same space as `rect`.
+    pub surface_group: Option<crate::shell::protocol::SurfaceGroupBounds>,
 }
 
 pub struct BandFragment {
@@ -525,6 +527,7 @@ impl<S: PaintScene + Default> PaintScene for BandedScene<'_, S> {
                 opacity: self.stack.iter().map(|layer| layer.alpha).product(),
                 band: self.current,
                 group,
+                surface_group: None,
             });
             if let (Some(layer), Some(group)) = (self.stack.last(), group) {
                 self.promoted_layers.insert(layer.id, group);

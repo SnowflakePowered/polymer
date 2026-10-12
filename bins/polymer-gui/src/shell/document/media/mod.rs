@@ -157,6 +157,10 @@ pub(crate) struct MediaPlayers {
 }
 
 impl MediaPlayers {
+    pub(super) fn contains(&self, node: NodeId) -> bool {
+        self.elements.contains_key(&node)
+    }
+
     pub(super) fn new(
         net: Arc<dyn NetProvider>,
         doc_id: usize,

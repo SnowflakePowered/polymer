@@ -1,5 +1,57 @@
 export interface HTMLTrackedSurfaceElement extends HTMLElement {
   readonly preferredSize: Readonly<{ width: number; height: number }>;
+  /** Moves a loaded preset onto this surface. A preset attaches once. */
+  attachShader(preset: ShaderPreset): FilterChain;
+}
+
+export interface HTMLTrackedSurfaceGroupElement extends HTMLElement {
+  /** Moves a loaded preset onto every surface stitched into this group. */
+  attachShader(preset: ShaderPreset): FilterChain;
+}
+
+export interface ShaderPresetOptions {
+  /**
+   * `content` renders over the composed surfaces; `element` over the whole box, for bezels.
+   * `auto`, the default, measures which one the preset needs when it loads.
+   */
+  viewport?: "auto" | "content" | "element";
+  /** The source's display aspect ratio. Inferred from the composed surfaces when omitted. */
+  aspectRatio?: number;
+}
+
+export interface ShaderParameter {
+  readonly id: string;
+  readonly description: string;
+  readonly initial: number;
+  readonly minimum: number;
+  readonly maximum: number;
+  readonly step: number;
+  readonly value: number;
+}
+
+/** A librashader preset loaded from a `file:` or `theme:` URL. */
+export interface ShaderPreset {
+  readonly ready: Promise<ShaderPreset>;
+  readonly parameters: readonly ShaderParameter[];
+  /** The viewport the preset renders into, once loaded. */
+  readonly viewport: "content" | "element" | undefined;
+}
+
+export interface ShaderPresetConstructor {
+  new (url: string | URL, options?: ShaderPresetOptions): ShaderPreset;
+}
+
+/** A preset attached to an element, rendering in the compositor. */
+export interface FilterChain {
+  /** Whether this preset is still the one attached to its element. */
+  readonly attached: boolean;
+  readonly parameters: readonly ShaderParameter[];
+  getParameter(id: string): number | undefined;
+  setParameter(id: string, value: number): void;
+  /** The number of passes enabled, once set. */
+  get passesEnabled(): number | undefined;
+  set passesEnabled(count: number);
+  detach(): void;
 }
 
 export type GraphicsHook = "vulkan" | "d3d11" | "d3d12" | "opengl";
@@ -697,5 +749,9 @@ declare global {
 
   interface HTMLElementTagNameMap {
     "tracked-surface": HTMLTrackedSurfaceElement;
+    "tracked-surface-group": HTMLTrackedSurfaceGroupElement;
   }
+
+  var ShaderPreset: ShaderPresetConstructor;
+  var FilterChain: { readonly prototype: FilterChain };
 }

@@ -3,6 +3,7 @@
 mod events;
 pub mod overlay;
 mod scene;
+mod shader;
 mod video;
 pub use events::*;
 use polymer_renderer::ReceivedSurface;
@@ -10,6 +11,7 @@ use polymer_renderer::egui::InputDiagnostics;
 use polymer_runtime::{RgbaScreenshot, SurfaceFrameReceiver, SurfaceOffer};
 use polymer_statistics::RecorderHandle;
 pub use scene::*;
+pub use shader::*;
 use std::{
     cell::RefCell,
     error::Error,
@@ -93,11 +95,15 @@ pub trait Compositor {
     fn commit(&self) -> Result<(), Box<dyn Error>>;
     fn matches_device(&self, offer: &SurfaceOffer) -> bool;
     fn replace_device(&mut self, offer: &SurfaceOffer) -> Result<(), Box<dyn Error>>;
+    /// Returns the surface group the stream joined, which is `None` whenever
+    /// the backend presents it on its own swapchain instead.
     fn import_surface(
         &mut self,
         offer: &SurfaceOffer,
         quarter_turns: u8,
-    ) -> Result<(), Box<dyn Error>>;
+        group: Option<u64>,
+    ) -> Result<Option<u64>, Box<dyn Error>>;
+    fn arrange_surface_group(&mut self, group: u64, layout: SurfaceGroupLayout);
     fn accepts_detached_frames(&self) -> bool;
     fn attach_surface_frames(
         &mut self,
@@ -131,4 +137,8 @@ pub trait Compositor {
     ) -> Result<(), Box<dyn Error>>;
     fn control_video(&mut self, id: u64, control: VideoControl);
     fn close_video(&mut self, id: u64);
+    /// Controls the shader of a surface group, or of a captured stream presented
+    /// on its own. Returns whether a presenter for `target` received it.
+    fn control_shader(&mut self, target: u64, control: ShaderControl) -> bool;
+    fn try_shader_content(&mut self) -> Option<ShaderContent>;
 }

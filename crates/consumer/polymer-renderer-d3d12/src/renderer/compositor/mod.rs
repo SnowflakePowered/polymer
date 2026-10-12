@@ -38,6 +38,7 @@ mod pacing;
 mod present;
 mod resources;
 mod setup;
+mod shader;
 mod snapshot;
 mod streams;
 use pacing::*;
@@ -45,6 +46,8 @@ use resources::*;
 pub use resources::create_texture;
 pub(super) use resources::{create_srv, transition};
 use setup::*;
+pub use shader::ShaderStage;
+use shader::*;
 
 const FRAME_COUNT: usize = 2;
 const DESCRIPTOR_COUNT: u32 = 1024;
@@ -137,6 +140,9 @@ pub struct D3d12Compositor {
     frame_garbage: [Vec<ID3D12Resource>; FRAME_COUNT],
     frame_uploads: [UploadArena; FRAME_COUNT],
     surfaces: Vec<ImportedSurface>,
+    shader: Option<ShaderStage>,
+    /// Extent of the render target the current draws are recorded into.
+    target: (u32, u32),
     display_latency: DisplayLatency,
     /// QPC ticks per second, for turning vblank stamps into milliseconds.
     counter_frequency: f64,

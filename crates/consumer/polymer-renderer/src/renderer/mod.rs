@@ -7,6 +7,16 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 pub mod frame_ownership;
 
+/// Which part of a composed box a shader preset renders into.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ShaderViewport {
+    /// The union of the composed surfaces.
+    #[default]
+    Content,
+    /// The whole composed box, for presets that draw their own borders.
+    Element,
+}
+
 /// How a surface's pixels are sampled and drawn inside its layout rectangle.
 ///
 /// Coordinates are in output pixels for `destination` and normalized,
