@@ -16,6 +16,12 @@ use std::{
     time::Duration,
 };
 
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformSettings {
+    pub emulator: Option<String>,
+}
+
 #[path = "consolestorage/mod.rs"]
 pub mod consolestorage;
 pub use consolestorage::ConsoleStorage;
@@ -120,7 +126,7 @@ pub trait PolymerHost: Send + Sync {
     fn update_platform_settings(
         &self,
         platform: String,
-        settings: polymer_library::PlatformSettings,
+        settings: PlatformSettings,
     ) -> ApiFuture<Result<Value, String>>;
     fn list_plugins(&self) -> Value;
     fn invoke_plugin(
@@ -307,7 +313,7 @@ async fn op_configuration_platforms(
 async fn op_configuration_update_platform(
     state: Rc<RefCell<OpState>>,
     #[string] platform: String,
-    #[serde] settings: polymer_library::PlatformSettings,
+    #[serde] settings: PlatformSettings,
 ) -> Result<serde_json::Value, JsErrorBox> {
     let host = state.borrow().borrow::<Arc<dyn PolymerHost>>().clone();
     host.update_platform_settings(platform, settings)

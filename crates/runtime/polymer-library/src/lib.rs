@@ -14,7 +14,7 @@ pub use games::{
     CuePart, CueTemplate, DiscSets, Game, GameCatalog, GameCatalogError, GamePage, GameQuery, GameSort,
     IdentifiedLaunchable, InstalledArtifact, Launchable, LaunchableUri, MediaData, MediaPreview, MediaResource,
     Metadata, MetadataData, MetadataInput, MetadataInputData, MetadataValue, PackageFile,
-    PackageManifest, PlatformSettings, ResolvedLaunchable,
+    PackageManifest, ResolvedLaunchable,
 };
 pub use inputstore::{
     InputIdentityScope, InputMappingMode, InputMappingProfile, InputStore, InputStoreError,
