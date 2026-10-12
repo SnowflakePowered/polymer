@@ -245,7 +245,7 @@ impl ShellHost {
     fn report_reload(&mut self) {
         if !self.reload_reported && self.runtime.reload_requested() {
             self.reload_reported = true;
-            self.outbox.send(ShellEvent::ReloadRequested);
+            self.outbox.request_reload();
         }
     }
 
@@ -279,11 +279,7 @@ impl ShellHost {
         self.paint_requested = false;
         self.last_frame = Instant::now();
         if let Some(frame) = self.document.produce_frame(&mut self.runtime) {
-            let structure_revision = self.document.0.borrow().dom_structure_revision();
-            self.outbox.send(ShellEvent::Frame {
-                frame,
-                structure_revision,
-            });
+            self.outbox.send(ShellEvent::Frame(frame));
         }
         true
     }

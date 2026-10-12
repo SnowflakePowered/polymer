@@ -5,6 +5,35 @@ use blitz_dom::node::{ElementData, Widget};
 use blitz_dom::{LocalName, NodeId, local_name};
 use std::collections::HashMap;
 
+const VIDEO_SOURCE_BIT: u64 = 1 << 62;
+const SURFACE_GROUP_BIT: u64 = 1 << 61;
+
+impl SurfaceGroupBounds {
+    pub(crate) fn id_for(node: NodeId) -> u64 {
+        SURFACE_GROUP_BIT | node.as_u64()
+    }
+}
+
+impl TrackedSource {
+    pub(crate) fn video(node: NodeId) -> Self {
+        Self::Video(VIDEO_SOURCE_BIT | node.as_u64())
+    }
+
+    pub(crate) fn from_id(id: u64) -> Self {
+        if id & VIDEO_SOURCE_BIT == 0 {
+            Self::Target(id)
+        } else {
+            Self::Video(id)
+        }
+    }
+
+    pub(crate) fn id(self) -> u64 {
+        match self {
+            Self::Target(id) | Self::Video(id) => id,
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct TrackedSurfaceWidget {
     source: Option<TrackedSource>,

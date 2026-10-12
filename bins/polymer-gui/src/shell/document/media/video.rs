@@ -44,20 +44,23 @@ impl VideoPlayback {
         }
     }
 
+    fn send(&self, request: VideoRequest) {
+        self.outbox.send(ShellEvent::Video {
+            id: self.id,
+            request,
+        });
+    }
+
     fn control(&self, control: VideoControl) {
         if self.feed.is_some() {
-            self.outbox.send(ShellEvent::Video(VideoRequest::Control {
-                id: self.id,
-                control,
-            }));
+            self.send(VideoRequest::Control(control));
         }
     }
 
     fn close(&mut self) {
         if let Some(feed) = self.feed.take() {
             feed.close();
-            self.outbox
-                .send(ShellEvent::Video(VideoRequest::Close { id: self.id }));
+            self.send(VideoRequest::Close);
         }
     }
 
@@ -78,11 +81,7 @@ impl VideoPlayback {
             audio: Box::new(feed.clone()),
         };
         self.feed = Some(feed);
-        self.outbox.send(ShellEvent::Video(VideoRequest::Open {
-            id: self.id,
-            source,
-            sink,
-        }));
+        self.send(VideoRequest::Open { source, sink });
         if !self.position.is_zero() {
             self.control(VideoControl::Seek(self.position));
         }
@@ -101,11 +100,7 @@ impl VideoPlayback {
                 height,
             } => {
                 (self.width, self.height) = (width, height);
-                self.outbox.send(ShellEvent::Video(VideoRequest::Extent {
-                    id: self.id,
-                    width,
-                    height,
-                }));
+                self.send(VideoRequest::Extent { width, height });
                 status.loaded(duration)
             }
             VideoEvent::Position(_) if self.seeks > 0 => Vec::new(),

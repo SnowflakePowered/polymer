@@ -1,4 +1,5 @@
 use super::{SharedShellDocument, ShellDocument, ShellHitSnapshot};
+use crate::shell::protocol::PointerKind;
 use crate::shell::runtime::{CoalescedPointer, ShellRuntime};
 use blitz_dom::{BaseDocument, EventDriver, EventHandler, NodeId, local_name};
 use blitz_traits::events::{
@@ -107,8 +108,8 @@ impl DenoEventHandler<'_> {
     }
 }
 
-pub struct DomMouseEvent<'a> {
-    pub kind: &'a str,
+pub struct DomMouseEvent {
+    pub kind: PointerKind,
     pub x: f32,
     pub y: f32,
     pub button: u8,
@@ -237,7 +238,7 @@ impl SharedShellDocument {
         &mut self,
         runtime: &mut ShellRuntime,
         hit: ShellHitSnapshot,
-        event: DomMouseEvent<'_>,
+        event: DomMouseEvent,
         samples: &[CoalescedPointer],
     ) -> bool {
         let DomMouseEvent {
@@ -279,36 +280,33 @@ impl SharedShellDocument {
             active_pointers: Default::default(),
         };
         let event = match kind {
-            "mousedown" => Some(UiEvent::PointerDown(data)),
-            "mouseup" => Some(UiEvent::PointerUp(data)),
-            "mousemove" => Some(UiEvent::PointerMove(data)),
-            _ => None,
+            PointerKind::Down => UiEvent::PointerDown(data),
+            PointerKind::Up => UiEvent::PointerUp(data),
+            PointerKind::Move => UiEvent::PointerMove(data),
         };
         let claimed = Rc::new(Cell::new(false));
-        if let Some(event) = event {
-            let target_override = self.0.borrow().pointer_target_override(hit, x, y);
-            let handler = DenoEventHandler {
-                target_override,
-                samples,
-                ..self.handler(runtime, claimed.clone(), !hit.over_tracked_surface)
-            };
-            EventDriver::new(self, handler).handle_ui_event(event);
-            let mut shell = self.0.borrow_mut();
-            if target_override.is_some() {
-                // This clears an incorrect native hit, not a pointer leaving
-                // the window. Preserve its cursor (including CSS cursor:none)
-                // while replacing the hover ancestry below.
-                let cursor = shell.document.as_ref().get_cursor();
-                let native_changed = shell.document.as_mut().clear_hover();
-                shell.document.as_ref().shell_provider.set_cursor(cursor);
-                if native_changed {
-                    shell.mark_changed();
-                }
-            }
-            shell.set_pointer_hover(Some(hit.node_id));
-            if shell.document.as_ref().scrollbar_drag_target().is_some() {
+        let target_override = self.0.borrow().pointer_target_override(hit, x, y);
+        let handler = DenoEventHandler {
+            target_override,
+            samples,
+            ..self.handler(runtime, claimed.clone(), !hit.over_tracked_surface)
+        };
+        EventDriver::new(self, handler).handle_ui_event(event);
+        let mut shell = self.0.borrow_mut();
+        if target_override.is_some() {
+            // This clears an incorrect native hit, not a pointer leaving
+            // the window. Preserve its cursor (including CSS cursor:none)
+            // while replacing the hover ancestry below.
+            let cursor = shell.document.as_ref().get_cursor();
+            let native_changed = shell.document.as_mut().clear_hover();
+            shell.document.as_ref().shell_provider.set_cursor(cursor);
+            if native_changed {
                 shell.mark_changed();
             }
+        }
+        shell.set_pointer_hover(Some(hit.node_id));
+        if shell.document.as_ref().scrollbar_drag_target().is_some() {
+            shell.mark_changed();
         }
         claimed.get()
     }

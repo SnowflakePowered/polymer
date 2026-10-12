@@ -33,7 +33,6 @@ struct ActiveShell {
     thread: Option<JoinHandle<()>>,
     factory: ShellSessionFactory,
     inspector_address: std::net::SocketAddr,
-    reload_requested: bool,
 }
 
 impl Drop for ActiveShell {
@@ -119,7 +118,6 @@ impl ShellSession {
             thread: Some(thread),
             factory: *factory,
             inspector_address: started.inspector_address,
-            reload_requested: false,
         }));
         Ok(Some(started.notifications))
     }
@@ -135,19 +133,10 @@ impl ShellSession {
     }
 
     /// Collects every event the shell thread published since the last drain.
-    pub fn drain(&mut self) -> Vec<ShellEvent> {
-        let ShellDocumentSlot::Active(active) = &mut self.slot else {
-            return Vec::new();
-        };
-        let mut events = Vec::new();
-        for event in active.events.drain() {
-            if matches!(event, ShellEvent::ReloadRequested) {
-                active.reload_requested = true;
-            } else {
-                events.push(event);
-            }
-        }
-        events
+    pub fn drain(&self) -> impl Iterator<Item = ShellEvent> + '_ {
+        self.active()
+            .into_iter()
+            .flat_map(|active| active.events.drain())
     }
 
     /// Asks the shell thread which surface group each launch surface composes
@@ -170,7 +159,8 @@ impl ShellSession {
     }
 
     pub fn reload_pending(&self) -> bool {
-        self.active().is_some_and(|active| active.reload_requested)
+        self.active()
+            .is_some_and(|active| active.events.reload_requested())
     }
 
     /// Stops the current shell thread when script asked for a reload, leaving

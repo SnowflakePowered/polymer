@@ -208,16 +208,12 @@ impl ShellCoordinator {
         let mut visuals = false;
         for event in self.shell.drain() {
             match event {
-                ShellEvent::Frame {
-                    frame,
-                    structure_revision,
-                } => latest = Some((frame, structure_revision)),
+                ShellEvent::Frame(frame) => latest = Some(frame),
                 ShellEvent::InputSettled { sequence, outcome } => {
                     self.held.settle(sequence, outcome);
                 }
-                ShellEvent::ReloadRequested => {}
-                ShellEvent::Video(request) => {
-                    self.game_host.handle_video(request);
+                ShellEvent::Video { id, request } => {
+                    self.game_host.handle_video(id, request);
                     visuals = true;
                 }
                 ShellEvent::Shader { target, control } => {
@@ -230,20 +226,16 @@ impl ShellCoordinator {
             self.sync_shell_visuals();
         }
         self.release_held_input(Instant::now());
-        if let Some((frame, structure_revision)) = latest {
-            self.present_shell_frame(frame, structure_revision);
+        if let Some(frame) = latest {
+            self.present_shell_frame(frame);
         }
     }
 
     /// Hands a painted shell frame to the compositor.
-    fn present_shell_frame(
-        &mut self,
-        frame: crate::shell::protocol::ShellFrame,
-        structure_revision: u64,
-    ) {
+    fn present_shell_frame(&mut self, frame: crate::shell::protocol::ShellFrame) {
         let entered = self.profile.enter();
         if let Some(inspector) = &self.inspector {
-            inspector.document_updated(structure_revision);
+            inspector.document_updated(frame.structure_revision);
         }
         self.next_scene_revision += 1;
         let revision = self.next_scene_revision;
