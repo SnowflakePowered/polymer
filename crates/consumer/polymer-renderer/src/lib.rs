@@ -14,7 +14,7 @@ pub use capture::{AcceptedSurface, SurfaceCapture, SurfaceCaptureEvent, SurfaceP
 pub use layout::Extent;
 pub use renderer::{
     CompositingPlan, MappedPointer, Presentation, ReceivedSurface, RenderWindow, Renderer,
-    SurfaceContent, SurfacePlacement, SwapchainMode,
+    ShaderViewport, SurfaceContent, SurfacePlacement, SwapchainMode,
 };
 
 pub fn fit_extent(

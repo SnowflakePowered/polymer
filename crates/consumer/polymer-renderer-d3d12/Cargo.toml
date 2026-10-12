@@ -17,6 +17,7 @@ parking_lot.workspace = true
 tracing.workspace = true
 windows = { workspace = true, features = ["Foundation", "UI_Composition", "Win32_System_WinRT_Composition"] }
 windows-sys.workspace = true
+librashader = { workspace = true, features = ["runtime-d3d12", "runtime-d3d12-static", "presets", "preprocess"] }
 
 [lints]
 workspace = true

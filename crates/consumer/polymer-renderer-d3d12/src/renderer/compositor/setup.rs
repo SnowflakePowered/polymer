@@ -111,6 +111,22 @@ impl D3d12Compositor {
         )
     }
 
+    /// Stitches several streams into one transparent composition swapchain.
+    pub fn new_for_group_composition(
+        window: &impl RenderWindow,
+        adapter: AdapterLuid,
+    ) -> Result<Self, Box<dyn Error>> {
+        Self::with_consumer(
+            window,
+            D3d12ConsumerDevice::new(adapter)?,
+            SwapchainTarget::Composition {
+                transparent: true,
+                sync_interval: 0,
+            },
+            SwapchainMode::Shared,
+        )
+    }
+
     pub(super) fn with_consumer(
         window: &impl RenderWindow,
         consumer: D3d12ConsumerDevice,
@@ -185,7 +201,7 @@ impl D3d12Compositor {
                 .device()
                 .CreateDescriptorHeap(&D3D12_DESCRIPTOR_HEAP_DESC {
                     Type: D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
-                    NumDescriptors: FRAME_COUNT as u32,
+                    NumDescriptors: FRAME_COUNT as u32 + SHADER_TARGETS,
                     ..Default::default()
                 })?;
             let srv_heap = consumer
@@ -252,6 +268,8 @@ impl D3d12Compositor {
                 frame_garbage: std::array::from_fn(|_| Vec::new()),
                 frame_uploads: std::array::from_fn(|_| UploadArena::new()),
                 surfaces: Vec::new(),
+                shader: None,
+                target: extent,
                 display_latency: DisplayLatency::default(),
                 counter_frequency: counter_frequency(),
             })
@@ -364,10 +382,7 @@ VOut vs_main(VIn v) {
 }
 Texture2D tex : register(t0); SamplerState samp : register(s0);
 float4 ps_main(VOut i) : SV_TARGET {
-    float4 result = tex.Sample(samp, i.uv) * float4(i.color.rgb, 1.0);
-    if (i.clip.w > 0.5) {
-        result.rgb *= result.a;
-    }
+    float4 result = float4(tex.Sample(samp, i.uv).rgb * i.color.rgb, 1.0);
     result *= i.color.a;
     if (i.clip.z > 0.0) {
         float radius = min(i.clip.z, min(i.clip.x, i.clip.y) * 0.5);

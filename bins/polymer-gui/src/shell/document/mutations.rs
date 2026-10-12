@@ -34,13 +34,16 @@ impl ShellDocument {
             let Some(element) = node.element_data() else {
                 continue;
             };
-            if let Some(widget) = TrackedSurfaceWidget::for_element(id, element) {
+            if element.custom_widget_data().is_none()
+                && let Some(widget) = TrackedSurfaceWidget::for_element(id, element)
+            {
                 widgets.push((id, Box::new(widget)));
             }
             if element.name.local == local_name!("img") {
                 images.push(id);
-            } else if element.name.local == local_name!("audio")
-                || element.name.local == local_name!("video")
+            } else if (element.name.local == local_name!("audio")
+                || element.name.local == local_name!("video"))
+                && !self.media.contains(id)
             {
                 media.push(id);
             }
@@ -113,6 +116,7 @@ impl ShellDocument {
             return;
         }
         self.detach_media(node);
+        self.detach_shaders(node, false);
         self.document.as_mut().mutate().set_inner_html(node, html);
         self.attach_custom_widgets(node);
         self.mark_structure_changed();
@@ -126,6 +130,7 @@ impl ShellDocument {
             .as_mut()
             .mutate()
             .append_children(parent, &[child]);
+        self.attach_custom_widgets(child);
         self.mark_structure_changed();
     }
 
@@ -145,15 +150,23 @@ impl ShellDocument {
             .as_mut()
             .mutate()
             .insert_nodes_before(before, &[child]);
+        self.attach_custom_widgets(child);
         self.mark_structure_changed();
     }
 
     pub(crate) fn remove_child(&mut self, parent: NodeId, child: NodeId) {
         self.detach_media(child);
-        let document = self.document.as_mut();
-        if document.get_node(child).and_then(|node| node.parent) != Some(parent) {
+        if self
+            .document
+            .as_ref()
+            .get_node(child)
+            .and_then(|node| node.parent)
+            != Some(parent)
+        {
             return;
         }
+        self.detach_shaders(child, true);
+        let document = self.document.as_mut();
         // A conditional UI subtree can be removed while one of its controls owns
         // focus. Pause dialogs exercise this whenever their focussed Resume
         // button disappears. Clear focus before detaching any subtree which

@@ -13,14 +13,14 @@ impl Handler<Launch> for GuiActor {
         let state = self.state.clone();
         Box::pin(
             async move {
-                let invalid_attachment = validation?.await.unwrap_or(None);
+                let surface_groups = validation?.await.unwrap_or_else(|_| Ok(Default::default()));
                 state.with(|state| {
                     state.launch(
                         message.token,
                         message.options,
                         message.prepared_filesystem,
                         message.controller_session,
-                        invalid_attachment,
+                        surface_groups,
                     )
                 })
             }

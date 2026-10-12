@@ -52,13 +52,9 @@ windows = { workspace = true, features = [
     "Win32_System_WinRT_Graphics_Capture",
     "Win32_UI_Input_KeyboardAndMouse",
 ] }
-windows-numerics = "0.2.0"
+windows-numerics = "0.3.1"
 winit.workspace = true
 vello = "0.11"
 vello_encoding = "0.11"
 wgpu-hal = { version = "30", features = ["dx12", "static-dxc"] }
-windows-wgpu = { package = "windows", version = "0.62", features = [
-    "Win32_Graphics_Direct3D12",
-    "Win32_Graphics_Dxgi_Common",
-] }
 tracing.workspace = true

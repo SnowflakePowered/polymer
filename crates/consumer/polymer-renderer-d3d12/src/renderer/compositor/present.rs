@@ -20,6 +20,8 @@ impl D3d12Compositor {
         }
         let frame_index = unsafe { self.swapchain.GetCurrentBackBufferIndex() } as usize;
         self.wait_frame(frame_index)?;
+        self.target = self.extent;
+        let carried = self.has_pending_frame();
         self.frame_garbage[frame_index].clear();
         // The fence above is what makes reusing these bytes safe: the GPU has
         // finished every draw that read from this frame's arena.
@@ -143,7 +145,7 @@ impl D3d12Compositor {
         }
 
         if plan.placements().next().is_some() {
-            self.draw_content(frame_index, plan)?;
+            self.draw_shaded(frame_index, plan, carried)?;
         }
         record(&mut D3d12RenderPass {
             device: self.receiver.device(),
@@ -262,10 +264,10 @@ impl D3d12Compositor {
         // asked for.
         let corners = |rect: [f32; 4]| {
             (
-                rect[0] / self.extent.0 as f32 * 2.0 - 1.0,
-                1.0 - rect[1] / self.extent.1 as f32 * 2.0,
-                rect[2] / self.extent.0 as f32 * 2.0 - 1.0,
-                1.0 - rect[3] / self.extent.1 as f32 * 2.0,
+                rect[0] / self.target.0 as f32 * 2.0 - 1.0,
+                1.0 - rect[1] / self.target.1 as f32 * 2.0,
+                rect[2] / self.target.0 as f32 * 2.0 - 1.0,
+                1.0 - rect[3] / self.target.1 as f32 * 2.0,
             )
         };
         let draws = plan
@@ -337,8 +339,8 @@ impl D3d12Compositor {
             scissor.unwrap_or(RECT {
                 left: 0,
                 top: 0,
-                right: self.extent.0 as i32,
-                bottom: self.extent.1 as i32,
+                right: self.target.0 as i32,
+                bottom: self.target.1 as i32,
             }),
         )
     }
@@ -366,8 +368,8 @@ impl D3d12Compositor {
         };
         unsafe {
             self.command_list.RSSetViewports(&[D3D12_VIEWPORT {
-                Width: self.extent.0 as f32,
-                Height: self.extent.1 as f32,
+                Width: self.target.0 as f32,
+                Height: self.target.1 as f32,
                 MaxDepth: 1.0,
                 ..Default::default()
             }]);

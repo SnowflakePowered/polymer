@@ -201,12 +201,12 @@ impl ShellRasterizer {
         if let Some(hal) = unsafe { queue.as_hal::<wgpu_hal::api::Dx12>() } {
             let _ = unsafe {
                 hal.as_raw()
-                    .SetName(windows_wgpu::core::w!("Polymer shell chrome queue"))
+                    .SetName(windows::core::w!("Polymer shell chrome queue"))
             };
         }
         // SAFETY: the raw device is only read while wgpu reports it lost, before it is destroyed.
         if let Some(raw) = unsafe { device.as_hal::<wgpu_hal::api::Dx12>() }
-            .map(|hal| windows_wgpu::core::Interface::as_raw(hal.raw_device()) as usize)
+            .map(|hal| windows::core::Interface::as_raw(hal.raw_device()) as usize)
         {
             device.set_device_lost_callback(move |reason, message| {
                 if reason == wgpu::DeviceLostReason::Destroyed {
@@ -293,7 +293,7 @@ impl ShellRasterizer {
     pub(crate) fn retained_device_context(
         &self,
     ) -> Result<(*mut std::ffi::c_void, *mut std::ffi::c_void), Box<dyn Error>> {
-        use windows_wgpu::core::Interface as _;
+        use windows::core::Interface as _;
         // SAFETY: the returned COM clones each transfer one owned reference to
         // the compositor constructor.
         unsafe {

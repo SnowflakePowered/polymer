@@ -8,7 +8,7 @@
 
 use std::{error::Error, ffi::c_void};
 use vello::wgpu;
-use windows_wgpu::Win32::Graphics::{
+use windows::Win32::Graphics::{
     Direct3D12::{
         D3D12_HEAP_FLAG_NONE, D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_DESC,
         D3D12_RESOURCE_DIMENSION_TEXTURE2D, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
@@ -16,7 +16,7 @@ use windows_wgpu::Win32::Graphics::{
     },
     Dxgi::Common::{DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SAMPLE_DESC},
 };
-use windows_wgpu::core::Interface;
+use windows::core::Interface;
 
 pub struct ChromeTexture {
     resource: ID3D12Resource,

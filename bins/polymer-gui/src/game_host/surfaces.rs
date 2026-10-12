@@ -12,6 +12,16 @@ impl GameHost {
             return Some(self.handle_surface_offer(offer));
         }
         loop {
+            let measured = self.compositor.borrow_mut().try_shader_content();
+            let Some(measured) = measured else {
+                break;
+            };
+            match measured.content {
+                Some(content) => self.shader_contents.insert(measured.presenter, content),
+                None => self.shader_contents.remove(&measured.presenter),
+            };
+        }
+        loop {
             let worker = self.compositor.borrow_mut().try_surface_event();
             let Some(worker) = worker else {
                 break;
@@ -88,7 +98,8 @@ impl GameHost {
         }
 
         let stream = *offer.stream();
-        let (surface, target_index, quarter_turns) = if let Some(previous) = replaced_connection {
+        let (mut surface, target_index, quarter_turns) = if let Some(previous) = replaced_connection
+        {
             let mut surface = self
                 .surfaces
                 .get(&previous)
@@ -100,7 +111,7 @@ impl GameHost {
             let quarter_turns = surface.quarter_turns;
             (surface, target_index, quarter_turns)
         } else {
-            let (target_index, quarter_turns) = self
+            let (target_index, quarter_turns, surface_group) = self
                 .target_configuration(offer.id().0)
                 .ok_or("the game host already has this render target")?;
             let (width, height) = rotated_extent(stream.width, stream.height, quarter_turns);
@@ -110,6 +121,7 @@ impl GameHost {
                     preferred_width: width,
                     preferred_height: height,
                     quarter_turns,
+                    surface_group,
                     geometries: vec![SurfaceGeometry {
                         x: 0,
                         y: 0,
@@ -121,6 +133,8 @@ impl GameHost {
                         corner_radius: 0.0,
                         style: None,
                         opacity: 1.0,
+                        surface_group: None,
+                        node: 0,
                     }],
                 },
                 target_index,
@@ -129,9 +143,11 @@ impl GameHost {
         };
         let backend = stream.hook.label().to_owned();
         let extent = polymer_renderer::Extent::new(stream.width, stream.height);
-        self.compositor
-            .borrow_mut()
-            .import_surface(&offer, quarter_turns)?;
+        surface.surface_group = self.compositor.borrow_mut().import_surface(
+            &offer,
+            quarter_turns,
+            surface.surface_group,
+        )?;
         let detached = self.compositor.borrow().accepts_detached_frames();
         let accepted = if detached {
             self.capture
@@ -166,6 +182,7 @@ impl GameHost {
             self.surfaces.remove(&previous);
             self.compositor.borrow_mut().remove_surface(previous);
         }
+        self.sync_surface_shaders();
         self.mark_composition_dirty();
         Ok(Some(ConnectedSurface {
             connection,
@@ -188,6 +205,8 @@ impl GameHost {
             self.capture.revoke(connection);
         }
         self.surfaces.clear();
+        self.surface_group_layouts.clear();
+        self.forget_shader_presenters();
         self.mark_composition_dirty();
         self.shell_refresh_pending = true;
         Ok(stale_connections)
@@ -215,6 +234,7 @@ impl GameHost {
         self.compositor.borrow_mut().remove_surface(connection);
         let removed = self.surfaces.remove(&connection).is_some();
         if removed {
+            self.sync_surface_shaders();
             self.mark_composition_dirty();
         }
         removed
@@ -230,6 +250,8 @@ impl GameHost {
         }
         self.capture.detach();
         self.surfaces.clear();
+        self.surface_group_layouts.clear();
+        self.forget_shader_presenters();
         self.pending_offer = None;
         self.mark_composition_dirty();
         let token = active.token;
@@ -248,7 +270,7 @@ impl GameHost {
         })
     }
 
-    fn target_configuration(&self, index: u32) -> Option<(u32, u8)> {
+    fn target_configuration(&self, index: u32) -> Option<(u32, u8, Option<u64>)> {
         let active = self.active.as_ref()?;
         active
             .options
@@ -261,7 +283,13 @@ impl GameHost {
                         .values()
                         .any(|surface| surface.index == target.index)
             })
-            .map(|target| (target.index, normalized_quarter_turns(target.rotation)))
+            .map(|target| {
+                (
+                    target.index,
+                    normalized_quarter_turns(target.rotation),
+                    target.group,
+                )
+            })
     }
 
     pub fn has_pending_frame(&self) -> bool {
@@ -324,6 +352,20 @@ impl GameHost {
                     corner_radius: placement.corner_radius,
                     style: placement.style.clone(),
                     opacity: placement.opacity,
+                    surface_group: placement.surface_group.map(|surface_group| {
+                        let bounds = surface_group.bounds;
+                        SurfaceGroupGeometry {
+                            id: surface_group.id,
+                            bounds: Rect::new(
+                                bounds.x0.round() as i32,
+                                bounds.y0.round() as i32,
+                                bounds.width().round().max(0.0) as u32,
+                                bounds.height().round().max(0.0) as u32,
+                            ),
+                            parent: surface_group.parent,
+                        }
+                    }),
+                    node: placement.node_id as u64,
                 });
         }
 
@@ -353,6 +395,7 @@ impl GameHost {
             }
         }
         if changed {
+            self.sync_surface_shaders();
             self.mark_composition_dirty();
         }
         changed

@@ -58,6 +58,9 @@ pub struct AttachedTrackedSurface {
     /// Blitz node ID validated by the shell DOM at attachment time.
     #[serde(deserialize_with = "AttachedTrackedSurface::deserialize_attach")]
     pub attach: usize,
+    /// `<tracked-surface-group>` resolved by the shell DOM at attachment time.
+    #[serde(skip)]
+    pub group: Option<u64>,
 }
 
 impl AttachedTrackedSurface {

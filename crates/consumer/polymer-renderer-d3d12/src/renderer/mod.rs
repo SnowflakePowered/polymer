@@ -4,7 +4,7 @@ pub mod compositor;
 pub mod receiver;
 mod surface;
 
-pub use compositor::{D3d12Compositor, D3d12RenderPass};
+pub use compositor::{D3d12Compositor, D3d12RenderPass, ShaderStage};
 pub use receiver::D3d12Receiver;
 
 mod contract;

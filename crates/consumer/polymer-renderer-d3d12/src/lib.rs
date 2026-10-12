@@ -3,5 +3,5 @@
 pub mod egui;
 pub mod renderer;
 pub use egui::D3d12EguiPainter;
-pub use renderer::{D3d12Compositor, D3d12RenderPass};
+pub use renderer::{D3d12Compositor, D3d12RenderPass, ShaderStage};
 pub mod webrtc;

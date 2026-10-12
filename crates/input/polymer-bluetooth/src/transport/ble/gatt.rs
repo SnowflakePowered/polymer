@@ -123,7 +123,7 @@ pub async fn default_adapter_address() -> Result<DeviceAddr> {
     let operation = BluetoothAdapter::GetDefaultAsync()
         .map_err(|error| Error::Platform(format!("could not query default adapter: {error}")))?;
     let adapter = operation
-        .get()
+        .join()
         .map_err(|error| Error::Platform(format!("could not open default adapter: {error}")))?;
     let value = adapter
         .BluetoothAddress()

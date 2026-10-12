@@ -1002,12 +1002,102 @@
     }
   }
 
+  const shaderPresets = new WeakMap();
+  const unattachedPresets = new FinalizationRegistry((id) => ops.op_shader_preset_drop(id));
+
+  class ShaderPreset {
+    constructor(url, options = {}) {
+      const href = new URL(String(url), globalThis.location.href).href;
+      const loading = ops.op_shader_preset_load(href, {
+        viewport: options.viewport ?? "auto",
+        aspectRatio: options.aspectRatio,
+      });
+      this.ready = loading.then((loaded) => {
+        shaderPresets.set(this, loaded);
+        unattachedPresets.register(this, loaded.id, this);
+        return this;
+      });
+      this.ready.catch(() => {});
+    }
+
+    get parameters() {
+      return shaderPresets.get(this)?.parameters.map((parameter) => ({ ...parameter })) ?? [];
+    }
+
+    get viewport() {
+      return shaderPresets.get(this)?.viewport;
+    }
+  }
+
+  class FilterChain {
+    #element;
+    #attachment;
+    #parameters;
+    #passes;
+
+    constructor(element, attachment, parameters) {
+      this.#element = element;
+      this.#attachment = attachment;
+      this.#parameters = new Map(parameters.map((parameter) => [parameter.id, { ...parameter }]));
+    }
+
+    get attached() {
+      return ops.op_shader_attached(this.#element.__id, this.#attachment);
+    }
+
+    get parameters() {
+      return [...this.#parameters.values()].map((parameter) => ({ ...parameter }));
+    }
+
+    getParameter(id) {
+      return this.#parameters.get(String(id))?.value;
+    }
+
+    setParameter(id, value) {
+      const parameter = this.#parameters.get(String(id));
+      if (!parameter) throw new RangeError(`unknown shader parameter ${id}`);
+      parameter.value = Number(value);
+      ops.op_shader_parameter(this.#element.__id, this.#attachment, parameter.id, parameter.value);
+    }
+
+    get passesEnabled() {
+      return this.#passes;
+    }
+
+    set passesEnabled(count) {
+      this.#passes = Math.max(0, Math.trunc(Number(count)));
+      ops.op_shader_passes(this.#element.__id, this.#attachment, this.#passes);
+    }
+
+    detach() {
+      ops.op_shader_detach(this.#element.__id, this.#attachment);
+    }
+  }
+
+  function attachShader(element, preset) {
+    const loaded = shaderPresets.get(preset);
+    if (!loaded) throw new TypeError("ShaderPreset has not finished loading; await preset.ready");
+    ops.op_shader_attach(element.__id, loaded.id);
+    unattachedPresets.unregister(preset);
+    return new FilterChain(element, loaded.id, loaded.parameters);
+  }
+
   class HTMLTrackedSurfaceElement extends HTMLElement {
     get preferredSize() {
       return Object.freeze({
         width: Number(this.dataset.preferredWidth) || 0,
         height: Number(this.dataset.preferredHeight) || 0,
       });
+    }
+
+    attachShader(preset) {
+      return attachShader(this, preset);
+    }
+  }
+
+  class HTMLTrackedSurfaceGroupElement extends HTMLElement {
+    attachShader(preset) {
+      return attachShader(this, preset);
     }
   }
 
@@ -1111,6 +1201,7 @@
     }
     switch (info.tag) {
       case "tracked-surface": return new HTMLTrackedSurfaceElement(id, info);
+      case "tracked-surface-group": return new HTMLTrackedSurfaceGroupElement(id, info);
       case "template": return new HTMLTemplateElement(id, info);
       case "img": return new HTMLImageElement(id, info);
       case "audio": return new HTMLAudioElement(id, info);
@@ -1217,6 +1308,9 @@
     DocumentFragment,
     HTMLTemplateElement,
     HTMLTrackedSurfaceElement,
+    HTMLTrackedSurfaceGroupElement,
+    ShaderPreset,
+    FilterChain,
     Document,
     document: null,
     scroll(...args) { documentNode.documentElement?.scrollTo(...args); },

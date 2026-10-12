@@ -70,7 +70,7 @@ tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 turso = { version = "0.8.1", default-features = false }
 watchable = "1.1.2"
 winit = "0.30.13"
-windows = { version = "0.61.3", features = [
+windows = { version = "0.62.2", features = [
     "Win32_Foundation",
     "Win32_Graphics_Direct3D",
     "Win32_Graphics_Direct3D_Fxc",
@@ -89,8 +89,9 @@ windows = { version = "0.61.3", features = [
     "Win32_System_Variant",
     "Win32_System_Threading",
 ] }
+librashader = { version = "0.12.1", default-features = false }
 windows-registry = "0.6.1"
-windows-core = "0.61.2"
+windows-core = "0.62.2"
 windows-strings = "0.5.1"
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",

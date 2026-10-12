@@ -25,6 +25,21 @@ pub struct SurfaceLayer {
     pub z_order: i32,
     pub placement: SurfaceContent,
 }
+/// Captured streams stitched into one group swapchain, in group-local pixels.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SurfaceGroupLayout {
+    pub extent: polymer_renderer::Extent,
+    pub members: Vec<SurfaceGroupMember>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SurfaceGroupMember {
+    pub connection: u64,
+    pub rectangle: polymer_renderer::layout::Rect,
+    pub corner_radius: f32,
+    pub placement: SurfaceContent,
+}
+
 #[derive(Clone)]
 pub struct ShellRasterChunk {
     pub id: RasterChunkId,

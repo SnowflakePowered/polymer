@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 polymer-composition.workspace = true
+librashader = { workspace = true, features = ["presets", "preprocess"] }
 polymer-banner = { workspace = true, features = ["render"] }
 polymer-mipmap.workspace = true
 actix.workspace = true
@@ -85,4 +86,4 @@ polymer-composition-windows.workspace = true
 polymer-platform-windows.workspace = true
 polymer-hook-input-dinput.workspace = true
 windows.workspace = true
-webview2-com = "=0.38.2"
+webview2-com = "0.39.1"

@@ -3,8 +3,22 @@ use super::*;
 impl D3d12Compositor {
     /// Reads the primary imported surface's last displayed frame as normalized RGBA pixels.
     pub fn snapshot_rgba(&mut self) -> Result<Option<(u32, u32, Vec<u8>)>, Box<dyn Error>> {
-        let Some((texture, state, flip_y, quarter_turns)) =
-            self.surfaces.first().and_then(|surface| {
+        let Some(connection) = self.surfaces.first().map(|surface| surface.connection) else {
+            return Ok(None);
+        };
+        self.snapshot_stream_rgba(connection)
+    }
+
+    /// Reads one imported stream's last displayed frame as normalized RGBA pixels.
+    pub fn snapshot_stream_rgba(
+        &mut self,
+        connection: u64,
+    ) -> Result<Option<(u32, u32, Vec<u8>)>, Box<dyn Error>> {
+        let Some((texture, state, flip_y, quarter_turns)) = self
+            .surfaces
+            .iter()
+            .find(|surface| surface.connection == connection)
+            .and_then(|surface| {
                 let frame = surface.frames.displayed()?;
                 Some((
                     surface

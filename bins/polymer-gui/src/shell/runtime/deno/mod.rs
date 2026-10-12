@@ -12,6 +12,7 @@ mod media;
 mod modules;
 mod runtime;
 mod scroll;
+mod shaders;
 mod state;
 
 pub use input::EventResult;

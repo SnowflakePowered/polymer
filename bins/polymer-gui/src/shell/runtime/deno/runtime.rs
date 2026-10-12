@@ -24,6 +24,10 @@ use super::media::{
 };
 use super::modules::{BrowserModuleLoader, document_scripts, execute_document_script};
 use super::scroll::op_dom_scroll;
+use super::shaders::{
+    op_shader_attach, op_shader_attached, op_shader_detach, op_shader_parameter, op_shader_passes,
+    op_shader_preset_drop, op_shader_preset_load,
+};
 use super::state::{BridgeState, op_post_message, op_shell_reload};
 use crate::shell::document::SharedShellDocument;
 use polymer_deno::polymer::PolymerNotificationSender;
@@ -74,6 +78,13 @@ deno_core::extension!(
         op_media_seek,
         op_media_configure,
         op_media_state,
+        op_shader_preset_load,
+        op_shader_attach,
+        op_shader_attached,
+        op_shader_preset_drop,
+        op_shader_parameter,
+        op_shader_passes,
+        op_shader_detach,
         op_post_message,
         op_shell_reload,
         op_shell_resolve_asset,

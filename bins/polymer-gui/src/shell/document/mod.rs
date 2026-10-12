@@ -18,12 +18,13 @@ mod media;
 mod mutations;
 mod providers;
 mod scrolling;
+mod shaders;
 mod tracked_surface;
 mod urls;
 
 use crate::shell::protocol::{
     RasterChunkId, ShellChannel, ShellCompositionGroup, ShellFrame, ShellRasterChunk,
-    TrackedSource, TrackedSurfaceLayout,
+    SurfaceGroupBounds, TrackedSource, TrackedSurfaceLayout,
 };
 use crate::shell::runtime::ShellRuntime;
 use crate::shell::runtime::deno::ScrollCommand;
@@ -35,6 +36,7 @@ use blitz_dom::local_name;
 use blitz_traits::net::{NetProvider, NetWaker};
 pub use events::{DomKeyboardEvent, DomMouseEvent, DomWheelEvent};
 pub(crate) use media::{MediaEvents, MediaPlayers, MediaSignal, MediaState};
+pub(crate) use shaders::{LoadedPreset, PresetOptions, PresetParameter, ShaderPresets};
 pub(crate) use urls::{ShellUrls, ThemeLocation};
 use hit_test::{node_is_within_tracked_surface, pointer_hit};
 use image_levels::ImageLevels;
@@ -49,7 +51,8 @@ use std::{
     },
 };
 use tracked_surface::{
-    apply_tracked_surface_styles, initialise_tracked_surfaces, is_tracked_surface_element,
+    apply_tracked_surface_styles, enclosing_surface_group, initialise_tracked_surfaces,
+    is_tracked_surface_element,
 };
 
 /// How many times a paint will re-resolve to pick up assets that only became
@@ -110,6 +113,7 @@ pub struct ShellDocument {
     images: ImageLevels,
     image_loader: Arc<image::ImageLoader>,
     media: MediaPlayers,
+    shaders: ShaderPresets,
     urls: Arc<ShellUrls>,
     width: u32,
     height: u32,
@@ -229,6 +233,7 @@ impl ShellDocumentFactory {
                 ..Default::default()
             },
         );
+        let shaders = ShaderPresets::new(outbox.clone());
         let media = MediaPlayers::new(
             net.clone(),
             document.as_ref().id(),
@@ -253,6 +258,7 @@ impl ShellDocumentFactory {
             images,
             image_loader,
             media,
+            shaders,
             urls,
             width: 0,
             height: 0,
@@ -401,7 +407,8 @@ impl ShellDocument {
                 .and_then(|node| node.parent)
         })
         .find(|node| self.is_script_node(*node))?;
-        let over_tracked_surface = node_is_within_tracked_surface(self.document.as_ref(), target);
+        let over_tracked_surface = node_is_within_tracked_surface(self.document.as_ref(), target)
+            || self.is_within_shaded_element(target);
         Some(ShellHitSnapshot {
             node_id: target,
             over_tracked_surface,
@@ -433,6 +440,12 @@ impl ShellDocument {
             );
         }
         valid
+    }
+
+    /// The `<tracked-surface-group>` composing an attached tracked surface.
+    pub fn attachment_surface_group(&self, attachment: usize) -> Option<u64> {
+        enclosing_surface_group(self.document.as_ref(), NodeId::from_u64(attachment as u64))
+            .map(SurfaceGroupBounds::id_for)
     }
 
     fn resolve_document(&mut self, invalidate_layout: bool) {
@@ -566,6 +579,11 @@ impl ShellDocument {
         let mut group_first_z = HashMap::<u64, i32>::new();
         let mut chunk_ordinals = HashMap::<Option<u64>, u32>::new();
         let mut fragments = output.fragments.into_iter().peekable();
+        let group_tree = output
+            .groups
+            .iter()
+            .map(|group| (group.id, (group.parent, group.bounds)))
+            .collect::<HashMap<_, _>>();
         for band in 0..used {
             while fragments
                 .peek()
@@ -620,6 +638,21 @@ impl ShellDocument {
                     corner_radius: placement.corner_radius * self.scale_factor,
                     style: placement.style.clone(),
                     opacity: placement.opacity,
+                    surface_group: placement.surface_group.map(|mut surface_group| {
+                        let inner = surface_group.bounds.inflate(-0.5, -0.5);
+                        surface_group.parent =
+                            std::iter::successors(surface_group.parent, |group| {
+                                group_tree.get(group).and_then(|(parent, _)| *parent)
+                            })
+                            .find(|group| {
+                                group_tree
+                                    .get(group)
+                                    .is_some_and(|(_, bounds)| bounds.union(inner) == *bounds)
+                            });
+                        surface_group.bounds =
+                            scaled_rect(surface_group.bounds, f64::from(self.scale_factor));
+                        surface_group
+                    }),
                 });
                 if let Some(group) = placement.group {
                     group_first_z.entry(group).or_insert(z_order);

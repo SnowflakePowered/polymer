@@ -17,6 +17,7 @@ use std::{
 };
 use winit::{event::WindowEvent, window::WindowId};
 
+pub use polymer_renderer_d3d12::ShaderStage;
 use shell::{ShellCompositor, ShellRasterizer};
 use surfaces::RenderDevice;
 use window::WindowManager;
@@ -183,13 +184,18 @@ impl polymer_composition::Compositor for WindowsCompositor {
         &mut self,
         offer: &SurfaceOffer,
         quarter_turns: u8,
-    ) -> Result<(), Box<dyn Error>> {
+        group: Option<u64>,
+    ) -> Result<Option<u64>, Box<dyn Error>> {
         let size = self.window.size();
         self.surfaces.import(
             &self.window.surface(size.width.max(1), size.height.max(1)),
             offer,
             quarter_turns,
+            group,
         )
+    }
+    fn arrange_surface_group(&mut self, group: u64, layout: SurfaceGroupLayout) {
+        self.surfaces.arrange_group(group, layout);
     }
     fn accepts_detached_frames(&self) -> bool {
         self.surfaces.accepts_detached_frames()
@@ -254,5 +260,11 @@ impl polymer_composition::Compositor for WindowsCompositor {
     }
     fn close_video(&mut self, id: u64) {
         self.surfaces.close_video(id);
+    }
+    fn control_shader(&mut self, target: u64, control: ShaderControl) -> bool {
+        self.surfaces.control_shader(target, control)
+    }
+    fn try_shader_content(&mut self) -> Option<ShaderContent> {
+        self.surfaces.try_shader_content()
     }
 }

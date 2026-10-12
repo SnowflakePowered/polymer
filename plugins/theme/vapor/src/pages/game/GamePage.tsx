@@ -46,13 +46,13 @@ export function GamePage() {
       }</For>
     }>
       <section class="vp-dual-screen">
-        <div class="vp-dual-screen-frame" data-layout={shell.state.screenLayout}>
+        <tracked-surface-group class="vp-dual-screen-frame" attr:data-layout={shell.state.screenLayout}>
           <tracked-surface ref={register(0)} src="0" data-index="0" class="vp-dual-screen-surface" attr:data-screen="top" />
           <tracked-surface ref={register(1)} src="1" data-index="1" class="vp-dual-screen-surface" attr:data-screen="bottom" />
           <Show when={shell.state.screenLayout === "hybrid"}>
             <tracked-surface attr:src="0" class="vp-dual-screen-surface" attr:data-screen="mirror" />
           </Show>
-        </div>
+        </tracked-surface-group>
       </section>
     </Show>
     <Show when={shell.state.phase.kind !== "idle"}>
