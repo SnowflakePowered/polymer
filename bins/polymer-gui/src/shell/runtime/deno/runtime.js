@@ -207,10 +207,7 @@
           target,
           rootBounds: null,
           boundingClientRect: rect,
-          intersectionRect: visible ? rect : Object.freeze({
-            x: 0, y: 0, width: 0, height: 0,
-            left: 0, top: 0, right: 0, bottom: 0,
-          }),
+          intersectionRect: visible ? rect : new DOMRectReadOnly(),
           isIntersecting: visible,
           intersectionRatio: visible ? 1 : 0,
         }], this);
@@ -667,11 +664,7 @@
 
     getBoundingClientRect() {
       const { x, y, width, height } = translatedClientRect(this);
-      return Object.freeze({
-        x, y, width, height,
-        left: x, top: y, right: x + width, bottom: y + height,
-        toJSON() { return { x, y, width, height, left: x, top: y, right: x + width, bottom: y + height }; },
-      });
+      return new DOMRect(x, y, width, height);
     }
 
     getClientRects() {
