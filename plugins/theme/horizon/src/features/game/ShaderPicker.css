@@ -1,0 +1,10 @@
+@layer horizon {
+.horizon-shader-panel { display: flex; min-height: 0; flex-direction: column; gap: .25rem; }
+.horizon-shader-heading { margin: 0 0 .75rem; font-size: 1.35rem; font-weight: 400; }
+.horizon-shader-results { display: flex; max-height: 45vh; flex-direction: column; gap: .25rem; margin-top: .5rem; overflow-y: auto; scrollbar-width: none; }
+.horizon-shader-results .hz-description { margin: .75rem 1rem; }
+.horizon-shader-result { display: flex; min-height: 3.25rem; flex: none; flex-direction: column; align-items: flex-start; justify-content: center; gap: .15rem; padding: .5rem 1rem; border: 0; border-radius: 0; color: var(--hz-text); background: transparent; font: inherit; text-align: left; cursor: pointer; }
+.horizon-shader-result:hover { background: var(--hz-panel); }
+.horizon-shader-result small { color: var(--hz-muted); font-size: .8em; }
+.horizon-shader-result[aria-current="true"] { box-shadow: inset 4px 0 var(--hz-brand); }
+}

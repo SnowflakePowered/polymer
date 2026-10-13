@@ -35,7 +35,7 @@ export type ShellState = {
   launch: LaunchInstance | null;
   audio: { available: boolean; volume: number; muted: boolean };
   notifications: Record<string, Notification>;
-  menu: "main" | "quick" | "order" | "shader" | null;
+  menu: "main" | "quick" | "order" | "shader" | "states" | null;
   screenLayout: ScreenLayout;
   shader: PlatformShader;
 };

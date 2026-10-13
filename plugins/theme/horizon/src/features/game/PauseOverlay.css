@@ -1,15 +1,30 @@
 @layer horizon {
-.horizon-quick-menu.hz-side-panel { position: fixed; top: 0; right: 0; bottom: 0; width: min(32rem, 40vw); min-width: 22rem; height: auto; max-height: none; padding: 1.5rem 1.5rem 0; border-radius: 0; background: color-mix(in srgb, var(--hz-overlay) 80%, transparent); }
-.horizon-quick-menu .hz-dialog-title { border-bottom: 0; }
-.horizon-quick-menu-title { display: flex; align-items: center; gap: 1rem; min-width: 0; }
-.horizon-quick-menu-title img { width: auto; height: 2.5rem; max-width: 8rem; flex: none; object-fit: contain; border-radius: var(--hz-radius); }
-.horizon-quick-menu-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.horizon-quick-menu .hz-action-row, .horizon-quick-menu .hz-setting-row { min-height: 3.75rem; padding: .75rem 1rem; border: 0; border-top: 1px solid var(--hz-divider); border-radius: var(--hz-radius); }
-.horizon-quick-menu .hz-action-row > span { display: flex; align-items: center; gap: .75rem; }
-.horizon-quick-menu .hz-action-row svg { flex: none; }
-.horizon-quick-menu .hz-dialog-body > :last-child { border-bottom: 1px solid var(--hz-divider); }
-.horizon-quick-menu .hz-setting-row[data-focus-ring] { background: color-mix(in srgb, var(--hz-panel) 60%, transparent); }
-.horizon-quick-menu .hz-actions { margin-top: auto; padding-top: 0; }
-.horizon-quick-menu .hz-hints { flex: 1; border-top: 1px solid var(--hz-divider); }
+.horizon-pause-backdrop { position: fixed; inset: 0; z-index: 70; background: rgb(0 0 0 / 55%); backdrop-filter: blur(24px); }
+.horizon-pause-shell { position: fixed; inset: 0; z-index: 71; display: grid; }
+.hz-dialog.horizon-pause {
+  --hz-text: #fff; --hz-muted: rgb(255 255 255 / 68%); --hz-action: #fff; --hz-divider: rgb(255 255 255 / 22%);
+  --hz-panel: rgb(255 255 255 / 12%); --hz-surface: #1e1e20; --hz-overlay: #1e1e20; --hz-track: rgb(255 255 255 / 30%);
+  position: relative; display: grid; width: 100%; height: 100%; max-height: none; grid-template-columns: minmax(0, 1fr) 1px minmax(0, 1fr);
+  padding: 0; border-radius: 0; color: var(--hz-text); background: transparent; box-shadow: none; outline: none;
 }
-.horizon-shader-dialog { width: min(40rem, 100%); height: min(36rem, calc(100vh - 4rem)); }
+.horizon-pause-header { position: absolute; top: 1.75rem; left: 1.75rem; display: flex; max-width: 40%; align-items: center; gap: .9rem; }
+.horizon-pause-header img { width: auto; height: 3rem; max-width: 8rem; flex: none; object-fit: contain; }
+.horizon-pause-title { overflow: hidden; margin: 0; font-size: 1.05rem; font-weight: 500; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+.horizon-pause-menu { display: flex; align-self: center; flex-direction: column; padding-left: 12.5vw; }
+.horizon-pause-item { display: flex; align-items: center; justify-content: flex-start; min-height: 3.6rem; padding: 0 1.5rem 0 2rem; border: 0; color: #fff; background: transparent; font: inherit; font-size: clamp(1.15rem, 1.9vw, 1.75rem); text-align: left; cursor: pointer; }
+.horizon-pause-item[aria-selected="true"] { background: rgb(255 255 255 / 14%); }
+.horizon-pause-item:hover, .horizon-pause-item:focus, .horizon-pause-item[data-focus-ring] { outline: none; color: var(--hz-brand); background: #fff; }
+.horizon-pause .hz-hints[data-floating] { position: absolute; }
+.horizon-pause-divider { margin: 2.25rem 0 4.75rem; background: rgb(255 255 255 / 85%); }
+.horizon-pause-options { display: flex; min-height: 0; align-self: center; flex-direction: column; gap: .25rem; max-width: 32rem; max-height: calc(100% - 9rem); overflow-y: auto; padding: .25rem 3.5rem; scrollbar-width: none; }
+.horizon-pause-options .hz-action-row, .horizon-pause-options .hz-setting-row { min-height: 3.75rem; padding: .75rem 1rem; border: 1px solid rgb(255 255 255 / 85%); border-radius: 0; background: rgb(0 0 0 / 25%); }
+.horizon-pause-options .hz-action-row > span { display: flex; align-items: center; gap: .75rem; }
+.horizon-pause-options .hz-action-row svg { flex: none; }
+.horizon-pause-options .horizon-shader-result[data-focus-ring], .horizon-pause-options .horizon-shader-result:focus { background: rgb(255 255 255 / 12%); }
+.horizon-pause-options .horizon-layout-picker { padding: .25rem 0; border: 0; }
+@media (max-width: 700px) {
+  .hz-dialog.horizon-pause { grid-template-columns: 1fr; grid-template-rows: auto auto; align-content: center; gap: 1.5rem; }
+  .horizon-pause-menu { padding-left: 0; } .horizon-pause-divider { display: none; }
+  .horizon-pause-options { padding: 0 1rem 5rem; max-width: none; }
+}
+}
