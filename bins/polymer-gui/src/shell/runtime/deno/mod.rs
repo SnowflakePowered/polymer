@@ -6,6 +6,7 @@
 //! of the document.
 
 mod assets;
+mod capture;
 mod dom;
 mod input;
 mod media;

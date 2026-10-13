@@ -114,6 +114,7 @@ pub struct ShellDocument {
     image_loader: Arc<image::ImageLoader>,
     media: MediaPlayers,
     shaders: ShaderPresets,
+    outbox: crate::shell::protocol::ShellOutbox,
     urls: Arc<ShellUrls>,
     width: u32,
     height: u32,
@@ -240,7 +241,7 @@ impl ShellDocumentFactory {
             document.as_ref().id(),
             &base_url,
             media_shell,
-            outbox,
+            outbox.clone(),
             urls.clone(),
         );
         let image_loader = Arc::new(image::ImageLoader::new(
@@ -260,6 +261,7 @@ impl ShellDocumentFactory {
             image_loader,
             media,
             shaders,
+            outbox,
             urls,
             width: 0,
             height: 0,

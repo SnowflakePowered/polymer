@@ -723,8 +723,15 @@ fn rename_handle(
 }
 
 fn delete_handle(file: &File) -> VfsResult<()> {
-    let info = FILE_DISPOSITION_INFO { DeleteFile: true };
-    set_file_information(file, FileDispositionInfo, &info)
+    let posix = FILE_DISPOSITION_INFO_EX {
+        Flags: FILE_DISPOSITION_INFO_EX_FLAGS(
+            FILE_DISPOSITION_FLAG_DELETE.0 | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS.0,
+        ),
+    };
+    set_file_information(file, FileDispositionInfoEx, &posix).or_else(|_| {
+        let info = FILE_DISPOSITION_INFO { DeleteFile: true };
+        set_file_information(file, FileDispositionInfo, &info)
+    })
 }
 
 fn detach_handle(file: &File) -> VfsResult<()> {

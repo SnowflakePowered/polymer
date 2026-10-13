@@ -5,9 +5,7 @@ import {
   op_emulator_message,
   op_emulator_pause_state,
   op_emulator_change_disc,
-  op_emulator_save_state,
-  op_emulator_resume_state,
-  op_emulator_state_screenshot,
+  op_emulator_state_action,
   op_emulator_set_muted,
   op_emulator_set_volume,
 } from "ext:core/ops";
@@ -86,6 +84,107 @@ export function createEmulator() {
     };
   }
 
+  function validateStateTimeout(timeoutMs) {
+    if (!Number.isInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 0xffff_ffff) {
+      throw new TypeError("save-state timeout must be a positive 32-bit integer");
+    }
+  }
+
+  class SaveStateStore extends EventTarget {
+    #capacity;
+    #action;
+    #entries = Object.freeze([]);
+    #queue = Promise.resolve();
+
+    constructor(capacity, action) {
+      super();
+      this.#capacity = capacity;
+      this.#action = action;
+    }
+
+    get capacity() { return this.#capacity; }
+    get entries() { return this.#entries; }
+
+    get(slot) {
+      return this.#entries.find((entry) => entry.slot === slot) ?? null;
+    }
+
+    #slotOf(target) {
+      const slot = typeof target === "number" ? target : target?.slot;
+      if (!Number.isInteger(slot) || slot < 0 || slot >= this.#capacity) {
+        throw new RangeError(`save-state slot must be an integer in 0..${this.#capacity - 1}`);
+      }
+      return slot;
+    }
+
+    #nextSlot() {
+      for (let slot = 0; slot < this.#capacity; slot++) {
+        if (!this.get(slot)) return slot;
+      }
+      return this.#entries.at(-1).slot;
+    }
+
+    #enqueue(task) {
+      const run = this.#queue.then(task);
+      this.#queue = run.catch(() => {});
+      return run;
+    }
+
+    #publish(type, detail = undefined) {
+      this.dispatchEvent(new CustomEvent(type, { detail }));
+    }
+
+    save(options = {}) {
+      const { label = null, createdAt = new Date(), screenshot = null, timeoutMs = 30_000 } = options;
+      const slot = options.slot === undefined ? undefined : this.#slotOf(options.slot);
+      validateStateTimeout(timeoutMs);
+      if (label !== null && typeof label !== "string") throw new TypeError("save-state label must be a string");
+      if (!(createdAt instanceof Date)) throw new TypeError("save-state createdAt must be a Date");
+      if (screenshot !== null && !(screenshot.bytes instanceof Uint8Array && typeof screenshot.type === "string")) {
+        throw new TypeError("save-state screenshot must be { bytes: Uint8Array, type: string }");
+      }
+      return this.#enqueue(async () => {
+        const target = slot ?? this.#nextSlot();
+        await this.#action(target, true, timeoutMs);
+        const entry = Object.freeze({
+          slot: target,
+          createdAt: new Date(createdAt),
+          label,
+          screenshot: screenshot && Object.freeze({ bytes: screenshot.bytes, type: screenshot.type }),
+        });
+        this.#entries = Object.freeze([entry, ...this.#entries.filter((candidate) => candidate.slot !== target)]);
+        this.#publish("save", entry);
+        this.#publish("change", this.#entries);
+        return entry;
+      });
+    }
+
+    restore(target, options = {}) {
+      const slot = this.#slotOf(target);
+      const { timeoutMs = 30_000 } = options;
+      validateStateTimeout(timeoutMs);
+      return this.#enqueue(async () => {
+        const entry = this.get(slot);
+        if (!entry) throw new DOMException(`save-state slot ${slot} is empty`, "NotFoundError");
+        await this.#action(slot, false, timeoutMs);
+        this.#publish("restore", entry);
+      });
+    }
+
+    delete(target) {
+      const slot = this.#slotOf(target);
+      if (!this.get(slot)) return;
+      this.#entries = Object.freeze(this.#entries.filter((entry) => entry.slot !== slot));
+      this.#publish("change", this.#entries);
+    }
+
+    __clear() {
+      if (this.#entries.length === 0) return;
+      this.#entries = Object.freeze([]);
+      this.#publish("change", this.#entries);
+    }
+  }
+
   class LaunchInstance extends EventTarget {
     #state = "pending";
     #error = null;
@@ -108,7 +207,12 @@ export function createEmulator() {
       this.requested = Object.freeze([...options.surfaces]);
       this.surfaces = Object.freeze([]);
       this.audio = Object.freeze({ available: false, volume: 1, muted: false });
-      this.saveStates = Object.freeze([]);
+      this.saveStates = options.saveStates
+        ? new SaveStateStore(options.saveStates.max, async (slot, save, timeoutMs) => {
+          if (!this.#canControl()) throw new DOMException("The launch is closing", "InvalidStateError");
+          await op_emulator_state_action(this.id, slot, save, timeoutMs);
+        })
+        : null;
       this.ready = this.#ready.promise;
       this.closed = this.#closed.promise;
     }
@@ -216,54 +320,6 @@ export function createEmulator() {
       }
     }
 
-    #validateStateTimeout(timeoutMs) {
-      if (!Number.isInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 0xffff_ffff) {
-        throw new TypeError("save-state timeout must be a positive 32-bit integer");
-      }
-    }
-
-    #saveStateRecord(metadata) {
-      const launch = this;
-      let screenshot;
-      return Object.freeze({
-        slot: metadata.slot,
-        timestamp: new Date(metadata.timestamp),
-        async screenshot() {
-          if (!metadata.hasScreenshot) return null;
-          if (screenshot === undefined) {
-            screenshot = (async () => {
-              const bytes = await op_emulator_state_screenshot(launch.id, metadata.recordId);
-              return bytes == null ? null : new Blob([bytes], { type: "image/png" });
-            })();
-          }
-          return screenshot;
-        },
-      });
-    }
-
-    async saveState(timeoutMs = 30_000) {
-      this.#validateStateTimeout(timeoutMs);
-      if (!this.#canControl()) throw new DOMException("The launch is closing", "InvalidStateError");
-      const state = this.#saveStateRecord(await op_emulator_save_state(this.id, timeoutMs));
-      this.saveStates = Object.freeze([
-        state,
-        ...this.saveStates.filter(candidate => candidate.slot !== state.slot),
-      ]);
-      this.#publish("statesave", state);
-      return state;
-    }
-
-    async resumeState(slot, timeoutMs = 30_000) {
-      if (!Number.isInteger(slot) || slot < 0 || slot > 0xffff_ffff) {
-        throw new TypeError("save-state slot must be a non-negative 32-bit integer");
-      }
-      this.#validateStateTimeout(timeoutMs);
-      if (!this.#canControl()) throw new DOMException("The launch is closing", "InvalidStateError");
-      const state = this.#saveStateRecord(await op_emulator_resume_state(this.id, slot, timeoutMs));
-      this.#publish("stateresume", state);
-      return state;
-    }
-
     close() {
       if (!this.#canControl()) return;
       this.#closeRequested = true;
@@ -320,7 +376,7 @@ export function createEmulator() {
           this.#rejectReady(this.#error || new Error("Emulator closed before becoming ready"));
         }
         this.#state = "closed";
-        this.saveStates = Object.freeze([]);
+        this.saveStates?.__clear();
         this.surfaces = Object.freeze([]);
         if (activeLaunch === this) publishActiveLaunch(null);
         this.#resolveClosed();

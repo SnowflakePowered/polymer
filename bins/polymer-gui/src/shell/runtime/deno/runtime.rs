@@ -15,6 +15,7 @@ use super::dom::{
     op_dom_scroll_metrics, op_dom_set_attribute, op_dom_set_inner_html, op_dom_set_text,
     op_dom_take_layout, op_dom_template_content, op_dom_text, op_dom_text_content,
 };
+use super::capture::op_surface_capture;
 use super::input::{EventResult, op_event_result};
 use super::media::{
     op_media_configure, op_media_load, op_media_pause, op_media_play, op_media_seek, op_media_state,
@@ -77,6 +78,7 @@ deno_core::extension!(
         op_media_state,
         op_shader_preset_load,
         op_shader_attach,
+        op_surface_capture,
         op_shader_attached,
         op_shader_preset_drop,
         op_shader_parameter,

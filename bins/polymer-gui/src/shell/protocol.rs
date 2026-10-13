@@ -177,7 +177,13 @@ pub(crate) enum ShellEvent {
         target: ShaderTarget,
         control: ShaderControl,
     },
+    Capture {
+        index: u32,
+        reply: oneshot::Sender<SurfaceCapture>,
+    },
 }
+
+pub(crate) type SurfaceCapture = Result<Option<polymer_runtime::RgbaScreenshot>, String>;
 
 /// The shell element a shader preset is attached to.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

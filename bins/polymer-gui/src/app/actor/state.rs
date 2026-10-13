@@ -1,10 +1,7 @@
-//! Save and restore remain sequential through plugin completion and metadata commit.
+//! Save and restore remain sequential through plugin completion.
 use super::StateActor;
-use crate::shell::runtime::InstanceToken;
 use actix::{AtomicResponse, Context, Handler, WrapFuture};
-use polymer_runtime::frontend::emulator::{ChangeDisc, Close, ResumeState, SaveState};
-use serde_json::Value;
-use std::time::Duration;
+use polymer_runtime::frontend::emulator::{ChangeDisc, Close, StateAction};
 
 impl Handler<ChangeDisc> for StateActor {
     type Result = AtomicResponse<Self, Result<(), String>>;
@@ -27,51 +24,20 @@ impl Handler<ChangeDisc> for StateActor {
     }
 }
 
-impl Handler<SaveState> for StateActor {
-    type Result = AtomicResponse<Self, Result<Value, String>>;
-    fn handle(&mut self, message: SaveState, _: &mut Context<Self>) -> Self::Result {
-        self.state_action(message.token, None, message.timeout)
-    }
-}
-
-impl Handler<ResumeState> for StateActor {
-    type Result = AtomicResponse<Self, Result<Value, String>>;
-    fn handle(&mut self, message: ResumeState, _: &mut Context<Self>) -> Self::Result {
-        self.state_action(message.token, Some(message.slot), message.timeout)
-    }
-}
-
-impl StateActor {
-    fn state_action(
-        &self,
-        token: InstanceToken,
-        restore_slot: Option<u32>,
-        timeout: Duration,
-    ) -> AtomicResponse<Self, Result<Value, String>> {
+impl Handler<StateAction> for StateActor {
+    type Result = AtomicResponse<Self, Result<(), String>>;
+    fn handle(&mut self, message: StateAction, _: &mut Context<Self>) -> Self::Result {
         let state = self.state.clone();
         AtomicResponse::new(Box::pin(
             async move {
-                let (slot, response) = state.with_active(token, |state| match restore_slot {
-                    Some(slot) => state
+                let response = state.with_active(message.token, |state| {
+                    state
                         .game_host
-                        .resume_state(slot, timeout)
-                        .map(|response| (slot, response)),
-                    None => state.game_host.save_state(timeout),
+                        .state_action(message.slot, message.save, message.timeout)
                 })?;
                 response.await.map_err(|_| {
                     "emulator plugin session closed during save-state action".to_owned()
-                })??;
-                state.with_active(token, |state| {
-                    let metadata = if restore_slot.is_none() {
-                        state.game_host.commit_save_state(slot)?
-                    } else {
-                        state
-                            .game_host
-                            .save_state_metadata(slot)
-                            .ok_or_else(|| format!("save-state slot {slot} no longer exists"))?
-                    };
-                    serde_json::to_value(metadata).map_err(|error| error.to_string())
-                })
+                })?
             }
             .into_actor(self),
         ))

@@ -62,23 +62,10 @@ pub struct ChangeDisc {
 }
 
 #[derive(actix::Message)]
-#[rtype(result = "Result<Value, String>")]
-pub struct SaveState {
-    pub token: InstanceToken,
-    pub timeout: Duration,
-}
-
-#[derive(actix::Message)]
-#[rtype(result = "Result<Value, String>")]
-pub struct ResumeState {
+#[rtype(result = "Result<(), String>")]
+pub struct StateAction {
     pub token: InstanceToken,
     pub slot: u32,
+    pub save: bool,
     pub timeout: Duration,
-}
-
-#[derive(actix::Message)]
-#[rtype(result = "Result<Option<Vec<u8>>, String>")]
-pub struct StateScreenshot {
-    pub token: InstanceToken,
-    pub record_id: String,
 }

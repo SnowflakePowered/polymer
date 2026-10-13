@@ -1,5 +1,6 @@
 use super::{GamePlacement, GameViewStyle};
-use crate::shell::protocol::{SurfaceGroupBounds, TrackedSource};
+use super::ShellDocument;
+use crate::shell::protocol::{ShellEvent, SurfaceCapture, SurfaceGroupBounds, TrackedSource};
 use anyrender::PaintScene as _;
 use blitz_dom::node::{ElementData, Widget};
 use blitz_dom::{LocalName, NodeId, local_name};
@@ -31,6 +32,28 @@ impl TrackedSource {
         match self {
             Self::Target(id) | Self::Video(id) => id,
         }
+    }
+}
+
+impl ShellDocument {
+    /// Requests the current raw frame of the stream a `<tracked-surface>` shows.
+    pub(crate) fn capture_surface(
+        &self,
+        node: NodeId,
+    ) -> Result<tokio::sync::oneshot::Receiver<SurfaceCapture>, String> {
+        let index = self
+            .document
+            .as_ref()
+            .get_node(node)
+            .and_then(blitz_dom::Node::element_data)
+            .filter(|element| is_tracked_surface_element(element))
+            .ok_or("captureSurface is only available on <tracked-surface>")?
+            .attr(local_name!("src"))
+            .and_then(|source| source.parse().ok())
+            .ok_or("the <tracked-surface> has no surface source")?;
+        let (reply, response) = tokio::sync::oneshot::channel();
+        self.outbox.send(ShellEvent::Capture { index, reply });
+        Ok(response)
     }
 }
 
