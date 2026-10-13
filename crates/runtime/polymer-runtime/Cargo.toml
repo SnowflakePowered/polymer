@@ -13,7 +13,7 @@ blake3 = { workspace = true, features = ["traits-preview"] }
 crossfire.workspace = true
 consolespec.workspace = true
 dashmap.workspace = true
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 object_store.workspace = true
 parking_lot.workspace = true
 serde.workspace = true

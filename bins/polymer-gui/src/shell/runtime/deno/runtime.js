@@ -1086,6 +1086,15 @@
     attachShader(preset) {
       return attachShader(this, preset);
     }
+
+    async captureSurface(type = "image/png") {
+      if (type !== "image/png" && type !== "image/jpeg" && type !== "image/webp") {
+        throw new DOMException(`${type} is not a supported capture type`, "NotSupportedError");
+      }
+      const bytes = await ops.op_surface_capture(this.__id, type);
+      if (bytes == null) throw new DOMException("The surface has not presented a frame", "InvalidStateError");
+      return bytes;
+    }
   }
 
   class HTMLTrackedSurfaceGroupElement extends HTMLElement {

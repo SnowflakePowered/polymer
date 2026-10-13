@@ -1067,43 +1067,21 @@ impl PolymerHost for FrontendServices {
         )
     }
 
-    fn emulator_save_state(
-        &self,
-        token: InstanceToken,
-        timeout: Duration,
-    ) -> ApiFuture<Result<Value, String>> {
-        self.commands.request(
-            |recipients| &recipients.emulator.save_state,
-            emulator::SaveState { token, timeout },
-            "emulator host is unavailable",
-        )
-    }
-
-    fn emulator_resume_state(
+    fn emulator_state_action(
         &self,
         token: InstanceToken,
         slot: u32,
+        save: bool,
         timeout: Duration,
-    ) -> ApiFuture<Result<Value, String>> {
+    ) -> ApiFuture<Result<(), String>> {
         self.commands.request(
-            |recipients| &recipients.emulator.resume_state,
-            emulator::ResumeState {
+            |recipients| &recipients.emulator.state_action,
+            emulator::StateAction {
                 token,
                 slot,
+                save,
                 timeout,
             },
-            "emulator host is unavailable",
-        )
-    }
-
-    fn emulator_state_screenshot(
-        &self,
-        token: InstanceToken,
-        record_id: String,
-    ) -> ApiFuture<Result<Option<Vec<u8>>, String>> {
-        self.commands.request(
-            |recipients| &recipients.emulator.state_screenshot,
-            emulator::StateScreenshot { token, record_id },
             "emulator host is unavailable",
         )
     }

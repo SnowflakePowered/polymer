@@ -127,7 +127,6 @@ struct ActivePresentation {
     options: AttachedLaunchPlan,
     controller_session: Option<polymer_pluginhost::controller::ControllerSession>,
     automation: Option<polymer_automation::AutomationSession>,
-    save_states: Option<polymer_runtime::SaveStateManager>,
     current_disc_index: u32,
     closing: bool,
 }

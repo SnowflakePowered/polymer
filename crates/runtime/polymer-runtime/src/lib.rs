@@ -12,7 +12,7 @@ mod jobs;
 mod launch;
 mod launchable_configuration;
 mod library;
-mod savestates;
+mod screenshot;
 mod session;
 mod storage;
 
@@ -38,7 +38,7 @@ pub use instance::{
 pub use jobs::JobService;
 pub use library::LibraryService;
 pub use polymer_platform::{GraphicsHook, GuestWindowId, Hooks, InputHook};
-pub use savestates::{RgbaScreenshot, SaveStateManager, SaveStateMetadata};
+pub use screenshot::RgbaScreenshot;
 pub use session::{SessionController, filesystem_host, mount_prepared_filesystem};
 pub use storage::{CheckpointSession, launch_storage};
 

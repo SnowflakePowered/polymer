@@ -110,12 +110,3 @@ impl Handler<PauseState> for GuiActor {
         }.into_actor(self))
     }
 }
-
-impl Handler<StateScreenshot> for GuiActor {
-    type Result = Result<Option<Vec<u8>>, String>;
-    fn handle(&mut self, message: StateScreenshot, _: &mut Context<Self>) -> Self::Result {
-        self.state.with_active(message.token, |state| {
-            state.game_host.save_state_screenshot(&message.record_id)
-        })
-    }
-}

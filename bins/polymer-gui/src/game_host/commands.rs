@@ -61,39 +61,10 @@ impl GameHost {
         Ok(())
     }
 
-    pub fn save_state(
-        &self,
-        timeout: std::time::Duration,
-    ) -> Result<(u32, PendingReply<StateAction>), String> {
-        let active = self
-            .active
-            .as_ref()
-            .ok_or_else(|| "emulator is no longer active".to_owned())?;
-        if active.closing {
-            return Err("emulator is closing".to_owned());
-        }
-        let states = active
-            .save_states
-            .as_ref()
-            .ok_or_else(|| "emulator does not support save states".to_owned())?;
-        let session = active
-            .controller_session
-            .as_ref()
-            .ok_or_else(|| "emulator plugin session is unavailable".to_owned())?;
-        let slot = states.next_slot();
-        Ok((
-            slot,
-            Box::pin(session.send(StateAction {
-                slot,
-                save: true,
-                timeout,
-            })),
-        ))
-    }
-
-    pub fn resume_state(
+    pub fn state_action(
         &self,
         slot: u32,
+        save: bool,
         timeout: std::time::Duration,
     ) -> Result<PendingReply<StateAction>, String> {
         let active = self
@@ -103,12 +74,14 @@ impl GameHost {
         if active.closing {
             return Err("emulator is closing".to_owned());
         }
-        let states = active
+        let max = active
+            .options
             .save_states
             .as_ref()
-            .ok_or_else(|| "emulator does not support save states".to_owned())?;
-        if !states.contains(slot) {
-            return Err(format!("save-state slot {slot} does not exist"));
+            .ok_or_else(|| "emulator does not support save states".to_owned())?
+            .max;
+        if slot >= max.get() {
+            return Err(format!("save-state slot {slot} is outside 0..{max}"));
         }
         let session = active
             .controller_session
@@ -116,54 +89,30 @@ impl GameHost {
             .ok_or_else(|| "emulator plugin session is unavailable".to_owned())?;
         Ok(Box::pin(session.send(StateAction {
             slot,
-            save: false,
+            save,
             timeout,
         })))
     }
 
-    pub fn commit_save_state(
+    pub fn capture_surface(
         &mut self,
-        slot: u32,
-    ) -> Result<polymer_runtime::SaveStateMetadata, String> {
-        let screenshot = self.capture_primary_screenshot();
-        let states = self
-            .active
-            .as_mut()
-            .and_then(|active| active.save_states.as_mut())
-            .ok_or_else(|| "emulator does not support save states".to_owned())?;
-        Ok(states.commit(slot, std::time::SystemTime::now(), screenshot))
+        index: u32,
+    ) -> Result<Option<polymer_runtime::RgbaScreenshot>, String> {
+        let Some(connection) = self
+            .surfaces
+            .iter()
+            .find_map(|(&connection, surface)| (surface.index == index).then_some(connection))
+        else {
+            return Ok(None);
+        };
+        self.compositor.borrow_mut().snapshot(connection)
     }
 
     pub fn capture_primary_screenshot(&mut self) -> Option<polymer_runtime::RgbaScreenshot> {
-        let connection = self
-            .surfaces
-            .iter()
-            .find_map(|(&connection, surface)| (surface.index == 0).then_some(connection))?;
-        let captured = self.compositor.borrow_mut().snapshot(connection);
-        match captured {
-            Ok(screenshot) => screenshot,
-            Err(error) => {
-                tracing::warn!("polymer: primary-surface screenshot failed: {error}");
-                None
-            }
-        }
-    }
-
-    pub fn save_state_metadata(&self, slot: u32) -> Option<polymer_runtime::SaveStateMetadata> {
-        self.active
-            .as_ref()?
-            .save_states
-            .as_ref()?
-            .metadata_for_slot(slot)
-    }
-
-    pub fn save_state_screenshot(&self, record_id: &str) -> Result<Option<Vec<u8>>, String> {
-        let states = self
-            .active
-            .as_ref()
-            .and_then(|active| active.save_states.as_ref())
-            .ok_or_else(|| "emulator does not support save states".to_owned())?;
-        Ok(states.screenshot(record_id).map(<[u8]>::to_vec))
+        self.capture_surface(0).unwrap_or_else(|error| {
+            tracing::warn!("polymer: primary-surface screenshot failed: {error}");
+            None
+        })
     }
 
     pub fn begin_quit(
@@ -196,7 +145,7 @@ impl GameHost {
         };
         let screenshot = self
             .capture_primary_screenshot()
-            .and_then(|screenshot| match screenshot.encode_png() {
+            .and_then(|screenshot| match screenshot.encode(image::ImageFormat::Png) {
                 Ok(png) => Some(png),
                 Err(error) => {
                     tracing::warn!("polymer: Quick Resume screenshot encoding failed: {error}");

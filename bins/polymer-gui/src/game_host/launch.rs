@@ -124,17 +124,12 @@ impl GameHost {
                 .instance()
                 .expect("a successful session launch owns an emulator instance"),
         );
-        let save_states = options
-            .save_states
-            .as_ref()
-            .map(|states| polymer_runtime::SaveStateManager::new(states.max));
         self.active = Some(ActivePresentation {
             token,
             current_disc_index: options.initial_disc_index,
             options,
             controller_session,
             automation,
-            save_states,
             closing: false,
         });
         Ok(())

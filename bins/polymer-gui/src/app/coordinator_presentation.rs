@@ -220,6 +220,9 @@ impl ShellCoordinator {
                     self.game_host.control_shader(target, control);
                     visuals = true;
                 }
+                ShellEvent::Capture { index, reply } => {
+                    let _ = reply.send(self.game_host.capture_surface(index));
+                }
             }
         }
         if visuals {

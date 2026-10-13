@@ -2,7 +2,14 @@ export interface HTMLTrackedSurfaceElement extends HTMLElement {
   readonly preferredSize: Readonly<{ width: number; height: number }>;
   /** Moves a loaded preset onto this surface. A preset attaches once. */
   attachShader(preset: ShaderPreset): FilterChain;
+  /**
+   * Encodes the latest raw frame of the emulator surface, before shaders.
+   * Rejects NotSupportedError for other types and InvalidStateError before the first frame.
+   */
+  captureSurface(type?: CaptureType): Promise<Uint8Array>;
 }
+
+export type CaptureType = "image/png" | "image/jpeg" | "image/webp";
 
 export interface HTMLTrackedSurfaceGroupElement extends HTMLElement {
   /** Moves a loaded preset onto every surface stitched into this group. */
@@ -279,7 +286,8 @@ export interface LaunchInstance extends EventTarget {
   readonly closed: Promise<void>;
   readonly surfaces: readonly TrackedSurface[];
   readonly audio: Readonly<{ available: boolean; volume: number; muted: boolean }>;
-  readonly saveStates: readonly SaveState[];
+  /** Null when the emulator plugin does not support save states. */
+  readonly saveStates: SaveStateStore | null;
   readonly quickResume: Readonly<{ screenshot: Blob | null }> | null;
   readonly canChangeDisc: boolean;
   /** Last successfully selected disc; initialized before the emulator starts. */
@@ -294,8 +302,6 @@ export interface LaunchInstance extends EventTarget {
   activateInput(): void;
   deactivateInput(): void;
   setPauseState(pauseState: "pause" | "resume", timeoutMs?: number): Promise<void>;
-  saveState(timeoutMs?: number): Promise<SaveState>;
-  resumeState(slot: number, timeoutMs?: number): Promise<SaveState>;
   close(): void;
 }
 
@@ -331,10 +337,38 @@ export interface Package extends PackageData, Digestible {
   toJSON(): PackageData;
 }
 
+export type SaveStateScreenshot = Readonly<{ bytes: Uint8Array; type: string }>;
+
 export interface SaveState {
   readonly slot: number;
-  readonly timestamp: Date;
-  screenshot(): Promise<Blob | null>;
+  readonly createdAt: Date;
+  readonly label: string | null;
+  readonly screenshot: SaveStateScreenshot | null;
+}
+
+export type SaveStateOptions = {
+  /** Defaults to the lowest empty slot, or the oldest entry when all are full. */
+  slot?: number;
+  label?: string | null;
+  createdAt?: Date;
+  screenshot?: SaveStateScreenshot | null;
+  timeoutMs?: number;
+};
+
+/**
+ * In-memory save states for one launch, cleared when it closes. Saves and restores run in order.
+ * Events: `save` and `restore` (detail: SaveState), `change` (detail: entries).
+ */
+export interface SaveStateStore extends EventTarget {
+  readonly capacity: number;
+  /** Newest first, one per slot. */
+  readonly entries: readonly SaveState[];
+  get(slot: number): SaveState | null;
+  save(options?: SaveStateOptions): Promise<SaveState>;
+  /** Rejects NotFoundError when the slot is empty. */
+  restore(target: number | SaveState, options?: { timeoutMs?: number }): Promise<void>;
+  /** Forgets the entry without calling the plugin. */
+  delete(target: number | SaveState): void;
 }
 
 export interface ScrapingApi extends EventTarget {
