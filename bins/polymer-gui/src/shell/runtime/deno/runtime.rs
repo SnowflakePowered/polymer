@@ -16,6 +16,9 @@ use super::dom::{
     op_dom_take_layout, op_dom_template_content, op_dom_text, op_dom_text_content,
 };
 use super::capture::op_surface_capture;
+use super::filesystem::{
+    op_fs_child, op_fs_entries, op_fs_modified, op_fs_pick, op_fs_read, op_fs_remove, op_fs_write,
+};
 use super::input::{EventResult, op_event_result};
 use super::media::{
     op_media_configure, op_media_load, op_media_pause, op_media_play, op_media_seek, op_media_state,
@@ -32,6 +35,7 @@ use polymer_deno::polymer::PolymerNotificationSender;
 
 const BOOTSTRAP: &str = include_str!("runtime.js");
 const EVENT_DISPATCH: &str = include_str!("event_dispatch.js");
+const FILESYSTEM: &str = include_str!("filesystem.js");
 
 deno_core::extension!(
     polymer_shell_runtime,
@@ -89,6 +93,13 @@ deno_core::extension!(
         op_shell_resolve_asset,
         op_shell_read_asset,
         op_event_result,
+        op_fs_pick,
+        op_fs_child,
+        op_fs_entries,
+        op_fs_read,
+        op_fs_modified,
+        op_fs_write,
+        op_fs_remove,
     ],
     esm_entry_point = "ext:polymer_shell_runtime/bootstrap.js",
     esm = ["ext:polymer_shell_runtime/bootstrap.js" = {
@@ -103,6 +114,9 @@ deno_core::extension!(
                   });
                   if (globalThis.dispatchEvent(event)) console.error("Uncaught", error);
                 });
+                for (const name of ["NotFoundError", "NotAllowedError", "TypeMismatchError", "InvalidModificationError"]) {
+                  core.registerErrorBuilder(`DOMException${name}`, (message) => new DOMException(message, name));
+                }
                 core.setUnhandledPromiseRejectionHandler((_promise, reason) => {
                   console.error("Uncaught (in promise)", reason);
                   return true;
@@ -194,6 +208,9 @@ impl Runtime {
         worker
             .js_runtime_mut()
             .execute_script("polymer:shell/event-dispatch.js", EVENT_DISPATCH)?;
+        worker
+            .js_runtime_mut()
+            .execute_script("polymer:shell/filesystem.js", FILESYSTEM)?;
         worker
             .js_runtime_mut()
             .execute_script("polymer:shell/runtime.js", BOOTSTRAP)?;

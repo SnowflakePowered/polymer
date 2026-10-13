@@ -15,6 +15,7 @@ use crate::error::Error;
 use atomic_write_file::AtomicWriteFile;
 
 mod composed;
+mod external;
 mod git;
 mod keystore;
 pub mod manifest;
@@ -27,6 +28,7 @@ mod scratch;
 
 pub(crate) use composed::ComposedLayer;
 pub use composed::ComposedStorage;
+pub use external::{ExternalTitleStorage, TitleMount};
 pub use git::{GitVolumeStorage, PlatformRepository};
 pub(crate) use git::{PendingScope, WritePass};
 pub use keystore::{KeyProjection, KeyStoreStorage};

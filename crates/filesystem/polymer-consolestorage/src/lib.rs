@@ -29,8 +29,8 @@ pub use storage::manifest::{
 pub use storage::memorycard::{MemoryCard, MemoryCardView, Reconcile};
 pub use storage::{
     BoxFuture, ChangeSignal, ComposedStorage, DirEntry, DirectoryStorage, EntryKind,
-    GitVolumeStorage, InstallResult, KeyProjection, KeyStoreStorage, MemoryFile, MemoryStorage,
-    Metadata, MountableStorage, PlatformRepository, ReadDir, ReconcileStorage,
-    ReconciliableStorage, ScratchStorage, Storage, StorageFile, StorageReader, VolumeStorage,
-    permissions::*,
+    ExternalTitleStorage, GitVolumeStorage, InstallResult, KeyProjection, KeyStoreStorage,
+    MemoryFile, MemoryStorage, Metadata, MountableStorage, PlatformRepository, ReadDir,
+    ReconcileStorage, ReconciliableStorage, ScratchStorage, Storage, StorageFile, StorageReader,
+    TitleMount, VolumeStorage, permissions::*,
 };

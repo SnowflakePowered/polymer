@@ -181,6 +181,9 @@ pub(crate) enum ShellEvent {
         index: u32,
         reply: oneshot::Sender<SurfaceCapture>,
     },
+    DialogParent {
+        reply: oneshot::Sender<Option<polymer_composition::DialogParent>>,
+    },
 }
 
 pub(crate) type SurfaceCapture = Result<Option<polymer_runtime::RgbaScreenshot>, String>;

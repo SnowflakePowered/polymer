@@ -1,4 +1,4 @@
-import { registerSurface } from "./00_infra.js";
+import { registerFileSystemHandle, registerSurface } from "./00_infra.js";
 import { createScraping } from "./01_scraping.js";
 import { createPlugin } from "./02_plugin.js";
 import { createConfiguration } from "./03_configuration.js";
@@ -71,6 +71,9 @@ function dispatch(event) {
     case "libraryContentChanged":
       library.contentChanged(event.detail);
       break;
+    case "librarySourcesChanged":
+      library.sourcesChanged(event.detail);
+      break;
     default:
       throw new TypeError(`Unknown Polymer event '${event?.type}'`);
   }
@@ -92,7 +95,7 @@ Object.defineProperty(globalThis, "Polymer", {
 });
 
 Object.defineProperty(globalThis, "__polymerApi", {
-  value: Object.freeze({ registerSurface }),
+  value: Object.freeze({ registerFileSystemHandle, registerSurface }),
   enumerable: false,
   configurable: false,
   writable: false,

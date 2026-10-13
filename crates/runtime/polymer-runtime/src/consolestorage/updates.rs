@@ -1,4 +1,5 @@
 use super::StorageActor;
+use polymer_consolestorage::installable::InPlaceTitle;
 use polymer_deno::polymer::consolestorage::{Platforms, StorageError};
 use polymer_library::{
     GameCatalog, Launchable, LaunchableUri, StorageKind, StorageManager,
@@ -14,7 +15,14 @@ impl super::StorageService {
         let title_id = Self::title_id(launchable)?;
         let artifact = match &launchable.identified.path {
             LaunchableUri::Artifact(artifact) => Some(artifact.artifact.clone()),
-            LaunchableUri::File(_) => None,
+            LaunchableUri::Mounted(mounted)
+                if !InPlaceTitle::managed_updates(&mounted.platform) =>
+            {
+                return Err(StorageError::from_display(
+                    "this title runs from its own folder and takes updates there",
+                ));
+            }
+            LaunchableUri::File(_) | LaunchableUri::Mounted(_) => None,
         };
         let title = json!({ "titleId": title_id, "version": null, "artifactId": artifact });
         let spec = Self::title_spec(
@@ -64,7 +72,7 @@ impl super::StorageService {
     ) -> JobSpec {
         let storage = match &launchable.identified.path {
             LaunchableUri::Artifact(artifact) => Some(artifact.storage.simple().to_string()),
-            LaunchableUri::File(_) => None,
+            LaunchableUri::File(_) | LaunchableUri::Mounted(_) => None,
         };
         params["platform"] = json!(launchable.identified.platform);
         params["storage"] = json!(storage);
@@ -95,7 +103,8 @@ impl super::StorageService {
             let updatable = platforms.iter().any(|platform| {
                 platform.updates && platform.platform == launchable.identified.platform
             });
-            if !updatable || launchable.identified.title_id.is_none() {
+            let in_place = matches!(&launchable.identified.path, LaunchableUri::Mounted(mounted) if !InPlaceTitle::managed_updates(&mounted.platform));
+            if !updatable || in_place || launchable.identified.title_id.is_none() {
                 continue;
             }
             store

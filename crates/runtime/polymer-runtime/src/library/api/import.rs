@@ -24,8 +24,10 @@ impl Handler<LibraryImport> for LibraryBackend {
         let scraping = self.scraping.clone();
         let firmware_root = self.firmware_root.clone();
         let key_root = self.key_root.clone();
+        let locks = self.locks.clone();
         self.mutate(async move {
             let path = PathBuf::from(path);
+            let _guard = locks.lock(&path).await;
             if path.is_file() && path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("rap")) {
                 let record = Rap::read(&path).map_err(|error| error.to_string())?;
                 let store = polymer_library::keys::KeyStore::open(key_root).await.map_err(|error| error.to_string())?;
@@ -46,7 +48,7 @@ impl Handler<LibraryImport> for LibraryBackend {
                         "titleId": package.title_id,
                     })).collect::<Vec<_>>(),
                 })),
-                Ok(packages) => Ok(json!({ "kind": "games", "imports": Self::import_games(&scraping, packages).await? })),
+                Ok(packages) => Ok(json!({ "kind": "games", "imports": Self::import_games(&scraping, packages, polymer_library::ImportOrigin::Manual).await? })),
                 Err(error) if error.firmware_candidate() && path.is_file() => {
                     let probe = path.clone();
                     let pup = tokio::task::spawn_blocking(move || Ps3PupDepot::open(&probe))

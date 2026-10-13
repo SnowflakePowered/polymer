@@ -384,7 +384,7 @@ export interface ScrapingApi extends EventTarget {
   }>;
 }
 
-export type JobKind = "scrape" | "install" | "bootstrap" | "plugin" | "import" | "check" | "update" | "download" | "refresh";
+export type JobKind = "scrape" | "install" | "bootstrap" | "plugin" | "import" | "check" | "update" | "download" | "refresh" | "scan";
 export type JobState = "queued" | "running" | "paused" | "completed" | "partial" | "failed" | "cancelled";
 export type JobStep = Readonly<{ key: string; state: JobState; error: string | null }>;
 /** Background work from any source. Persistent jobs survive restarts and resume. */
@@ -665,7 +665,28 @@ export type InstallablePackage = Readonly<{ path: string; filename: string; plat
 
 export type ImportedKey = Readonly<{ namespace: "system" | "content"; id: string; titleId?: string; byteLength: number }>;
 
+/** A watched folder whose games and in-place titles are imported automatically. */
+export type LibrarySource = Readonly<{
+  id: string;
+  root: string;
+  createdAt: number;
+  /** `offline` while the root is unreachable; nothing it imported is removed meanwhile. */
+  state: "watching" | "scanning" | "offline" | "idle";
+}>;
+
+export interface LibrarySourcesApi extends EventTarget {
+  list(): Promise<LibrarySource[]>;
+  /** Adds a folder, by path or picked handle, then watches and scans it. Adding a folder twice returns the existing source. */
+  add(folder: string | FileSystemDirectoryHandle): Promise<LibrarySource>;
+  /** Removes a source and every game it imported that no other source covers. Explicit imports are kept. */
+  remove(id: string): Promise<void>;
+  /** Starts a `scan` job for the source, unless one is running. */
+  scan(id: string): Promise<void>;
+}
+// Events: `change` (detail LibrarySource[])
+
 export interface LibraryApi extends EventTarget {
+  readonly sources: LibrarySourcesApi;
   /**
    * Starts an `import` job for a path, or returns the active one for the same path. Installable
    * packages install into `storage`, or into the first NAND for their platform, created if needed.
@@ -754,7 +775,18 @@ export interface MachineSpec {
   sysupdates: MachineFirmware[];
 }
 
+export type FilePickerOptions = {
+  types?: readonly Readonly<{ description?: string; accept: Readonly<Record<string, string | readonly string[]>> }>[];
+  excludeAcceptAllOption?: boolean;
+  startIn?: FileSystemHandle;
+};
+
 declare global {
+  /** Rejects with an `AbortError` DOMException when the dialog is dismissed. */
+  function showOpenFilePicker(options?: FilePickerOptions & { multiple?: boolean }): Promise<FileSystemFileHandle[]>;
+  function showSaveFilePicker(options?: FilePickerOptions & { suggestedName?: string }): Promise<FileSystemFileHandle>;
+  function showDirectoryPicker(options?: { startIn?: FileSystemHandle }): Promise<FileSystemDirectoryHandle>;
+
   interface Navigator {
     clearImageMipChains(): void;
   }

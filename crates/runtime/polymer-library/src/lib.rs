@@ -13,9 +13,11 @@ mod storage_selection;
 pub use directories::Directories;
 pub use games::{
     CuePart, CueTemplate, DiscSets, Game, GameCatalog, GameCatalogError, GamePage, GameQuery,
-    GameSort, IdentifiedLaunchable, InstalledArtifact, Launchable, LaunchableUri, MediaData,
+    GameSort, IdentifiedLaunchable, ImportOrigin, InstalledArtifact, InstalledLocation, Launchable,
+    LaunchableUri,
+    LibrarySource, MediaData, MountedTitleRow,
     MediaPreview, MediaResource, Metadata, MetadataData, MetadataInput, MetadataInputData,
-    MetadataValue, PackageFile, PackageManifest, ResolvedLaunchable,
+    MetadataValue, MountedTitle, PackageFile, PackageManifest, ResolvedLaunchable,
 };
 pub use inputstore::{
     InputIdentityScope, InputMappingMode, InputMappingProfile, InputStore, InputStoreError,

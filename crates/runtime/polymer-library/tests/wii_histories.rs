@@ -492,7 +492,9 @@ async fn deletion_intent_survives_reference_failure_and_overrides_install_recove
 
 #[tokio::test]
 async fn catalog_reconciles_uninstalled_titles_and_interrupted_volume_deletion() {
-    use polymer_library::{GameCatalog, IdentifiedLaunchable, LaunchableUri, StorageManager};
+    use polymer_library::{
+        GameCatalog, IdentifiedLaunchable, ImportOrigin, LaunchableUri, StorageManager,
+    };
     use std::sync::Arc;
     let fixture = WiiFixture::new().await;
     let directory = tempfile::tempdir().unwrap();
@@ -538,6 +540,7 @@ async fn catalog_reconciles_uninstalled_titles_and_interrupted_volume_deletion()
                     platform: WiiNand::PLATFORM.into(),
                 },
                 Vec::new(),
+                ImportOrigin::Manual,
             )
             .await
             .unwrap();
@@ -576,7 +579,10 @@ async fn catalog_reconciles_uninstalled_titles_and_interrupted_volume_deletion()
         parent_binary_id: None,
         platform: WiiNand::PLATFORM.into(),
     };
-    catalog.import_package(input, Vec::new()).await.unwrap();
+    catalog
+        .import_package(input, Vec::new(), ImportOrigin::Manual)
+        .await
+        .unwrap();
     let platform =
         PlatformRepository::open(manager.platform_path(WiiNand::PLATFORM), WiiNand::PLATFORM)
             .unwrap();

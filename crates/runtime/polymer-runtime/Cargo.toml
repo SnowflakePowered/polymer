@@ -6,6 +6,9 @@ license.workspace = true
 
 [dependencies]
 actix.workspace = true
+dunce = "1"
+notify-debouncer-full.workspace = true
+walkdir = "2.5.0"
 # pin to force prebuild nasm feature
 aws-lc-rs = { version = "=1.16.3", features = ["prebuilt-nasm"] }
 base64.workspace = true

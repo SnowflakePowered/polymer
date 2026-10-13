@@ -17,8 +17,30 @@ CREATE TABLE IF NOT EXISTS launchables (
     binary_id BLOB NOT NULL REFERENCES binaries(id) ON DELETE CASCADE,
     path TEXT NOT NULL UNIQUE CHECK (length(path) > 0),
     entrypoint TEXT CHECK (entrypoint IS NULL OR length(entrypoint) > 0),
-    package TEXT CHECK (package IS NULL OR length(package) > 0)
+    package TEXT CHECK (package IS NULL OR length(package) > 0),
+    host_key TEXT CHECK (host_key IS NULL OR length(host_key) > 0),
+    host_stamp TEXT,
+    install_path TEXT CHECK (install_path IS NULL OR length(install_path) > 0),
+    manual INTEGER NOT NULL DEFAULT 0 CHECK (manual IN (0, 1))
 ) STRICT;
+CREATE INDEX IF NOT EXISTS launchables_host ON launchables(host_key);
+CREATE INDEX IF NOT EXISTS launchables_install ON launchables(install_path);
+CREATE TABLE IF NOT EXISTS library_sources (
+    id BLOB PRIMARY KEY NOT NULL CHECK (length(id) = 16),
+    root TEXT NOT NULL CHECK (length(root) > 0),
+    root_key TEXT NOT NULL UNIQUE CHECK (length(root_key) > 0),
+    created_at INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS mounted_titles (
+    host_key TEXT PRIMARY KEY NOT NULL CHECK (length(host_key) > 0),
+    host TEXT NOT NULL CHECK (length(host) > 0),
+    platform TEXT NOT NULL CHECK (length(platform) > 0),
+    title TEXT NOT NULL CHECK (length(title) > 0),
+    kind TEXT NOT NULL CHECK (kind IN ('app', 'appcontent', 'appupdate')),
+    install_path TEXT NOT NULL CHECK (length(install_path) > 0),
+    UNIQUE (platform, install_path)
+) STRICT;
+CREATE INDEX IF NOT EXISTS mounted_titles_title ON mounted_titles(platform, title);
 CREATE TABLE IF NOT EXISTS media_objects (
     blake3 BLOB PRIMARY KEY NOT NULL CHECK (length(blake3) = 32),
     object_key TEXT NOT NULL UNIQUE CHECK (length(object_key) > 0),
@@ -150,5 +172,5 @@ BEGIN
         SELECT 1 FROM game_title_changes
         WHERE root_binary_id = COALESCE(OLD.parent_binary_id, OLD.id));
 END;
-PRAGMA user_version = 12;
+PRAGMA user_version = 13;
 "#;

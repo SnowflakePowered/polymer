@@ -29,6 +29,7 @@ pub enum JobKind {
     Update,
     Download,
     Refresh,
+    Scan,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
@@ -137,6 +138,7 @@ impl JobKind {
             Self::Update => "update",
             Self::Download => "download",
             Self::Refresh => "refresh",
+            Self::Scan => "scan",
         }
     }
 

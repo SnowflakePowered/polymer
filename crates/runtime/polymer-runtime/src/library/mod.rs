@@ -13,6 +13,8 @@ pub struct LibraryService {
     actor: Addr<LibraryBackend>,
     reader: Addr<LibraryReader>,
     licenses: Addr<LicenseReader>,
+    sources: Addr<crate::sources::SourceActor>,
+    source_events: tokio::sync::broadcast::Sender<serde_json::Value>,
     scraping: polymer_scraping::ScrapingEngine,
 }
 
@@ -50,6 +52,7 @@ struct LibraryBackend {
     key_root: std::path::PathBuf,
     catalog: Arc<GameCatalog>,
     scraping: polymer_scraping::ScrapingEngine,
+    locks: crate::sources::PathLocks,
     _lifetime: Rc<LibraryActorLifetime>,
 }
 
@@ -80,6 +83,7 @@ impl LibraryService {
     ) -> Result<Self, std::io::Error> {
         let firmware_root = directories.firmware();
         let key_root = directories.keys();
+        let source_jobs = jobs.clone();
         let scraping =
             polymer_scraping::ScrapingEngine::new(catalog.clone(), jobs, plugins, directories);
         if let Err(error) = scraping.resume().await {
@@ -87,6 +91,8 @@ impl LibraryService {
         }
         let actor_catalog = catalog.clone();
         let actor_scraping = scraping.clone();
+        let (source_events, _) = tokio::sync::broadcast::channel(16);
+        let actor_source_events = source_events.clone();
         let (ready, startup) = tokio::sync::oneshot::channel();
         std::thread::Builder::new()
             .name("polymer-library".to_owned())
@@ -109,6 +115,16 @@ impl LibraryService {
                         _lifetime: lifetime.clone(),
                     }
                     .start();
+                    let locks = crate::sources::PathLocks::default();
+                    let sources = crate::sources::SourceActor::new(
+                        actor_catalog.clone(),
+                        actor_scraping.clone(),
+                        source_jobs,
+                        key_root.clone(),
+                        locks.clone(),
+                        actor_source_events,
+                    )
+                    .start();
                     let writer = LibraryBackend::create(move |ctx| {
                         ctx.set_mailbox_capacity(0);
                         LibraryBackend {
@@ -116,10 +132,11 @@ impl LibraryService {
                             key_root,
                             catalog: actor_catalog,
                             scraping: actor_scraping,
+                            locks,
                             _lifetime: lifetime,
                         }
                     });
-                    Ok::<_, std::io::Error>((writer, reader, licenses))
+                    Ok::<_, std::io::Error>((writer, reader, licenses, sources))
                 });
                 let started = actor.is_ok();
                 if ready.send(actor).is_ok()
@@ -129,13 +146,15 @@ impl LibraryService {
                     tracing::error!(%error, "library actor system failed");
                 }
             })?;
-        let (actor, reader, licenses) = startup.await.map_err(std::io::Error::other)??;
+        let (actor, reader, licenses, sources) = startup.await.map_err(std::io::Error::other)??;
 
         Ok(Self {
             configuration_locks: Default::default(),
             actor,
             reader,
             licenses,
+            sources,
+            source_events,
             scraping,
             catalog,
         })
@@ -165,6 +184,10 @@ impl LibraryService {
             scraping_start: self.actor.clone().recipient(),
             scraping_scrapers: self.reader.clone().recipient(),
             scraping_refresh: self.actor.clone().recipient(),
+            sources_list: self.sources.clone().recipient(),
+            sources_add: self.sources.clone().recipient(),
+            sources_remove: self.sources.clone().recipient(),
+            sources_scan: self.sources.clone().recipient(),
         }
     }
 
@@ -180,5 +203,10 @@ impl LibraryService {
 
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<polymer_scraping::ScrapingEvent> {
         self.scraping.subscribe()
+    }
+
+    /// Every library source with its state, sent whenever one changes.
+    pub fn subscribe_sources(&self) -> tokio::sync::broadcast::Receiver<serde_json::Value> {
+        self.source_events.subscribe()
     }
 }

@@ -1,3 +1,4 @@
+import { hostPath } from "./00_infra.js";
 import { Package } from "./00_package.js";
 import {
   op_jobs_import,
@@ -12,6 +13,7 @@ import {
   op_library_launchables_add, op_library_launchables_find, op_library_launchables_delete,
   op_library_metadata_add, op_library_metadata_update, op_library_metadata_delete,
   op_library_metadata_replace, op_library_metadata_text, op_library_metadata_url,
+  op_library_sources_list, op_library_sources_add, op_library_sources_remove, op_library_sources_scan,
 } from "ext:core/ops";
 
 function uuid(value, name) {
@@ -135,7 +137,15 @@ export function createLibrary() {
     text(id) { return op_library_metadata_text(uuid(id, "id")); },
     url(id) { return op_library_metadata_url(uuid(id, "id")); },
   });
+  const sources = new EventTarget();
+  Object.defineProperties(sources, {
+    list: { value: () => op_library_sources_list() },
+    add: { value: async folder => op_library_sources_add(hostPath(folder, "folder")) },
+    remove: { value: id => op_library_sources_remove(uuid(id, "id")) },
+    scan: { value: id => op_library_sources_scan(uuid(id, "id")) },
+  });
   Object.defineProperties(Library, {
+    sources: { value: sources, enumerable: true },
     updates: { value: Object.freeze({
       check: launchableId => op_jobs_check_updates(uuid(launchableId, "launchableId")),
       fetch: (launchableId, candidate) => op_jobs_fetch_update(uuid(launchableId, "launchableId"), candidate),
@@ -194,6 +204,9 @@ export function createLibrary() {
     Library,
     contentChanged(detail) {
       Library.dispatchEvent(new CustomEvent("contentchange", { detail: Object.freeze(detail) }));
+    },
+    sourcesChanged(detail) {
+      sources.dispatchEvent(new CustomEvent("change", { detail: Object.freeze(detail.map(Object.freeze)) }));
     },
   });
 }

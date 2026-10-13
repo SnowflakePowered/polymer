@@ -313,3 +313,48 @@ pub(super) async fn op_scraping_refresh(
         .call(ScrapingRefresh { plugin })
         .await
 }
+
+#[op2]
+#[serde]
+pub(super) async fn op_library_sources_list(
+    state: Rc<RefCell<OpState>>,
+) -> Result<serde_json::Value, JsErrorBox> {
+    Library::from_state(&state)?
+        .sources_list
+        .call(SourcesList)
+        .await
+}
+
+#[op2]
+#[serde]
+pub(super) async fn op_library_sources_add(
+    state: Rc<RefCell<OpState>>,
+    #[string] path: String,
+) -> Result<serde_json::Value, JsErrorBox> {
+    Library::from_state(&state)?
+        .sources_add
+        .call(SourcesAdd { path })
+        .await
+}
+
+#[op2]
+pub(super) async fn op_library_sources_remove(
+    state: Rc<RefCell<OpState>>,
+    #[string] id: String,
+) -> Result<(), JsErrorBox> {
+    Library::from_state(&state)?
+        .sources_remove
+        .call(SourcesRemove { id })
+        .await
+}
+
+#[op2]
+pub(super) async fn op_library_sources_scan(
+    state: Rc<RefCell<OpState>>,
+    #[string] id: String,
+) -> Result<(), JsErrorBox> {
+    Library::from_state(&state)?
+        .sources_scan
+        .call(SourcesScan { id })
+        .await
+}

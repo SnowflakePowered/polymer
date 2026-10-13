@@ -101,6 +101,9 @@ impl Compositor for MacosCompositor {
     fn set_title(&self, title: &str) {
         self.window.set_title(title);
     }
+    fn dialog_parent(&self) -> Option<polymer_composition::DialogParent> {
+        polymer_composition::DialogParent::of(&self.window)
+    }
     fn set_ime_enabled(&self, enabled: bool) {
         self.window.set_ime_allowed(enabled);
     }

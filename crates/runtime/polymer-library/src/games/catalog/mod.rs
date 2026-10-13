@@ -21,9 +21,11 @@ mod identity;
 mod manifest;
 mod metadata;
 mod objects;
+mod sources;
 mod titles;
 mod updates;
 
+pub use sources::{ImportOrigin, LibrarySource, MountedTitleRow};
 use titles::TitleIndex;
 
 #[derive(Debug, thiserror::Error)]
@@ -50,6 +52,10 @@ pub enum GameCatalogError {
     NotFound(String),
     #[error("import disc 1 of {set} before disc {disc}")]
     MissingFirstDisc { set: String, disc: u8 },
+    #[error("{0} is not in a library source")]
+    Uncovered(String),
+    #[error("this title is already mounted from {}", .0.display())]
+    MountedElsewhere(PathBuf),
 }
 
 #[derive(Clone)]
@@ -190,6 +196,12 @@ impl GameCatalog {
                 JOIN binaries AS root ON root.id = COALESCE(binary.parent_binary_id, binary.id)
                 LEFT JOIN game_titles AS titles ON titles.root_binary_id = root.id
                 WHERE binary.id {scope}
+                  AND NOT (launchable.path GLOB 'mount://*' AND EXISTS (
+                      SELECT 1 FROM launchables AS managed
+                      JOIN binaries AS managed_binary ON managed_binary.id = managed.binary_id
+                      WHERE managed.path GLOB 'artifact://*'
+                        AND managed.install_path = launchable.install_path
+                        AND managed_binary.platform = binary.platform))
                 ORDER BY COALESCE(binary.parent_binary_id, binary.id),
                          binary.parent_binary_id IS NOT NULL, binary.id, launchable.path
                 "#
@@ -311,13 +323,16 @@ impl GameCatalog {
         &self,
         mut input: IdentifiedLaunchable,
         seeds: Vec<(String, Vec<MetadataInput>)>,
+        origin: ImportOrigin,
     ) -> Result<(Launchable, bool), GameCatalogError> {
         if input.platform.is_empty() {
             return Err(GameCatalogError::InvalidData(
                 "a launchable requires a platform".to_owned(),
             ));
         }
-        let path = input.path.url()?.to_string();
+        let mut path = input.path.url()?.to_string();
+        let host_key = input.path.source_path().map(LibrarySource::key);
+        let install_path = input.path.install_path().map(str::to_owned);
         let mut prepared_seeds = Vec::with_capacity(seeds.len());
         for (producer, inputs) in seeds {
             let mut prepared = Vec::with_capacity(inputs.len());
@@ -339,6 +354,11 @@ impl GameCatalog {
         let transaction = connection
             .transaction_with_behavior(turso::transaction::TransactionBehavior::Immediate)
             .await?;
+        if origin == ImportOrigin::Source
+            && !Self::covered(&transaction, host_key.as_deref()).await?
+        {
+            return Err(GameCatalogError::Uncovered(input.path.to_string()));
+        }
         input.parent_binary_id = self.disc_parent(&transaction, &input, binary_id).await?;
         self.validate_parent(&transaction, &input).await?;
         let mut binary_rows = transaction
@@ -353,15 +373,23 @@ impl GameCatalog {
 
         let mut existing = transaction
             .query(
-                "SELECT id, binary_id FROM launchables WHERE path = ?1",
-                [Value::from(path.clone())],
+                r#"SELECT id, binary_id, path FROM launchables
+                   WHERE path = ?1 OR (host_key = ?2 AND substr(path, 1, instr(path, ':')) = substr(?1, 1, instr(?1, ':')))
+                   ORDER BY path = ?1 DESC LIMIT 1"#,
+                vec![
+                    Value::from(path.clone()),
+                    host_key.clone().map_or(Value::Null, Value::from),
+                ],
             )
             .await?;
         let (id, previous_binary) = match existing.next().await? {
-            Some(row) => (
-                Self::uuid(row.get_value(0)?)?,
-                Some(Self::uuid(row.get_value(1)?)?),
-            ),
+            Some(row) => {
+                path = row.get(2)?;
+                (
+                    Self::uuid(row.get_value(0)?)?,
+                    Some(Self::uuid(row.get_value(1)?)?),
+                )
+            }
             None => (Uuid::now_v7(), None),
         };
         drop(existing);
@@ -372,8 +400,11 @@ impl GameCatalog {
         transaction
             .execute(
                 r#"
-                INSERT INTO launchables (id, binary_id, path, entrypoint, package) VALUES (?1, ?2, ?3, ?4, ?5)
-                ON CONFLICT(path) DO UPDATE SET binary_id = excluded.binary_id, entrypoint = excluded.entrypoint, package = excluded.package
+                INSERT INTO launchables (id, binary_id, path, entrypoint, package, host_key, install_path, manual)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                ON CONFLICT(path) DO UPDATE SET binary_id = excluded.binary_id, entrypoint = excluded.entrypoint,
+                    package = excluded.package, host_key = excluded.host_key, install_path = excluded.install_path,
+                    manual = launchables.manual OR excluded.manual
                 "#,
                 vec![
                     Self::id(id),
@@ -381,6 +412,9 @@ impl GameCatalog {
                     Value::from(path),
                     input.entrypoint.clone().map_or(Value::Null, Value::from),
                     input.package.clone().map_or(Value::Null, Value::from),
+                    host_key.map_or(Value::Null, Value::from),
+                    install_path.map_or(Value::Null, Value::from),
+                    Value::from(i64::from(origin == ImportOrigin::Manual)),
                 ],
             )
             .await?;
@@ -511,7 +545,7 @@ impl GameCatalog {
         drop(rows);
         match version {
             0 => connection.execute_batch(SCHEMA).await?,
-            12 => {}
+            13 => {}
             version => {
                 return Err(GameCatalogError::InvalidData(format!(
                     "library database schema version {version} is not supported"

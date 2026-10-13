@@ -1,4 +1,4 @@
-use polymer_library::GameCatalog;
+use polymer_library::{GameCatalog, ImportOrigin};
 use polymer_scraping::{Ingestor, Package};
 use std::{path::PathBuf, sync::Arc};
 
@@ -25,8 +25,14 @@ async fn complete_disc_identifies_imports_and_prepares_without_track_launchables
     assert!(host_path.extension().unwrap().eq_ignore_ascii_case("cue"));
     let explicit = Package::from_path(&host_path).unwrap();
     assert_eq!(explicit.uri, from_directory.uri);
-    let (first, _) = from_directory.import(&catalog).await.unwrap();
-    let (same, created) = explicit.import(&catalog).await.unwrap();
+    let (first, _) = from_directory
+        .import(&catalog, ImportOrigin::Manual)
+        .await
+        .unwrap();
+    let (same, created) = explicit
+        .import(&catalog, ImportOrigin::Manual)
+        .await
+        .unwrap();
     assert_eq!(same.id, first.id);
     assert!(!created);
     let stored = catalog.launchable(first.id).await.unwrap();
@@ -56,7 +62,7 @@ async fn complete_disc_identifies_imports_and_prepares_without_track_launchables
         .unwrap();
     let cue = cuna::CueSheet::new(rendered).unwrap();
     assert_eq!(cue.files.len(), expected_members);
-    let games = catalog.games(None).await.unwrap();
+    let games = catalog.games().await.unwrap();
     assert_eq!(games.len(), 1);
     assert_eq!(games[0].launchables.len(), 1);
     println!(

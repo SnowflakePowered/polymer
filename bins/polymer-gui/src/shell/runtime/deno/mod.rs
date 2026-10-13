@@ -8,6 +8,7 @@
 mod assets;
 mod capture;
 mod dom;
+mod filesystem;
 mod input;
 mod media;
 mod modules;

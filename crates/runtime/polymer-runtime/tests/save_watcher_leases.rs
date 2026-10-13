@@ -30,6 +30,7 @@ async fn failed_final_checkpoint_retains_nand_and_profile_until_retry_finishes()
     let (notifications, _received) = tokio::sync::mpsc::unbounded_channel();
     let factories = polymer_runtime::launch_storage(
         Some(manager.clone()),
+        None,
         &["onLaunch".to_owned()],
         &[serde_json::json!({
             "console": WiiNand::PLATFORM,

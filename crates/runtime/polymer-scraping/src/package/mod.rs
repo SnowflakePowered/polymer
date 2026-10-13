@@ -34,6 +34,9 @@ pub struct Package {
     )]
     manifest: Option<polymer_library::PackageManifest>,
     pub uri: LaunchableUri,
+    /// Filled when preparing a launch, for titles that live in console storage.
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub installed: Option<polymer_library::InstalledLocation>,
     pub filename: String,
     pub platform: String,
     pub serial: Option<String>,
@@ -73,6 +76,7 @@ impl Package {
             bundle: None,
             manifest: launchable.manifest,
             uri: launchable.path,
+            installed: None,
             filename,
             platform: launchable.platform,
             serial: launchable.serial,
@@ -90,6 +94,7 @@ impl Package {
     /// Prepare launch data, computing identity only for an unregistered package.
     pub fn prepare_launch(&mut self) -> Result<(), crate::ScrapingError> {
         self.ensure_binary_identity()?;
+        self.installed = self.uri.installed();
         if let Some(manifest) = &mut self.manifest {
             if manifest.template.is_none() {
                 crate::ingest::CuePreparation::finalize(manifest)?;
@@ -196,6 +201,7 @@ impl Package {
             bundle: None,
             manifest,
             uri: LaunchableUri::file(&path)?,
+            installed: None,
             filename: name,
             platform: platform.to_owned(),
             serial,

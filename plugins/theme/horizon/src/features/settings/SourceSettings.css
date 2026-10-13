@@ -1,0 +1,6 @@
+@layer horizon {
+.horizon-source-add { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.75rem; }
+.horizon-source-list { display: flex; flex-direction: column; gap: 0.25rem; margin: 0.75rem 0 0; padding: 0; list-style: none; }
+.horizon-source-list li { padding: 0.5rem 0.75rem; border-radius: var(--hz-radius-panel); background: var(--hz-panel); }
+.horizon-source-list .hz-list-row > span { overflow: hidden; text-overflow: ellipsis; }
+}

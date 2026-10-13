@@ -223,6 +223,9 @@ impl ShellCoordinator {
                 ShellEvent::Capture { index, reply } => {
                     let _ = reply.send(self.game_host.capture_surface(index));
                 }
+                ShellEvent::DialogParent { reply } => {
+                    let _ = reply.send(self.compositor.borrow().dialog_parent());
+                }
             }
         }
         if visuals {

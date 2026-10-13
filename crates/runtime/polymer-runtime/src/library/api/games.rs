@@ -153,7 +153,9 @@ impl Handler<LaunchablesAdd> for LibraryBackend {
                     return Err("an installed artifact must identify as one package".to_owned());
                 }
             };
-            let imports = Self::import_games(&scraping, packages).await?;
+            let imports =
+                Self::import_games(&scraping, packages, polymer_library::ImportOrigin::Manual)
+                    .await?;
             if let Some(depot) = depot
                 && let Some(launchable) = catalog
                     .launchable_at(&depot)
@@ -195,8 +197,9 @@ impl LibraryBackend {
     pub(super) async fn import_games(
         scraping: &polymer_scraping::ScrapingEngine,
         packages: Vec<polymer_scraping::Package>,
+        origin: polymer_library::ImportOrigin,
     ) -> Result<Vec<Value>, String> {
-        let imported = polymer_scraping::Ingestor::import(scraping, packages)
+        let imported = polymer_scraping::Ingestor::import(scraping, packages, origin)
             .await
             .map_err(|error| error.to_string())?;
         Ok(imported

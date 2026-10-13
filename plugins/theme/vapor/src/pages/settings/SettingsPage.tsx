@@ -1,7 +1,7 @@
 import { For, Show, createResource, createSignal, onCleanup, onMount } from "solid-js";
-import type { ManagedControllerDevice, PlatformConfiguration } from "@polymer-fe/frontend";
+import type { LibrarySource, ManagedControllerDevice, PlatformConfiguration } from "@polymer-fe/frontend";
 import { useShell } from "../../app/shell";
-import { Button, DropdownField, Field, Page, PagedSettings, ProgressBar, Throbber } from "../../ui";
+import { Button, ConfirmModal, DropdownField, Field, Page, PagedSettings, ProgressBar, Throbber } from "../../ui";
 import { platformName } from "../library/platform";
 import "./settings.css";
 
@@ -33,6 +33,48 @@ function Controllers() {
   </Show></>;
 }
 
+const SOURCE_STATES: Record<LibrarySource["state"], string> = {
+  watching: "Watching for changes",
+  scanning: "Scanning…",
+  offline: "Not reachable. Its games stay in the library until it returns.",
+  idle: "Waiting",
+};
+
+function Sources() {
+  const shell = useShell();
+  const sources = window.Polymer.library.sources;
+  const [list, setList] = createSignal<readonly LibrarySource[]>([]);
+  const [removing, setRemoving] = createSignal<LibrarySource | null>(null);
+  onMount(() => {
+    void sources.list().then(setList, shell.fail);
+    const changed = (event: Event) => setList((event as CustomEvent<readonly LibrarySource[]>).detail);
+    sources.addEventListener("change", changed);
+    onCleanup(() => sources.removeEventListener("change", changed));
+  });
+  const add = () => void showDirectoryPicker()
+    .then(folder => sources.add(folder))
+    .then(() => sources.list())
+    .then(setList, error => { if (!(error instanceof DOMException && error.name === "AbortError")) shell.fail(error); });
+  const remove = (source: LibrarySource) => void sources.remove(source.id)
+    .then(() => sources.list())
+    .then(setList, shell.fail);
+  return <>
+    <Field label="Add folder" description="Games in library folders are added automatically and kept up to date as files are added or removed. Installed PC games and installable packages are skipped.">
+      <Button primary onClick={add}>Browse…</Button>
+    </Field>
+    <h3 class="vp-section-title">Library folders</h3>
+    <Show when={list().length} fallback={<Field label="No folders" description="Add a folder to keep its games in your library." />}>
+      <For each={list()}>{source => <Field label={source.root} description={SOURCE_STATES[source.state]}>
+        <Button disabled={source.state !== "watching"} onClick={() => void sources.scan(source.id).catch(shell.fail)}>Rescan</Button>
+        <Button danger onClick={() => setRemoving(source)}>Remove</Button>
+      </Field>}</For>
+    </Show>
+    <ConfirmModal open={!!removing()} title="Remove folder?" confirm="Remove" danger
+      description={`Games added from ${removing()?.root ?? ""} will be removed from the library. Games you imported yourself are kept, and no files are deleted.`}
+      onConfirm={() => { const source = removing(); setRemoving(null); if (source) remove(source); }} onClose={() => setRemoving(null)} />
+  </>;
+}
+
 function About() {
   return <For each={window.Polymer.plugin.list()}>{plugin => <Field label={plugin.id} description={`${plugin.class} plugin`}><span class="vp-settings-version">{plugin.version}</span></Field>}</For>;
 }
@@ -48,6 +90,7 @@ export function SettingsPage() {
     <PagedSettings title="Settings" active={page()} onChange={setPage} pages={[
       { id: "platforms", title: "Platforms", icon: "display", content: () => <Platforms /> },
       { id: "controllers", title: "Controllers", icon: "controller", content: () => <Controllers /> },
+      { id: "sources", title: "Library folders", icon: "library", content: () => <Sources /> },
       { id: "about", title: "Plugins", icon: "info", separatorBefore: true, content: () => <About /> },
     ]} />
   </Page>;

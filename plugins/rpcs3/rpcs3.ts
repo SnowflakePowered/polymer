@@ -20,14 +20,13 @@ export const onLaunch = (args: EmulatorLaunchArgs<unknown, Readonly<{ hdd?: Stor
     fs.mount("/User");
     fs.mount("/User/Temp");
     fs.mount("/User/AppData/Local", caches.driver, { mode: "rwx" });
-    let game: string;
-    if (args.launchSet[0].package.uri.startsWith("artifact://")) {
-        const title = [args.launchSet[0].package.titleId, args.launchSet[0].package.serial].find(id => id && /^[A-Z]{4}[0-9]{5}$/.test(id));
-        if (!title) throw new Error("The installed PS3 title has no bootable title ID.");
-        game = fs.path(`/Storage/hdd/dev_hdd0/game/${title}/USRDIR/EBOOT.BIN`);
-    } else {
-        game = fs.mount("/Game", args.launchSet[0].package, { mode: "rx" });
+    const installed = args.launchSet[0].package.installed;
+    if (!installed && args.launchSet[0].package.uri.startsWith("artifact://")) {
+        throw new Error("The installed PS3 title has no bootable location.");
     }
+    const game = installed
+        ? fs.path(`/Storage/${installed.device}/${installed.path}/${installed.entrypoint}`)
+        : fs.mount("/Game", args.launchSet[0].package, { mode: "rx" });
     const vfs = {
         "/dev_hdd0/": `${fs.path("/Storage/hdd/dev_hdd0")}/`,
         "/dev_hdd1/": `${fs.path("/RPCS3/dev_hdd1")}/`,

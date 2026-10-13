@@ -1,6 +1,6 @@
 use object_store::memory::InMemory;
 use polymer_library::{
-    GameCatalog, IdentifiedLaunchable, LaunchableUri, MetadataData, MetadataInput,
+    GameCatalog, IdentifiedLaunchable, ImportOrigin, LaunchableUri, MetadataData, MetadataInput,
     MetadataInputData, MetadataValue,
     jobs::{JobKind, JobSpec, JobState, JobStore, JobSubject},
 };
@@ -70,6 +70,7 @@ async fn successful_plugins_commit_repeated_values_and_publish_events() {
                 serial: None,
                 title_id: None,
                 disc_number: None,
+                requires_license: false,
                 parent_binary_id: None,
                 platform: "NINTENDO_NES".to_owned(),
             },
@@ -83,6 +84,7 @@ async fn successful_plugins_commit_repeated_values_and_publish_events() {
                     },
                 }],
             )],
+            ImportOrigin::Manual,
         )
         .await
         .unwrap();
@@ -200,7 +202,10 @@ async fn child_packages_keep_their_own_identity_and_scrape_results() {
         image.extend(vec![contents; 16 * 1024]);
         std::fs::write(&path, image).unwrap();
         let package = Package::identify(&path, None, parent).unwrap();
-        let (launchable, created) = package.import(&catalog).await.unwrap();
+        let (launchable, created) = package
+            .import(&catalog, ImportOrigin::Manual)
+            .await
+            .unwrap();
         assert!(created, "each newly identified binary needs a scrape");
         parent = Some(
             launchable
@@ -289,7 +294,9 @@ async fn child_packages_keep_their_own_identity_and_scrape_results() {
             launchable.identified.parent_binary_id,
         )
         .unwrap();
-        let imported = Ingestor::import(&engine, vec![package]).await.unwrap();
+        let imported = Ingestor::import(&engine, vec![package], ImportOrigin::Manual)
+            .await
+            .unwrap();
         assert!(imported[0].1.is_none());
     }
     let game = catalog.game(root).await.unwrap().unwrap();
@@ -441,6 +448,7 @@ async fn scraping_refreshes_contents_a_plugin_reports_missing_before_its_first_s
                 serial: None,
                 title_id: None,
                 disc_number: None,
+                requires_license: false,
                 parent_binary_id: None,
                 platform: "NINTENDO_NES".to_owned(),
             },
@@ -454,6 +462,7 @@ async fn scraping_refreshes_contents_a_plugin_reports_missing_before_its_first_s
                     },
                 }],
             )],
+            ImportOrigin::Manual,
         )
         .await
         .unwrap();
@@ -521,10 +530,12 @@ async fn a_titles_cached_updates_are_replaced_by_its_latest_check() {
                 serial: None,
                 title_id: Some("BLES00229".to_owned()),
                 disc_number: None,
+                requires_license: false,
                 parent_binary_id: None,
                 platform: "SONY_PS3".to_owned(),
             },
             Vec::new(),
+            ImportOrigin::Manual,
         )
         .await
         .unwrap();

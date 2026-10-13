@@ -532,6 +532,23 @@ impl FrontendServices {
         ));
         let input_listener = input_sources.add_listener(deno_input.clone());
         if let Some(library) = &library {
+            let mut sources = library.subscribe_sources();
+            let source_notifications = notifications.clone();
+            tokio::spawn(async move {
+                loop {
+                    let statuses = match sources.recv().await {
+                        Ok(statuses) => statuses,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    };
+                    if source_notifications
+                        .send(PolymerNotification::LibrarySourcesChanged(statuses))
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            });
             let mut events = library.subscribe();
             let notifications = notifications.clone();
             tokio::spawn(async move {
@@ -852,6 +869,7 @@ impl PolymerHost for FrontendServices {
     ) -> ApiFuture<Value> {
         let handle = self.plugins.handle();
         let storage = self.storage.clone();
+        let catalog = self.library.as_ref().map(LibraryService::catalog);
         let prepared_filesystems = self.prepared_filesystems.clone();
         let controller_sessions = self.controller_sessions.clone();
         let notifications = self.notifications.clone();
@@ -876,6 +894,7 @@ impl PolymerHost for FrontendServices {
             let checkpoints = crate::CheckpointSession::default();
             let storage = match crate::launch_storage(
                 storage,
+                catalog,
                 &path,
                 &arguments,
                 notifications,

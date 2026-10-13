@@ -6,9 +6,10 @@ use polymer_consolestorage::impls::dreamcast::DreamcastMemoryCard;
 use polymer_consolestorage::impls::gamecube::GameCubeMemoryCard;
 use polymer_consolestorage::impls::ps1::PlaystationMemoryCard;
 use polymer_consolestorage::impls::ps2::Playstation2MemoryCard;
+use polymer_consolestorage::installable::InPlaceTitle;
 use polymer_consolestorage::savegame::{Package, SaveGameSink};
 use polymer_consolestorage::{
-    BatteryIdentity, BatterySaveRepo, CheckpointGate, CheckpointRequest, SaveRepo,
+    BatteryIdentity, BatterySaveRepo, CheckpointGate, CheckpointRequest, SaveRepo, TitleMount,
 };
 use polymer_deno::polymer::{PolymerNotification, PolymerNotificationSender};
 use polymer_library::keys::KeyStore;
@@ -275,6 +276,7 @@ async fn select_artifact(
 
 pub async fn launch_storage(
     manager: Option<Arc<StorageManager>>,
+    catalog: Option<Arc<polymer_library::GameCatalog>>,
     export_path: &[String],
     arguments: &[Value],
     notifications: PolymerNotificationSender,
@@ -343,6 +345,35 @@ pub async fn launch_storage(
             .map_err(|error| error.to_string())?;
         requested.insert(device.to_owned(), selection);
     }
+    let uri = metadata.as_ref().map(|package| &package.uri);
+    let title = uri
+        .and_then(LaunchableUri::install_path)
+        .and_then(|install_path| InPlaceTitle::title_at(console, install_path));
+    let rows = match (&catalog, title) {
+        (Some(catalog), Some(title)) => catalog
+            .mounted_titles(console, &title)
+            .await
+            .map_err(|error| error.to_string())?,
+        _ => Vec::new(),
+    };
+    let launched = match uri {
+        Some(LaunchableUri::Mounted(mounted)) => {
+            Some((mounted.install_path.clone(), mounted.host.clone()))
+        }
+        _ => None,
+    };
+    let mounts: Vec<_> = rows
+        .into_iter()
+        .map(|row| (row.install_path, row.host))
+        .chain(launched)
+        .collect::<BTreeMap<_, _>>()
+        .into_iter()
+        .map(|(install_path, host)| TitleMount { install_path, host })
+        .collect();
+    let device_mounts = |name: &str| match default_device {
+        Some((device, _)) if device == name => mounts.clone(),
+        _ => Vec::new(),
+    };
     let key_store = KeyStore::open(manager.root().join("keys"))
         .await
         .map_err(|e| e.to_string())?;
@@ -442,7 +473,7 @@ pub async fn launch_storage(
                 tracing::warn!(%error, "could not describe saves from the launched game");
             }
             let composed = nand
-                .compose(Some(save.clone()), keys.clone())
+                .compose_mounted(Some(save.clone()), keys.clone(), device_mounts(name))
                 .await
                 .map_err(|error| error.to_string())?;
             storage.insert(
@@ -483,7 +514,7 @@ pub async fn launch_storage(
         match volume {
             ConsoleStorage::Nand(nand) => {
                 let root = nand
-                    .compose(None, keys.clone())
+                    .compose_mounted(None, keys.clone(), device_mounts(name))
                     .await
                     .map_err(|e| e.to_string())?;
                 storage.insert(
