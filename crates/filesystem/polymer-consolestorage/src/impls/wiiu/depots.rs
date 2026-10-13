@@ -4,7 +4,8 @@ use crate::error::Error;
 use crate::impls::wiiu::{nand::WiiUNand, xml};
 use crate::installable::artifacts::{Artifact, ArtifactEntrypoint};
 use crate::installable::{
-    Depot, DepotFile, DepotType, DirectoryInstall, IconHint, InstallContext, Installable,
+    Depot, DepotFile, DepotType, DirectoryInstall, IconHint, InPlaceDepot, InstallContext,
+    Installable,
 };
 use crate::nand::VirtualNand;
 use crate::requires_structure;
@@ -96,6 +97,50 @@ impl WiiUMetaXmlDepot {
             vec![icon],
             entrypoint,
         )
+    }
+}
+
+impl InPlaceDepot for WiiUMetaXmlDepot {
+    const PLATFORM: &'static str = WiiUNand::PLATFORM;
+    const MARKERS: &'static [&'static str] = &["meta/meta.xml", "code/app.xml", "code/cos.xml"];
+
+    fn locate(path: &Path) -> Result<Self, Error> {
+        <Self as Depot>::open(path)
+    }
+
+    fn title_at(install_path: &str) -> Option<String> {
+        let (high, low) = install_path.strip_prefix("usr/title/")?.split_once('/')?;
+        let id = (u64::from_str_radix(high, 16).ok()? << 32) | u64::from_str_radix(low, 16).ok()?;
+        Some(Self::component(id).title)
+    }
+
+    fn title(&self) -> String {
+        Self::component(self.title_id).title
+    }
+
+    fn kind(&self) -> DepotType {
+        Self::title_kind(self.title_id)
+    }
+
+    fn install_path(&self) -> String {
+        Self::component(self.title_id).root
+    }
+
+    fn entrypoint(&self) -> Result<Option<ArtifactEntrypoint>, Error> {
+        if self.kind() != DepotType::App {
+            return Ok(None);
+        }
+        let cos: xml::CosXml = xml::read(&self.root.join("code/cos.xml"))?;
+        let root = InPlaceDepot::install_path(self);
+        Ok(Some(ArtifactEntrypoint {
+            root: root.clone(),
+            path: format!("code/{}", cos.argstr.text.trim()),
+            package: root,
+        }))
+    }
+
+    fn keys(&self) -> Result<Vec<crate::keys::KeyRecord>, Error> {
+        self.embedded_keys()
     }
 }
 

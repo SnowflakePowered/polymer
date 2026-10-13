@@ -11,6 +11,11 @@ export type Package = Readonly<{
   platform: string;
   serial: string | null;
   titleId: string | null;
+  /**
+   * Set at launch for a title that lives inside console storage, installed or mounted in place:
+   * the storage device, the title's path inside it, and the file to boot relative to that path.
+   */
+  installed?: Readonly<{ device: string; path: string; entrypoint: string }> | null;
   bundle?: Readonly<{
     revision: string;
     entrypoint: string;

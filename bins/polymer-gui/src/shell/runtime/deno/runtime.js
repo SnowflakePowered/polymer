@@ -6,6 +6,8 @@
   const { defineEventHandler } = webEvents;
   const eventDispatch = globalThis.__polymerCreateEventDispatch(webEvents, ops);
   delete globalThis.__polymerCreateEventDispatch;
+  globalThis.__polymerInstallFileSystem(ops, globalThis.__polymerApi.registerFileSystemHandle);
+  delete globalThis.__polymerInstallFileSystem;
   const { MouseEvent, PointerEvent, WheelEvent, KeyboardEvent, FocusEvent, InputEvent, CompositionEvent, createPointerEvent, dispatch, dispatchNativeEvent } = eventDispatch;
   delete globalThis.__polymerRuntime;
   const wrappers = new Map();

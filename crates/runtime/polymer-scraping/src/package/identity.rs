@@ -1,5 +1,7 @@
 use super::Package;
-use polymer_library::{GameCatalog, GameCatalogError, IdentifiedLaunchable, Launchable};
+use polymer_library::{
+    GameCatalog, GameCatalogError, IdentifiedLaunchable, ImportOrigin, Launchable,
+};
 use polymer_pluginhost::digest::{DigestAlgorithm, Digestible, PackageBinary};
 
 impl Digestible for Package {
@@ -29,6 +31,7 @@ impl Package {
     pub async fn import(
         mut self,
         catalog: &GameCatalog,
+        origin: ImportOrigin,
     ) -> Result<(Launchable, bool), GameCatalogError> {
         let seed = self.import.take().ok_or_else(|| {
             GameCatalogError::InvalidData(
@@ -62,6 +65,7 @@ impl Package {
                 // Clear legacy eager hashes when reimporting an existing game.
                 ("host:raw-file".to_owned(), Vec::new()),
             ],
+            origin,
         ))
         .await
     }

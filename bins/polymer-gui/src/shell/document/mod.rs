@@ -286,6 +286,16 @@ impl ShellDocumentFactory {
 }
 
 impl ShellDocument {
+    /// The window that owns file pickers opened by script.
+    pub(crate) fn dialog_parent(
+        &self,
+    ) -> tokio::sync::oneshot::Receiver<Option<polymer_composition::DialogParent>> {
+        let (reply, response) = tokio::sync::oneshot::channel();
+        self.outbox
+            .send(crate::shell::protocol::ShellEvent::DialogParent { reply });
+        response
+    }
+
     pub(crate) fn urls(&self) -> Arc<ShellUrls> {
         self.urls.clone()
     }

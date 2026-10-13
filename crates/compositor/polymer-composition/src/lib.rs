@@ -1,10 +1,12 @@
 //! Native window and retained composition boundary for Polymer frontends.
 //! Scene descriptions carry no native graphics resources or DOM objects.
+mod dialog;
 mod events;
 pub mod overlay;
 mod scene;
 mod shader;
 mod video;
+pub use dialog::DialogParent;
 pub use events::*;
 use polymer_renderer::ReceivedSurface;
 use polymer_renderer::egui::InputDiagnostics;
@@ -46,6 +48,7 @@ pub trait Compositor {
     fn request_redraw(&self);
     fn set_cursor(&self, icon: Option<cursor_icon::CursorIcon>);
     fn set_title(&self, title: &str);
+    fn dialog_parent(&self) -> Option<DialogParent>;
     fn set_ime_enabled(&self, enabled: bool);
     fn set_ime_cursor_area(&self, x: f32, y: f32, width: f32, height: f32);
     fn focus_host(&self);

@@ -2,7 +2,7 @@ use std::{path::Path, sync::Arc};
 
 use object_store::memory::InMemory;
 use polymer_library::{
-    GameCatalog, GameCatalogError, IdentifiedLaunchable, Launchable, LaunchableUri,
+    GameCatalog, GameCatalogError, IdentifiedLaunchable, ImportOrigin, Launchable, LaunchableUri,
 };
 
 const EXECUTABLE: &[u8] = b"shared Chrono Cross executable";
@@ -27,7 +27,7 @@ async fn import(
         platform: "SONY_PSX".to_owned(),
     };
     catalog
-        .import_package(input, Vec::new())
+        .import_package(input, Vec::new(), ImportOrigin::Manual)
         .await
         .map(|(launchable, _)| launchable)
 }

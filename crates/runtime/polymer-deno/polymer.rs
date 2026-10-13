@@ -57,7 +57,8 @@ use library::{
     op_library_launchables_add, op_library_launchables_delete, op_library_launchables_find,
     op_library_metadata_add, op_library_metadata_delete, op_library_metadata_replace,
     op_library_metadata_text, op_library_metadata_update, op_library_metadata_url,
-    op_scraping_refresh, op_scraping_scrapers, op_scraping_start,
+    op_library_sources_add, op_library_sources_list, op_library_sources_remove,
+    op_library_sources_scan, op_scraping_refresh, op_scraping_scrapers, op_scraping_start,
 };
 
 pub type ApiFuture<T> = Pin<Box<dyn Future<Output = T> + 'static>>;
@@ -219,6 +220,7 @@ pub enum PolymerNotification {
     LibraryContentChanged {
         root_binary_id: String,
     },
+    LibrarySourcesChanged(Value),
 }
 
 /// Cloneable native-to-JavaScript notification endpoint.
@@ -563,6 +565,7 @@ deno_core::extension!(
         op_library_metadata_text,
         op_library_metadata_url,
         op_scraping_start, op_scraping_scrapers, op_scraping_refresh,
+        op_library_sources_list, op_library_sources_add, op_library_sources_remove, op_library_sources_scan,
         op_jobs_list, op_jobs_get, op_jobs_cancel, op_jobs_retry, op_jobs_dismiss, op_jobs_import, op_jobs_check_updates, op_jobs_fetch_update,
         op_emulator_launch,
         op_emulator_close,

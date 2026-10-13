@@ -1,4 +1,17 @@
 const surfaceAttachments = new WeakMap();
+const fileSystemPaths = new WeakMap();
+
+export function registerFileSystemHandle(handle, path) {
+  fileSystemPaths.set(handle, String(path));
+}
+
+/** The host path of a picked file system handle, or a path given directly. */
+export function hostPath(value, name) {
+  if (typeof value === "string" && value.length) return value;
+  const path = fileSystemPaths.get(value);
+  if (path === undefined) throw new TypeError(`${name} must be a non-empty string or a FileSystemHandle`);
+  return path;
+}
 
 export function registerSurface(surface, attachment) {
   if ((typeof surface !== "object" && typeof surface !== "function") || surface === null) {

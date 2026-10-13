@@ -5,12 +5,14 @@ pub mod artifacts;
 mod component;
 pub(crate) use component::ComponentStage;
 mod directory;
+mod in_place;
 mod installation;
 mod progress;
 mod writer;
 pub(crate) use writer::StorageWriter;
 
 pub use directory::DirectoryInstall;
+pub use in_place::{InPlaceDepot, InPlaceTitle};
 pub use installation::{Installable, Installation};
 pub(crate) use progress::Reporting;
 pub use progress::{InstallContext, InstallEvent, InstallPhase, InstallPreview};

@@ -2,8 +2,8 @@ use std::{path::Path, sync::Arc};
 
 use object_store::memory::InMemory;
 use polymer_library::{
-    GameCatalog, GameQuery, GameSort, IdentifiedLaunchable, LaunchableUri, MetadataInput,
-    MetadataInputData, MetadataValue,
+    GameCatalog, GameQuery, GameSort, IdentifiedLaunchable, ImportOrigin, LaunchableUri,
+    MetadataInput, MetadataInputData, MetadataValue,
 };
 use uuid::Uuid;
 
@@ -39,7 +39,11 @@ async fn import(
         })
         .collect();
     let (launchable, _) = catalog
-        .import_package(input, vec![("seed".to_owned(), seeds)])
+        .import_package(
+            input,
+            vec![("seed".to_owned(), seeds)],
+            ImportOrigin::Manual,
+        )
         .await
         .unwrap();
     launchable.binary_id

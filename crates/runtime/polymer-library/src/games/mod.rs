@@ -7,9 +7,13 @@ pub use manifest::{CuePart, CueTemplate, PackageFile, PackageManifest};
 pub use preview::MediaPreview;
 mod schema;
 mod uri;
-pub use uri::{InstalledArtifact, LaunchableUri, ResolvedLaunchable};
+pub use uri::{
+    InstalledArtifact, InstalledLocation, LaunchableUri, MountedTitle, ResolvedLaunchable,
+};
 
-pub use catalog::{GameCatalog, GameCatalogError};
+pub use catalog::{
+    GameCatalog, GameCatalogError, ImportOrigin, LibrarySource, MountedTitleRow,
+};
 pub use discs::{DiscSets, Serial};
 pub use model::{
     Game, GamePage, GameQuery, GameSort, IdentifiedLaunchable, Launchable, MediaData,

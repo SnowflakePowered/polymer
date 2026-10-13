@@ -7,8 +7,9 @@ use uuid::Uuid;
 
 use crate::installable::artifacts::Artifact;
 use crate::keys::KeyReader;
-use crate::storage::VolumeStorage;
 use crate::storage::manifest::{ArtifactSummary, VolumeInfo};
+use crate::storage::{ComposedLayer, VolumeStorage};
+use crate::{ComposedStorage, ExternalTitleStorage, TitleMount};
 use crate::{Error, MountableStorage, Permissions, SaveRepo};
 
 pub enum NandCompletion {
@@ -65,6 +66,36 @@ pub trait VirtualNand: Send + Sync {
         saves: Option<Arc<dyn SaveRepo>>,
         keys: Arc<dyn KeyReader>,
     ) -> Result<Arc<dyn MountableStorage>, Error>;
+
+    /// [`Self::compose`] with host title directories mounted read-only at their
+    /// install paths. Mounts whose install path is already in this NAND are
+    /// skipped, so a managed installation always wins.
+    async fn compose_mounted(
+        &self,
+        saves: Option<Arc<dyn SaveRepo>>,
+        keys: Arc<dyn KeyReader>,
+        mounts: Vec<TitleMount>,
+    ) -> Result<Arc<dyn MountableStorage>, Error> {
+        let composed = self.compose(saves, keys).await?;
+        let root = self.root();
+        let mounts: Vec<_> = mounts
+            .into_iter()
+            .filter(|mount| !root.exists(&mount.install_path))
+            .collect();
+        if mounts.is_empty() {
+            return Ok(composed);
+        }
+        Ok(Arc::new(ComposedStorage::with_layers(vec![
+            ComposedLayer::volatile(
+                "external",
+                Arc::new(ExternalTitleStorage::new(
+                    mounts,
+                    &*root as &dyn crate::Storage,
+                )),
+            ),
+            ComposedLayer::volatile("nand", composed),
+        ])?))
+    }
 
     /// The consolespec platform ID this NAND was created for.
     fn platform(&self) -> &str;

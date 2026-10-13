@@ -18,6 +18,26 @@ use crate::StorageManager;
 pub enum LaunchableUri {
     File(PathBuf),
     Artifact(InstalledArtifact),
+    Mounted(MountedTitle),
+}
+
+/// Where a title lives inside the console storage a plugin mounts, so it can
+/// boot it from there whether it was installed or mounted in place.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct InstalledLocation {
+    pub device: String,
+    pub path: String,
+    pub entrypoint: String,
+}
+
+/// A title directory on the host, mounted at its install path in the
+/// platform's managed NAND when launched.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct MountedTitle {
+    pub platform: String,
+    pub install_path: String,
+    pub host: PathBuf,
+    pub entrypoint: String,
 }
 
 #[derive(Clone, Debug)]
@@ -30,6 +50,7 @@ pub struct InstalledArtifact {
 
 #[derive(Clone, Debug)]
 struct ArtifactLocation {
+    install_path: String,
     root: PathBuf,
     entrypoint: String,
     package: PathBuf,
@@ -47,6 +68,7 @@ pub enum ResolvedLaunchable {
 impl LaunchableUri {
     const FILE: &str = "file";
     const ARTIFACT: &str = "artifact";
+    const MOUNT: &str = "mount";
 
     pub fn file(path: impl AsRef<Path>) -> Result<Self, GameCatalogError> {
         let path = dunce::simplified(path.as_ref());
@@ -70,6 +92,7 @@ impl LaunchableUri {
     fn location(&self) -> io::Result<(&Path, Option<&str>)> {
         match self {
             Self::File(path) => Ok((path, None)),
+            Self::Mounted(mounted) => Ok((&mounted.host, Some(mounted.entrypoint.as_str()))),
             Self::Artifact(installed) => installed
                 .location()
                 .map(|location| (location.root.as_path(), Some(location.entrypoint.as_str())))
@@ -86,10 +109,46 @@ impl LaunchableUri {
         self.location().map(|(path, _)| path.to_owned())
     }
 
+    /// The host path a library source can own: a file, or a mounted title directory.
+    pub fn source_path(&self) -> Option<&Path> {
+        match self {
+            Self::File(path) => Some(path),
+            Self::Mounted(mounted) => Some(&mounted.host),
+            Self::Artifact(_) => None,
+        }
+    }
+
+    pub fn installed(&self) -> Option<InstalledLocation> {
+        let platform = match self {
+            Self::File(_) => return None,
+            Self::Mounted(mounted) => &mounted.platform,
+            Self::Artifact(installed) => &installed.platform,
+        };
+        let (device, _) = polymer_consolestorage::ConsoleStorage::default_device(platform)?;
+        let (_, entrypoint) = self.location().ok()?;
+        Some(InstalledLocation {
+            device: device.to_owned(),
+            path: self.install_path()?.to_owned(),
+            entrypoint: entrypoint?.to_owned(),
+        })
+    }
+
+    /// Where the title lives inside its platform's NAND, if it lives in one.
+    pub fn install_path(&self) -> Option<&str> {
+        match self {
+            Self::File(_) => None,
+            Self::Mounted(mounted) => Some(&mounted.install_path),
+            Self::Artifact(installed) => installed
+                .location()
+                .map(|location| location.install_path.as_str()),
+        }
+    }
+
     /// The identifiable package: the file itself, or an artifact's installed package root.
     pub fn package_path(&self) -> io::Result<PathBuf> {
         match self {
             Self::File(path) => Ok(path.clone()),
+            Self::Mounted(mounted) => Ok(mounted.host.clone()),
             Self::Artifact(installed) => installed
                 .location()
                 .map(|location| location.package.clone())
@@ -132,6 +191,20 @@ impl LaunchableUri {
         let invalid = || GameCatalogError::InvalidData(format!("{self:?} is not a valid URI"));
         match self {
             Self::File(path) => Url::from_file_path(path).map_err(|()| invalid()),
+            Self::Mounted(mounted) => {
+                let host = Url::from_file_path(&mounted.host).map_err(|()| invalid())?;
+                let mut url = Url::parse(&format!(
+                    "{}://{}/{}",
+                    Self::MOUNT,
+                    mounted.platform,
+                    mounted.install_path
+                ))
+                .map_err(|_| invalid())?;
+                url.query_pairs_mut()
+                    .append_pair("host", host.as_str())
+                    .append_pair("entrypoint", &mounted.entrypoint);
+                Ok(url)
+            }
             Self::Artifact(installed) => Url::parse(&format!(
                 "{}://{}/{}/{}",
                 Self::ARTIFACT,
@@ -141,6 +214,25 @@ impl LaunchableUri {
             ))
             .map_err(|_| invalid()),
         }
+    }
+
+    fn from_mount_url(url: &Url) -> Option<Self> {
+        let platform = url.host_str().filter(|platform| !platform.is_empty())?;
+        let install_path = url
+            .path()
+            .strip_prefix('/')
+            .filter(|path| !path.is_empty())?;
+        let query = |key: &str| {
+            url.query_pairs()
+                .find_map(|(name, value)| (name == key).then(|| value.into_owned()))
+        };
+        let host = Url::parse(&query("host")?).ok()?.to_file_path().ok()?;
+        Some(Self::Mounted(MountedTitle {
+            platform: platform.to_owned(),
+            install_path: install_path.to_owned(),
+            host: dunce::simplified(&host).to_owned(),
+            entrypoint: query("entrypoint").filter(|entrypoint| !entrypoint.is_empty())?,
+        }))
     }
 
     fn from_artifact_url(url: &Url) -> Option<Self> {
@@ -164,7 +256,8 @@ impl InstalledArtifact {
                         manager.artifact_entrypoint(&self.platform, self.storage, &self.artifact)
                     })
                     .map(|(checkout, entrypoint)| ArtifactLocation {
-                        root: checkout.join(entrypoint.root),
+                        root: checkout.join(&entrypoint.root),
+                        install_path: entrypoint.root,
                         entrypoint: entrypoint.path,
                         package: checkout.join(entrypoint.package),
                     })
@@ -202,6 +295,7 @@ impl FromStr for LaunchableUri {
         match url.scheme() {
             Self::FILE => Self::file(url.to_file_path().map_err(|()| invalid())?),
             Self::ARTIFACT => Self::from_artifact_url(&url).ok_or_else(invalid),
+            Self::MOUNT => Self::from_mount_url(&url).ok_or_else(invalid),
             _ => Err(invalid()),
         }
     }
@@ -211,7 +305,7 @@ impl fmt::Display for LaunchableUri {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::File(path) => fmt::Display::fmt(&path.display(), formatter),
-            Self::Artifact(_) => {
+            Self::Artifact(_) | Self::Mounted(_) => {
                 let url = self.url().map_err(|_| fmt::Error)?;
                 formatter.write_str(url.as_str())
             }

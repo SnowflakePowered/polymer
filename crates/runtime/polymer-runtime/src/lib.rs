@@ -14,6 +14,7 @@ mod launchable_configuration;
 mod library;
 mod screenshot;
 mod session;
+mod sources;
 mod storage;
 
 pub use capture::ConsumerPreference;

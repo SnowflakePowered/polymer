@@ -9,17 +9,37 @@ impl GameCatalog {
         let connection = self.connection().await?;
         let mut rows = connection
             .query(
-                "SELECT path FROM launchables WHERE path GLOB 'artifact://*'",
+                "SELECT path, install_path IS NULL FROM launchables WHERE path GLOB 'artifact://*'",
                 (),
             )
             .await?;
         let mut volumes = BTreeSet::new();
+        let mut unplaced = Vec::new();
         while let Some(row) = rows.next().await? {
-            if let LaunchableUri::Artifact(artifact) = row.get::<String>(0)?.parse()? {
+            let path: String = row.get(0)?;
+            if let LaunchableUri::Artifact(artifact) = path.parse()? {
+                if row.get::<i64>(1)? != 0 {
+                    unplaced.push((path, artifact.clone()));
+                }
                 volumes.insert((artifact.platform, artifact.storage));
             }
         }
         drop(rows);
+        for (path, artifact) in unplaced {
+            let Ok((_, entrypoint)) = manager.artifact_entrypoint(
+                &artifact.platform,
+                artifact.storage,
+                &artifact.artifact,
+            ) else {
+                continue;
+            };
+            connection
+                .execute(
+                    "UPDATE launchables SET install_path = ?2 WHERE path = ?1",
+                    vec![Value::from(path), Value::from(entrypoint.root)],
+                )
+                .await?;
+        }
         for (platform, id) in volumes {
             let info = manager
                 .volume_info(&platform, id)
@@ -75,31 +95,7 @@ impl GameCatalog {
                 .execute("DELETE FROM launchables WHERE id = ?1", [Self::id(id)])
                 .await?;
         }
-        let mut objects = Vec::new();
-        for root in roots {
-            let mut rows = transaction.query(
-                "SELECT COUNT(*) FROM launchables l JOIN binaries b ON b.id = l.binary_id WHERE b.id = ?1 OR b.parent_binary_id = ?1", [Self::id(root)]
-            ).await?;
-            let count: i64 = rows
-                .next()
-                .await?
-                .ok_or_else(|| GameCatalogError::InvalidData("missing launchable count".into()))?
-                .get(0)?;
-            let empty = count == 0;
-            drop(rows);
-            if empty {
-                objects.extend(Self::referenced_objects(&transaction, root, None).await?);
-                transaction
-                    .execute(
-                        "DELETE FROM binaries WHERE parent_binary_id = ?1",
-                        [Self::id(root)],
-                    )
-                    .await?;
-                transaction
-                    .execute("DELETE FROM binaries WHERE id = ?1", [Self::id(root)])
-                    .await?;
-            }
-        }
+        let objects = Self::prune_roots(&transaction, &roots).await?;
         transaction.commit().await?;
         self.collect_objects(objects).await;
         Ok(())

@@ -98,6 +98,10 @@ impl WindowManager {
         self.window.set_cursor_visible(icon.is_some());
     }
 
+    pub fn dialog_parent(&self) -> Option<polymer_composition::DialogParent> {
+        polymer_composition::DialogParent::of(&self.window)
+    }
+
     pub fn set_title(&self, title: &str) {
         self.window.set_title(title);
     }

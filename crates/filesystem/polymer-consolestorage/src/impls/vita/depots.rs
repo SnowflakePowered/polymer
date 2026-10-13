@@ -3,9 +3,10 @@ use std::path::{Path, PathBuf};
 
 use crate::Error;
 use crate::impls::sony::{TitleId, metadata::SonyMetadata};
-use crate::installable::artifacts::Artifact;
+use crate::installable::artifacts::{Artifact, ArtifactEntrypoint};
 use crate::installable::{
-    Depot, DepotFile, DepotType, DirectoryInstall, IconHint, InstallContext, Installable,
+    Depot, DepotFile, DepotType, DirectoryInstall, IconHint, InPlaceDepot, InstallContext,
+    Installable,
 };
 use crate::nand::VirtualNand;
 
@@ -82,6 +83,55 @@ impl VitaDirectoryDepot {
             vec![icon],
             None,
         )
+    }
+}
+
+impl InPlaceDepot for VitaDirectoryDepot {
+    const PLATFORM: &'static str = super::VitaNand::PLATFORM;
+    const MARKERS: &'static [&'static str] = &["sce_sys/param.sfo"];
+
+    fn locate(path: &Path) -> Result<Self, Error> {
+        let depot = <Self as Depot>::open(path)?;
+        if depot.root.join("sce_pfs").exists() {
+            return Err(Error::Unsupported(
+                "encrypted Vita content requires PFS decryption".to_owned(),
+            ));
+        }
+        Ok(depot)
+    }
+
+    fn title_at(install_path: &str) -> Option<String> {
+        let rest = ["ux0/app/", "ux0/patch/", "ux0/addcont/"]
+            .iter()
+            .find_map(|prefix| install_path.strip_prefix(prefix))?;
+        rest.split('/').next().map(str::to_owned)
+    }
+
+    fn title(&self) -> String {
+        self.title_id.clone()
+    }
+
+    fn kind(&self) -> DepotType {
+        self.kind
+    }
+
+    fn install_path(&self) -> String {
+        self.destination.clone()
+    }
+
+    fn entrypoint(&self) -> Result<Option<ArtifactEntrypoint>, Error> {
+        if self.kind != DepotType::App {
+            return Ok(None);
+        }
+        let eboot = self.root.join("eboot.bin");
+        if !eboot.is_file() {
+            return Err(Error::io(&eboot, std::io::ErrorKind::NotFound.into()));
+        }
+        Ok(Some(ArtifactEntrypoint {
+            root: self.destination.clone(),
+            path: "eboot.bin".to_owned(),
+            package: self.destination.clone(),
+        }))
     }
 }
 

@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use object_store::memory::InMemory;
 use polymer_consolestorage::keys::{KeyIdentity, KeyRecord, KeyWriter};
-use polymer_library::{GameCatalog, IdentifiedLaunchable, LaunchableUri, keys::KeyStore};
+use polymer_library::{
+    GameCatalog, IdentifiedLaunchable, ImportOrigin, LaunchableUri, keys::KeyStore,
+};
 
 const CONTENT_ID: &str = "EP9000-NPEA00253_00-GECHOCHROM000001";
 
@@ -34,6 +36,7 @@ async fn titles_needing_a_license_are_licensed_once_their_key_is_imported() {
                     platform: "SONY_PS3".to_owned(),
                 },
                 Vec::new(),
+                ImportOrigin::Manual,
             )
             .await
             .unwrap();

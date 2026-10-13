@@ -17,7 +17,7 @@
 .horizon-pause .hz-hints[data-floating] { position: absolute; }
 .horizon-pause-divider { margin: 2.25rem 0 4.75rem; background: rgb(255 255 255 / 85%); }
 .horizon-pause-options { display: flex; min-height: 0; align-self: center; flex-direction: column; gap: .25rem; max-width: 32rem; max-height: calc(100% - 9rem); overflow-y: auto; padding: .25rem 3.5rem; scrollbar-width: none; }
-.horizon-pause-options .hz-action-row, .horizon-pause-options .hz-setting-row { min-height: 3.75rem; padding: .75rem 1rem; border: 1px solid rgb(255 255 255 / 85%); border-radius: 0; background: rgb(0 0 0 / 25%); }
+.horizon-pause-options .hz-action-row, .horizon-pause-options .hz-setting-row { min-height: 3.75rem; padding: .75rem 1rem; border: 1px solid rgb(255 255 255 / 85%); border-radius: 0; background: rgb(0 0 0 / 25%); --hz-ring-fill: var(--hz-surface); }
 .horizon-pause-options .hz-action-row > span { display: flex; align-items: center; gap: .75rem; }
 .horizon-pause-options .hz-action-row svg { flex: none; }
 .horizon-pause-options .horizon-shader-result[data-focus-ring], .horizon-pause-options .horizon-shader-result:focus { background: rgb(255 255 255 / 12%); }

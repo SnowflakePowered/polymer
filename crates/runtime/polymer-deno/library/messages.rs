@@ -47,6 +47,32 @@ pub struct Library {
     pub scraping_start: Recipient<ScrapingStart>,
     pub scraping_scrapers: Recipient<ScrapingScrapers>,
     pub scraping_refresh: Recipient<ScrapingRefresh>,
+    pub sources_list: Recipient<SourcesList>,
+    pub sources_add: Recipient<SourcesAdd>,
+    pub sources_remove: Recipient<SourcesRemove>,
+    pub sources_scan: Recipient<SourcesScan>,
+}
+
+#[derive(Debug, actix::Message)]
+#[rtype(result = "Result<Value, LibraryError>")]
+pub struct SourcesList;
+
+#[derive(Debug, actix::Message)]
+#[rtype(result = "Result<Value, LibraryError>")]
+pub struct SourcesAdd {
+    pub path: String,
+}
+
+#[derive(Debug, actix::Message)]
+#[rtype(result = "Result<(), LibraryError>")]
+pub struct SourcesRemove {
+    pub id: String,
+}
+
+#[derive(Debug, actix::Message)]
+#[rtype(result = "Result<(), LibraryError>")]
+pub struct SourcesScan {
+    pub id: String,
 }
 
 #[derive(Debug, actix::Message)]

@@ -69,6 +69,9 @@ impl polymer_composition::Compositor for WindowsCompositor {
     fn set_title(&self, title: &str) {
         self.window.set_title(title)
     }
+    fn dialog_parent(&self) -> Option<polymer_composition::DialogParent> {
+        self.window.dialog_parent()
+    }
     fn set_ime_enabled(&self, enabled: bool) {
         self.window.set_ime_enabled(enabled)
     }
