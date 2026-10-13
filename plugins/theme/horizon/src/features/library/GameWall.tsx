@@ -9,7 +9,7 @@ import { GameInfoCard } from "./GameInfoCard";
 import { gameId, nearestInDirection, type Direction } from "./spatial-navigation";
 import "./GameWall.css";
 
-export function GameWall(props: { games: RecentGame[]; onEnd?: () => void }) {
+export function GameWall(props: { games: RecentGame[]; onEnd?: () => void; onTopEdge?: () => void }) {
   const shell = useShell();
   const [context, setContext] = createSignal<{ game: RecentGame }>();
   const [info, setInfo] = createSignal<RecentGame>();
@@ -29,6 +29,11 @@ export function GameWall(props: { games: RecentGame[]; onEnd?: () => void }) {
   createEffect(() => {
     if (!shell.model.selectedGame && props.games[0]) shell.setModel("selectedGame", gameId(props.games[0]));
     if (shell.model.selectedGame && !gameFor(shell.model.selectedGame) && props.games[0]) shell.setModel("selectedGame", gameId(props.games[0]));
+  });
+
+  createEffect(() => {
+    props.games;
+    requestAnimationFrame(() => { if (document.activeElement === document.body || !document.activeElement?.isConnected) elements.get(selected() || "")?.focus(); });
   });
 
   const choose = (id: string) => {
@@ -74,6 +79,7 @@ export function GameWall(props: { games: RecentGame[]; onEnd?: () => void }) {
       }
       if (action.type === "move") {
         const next = nearestInDirection([...elements].map(([id, element]) => ({ id, rect: element.getBoundingClientRect() })), current, action.direction as Direction);
+        if (!next && action.direction === "up" && !sourceId && props.onTopEdge) { props.onTopEdge(); return true; }
         if (!next) return false;
         if (sourceId) setControllerSelections(values => ({ ...values, [sourceId]: next }));
         else choose(next);

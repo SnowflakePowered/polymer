@@ -20,6 +20,7 @@ export function QuickAccess() {
       <h2 class="vp-quick-access-title"><Show when={game()?.icon}>{icon => <img src={icon()} alt="" />}</Show><span>{game()?.name ?? shell.state.draft?.name ?? "Now playing"}</span></h2>
       <PanelSection title="Game">
         <Button primary data-autofocus onClick={close}>Resume game</Button>
+        <Show when={shell.state.launch?.saveStates}><Button onClick={() => shell.update("menu", "states")}>Save states</Button></Show>
         <Button onClick={() => shell.update("menu", "order")}>Controller order</Button>
         <Button onClick={() => shell.update("menu", "shader")}>Shader</Button>
         <Button danger onClick={() => setConfirm(true)}>Exit game</Button>

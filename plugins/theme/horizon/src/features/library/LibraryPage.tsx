@@ -6,6 +6,7 @@ import { useShell } from "../../app/shell-context";
 import { EmptyLibrary } from "./EmptyLibrary";
 import { GameWall } from "./GameWall";
 import { LibrarySearch } from "./LibrarySearch";
+import { PlatformShelf } from "./PlatformShelf";
 import "./LibraryPage.css";
 
 export function LibraryPage(props: ParentProps) {
@@ -13,6 +14,11 @@ export function LibraryPage(props: ParentProps) {
   const location = useLocation();
   const settingsOpen = () => location.pathname === "/details";
   const [dropActive, setDropActive] = createSignal(window.Polymer.scraping.dropActive);
+  const [shelfOpen, setShelfOpen] = createSignal(false);
+  const closeShelf = () => {
+    setShelfOpen(false);
+    requestAnimationFrame(() => (document.querySelector<HTMLElement>(".horizon-game-tile[aria-current='true']") ?? document.querySelector<HTMLElement>(".horizon-game-tile"))?.focus());
+  };
   onMount(() => {
     const changed = (event: Event) => setDropActive((event as CustomEvent<boolean>).detail);
     window.Polymer.scraping.addEventListener("dropactivechange", changed);
@@ -24,8 +30,9 @@ export function LibraryPage(props: ParentProps) {
     <AppSidebar />
     <section class="horizon-library-content" data-drop-active={dropActive()}>
       <Show when={shell.model.librarySearchOpen}><LibrarySearch /></Show>
+      <Show when={shelfOpen()}><PlatformShelf onExit={closeShelf} /></Show>
       <Show when={games().length > 0} fallback={<Show when={filtered()} fallback={<EmptyLibrary dropActive={dropActive()} />}><EmptyState title="No games match these filters." /></Show>}>
-        <GameWall games={games()} onEnd={shell.loadMoreGames} />
+        <GameWall games={games()} onEnd={shell.loadMoreGames} onTopEdge={() => setShelfOpen(true)} />
       </Show>
       <ActionHints floating />
     </section>
