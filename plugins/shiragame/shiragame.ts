@@ -1,7 +1,7 @@
-import { caches } from "polymer:cache";
+import { caches } from "polymer:plugin";
 import { connect } from "polymer:database";
 import { Job } from "polymer:jobs";
-import type { OnPluginLoad, OnScrape, UpdateContents, ScrapeInput, ScrapeResult } from "polymer:api";
+import type { OnPluginLoad, OnScrape, OnUpdateContents, ScrapeInput, ScrapeResult } from "polymer:api";
 import { ShiragameContent } from "pkg:content.ts";
 import { ShiragameMatcher } from "pkg:matching.ts";
 
@@ -28,6 +28,6 @@ class ShiragameScraper {
 
 const scraper = new ShiragameScraper();
 export const onPluginLoad: OnPluginLoad = scraper.load.bind(scraper);
-export const updateContents: UpdateContents = scraper.update.bind(scraper);
+export const onUpdateContents: OnUpdateContents = scraper.update.bind(scraper);
 export const onScrape: OnScrape = scraper.scrape.bind(scraper);
-export default { onPluginLoad, updateContents, onScrape };
+export default { onPluginLoad, onUpdateContents, onScrape };

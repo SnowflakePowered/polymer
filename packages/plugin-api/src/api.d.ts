@@ -31,7 +31,7 @@ export type PluginStorage = Readonly<{
     setItem(key: string, value: unknown): void,
 }>;
 
-export type UpdateContents = () => void | Promise<void>;
+export type OnUpdateContents = () => void | Promise<void>;
 export type OnPluginLoad = () => void | boolean | Promise<void | boolean>;
 export type JobProgress = { readonly message?: string; readonly completed?: number; readonly total?: number };
 
@@ -50,8 +50,10 @@ export type PluginCacheDirectory = Readonly<{
     kind: "directory",
     open(path: string, options?: PluginCacheOpenOptions): PluginCacheFile,
     directory(path: string): PluginCacheDirectory,
+    /** Deletes the directory and everything in it. Links inside it are removed, not followed. */
+    delete(): Promise<void>,
 }>;
-export type PluginCache = DirectoryEntry & Readonly<{
+export type PluginCache =DirectoryEntry & Readonly<{
     open(path: string, options?: PluginCacheOpenOptions): PluginCacheFile,
     directory(path: string): PluginCacheDirectory,
 }>;

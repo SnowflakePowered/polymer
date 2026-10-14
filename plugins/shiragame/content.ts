@@ -1,4 +1,4 @@
-import { caches } from "polymer:cache";
+import { caches } from "polymer:plugin";
 import { connect } from "polymer:database";
 import { Job } from "polymer:jobs";
 import { ShiragameCatalog } from "pkg:catalog.ts";
@@ -43,7 +43,7 @@ export class ShiragameContent {
     try {
       const latest = await state.prepare("SELECT MAX(id) AS id FROM shiragame_generations").get<{ id: number | null }>();
       if (!latest?.id) return;
-      const path = `generation-${latest.id}.db`;
+      const path = `generation-${latest.id}/shiragame.db`;
       // A previous boot may have stopped during indexing. Reuse its extracted
       // database; CREATE INDEX IF NOT EXISTS preserves already completed work.
       const db = await connect(caches.download.open(path, { read: false }));
@@ -70,10 +70,9 @@ export class ShiragameContent {
       generation = Number(lastInsertRowid);
     } finally { await state.close(); }
     const archivePath = `generation-${generation}.zip`;
-    const path = `generation-${generation}.db`;
     const archive = new ShiragameArchive();
     await archive.download(archivePath);
-    await archive.extract(archivePath, path);
+    const path = await archive.extract(archivePath, `generation-${generation}`);
     await this.publish(path, job);
   }
 
@@ -85,7 +84,7 @@ export class ShiragameContent {
       // staged database. Existing readers keep their immutable generation.
       await state.prepare("INSERT OR REPLACE INTO shiragame_active (id, path, release, index_version) VALUES (1, ?, ?, ?)")
         .run([path, release.release, ShiragameCatalog.INDEX_VERSION]);
-      await state.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+      await state.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get();
       job.progress({ message: "Shiragame cue sheets ready" });
     } finally { await state.close(); }
   }

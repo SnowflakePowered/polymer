@@ -1,11 +1,15 @@
-import cemuExecutable from "pkg:bin/win-x64/Cemu.exe";
-import graphicsPacks from "pkg:bin/graphicsPacks";
-import resources from "pkg:bin/win-x64/resources";
-import gameProfiles from "pkg:bin/win-x64/gameProfiles";
-import { caches } from "polymer:cache";
 import { pluginStorage } from "polymer:pluginStorage";
+import { caches, config } from "polymer:plugin";
+import { connect } from "polymer:database";
+import { download } from "polymer:download";
+import { Job } from "polymer:jobs";
+import { osIdentifier } from "polymer:sys";
+import { unarchive } from "polymer:unarchive";
+import { EmulatorUpdates } from "jsr:@polymer-fe/emulator-updates@^0.1.0";
 import type {
     ConfigurationResult,
+    DirEntry,
+    DirectoryEntry,
     EmulatorLaunchArgs,
     Package,
     Storage,
@@ -44,20 +48,40 @@ type Storages = Readonly<{
 }>;
 
 const GRAPHICS_GROUP = "graphics";
-const GRAPHICS_PACKS_STORAGE_KEY = "graphicsPacks";
+const GRAPHICS_PACKS_RELEASE = "https://api.github.com/repos/cemu-project/cemu_graphic_packs/releases/latest";
 
-export async function onPluginLoad() {
-    if (graphicsPacks.kind !== "directory") throw new TypeError("Cemu graphics packs must be a directory");
-    pluginStorage.setItem(
-        GRAPHICS_PACKS_STORAGE_KEY,
-        await loadGraphicsPacks(graphicsPacks),
-    );
+const runtime = new EmulatorUpdates({
+    name: "Cemu",
+    cache: caches.runtime,
+    osIdentifier,
+    channel: String(config.channel ?? "stable"),
+    connect,
+    download,
+    unarchive,
+    Job,
+});
+
+export const onPluginLoad = () => runtime.ready();
+
+export async function onUpdateContents() {
+    const response = await fetch(GRAPHICS_PACKS_RELEASE);
+    if (!response.ok) throw new Error(`Cemu graphics packs request failed with ${response.status}`);
+    const release = await response.json();
+    const asset = release.assets?.find((asset: { name: string }) => /^graphicPacks.*\.zip$/.test(asset.name));
+    if (!asset?.digest?.startsWith("sha256:")) throw new Error("Cemu graphics packs release has no verifiable archive");
+    await runtime.update([await runtime.release("cemu"), {
+        version: release.tag_name,
+        url: asset.browser_download_url,
+        sha256: asset.digest.slice("sha256:".length),
+        size: asset.size,
+        directory: "graphicsPacks",
+    }]);
 }
 
-export function onConfigure(
+export async function onConfigure(
     game: Package,
     userConfiguration?: UserConfiguration,
-): ConfigurationResult {
+): Promise<ConfigurationResult> {
     const api = selectedApi(userConfiguration);
     const groups: Array<ConfigurationResult["groups"][number]> = [{
         key: GRAPHICS_GROUP,
@@ -76,8 +100,9 @@ export function onConfigure(
     const values: Record<string, Record<string, boolean | number | string | null>> = {
         [GRAPHICS_GROUP]: { api },
     };
-    if (normalizeTitleId(game.titleId)) {
-        const packs = loadedGraphicsPacks();
+    const generation = await runtime.active();
+    if (normalizeTitleId(game.titleId) && generation) {
+        const packs = await loadedGraphicsPacks(generation, await runtimeEntries(generation));
         const settled = settleGraphicsPacks(packs, game.titleId, userConfiguration, api);
         groups.push(...settled.groups);
         Object.assign(values, settled.values);
@@ -95,7 +120,9 @@ export async function onLaunch(args: EmulatorLaunchArgs<Options, Storages>) {
     args.configuration.options().content.open_pad = true;
     args.configuration.options()["content-graphic"].api = api === "vulkan" ? 1 : 0;
 
-    const packs = normalizeTitleId(args.launchSet[0].package.titleId) ? loadedGraphicsPacks() : [];
+    const generation = await runtime.launch();
+    const entries = await runtimeEntries(generation);
+    const packs = normalizeTitleId(args.launchSet[0].package.titleId) ? await loadedGraphicsPacks(generation, entries) : [];
     const selected = settleGraphicsPacks(
         packs,
         args.launchSet[0].package.titleId,
@@ -113,7 +140,7 @@ export async function onLaunch(args: EmulatorLaunchArgs<Options, Storages>) {
         }
     }
 
-    args.filesystem.mount("/Cemu/Cemu.exe", cemuExecutable, { mode: "rx" });
+    args.filesystem.mount("/Cemu/Cemu.exe", entries.get("Cemu.exe")!, { mode: "rx" });
     const discKeys: string[] = [];
     for (const key of await args.keyStore.list({ namespace: "content" })) {
         if (key.titleId !== undefined) continue;
@@ -123,9 +150,9 @@ export async function onLaunch(args: EmulatorLaunchArgs<Options, Storages>) {
     }
     const keyFile = new TextEncoder().encode(discKeys.join("\n") + (discKeys.length ? "\n" : ""));
     args.filesystem.mount("/Cemu/keys.txt", keyFile, { mode: "r" });
-    args.filesystem.mount("/Cemu/resources", resources, { mode: "rx" });
-    args.filesystem.mount("/Cemu/gameProfiles", gameProfiles, { mode: "rx" });
-    args.filesystem.mount("/Cemu/graphicPacks/downloadedGraphicPacks", graphicsPacks, { mode: "rx" });
+    args.filesystem.mount("/Cemu/resources", entries.get("resources")!, { mode: "rx" });
+    args.filesystem.mount("/Cemu/gameProfiles", entries.get("gameProfiles")!, { mode: "rx" });
+    args.filesystem.mount("/Cemu/graphicPacks/downloadedGraphicPacks", entries.get("graphicsPacks")!, { mode: "rx" });
     args.filesystem.mount("/Cemu/shaderCache", caches.shaderCache, { mode: "rwx" });
     for (const [name, bytes] of Object.entries(args.configuration.render())) {
         args.filesystem.mount(`/Cemu/${name}`, bytes, { mode: "rw" });
@@ -163,9 +190,20 @@ function selectedApi(configuration: UserConfiguration | undefined): GraphicsApi 
     return configuration?.[GRAPHICS_GROUP]?.api === "opengl" ? "opengl" : "vulkan";
 }
 
-function loadedGraphicsPacks(): GraphicsPack[] {
-    const packs = pluginStorage.getItem<GraphicsPack[]>(GRAPHICS_PACKS_STORAGE_KEY);
-    if (packs === null) throw new Error("graphics packs were not loaded");
+async function runtimeEntries(generation: DirectoryEntry): Promise<Map<string, DirEntry>> {
+    const entries = new Map<string, DirEntry>();
+    for await (const entry of generation) entries.set(entry.name, entry);
+    return entries;
+}
+
+async function loadedGraphicsPacks(generation: DirectoryEntry, entries: Map<string, DirEntry>): Promise<GraphicsPack[]> {
+    const directory = entries.get("graphicsPacks");
+    if (directory?.kind !== "directory") throw new TypeError("Cemu graphics packs must be a directory");
+    const key = `graphicsPacks:${generation.name}`;
+    const cached = pluginStorage.getItem<GraphicsPack[]>(key);
+    if (cached !== null) return cached;
+    const packs = await loadGraphicsPacks(directory);
+    pluginStorage.setItem(key, packs);
     return packs;
 }
 
@@ -189,4 +227,4 @@ export function onSaveCheckpoint({ storage, save, changed }: SaveCheckpointConte
         || changed.some((entry) => entry.path === committed);
 }
 
-export default { onPluginLoad, onConfigure, onLaunch, onSaveCheckpoint };
+export default { onPluginLoad, onUpdateContents, onConfigure, onLaunch, onSaveCheckpoint };

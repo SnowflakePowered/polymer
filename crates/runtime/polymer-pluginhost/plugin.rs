@@ -1,6 +1,6 @@
 //! Common public identity for loaded plugins.
 
-use crate::loading::{PluginCache, PluginModuleLoader};
+use crate::loading::{PluginCache, PluginConfig, PluginModuleLoader};
 
 /// Runtime-neutral identity and package services shared by every plugin class.
 pub trait PluginInstance: Send + Sync + 'static {
@@ -13,4 +13,9 @@ pub trait PluginInstance: Send + Sync + 'static {
     fn caches(&self) -> &[PluginCache] {
         &[]
     }
+
+    fn config(&self) -> &PluginConfig;
+
+    /// The parsed `plugin.toml`.
+    fn manifest(&self) -> &serde_json::Value;
 }

@@ -1,4 +1,10 @@
-import runtime from "pkg:bin/win-x64";
+import { caches, config } from "polymer:plugin";
+import { connect } from "polymer:database";
+import { download } from "polymer:download";
+import { Job } from "polymer:jobs";
+import { osIdentifier } from "polymer:sys";
+import { unarchive } from "polymer:unarchive";
+import { EmulatorUpdates } from "jsr:@polymer-fe/emulator-updates@^0.1.0";
 import type { DiscChangeContext, EmulatorLaunchArgs, PauseResumeContext, Storage } from "polymer:api";
 import { HotkeyParser } from "pkg:hotkeys.ts";
 
@@ -47,6 +53,21 @@ type Options = {
 
 let currentDisc = 0;
 
+const runtime = new EmulatorUpdates({
+    name: "DuckStation",
+    cache: caches.runtime,
+    osIdentifier,
+    channel: String(config.channel ?? "stable"),
+    connect,
+    download,
+    unarchive,
+    Job,
+});
+
+export const onPluginLoad = () => runtime.ready();
+
+export const onUpdateContents = async () => runtime.update([await runtime.release("duckstation")]);
+
 export const onLaunch = async (args: EmulatorLaunchArgs<Options, Readonly<{ card1?: Storage, card2?: Storage }>>) => {
     const biosFiles = (await args.firmwareStore.list()).filter(entry => entry.platform === "SONY_PSX");
     if (biosFiles.length === 0) {
@@ -54,7 +75,7 @@ export const onLaunch = async (args: EmulatorLaunchArgs<Options, Readonly<{ card
     }
     const path = (virtualPath: string) => args.filesystem.path(virtualPath);
 
-    args.filesystem.mount("/DuckStation", runtime, { mode: "rx" });
+    args.filesystem.mount("/DuckStation", await runtime.launch(), { mode: "rx" });
     args.filesystem.mount("/DuckStation/portable.txt", new Uint8Array(), { mode: "r" });
     args.filesystem.mount("/DuckStation/duckstation.log", new Uint8Array(), { mode: "rw" });
     if (args.storage.card1) {
@@ -139,4 +160,4 @@ export const onDiscChange = (context: DiscChangeContext) => {
     currentDisc = context.index;
 };
 
-export default { onLaunch, onParseHotkey, onPauseResume, onDiscChange };
+export default { onPluginLoad, onUpdateContents, onLaunch, onParseHotkey, onPauseResume, onDiscChange };

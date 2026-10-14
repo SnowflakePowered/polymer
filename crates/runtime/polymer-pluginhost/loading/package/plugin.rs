@@ -17,6 +17,8 @@ struct PluginBlock {
     caches: Vec<PluginCache>,
     #[serde(default)]
     permissions: PluginPermissions,
+    #[serde(default)]
+    config: super::PluginConfig,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -90,6 +92,7 @@ pub struct PluginPackage<B> {
     main: PathBuf,
     plugin: PluginBlock,
     block: B,
+    manifest: serde_json::Value,
     module_loader: crate::loading::PluginModuleLoader,
     entrypoint: deno_core::ModuleSpecifier,
 }
@@ -105,6 +108,7 @@ impl<B: DeserializeOwned> PluginPackage<B> {
         let root = root.as_ref().canonicalize()?;
         let manifest_path = root.join("plugin.toml");
         let mut manifest = fs::read_to_string(&manifest_path)?.parse::<toml::Table>()?;
+        let document = serde_json::to_value(&manifest).expect("TOML tables are JSON-compatible");
         let plugin: PluginBlock = manifest
             .remove("plugin")
             .ok_or_else(|| PackageError::MissingBlock("plugin".to_owned()))?
@@ -118,6 +122,7 @@ impl<B: DeserializeOwned> PluginPackage<B> {
             return Err(PackageError::InvalidPluginId(plugin.id));
         }
         PluginCache::validate_all(&plugin.caches)?;
+        plugin.config.validate()?;
         if plugin.main.as_os_str().is_empty()
             || plugin.main.is_absolute()
             || plugin
@@ -146,6 +151,7 @@ impl<B: DeserializeOwned> PluginPackage<B> {
             main,
             plugin,
             block,
+            manifest: document,
             module_loader,
             entrypoint,
         })
@@ -211,6 +217,14 @@ where
     fn caches(&self) -> &[PluginCache] {
         &self.plugin.caches
     }
+
+    fn config(&self) -> &super::PluginConfig {
+        &self.plugin.config
+    }
+
+    fn manifest(&self) -> &serde_json::Value {
+        &self.manifest
+    }
 }
 
 pub(super) fn confined_path(root: &Path, path: impl AsRef<Path>) -> Result<PathBuf, PackageError> {
@@ -268,6 +282,8 @@ pub enum PackageError {
     InvalidCacheLabel(String),
     #[error("duplicate plugin cache '{0}'")]
     DuplicateCache(String),
+    #[error("plugin config option '{0}' needs a display name and a default among its choices")]
+    InvalidConfigOption(String),
     #[error("invalid namespaced scrape key '{0}'")]
     InvalidScrapeKey(String),
     #[error("duplicate scraper provides key '{0}'")]

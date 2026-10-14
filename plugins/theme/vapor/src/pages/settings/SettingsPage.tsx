@@ -1,7 +1,7 @@
-import { For, Show, createResource, createSignal, onCleanup, onMount } from "solid-js";
-import type { LibrarySource, ManagedControllerDevice, PlatformConfiguration } from "@polymer-fe/frontend";
+import { For, Match, Show, Switch, createResource, createSignal, onCleanup, onMount } from "solid-js";
+import type { LibrarySource, ManagedControllerDevice, PlatformConfiguration, Plugin, PluginOption } from "@polymer-fe/frontend";
 import { useShell } from "../../app/shell";
-import { Button, ConfirmModal, DropdownField, Field, Page, PagedSettings, ProgressBar, Throbber } from "../../ui";
+import { Button, ConfirmModal, DropdownField, Field, Page, PagedSettings, ProgressBar, Throbber, ToggleField } from "../../ui";
 import { platformName } from "../library/platform";
 import "./settings.css";
 
@@ -76,7 +76,22 @@ function Sources() {
 }
 
 function About() {
-  return <For each={window.Polymer.plugin.list()}>{plugin => <Field label={plugin.id} description={`${plugin.class} plugin`}><span class="vp-settings-version">{plugin.version}</span></Field>}</For>;
+  const shell = useShell();
+  const [plugins, { refetch }] = createResource(() => Promise.all(window.Polymer.plugin.list().map(async plugin => ({ plugin, options: await plugin.config() }))));
+  const configure = (plugin: Plugin, option: PluginOption, value: unknown) => void plugin.configure(option.key, value)
+    .then(() => refetch(), shell.fail);
+  return <Show when={plugins()} fallback={<Throbber />}><For each={plugins()}>{({ plugin, options }) => <>
+    <Field label={plugin.id} description={`${plugin.class} plugin`}><span class="vp-settings-version">{plugin.version}</span></Field>
+    <For each={options}>{option => <Switch fallback={<Field label={option.display} description={String(option.value)} />}>
+      <Match when={option.choices.length}>
+        <DropdownField label={option.display} value={String(option.value)} options={option.choices.map(choice => ({ value: String(choice), label: String(choice) }))}
+          onChange={value => configure(plugin, option, option.choices.find(choice => String(choice) === value))} />
+      </Match>
+      <Match when={typeof option.default === "boolean"}>
+        <ToggleField label={option.display} checked={option.value === true} onChange={checked => configure(plugin, option, checked)} />
+      </Match>
+    </Switch>}</For>
+  </>}</For></Show>;
 }
 
 export function SettingsPage() {

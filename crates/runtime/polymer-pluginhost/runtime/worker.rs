@@ -21,6 +21,8 @@ pub(super) struct WorkerOptions {
     filesystem: crate::filesystem::FilesystemOptions,
     cache: crate::cache::CacheOptions,
     database: crate::database::DatabaseOptions,
+    config: serde_json::Map<String, Value>,
+    manifest: Value,
     pub(super) platform: crate::platform::PlatformBinding,
 }
 
@@ -30,6 +32,8 @@ impl WorkerOptions {
         directories: &polymer_library::Directories,
         storage: StorageFactories,
         quick_resume: Option<QuickResumeData>,
+        saved: &serde_json::Map<String, Value>,
+        jsr_overrides: Arc<dashmap::DashMap<String, std::path::PathBuf>>,
     ) -> Result<Self, PackageError> {
         let mut filesystem =
             crate::filesystem::FilesystemOptions::new(plugin.module_loader().root().to_owned());
@@ -45,10 +49,15 @@ impl WorkerOptions {
                 root: plugin.module_loader().root().to_owned(),
                 target: None,
             },
-            loader: plugin.module_loader().with_directories(directories),
+            loader: plugin
+                .module_loader()
+                .with_directories(directories)
+                .with_jsr_overrides(jsr_overrides),
             filesystem,
             cache,
             database: crate::database::DatabaseOptions::for_plugin(directories, plugin.id()),
+            config: plugin.config().effective(saved),
+            manifest: plugin.manifest().clone(),
         })
     }
 }
@@ -96,6 +105,8 @@ pub(super) fn create_worker_runtime(
         filesystem,
         cache,
         database,
+        config,
+        manifest,
         platform,
     } = options;
     let main_module =
@@ -119,10 +130,12 @@ pub(super) fn create_worker_runtime(
             crate::emulator::js::extension(),
             crate::cache::extension(cache),
             crate::download::extension(download),
+            crate::unarchive::extension(),
             crate::platform::extension(platform),
             crate::database::extension(database),
             crate::filesystem::extension(filesystem),
             crate::plugin_storage::extension(storage),
+            crate::plugin_context::extension(config, manifest),
             crate::runtime::js::extension(),
             crate::scraper::js::extension(),
         ],

@@ -1,12 +1,33 @@
-import runtime from "pkg:bin/win-x64";
 import type { BatteryStorage, EmulatorLaunchArgs } from "polymer:api";
+import { caches, config } from "polymer:plugin";
+import { connect } from "polymer:database";
+import { download } from "polymer:download";
+import { Job } from "polymer:jobs";
+import { osIdentifier } from "polymer:sys";
+import { unarchive } from "polymer:unarchive";
+import { EmulatorUpdates } from "jsr:@polymer-fe/emulator-updates@^0.1.0";
 
-export const onLaunch = (args: EmulatorLaunchArgs<
+const runtime = new EmulatorUpdates({
+    name: "melonDS",
+    cache: caches.runtime,
+    osIdentifier,
+    channel: String(config.channel ?? "stable"),
+    connect,
+    download,
+    unarchive,
+    Job,
+});
+
+export const onPluginLoad = () => runtime.ready();
+
+export const onUpdateContents = async () => runtime.update([await runtime.release("melonds")]);
+
+export const onLaunch = async (args: EmulatorLaunchArgs<
     { runtime: { SaveFilePath: string, SavestatePath: string } },
     BatteryStorage
 >) => {
     const fs = args.filesystem;
-    fs.mount("/melonDS", runtime, { mode: "rx" });
+    fs.mount("/melonDS", await runtime.launch(), { mode: "rx" });
     fs.mount("/melonDS/portable");
     fs.mount("/User");
     fs.mount("/User/states");
@@ -37,4 +58,4 @@ export const onLaunch = (args: EmulatorLaunchArgs<
     };
 };
 
-export default { onLaunch };
+export default { onPluginLoad, onUpdateContents, onLaunch };

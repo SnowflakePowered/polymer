@@ -50,7 +50,7 @@ async fn package_mounts_images_directories_and_cues_read_only() {
     std::fs::write(root.path().join("plugin.js"), r#"
         import assets from "pkg:assets";
         import image from "pkg:game.iso";
-        import { caches } from "polymer:cache";
+        import { caches } from "polymer:plugin";
         export async function onLaunch(args) {
             args.filesystem.mount("/ScratchDefault");
             args.filesystem.mount("/ScratchOptions", {});
@@ -62,8 +62,7 @@ async fn package_mounts_images_directories_and_cues_read_only() {
                 if (!rejected) throw Error("format accepted for a non-storage source");
             }
             if (args.storage.card) {
-                args.filesystem.mount("/DefaultCard.mcd", args.storage.card, { mode: "r" });
-                args.filesystem.mount("/ExplicitCard.mcd", args.storage.card, { mode: "r", format: "raw" });
+                args.filesystem.mount("/Card.mcd", args.storage.card, { mode: "r", format: "raw" });
             }
             args.filesystem.mount("/Imported.iso", image, { mode: "r" });
             args.filesystem.mount("/Assets", assets, { mode: "rx" });
@@ -202,8 +201,7 @@ async fn package_mounts_images_directories_and_cues_read_only() {
         ("/Game/file-0000.bin", track.as_slice()),
         ("/Assets/resource.bin", b"asset".as_slice()),
         ("/Imported.iso", b"game".as_slice()),
-        ("/DefaultCard.mcd", b"MC".as_slice()),
-        ("/ExplicitCard.mcd", b"MC".as_slice()),
+        ("/Card.mcd", b"MC".as_slice()),
         ("/Selected/resource.bin", b"asset".as_slice()),
         ("/Selected/nested/data.bin", b"nested".as_slice()),
         ("/Deep/data.bin", b"nested".as_slice()),

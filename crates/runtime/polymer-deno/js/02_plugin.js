@@ -1,5 +1,8 @@
 import { Package } from "./00_package.js";
-import { op_plugin_invoke, op_plugin_list } from "ext:core/ops";
+import {
+  op_contents_refresh, op_plugin_cache_clear, op_plugin_cache_size, op_plugin_invoke, op_plugin_list,
+  op_plugin_options, op_plugin_set_option,
+} from "ext:core/ops";
 
 // Same-realm plugin facade. Calls cross only the Deno op boundary; pluginhost
 // keeps each package invocation in its own fresh worker isolate.
@@ -10,18 +13,6 @@ export function createPlugin() {
     }
     return id;
   };
-
-  const descriptor = (value) => Object.freeze({
-    id: String(value.id),
-    version: String(value.version),
-    class: String(value.class),
-    caches: Object.freeze((value.caches ?? []).map((cache) => Object.freeze({
-      key: String(cache.key),
-      label: String(cache.label),
-    }))),
-  });
-
-  const list = () => Object.freeze(op_plugin_list().map(descriptor));
 
   const errorFrom = (wire) => {
     const error = new Error(String(wire?.message ?? "plugin invocation failed"));
@@ -81,6 +72,39 @@ export function createPlugin() {
     },
   });
 
+  const plugin = (value) => {
+    const id = String(value.id);
+    const options = (value.config ?? []).map((option) => ({
+      key: String(option.key),
+      display: String(option.display),
+      default: option.default,
+      choices: Object.freeze([...option.choices]),
+    }));
+    return Object.freeze({
+      id,
+      version: String(value.version),
+      class: String(value.class),
+      caches: Object.freeze(Object.fromEntries((value.caches ?? []).map((cache) => {
+        const key = String(cache.key);
+        return [key, Object.freeze({
+          key,
+          label: String(cache.label),
+          size: () => op_plugin_cache_size(id, key),
+          clear: () => op_plugin_cache_clear(id, key),
+        })];
+      }))),
+      async config() {
+        const values = await op_plugin_options(id);
+        return Object.freeze(options.map((option) => Object.freeze({ ...option, value: values[option.key] })));
+      },
+      exports: callable(id),
+      updateContents: () => op_contents_refresh(id),
+      configure: (key, value) => op_plugin_set_option(id, String(key), value),
+    });
+  };
+
+  const list = () => Object.freeze(op_plugin_list().map(plugin));
+
   const target = new EventTarget();
   const latest = new Map();
   const api = Object.assign(target, {
@@ -89,9 +113,6 @@ export function createPlugin() {
     get(id) {
       id = pluginId(id);
       return list().find((plugin) => plugin.id === id);
-    },
-    open(id) {
-      return callable(pluginId(id));
     },
   });
   return Object.freeze({

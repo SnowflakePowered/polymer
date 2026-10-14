@@ -304,13 +304,13 @@ pub(super) async fn op_scraping_scrapers(
 
 #[op2]
 #[serde]
-pub(super) async fn op_scraping_refresh(
+pub(super) async fn op_contents_refresh(
     state: Rc<RefCell<OpState>>,
     #[string] plugin: String,
 ) -> Result<serde_json::Value, JsErrorBox> {
     Library::from_state(&state)?
-        .scraping_refresh
-        .call(ScrapingRefresh { plugin })
+        .contents_refresh
+        .call(ContentsRefresh { plugin })
         .await
 }
 

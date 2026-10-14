@@ -4,8 +4,20 @@ version = "0.0.1"
 class = "emulator"
 main = "pcsx2.ts"
 
+[plugin.permissions.net]
+allowed-hosts = ["emulator-index.snowflakepowe.red", "github.com", "release-assets.githubusercontent.com", "jsr.io"]
+
+[[plugin.caches]]
+key = "runtime"
+label = "PCSX2 Runtime"
+
 [plugin.config]
 memory_card_format = "pcsx2"
+
+[plugin.config.channel]
+display = "Update channel"
+default = "stable"
+choices = ["stable", "preview", "nightly"]
 
 [emulator]
 platforms = ["SONY_PS2"]

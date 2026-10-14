@@ -41,7 +41,7 @@ async function invoke(entrypoint, path, args, job) {
   if (typeof value !== "function") {
     throw new TypeError(`plugin export '${path.join(".")}' is not a function`);
   }
-  if (path.join(".") === "updateContents" || path.join(".") === "default.updateContents") args = [];
+  if (path.join(".") === "onUpdateContents" || path.join(".") === "default.onUpdateContents") args = [];
   const platform = { onBootstrap: "bootstrap", onCheckUpdates: "checkUpdates", onFetchUpdate: "fetchUpdate" }[path.at(-1)];
   if (platform) {
     const result = await hosted(job, () => globalThis.__polymerPlatform[platform](receiver, ...args));

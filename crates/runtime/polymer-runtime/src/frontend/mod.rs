@@ -861,6 +861,30 @@ impl PolymerHost for FrontendServices {
             .expect("plugin descriptors are JSON-compatible")
     }
 
+    fn plugin_options(&self, plugin: String) -> ApiFuture<Result<Value, String>> {
+        let handle = self.plugins.handle();
+        Box::pin(async move {
+            handle.options(&plugin).await.map(Value::Object).map_err(|error| error.message)
+        })
+    }
+
+    fn set_plugin_option(&self, plugin: String, key: String, value: Value) -> ApiFuture<Result<(), String>> {
+        let handle = self.plugins.handle();
+        Box::pin(async move {
+            handle.set_option(&plugin, &key, value).await.map_err(|error| error.message)
+        })
+    }
+
+    fn plugin_cache_size(&self, plugin: String, key: String) -> ApiFuture<Result<u64, String>> {
+        let handle = self.plugins.handle();
+        Box::pin(async move { handle.cache_size(&plugin, &key).await.map_err(|error| error.message) })
+    }
+
+    fn clear_plugin_cache(&self, plugin: String, key: String) -> ApiFuture<Result<(), String>> {
+        let handle = self.plugins.handle();
+        Box::pin(async move { handle.clear_cache(&plugin, &key).await.map_err(|error| error.message) })
+    }
+
     fn invoke_plugin(
         &self,
         plugin: String,

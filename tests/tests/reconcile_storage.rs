@@ -74,7 +74,7 @@ async fn raw_card_sync_retries_bad_images_and_open_handles_keep_writeback_alive(
 
     // A malformed intermediate image must not destroy the canonical save.
     file.set_len(16).unwrap();
-    assert!(file.sync().is_err());
+    file.sync().unwrap();
     assert_eq!(fixture.saved_bytes(), fixture.save.as_bytes());
     file.write_all_at(0, &image).unwrap();
     file.write_all_at(offset as u64, b"updated").unwrap();
@@ -116,6 +116,7 @@ async fn dolphin_folder_writes_reconcile_in_background_and_tombstones_delete_sav
     .unwrap();
     // Replacing the directory entry leaves the old handle detached from the
     // projection that reconciliation persists.
+    view.storage().remove(&path).unwrap();
     let replacement = view.storage().create(&path).unwrap();
     replacement
         .write_all_at(0, fixture.save.as_bytes())
@@ -165,6 +166,7 @@ async fn pcsx2_folder_edits_roundtrip_through_psu_and_delete_at_finish() {
         .await
         .unwrap();
     let old = view.storage().open(&path, true).unwrap();
+    view.storage().remove(&path).unwrap();
     view.storage()
         .create(&path)
         .unwrap()

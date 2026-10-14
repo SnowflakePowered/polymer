@@ -178,8 +178,24 @@ fn op_cache_write(
         .map_err(JsErrorBox::from_err)
 }
 
+#[op2]
+async fn op_cache_delete_directory(
+    state: std::rc::Rc<std::cell::RefCell<OpState>>,
+    #[string] key: String,
+    #[string] path: String,
+) -> Result<(), JsErrorBox> {
+    let path = state.borrow().borrow::<CacheState>().path(&key, &path)?;
+    tokio::task::spawn_blocking(move || match std::fs::remove_dir_all(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        result => result,
+    })
+    .await
+    .map_err(|error| JsErrorBox::generic(error.to_string()))?
+    .map_err(JsErrorBox::from_err)
+}
+
 deno_core::extension!(polymer_cache,
-    ops = [op_cache_keys, op_cache_read, op_cache_size, op_cache_read_range, op_cache_create, op_cache_write],
+    ops = [op_cache_keys, op_cache_read, op_cache_size, op_cache_read_range, op_cache_create, op_cache_write, op_cache_delete_directory],
     esm_entry_point = "ext:polymer_cache/00_cache.js",
     esm = [dir "cache/js", "00_cache.js"],
     options = { options: CacheOptions },

@@ -9,7 +9,7 @@ const KINDS: Record<JobKind, { label: string; icon: IconName }> = {
   scrape: { label: "Metadata", icon: "search" }, install: { label: "Install", icon: "storage" }, bootstrap: { label: "System setup", icon: "settings" },
   plugin: { label: "Plugin", icon: "info" }, import: { label: "Import", icon: "library" }, check: { label: "Update check", icon: "search" },
   update: { label: "Update", icon: "download" }, download: { label: "Download", icon: "download" }, refresh: { label: "Refresh", icon: "library" },
-  scan: { label: "Folder scan", icon: "library" },
+  scan: { label: "Folder scan", icon: "library" }, extract: { label: "Extract", icon: "storage" },
 };
 const STATES: Record<Job["state"], string> = { queued: "Queued", running: "In progress", paused: "Paused", completed: "Completed", partial: "Partially completed", failed: "Failed", cancelled: "Cancelled" };
 const percent = (job: Job) => job.total ? Math.min(1, (job.completed ?? 0) / job.total) : undefined;

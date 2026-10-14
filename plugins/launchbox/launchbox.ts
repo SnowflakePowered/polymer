@@ -1,16 +1,17 @@
 import { IndexWriter } from "pkg:index-writer.ts";
 import { parseXmlStreamFromBytes } from "jsr:@std/xml/parse-stream";
-import { Reader, ZipReader } from "jsr:@zip-js/zip-js";
-import { caches } from "polymer:cache";
+import { caches } from "polymer:plugin";
 import { download } from "polymer:download";
 import { Job, JobTrackedStream } from "polymer:jobs";
 import { connect } from "polymer:database";
-import type { OnPluginLoad, UpdateContents, OnScrape, ScrapeCandidate, ScrapeInput, ScrapeResult } from "polymer:api";
+import { unarchive } from "polymer:unarchive";
+import type { OnPluginLoad, OnUpdateContents, OnScrape, ScrapeCandidate, ScrapeInput, ScrapeResult } from "polymer:api";
 
 const SOURCE = "LaunchBox Games Database";
 const METADATA_URL = "https://gamesdb.launchbox-app.com/Metadata.zip";
 const IMAGE_ROOT = "https://images.launchbox-app.com/";
 const DOWNLOAD_FILE = "Metadata.zip";
+const EXTRACTED_DIRECTORY = "Metadata";
 
 const platformNames: Readonly<Record<string, string>> = Object.freeze({
   ATARI_2600: "Atari 2600", ATARI_5200: "Atari 5200", ATARI_7800: "Atari 7800",
@@ -48,20 +49,6 @@ type GameRecord = {
 type ImageRecord = { id: number; fileName: string; type: string; region: string };
 type AlternateRecord = { id: number; name: string; region: string };
 type FileRecord = { platform: string; fileName: string; gameName: string };
-
-class CacheReader extends Reader<ReturnType<typeof caches.download.open>> {
-  readonly file: ReturnType<typeof caches.download.open>;
-
-  constructor(file: ReturnType<typeof caches.download.open>) {
-    super(file);
-    this.file = file;
-    this.size = file.size;
-  }
-
-  readUint8Array(index: number, length: number): Promise<Uint8Array> {
-    return this.file.read(index, length);
-  }
-}
 
 function normalize(value: string): string {
   return value.normalize("NFKD").toLocaleLowerCase("en-US")
@@ -136,24 +123,18 @@ async function buildIndex(job: Job): Promise<void> {
   let field = "";
   let text = "";
   const imageOrdinals = new Map<string, number>();
-  let zip: ZipReader<unknown> | undefined;
   try {
-    const archiveFile = caches.download.open(DOWNLOAD_FILE);
-    zip = new ZipReader(new CacheReader(archiveFile), { useWebWorkers: false });
-    const entries = await zip.getEntries();
-    const entry = entries.find((entry) => entry.filename === "Metadata.xml");
-    if (!entry?.getData) throw new Error("LaunchBox archive does not contain Metadata.xml");
-    const xml = new TransformStream<Uint8Array, Uint8Array>();
-    const extraction = entry.getData(xml.writable);
-    await Promise.all([extraction, parseXmlStreamFromBytes(streamChunks(new JobTrackedStream(xml.readable, { message: "Indexing game metadata", total: entry.uncompressedSize }), async () => { await games.flush(); await images.flush(); await alternates.flush(); }), {
-      onStartElement(name) {
+    await unarchive(caches.download.open(DOWNLOAD_FILE), caches.download.directory(EXTRACTED_DIRECTORY));
+    const metadata = caches.download.open(`${EXTRACTED_DIRECTORY}/Metadata.xml`);
+    await parseXmlStreamFromBytes(streamChunks(new JobTrackedStream(metadata.readable!, { message: "Indexing game metadata", total: metadata.size }), async () => { await games.flush(); await images.flush(); await alternates.flush(); }), {
+      onStartElement(name: string) {
         if (name === "Game") { recordType = "Game"; record = { id: 0, platform: "", name: "" }; }
         else if (name === "GameImage") { recordType = "GameImage"; record = { id: 0, fileName: "", type: "", region: "" }; }
         else if (name === "GameAlternateName") { recordType = "GameAlternateName"; record = { id: 0, name: "", region: "" }; }
         else if (record) { field = name; text = ""; }
       },
-      onText(value) { if (record && field) text += value; },
-      onEndElement(name) {
+      onText(value: string) { if (record && field) text += value; },
+      onEndElement(name: string) {
         if (record && field === name) {
           const value = text.trim();
           if (recordType === "Game") {
@@ -205,21 +186,18 @@ async function buildIndex(job: Job): Promise<void> {
           record = undefined; recordType = undefined; field = ""; text = "";
         }
       },
-    })]);
-    const filesEntry = entries.find((entry) => entry.filename === "Files.xml");
-    if (!filesEntry?.getData) throw new Error("LaunchBox archive does not contain Files.xml");
-    const files = new TransformStream<Uint8Array, Uint8Array>();
-    const filesExtraction = filesEntry.getData(files.writable);
+    });
+    const filesXml = caches.download.open(`${EXTRACTED_DIRECTORY}/Files.xml`);
     let file: FileRecord | undefined;
     field = "";
     text = "";
-    await Promise.all([filesExtraction, parseXmlStreamFromBytes(streamChunks(new JobTrackedStream(files.readable, { message: "Indexing filenames", total: filesEntry.uncompressedSize }), () => aliases.flush()), {
-      onStartElement(name) {
+    await parseXmlStreamFromBytes(streamChunks(new JobTrackedStream(filesXml.readable!, { message: "Indexing filenames", total: filesXml.size }), () => aliases.flush()), {
+      onStartElement(name: string) {
         if (name === "File") file = { platform: "", fileName: "", gameName: "" };
         else if (file) { field = name; text = ""; }
       },
-      onText(value) { if (file && field) text += value; },
-      onEndElement(name) {
+      onText(value: string) { if (file && field) text += value; },
+      onEndElement(name: string) {
         if (file && field === name) {
           const value = text.trim();
           if (name === "Platform") file.platform = value;
@@ -241,7 +219,7 @@ async function buildIndex(job: Job): Promise<void> {
           file = undefined;
         }
       },
-    })]);
+    });
     await games.flush();
     await images.flush();
     await alternates.flush();
@@ -277,7 +255,7 @@ async function buildIndex(job: Job): Promise<void> {
     try { await db.exec("ROLLBACK"); } catch { /* transaction was already closed */ }
     throw error;
   } finally {
-    await zip?.close();
+    await caches.download.directory(EXTRACTED_DIRECTORY).delete();
   }
 }
 
@@ -300,7 +278,7 @@ async function downloadAndBuildIndex(job: Job): Promise<void> {
 }
 
 /** Downloads new metadata, or first builds the index from an archive a previous run downloaded. */
-export const updateContents: UpdateContents = async () => {
+export const onUpdateContents: OnUpdateContents = async () => {
   let cached = false;
   if (!await onPluginLoad()) {
     try { cached = caches.download.open(DOWNLOAD_FILE).size > 0; } catch { /* no cached archive */ }
@@ -427,4 +405,4 @@ export const onScrape: OnScrape = async function* (input): AsyncGenerator<Scrape
   for (const image of ArtworkRegions.select(images, input)) yield { key: image.key, value: image.url, source: SOURCE };
 };
 
-export default { onPluginLoad, updateContents, onScrape };
+export default { onPluginLoad, onUpdateContents, onScrape };

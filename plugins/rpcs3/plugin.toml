@@ -4,6 +4,18 @@ version = "0.0.1"
 class = "emulator"
 main = "rpcs3.ts"
 
+[plugin.permissions.net]
+allowed-hosts = ["emulator-index.snowflakepowe.red", "github.com", "release-assets.githubusercontent.com", "jsr.io"]
+
+[[plugin.caches]]
+key = "runtime"
+label = "RPCS3 Runtime"
+
+[plugin.config.channel]
+display = "Update channel"
+default = "nightly"
+choices = ["stable", "preview", "nightly"]
+
 [[plugin.caches]]
 key = "cache"
 label = "Shader and executable cache"

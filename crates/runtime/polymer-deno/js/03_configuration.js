@@ -121,7 +121,9 @@ export function createConfiguration(pluginApi) {
         throw new TypeError("launch requires a nonempty list of launchable IDs");
       }
       const prepared = await Configuration.prepare(launchSet[0], { ...selection, launchSet });
-      const plugin = await pluginApi.open(prepared.plugin).onLaunch(prepared.arguments);
+      const emulator = pluginApi.get(prepared.plugin);
+      if (!emulator) throw new TypeError(`emulator plugin '${prepared.plugin}' is not loaded`);
+      const plugin = await emulator.exports.onLaunch(prepared.arguments);
       const launch = Object.freeze({
         command: plugin.command,
         workingDirectory: plugin.workingDirectory,

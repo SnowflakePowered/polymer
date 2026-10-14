@@ -40,6 +40,7 @@ polymer-input.workspace = true
 
 polymer-ipc.workspace = true
 polymer-library.workspace = true
+polymer-unarchive.workspace = true
 polymer-vfs.workspace = true
 toml.workspace = true
 toml-spanner = { version = "1", features = ["derive"] }

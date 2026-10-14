@@ -6,6 +6,7 @@ use deno_core::{
     ModuleSourceCode, ModuleSpecifier, ModuleType, ResolutionKind, error::ModuleLoaderError,
     resolve_import,
 };
+use dashmap::DashMap;
 use futures_util::FutureExt;
 use std::{path::PathBuf, sync::Arc};
 
@@ -18,10 +19,11 @@ const API_MODULE: &str = "polymer:api";
 const UI_AUTOMATION_MODULE: &str = "polymer:uiautomation";
 const PLUGIN_STORAGE_MODULE: &str = "polymer:pluginStorage";
 const CONSOLESTORAGE_MODULE: &str = "polymer:consolestorage";
-const CACHE_MODULE: &str = "polymer:cache";
 const DATABASE_MODULE: &str = "polymer:database";
 const DOWNLOAD_MODULE: &str = "polymer:download";
 const JOBS_MODULE: &str = "polymer:jobs";
+const UNARCHIVE_MODULE: &str = "polymer:unarchive";
+const PLUGIN_MODULE: &str = "polymer:plugin";
 const JSR_ORIGIN: &str = "https://jsr.io";
 
 /// Module resolver and source transformer bound permanently to one package.
@@ -33,6 +35,7 @@ pub struct PluginModuleLoader {
     jsr_cache: Option<Arc<PathBuf>>,
     network_hosts: Vec<String>,
     insecure_hosts: Arc<[String]>,
+    jsr_overrides: Arc<DashMap<String, PathBuf>>,
 }
 
 impl PluginModuleLoader {
@@ -46,6 +49,7 @@ impl PluginModuleLoader {
             jsr_cache: None,
             network_hosts: Vec::new(),
             insecure_hosts: Arc::new([]),
+            jsr_overrides: Arc::default(),
         }
     }
 
@@ -53,6 +57,21 @@ impl PluginModuleLoader {
         let mut loader = self.clone();
         loader.jsr_cache = Some(Arc::new(directories.jsr_cache()));
         loader
+    }
+
+    /// Resolves the given JSR packages from local directories instead of jsr.io.
+    pub(crate) fn with_jsr_overrides(mut self, overrides: Arc<DashMap<String, PathBuf>>) -> Self {
+        self.jsr_overrides = overrides;
+        self
+    }
+
+    fn overridden(&self, specifier: &ModuleSpecifier) -> bool {
+        specifier.scheme() == "file"
+            && specifier.to_file_path().is_ok_and(|path| {
+                self.jsr_overrides
+                    .iter()
+                    .any(|entry| path.starts_with(entry.value()))
+            })
     }
 
     pub fn id(&self) -> &str {
@@ -263,10 +282,11 @@ impl ModuleLoader for PluginModuleLoader {
                 | UI_AUTOMATION_MODULE
                 | PLUGIN_STORAGE_MODULE
                 | CONSOLESTORAGE_MODULE
-                | CACHE_MODULE
                 | DATABASE_MODULE
                 | DOWNLOAD_MODULE
                 | JOBS_MODULE
+                | UNARCHIVE_MODULE
+                | PLUGIN_MODULE
         ) {
             return ModuleSpecifier::parse(specifier).map_err(ModuleLoaderError::from_err);
         }
@@ -278,6 +298,15 @@ impl ModuleLoader for PluginModuleLoader {
         }
         if specifier.starts_with("pkg:") && !specifier.starts_with("pkg://") {
             return self.resolve_package(specifier);
+        }
+        if let Ok(referrer) = ModuleSpecifier::parse(referrer)
+            && self.overridden(&referrer)
+        {
+            let resolved =
+                resolve_import(specifier, referrer.as_str()).map_err(ModuleLoaderError::from_err)?;
+            if self.overridden(&resolved) {
+                return Ok(resolved);
+            }
         }
         // Registry dependencies resolve their own module graph, never local plugin paths.
         if ModuleSpecifier::parse(referrer)
@@ -307,6 +336,24 @@ impl ModuleLoader for PluginModuleLoader {
             return ModuleLoadResponse::Async(
                 async move { loader.load_jsr(specifier, module_type).await }.boxed_local(),
             );
+        }
+        if self.overridden(module_specifier) {
+            let source = module_specifier
+                .to_file_path()
+                .map_err(|()| {
+                    ModuleLoaderError::type_error(format!("not a file module: {module_specifier}"))
+                })
+                .and_then(|path| std::fs::read(path).map_err(ModuleLoaderError::from_err))
+                .and_then(|code| self.transform_source(module_specifier, code))
+                .map(|code| {
+                    ModuleSource::new(
+                        requested_module_type(&options),
+                        ModuleSourceCode::Bytes(code.into_boxed_slice().into()),
+                        module_specifier,
+                        None,
+                    )
+                });
+            return ModuleLoadResponse::Sync(source);
         }
         let source = if module_specifier.as_str() == SYS_MODULE {
             let os = match std::env::consts::OS {
@@ -347,13 +394,6 @@ impl ModuleLoader for PluginModuleLoader {
                 module_specifier,
                 None,
             ))
-        } else if module_specifier.as_str() == CACHE_MODULE {
-            Ok(ModuleSource::new(
-                ModuleType::JavaScript,
-                ModuleSourceCode::String(include_str!("js/01_cache.js").to_owned().into()),
-                module_specifier,
-                None,
-            ))
         } else if module_specifier.as_str() == CONSOLESTORAGE_MODULE {
             Ok(ModuleSource::new(
                 ModuleType::JavaScript,
@@ -372,6 +412,20 @@ impl ModuleLoader for PluginModuleLoader {
             Ok(ModuleSource::new(
                 ModuleType::JavaScript,
                 ModuleSourceCode::String(include_str!("js/09_jobs.js").to_owned().into()),
+                module_specifier,
+                None,
+            ))
+        } else if module_specifier.as_str() == UNARCHIVE_MODULE {
+            Ok(ModuleSource::new(
+                ModuleType::JavaScript,
+                ModuleSourceCode::String(include_str!("js/10_unarchive.js").to_owned().into()),
+                module_specifier,
+                None,
+            ))
+        } else if module_specifier.as_str() == PLUGIN_MODULE {
+            Ok(ModuleSource::new(
+                ModuleType::JavaScript,
+                ModuleSourceCode::String(include_str!("js/11_plugin.js").to_owned().into()),
                 module_specifier,
                 None,
             ))

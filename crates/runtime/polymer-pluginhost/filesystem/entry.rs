@@ -122,6 +122,27 @@ impl FilesystemState {
                 }
                 let authority = source.authority();
                 let origin = source.origin().clone();
+                #[cfg(target_os = "macos")]
+                if directory
+                    && components.last().is_some_and(|name| name.ends_with(".app"))
+                    && let ResourceOrigin::Cache(key) = &origin
+                    && let Some(cache) = self.caches.get(key)
+                {
+                    let bundle = components
+                        .iter()
+                        .fold(cache.path.clone(), |path, name| path.join(name));
+                    self.plan.mount_tree(
+                        target,
+                        Arc::new(Resource::new(
+                            Arc::new(polymer_platform_macos::BundleFactory::new(bundle)),
+                            Permissions::from_str("rx").expect("canonical bundle permissions"),
+                            origin,
+                        )),
+                        permissions,
+                    );
+                    self.used = true;
+                    return Ok(());
+                }
                 if components.is_empty() && directory {
                     self.plan.mount_tree(target, source, permissions);
                 } else if directory {

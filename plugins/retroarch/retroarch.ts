@@ -1,9 +1,34 @@
-import runtime from "pkg:bin/win-x64";
 import type { EmulatorLaunchArgs } from "polymer:api";
+import { caches, config } from "polymer:plugin";
+import { connect } from "polymer:database";
+import { download } from "polymer:download";
+import { Job } from "polymer:jobs";
+import { osIdentifier } from "polymer:sys";
+import { unarchive } from "polymer:unarchive";
+import { EmulatorUpdates } from "jsr:@polymer-fe/emulator-updates@^0.1.0";
+
+const runtime = new EmulatorUpdates({
+    name: "RetroArch",
+    cache: caches.runtime,
+    osIdentifier,
+    channel: String(config.channel ?? "stable"),
+    connect,
+    download,
+    unarchive,
+    Job,
+});
 
 function quoted(value: string): string {
     return `"${value.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")}"`;
 }
+
+export const onPluginLoad = () => runtime.ready();
+
+export const onUpdateContents = async () => runtime.update([await runtime.release("retroarch"), {
+    version: "latest",
+    url: "https://buildbot.libretro.com/nightly/windows/x86_64/latest/pcsx2_libretro.dll.zip",
+    directory: "cores",
+}]);
 
 export const onLaunch = async (args: EmulatorLaunchArgs<{ core: { placeholder: boolean } }>) => {
     const bios = (await args.firmwareStore.list()).find(entry =>
@@ -15,7 +40,7 @@ export const onLaunch = async (args: EmulatorLaunchArgs<{ core: { placeholder: b
     const biosFile = await args.firmwareStore.open(bios.label);
     const biosName = "bios.bin";
 
-    args.filesystem.mount("/RetroArch", runtime, { mode: "rx" });
+    args.filesystem.mount("/RetroArch", await runtime.launch(), { mode: "rx" });
     args.filesystem.mount("/User/saves");
     args.filesystem.mount("/User/states");
     args.filesystem.mount("/User/logs");
@@ -90,4 +115,4 @@ export const onLaunch = async (args: EmulatorLaunchArgs<{ core: { placeholder: b
     };
 };
 
-export default { onLaunch };
+export default { onPluginLoad, onUpdateContents, onLaunch };
