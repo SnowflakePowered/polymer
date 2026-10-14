@@ -2,6 +2,7 @@
 id = "mgba"
 version = "0.0.1"
 class = "emulator"
+api = "^0.1"
 main = "mgba.ts"
 
 [plugin.permissions.net]

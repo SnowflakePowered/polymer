@@ -1,0 +1,18 @@
+[package]
+name = "polymer-pack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+asar = { workspace = true, features = ["write"] }
+clap = { version = "4.6.1", features = ["derive"] }
+minisign = "0.10.0"
+polymer-distribution.workspace = true
+polymer-pluginmanifest.workspace = true
+reqwest = { version = "0.13.1", default-features = false, features = ["blocking", "rustls"] }
+semver = "1"
+toml.workspace = true
+
+[lints]
+workspace = true

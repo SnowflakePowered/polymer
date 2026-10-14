@@ -2,14 +2,6 @@
 
 The public entry point is `src/ui/index.ts`. Components use Solid signals and Ark behavior; they do not import Polymer services, models, or shell state. The host owns data, persistence, routing, notification lifetime and emulator pause/input leases.
 
-## Development gallery
-
-Run `npm run dev` in `plugins/theme/horizon`, then open `/gallery.html`. This standalone development entry uses local state and requires no Polymer API mocks. The native debug theme also exposes **UI gallery** in its rail. The gallery is excluded from production builds.
-
-Press **F2** in the gallery to preview semantic controller input with the keyboard: arrows move, Enter/Space activate, Escape backs out, PageUp/PageDown represent L/R. This exercises the real UI routing and Ark controller adapters; it does not simulate hardware connection or repeat timing. F2 returns to ordinary keyboard editing.
-
-The gallery includes every component family, grouped/disabled choices, loading/empty/error results, field validation, long labels, nested pickers, confirmations, context menus, side panels and draggable floating panels.
-
 ## Public inventory
 
 | Family | Exports |

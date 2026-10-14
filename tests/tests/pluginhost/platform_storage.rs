@@ -36,6 +36,7 @@ impl Fixture {
             id = "{id}"
             version = "1"
             class = "platform"
+            api = "^0.1"
             main = "main.js"
             [platform]
             platforms = ["NINTENDO_WII"]
@@ -56,6 +57,7 @@ impl Fixture {
             id = "emulator"
             version = "1"
             class = "emulator"
+            api = "^0.1"
             main = "main.js"
             [emulator]
             platforms = ["NINTENDO_WII"]

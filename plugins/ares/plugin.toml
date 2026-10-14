@@ -2,6 +2,7 @@
 id = "ares"
 version = "0.0.1"
 class = "emulator"
+api = "^0.1"
 main = "ares.ts"
 
 [plugin.permissions.net]

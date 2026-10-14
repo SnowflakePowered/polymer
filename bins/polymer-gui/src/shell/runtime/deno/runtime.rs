@@ -172,7 +172,7 @@ impl Runtime {
         let shaders =
             polymer_library::ShaderLibrary::new(document.0.borrow().urls().directories().shaders());
         let document_url = ModuleSpecifier::parse(&source_name)?;
-        let browser_loader = Rc::new(BrowserModuleLoader::new());
+        let browser_loader = Rc::new(BrowserModuleLoader::new(document.0.borrow().urls()));
         let (polymer_extension, notifications) =
             polymer_deno::polymer::init_with_notifications(|notifications| {
                 polymer_runtime::FrontendServices::new(

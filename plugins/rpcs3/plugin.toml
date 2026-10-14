@@ -2,6 +2,7 @@
 id = "rpcs3"
 version = "0.0.1"
 class = "emulator"
+api = "^0.1"
 main = "rpcs3.ts"
 
 [plugin.permissions.net]

@@ -6,14 +6,20 @@ license.workspace = true
 publish = false
 
 [dependencies]
+asar = { workspace = true, features = ["write"] }
 blake3.workspace = true
 cuna = "0.7"
 object_store.workspace = true
+minisign = "0.10.0"
+minisign-verify = "0.3.0"
+polymer-distribution.workspace = true
 polymer-library.workspace = true
 polymer-consolestorage = { path = "../crates/filesystem/polymer-consolestorage" }
 polymer-pluginhost = { path = "../crates/runtime/polymer-pluginhost" }
+polymer-pluginmanifest.workspace = true
 polymer-scraping.workspace = true
 polymer-vfs.workspace = true
+semver = "1"
 serde_json.workspace = true
 tempfile.workspace = true
 tokio = { version = "1.53.0", features = ["macros", "rt", "time"] }

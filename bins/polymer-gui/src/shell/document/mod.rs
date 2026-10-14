@@ -53,7 +53,7 @@ use tracked_surface::{
     apply_tracked_surface_styles, enclosing_surface_group, initialise_tracked_surfaces,
     is_tracked_surface_element,
 };
-pub(crate) use urls::{ShellUrls, ThemeLocation};
+pub(crate) use urls::{ShellUrls, ThemeFiles, ThemeLocation};
 
 /// How many times a paint will re-resolve to pick up assets that only became
 /// reachable through an asset it just loaded.

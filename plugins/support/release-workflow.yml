@@ -1,0 +1,60 @@
+# Reference GitHub Actions workflow for releasing a plugin listed in Polymer.toml.
+# Copy it to .github/workflows/ in a plugin repository and add a POLYMER_SIGNING_KEY secret
+# holding the key written by `polymer-pack keygen`.
+#
+# Run it from the Actions tab with the ID of the plugin to release, as listed in Polymer.toml. The
+# version is read from the plugin's plugin.toml, and the archive's name, <name>-<version>, becomes the tag.
+name: Release plugin
+
+on:
+  workflow_dispatch:
+    inputs:
+      id:
+        description: Plugin ID in Polymer.toml
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Build steps for plugins that need them, such as `npm ci && npm run build` for a theme.
+
+      - name: Install polymer-pack
+        run: cargo install --locked --git https://github.com/chyyran/snowglass polymer-pack
+
+      - name: Pack and sign
+        id: pack
+        env:
+          ID: ${{ inputs.id }}
+          POLYMER_SIGNING_KEY: ${{ secrets.POLYMER_SIGNING_KEY }}
+        run: |
+          archive="$(polymer-pack pack --id "$ID" --out dist)"
+          polymer-pack sign "$archive"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          echo "tag=$(basename "$archive" .asar)" >> "$GITHUB_OUTPUT"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ steps.pack.outputs.tag }}" "${{ steps.pack.outputs.archive }}"
+
+      - name: Record
+        env:
+          ID: ${{ inputs.id }}
+        run: |
+          archive="${{ steps.pack.outputs.archive }}"
+          polymer-pack record --id "$ID" \
+            --url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${{ steps.pack.outputs.tag }}/$(basename "$archive")" \
+            "$archive"
+
+      - name: Commit the release
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "release ${{ steps.pack.outputs.tag }}"
+          git push

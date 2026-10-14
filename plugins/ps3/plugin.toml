@@ -2,6 +2,7 @@
 id = "ps3"
 version = "0.1.0"
 class = "platform"
+api = "^0.1"
 main = "ps3.ts"
 
 [plugin.permissions.net]

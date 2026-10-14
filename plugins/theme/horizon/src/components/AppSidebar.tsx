@@ -29,7 +29,6 @@ export function AppSidebar() {
       <SidebarButton icon="saves" iconSize={42} label="Saves" active={location.pathname === "/saves"} onClick={() => navigate("/saves")} />
       <SidebarButton icon="storage" iconSize={42} label="System Storage" active={location.pathname === "/storage"} onClick={() => navigate("/storage")} />
       <ControllerStatus />
-      {import.meta.env.DEV && <SidebarButton icon="info" label="UI gallery" onClick={() => navigate("/gallery")} />}
       <SidebarButton icon="settings" iconSize={44} label="Settings" active={location.pathname === "/settings"} onClick={() => navigate("/settings")} />
     </nav>
   </NavigationRail>;

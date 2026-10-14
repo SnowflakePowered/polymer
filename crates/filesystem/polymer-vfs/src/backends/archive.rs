@@ -4,7 +4,7 @@ use crate::{
     ResourceFactory, VfsComponent, VfsError, VfsPath, VfsPathBuf, VfsPathUnit, VfsResult, Volume,
 };
 use asar::{AsarReader, Header};
-use memmap2::{Mmap, MmapOptions};
+use memmap2::MmapOptions;
 use std::{
     collections::{BTreeMap, HashMap},
     fs::File,
@@ -13,25 +13,55 @@ use std::{
     sync::Arc,
 };
 
+type Bytes = Arc<dyn AsRef<[u8]> + Send + Sync>;
+
+enum AsarSource {
+    File(PathBuf),
+    Memory(Bytes),
+}
+
 pub struct AsarVolumeFactory {
-    path: PathBuf,
+    source: AsarSource,
+    root: Vec<String>,
 }
 
 impl AsarVolumeFactory {
     pub fn new(path: PathBuf) -> Self {
-        Self { path }
+        Self {
+            source: AsarSource::File(path),
+            root: Vec::new(),
+        }
+    }
+
+    /// An archive held in memory, whose volume is rooted at the `/`-separated directory
+    /// `root`, or the archive root when it is empty.
+    pub fn memory(bytes: Arc<[u8]>, root: &str) -> Self {
+        Self {
+            source: AsarSource::Memory(Arc::new(bytes)),
+            root: root
+                .split('/')
+                .filter(|part| !part.is_empty())
+                .map(str::to_owned)
+                .collect(),
+        }
     }
 }
 
 impl ResourceFactory<dyn Volume> for AsarVolumeFactory {
     fn materialize_in(&self, _scope: &mut MaterializationScope) -> VfsResult<Arc<dyn Volume>> {
-        let file = File::open(&self.path)?;
-        // SAFETY: the read-only mapping owns its operating-system mapping handle.
-        let mapping = Arc::new(unsafe { MmapOptions::new().map(&file)? });
-        let (header, offset) = Header::read(&mut &mapping[..])?;
+        let mapping: Bytes = match &self.source {
+            AsarSource::File(path) => {
+                let file = File::open(path)?;
+                // SAFETY: the read-only mapping owns its operating-system mapping handle.
+                Arc::new(unsafe { MmapOptions::new().map(&file)? })
+            }
+            AsarSource::Memory(bytes) => bytes.clone(),
+        };
+        let data = (*mapping).as_ref();
+        let (header, offset) = Header::read(&mut &data[..])?;
         validate_header(&header)?;
-        let reader = AsarReader::new_from_header(header, offset, &mapping[..], None)?;
-        Ok(Arc::new(AsarVolume::from_reader(mapping.clone(), &reader)?))
+        let reader = AsarReader::new_from_header(header, offset, data, None)?;
+        Ok(Arc::new(AsarVolume::from_reader(mapping.clone(), &reader)?.at(&self.root)?))
     }
 }
 
@@ -54,10 +84,11 @@ fn validate_header(header: &Header) -> VfsResult<()> {
 
 struct AsarVolume {
     inner: Arc<AsarInner>,
+    root: usize,
 }
 
 struct AsarInner {
-    mapping: Arc<Mmap>,
+    mapping: Bytes,
     nodes: HashMap<usize, AsarNode>,
 }
 
@@ -79,7 +110,7 @@ struct AsarFile {
 impl AsarVolume {
     const ROOT: usize = 0;
 
-    fn from_reader(mapping: Arc<Mmap>, reader: &AsarReader<'_>) -> VfsResult<Self> {
+    fn from_reader(mapping: Bytes, reader: &AsarReader<'_>) -> VfsResult<Self> {
         let mut builder = AsarBuilder {
             nodes: HashMap::from([(Self::ROOT, AsarNode::Directory(BTreeMap::new()))]),
             paths: BTreeMap::from([(Vec::new(), Self::ROOT)]),
@@ -105,7 +136,7 @@ impl AsarVolume {
                 return Err(VfsError::NameCollision(archive_vfs_path(path)?));
             }
             let node = builder.allocate(AsarNode::File {
-                range: data_range(&mapping, file.data())?,
+                range: data_range((*mapping).as_ref(), file.data())?,
             });
             builder.paths.insert(path_key, node);
             let AsarNode::Directory(children) = builder.nodes.get_mut(&parent).unwrap() else {
@@ -119,7 +150,24 @@ impl AsarVolume {
                 mapping,
                 nodes: builder.nodes,
             }),
+            root: Self::ROOT,
         })
+    }
+
+    /// The same archive, rooted at the directory `path` below the archive root.
+    fn at(mut self, path: &[String]) -> VfsResult<Self> {
+        for name in path {
+            let AsarNode::Directory(children) =
+                self.inner.nodes.get(&self.root).ok_or(VfsError::StaleNode)?
+            else {
+                return Err(VfsError::NotDirectory(VfsPathBuf::root()));
+            };
+            self.root = children
+                .get(&VfsComponent::new(name)?.normalized()?)
+                .map(|(_, child)| *child)
+                .ok_or_else(|| VfsError::Asar(format!("archive has no directory '{}'", path.join("/"))))?;
+        }
+        Ok(self)
     }
 }
 
@@ -197,7 +245,7 @@ impl Volume for AsarVolume {
     fn root(&self) -> VfsResult<Arc<dyn DirectoryNode>> {
         Ok(Arc::new(AsarDirectory {
             archive: self.inner.clone(),
-            node: Self::ROOT,
+            node: self.root,
         }))
     }
 
@@ -315,7 +363,7 @@ impl FileNode for AsarFile {
 }
 
 struct AsarOpen {
-    mapping: Arc<Mmap>,
+    mapping: Bytes,
     range: Range<usize>,
 }
 
@@ -337,7 +385,7 @@ impl OpenFile for AsarOpen {
         }
         let count = buffer.len().min(self.range.len() - offset);
         let start = self.range.start + offset;
-        buffer[..count].copy_from_slice(&self.mapping[start..start + count]);
+        buffer[..count].copy_from_slice(&(*self.mapping).as_ref()[start..start + count]);
         Ok(count)
     }
 

@@ -19,12 +19,13 @@ use serde::Serialize;
 use serde_bytes::ByteBuf;
 use std::{
     collections::{BTreeMap, HashMap},
-    path::{Component as HostComponent, Path, PathBuf},
+    path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
 };
 
 use crate::{emulator::QuickResumeData, handle::Handle};
+use polymer_pluginmanifest::{PackageArchive, PackageEntry, PackageSource};
 
 #[derive(Clone, Debug)]
 pub struct NamedCache {
@@ -39,7 +40,7 @@ type FileResource = Resource<dyn FileNode>;
 
 #[derive(Clone)]
 pub struct FilesystemOptions {
-    pub package_root: PathBuf,
+    pub package: PackageSource,
     pub scratch_root: Option<PathBuf>,
     pub caches: Vec<NamedCache>,
     pub storage: StorageFactories,
@@ -50,7 +51,7 @@ impl std::fmt::Debug for FilesystemOptions {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("FilesystemOptions")
-            .field("package_root", &self.package_root)
+            .field("package", &self.package)
             .field("caches", &self.caches)
             .field("storage", &self.storage.keys().collect::<Vec<_>>())
             .finish()
@@ -58,9 +59,9 @@ impl std::fmt::Debug for FilesystemOptions {
 }
 
 impl FilesystemOptions {
-    pub fn new(package_root: PathBuf) -> Self {
+    pub fn new(package: PackageSource) -> Self {
         Self {
-            package_root,
+            package,
             scratch_root: None,
             caches: Vec::new(),
             storage: BTreeMap::new(),
@@ -141,7 +142,7 @@ impl<T: ?Sized + Send + Sync + 'static> SharedResource<T> {
 }
 
 pub(crate) struct FilesystemState {
-    package_root: PathBuf,
+    package: PackageSource,
     scratch_root: Option<PathBuf>,
     endpoint: FilesystemEndpoint,
     plan: FilesystemPlan,
@@ -158,10 +159,9 @@ pub(crate) struct FilesystemState {
 
 impl FilesystemState {
     fn new(options: FilesystemOptions) -> Result<Self, VfsError> {
-        let package_root = options.package_root.canonicalize()?;
         let endpoint = FilesystemEndpoint::random();
         let mut state = Self {
-            package_root,
+            package: options.package,
             scratch_root: options.scratch_root,
             endpoint,
             plan: FilesystemPlan::default(),
@@ -282,6 +282,51 @@ impl FilesystemState {
         ))))
     }
 
+    /// Mounts the package file or directory at the `/`-separated `relative` path read-only.
+    fn insert_package_resource(&mut self, relative: &str) -> Result<ResourceHandle, VfsError> {
+        match self.package.clone() {
+            PackageSource::Directory(_) => {
+                let path = self
+                    .package
+                    .host_path(relative)
+                    .map_err(|error| VfsError::Unsupported(error.to_string()))?
+                    .expect("directory packages have host paths");
+                self.insert_path_resource(path)
+            }
+            PackageSource::Archive(archive) => self.insert_archived_resource(&archive, relative),
+        }
+    }
+
+    fn insert_archived_resource(
+        &mut self,
+        archive: &PackageArchive,
+        relative: &str,
+    ) -> Result<ResourceHandle, VfsError> {
+        let permissions = Permissions::from_str("rx").expect("canonical package permissions");
+        let origin = ResourceOrigin::Asar(format!("{}/{relative}", archive.path().display()));
+        let volume = match (self.package.entry(relative), archive.file(relative)) {
+            (Some(PackageEntry::Directory), _) => AsarVolumeFactory::memory(archive.bytes().clone(), relative),
+            (Some(PackageEntry::File), Some(bytes))
+                if relative.to_ascii_lowercase().ends_with(".asar") =>
+            {
+                AsarVolumeFactory::memory(Arc::from(bytes), "")
+            }
+            (Some(PackageEntry::File), Some(bytes)) => {
+                return Ok(ResourceHandle::File(self.insert_file(Resource::new(
+                    Arc::new(MemoryFileFactory::immutable(bytes.to_vec())),
+                    permissions,
+                    origin,
+                ))));
+            }
+            _ => return Err(std::io::Error::from(std::io::ErrorKind::NotFound).into()),
+        };
+        Ok(ResourceHandle::Tree(self.insert_volume(Resource::new(
+            Arc::new(volume),
+            permissions,
+            origin,
+        ))))
+    }
+
     fn insert_volume(
         &mut self,
         resource: Resource<dyn polymer_vfs::Volume>,
@@ -338,7 +383,7 @@ impl FilesystemState {
         Ok(shared.factory.shared()?.0)
     }
 
-    fn package_path(&self, source: &str) -> Result<PathBuf, VfsError> {
+    fn package_path(&self, source: &str) -> Result<String, VfsError> {
         let relative = source.strip_prefix("pkg:").ok_or_else(|| {
             VfsError::Unsupported("filesystem source must use the pkg: scheme".into())
         })?;
@@ -357,16 +402,11 @@ impl FilesystemState {
                 "pkg: source must use URL separators: {source}"
             )));
         }
-        let relative = Path::new(decoded.as_ref());
-        if relative
-            .components()
-            .any(|component| !matches!(component, HostComponent::Normal(_)))
-        {
-            return Err(VfsError::Unsupported(format!(
+        PackageSource::relative(Path::new(decoded.as_ref())).map_err(|_| {
+            VfsError::Unsupported(format!(
                 "pkg: source must contain only normal path components: {source}"
-            )));
-        }
-        Ok(self.package_root.join(relative))
+            ))
+        })
     }
 
     fn handle(&self, kind: &str, token: &str) -> Result<ResourceHandle, VfsError> {

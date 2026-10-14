@@ -1,6 +1,6 @@
 use clap::Parser;
 use polymer_pluginhost::{loading::PluginRegistry, theme::ThemePluginInstance};
-use std::{error::Error, fs, path::PathBuf};
+use std::{error::Error, fs};
 
 #[derive(Parser)]
 #[command(name = "polymer-gui", version, about)]
@@ -26,17 +26,18 @@ pub struct ShellOptions {
 
 pub async fn parse() -> Result<ShellOptions, Box<dyn Error>> {
     let arguments = ShellArguments::parse();
+    let directories = polymer_library::Directories::discover()?;
     let plugins = PluginRegistry::new();
-    let plugin_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("plugins");
-    if plugin_root.is_dir() {
-        for manifest in plugin_manifests(&plugin_root)? {
-            if let Err(error) = plugins.load(&manifest) {
-                eprintln!("polymer: skipping plugin {}: {error}", manifest.display());
-            }
-        }
+    let index = polymer_distribution::Index::read(&directories.plugin_index()).unwrap_or_else(|error| {
+        eprintln!("polymer: could not read the plugin index: {error}");
+        polymer_distribution::Index::default()
+    });
+    for (path, error) in &index.rejected {
+        eprintln!("polymer: skipping plugin index entry {}: {error}", path.display());
+    }
+    let search_paths = [std::env::current_dir()?.join("plugins"), directories.packages()];
+    for (path, error) in plugins.discover(&search_paths, &index) {
+        eprintln!("polymer: skipping plugin {}: {error}", path.display());
     }
     let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -56,7 +57,6 @@ pub async fn parse() -> Result<ShellOptions, Box<dyn Error>> {
             plugins.override_jsr(name, directory);
         }
     }
-    let directories = polymer_library::Directories::discover()?;
     let local_storage = match polymer_deno::webstorage::LocalStorage::open(&directories).await {
         Ok(storage) => Some(storage),
         Err(error) => {
@@ -99,32 +99,6 @@ pub async fn parse() -> Result<ShellOptions, Box<dyn Error>> {
         library,
         jobs,
     })
-}
-
-fn plugin_manifests(root: &std::path::Path) -> Result<Vec<PathBuf>, std::io::Error> {
-    let mut pending = vec![root.to_owned()];
-    let mut manifests = Vec::new();
-    while let Some(directory) = pending.pop() {
-        let manifest = directory.join("plugin.toml");
-        if directory != root && manifest.is_file() {
-            manifests.push(manifest);
-            continue;
-        }
-        let mut children = fs::read_dir(&directory)?
-            .filter_map(Result::ok)
-            .filter_map(|entry| {
-                entry
-                    .file_type()
-                    .ok()
-                    .filter(|kind| kind.is_dir())
-                    .map(|_| entry.path())
-            })
-            .collect::<Vec<_>>();
-        children.sort();
-        pending.extend(children.into_iter().rev());
-    }
-    manifests.sort();
-    Ok(manifests)
 }
 
 async fn saved_theme(storage: Option<&polymer_deno::webstorage::LocalStorage>) -> Option<String> {

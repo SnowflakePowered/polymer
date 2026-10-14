@@ -2,6 +2,7 @@
 id = "ymir"
 version = "0.0.1"
 class = "emulator"
+api = "^0.1"
 main = "ymir.ts"
 
 [plugin.permissions.net]

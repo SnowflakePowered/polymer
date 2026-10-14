@@ -3,7 +3,7 @@ use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use thiserror::Error;
 
-use super::PackageError;
+use crate::PackageError;
 
 /// A `[plugin.config]` option shown to the user.
 #[derive(Clone, Debug, Deserialize)]
@@ -70,7 +70,9 @@ impl PluginConfig {
                     !option.display.trim().is_empty()
                         && (option.choices.is_empty() || option.choices.contains(&option.default))
                 }
-                PluginConfigEntry::Value(toml::Value::Table(table)) => !table.contains_key("display"),
+                PluginConfigEntry::Value(toml::Value::Table(table)) => {
+                    !table.contains_key("display")
+                }
                 PluginConfigEntry::Value(_) => true,
             };
             if !valid {

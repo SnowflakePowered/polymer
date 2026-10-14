@@ -67,11 +67,9 @@ fn op_vfs_import_package(
     #[string] source: String,
 ) -> Result<JsResource, JsErrorBox> {
     let vfs = state.borrow_mut::<FilesystemState>();
-    let path = vfs.package_path(&source).map_err(js_error)?;
-    let name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned());
-    let handle = vfs.insert_path_resource(path).map_err(js_error)?;
+    let relative = vfs.package_path(&source).map_err(js_error)?;
+    let name = relative.rsplit('/').next().map(str::to_owned);
+    let handle = vfs.insert_package_resource(&relative).map_err(js_error)?;
     Ok(JsResource::new(name, handle))
 }
 

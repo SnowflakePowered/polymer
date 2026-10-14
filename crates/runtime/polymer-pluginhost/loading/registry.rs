@@ -6,7 +6,6 @@ use crate::{
     emulator::EmulatorPluginInstance, platform::PlatformPluginInstance, plugin::PluginInstance,
     scraper::ScraperPluginInstance, theme::ThemePluginInstance,
 };
-use serde::Deserialize;
 use std::{
     any::{Any, TypeId},
     collections::HashMap,
@@ -14,6 +13,8 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, RwLock},
 };
+use polymer_distribution::{Index, SignedArchive};
+use polymer_pluginmanifest::{AnyPluginManifest, PackageArchive, PackageSource};
 use thiserror::Error;
 
 struct RegisteredPlugin {
@@ -77,8 +78,72 @@ impl PluginRegistry {
             .find(|plugin| plugin.platforms().iter().any(|id| id == platform))
     }
 
-    /// Loads the package containing `plugin.toml` and registers every interface
-    /// implemented by that package. A plugin ID can be registered only once.
+    /// Loads every plugin under `search_paths`, earlier paths first. Unpacked plugin
+    /// directories load before signed archives, so an unpacked plugin takes the place of an
+    /// archive with the same ID, and archives load newest version first, so the newest of
+    /// several archives of a plugin is the one loaded. Returns the plugins that could not be
+    /// loaded.
+    pub fn discover(
+        &self,
+        search_paths: &[PathBuf],
+        index: &Index,
+    ) -> Vec<(PathBuf, PluginRegistryError)> {
+        let mut unpacked = Vec::new();
+        let mut archives = Vec::new();
+        for root in search_paths {
+            Self::search(root, &mut unpacked, &mut archives);
+        }
+        archives.sort_by_cached_key(|path| {
+            let version = fs::read(path).ok().and_then(|file| {
+                Some(SignedArchive::split(&file).ok()?.trusted_comment().ok()?.version)
+            });
+            std::cmp::Reverse(version)
+        });
+        let unpacked = unpacked.into_iter().map(|path| {
+            let result = self.load(&path);
+            (path, result)
+        });
+        let archives = archives.into_iter().map(|path| {
+            let result = self.load_archive(&path, index);
+            (path, result)
+        });
+        unpacked
+            .chain(archives)
+            .filter_map(|(path, result)| result.err().map(|error| (path, error)))
+            .collect()
+    }
+
+    /// Collects the plugin directories and archives under `root`, in path order.
+    fn search(root: &Path, unpacked: &mut Vec<PathBuf>, archives: &mut Vec<PathBuf>) {
+        let mut pending = vec![root.to_owned()];
+        while let Some(directory) = pending.pop() {
+            if directory != root && directory.join("plugin.toml").is_file() {
+                unpacked.push(directory);
+                continue;
+            }
+            let Ok(entries) = fs::read_dir(&directory) else {
+                continue;
+            };
+            let mut children = entries
+                .filter_map(Result::ok)
+                .filter(|entry| !matches!(entry.file_name().to_str(), Some("node_modules" | ".git")))
+                .filter_map(|entry| Some((entry.path(), entry.file_type().ok()?)))
+                .collect::<Vec<_>>();
+            children.sort_by(|(left, _), (right, _)| left.cmp(right));
+            for (child, kind) in children.into_iter().rev() {
+                if kind.is_dir() {
+                    pending.push(child);
+                } else if kind.is_file()
+                    && child.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("asar"))
+                {
+                    archives.push(child);
+                }
+            }
+        }
+    }
+
+    /// Loads an unpacked plugin from the directory holding its `plugin.toml`, or from the
+    /// `plugin.toml` itself.
     pub fn load(
         &self,
         manifest: impl AsRef<Path>,
@@ -93,47 +158,65 @@ impl PluginRegistry {
         let root = manifest
             .parent()
             .ok_or_else(|| PluginRegistryError::InvalidManifestPath(manifest.clone()))?;
-        let header: ManifestHeader = toml::from_str(&fs::read_to_string(&manifest)?)?;
+        self.load_source(PackageSource::directory(root)?)
+    }
 
-        match header.plugin.class.as_str() {
-            "platform" => {
-                let concrete = Arc::new(PlatformPlugin::load(root)?);
-                let instance: Arc<dyn PluginInstance> = concrete.clone();
-                let platform: Arc<dyn PlatformPluginInstance> = concrete;
-                let mut registered = RegisteredPlugin::new(instance.clone());
-                registered.insert(platform);
-                self.register(instance.id(), registered)?;
-                Ok(instance)
-            }
-            "emulator" => {
-                let concrete = Arc::new(EmulatorPlugin::load(root)?);
-                let instance: Arc<dyn PluginInstance> = concrete.clone();
-                let emulator: Arc<dyn EmulatorPluginInstance> = concrete;
-                let mut registered = RegisteredPlugin::new(instance.clone());
-                registered.insert(emulator);
-                self.register(instance.id(), registered)?;
-                Ok(instance)
-            }
-            "scraper" => {
-                let concrete = Arc::new(ScraperPlugin::load(root)?);
-                let instance: Arc<dyn PluginInstance> = concrete.clone();
-                let scraper: Arc<dyn ScraperPluginInstance> = concrete;
-                let mut registered = RegisteredPlugin::new(instance.clone());
-                registered.insert(scraper);
-                self.register(instance.id(), registered)?;
-                Ok(instance)
-            }
-            "theme" => {
-                let concrete = Arc::new(ThemePlugin::load(root)?);
-                let instance: Arc<dyn PluginInstance> = concrete.clone();
-                let theme: Arc<dyn ThemePluginInstance> = concrete;
-                let mut registered = RegisteredPlugin::new(instance.clone());
-                registered.insert(theme);
-                self.register(instance.id(), registered)?;
-                Ok(instance)
-            }
-            class => Err(PluginRegistryError::UnknownClass(class.to_owned())),
+    /// Loads a signed plugin archive once one of the keys `index` registers for the plugin it
+    /// names has verified its signature.
+    pub fn load_archive(
+        &self,
+        path: impl AsRef<Path>,
+        index: &Index,
+    ) -> Result<Arc<dyn PluginInstance>, PluginRegistryError> {
+        let path = path.as_ref();
+        let bytes: Arc<[u8]> = fs::read(path)?.into();
+        let signed = SignedArchive::split(&bytes)?;
+        signed.verify(&index.keys(&signed.trusted_comment()?.id))?;
+        let archive = PackageArchive::new(path.to_owned(), bytes.clone())?;
+        self.load_source(PackageSource::Archive(archive))
+    }
+
+    /// Registers every interface implemented by a package. A plugin ID can be registered
+    /// only once.
+    fn load_source(&self, source: PackageSource) -> Result<Arc<dyn PluginInstance>, PluginRegistryError> {
+        let manifest = AnyPluginManifest::load(source)?;
+        let host = crate::plugin::HostApi::for_class(manifest.class());
+        if !manifest.api().matches(host) {
+            return Err(PluginRegistryError::IncompatibleApi {
+                id: manifest.id().to_owned(),
+                required: manifest.api().clone(),
+                host: host.clone(),
+            });
         }
+        let mut registered;
+        let instance: Arc<dyn PluginInstance> = match manifest {
+            AnyPluginManifest::Platform(manifest) => {
+                let concrete = Arc::new(PlatformPlugin::new(manifest)?);
+                registered = RegisteredPlugin::new(concrete.clone());
+                registered.insert::<dyn PlatformPluginInstance>(concrete.clone());
+                concrete
+            }
+            AnyPluginManifest::Emulator(manifest) => {
+                let concrete = Arc::new(EmulatorPlugin::new(manifest)?);
+                registered = RegisteredPlugin::new(concrete.clone());
+                registered.insert::<dyn EmulatorPluginInstance>(concrete.clone());
+                concrete
+            }
+            AnyPluginManifest::Scraper(manifest) => {
+                let concrete = Arc::new(ScraperPlugin::new(manifest)?);
+                registered = RegisteredPlugin::new(concrete.clone());
+                registered.insert::<dyn ScraperPluginInstance>(concrete.clone());
+                concrete
+            }
+            AnyPluginManifest::Theme(manifest) => {
+                let concrete = Arc::new(ThemePlugin::new(manifest)?);
+                registered = RegisteredPlugin::new(concrete.clone());
+                registered.insert::<dyn ThemePluginInstance>(concrete.clone());
+                concrete
+            }
+        };
+        self.register(instance.id(), registered)?;
+        Ok(instance)
     }
 
     /// Retrieves one registered interface for a plugin. This is a typed
@@ -195,16 +278,6 @@ impl PluginRegistry {
     }
 }
 
-#[derive(Deserialize)]
-struct ManifestHeader {
-    plugin: ManifestPluginHeader,
-}
-
-#[derive(Deserialize)]
-struct ManifestPluginHeader {
-    class: String,
-}
-
 #[derive(Debug, Error)]
 pub enum PluginRegistryError {
     #[error(transparent)]
@@ -213,12 +286,18 @@ pub enum PluginRegistryError {
     Manifest(#[from] toml::de::Error),
     #[error(transparent)]
     Package(#[from] PackageError),
+    #[error(transparent)]
+    Distribution(#[from] polymer_distribution::Error),
     #[error("plugin manifest has no package directory: {}", .0.display())]
     InvalidManifestPath(PathBuf),
-    #[error("plugin class '{0}' is not registered")]
-    UnknownClass(String),
     #[error("plugin '{0}' is already registered")]
     DuplicatePlugin(String),
+    #[error("plugin '{id}' requires host API {required}, but this host provides {host}")]
+    IncompatibleApi {
+        id: String,
+        required: semver::VersionReq,
+        host: semver::Version,
+    },
     #[error("platform '{platform}' has duplicate providers '{existing}' and '{incoming}'")]
     DuplicatePlatform {
         platform: String,

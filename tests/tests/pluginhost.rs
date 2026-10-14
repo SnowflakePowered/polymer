@@ -1,3 +1,5 @@
+#[path = "pluginhost/archives.rs"]
+mod archives;
 #[path = "pluginhost/digest.rs"]
 mod digest;
 #[path = "pluginhost/disc_change.rs"]

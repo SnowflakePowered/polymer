@@ -1,11 +1,12 @@
 use crate::commands::ShellDocumentSource;
-use crate::shell::document::ThemeLocation;
+use crate::shell::document::{ThemeFiles, ThemeLocation};
 use deno_core::ModuleSpecifier;
 use polymer_pluginhost::theme::ThemePluginInstance;
+use polymer_pluginmanifest::PackageSource;
 use std::{
     error::Error,
     ffi::OsString,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::Arc,
     time::{Duration, Instant},
@@ -40,8 +41,15 @@ impl SelectedTheme {
                     self.plugin.id()
                 )
             })?;
+            let PackageSource::Directory(root) = self.plugin.source() else {
+                return Err(format!(
+                    "theme '{}' is archived; debug mode needs its unpacked directory",
+                    self.plugin.id()
+                )
+                .into());
+            };
             ensure_debug_address_available(&debug.url).await?;
-            self.server = Some(ThemeServer::spawn(self.plugin.root(), &debug.serve)?);
+            self.server = Some(ThemeServer::spawn(root, &debug.serve)?);
             self.url = Some(debug.url.clone());
             return self
                 .load_debug_document(&debug.url)
@@ -49,52 +57,107 @@ impl SelectedTheme {
                 .map(|source| self.with_assets(source));
         }
 
-        let main = self.plugin.main().canonicalize().map_err(|error| {
+        let unavailable = |error: &dyn std::fmt::Display| {
             format!(
                 "theme '{}' production document {} is unavailable; run its frontend build: {error}",
                 self.plugin.id(),
-                self.plugin.main().display()
+                self.plugin.main()
             )
-        })?;
-        let root = self.plugin.root().canonicalize()?;
-        if !main.starts_with(&root) || !main.is_file() {
-            return Err(format!(
-                "theme '{}' production document is not a file confined to its package: {}",
-                self.plugin.id(),
-                main.display()
-            )
-            .into());
-        }
-        let url = ModuleSpecifier::from_file_path(&main)
-            .map_err(|_| format!("could not convert {} to a file URL", main.display()))?;
+        };
+        self.plugin
+            .source()
+            .require_file(self.plugin.main())
+            .map_err(|error| unavailable(&error))?;
+        let url = match self.plugin.source() {
+            PackageSource::Directory(_) => {
+                let main = self
+                    .plugin
+                    .source()
+                    .host_path(self.plugin.main())?
+                    .expect("directory packages have host paths");
+                ModuleSpecifier::from_file_path(&main)
+                    .map_err(|_| format!("could not convert {} to a file URL", main.display()))?
+            }
+            PackageSource::Archive(_) => {
+                let main = self.plugin.main();
+                let page = match self.archived_root().as_str() {
+                    "" => Some(main),
+                    root => main.strip_prefix(root).and_then(|page| page.strip_prefix('/')),
+                }
+                .ok_or_else(|| unavailable(&"it is outside the theme root"))?;
+                ModuleSpecifier::parse(&format!("theme:///{page}"))?
+            }
+        };
         self.url = Some(url.clone());
-        load_document(&url)
+        self.fetch_document(&url)
             .await
             .map(|source| self.with_assets(source))
     }
 
-    fn with_assets(&self, source: ShellDocumentSource) -> ShellDocumentSource {
-        let package = self.plugin.root();
-        let root = self
-            .plugin
-            .theme_root()
-            .filter(|_| !self.debug)
-            .map(|root| package.join(root));
-        let assets = self.plugin.assets().and_then(|assets| {
-            let prefix = assets
-                .components()
-                .filter_map(|component| match component {
-                    Component::Normal(part) => Some(part.to_str()),
-                    _ => None,
-                })
-                .collect::<Option<Vec<_>>>()?
-                .join("/");
-            Some((format!("{prefix}/"), package.join(assets)))
-        });
-        ShellDocumentSource {
-            theme: ThemeLocation { root, assets },
-            ..source
+    /// The directory an archived theme serves: its `theme.root`, or the directory of its main
+    /// document.
+    fn archived_root(&self) -> String {
+        match self.plugin.theme_root() {
+            Some(root) => PackageSource::relative(root).unwrap_or_default(),
+            None => self
+                .plugin
+                .main()
+                .rsplit_once('/')
+                .map(|(directory, _)| directory.to_owned())
+                .unwrap_or_default(),
         }
+    }
+
+    async fn fetch_document(&self, url: &ModuleSpecifier) -> Result<ShellDocumentSource, Box<dyn Error>> {
+        let html = match url.scheme() {
+            "file" => {
+                let path = url
+                    .to_file_path()
+                    .map_err(|_| format!("invalid theme file URL: {url}"))?;
+                tokio::fs::read_to_string(path).await?
+            }
+            "theme" => self.plugin.source().read_to_string(self.plugin.main())?,
+            _ => {
+                reqwest::get(url.clone())
+                    .await?
+                    .error_for_status()?
+                    .text()
+                    .await?
+            }
+        };
+        Ok(ShellDocumentSource {
+            html,
+            base_url: url.to_string(),
+            theme: ThemeLocation::default(),
+        })
+    }
+
+    fn with_assets(&self, source: ShellDocumentSource) -> ShellDocumentSource {
+        let assets = self
+            .plugin
+            .assets()
+            .map(|assets| PackageSource::relative(assets).unwrap_or_default());
+        let theme = match self.plugin.source() {
+            PackageSource::Directory(package) => ThemeLocation {
+                root: self
+                    .plugin
+                    .theme_root()
+                    .filter(|_| !self.debug)
+                    .map(|root| ThemeFiles::Directory(package.join(root))),
+                assets: assets.map(|assets| {
+                    let directory = ThemeFiles::Directory(package.join(&assets));
+                    (format!("{assets}/"), directory)
+                }),
+            },
+            PackageSource::Archive(archive) => ThemeLocation {
+                root: Some(ThemeFiles::Archive(archive.clone(), self.archived_root())),
+                assets: assets.map(|assets| {
+                    let directory = ThemeFiles::Archive(archive.clone(), assets.clone());
+                    (format!("{assets}/"), directory)
+                }),
+            },
+        };
+        ShellDocumentSource { theme, ..source }
     }
 
     pub(crate) async fn reload_document(&self) -> Result<ShellDocumentSource, Box<dyn Error>> {
@@ -102,7 +165,7 @@ impl SelectedTheme {
             .url
             .as_ref()
             .ok_or("the theme document was never loaded")?;
-        load_document(url)
+        self.fetch_document(url)
             .await
             .map(|source| self.with_assets(source))
     }
@@ -113,7 +176,7 @@ impl SelectedTheme {
     ) -> Result<ShellDocumentSource, Box<dyn Error>> {
         let deadline = Instant::now() + DEBUG_STARTUP_TIMEOUT;
         loop {
-            let request_error = match load_document(url).await {
+            let request_error = match self.fetch_document(url).await {
                 Ok(document) => {
                     if let Some(status) = self
                         .server
@@ -183,25 +246,6 @@ async fn ensure_debug_address_available(url: &ModuleSpecifier) -> Result<(), Box
     Ok(())
 }
 
-async fn load_document(url: &ModuleSpecifier) -> Result<ShellDocumentSource, Box<dyn Error>> {
-    let html = if url.scheme() == "file" {
-        let path = url
-            .to_file_path()
-            .map_err(|_| format!("invalid theme file URL: {url}"))?;
-        tokio::fs::read_to_string(path).await?
-    } else {
-        reqwest::get(url.clone())
-            .await?
-            .error_for_status()?
-            .text()
-            .await?
-    };
-    Ok(ShellDocumentSource {
-        html,
-        base_url: url.to_string(),
-        theme: ThemeLocation::default(),
-    })
-}
 
 struct ThemeServer {
     child: Child,

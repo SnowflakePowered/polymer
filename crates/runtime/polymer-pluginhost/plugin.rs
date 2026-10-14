@@ -2,6 +2,8 @@
 
 use crate::loading::{PluginCache, PluginConfig, PluginModuleLoader};
 
+pub use polymer_pluginmanifest::HostApi;
+
 /// Runtime-neutral identity and package services shared by every plugin class.
 pub trait PluginInstance: Send + Sync + 'static {
     fn id(&self) -> &str;
@@ -15,6 +17,9 @@ pub trait PluginInstance: Send + Sync + 'static {
     }
 
     fn config(&self) -> &PluginConfig;
+
+    /// The host API versions the plugin supports.
+    fn api(&self) -> &semver::VersionReq;
 
     /// The parsed `plugin.toml`.
     fn manifest(&self) -> &serde_json::Value;

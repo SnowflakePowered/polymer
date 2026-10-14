@@ -2,6 +2,7 @@
 id = "cemu"
 version = "0.0.1"
 class = "emulator"
+api = "^0.1"
 main = "cemu.ts"
 
 [plugin.permissions.net]

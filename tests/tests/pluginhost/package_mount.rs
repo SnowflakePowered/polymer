@@ -22,6 +22,7 @@ async fn package_mounts_images_directories_and_cues_read_only() {
         id = "worker-test"
         version = "1"
         class = "emulator"
+        api = "^0.1"
         main = "plugin.js"
         [[plugin.caches]]
         key = "shaders"

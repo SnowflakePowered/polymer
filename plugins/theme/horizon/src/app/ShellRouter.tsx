@@ -1,5 +1,4 @@
-import { lazy } from "solid-js";
-import { MemoryRouter, Route, createMemoryHistory, useNavigate } from "@solidjs/router";
+import { MemoryRouter, Route, createMemoryHistory } from "@solidjs/router";
 import { ShellProvider } from "./ShellProvider";
 import { StoragePage } from "../features/storage/StoragePage";
 import { SavesPage } from "../features/saves/SavesPage";
@@ -12,8 +11,6 @@ import { PlayPage } from "../features/game/PlayPage";
 import { ControllerReorder } from "../features/game/ControllerReorder";
 import "./ShellRouter.css";
 import { InputProvider } from "./InputProvider";
-
-const DevGallery = import.meta.env.DEV ? lazy(() => import("../gallery/Gallery").then(module => ({ default: module.Gallery }))) : () => null;
 
 const history = createMemoryHistory();
 history.set({ value: "/", replace: true, scroll: false });
@@ -29,10 +26,6 @@ export function ShellRouter() {
       <Route path="/" component={() => null} />
       <Route path="/details" component={GameDetailsPage} />
     </Route>
-    {import.meta.env.DEV && <Route path="/gallery" component={() => {
-      const navigate = useNavigate();
-      return <DevGallery onBack={() => navigate("/", { replace: true, scroll: false })} />;
-    }} />}
     <Route path="/saves" component={SavesPage} />
     <Route path="/storage" component={StoragePage} />
     <Route path="/settings" component={SettingsPage} />

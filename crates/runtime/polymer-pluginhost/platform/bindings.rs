@@ -5,13 +5,14 @@ use polymer_library::{
     StorageManager,
     jobs::{JobKind, JobOutcome, JobProgress, JobSubject},
 };
+use polymer_pluginmanifest::{PackageEntry, PackageSource};
 use serde_json::json;
 use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::Arc};
 use uuid::Uuid;
 
 #[derive(Clone)]
 pub(crate) struct PlatformBinding {
-    pub root: PathBuf,
+    pub source: PackageSource,
     pub target: Option<(Arc<StorageManager>, String, Uuid)>,
 }
 
@@ -25,23 +26,24 @@ impl PlatformBinding {
         if let Some(cache) = cache {
             return state.borrow::<crate::cache::CacheState>().path(cache, path);
         }
-        if let Some(relative) = path.strip_prefix("pkg:") {
-            let path = self
-                .root
-                .join(relative)
-                .canonicalize()
-                .map_err(JsErrorBox::from_err)?;
-            if !path.starts_with(&self.root) {
-                return Err(JsErrorBox::type_error("Resource escapes plugin package"));
-            }
-            return Ok(path);
+        if let Some(host) = Self::host(path) {
+            return Ok(host);
         }
-        let path = PathBuf::from(path);
-        Ok(if path.is_absolute() {
-            path
-        } else {
-            self.root.join(path)
-        })
+        let relative = Self::relative(path.strip_prefix("pkg:").unwrap_or(path))?;
+        self.source
+            .host_path(&relative)
+            .map_err(|error| JsErrorBox::type_error(error.to_string()))?
+            .ok_or_else(|| JsErrorBox::type_error("Archived plugin packages have no host paths"))
+    }
+
+    /// An absolute host path given without the `pkg:` scheme.
+    fn host(path: &str) -> Option<PathBuf> {
+        Some(PathBuf::from(path)).filter(|host| !path.starts_with("pkg:") && host.is_absolute())
+    }
+
+    fn relative(path: &str) -> Result<String, JsErrorBox> {
+        PackageSource::relative(std::path::Path::new(path))
+            .map_err(|_| JsErrorBox::type_error("Resource escapes plugin package"))
     }
 }
 
@@ -52,8 +54,23 @@ fn op_platform_resource(
     #[string] path: String,
 ) -> Result<serde_json::Value, JsErrorBox> {
     let binding = state.borrow::<PlatformBinding>();
-    let path = binding.path(state, &path, None)?;
-    match std::fs::metadata(path) {
+    let host = match (PlatformBinding::host(&path), &binding.source) {
+        (Some(host), _) => host,
+        (None, PackageSource::Directory(root)) => {
+            root.join(PlatformBinding::relative(path.strip_prefix("pkg:").unwrap_or(&path))?)
+        }
+        (None, PackageSource::Archive(archive)) => {
+            let relative = PlatformBinding::relative(path.strip_prefix("pkg:").unwrap_or(&path))?;
+            return Ok(match (archive.file(&relative), binding.source.entry(&relative)) {
+                (Some(bytes), _) => json!({"exists": true, "size": bytes.len(), "directory": false}),
+                (None, Some(PackageEntry::Directory)) => {
+                    json!({"exists": true, "size": 0, "directory": true})
+                }
+                _ => json!({"exists": false}),
+            });
+        }
+    };
+    match std::fs::metadata(host) {
         Ok(metadata) => {
             Ok(json!({"exists": true, "size": metadata.len(), "directory": metadata.is_dir()}))
         }

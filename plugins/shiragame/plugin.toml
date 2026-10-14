@@ -2,6 +2,7 @@
 id = "shiragame"
 version = "0.1.0"
 class = "scraper"
+api = "^0.1"
 main = "shiragame.ts"
 
 [plugin.permissions.net]

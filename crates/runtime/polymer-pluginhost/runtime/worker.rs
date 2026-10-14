@@ -36,7 +36,7 @@ impl WorkerOptions {
         jsr_overrides: Arc<dashmap::DashMap<String, std::path::PathBuf>>,
     ) -> Result<Self, PackageError> {
         let mut filesystem =
-            crate::filesystem::FilesystemOptions::new(plugin.module_loader().root().to_owned());
+            crate::filesystem::FilesystemOptions::new(plugin.module_loader().source().clone());
         filesystem.scratch_root = Some(directories.plugin_scratch(plugin.id()));
         filesystem.storage = storage;
         filesystem.quick_resume = quick_resume;
@@ -46,7 +46,7 @@ impl WorkerOptions {
             firmware: crate::firmware::FirmwareBinding::new(directories.firmware()),
             keys: crate::keys::KeyBinding::new(directories.keys()),
             platform: crate::platform::PlatformBinding {
-                root: plugin.module_loader().root().to_owned(),
+                source: plugin.module_loader().source().clone(),
                 target: None,
             },
             loader: plugin
