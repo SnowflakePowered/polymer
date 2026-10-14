@@ -10,3 +10,9 @@ export const config: Readonly<Record<string, unknown>>;
 
 /** The plugin's parsed `plugin.toml`. */
 export const manifest: Readonly<Record<string, any>>;
+
+/**
+ * In-memory store shared by every isolate of the plugin in this process, holding
+ * JSON-compatible values. It is not persisted.
+ */
+export const pluginStorage: import("polymer:api").PluginStorage;

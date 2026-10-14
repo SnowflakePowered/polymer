@@ -109,8 +109,7 @@ It handles the lifecycle of a plugin, which is run in it's own Deno isolate, and
 * `polymer` import namespace -- plugin-host APIs
   * `polymer:uiautomation` -- UI automation host, implemented by `polymer-automation`
   * `polymer:unarchive` -- Extracts zip, 7z, and DMG archives between cache paths as a job, implemented by `polymer-unarchive`
-  * `polymer:plugin` -- `caches` are the plugin's persistent cache directories. `manifest` is the plugin's parsed `plugin.toml`. `config` holds its `[plugin.config]` values. Options declared as tables with a `display` name, a `default`, and optional `choices` are shown to the user, and hold the user's choice.
-  * `polymer:pluginStorage` -- Plugin-local ephemeral storage, like `AsyncLocalStorage`, but only supports JSON-safe objects.
+  * `polymer:plugin` -- `caches` are the plugin's persistent cache directories. `manifest` is the plugin's parsed `plugin.toml`. `pluginStorage` is plugin-local ephemeral storage, like `AsyncLocalStorage`, but only supports JSON-safe objects. `config` holds its `[plugin.config]` values. Options declared as tables with a `display` name, a `default`, and optional `choices` are shown to the user, and hold the user's choice.
   * `polymer:database` -- Plugin-local persistent SQLite database, as a replacement for IndexedDB.
   * `polymer:actions` -- Only available to emulator plugins that have defined an `actions.toml`. Allows
 * `jsr` imports from the [jsr.io](https://jsr.io) repository. 

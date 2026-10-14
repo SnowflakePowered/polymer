@@ -138,7 +138,7 @@ async fn cancelling_bootstrap_terminates_the_worker() {
         .load(fixture.provider(
             "platform",
             r#"
-        import { pluginStorage } from 'polymer:pluginStorage';
+        import { pluginStorage } from 'polymer:plugin';
         export async function onBootstrap() {
             pluginStorage.setItem('entered', true);
             await new Promise(resolve => setTimeout(resolve, 60000));
