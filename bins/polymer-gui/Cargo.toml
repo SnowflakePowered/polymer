@@ -52,7 +52,9 @@ polymer-bluetooth = { path = "../../crates/input/polymer-bluetooth" }
 polymer-input-bluetooth = { path = "../../crates/input/polymer-input-bluetooth" }
 polymer-ipc = { workspace = true, features = ["input-host"] }
 polymer-library.workspace = true
+polymer-distribution.workspace = true
 polymer-pluginhost = { path = "../../crates/runtime/polymer-pluginhost" }
+polymer-pluginmanifest.workspace = true
 polymer-protocol.workspace = true
 polymer-runtime.workspace = true
 polymer-vfs.workspace = true

@@ -1,97 +1,11 @@
-use super::plugin::{PackageError, PluginClass, PluginPackage, confined_path};
+use super::plugin::PluginPackage;
 use crate::emulator::{EmulatorPluginInstance, EmulatorPort};
-use polymer_config::{
-    ConfigurationToml,
-    ast::{ConfigurationDefinition, ConfigurationInstance, PortAssignment, PortAssignments},
-};
-use serde::Deserialize;
-use std::{fs, path::PathBuf, sync::Arc};
-use toml_spanner::Arena;
-
-/// Keys owned directly by the `[emulator]` block.
-#[derive(Deserialize)]
-pub struct EmulatorBlock {
-    platforms: Vec<String>,
-    configuration: ConfigurationBlock,
-    #[serde(default)]
-    savestates: Option<SaveStateConfig>,
-    #[serde(skip)]
-    definition: Option<Arc<ConfigurationDefinition>>,
-}
-
-#[derive(Clone, Debug, Deserialize, serde::Serialize, Eq, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct SaveStateConfig {
-    pub max: std::num::NonZeroU32,
-    #[serde(default)]
-    pub revision: Option<String>,
-}
-
-/// Keys owned by the `[emulator.configuration]` block.
-#[derive(Debug, Deserialize)]
-struct ConfigurationBlock {
-    definitions: Vec<PathBuf>,
-}
+use polymer_config::ast::{ConfigurationDefinition, ConfigurationInstance, PortAssignment, PortAssignments};
+use polymer_pluginmanifest::{EmulatorBlock, PackageError, PluginManifest, SaveStateConfig};
 
 pub type EmulatorPlugin = PluginPackage<EmulatorBlock>;
 
-impl PluginClass for EmulatorBlock {
-    const CLASS: &'static str = "emulator";
-
-    fn prepare(package: &mut PluginPackage<Self>) -> Result<(), PackageError> {
-        confined_path(package.root(), package.main())?;
-        let emulator = package.block();
-        if emulator
-            .savestates
-            .as_ref()
-            .and_then(|states| states.revision.as_deref())
-            .is_some_and(|revision| revision.trim().is_empty())
-        {
-            return Err(PackageError::InvalidSaveStateRevision);
-        }
-        let mut definition_paths = Vec::new();
-        for pattern in &emulator.configuration.definitions {
-            let absolute = package.root().join(pattern);
-            let pattern = absolute
-                .to_str()
-                .ok_or_else(|| PackageError::NonUtf8Path(absolute.clone()))?;
-            let mut matches = glob::glob(pattern)?.collect::<Result<Vec<_>, _>>()?;
-            matches.sort();
-            if matches.is_empty() {
-                return Err(PackageError::EmptyDefinitionPattern(pattern.to_owned()));
-            }
-            for path in matches {
-                definition_paths.push(confined_path(package.root(), path)?);
-            }
-        }
-        let sources = definition_paths
-            .iter()
-            .map(fs::read_to_string)
-            .collect::<Result<Vec<_>, _>>()?;
-        let arena = Arena::new();
-        let parsed = ConfigurationToml::try_from_tomls(&arena, sources.iter().map(String::as_str))?;
-        let definition = Arc::new(ConfigurationDefinition::from(parsed));
-        package.block_mut().definition = Some(definition);
-        Ok(())
-    }
-}
-
 impl PluginPackage<EmulatorBlock> {
-    fn definition(&self) -> &Arc<ConfigurationDefinition> {
-        self.block()
-            .definition
-            .as_ref()
-            .expect("emulator package was prepared during loading")
-    }
-
-    pub fn platforms(&self) -> &[String] {
-        &self.block().platforms
-    }
-
-    pub fn save_states(&self) -> Option<&SaveStateConfig> {
-        self.block().savestates.as_ref()
-    }
-
     pub fn ports(&self, console: &str) -> Result<Vec<EmulatorPort>, PackageError> {
         let input = self
             .definition()
@@ -191,15 +105,15 @@ impl PluginPackage<EmulatorBlock> {
 
 impl EmulatorPluginInstance for PluginPackage<EmulatorBlock> {
     fn configuration_definition(&self) -> &ConfigurationDefinition {
-        self.definition()
+        PluginManifest::definition(self)
     }
 
     fn platforms(&self) -> &[String] {
-        self.platforms()
+        PluginManifest::<EmulatorBlock>::platforms(self)
     }
 
     fn save_states(&self) -> Option<&SaveStateConfig> {
-        self.save_states()
+        PluginManifest::save_states(self)
     }
 
     fn ports(&self, console: &str) -> Result<Vec<EmulatorPort>, PackageError> {

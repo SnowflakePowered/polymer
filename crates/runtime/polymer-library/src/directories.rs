@@ -64,6 +64,16 @@ impl Directories {
         self.storage.join("jobs.db")
     }
 
+    /// Signed plugin archives, one of the plugin search paths.
+    pub fn packages(&self) -> PathBuf {
+        self.storage.join("packages")
+    }
+
+    /// The last fetched copy of polymer-index, which holds the keys that sign plugin archives.
+    pub fn plugin_index(&self) -> PathBuf {
+        self.storage.join("index")
+    }
+
     pub fn plugin_database(&self, plugin: &str) -> PathBuf {
         self.storage.join("plugins").join(plugin).join("plugin.db")
     }

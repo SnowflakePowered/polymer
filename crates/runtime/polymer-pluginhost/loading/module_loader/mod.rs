@@ -8,6 +8,7 @@ use deno_core::{
 };
 use dashmap::DashMap;
 use futures_util::FutureExt;
+use polymer_pluginmanifest::{PackageEntry, PackageSource};
 use std::{path::PathBuf, sync::Arc};
 
 mod jsr;
@@ -29,7 +30,7 @@ const JSR_ORIGIN: &str = "https://jsr.io";
 #[derive(Clone, Debug)]
 pub struct PluginModuleLoader {
     id: Arc<str>,
-    root: Arc<PathBuf>,
+    source: PackageSource,
     base: ModuleSpecifier,
     jsr_cache: Option<Arc<PathBuf>>,
     network_hosts: Vec<String>,
@@ -38,12 +39,12 @@ pub struct PluginModuleLoader {
 }
 
 impl PluginModuleLoader {
-    pub(crate) fn new(id: &str, root: PathBuf) -> Self {
+    pub(crate) fn new(id: &str, source: PackageSource) -> Self {
         let base = ModuleSpecifier::parse(&format!("{PLUGIN_SCHEME}://{PLUGIN_HOST}/{id}/"))
             .expect("validated plugin IDs produce valid module URLs");
         Self {
             id: id.into(),
-            root: Arc::new(root),
+            source,
             base,
             jsr_cache: None,
             network_hosts: Vec::new(),
@@ -96,29 +97,13 @@ impl PluginModuleLoader {
         &self.insecure_hosts
     }
 
-    pub fn root(&self) -> &std::path::Path {
-        &self.root
+    pub fn source(&self) -> &PackageSource {
+        &self.source
     }
 
-    pub(crate) fn package_specifier(
-        &self,
-        path: &std::path::Path,
-    ) -> Result<ModuleSpecifier, ModuleLoaderError> {
-        if path.as_os_str().is_empty()
-            || path.is_absolute()
-            || path
-                .components()
-                .any(|component| !matches!(component, std::path::Component::Normal(_)))
-        {
-            return Err(ModuleLoaderError::type_error(format!(
-                "plugin main must be a package-relative path: {}",
-                path.display()
-            )));
-        }
-        let relative = path.to_string_lossy().replace('\\', "/");
-        self.base
-            .join(&relative)
-            .map_err(ModuleLoaderError::from_err)
+    /// The module URL of a validated package-relative path.
+    pub(crate) fn package_specifier(&self, relative: &str) -> Result<ModuleSpecifier, ModuleLoaderError> {
+        self.base.join(relative).map_err(ModuleLoaderError::from_err)
     }
 
     fn resolve_package(&self, specifier: &str) -> Result<ModuleSpecifier, ModuleLoaderError> {
@@ -143,8 +128,12 @@ impl PluginModuleLoader {
             .map_err(ModuleLoaderError::from_err)
     }
 
-    fn path(&self, specifier: &ModuleSpecifier) -> Result<PathBuf, ModuleLoaderError> {
-        let relative = specifier
+    /// The package-relative path a module URL names.
+    fn relative(&self, specifier: &ModuleSpecifier) -> Result<String, ModuleLoaderError> {
+        let mut file = specifier.clone();
+        file.set_query(None);
+        file.set_fragment(None);
+        let relative = file
             .as_str()
             .strip_prefix(self.base.as_str())
             .ok_or_else(|| {
@@ -153,19 +142,11 @@ impl PluginModuleLoader {
                     self.id
                 ))
             })?;
-        let file_base = ModuleSpecifier::from_directory_path(self.root()).map_err(|()| {
-            ModuleLoaderError::type_error(format!(
-                "cannot convert plugin root to a file URL: {}",
-                self.root.display()
-            ))
-        })?;
-        let file = file_base
-            .join(relative)
-            .map_err(ModuleLoaderError::from_err)?;
-        let path = file.to_file_path().map_err(|()| {
-            ModuleLoaderError::type_error(format!("plugin module is not a file path: {file}"))
-        })?;
-        Ok(path)
+        let decoded = percent_encoding::percent_decode_str(relative)
+            .decode_utf8()
+            .map_err(|error| ModuleLoaderError::type_error(error.to_string()))?;
+        PackageSource::relative(std::path::Path::new(decoded.as_ref()))
+            .map_err(|error| ModuleLoaderError::type_error(error.to_string()))
     }
 
     fn load_source(
@@ -173,14 +154,15 @@ impl PluginModuleLoader {
         specifier: &ModuleSpecifier,
         module_type: ModuleType,
     ) -> Result<ModuleSource, ModuleLoaderError> {
-        let path = self.path(specifier)?;
-        let metadata = std::fs::metadata(&path).map_err(ModuleLoaderError::from_err)?;
-        let extension = path
-            .extension()
-            .and_then(|value| value.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        if metadata.is_dir()
+        let relative = self.relative(specifier)?;
+        let entry = self.source.entry(&relative).ok_or_else(|| {
+            ModuleLoaderError::type_error(format!("plugin module {specifier} does not exist"))
+        })?;
+        let extension = relative
+            .rsplit_once('.')
+            .map(|(_, extension)| extension.to_ascii_lowercase())
+            .unwrap_or_default();
+        if entry == PackageEntry::Directory
             || extension == "asar"
             || (module_type == ModuleType::JavaScript
                 && !matches!(
@@ -209,7 +191,11 @@ impl PluginModuleLoader {
                 None,
             ));
         }
-        let code = std::fs::read(&path).map_err(ModuleLoaderError::from_err)?;
+        let code = self
+            .source
+            .read(&relative)
+            .map_err(|error| ModuleLoaderError::type_error(error.to_string()))?
+            .into_owned();
         let code = self.transform_source(specifier, code)?;
         Ok(ModuleSource::new(
             module_type,

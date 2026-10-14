@@ -19,6 +19,7 @@ async fn successful_plugins_commit_repeated_values_and_publish_events() {
           id = "fixture"
           version = "1"
           class = "scraper"
+          api = "^0.1"
           main = "fixture.js"
 
           [scraper]
@@ -161,6 +162,7 @@ async fn child_packages_keep_their_own_identity_and_scrape_results() {
           id = "identity"
           version = "1"
           class = "scraper"
+          api = "^0.1"
           main = "identity.js"
 
           [scraper]
@@ -329,6 +331,7 @@ async fn overlapping_refreshes_share_one_job_that_parents_the_plugins_jobs() {
           id = "contents"
           version = "1"
           class = "scraper"
+          api = "^0.1"
           main = "contents.js"
 
           [scraper]
@@ -392,6 +395,7 @@ async fn scraping_refreshes_contents_a_plugin_reports_missing_before_its_first_s
           id = "contents"
           version = "1"
           class = "scraper"
+          api = "^0.1"
           main = "contents.js"
 
           [scraper]

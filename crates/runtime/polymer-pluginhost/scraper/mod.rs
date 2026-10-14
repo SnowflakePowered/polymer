@@ -33,6 +33,10 @@ impl From<BTreeMap<String, Vec<ScrapeCandidate>>> for ScrapeInput {
 }
 
 impl ScrapeInput {
+    pub fn satisfies(&self, requirement: &ScrapeRequirement) -> bool {
+        requirement.keys().iter().any(|key| self.contains(key))
+    }
+
     fn contains(&self, key: &str) -> bool {
         match key {
             "package.files" => self.packages.iter().any(|package| {
@@ -49,18 +53,6 @@ impl ScrapeInput {
     }
 }
 
-impl ScrapeRequirement {
-    pub fn keys(&self) -> &[String] {
-        match self {
-            Self::Key(key) => std::slice::from_ref(key),
-            Self::Any(keys) => keys,
-        }
-    }
-
-    pub fn satisfied(&self, input: &ScrapeInput) -> bool {
-        self.keys().iter().any(|key| input.contains(key))
-    }
-}
 
 /// Scraper capability projected from a registered scripted plugin.
 pub trait ScraperPluginInstance: PluginInstance {
@@ -71,7 +63,7 @@ pub trait ScraperPluginInstance: PluginInstance {
     fn accepts(&self, input: &ScrapeInput) -> bool {
         self.requirements()
             .iter()
-            .all(|requirement| requirement.satisfied(input))
+            .all(|requirement| input.satisfies(requirement))
     }
 
     /// Whether this scraper still lacks `key` to satisfy one of its requirements.
@@ -80,7 +72,7 @@ pub trait ScraperPluginInstance: PluginInstance {
             .iter()
             .chain(self.optional())
             .any(|requirement| {
-                !requirement.satisfied(input)
+                !input.satisfies(requirement)
                     && requirement.keys().iter().any(|wanted| wanted == key)
             })
     }

@@ -2,6 +2,7 @@
 id = "launchbox"
 version = "0.1.0"
 class = "scraper"
+api = "^0.1"
 main = "launchbox.ts"
 
 [plugin.permissions.net]

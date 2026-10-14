@@ -21,6 +21,7 @@ async fn disc_changes_keep_quit_on_the_last_successful_disc() {
             id = "worker-test"
             version = "1"
             class = "emulator"
+            api = "^0.1"
             main = "plugin.js"
             [emulator]
             platforms = ["TEST"]

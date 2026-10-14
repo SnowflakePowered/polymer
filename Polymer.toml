@@ -1,0 +1,161 @@
+[[plugin]]
+id = "ares"
+class = "emulator"
+path = "plugins/ares"
+name = "ares"
+description = "Multi-system emulation for Nintendo, Sega, NEC, SNK, Bandai, Atari, and PlayStation consoles."
+authors = ["SnowflakePowered"]
+maintainers = ["chyyran"]
+
+[[plugin]]
+id = "azahar"
+class = "emulator"
+path = "plugins/azahar"
+name = "Azahar"
+description = "Nintendo 3DS emulation."
+authors = ["SnowflakePowered"]
+maintainers = ["chyyran"]
+
+[[plugin]]
+id = "cemu"
+class = "emulator"
+path = "plugins/cemu"
+name = "Cemu"
+description = "Nintendo Wii U emulation, with community graphics packs."
+authors = ["SnowflakePowered"]
+maintainers = ["chyyran"]
+
+[[plugin]]
+id = "dolphin"
+class = "emulator"
+path = "plugins/dolphin"
+name = "Dolphin"
+description = "Nintendo GameCube and Wii emulation."
+authors = ["SnowflakePowered"]
+maintainers = ["chyyran"]
+
+[[plugin]]
+id = "duckstation"
+class = "emulator"
+path = "plugins/duckstation"
+name = "DuckStation"
+description = "PlayStation emulation."
+authors = ["SnowflakePowered"]
+maintainers = ["chyyran"]
+
+[[plugin]]
+id = "flycast"
+class = "emulator"
+path = "plugins/flycast"
+name = "Flycast"
+description = "Sega Dreamcast emulation."
+authors = ["SnowflakePowered"]
+maintainers = ["chyyran"]
+
+[[plugin]]
+id = "melonds"
+class = "emulator"
+path = "plugins/melonds"
+name = "melonDS"
+description = "Nintendo DS emulation."
+authors = ["SnowflakePowered"]
+maintainers = ["chyyran"]
+
+[[plugin]]
+id = "mgba"
+class = "emulator"
+path = "plugins/mgba"
+name = "mGBA"
+description = "Game Boy Advance emulation."
+authors = ["SnowflakePowered"]
+maintainers = ["chyyran"]
+
+[[plugin]]
+id = "pcsx2"
+class = "emulator"
+path = "plugins/pcsx2"
+name = "PCSX2"
+description = "PlayStation 2 emulation."
+authors = ["SnowflakePowered"]
+maintainers = ["chyyran"]
+
+[[plugin]]
+id = "ppsspp"
+class = "emulator"
+path = "plugins/ppsspp"
+name = "PPSSPP"
+description = "PlayStation Portable emulation."
+authors = ["SnowflakePowered"]
+maintainers = ["chyyran"]
+
+[[plugin]]
+id = "retroarch-lrps2"
+class = "emulator"
+path = "plugins/retroarch"
+name = "RetroArch (LRPS2)"
+description = "PlayStation 2 emulation through RetroArch and the LRPS2 core."
+authors = ["SnowflakePowered"]
+maintainers = ["chyyran"]
+
+[[plugin]]
+id = "rpcs3"
+class = "emulator"
+path = "plugins/rpcs3"
+name = "RPCS3"
+description = "PlayStation 3 emulation."
+authors = ["SnowflakePowered"]
+maintainers = ["chyyran"]
+
+[[plugin]]
+id = "ymir"
+class = "emulator"
+path = "plugins/ymir"
+name = "Ymir"
+description = "Sega Saturn emulation."
+authors = ["SnowflakePowered"]
+maintainers = ["chyyran"]
+
+[[plugin]]
+id = "ps3"
+class = "platform"
+path = "plugins/ps3"
+name = "PlayStation 3"
+description = "PlayStation 3 console storage, firmware installation, and title updates."
+authors = ["SnowflakePowered"]
+maintainers = ["chyyran"]
+
+[[plugin]]
+id = "launchbox"
+class = "scraper"
+path = "plugins/launchbox"
+name = "LaunchBox Games Database"
+description = "Game metadata and artwork from the LaunchBox Games Database."
+authors = ["SnowflakePowered"]
+maintainers = ["chyyran"]
+
+[[plugin]]
+id = "shiragame"
+class = "scraper"
+path = "plugins/shiragame"
+name = "Shiragame"
+description = "Game identification by dump hashes and serials from the Shiragame database."
+authors = ["SnowflakePowered"]
+maintainers = ["chyyran"]
+
+[[plugin]]
+id = "horizon"
+class = "theme"
+path = "plugins/theme/horizon"
+name = "Horizon"
+description = "The Horizon theme."
+authors = ["SnowflakePowered"]
+maintainers = ["chyyran"]
+
+[[plugin]]
+id = "vapor"
+class = "theme"
+path = "plugins/theme/vapor"
+name = "Vapor"
+description = "The Vapor theme."
+authors = ["SnowflakePowered"]
+maintainers = ["chyyran"]

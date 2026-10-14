@@ -44,6 +44,11 @@ impl NetProvider for ShellNetProvider {
             return;
         };
         let requested = std::mem::replace(&mut request.url, url).to_string();
+        if let Some(bytes) = self.urls.archived(&request.url) {
+            handler.bytes(requested, Bytes::from(bytes));
+            self.waker.wake(doc_id);
+            return;
+        }
         if request.url.scheme() != "file" {
             self.remote.fetch(
                 doc_id,

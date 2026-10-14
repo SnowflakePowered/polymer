@@ -10,14 +10,16 @@ use deno_core::{
 
 #[derive(Clone)]
 pub(super) struct BrowserModuleLoader {
+    urls: std::sync::Arc<crate::shell::document::ShellUrls>,
     client: reqwest::Client,
     requests: std::sync::Arc<tokio::sync::Semaphore>,
     inline: Rc<RefCell<HashMap<ModuleSpecifier, Vec<u8>>>>,
 }
 
 impl BrowserModuleLoader {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(urls: std::sync::Arc<crate::shell::document::ShellUrls>) -> Self {
         Self {
+            urls,
             client: reqwest::Client::builder()
                 .pool_max_idle_per_host(16)
                 .build()
@@ -51,6 +53,12 @@ impl BrowserModuleLoader {
                         ))
                     })?;
                     let code = std::fs::read(path).map_err(ModuleLoaderError::from_err)?;
+                    (code, specifier.clone())
+                }
+                "theme" => {
+                    let code = self.urls.archived(specifier).ok_or_else(|| {
+                        ModuleLoaderError::type_error(format!("Theme module {specifier} does not exist"))
+                    })?;
                     (code, specifier.clone())
                 }
                 "http" | "https" => {

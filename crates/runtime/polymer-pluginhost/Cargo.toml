@@ -16,7 +16,6 @@ deno_core = "0.412.0"
 deno_ast = { version = "0.53.3", features = ["transpiling"] }
 deno_error = "0.7.1"
 dashmap.workspace = true
-glob = "0.3"
 blake3 = { workspace = true, features = ["traits-preview"] }
 gumshoe.workspace = true
 sha2 = "0.11"
@@ -28,7 +27,7 @@ parking_lot.workspace = true
 serde.workspace = true
 serde_bytes = "0.11"
 serde_json.workspace = true
-semver = "1"
+semver = { version = "1", features = ["serde"] }
 turso.workspace = true
 reqwest = { version = "0.13.1", default-features = false, features = ["rustls"] }
 polymer-config.workspace = true
@@ -40,10 +39,11 @@ polymer-input.workspace = true
 
 polymer-ipc.workspace = true
 polymer-library.workspace = true
+polymer-distribution.workspace = true
+polymer-pluginmanifest.workspace = true
 polymer-unarchive.workspace = true
 polymer-vfs.workspace = true
 toml.workspace = true
-toml-spanner = { version = "1", features = ["derive"] }
 thiserror.workspace = true
 tracing.workspace = true
 tokio = { version = "1.53.0", features = ["rt", "rt-multi-thread", "sync"] }

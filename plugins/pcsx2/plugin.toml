@@ -2,6 +2,7 @@
 id = "pcsx2"
 version = "0.0.1"
 class = "emulator"
+api = "^0.1"
 main = "pcsx2.ts"
 
 [plugin.permissions.net]

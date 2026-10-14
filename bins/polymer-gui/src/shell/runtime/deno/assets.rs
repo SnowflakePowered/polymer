@@ -33,14 +33,19 @@ pub(super) async fn op_shell_read_asset(
         .0
         .borrow()
         .urls();
-    let path = Url::parse(&url)
-        .ok()
-        .and_then(|parsed| urls.local_file(&parsed))
-        .ok_or_else(|| JsErrorBox::type_error(format!("{url} is not a local shell asset")))?;
-    let content_type = mime_guess::from_path(&path)
-        .first_or_octet_stream()
-        .to_string();
-    let body = tokio::fs::read(&path).await.map_err(JsErrorBox::from_err)?;
+    let parsed = Url::parse(&url)
+        .map_err(|_| JsErrorBox::type_error(format!("{url} is not a local shell asset")))?;
+    let (body, guess) = match urls.archived(&parsed) {
+        Some(body) => (body, mime_guess::from_path(parsed.path())),
+        None => {
+            let path = urls
+                .local_file(&parsed)
+                .ok_or_else(|| JsErrorBox::type_error(format!("{url} is not a local shell asset")))?;
+            let guess = mime_guess::from_path(&path);
+            (tokio::fs::read(&path).await.map_err(JsErrorBox::from_err)?, guess)
+        }
+    };
+    let content_type = guess.first_or_octet_stream().to_string();
     Ok(ShellAsset {
         body: body.into(),
         content_type,

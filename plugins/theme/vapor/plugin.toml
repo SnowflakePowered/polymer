@@ -2,6 +2,7 @@
 id = "vapor"
 version = "0.1.0"
 class = "theme"
+api = "^0.1"
 main = "dist/index.html"
 
 [theme]

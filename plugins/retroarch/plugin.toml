@@ -2,6 +2,7 @@
 id = "retroarch-lrps2"
 version = "0.0.1"
 class = "emulator"
+api = "^0.1"
 main = "retroarch.ts"
 
 [plugin.permissions.net]

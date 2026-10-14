@@ -187,6 +187,15 @@ impl MediaPlayers {
 
     fn fetch(&self, node: NodeId, generation: u64, url: Url) {
         let resolved = self.urls.resolve(&url);
+        if let Some(bytes) = resolved.as_ref().and_then(|url| self.urls.archived(url)) {
+            NodeSignal::send(
+                &self.shell,
+                node,
+                generation,
+                MediaSignalKind::Fetched(Some(MediaData::Memory(Bytes::from(bytes)))),
+            );
+            return;
+        }
         if resolved.as_ref().is_none_or(|url| url.scheme() == "file") {
             let file = resolved
                 .and_then(|url| url.to_file_path().ok())
