@@ -5,7 +5,7 @@ class = "scraper"
 main = "shiragame.ts"
 
 [plugin.permissions.net]
-allowed-hosts = ["github.com", "release-assets.githubusercontent.com", "jsr.io"]
+allowed-hosts = ["github.com", "release-assets.githubusercontent.com"]
 
 [[plugin.caches]]
 key = "download"

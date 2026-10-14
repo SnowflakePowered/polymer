@@ -8,7 +8,9 @@ use polymer_library::{
     },
 };
 use polymer_pluginhost::{
+    emulator::EmulatorPluginInstance,
     loading::PluginRegistry,
+    plugin::PluginInstance,
     runtime::{PluginInvocationError, PluginRuntime, PluginRuntimeHandle, PluginRuntimeOptions},
     scraper::{ScrapeCandidate, ScrapeInput, ScraperPluginInstance},
 };
@@ -211,13 +213,35 @@ impl ScrapingEngine {
         Ok(job)
     }
 
-    /// Load every scraper and resume jobs interrupted by the previous process.
+    /// Load every scraper, resume jobs interrupted by the previous process, and refresh every
+    /// emulator that updates its own contents.
     pub async fn resume(&self) -> Result<(), ScrapingError> {
         self.inner.handle.load::<dyn ScraperPluginInstance>();
         self.inner
             .jobs
             .resume(&[JobKind::Scrape, JobKind::Refresh])
             .await?;
+        for plugin in self
+            .inner
+            .handle
+            .registry()
+            .plugins::<dyn EmulatorPluginInstance>()
+        {
+            let engine = self.clone();
+            let id = plugin.id().to_owned();
+            tokio::spawn(async move {
+                let refreshed = match engine.inner.handle.exports(&id).await {
+                    Ok(exports) if exports.contains("onUpdateContents") => {
+                        engine.refresh(&id).await.map(|_| ())
+                    }
+                    Ok(_) => Ok(()),
+                    Err(error) => Err(error.into()),
+                };
+                if let Err(error) = refreshed {
+                    tracing::warn!(plugin = %id, %error, "could not refresh emulator");
+                }
+            });
+        }
         Ok(())
     }
 
@@ -232,20 +256,20 @@ impl ScrapingEngine {
         Ok((binary("rootBinaryId")?, binary("triggerBinaryId")?))
     }
 
-    /// Starts an in-memory `refresh` job that runs the scraper's `updateContents`, or
+    /// Starts an in-memory `refresh` job that runs the plugin's `onUpdateContents`, or
     /// returns the one already refreshing it.
     pub async fn refresh(&self, plugin_id: &str) -> Result<Job, ScrapingError> {
         if self
             .inner
             .handle
             .registry()
-            .plugin::<dyn ScraperPluginInstance>(plugin_id)
+            .plugin::<dyn PluginInstance>(plugin_id)
             .is_none()
         {
             return Err(PluginInvocationError::new(
                 "NotFoundError",
-                "UNKNOWN_SCRAPER",
-                format!("unknown scraper '{plugin_id}'"),
+                "UNKNOWN_PLUGIN",
+                format!("unknown plugin '{plugin_id}'"),
             )
             .into());
         }

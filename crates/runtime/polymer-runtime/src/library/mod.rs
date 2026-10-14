@@ -183,7 +183,7 @@ impl LibraryService {
             metadata_url: self.reader.clone().recipient(),
             scraping_start: self.actor.clone().recipient(),
             scraping_scrapers: self.reader.clone().recipient(),
-            scraping_refresh: self.actor.clone().recipient(),
+            contents_refresh: self.actor.clone().recipient(),
             sources_list: self.sources.clone().recipient(),
             sources_add: self.sources.clone().recipient(),
             sources_remove: self.sources.clone().recipient(),

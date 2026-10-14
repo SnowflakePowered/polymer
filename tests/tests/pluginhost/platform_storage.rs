@@ -363,6 +363,7 @@ async fn platform_install_persists_keys_before_validation_and_installs_content()
             .embedded_keys()
             .is_empty()
     );
+    nand.uninstall(&[installed.id.as_str()]).await.unwrap();
     manager
         .install(&device.platform, device.id, &path, |_| {})
         .await

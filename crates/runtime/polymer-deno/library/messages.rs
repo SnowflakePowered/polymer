@@ -46,7 +46,7 @@ pub struct Library {
     pub metadata_url: Recipient<MetadataUrl>,
     pub scraping_start: Recipient<ScrapingStart>,
     pub scraping_scrapers: Recipient<ScrapingScrapers>,
-    pub scraping_refresh: Recipient<ScrapingRefresh>,
+    pub contents_refresh: Recipient<ContentsRefresh>,
     pub sources_list: Recipient<SourcesList>,
     pub sources_add: Recipient<SourcesAdd>,
     pub sources_remove: Recipient<SourcesRemove>,
@@ -230,6 +230,6 @@ pub struct ScrapingScrapers;
 
 #[derive(Debug, actix::Message)]
 #[rtype(result = "Result<Value, LibraryError>")]
-pub struct ScrapingRefresh {
+pub struct ContentsRefresh {
     pub plugin: String,
 }

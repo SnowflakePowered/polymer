@@ -64,14 +64,15 @@ are not applied to file digests, so only byte-identical dump representations mat
 
 ## Cache lifecycle
 
-The archive is streamed into the plugin's declared `download` cache and the single
-`shiragame.db` entry is extracted with ZIP CRC verification. Database validation
+The archive is streamed into the plugin's declared `download` cache and extracted
+natively by `polymer:unarchive`, with ZIP CRC verification, into its generation's
+directory. Database validation
 checks schema compatibility, required columns, and SQLite integrity. The release
 has no hash/serial lookup indexes, so the plugin builds them in its staged copy.
 
 Only after indexing, checkpointing, and closing the staged database does one
 SQLite statement publish its generation in the plugin's persistent database.
-The host serializes `updateContents` calls per plugin. Existing readers retain
+The host serializes `onUpdateContents` calls per plugin. Existing readers retain
 an immutable generation, so a failed or cancelled update cannot replace the
 active database. Older and failed staging files remain in the managed cache;
 clearing that cache reclaims them and causes a rebuild on the next plugin load.
@@ -85,7 +86,7 @@ with cache `write: true`, which creates a stream that can truncate the file.
 
 - `shiragame.ts`: exported lifecycle and scrape callbacks.
 - `content.ts`: persistent generation state and publication.
-- `archive.ts`: bounded download and ZIP extraction.
+- `archive.ts`: bounded download and native ZIP extraction.
 - `catalog.ts`: schema validation and index creation.
 - `matching.ts`, `serial.ts`: platform-scoped matching and serial normalization.
 
@@ -98,7 +99,7 @@ cargo test -p polymer-pluginhost -p polymer-scraping --lib --tests
 
 Two optional integration tests use the real release. Set `SHIRAGAME_TEST_DB` to an
 extracted `shiragame.db` or `SHIRAGAME_TEST_ZIP` to its archive, then run the matching
-ignored test. The archive test needs access to jsr.io for the pinned zip.js module:
+ignored test:
 
 ```sh
 cargo test -p polymer-pluginhost --lib shiragame_release_indexes_and_matches_a_real_dump -- --ignored --nocapture

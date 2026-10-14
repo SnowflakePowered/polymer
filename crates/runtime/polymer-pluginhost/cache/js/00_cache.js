@@ -1,5 +1,6 @@
 import {
   op_cache_create,
+  op_cache_delete_directory,
   op_digest,
   op_cache_keys,
   op_cache_read,
@@ -73,6 +74,7 @@ function directory(key, path) {
     kind: "directory",
     open(name, options = {}) { return file(key, `${path}/${plainPath(name)}`, options); },
     directory(name) { return directory(key, `${path}/${plainPath(name)}`); },
+    delete() { return op_cache_delete_directory(key, path); },
   });
   files.set(result, Object.freeze({ key, path }));
   return result;

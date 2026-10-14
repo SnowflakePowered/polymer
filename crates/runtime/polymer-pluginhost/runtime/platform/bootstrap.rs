@@ -1,6 +1,6 @@
 use super::super::{
     PluginInvocationError, PluginRuntimeHandle,
-    worker::{WorkerOptions, invoke_export, run_worker},
+    worker::{invoke_export, run_worker},
 };
 use polymer_library::jobs::JobHandle;
 use polymer_library::{StorageInspection, StorageManager};
@@ -23,8 +23,7 @@ impl PluginRuntimeHandle {
             .platform(platform)
             .ok_or_else(|| PluginInvocationError::worker("Platform provider unavailable"))?;
         let mut worker =
-            WorkerOptions::for_plugin(provider.as_ref(), self.directories(), BTreeMap::new(), None)
-                .map_err(PluginInvocationError::worker)?;
+            self.worker_options(provider.as_ref(), BTreeMap::new(), None).await?;
         worker.platform.target = Some((manager.clone(), platform.to_owned(), id));
         worker.firmware.platform = Some(platform.to_owned());
         worker.keys.root = manager.root().join("keys");

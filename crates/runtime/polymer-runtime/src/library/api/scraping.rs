@@ -42,12 +42,12 @@ impl Handler<ScrapingScrapers> for LibraryReader {
     }
 }
 
-impl Handler<ScrapingRefresh> for LibraryBackend {
+impl Handler<ContentsRefresh> for LibraryBackend {
     type Result = AtomicResponse<Self, Result<Value, LibraryError>>;
 
     fn handle(
         &mut self,
-        ScrapingRefresh { plugin }: ScrapingRefresh,
+        ContentsRefresh { plugin }: ContentsRefresh,
         _: &mut Context<Self>,
     ) -> Self::Result {
         let scraping = self.scraping.clone();

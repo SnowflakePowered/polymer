@@ -1,5 +1,5 @@
 import {
-  op_scraping_package_from_path, op_scraping_start, op_scraping_scrapers, op_scraping_refresh,
+  op_scraping_package_from_path, op_scraping_start, op_scraping_scrapers,
 } from "ext:core/ops";
 
 import { Package as PackageValue } from "./00_package.js";
@@ -34,7 +34,6 @@ export function createScraping() {
     start: { value: (rootBinaryId, options = {}) => op_scraping_start(String(rootBinaryId), String(options.triggerBinaryId ?? rootBinaryId)) },
     scrapers: { value: Object.freeze({
       list: () => op_scraping_scrapers(),
-      update: id => op_scraping_refresh(String(id)),
     }) },
   });
   return Object.freeze({

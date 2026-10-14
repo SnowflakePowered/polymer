@@ -1,6 +1,21 @@
 import { osIdentifier } from "polymer:sys";
+import { caches, config } from "polymer:plugin";
+import { connect } from "polymer:database";
+import { download } from "polymer:download";
+import { Job } from "polymer:jobs";
+import { unarchive } from "polymer:unarchive";
+import { EmulatorUpdates } from "jsr:@polymer-fe/emulator-updates@^0.1.0";
 const isMacos = osIdentifier.startsWith("macos-");
-const runtime = (await import(`pkg:bin/${osIdentifier}${isMacos ? "/Dolphin.app" : ""}`)).default;
+const runtime = new EmulatorUpdates({
+    name: "Dolphin",
+    cache: caches.runtime,
+    osIdentifier,
+    channel: String(config.channel ?? "stable"),
+    connect,
+    download,
+    unarchive,
+    Job,
+});
 import { uiAutomation, UiAutomationError, type UiLocator, type WindowQuery } from "polymer:uiautomation";
 import type {
     Actions,
@@ -414,7 +429,11 @@ async function applyWiiConnectionChanges(
     }
 }
 
-export const onLaunch = (args: EmulatorLaunchArgs<Options, Readonly<{ nand?: Storage, slotA?: Storage, slotB?: Storage }>>) => {
+export const onPluginLoad = () => runtime.ready();
+
+export const onUpdateContents = async () => runtime.update([await runtime.release("dolphin")]);
+
+export const onLaunch = async (args: EmulatorLaunchArgs<Options, Readonly<{ nand?: Storage, slotA?: Storage, slotB?: Storage }>>) => {
     const gameName = args.launchSet[0].package.filename;
     const isWii = args.console === "NINTENDO_WII";
     const controllerTopology = pointerTopology(args.controllerTopology);
@@ -423,7 +442,13 @@ export const onLaunch = (args: EmulatorLaunchArgs<Options, Readonly<{ nand?: Sto
     // visible as files and be passed to Dolphin with -e.
     const launchesNandTitle = isWii && !isDiscImage(gameName);
 
-    args.filesystem.mount("/Dolphin", runtime, { mode: "rx" });
+    let dolphin: DirectoryResource = await runtime.launch();
+    if (isMacos) {
+        for await (const entry of dolphin) {
+            if (entry.kind === "directory" && entry.name === "Dolphin.app") dolphin = entry;
+        }
+    }
+    args.filesystem.mount("/Dolphin", dolphin, { mode: "rx" });
     args.filesystem.mount("/User/StateSaves", args.saveStates.directory, { mode: "rwx" });
     args.filesystem.mount(
         "/User/Config/Logger.ini",
@@ -676,6 +701,8 @@ export const onQuit = async (context: QuitContext): Promise<FileEntry | null> =>
 }
 
 export default {
+    onPluginLoad,
+    onUpdateContents,
     onConfigure,
     onLaunch,
     onPauseResume,

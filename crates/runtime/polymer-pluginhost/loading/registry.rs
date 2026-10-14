@@ -53,11 +53,22 @@ impl RegisteredPlugin {
 #[derive(Clone, Default)]
 pub struct PluginRegistry {
     plugins: Arc<RwLock<HashMap<String, RegisteredPlugin>>>,
+    jsr_overrides: Arc<dashmap::DashMap<String, PathBuf>>,
 }
 
 impl PluginRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Resolves a JSR package such as `@polymer-fe/emulator-updates` from a local directory
+    /// holding its `jsr.json`, for every plugin.
+    pub fn override_jsr(&self, package: impl Into<String>, directory: PathBuf) {
+        self.jsr_overrides.insert(package.into(), directory);
+    }
+
+    pub(crate) fn jsr_overrides(&self) -> Arc<dashmap::DashMap<String, PathBuf>> {
+        self.jsr_overrides.clone()
     }
 
     pub fn platform(&self, platform: &str) -> Option<Arc<dyn PlatformPluginInstance>> {

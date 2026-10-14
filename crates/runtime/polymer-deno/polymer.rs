@@ -58,7 +58,7 @@ use library::{
     op_library_metadata_add, op_library_metadata_delete, op_library_metadata_replace,
     op_library_metadata_text, op_library_metadata_update, op_library_metadata_url,
     op_library_sources_add, op_library_sources_list, op_library_sources_remove,
-    op_library_sources_scan, op_scraping_refresh, op_scraping_scrapers, op_scraping_start,
+    op_library_sources_scan, op_contents_refresh, op_scraping_scrapers, op_scraping_start,
 };
 
 pub type ApiFuture<T> = Pin<Box<dyn Future<Output = T> + 'static>>;
@@ -133,6 +133,10 @@ pub trait PolymerHost: Send + Sync {
         settings: PlatformSettings,
     ) -> ApiFuture<Result<Value, String>>;
     fn list_plugins(&self) -> Value;
+    fn plugin_options(&self, plugin: String) -> ApiFuture<Result<Value, String>>;
+    fn set_plugin_option(&self, plugin: String, key: String, value: Value) -> ApiFuture<Result<(), String>>;
+    fn plugin_cache_size(&self, plugin: String, key: String) -> ApiFuture<Result<u64, String>>;
+    fn clear_plugin_cache(&self, plugin: String, key: String) -> ApiFuture<Result<(), String>>;
     fn invoke_plugin(
         &self,
         plugin: String,
@@ -345,6 +349,48 @@ fn op_plugin_list(state: &mut OpState) -> Result<serde_json::Value, JsErrorBox> 
 
 #[op2]
 #[serde]
+async fn op_plugin_options(
+    state: Rc<RefCell<OpState>>,
+    #[string] plugin: String,
+) -> Result<serde_json::Value, JsErrorBox> {
+    let host = state.borrow().borrow::<Arc<dyn PolymerHost>>().clone();
+    host.plugin_options(plugin).await.map_err(JsErrorBox::type_error)
+}
+
+#[op2]
+async fn op_plugin_set_option(
+    state: Rc<RefCell<OpState>>,
+    #[string] plugin: String,
+    #[string] key: String,
+    #[serde] value: serde_json::Value,
+) -> Result<(), JsErrorBox> {
+    let host = state.borrow().borrow::<Arc<dyn PolymerHost>>().clone();
+    host.set_plugin_option(plugin, key, value).await.map_err(JsErrorBox::type_error)
+}
+
+#[op2]
+#[number]
+async fn op_plugin_cache_size(
+    state: Rc<RefCell<OpState>>,
+    #[string] plugin: String,
+    #[string] key: String,
+) -> Result<u64, JsErrorBox> {
+    let host = state.borrow().borrow::<Arc<dyn PolymerHost>>().clone();
+    host.plugin_cache_size(plugin, key).await.map_err(JsErrorBox::type_error)
+}
+
+#[op2]
+async fn op_plugin_cache_clear(
+    state: Rc<RefCell<OpState>>,
+    #[string] plugin: String,
+    #[string] key: String,
+) -> Result<(), JsErrorBox> {
+    let host = state.borrow().borrow::<Arc<dyn PolymerHost>>().clone();
+    host.clear_plugin_cache(plugin, key).await.map_err(JsErrorBox::type_error)
+}
+
+#[op2]
+#[serde]
 async fn op_plugin_invoke(
     state: Rc<RefCell<OpState>>,
     #[string] plugin: String,
@@ -525,6 +571,10 @@ deno_core::extension!(
         op_configuration_platforms,
         op_configuration_update_platform,
         op_plugin_list,
+        op_plugin_options,
+        op_plugin_set_option,
+        op_plugin_cache_size,
+        op_plugin_cache_clear,
         op_plugin_invoke,
         op_prepared_filesystem_release,
         op_consolestorage_platforms,
@@ -564,7 +614,7 @@ deno_core::extension!(
         op_library_metadata_replace,
         op_library_metadata_text,
         op_library_metadata_url,
-        op_scraping_start, op_scraping_scrapers, op_scraping_refresh,
+        op_scraping_start, op_scraping_scrapers, op_contents_refresh,
         op_library_sources_list, op_library_sources_add, op_library_sources_remove, op_library_sources_scan,
         op_jobs_list, op_jobs_get, op_jobs_cancel, op_jobs_retry, op_jobs_dismiss, op_jobs_import, op_jobs_check_updates, op_jobs_fetch_update,
         op_emulator_launch,

@@ -5,6 +5,7 @@ import { AppSidebar } from "../../components/AppSidebar";
 import { useShell } from "../../app/shell-context";
 import { KeySettings } from "./KeySettings";
 import { PlatformSettings } from "./PlatformSettings";
+import { PluginSettings } from "./PluginSettings";
 import { SourceSettings } from "./SourceSettings";
 
 const shellLayout = css({ display: "flex", height: "100%", color: "text", bg: "surface" });
@@ -17,7 +18,7 @@ export function SettingsPage() {
   let panel!: HTMLElement;
   return <div class={shellLayout}><AppSidebar /><Screen class={screen} hints={[{ action: "back", label: "Back" }, { action: "activate", label: "OK" }]} onAction={action => { if (action.type !== "back") return false; shell.navigate("/"); return true; }}>
     <ScreenHeader title="Settings" icon={<Icon name="settings" class={headerIcon} strokeWidth={1.4} />} />
-    <MasterDetail navigation={<CategoryNavigation label="Settings categories" value={category()} items={[{ value: "themes", label: "Themes" }, { value: "platforms", label: "Platforms" }, { value: "sources", label: "Library folders" }, { value: "keys", label: "Key settings" }]} onValueChange={setCategory} onEnter={() => panel.querySelector<HTMLElement>("input")?.focus()} />}>
+    <MasterDetail navigation={<CategoryNavigation label="Settings categories" value={category()} items={[{ value: "themes", label: "Themes" }, { value: "platforms", label: "Platforms" }, { value: "sources", label: "Library folders" }, { value: "keys", label: "Key settings" }, { value: "plugins", label: "Plugins" }]} onValueChange={setCategory} onEnter={() => panel.querySelector<HTMLElement>("input")?.focus()} />}>
       <section ref={panel}>
         <Switch>
           <Match when={category() === "themes"}>
@@ -30,6 +31,7 @@ export function SettingsPage() {
           <Match when={category() === "platforms"}><PlatformSettings /></Match>
           <Match when={category() === "sources"}><SourceSettings /></Match>
           <Match when={category() === "keys"}><KeySettings /></Match>
+          <Match when={category() === "plugins"}><PluginSettings /></Match>
         </Switch>
       </section>
     </MasterDetail>

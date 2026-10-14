@@ -1,4 +1,4 @@
-import { caches } from "polymer:cache";
+import { caches } from "polymer:plugin";
 import { download } from "polymer:download";
 import type { PlatformDevice, PluginCacheFile, UpdateCandidate, UpdateQuery } from "polymer:api";
 

@@ -4,6 +4,18 @@ version = "0.0.1"
 class = "emulator"
 main = "retroarch.ts"
 
+[plugin.permissions.net]
+allowed-hosts = ["emulator-index.snowflakepowe.red", "buildbot.libretro.com", "jsr.io"]
+
+[[plugin.caches]]
+key = "runtime"
+label = "RetroArch Runtime"
+
+[plugin.config.channel]
+display = "Update channel"
+default = "stable"
+choices = ["stable", "preview", "nightly"]
+
 [emulator]
 platforms = ["SONY_PS2"]
 

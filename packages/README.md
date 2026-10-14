@@ -3,7 +3,8 @@
 | Package | Contents | Used by |
 |---|---|---|
 | `@polymer-fe/types` | Data types shared by plugins and the frontend (`Package`, `Digestible`, configuration layouts). | both |
-| `@polymer-fe/plugin-api` | Declarations for the host modules plugins import (`polymer:api`, `polymer:cache`, `polymer:jobs`, ...) and for `pkg:` and `jsr:` imports. | plugins |
+| `@polymer-fe/plugin-api` | Declarations for the host modules plugins import (`polymer:api`, `polymer:plugin`, `polymer:jobs`, ...) and for `pkg:` and `jsr:` imports. | plugins |
+| `@polymer-fe/emulator-updates` | Emulator binary updates from the emulator index: download, extract, stage, and promote at launch. Published to JSR; plugins import `jsr:@polymer-fe/emulator-updates`, which development builds resolve to this directory. | plugins |
 | `@polymer-fe/frontend` | The `window.Polymer` API and theme-independent shell helpers (`LibraryState`, `NavigationRouter`, `GameLauncher`, ...). | themes |
 | `@polymer-fe/solid`, `@polymer-fe/react`, `@polymer-fe/vue` | JSX declarations for Polymer's custom elements (`<tracked-surface>`) in each framework. Type-only, with the framework as a peer dependency. | themes |
 

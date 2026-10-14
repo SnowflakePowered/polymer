@@ -1,9 +1,11 @@
+mod config;
 mod emulator;
 mod plugin;
 mod scraper;
 mod theme;
 
 pub(crate) use emulator::EmulatorPlugin;
+pub use config::{PluginConfig, PluginConfigError, PluginOption};
 pub use emulator::SaveStateConfig;
 pub use plugin::PackageError;
 pub use plugin::PluginCache;

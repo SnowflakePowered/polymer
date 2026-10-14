@@ -121,6 +121,7 @@ polymer-protocol = { path = "crates/runtime/polymer-protocol" }
 polymer-ipc = { path = "crates/runtime/polymer-ipc" }
 polymer-statistics = { path = "crates/runtime/polymer-statistics" }
 polymer-platform = { path = "crates/runtime/polymer-platform" }
+polymer-unarchive = { path = "crates/runtime/polymer-unarchive" }
 polymer-platform-windows = { path = "crates/runtime/polymer-platform-windows" }
 polymer-platform-macos = { path = "crates/runtime/polymer-platform-macos" }
 objc2 = "0.6.4"

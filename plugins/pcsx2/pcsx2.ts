@@ -1,5 +1,10 @@
-import runtime from "pkg:bin/win-x64";
-import config from "pkg:plugin.toml";
+import { caches, config } from "polymer:plugin";
+import { connect } from "polymer:database";
+import { download } from "polymer:download";
+import { Job } from "polymer:jobs";
+import { osIdentifier } from "polymer:sys";
+import { unarchive } from "polymer:unarchive";
+import { EmulatorUpdates } from "jsr:@polymer-fe/emulator-updates@^0.1.0";
 import type { EmulatorLaunchArgs, PauseResumeContext, Storage } from "polymer:api";
 import { HotkeyParser } from "pkg:hotkeys.ts";
 
@@ -38,6 +43,21 @@ type Options = {
         "emucore-gs": { renderer: number },
 };
 
+const runtime = new EmulatorUpdates({
+    name: "PCSX2",
+    cache: caches.runtime,
+    osIdentifier,
+    channel: String(config.channel ?? "stable"),
+    connect,
+    download,
+    unarchive,
+    Job,
+});
+
+export const onPluginLoad = () => runtime.ready();
+
+export const onUpdateContents = async () => runtime.update([await runtime.release("pcsx2")]);
+
 export const onLaunch = async (args: EmulatorLaunchArgs<Options, Readonly<{ mem1?: Storage, mem2?: Storage }>>) => {
     const bios = (await args.firmwareStore.list()).find(entry =>
         entry.platform === "SONY_PS2" && entry.byteLength === 4 * 1024 * 1024
@@ -51,12 +71,12 @@ export const onLaunch = async (args: EmulatorLaunchArgs<Options, Readonly<{ mem1
     // Keep the immutable PCSX2 distribution separate from invocation-local
     // state. Portable mode only needs its fixed `inis/` child to be writable;
     // every configurable data directory is redirected to /User below.
-    args.filesystem.mount("/PCSX2", runtime, { mode: "rx" });
+    args.filesystem.mount("/PCSX2", await runtime.launch(), { mode: "rx" });
     args.filesystem.mount("/PCSX2/inis");
     if (args.storage.mem1) {
         args.filesystem.mount("/User/memcards/Mcd001.ps2", args.storage.mem1, {
             mode: "rwx",
-            format: config.plugin.config.memory_card_format,
+            format: String(config.memory_card_format),
         });
     }
     args.filesystem.mount(`/User/bios/${biosName}`, biosFile, { mode: "r" });
@@ -119,4 +139,4 @@ export const onPauseResume = (context: PauseResumeContext) => {
     context.actions.pause?.activate();
 };
 
-export default { onLaunch, onParseHotkey, onPauseResume };
+export default { onPluginLoad, onUpdateContents, onLaunch, onParseHotkey, onPauseResume };

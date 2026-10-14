@@ -57,7 +57,7 @@ struct PluginLifecycle {
     /// The functions the plugin exports, discovered when it first loads in this process.
     loaded: OnceCell<BTreeSet<String>>,
     /// Whether the plugin's contents are usable: false when `onPluginLoad` returned false,
-    /// until `updateContents` succeeds.
+    /// until `onUpdateContents` succeeds.
     ready: AtomicBool,
     /// Serializes the plugin's bootstraps.
     bootstrap: Arc<tokio::sync::Mutex<()>>,
@@ -261,6 +261,166 @@ impl PluginRuntimeHandle {
         &self.state.registry
     }
 
+    fn instance(&self, plugin_id: &str) -> Result<Arc<dyn PluginInstance>, PluginInvocationError> {
+        self.registry()
+            .plugin::<dyn PluginInstance>(plugin_id)
+            .ok_or_else(|| {
+                PluginInvocationError::new(
+                    "NotFoundError",
+                    "UNKNOWN_PLUGIN",
+                    format!("unknown plugin '{plugin_id}'"),
+                )
+            })
+    }
+
+    /// The plugin's database, with the table holding the user's choices for its options.
+    async fn options_database(&self, plugin_id: &str) -> Result<turso::Connection, PluginInvocationError> {
+        let path = self.directories().plugin_database(plugin_id);
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(PluginInvocationError::worker)?;
+        }
+        let path = path
+            .to_str()
+            .ok_or_else(|| PluginInvocationError::worker("plugin database path is not UTF-8"))?;
+        let connection = turso::Builder::new_local(path)
+            .experimental_without_rowid(true)
+            .build()
+            .await
+            .map_err(PluginInvocationError::worker)?
+            .connect()
+            .map_err(PluginInvocationError::worker)?;
+        connection
+            .execute(
+                "CREATE TABLE IF NOT EXISTS polymer_options (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+                (),
+            )
+            .await
+            .map_err(PluginInvocationError::worker)?;
+        Ok(connection)
+    }
+
+    /// The user's saved choices for a plugin's options.
+    async fn saved_config(&self, plugin_id: &str) -> serde_json::Map<String, Value> {
+        let saved = async {
+            let connection = self.options_database(plugin_id).await?;
+            let mut rows = connection
+                .query("SELECT key, value FROM polymer_options", ())
+                .await
+                .map_err(PluginInvocationError::worker)?;
+            let mut saved = serde_json::Map::new();
+            while let Some(row) = rows.next().await.map_err(PluginInvocationError::worker)? {
+                let key = row.get::<String>(0).map_err(PluginInvocationError::worker)?;
+                let value = row.get::<String>(1).map_err(PluginInvocationError::worker)?;
+                if let Ok(value) = serde_json::from_str(&value) {
+                    saved.insert(key, value);
+                }
+            }
+            Ok::<_, PluginInvocationError>(saved)
+        };
+        saved.await.unwrap_or_else(|error| {
+            tracing::warn!(plugin = %plugin_id, %error, "could not read plugin options");
+            serde_json::Map::new()
+        })
+    }
+
+    /// What a fresh worker for the plugin needs, including the user's choices for its options.
+    async fn worker_options(
+        &self,
+        plugin: &dyn PluginInstance,
+        storage: StorageFactories,
+        quick_resume: Option<QuickResumeData>,
+    ) -> Result<WorkerOptions, PluginInvocationError> {
+        WorkerOptions::for_plugin(
+            plugin,
+            self.directories(),
+            storage,
+            quick_resume,
+            &self.saved_config(plugin.id()).await,
+            self.registry().jsr_overrides(),
+        )
+        .map_err(PluginInvocationError::worker)
+    }
+
+    /// The current value of each of a plugin's user-facing options.
+    pub async fn options(
+        &self,
+        plugin_id: &str,
+    ) -> Result<serde_json::Map<String, Value>, PluginInvocationError> {
+        let plugin = self.instance(plugin_id)?;
+        let mut effective = plugin.config().effective(&self.saved_config(plugin_id).await);
+        effective.retain(|key, _| plugin.config().options().any(|(name, _)| name == key));
+        Ok(effective)
+    }
+
+    /// Saves the user's value for one of a plugin's user-facing options.
+    pub async fn set_option(
+        &self,
+        plugin_id: &str,
+        key: &str,
+        value: Value,
+    ) -> Result<(), PluginInvocationError> {
+        self.instance(plugin_id)?
+            .config()
+            .validate_option(key, &value)
+            .map_err(|error| PluginInvocationError::new("TypeError", "INVALID_OPTION", error.to_string()))?;
+        self.options_database(plugin_id)
+            .await?
+            .execute(
+                "INSERT INTO polymer_options (key, value) VALUES (?1, ?2) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                (key, value.to_string()),
+            )
+            .await
+            .map_err(PluginInvocationError::worker)?;
+        Ok(())
+    }
+
+    fn cache_path(&self, plugin_id: &str, key: &str) -> Result<std::path::PathBuf, PluginInvocationError> {
+        if !self.instance(plugin_id)?.caches().iter().any(|cache| cache.key == key) {
+            return Err(PluginInvocationError::new(
+                "NotFoundError",
+                "UNKNOWN_CACHE",
+                format!("plugin '{plugin_id}' has no cache '{key}'"),
+            ));
+        }
+        Ok(self.directories().plugin_cache(plugin_id).join(key))
+    }
+
+    /// The bytes used by one of a plugin's caches.
+    pub async fn cache_size(&self, plugin_id: &str, key: &str) -> Result<u64, PluginInvocationError> {
+        let path = self.cache_path(plugin_id, key)?;
+        tokio::task::spawn_blocking(move || {
+            let mut size = 0;
+            let mut pending = vec![path];
+            while let Some(directory) = pending.pop() {
+                let Ok(entries) = std::fs::read_dir(&directory) else { continue };
+                for entry in entries.flatten() {
+                    match entry.metadata() {
+                        Ok(metadata) if metadata.is_dir() => pending.push(entry.path()),
+                        Ok(metadata) => size += metadata.len(),
+                        Err(_) => {}
+                    }
+                }
+            }
+            size
+        })
+        .await
+        .map_err(PluginInvocationError::worker)
+    }
+
+    /// Deletes everything in one of a plugin's caches.
+    pub async fn clear_cache(&self, plugin_id: &str, key: &str) -> Result<(), PluginInvocationError> {
+        let path = self.cache_path(plugin_id, key)?;
+        tokio::task::spawn_blocking(move || match std::fs::remove_dir_all(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            result => result,
+        })
+        .await
+        .map_err(PluginInvocationError::worker)?
+        .map_err(PluginInvocationError::worker)
+    }
+
     pub fn jobs(&self) -> Option<&Arc<polymer_library::jobs::JobStore>> {
         self.state.jobs.as_ref()
     }
@@ -311,8 +471,7 @@ impl PluginRuntimeHandle {
             })?;
         let entrypoint = plugin.entrypoint().to_string();
         let worker =
-            WorkerOptions::for_plugin(plugin.as_ref(), self.directories(), BTreeMap::new(), None)
-                .map_err(PluginInvocationError::worker)?;
+            self.worker_options(plugin.as_ref(), BTreeMap::new(), None).await?;
         let loading = lifecycle.clone();
         self.run_with_control(self.cancellation_token().control, move |control| {
             run_worker(entrypoint, worker, loading, control, |_| async { Ok(()) })
@@ -359,8 +518,7 @@ impl PluginRuntimeHandle {
         let entrypoint = plugin.entrypoint().to_string();
         let invocation_entrypoint = entrypoint.clone();
         let worker =
-            WorkerOptions::for_plugin(plugin.as_ref(), self.directories(), BTreeMap::new(), None)
-                .map_err(PluginInvocationError::worker)?;
+            self.worker_options(plugin.as_ref(), BTreeMap::new(), None).await?;
         let lifecycle = self.lifecycle(plugin_id);
         let result = self
             .run_with_control(cancellation.control, move |control| {
@@ -504,8 +662,7 @@ impl PluginRuntimeHandle {
         let entrypoint = plugin.entrypoint().to_string();
         let invocation_entrypoint = entrypoint.clone();
         let worker =
-            WorkerOptions::for_plugin(plugin.as_ref(), self.directories(), BTreeMap::new(), None)
-                .map_err(PluginInvocationError::worker)?;
+            self.worker_options(plugin.as_ref(), BTreeMap::new(), None).await?;
         let lifecycle = self.lifecycle(plugin_id);
         let provided = plugin
             .provides()
@@ -535,15 +692,15 @@ impl PluginRuntimeHandle {
         Ok(results)
     }
 
-    /// Runs a scraper's `updateContents` with `job` as the parent of the jobs it starts.
+    /// Runs a plugin's `onUpdateContents` with `job` as the parent of the jobs it starts.
     pub async fn update_contents(
         &self,
         plugin_id: &str,
         job: Option<Arc<polymer_library::jobs::JobHandle>>,
         cancellation: PluginCancellationToken,
     ) -> Result<(), PluginInvocationError> {
-        let plugin = self.scraper(plugin_id)?;
-        let path = ["updateContents".to_owned()];
+        let plugin = self.instance(plugin_id)?;
+        let path = ["onUpdateContents".to_owned()];
         self.invoke_generic(plugin, &path, Vec::new(), cancellation, job)
             .await?;
         self.lifecycle(plugin_id)
@@ -553,7 +710,7 @@ impl PluginRuntimeHandle {
     }
 
     /// Whether a scraper's contents are ready, loading the plugin first when nothing has
-    /// run it yet in this process. Contents that are not ready need `updateContents`.
+    /// run it yet in this process. Contents that are not ready need `onUpdateContents`.
     pub async fn contents_ready(&self, plugin_id: &str) -> Result<bool, PluginInvocationError> {
         self.scraper(plugin_id)?;
         self.exports(plugin_id).await?;
@@ -663,8 +820,7 @@ impl PluginRuntimeHandle {
         let entrypoint = plugin.entrypoint().to_string();
         let invocation_entrypoint = entrypoint.clone();
         let worker =
-            WorkerOptions::for_plugin(plugin.as_ref(), self.directories(), BTreeMap::new(), None)
-                .map_err(PluginInvocationError::worker)?;
+            self.worker_options(plugin.as_ref(), BTreeMap::new(), None).await?;
 
         let lifecycle = self.lifecycle(plugin.id());
         let path = export_path.to_vec();
@@ -700,13 +856,13 @@ impl PluginRuntimeHandle {
         invocation: EmulatorLaunchInvocation,
         cancellation: PluginCancellationToken,
     ) -> Result<(EmulatorLaunchArguments, Option<ControllerSession>), PluginInvocationError> {
-        let mut worker = WorkerOptions::for_plugin(
-            invocation.plugin.as_ref(),
-            self.directories(),
-            invocation.storage.clone(),
-            invocation.quick_resume.clone(),
-        )
-        .map_err(PluginInvocationError::worker)?;
+        let mut worker = self
+            .worker_options(
+                invocation.plugin.as_ref(),
+                invocation.storage.clone(),
+                invocation.quick_resume.clone(),
+            )
+            .await?;
         worker.firmware.platform = invocation.arguments["console"].as_str().map(str::to_owned);
         worker.keys.platform = worker.firmware.platform.clone();
         let lifecycle = self.lifecycle(invocation.plugin.id());

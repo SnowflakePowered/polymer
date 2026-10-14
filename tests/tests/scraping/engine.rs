@@ -341,7 +341,7 @@ async fn overlapping_refreshes_share_one_job_that_parents_the_plugins_jobs() {
         plugin.path().join("contents.js"),
         r#"
           import { Job } from "polymer:jobs";
-          export async function updateContents() {
+          export async function onUpdateContents() {
             await new Job("Indexing").run(() => new Promise(resolve => setTimeout(resolve, 50)));
           }
           export async function* onScrape() {}
@@ -413,7 +413,7 @@ async fn scraping_refreshes_contents_a_plugin_reports_missing_before_its_first_s
           export async function onPluginLoad() {
             return (await genre()) !== undefined;
           }
-          export async function updateContents() {
+          export async function onUpdateContents() {
             const db = await connect();
             try { await db.exec("CREATE TABLE genres (value TEXT); INSERT INTO genres VALUES ('Action');"); }
             finally { await db.close(); }

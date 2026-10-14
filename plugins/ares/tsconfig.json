@@ -3,6 +3,7 @@
   "compilerOptions": {
     "paths": {
       "polymer:*": ["../../packages/plugin-api/src/*"],
+      "jsr:@polymer-fe/emulator-updates@*": ["../../packages/emulator-updates/src/mod.ts"],
       "@polymer-fe/types": ["../../packages/types/src/index.ts"],
       "pkg:*.ts": ["./*.ts"]
     }

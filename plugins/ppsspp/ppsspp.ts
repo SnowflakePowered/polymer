@@ -1,5 +1,10 @@
-import runtime from "pkg:bin/win-x64";
-import { caches } from "polymer:cache";
+import { caches, config } from "polymer:plugin";
+import { connect } from "polymer:database";
+import { download } from "polymer:download";
+import { Job } from "polymer:jobs";
+import { osIdentifier } from "polymer:sys";
+import { unarchive } from "polymer:unarchive";
+import { EmulatorUpdates } from "jsr:@polymer-fe/emulator-updates@^0.1.0";
 import type {
     Actions, DirectoryResource, EmulatorLaunchArgs, FileEntry, PauseResumeContext, QuitContext, StateContext,
 } from "polymer:api";
@@ -60,9 +65,24 @@ class StateSlots {
     }
 }
 
-export const onLaunch = (args: EmulatorLaunchArgs<{ general: { FullscreenOnDoubleclick: boolean, StateSlot: number } }>) => {
+const runtime = new EmulatorUpdates({
+    name: "PPSSPP",
+    cache: caches.runtime,
+    osIdentifier,
+    channel: String(config.channel ?? "stable"),
+    connect,
+    download,
+    unarchive,
+    Job,
+});
+
+export const onPluginLoad = () => runtime.ready();
+
+export const onUpdateContents = async () => runtime.update([await runtime.release("ppsspp")]);
+
+export const onLaunch = async (args: EmulatorLaunchArgs<{ general: { FullscreenOnDoubleclick: boolean, StateSlot: number } }>) => {
     const fs = args.filesystem;
-    fs.mount("/PPSSPP", runtime, { mode: "rx" });
+    fs.mount("/PPSSPP", await runtime.launch(), { mode: "rx" });
     fs.mount("/PPSSPP/memstick");
     fs.mount("/PPSSPP/memstick/PSP/SAVEDATA", caches.saves, { mode: "rw" });
     fs.mount("/PPSSPP/memstick/PSP/PPSSPP_STATE", args.saveStates.directory, { mode: "rwx" });
@@ -113,4 +133,4 @@ export const onStateResume = (context: StateContext) => StateSlots.load(context.
 
 export const onQuit = (context: QuitContext) => StateSlots.save(context.actions, context.directory, QUICK_RESUME_SLOT);
 
-export default { onLaunch, onParseHotkey, onPauseResume, onStateSave, onStateResume, onQuit };
+export default { onPluginLoad, onUpdateContents, onLaunch, onParseHotkey, onPauseResume, onStateSave, onStateResume, onQuit };

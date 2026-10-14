@@ -1,5 +1,10 @@
-import runtime from "pkg:bin/win-x64";
-import { caches } from "polymer:cache";
+import { caches, config } from "polymer:plugin";
+import { connect } from "polymer:database";
+import { download } from "polymer:download";
+import { Job } from "polymer:jobs";
+import { osIdentifier } from "polymer:sys";
+import { unarchive } from "polymer:unarchive";
+import { EmulatorUpdates } from "jsr:@polymer-fe/emulator-updates@^0.1.0";
 import { systems } from "pkg:systems.ts";
 import type { BatteryStorage, EmulatorLaunchArgs, Storage } from "polymer:api";
 
@@ -10,11 +15,26 @@ type LaunchArgs = EmulatorLaunchArgs<{
     paths: { home: string, saves: string, firmware: string, screenshots: string },
 }, BatteryStorage & Readonly<{ card1?: Storage }>>;
 
+const runtime = new EmulatorUpdates({
+    name: "ares",
+    cache: caches.runtime,
+    osIdentifier,
+    channel: String(config.channel ?? "stable"),
+    connect,
+    download,
+    unarchive,
+    Job,
+});
+
+export const onPluginLoad = () => runtime.ready();
+
+export const onUpdateContents = async () => runtime.update([await runtime.release("ares")]);
+
 export const onLaunch = async (args: LaunchArgs) => {
     const system = systems[args.console];
     if (!system) throw new Error(`ares does not support ${args.console}`);
     const fs = args.filesystem;
-    fs.mount("/ares", runtime, { mode: "rx" });
+    fs.mount("/ares", await runtime.launch(), { mode: "rx" });
     fs.mount("/User");
     fs.mount("/User/saves", caches.saves, { mode: "rw" });
     const game = fs.mount("/Game", args.launchSet[0].package, { mode: "rx" });
@@ -79,4 +99,4 @@ class AresFirmware {
     }
 }
 
-export default { onLaunch };
+export default { onPluginLoad, onUpdateContents, onLaunch };

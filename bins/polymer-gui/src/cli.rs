@@ -38,6 +38,24 @@ pub async fn parse() -> Result<ShellOptions, Box<dyn Error>> {
             }
         }
     }
+    let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent);
+    for directory in workspace
+        .and_then(|workspace| fs::read_dir(workspace.join("packages")).ok())
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+    {
+        let name = fs::read(directory.join("jsr.json"))
+            .ok()
+            .and_then(|manifest| serde_json::from_slice::<serde_json::Value>(&manifest).ok())
+            .and_then(|manifest| manifest.get("name")?.as_str().map(str::to_owned));
+        if let Some(name) = name {
+            plugins.override_jsr(name, directory);
+        }
+    }
     let directories = polymer_library::Directories::discover()?;
     let local_storage = match polymer_deno::webstorage::LocalStorage::open(&directories).await {
         Ok(storage) => Some(storage),

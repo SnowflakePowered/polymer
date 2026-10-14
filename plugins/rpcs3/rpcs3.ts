@@ -1,14 +1,34 @@
-import runtime from "pkg:bin/win-x64";
-import { caches } from "polymer:cache";
+import { caches, config } from "polymer:plugin";
+import { connect } from "polymer:database";
+import { download } from "polymer:download";
+import { Job } from "polymer:jobs";
+import { osIdentifier } from "polymer:sys";
+import { unarchive } from "polymer:unarchive";
+import { EmulatorUpdates } from "jsr:@polymer-fe/emulator-updates@^0.1.0";
 import { Rpcs3Configuration } from "pkg:configuration.ts";
 import type { EmulatorLaunchArgs, SaveCheckpointContext, Storage } from "polymer:api";
 
-export const onLaunch = (args: EmulatorLaunchArgs<unknown, Readonly<{ hdd?: Storage, flash?: Storage }>>) => {
+const runtime = new EmulatorUpdates({
+    name: "RPCS3",
+    cache: caches.runtime,
+    osIdentifier,
+    channel: String(config.channel ?? "stable"),
+    connect,
+    download,
+    unarchive,
+    Job,
+});
+
+export const onPluginLoad = () => runtime.ready();
+
+export const onUpdateContents = async () => runtime.update([await runtime.release("rpcs3")]);
+
+export const onLaunch = async (args: EmulatorLaunchArgs<unknown, Readonly<{ hdd?: Storage, flash?: Storage }>>) => {
     if (!args.storage.hdd) {
         throw new Error("Select a PlayStation 3 NAND and save repository for the HDD, and install system software before launching RPCS3.");
     }
     const fs = args.filesystem;
-    fs.mount("/RPCS3", runtime, { mode: "rx" });
+    fs.mount("/RPCS3", await runtime.launch(), { mode: "rx" });
     fs.mount("/Storage/hdd", args.storage.hdd, { mode: "rwx" });
     if (args.storage.flash) fs.mount("/Storage/flash", args.storage.flash, { mode: "rwx" });
     // The PS3 NAND contains both HDD and flash trees; a separate flash selection
@@ -53,4 +73,4 @@ export const onSaveCheckpoint = ({ storage, changed }: SaveCheckpointContext) =>
     storage !== "hdd" || !changed.some(({ path }) =>
         path.split("/").some((part) => part.startsWith(".working_") || part.startsWith(".backup_")));
 
-export default { onLaunch, onSaveCheckpoint };
+export default { onPluginLoad, onUpdateContents, onLaunch, onSaveCheckpoint };

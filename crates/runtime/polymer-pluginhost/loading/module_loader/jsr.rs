@@ -31,6 +31,9 @@ impl PluginModuleLoader {
         } else {
             format!("./{}", parts[2..].join("/"))
         };
+        if let Some(directory) = self.jsr_overrides.get(&package) {
+            return Self::resolve_local(&package, &export, directory.value());
+        }
         let package =
             percent_encoding::utf8_percent_encode(&package, percent_encoding::NON_ALPHANUMERIC);
         let export =
@@ -45,6 +48,33 @@ impl PluginModuleLoader {
                 .unwrap_or_default()
         ))
         .map_err(ModuleLoaderError::from_err)
+    }
+
+    /// Resolves an export of a package from its local `jsr.json`.
+    fn resolve_local(
+        package: &str,
+        export: &str,
+        directory: &std::path::Path,
+    ) -> Result<ModuleSpecifier, ModuleLoaderError> {
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(directory.join("jsr.json")).map_err(ModuleLoaderError::from_err)?,
+        )
+        .map_err(ModuleLoaderError::from_err)?;
+        let path = match manifest.get("exports") {
+            Some(serde_json::Value::String(path)) if export == "." => Some(path.as_str()),
+            Some(serde_json::Value::Object(exports)) => {
+                exports.get(export).and_then(serde_json::Value::as_str)
+            }
+            _ => None,
+        }
+        .ok_or_else(|| {
+            ModuleLoaderError::type_error(format!(
+                "JSR package '{package}' has no export '{export}'"
+            ))
+        })?;
+        ModuleSpecifier::from_file_path(directory.join(path.trim_start_matches("./"))).map_err(
+            |()| ModuleLoaderError::type_error(format!("cannot resolve local JSR package '{package}'")),
+        )
     }
 
     fn jsr_cache(&self) -> Result<&std::path::Path, ModuleLoaderError> {

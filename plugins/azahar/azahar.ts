@@ -1,8 +1,29 @@
-import runtime from "pkg:bin/win-x64";
+import { caches, config } from "polymer:plugin";
+import { connect } from "polymer:database";
+import { download } from "polymer:download";
+import { Job } from "polymer:jobs";
+import { osIdentifier } from "polymer:sys";
+import { unarchive } from "polymer:unarchive";
+import { EmulatorUpdates } from "jsr:@polymer-fe/emulator-updates@^0.1.0";
 import type { EmulatorLaunchArgs, PauseResumeContext, Storage } from "polymer:api";
 import { HotkeyParser } from "pkg:hotkeys.ts";
 
-export const onLaunch = (args: EmulatorLaunchArgs<
+const runtime = new EmulatorUpdates({
+    name: "Azahar",
+    cache: caches.runtime,
+    osIdentifier,
+    channel: String(config.channel ?? "stable"),
+    connect,
+    download,
+    unarchive,
+    Job,
+});
+
+export const onPluginLoad = () => runtime.ready();
+
+export const onUpdateContents = async () => runtime.update([await runtime.release("azahar")]);
+
+export const onLaunch = async (args: EmulatorLaunchArgs<
     { storage: { nand_directory: string, sdmc_directory: string } },
     Readonly<{ ctrnand?: Storage }>
 >) => {
@@ -10,7 +31,7 @@ export const onLaunch = (args: EmulatorLaunchArgs<
         throw new Error("Select a Nintendo 3DS NAND and save repository before launching Azahar.");
     }
     const fs = args.filesystem;
-    fs.mount("/Azahar", runtime, { mode: "rx" });
+    fs.mount("/Azahar", await runtime.launch(), { mode: "rx" });
     fs.mount("/Azahar/user");
     // Polymer's 3DS volume contains both nand/ and sdmc/, including title tickets.
     fs.mount("/Storage", args.storage.ctrnand, { mode: "rwx" });
@@ -42,4 +63,4 @@ export const onPauseResume = (context: PauseResumeContext) => {
     context.actions.pause?.activate();
 };
 
-export default { onLaunch, onParseHotkey, onPauseResume };
+export default { onPluginLoad, onUpdateContents, onLaunch, onParseHotkey, onPauseResume };

@@ -316,11 +316,43 @@ export interface PluginExport {
   readonly [property: string]: PluginExport;
 }
 
+export type PluginOption = Readonly<{
+  key: string;
+  display: string;
+  value: unknown;
+  default: unknown;
+  /** Allowed values; empty when any value of the default's type is allowed. */
+  choices: readonly unknown[];
+}>;
+
+export interface PluginCache {
+  readonly key: string;
+  readonly label: string;
+  /** Bytes currently stored in the cache. */
+  size(): Promise<number>;
+  /** Deletes everything in the cache. */
+  clear(): Promise<void>;
+}
+
+export interface Plugin {
+  readonly id: string;
+  readonly version: string;
+  readonly class: string;
+  readonly caches: Readonly<Record<string, PluginCache>>;
+  /** Options declared with a `display` name in `[plugin.config]`, with the user's current values. */
+  config(): Promise<readonly PluginOption[]>;
+  readonly exports: PluginExport;
+  /** Starts a refresh job that runs the plugin's onUpdateContents, or returns the one already running. */
+  updateContents(): Promise<Job>;
+  /** Saves the user's value for an option in the plugin's database. It applies from the plugin's next invocation. */
+  configure(key: string, value: unknown): Promise<void>;
+}
+
 export interface PluginApi extends EventTarget {
   /** Latest events per runtime source and topic, bounded to 256 entries for late listeners. */
   events(): readonly PluginEvent[];
-  open(id: string): PluginExport;
-  list(): readonly Readonly<{ id: string; version: string; class: string }>[];
+  get(id: string): Plugin | undefined;
+  list(): readonly Plugin[];
 }
 
 export type PluginEvent<T = unknown> = Readonly<{
@@ -380,11 +412,10 @@ export interface ScrapingApi extends EventTarget {
   start(rootBinaryId: string, options?: { triggerBinaryId?: string }): Promise<Job>;
   readonly scrapers: Readonly<{
     list(): Promise<ScraperDescriptor[]>;
-    update(id: string): Promise<Job>;
   }>;
 }
 
-export type JobKind = "scrape" | "install" | "bootstrap" | "plugin" | "import" | "check" | "update" | "download" | "refresh" | "scan";
+export type JobKind = "scrape" | "install" | "bootstrap" | "plugin" | "import" | "check" | "update" | "download" | "refresh" | "scan" | "extract";
 export type JobState = "queued" | "running" | "paused" | "completed" | "partial" | "failed" | "cancelled";
 export type JobStep = Readonly<{ key: string; state: JobState; error: string | null }>;
 /** Background work from any source. Persistent jobs survive restarts and resume. */

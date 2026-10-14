@@ -1,14 +1,35 @@
-import runtime from "pkg:bin/win-x64";
+import { caches, config } from "polymer:plugin";
+import { connect } from "polymer:database";
+import { download } from "polymer:download";
+import { Job } from "polymer:jobs";
+import { osIdentifier } from "polymer:sys";
+import { unarchive } from "polymer:unarchive";
+import { EmulatorUpdates } from "jsr:@polymer-fe/emulator-updates@^0.1.0";
 import discScript from "pkg:disc.lua";
 import type { DiscChangeContext, EmulatorLaunchArgs, Storage } from "polymer:api";
 
 const DISC_REQUEST = "/Flycast/polymer-disc.txt";
 let discPaths: string[] = [];
 
+const runtime = new EmulatorUpdates({
+    name: "Flycast",
+    cache: caches.runtime,
+    osIdentifier,
+    channel: String(config.channel ?? "stable"),
+    connect,
+    download,
+    unarchive,
+    Job,
+});
+
+export const onPluginLoad = () => runtime.ready();
+
+export const onUpdateContents = async () => runtime.update([await runtime.release("flycast")]);
+
 export const onLaunch = async (args: EmulatorLaunchArgs<unknown, Readonly<{ vmu?: Storage }>>) => {
     const path = (virtualPath: string) => args.filesystem.path(virtualPath);
 
-    args.filesystem.mount("/Flycast", runtime, { mode: "rx" });
+    args.filesystem.mount("/Flycast", await runtime.launch(), { mode: "rx" });
     args.filesystem.mount("/Flycast/data");
     for (const name of ["dc_boot.bin", "dc_flash.bin"]) {
         const file = await args.firmwareStore.open(name);
@@ -56,4 +77,4 @@ export const onDiscChange = (context: DiscChangeContext) => {
     context.filesystem.flush();
 };
 
-export default { onLaunch, onDiscChange };
+export default { onPluginLoad, onUpdateContents, onLaunch, onDiscChange };
