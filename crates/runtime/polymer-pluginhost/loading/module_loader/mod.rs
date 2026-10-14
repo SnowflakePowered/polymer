@@ -17,7 +17,6 @@ const PLUGIN_HOST: &str = "plugin";
 const SYS_MODULE: &str = "polymer:sys";
 const API_MODULE: &str = "polymer:api";
 const UI_AUTOMATION_MODULE: &str = "polymer:uiautomation";
-const PLUGIN_STORAGE_MODULE: &str = "polymer:pluginStorage";
 const CONSOLESTORAGE_MODULE: &str = "polymer:consolestorage";
 const DATABASE_MODULE: &str = "polymer:database";
 const DOWNLOAD_MODULE: &str = "polymer:download";
@@ -280,7 +279,6 @@ impl ModuleLoader for PluginModuleLoader {
             API_MODULE
                 | SYS_MODULE
                 | UI_AUTOMATION_MODULE
-                | PLUGIN_STORAGE_MODULE
                 | CONSOLESTORAGE_MODULE
                 | DATABASE_MODULE
                 | DOWNLOAD_MODULE
@@ -384,13 +382,6 @@ impl ModuleLoader for PluginModuleLoader {
             Ok(ModuleSource::new(
                 ModuleType::JavaScript,
                 ModuleSourceCode::String(include_str!("js/05_ui_automation.js").to_owned().into()),
-                module_specifier,
-                None,
-            ))
-        } else if module_specifier.as_str() == PLUGIN_STORAGE_MODULE {
-            Ok(ModuleSource::new(
-                ModuleType::JavaScript,
-                ModuleSourceCode::String(include_str!("js/00_plugin_storage.js").to_owned().into()),
                 module_specifier,
                 None,
             ))

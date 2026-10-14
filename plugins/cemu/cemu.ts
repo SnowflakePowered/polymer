@@ -1,5 +1,4 @@
-import { pluginStorage } from "polymer:pluginStorage";
-import { caches, config } from "polymer:plugin";
+import { caches, config, pluginStorage } from "polymer:plugin";
 import { connect } from "polymer:database";
 import { download } from "polymer:download";
 import { Job } from "polymer:jobs";
