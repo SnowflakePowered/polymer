@@ -61,8 +61,8 @@ impl VulkanVirtualBackend {
     }
     pub fn format(format: vk::Format) -> Option<u32> {
         match format {
-            vk::Format::R8G8B8A8_UNORM => Some(28),
-            vk::Format::B8G8R8A8_UNORM => Some(87),
+            vk::Format::R8G8B8A8_UNORM | vk::Format::R8G8B8A8_SRGB => Some(28),
+            vk::Format::B8G8R8A8_UNORM | vk::Format::B8G8R8A8_SRGB => Some(87),
             vk::Format::A2B10G10R10_UNORM_PACK32 => Some(24),
             vk::Format::R16G16B16A16_SFLOAT => Some(10),
             _ => None,

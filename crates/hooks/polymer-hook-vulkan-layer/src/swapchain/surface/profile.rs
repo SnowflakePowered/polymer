@@ -22,6 +22,8 @@ impl Surface {
             vk::Format::R8G8B8A8_UNORM,
             vk::Format::A2B10G10R10_UNORM_PACK32,
             vk::Format::R16G16B16A16_SFLOAT,
+            vk::Format::B8G8R8A8_SRGB,
+            vk::Format::R8G8B8A8_SRGB,
         ] {
             let mut external = vk::PhysicalDeviceExternalImageFormatInfo::default()
                 .handle_type(vk::ExternalMemoryHandleTypeFlags::D3D12_RESOURCE);
