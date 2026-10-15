@@ -18,6 +18,12 @@ type = "string"
 default = "Vulkan"
 emit = { key = "Renderer" }
 
+[[sections.video.options]]
+key = "Shader Mode"
+title = "Shader Mode"
+type = "string"
+emit = { key = "Shader Mode" }
+
 [targets.settings."Miscellaneous"]
 
 [sections.misc]

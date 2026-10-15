@@ -10939,6 +10939,7 @@ dependencies = [
 name = "polymer-platform-windows"
 version = "0.1.0"
 dependencies = [
+ "ash",
  "exe",
  "ib-hook",
  "parking_lot",
@@ -10986,6 +10987,7 @@ dependencies = [
  "polymer-ipc",
  "polymer-library",
  "polymer-platform-macos",
+ "polymer-platform-windows",
  "polymer-pluginmanifest",
  "polymer-protocol",
  "polymer-unarchive",

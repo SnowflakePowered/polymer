@@ -2,7 +2,7 @@ import { caches, config, pluginStorage } from "polymer:plugin";
 import { connect } from "polymer:database";
 import { download } from "polymer:download";
 import { Job } from "polymer:jobs";
-import { osIdentifier } from "polymer:sys";
+import { graphicsApis, osIdentifier } from "polymer:sys";
 import { unarchive } from "polymer:unarchive";
 import { EmulatorUpdates } from "jsr:@polymer-fe/emulator-updates@^0.1.0";
 import type {
@@ -36,7 +36,7 @@ type Options = {
             }>,
         }>,
     },
-    "content-graphic": { api: number },
+    "content-graphic": { api: number, async_compile: boolean },
 };
 
 type Storages = Readonly<{
@@ -60,20 +60,31 @@ const runtime = new EmulatorUpdates({
     Job,
 });
 
+const graphicsPacks = new EmulatorUpdates({
+    name: "Cemu graphics packs",
+    cache: caches.graphicsPacks,
+    table: "graphics_pack_generations",
+    osIdentifier,
+    connect,
+    download,
+    unarchive,
+    Job,
+});
+
 export const onPluginLoad = () => runtime.ready();
 
 export async function onUpdateContents() {
+    await runtime.update([await runtime.release("cemu")]);
     const response = await fetch(GRAPHICS_PACKS_RELEASE);
     if (!response.ok) throw new Error(`Cemu graphics packs request failed with ${response.status}`);
     const release = await response.json();
     const asset = release.assets?.find((asset: { name: string }) => /^graphicPacks.*\.zip$/.test(asset.name));
     if (!asset?.digest?.startsWith("sha256:")) throw new Error("Cemu graphics packs release has no verifiable archive");
-    await runtime.update([await runtime.release("cemu"), {
+    await graphicsPacks.update([{
         version: release.tag_name,
         url: asset.browser_download_url,
         sha256: asset.digest.slice("sha256:".length),
         size: asset.size,
-        directory: "graphicsPacks",
     }]);
 }
 
@@ -89,19 +100,22 @@ export async function onConfigure(
             key: "api",
             title: "Graphics API",
             type: "select",
-            default: "vulkan",
-            choices: [
-                { key: "vulkan", label: "Vulkan" },
-                { key: "opengl", label: "OpenGL" },
-            ],
+            default: GRAPHICS_APIS[0]?.key ?? "vulkan",
+            choices: GRAPHICS_APIS,
+        }, {
+            key: "asyncShaders",
+            title: "Async Shader Compile",
+            description: "Compile shaders in the background to reduce stutter. Vulkan only.",
+            type: "bool",
+            default: true,
         }],
     }];
     const values: Record<string, Record<string, boolean | number | string | null>> = {
-        [GRAPHICS_GROUP]: { api },
+        [GRAPHICS_GROUP]: { api, asyncShaders: asyncShaders(userConfiguration) },
     };
-    const generation = await runtime.active();
+    const generation = await graphicsPacks.active();
     if (normalizeTitleId(game.titleId) && generation) {
-        const packs = await loadedGraphicsPacks(generation, await runtimeEntries(generation));
+        const packs = await loadedGraphicsPacks(generation);
         const settled = settleGraphicsPacks(packs, game.titleId, userConfiguration, api);
         groups.push(...settled.groups);
         Object.assign(values, settled.values);
@@ -118,10 +132,12 @@ export async function onLaunch(args: EmulatorLaunchArgs<Options, Storages>) {
     const api = selectedApi(userConfiguration);
     args.configuration.options().content.open_pad = true;
     args.configuration.options()["content-graphic"].api = api === "vulkan" ? 1 : 0;
+    args.configuration.options()["content-graphic"].async_compile = asyncShaders(userConfiguration);
 
     const generation = await runtime.launch();
     const entries = await runtimeEntries(generation);
-    const packs = normalizeTitleId(args.launchSet[0].package.titleId) ? await loadedGraphicsPacks(generation, entries) : [];
+    const packsGeneration = await graphicsPacks.ready() ? await graphicsPacks.launch() : undefined;
+    const packs = packsGeneration && normalizeTitleId(args.launchSet[0].package.titleId) ? await loadedGraphicsPacks(packsGeneration) : [];
     const selected = settleGraphicsPacks(
         packs,
         args.launchSet[0].package.titleId,
@@ -151,7 +167,7 @@ export async function onLaunch(args: EmulatorLaunchArgs<Options, Storages>) {
     args.filesystem.mount("/Cemu/keys.txt", keyFile, { mode: "r" });
     args.filesystem.mount("/Cemu/resources", entries.get("resources")!, { mode: "rx" });
     args.filesystem.mount("/Cemu/gameProfiles", entries.get("gameProfiles")!, { mode: "rx" });
-    args.filesystem.mount("/Cemu/graphicPacks/downloadedGraphicPacks", entries.get("graphicsPacks")!, { mode: "rx" });
+    if (packsGeneration) args.filesystem.mount("/Cemu/graphicPacks/downloadedGraphicPacks", packsGeneration, { mode: "rx" });
     args.filesystem.mount("/Cemu/shaderCache", caches.shaderCache, { mode: "rwx" });
     for (const [name, bytes] of Object.entries(args.configuration.render())) {
         args.filesystem.mount(`/Cemu/${name}`, bytes, { mode: "rw" });
@@ -185,8 +201,18 @@ export async function onLaunch(args: EmulatorLaunchArgs<Options, Storages>) {
     };
 }
 
+const GRAPHICS_APIS = ([
+    { key: "vulkan", label: "Vulkan" },
+    { key: "opengl", label: "OpenGL" },
+] satisfies { key: GraphicsApi, label: string }[]).filter(api => graphicsApis.includes(api.key));
+
+function asyncShaders(configuration: UserConfiguration | undefined): boolean {
+    return configuration?.[GRAPHICS_GROUP]?.asyncShaders !== false;
+}
+
 function selectedApi(configuration: UserConfiguration | undefined): GraphicsApi {
-    return configuration?.[GRAPHICS_GROUP]?.api === "opengl" ? "opengl" : "vulkan";
+    const api = configuration?.[GRAPHICS_GROUP]?.api;
+    return GRAPHICS_APIS.find(choice => choice.key === api)?.key ?? GRAPHICS_APIS[0]?.key ?? "vulkan";
 }
 
 async function runtimeEntries(generation: DirectoryEntry): Promise<Map<string, DirEntry>> {
@@ -195,13 +221,11 @@ async function runtimeEntries(generation: DirectoryEntry): Promise<Map<string, D
     return entries;
 }
 
-async function loadedGraphicsPacks(generation: DirectoryEntry, entries: Map<string, DirEntry>): Promise<GraphicsPack[]> {
-    const directory = entries.get("graphicsPacks");
-    if (directory?.kind !== "directory") throw new TypeError("Cemu graphics packs must be a directory");
+async function loadedGraphicsPacks(generation: DirectoryEntry): Promise<GraphicsPack[]> {
     const key = `graphicsPacks:${generation.name}`;
     const cached = pluginStorage.getItem<GraphicsPack[]>(key);
     if (cached !== null) return cached;
-    const packs = await loadGraphicsPacks(directory);
+    const packs = await loadGraphicsPacks(generation);
     pluginStorage.setItem(key, packs);
     return packs;
 }

@@ -2,11 +2,12 @@ import { caches, config } from "polymer:plugin";
 import { connect } from "polymer:database";
 import { download } from "polymer:download";
 import { Job } from "polymer:jobs";
-import { osIdentifier } from "polymer:sys";
+import { graphicsApis, osIdentifier } from "polymer:sys";
 import { unarchive } from "polymer:unarchive";
 import { EmulatorUpdates } from "jsr:@polymer-fe/emulator-updates@^0.1.0";
 import type {
-    Actions, DirectoryResource, EmulatorLaunchArgs, FileEntry, PauseResumeContext, QuitContext, StateContext,
+    Actions, ConfigurationResult, DirectoryResource, EmulatorLaunchArgs, FileEntry, GraphicsHook, Package, PauseResumeContext,
+    QuitContext, StateContext, UserConfiguration,
 } from "polymer:api";
 import { HotkeyParser } from "pkg:hotkeys.ts";
 
@@ -80,7 +81,55 @@ export const onPluginLoad = () => runtime.ready();
 
 export const onUpdateContents = async () => runtime.update([await runtime.release("ppsspp")]);
 
-export const onLaunch = async (args: EmulatorLaunchArgs<{ general: { FullscreenOnDoubleclick: boolean, StateSlot: number } }>) => {
+const GRAPHICS_APIS = ([
+    { hook: "d3d11", label: "Direct3D 11", value: "DIRECT3D11" },
+    { hook: "vulkan", label: "Vulkan", value: "VULKAN" },
+    { hook: "opengl", label: "OpenGL", value: "OPENGL" },
+] satisfies { hook: GraphicsHook, label: string, value: string }[]).filter(api => graphicsApis.includes(api.hook));
+
+const GRAPHICS_API_OPTION = {
+    key: "api",
+    title: "Graphics API",
+    type: "select",
+    default: GRAPHICS_APIS[0]?.hook ?? null,
+    choices: GRAPHICS_APIS.map(api => ({ key: api.hook, label: api.label })),
+} as const;
+
+function graphicsApi(configuration?: UserConfiguration) {
+    return GRAPHICS_APIS.find(api => api.hook === configuration?.graphics?.api) ?? GRAPHICS_APIS[0];
+}
+
+const MAX_CPU_CLOCK = 400;
+
+const CPU_CLOCK_OPTION = {
+    key: "clock",
+    title: "CPU Clock",
+    description: "Percentage of the console's native CPU speed. Higher values can reduce slowdown but may break some games.",
+    type: "int",
+    default: 100,
+    min: 100,
+    max: MAX_CPU_CLOCK,
+} as const;
+
+function cpuClock(configuration?: UserConfiguration): number {
+    const value = configuration?.cpu?.clock;
+    return typeof value === "number" && Number.isInteger(value) ? Math.min(MAX_CPU_CLOCK, Math.max(100, value)) : 100;
+}
+
+export const onConfigure = (_pkg: Package, userConfiguration?: UserConfiguration): ConfigurationResult => ({
+    schema: "ppsspp/v1",
+    groups: [
+        ...(GRAPHICS_APIS.length > 1 ? [{ key: "graphics", title: "Graphics", options: [GRAPHICS_API_OPTION] }] : []),
+        { key: "cpu", title: "CPU", options: [CPU_CLOCK_OPTION] },
+    ],
+    values: { graphics: { api: graphicsApi(userConfiguration)?.hook ?? null }, cpu: { clock: cpuClock(userConfiguration) } },
+});
+
+export const onLaunch = async (args: EmulatorLaunchArgs<{
+    general: { FullscreenOnDoubleclick: boolean, StateSlot: number },
+    graphics: { GraphicsBackend: string, DisabledGraphicsBackends: string },
+    cpu: { CPUSpeed: number },
+}>) => {
     const fs = args.filesystem;
     fs.mount("/PPSSPP", await runtime.launch(), { mode: "rx" });
     fs.mount("/PPSSPP/memstick");
@@ -91,6 +140,12 @@ export const onLaunch = async (args: EmulatorLaunchArgs<{ general: { FullscreenO
     const options = args.configuration.options().general;
     options.FullscreenOnDoubleclick = false;
     options.StateSlot = 0;
+    const api = graphicsApi(args.userConfiguration);
+    args.configuration.options().graphics.GraphicsBackend = api.value;
+    args.configuration.options().graphics.DisabledGraphicsBackends = api.hook === "vulkan" ? "" : "VULKAN";
+    args.configuration.options().cpu.CPUSpeed = cpuClock(args.userConfiguration) === 100
+        ? 0
+        : Math.round(2.22 * cpuClock(args.userConfiguration));
     StateSlots.current = 0;
     StateSlots.paused = false;
     for (const [name, bytes] of Object.entries(args.configuration.render())) {
@@ -110,7 +165,7 @@ export const onLaunch = async (args: EmulatorLaunchArgs<{ general: { FullscreenO
             ["LOCALAPPDATA", fs.path("/User/AppData/Local")], ["TEMP", fs.path("/User/Temp")],
             ["TMP", fs.path("/User/Temp")]],
         isolate: true,
-        hooks: { graphics: ["d3d11"], input: ["xinput"] },
+        hooks: { graphics: [api.hook], input: ["xinput"] },
         surfaces: [{ index: 0, pattern: "^PPSSPP" }],
         quickResume,
     };
@@ -133,4 +188,4 @@ export const onStateResume = (context: StateContext) => StateSlots.load(context.
 
 export const onQuit = (context: QuitContext) => StateSlots.save(context.actions, context.directory, QUICK_RESUME_SLOT);
 
-export default { onPluginLoad, onUpdateContents, onLaunch, onParseHotkey, onPauseResume, onStateSave, onStateResume, onQuit };
+export default { onPluginLoad, onUpdateContents, onConfigure, onLaunch, onParseHotkey, onPauseResume, onStateSave, onStateResume, onQuit };

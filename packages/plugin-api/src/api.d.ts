@@ -167,6 +167,7 @@ export type ControllerTopology = Readonly<{
     mappings: readonly ControllerMapping[],
 }>;
 
+export type GraphicsHook = "vulkan" | "d3d11" | "d3d12" | "opengl" | "metal";
 export type InputHook = "sdl2" | "sdl3" | "bluetooth-api-win32" | "xinput";
 
 export type UiNodeSnapshot = Readonly<{

@@ -6,7 +6,7 @@ api = "^0.1"
 main = "cemu.ts"
 
 [plugin.permissions.net]
-allowed-hosts = ["emulator-index.snowflakepowe.red", "github.com", "release-assets.githubusercontent.com", "api.github.com", "jsr.io"]
+allowed-hosts = ["emulator-index.polymer.gg", "github.com", "release-assets.githubusercontent.com", "api.github.com", "jsr.io"]
 
 [[plugin.caches]]
 key = "runtime"
@@ -20,6 +20,10 @@ choices = ["stable", "preview", "nightly"]
 [[plugin.caches]]
 key = "shaderCache"
 label = "Shader Cache"
+
+[[plugin.caches]]
+key = "graphicsPacks"
+label = "Graphics Packs"
 
 [emulator]
 platforms = ["NINTENDO_WIIU"]

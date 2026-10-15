@@ -6,10 +6,10 @@ import { osIdentifier } from "polymer:sys";
 import { unarchive } from "polymer:unarchive";
 import { EmulatorUpdates } from "jsr:@polymer-fe/emulator-updates@^0.1.0";
 import { systems } from "pkg:systems.ts";
-import type { BatteryStorage, EmulatorLaunchArgs, Storage } from "polymer:api";
+import type { BatteryStorage, ConfigurationResult, EmulatorLaunchArgs, Package, Storage, UserConfiguration } from "polymer:api";
 
 type LaunchArgs = EmulatorLaunchArgs<{
-    video: { driver: string },
+    video: { driver: string, quality: string },
     input: { defocus: string, driver: string },
     general: { auto_save_memory: boolean, no_file_prompt: boolean, show_status_bar: boolean },
     paths: { home: string, saves: string, firmware: string, screenshots: string },
@@ -30,6 +30,34 @@ export const onPluginLoad = () => runtime.ready();
 
 export const onUpdateContents = async () => runtime.update([await runtime.release("ares")]);
 
+const N64_PLATFORMS = ["NINTENDO_N64", "NINTENDO_N64DD"];
+const N64_RESOLUTIONS = [
+    { key: "SD", label: "1x Native" },
+    { key: "HD", label: "2x Native" },
+    { key: "UHD", label: "4x Native" },
+];
+
+export const onConfigure = (pkg: Package, userConfiguration?: UserConfiguration): ConfigurationResult => ({
+    schema: "ares/v1",
+    groups: N64_PLATFORMS.includes(pkg.platform) ? [{
+        key: "graphics",
+        title: "Graphics",
+        options: [{
+            key: "resolution",
+            title: "Internal Resolution",
+            type: "select",
+            default: "SD",
+            choices: N64_RESOLUTIONS,
+        }],
+    }] : [],
+    values: N64_PLATFORMS.includes(pkg.platform) ? { graphics: { resolution: n64Resolution(userConfiguration) } } : {},
+});
+
+function n64Resolution(configuration?: UserConfiguration): string {
+    const value = configuration?.graphics?.resolution;
+    return N64_RESOLUTIONS.some(choice => choice.key === value) ? value as string : "SD";
+}
+
 export const onLaunch = async (args: LaunchArgs) => {
     const system = systems[args.console];
     if (!system) throw new Error(`ares does not support ${args.console}`);
@@ -49,6 +77,7 @@ export const onLaunch = async (args: LaunchArgs) => {
 
     const options = args.configuration.options();
     options.video.driver = "OpenGL 3.2";
+    if (N64_PLATFORMS.includes(args.console)) options.video.quality = n64Resolution(args.userConfiguration);
     options.input.defocus = "Allow";
     options.input.driver = "SDL";
     options.general.auto_save_memory = true;
@@ -99,4 +128,4 @@ class AresFirmware {
     }
 }
 
-export default { onPluginLoad, onUpdateContents, onLaunch };
+export default { onPluginLoad, onUpdateContents, onConfigure, onLaunch };

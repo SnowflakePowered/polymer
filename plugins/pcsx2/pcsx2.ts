@@ -2,10 +2,10 @@ import { caches, config } from "polymer:plugin";
 import { connect } from "polymer:database";
 import { download } from "polymer:download";
 import { Job } from "polymer:jobs";
-import { osIdentifier } from "polymer:sys";
+import { graphicsApis, osIdentifier } from "polymer:sys";
 import { unarchive } from "polymer:unarchive";
 import { EmulatorUpdates } from "jsr:@polymer-fe/emulator-updates@^0.1.0";
-import type { EmulatorLaunchArgs, PauseResumeContext, Storage } from "polymer:api";
+import type { ConfigurationResult, EmulatorLaunchArgs, Package, PauseResumeContext, Storage, GraphicsHook, UserConfiguration } from "polymer:api";
 import { HotkeyParser } from "pkg:hotkeys.ts";
 
 type Options = {
@@ -40,7 +40,8 @@ type Options = {
             slot2_filename: string,
         },
         input_sources: { sdl: boolean },
-        "emucore-gs": { renderer: number },
+        "emucore-gs": { renderer: number, upscale_multiplier: string },
+        "emucore-speedhacks": { ee_cycle_rate: number },
 };
 
 const runtime = new EmulatorUpdates({
@@ -57,6 +58,75 @@ const runtime = new EmulatorUpdates({
 export const onPluginLoad = () => runtime.ready();
 
 export const onUpdateContents = async () => runtime.update([await runtime.release("pcsx2")]);
+
+export const onConfigure = (_pkg: Package, userConfiguration?: UserConfiguration): ConfigurationResult => ({
+    schema: "pcsx2/v1",
+    groups: [{
+        key: "graphics",
+        title: "Graphics",
+        options: [...(GRAPHICS_APIS.length > 1 ? [GRAPHICS_API_OPTION] : []), {
+            key: "resolution",
+            title: "Internal Resolution",
+            description: "Multiple of the console's native resolution.",
+            type: "int",
+            default: 1,
+            min: 1,
+            max: MAX_RESOLUTION,
+        }],
+    }, {
+        key: "cpu",
+        title: "CPU",
+        options: [CPU_CLOCK_OPTION],
+    }],
+    values: { graphics: { api: graphicsApi(userConfiguration)?.hook ?? null, resolution: internalResolution(userConfiguration) }, cpu: { clock: cpuClock(userConfiguration).key } },
+});
+
+const GRAPHICS_APIS = ([
+    { hook: "d3d11", label: "Direct3D 11", value: 3 },
+    { hook: "d3d12", label: "Direct3D 12", value: 15 },
+    { hook: "metal", label: "Metal", value: 17 },
+    { hook: "vulkan", label: "Vulkan", value: 14 },
+    { hook: "opengl", label: "OpenGL", value: 12 },
+] satisfies { hook: GraphicsHook, label: string, value: number }[]).filter(api => graphicsApis.includes(api.hook));
+
+const GRAPHICS_API_OPTION = {
+    key: "api",
+    title: "Graphics API",
+    type: "select",
+    default: GRAPHICS_APIS[0]?.hook ?? null,
+    choices: GRAPHICS_APIS.map(api => ({ key: api.hook, label: api.label })),
+} as const;
+
+function graphicsApi(configuration?: UserConfiguration) {
+    return GRAPHICS_APIS.find(api => api.hook === configuration?.graphics?.api) ?? GRAPHICS_APIS[0];
+}
+
+const CPU_CLOCKS = [
+    { key: "100", label: "100% (Default)", value: 0 },
+    { key: "130", label: "130%", value: 1 },
+    { key: "180", label: "180%", value: 2 },
+    { key: "300", label: "300%", value: 3 },
+];
+
+const CPU_CLOCK_OPTION = {
+    key: "clock",
+    title: "CPU Clock",
+    description: "Percentage of the console's native CPU speed. Higher values can reduce slowdown but may break some games.",
+    type: "select",
+    default: "100",
+    choices: CPU_CLOCKS.map(clock => ({ key: clock.key, label: clock.label })),
+} as const;
+
+function cpuClock(configuration?: UserConfiguration) {
+    return CPU_CLOCKS.find(clock => clock.key === configuration?.cpu?.clock) ?? CPU_CLOCKS[0];
+}
+
+const MAX_RESOLUTION = 8;
+
+function internalResolution(configuration?: UserConfiguration): number {
+    const value = configuration?.graphics?.resolution;
+    return typeof value === "number" && Number.isInteger(value) ? Math.min(MAX_RESOLUTION, Math.max(1, value)) : 1;
+}
 
 export const onLaunch = async (args: EmulatorLaunchArgs<Options, Readonly<{ mem1?: Storage, mem2?: Storage }>>) => {
     const bios = (await args.firmwareStore.list()).find(entry =>
@@ -110,7 +180,9 @@ export const onLaunch = async (args: EmulatorLaunchArgs<Options, Readonly<{ mem1
     options.memory_cards.slot2_enable = false;
     options.memory_cards.slot2_filename = "Mcd002.ps2";
     options.input_sources.sdl = true;
-    options["emucore-gs"].renderer = 3;
+    options["emucore-gs"].renderer = graphicsApi(args.userConfiguration).value;
+    options["emucore-speedhacks"].ee_cycle_rate = cpuClock(args.userConfiguration).value;
+    options["emucore-gs"].upscale_multiplier = String(internalResolution(args.userConfiguration));
     args.filesystem.mount("/PCSX2", args.configuration, { mode: "rw" });
 
     return {
@@ -125,7 +197,7 @@ export const onLaunch = async (args: EmulatorLaunchArgs<Options, Readonly<{ mem1
         ],
         argv: ["-portable", "-batch", "--", gamePath],
         isolate: false,
-        hooks: { graphics: ["d3d11"], input: ["sdl3"] },
+        hooks: { graphics: [graphicsApi(args.userConfiguration).hook], input: ["sdl3"] },
         
         surfaces: [
             { index: 0 },
@@ -139,4 +211,4 @@ export const onPauseResume = (context: PauseResumeContext) => {
     context.actions.pause?.activate();
 };
 
-export default { onPluginLoad, onUpdateContents, onLaunch, onParseHotkey, onPauseResume };
+export default { onPluginLoad, onUpdateContents, onConfigure, onLaunch, onParseHotkey, onPauseResume };

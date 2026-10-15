@@ -2,11 +2,11 @@ import { caches, config } from "polymer:plugin";
 import { connect } from "polymer:database";
 import { download } from "polymer:download";
 import { Job } from "polymer:jobs";
-import { osIdentifier } from "polymer:sys";
+import { graphicsApis, osIdentifier } from "polymer:sys";
 import { unarchive } from "polymer:unarchive";
 import { EmulatorUpdates } from "jsr:@polymer-fe/emulator-updates@^0.1.0";
 import { Rpcs3Configuration } from "pkg:configuration.ts";
-import type { EmulatorLaunchArgs, SaveCheckpointContext, Storage } from "polymer:api";
+import type { ConfigurationResult, EmulatorLaunchArgs, GraphicsHook, Package, SaveCheckpointContext, Storage, UserConfiguration } from "polymer:api";
 
 const runtime = new EmulatorUpdates({
     name: "RPCS3",
@@ -23,7 +23,55 @@ export const onPluginLoad = () => runtime.ready();
 
 export const onUpdateContents = async () => runtime.update([await runtime.release("rpcs3")]);
 
-export const onLaunch = async (args: EmulatorLaunchArgs<unknown, Readonly<{ hdd?: Storage, flash?: Storage }>>) => {
+const GRAPHICS_APIS = ([
+    { hook: "vulkan", label: "Vulkan", value: "Vulkan" },
+    { hook: "opengl", label: "OpenGL", value: "OpenGL" },
+] satisfies { hook: GraphicsHook, label: string, value: string }[]).filter(api => graphicsApis.includes(api.hook));
+
+const GRAPHICS_API_OPTION = {
+    key: "api",
+    title: "Graphics API",
+    type: "select",
+    default: GRAPHICS_APIS[0]?.hook ?? null,
+    choices: GRAPHICS_APIS.map(api => ({ key: api.hook, label: api.label })),
+} as const;
+
+function graphicsApi(configuration?: UserConfiguration) {
+    return GRAPHICS_APIS.find(api => api.hook === configuration?.graphics?.api) ?? GRAPHICS_APIS[0];
+}
+
+const SHADER_MODES = [
+    { key: "Async Recompiler with Shader Interpreter", label: "Async with Shader Interpreter" },
+    { key: "Async Recompiler (multi-threaded)", label: "Async (multi-threaded)" },
+    { key: "Legacy Recompiler (single-threaded)", label: "Legacy (single-threaded)" },
+    { key: "Shader Interpreter only", label: "Shader Interpreter only" },
+];
+
+function shaderMode(configuration?: UserConfiguration): string {
+    const value = configuration?.graphics?.shaderMode;
+    return SHADER_MODES.find(mode => mode.key === value)?.key ?? SHADER_MODES[0].key;
+}
+
+export const onConfigure = (_pkg: Package, userConfiguration?: UserConfiguration): ConfigurationResult => ({
+    schema: "rpcs3/v1",
+    groups: [{
+        key: "graphics",
+        title: "Graphics",
+        options: [...(GRAPHICS_APIS.length > 1 ? [GRAPHICS_API_OPTION] : []), {
+            key: "shaderMode",
+            title: "Shader Mode",
+            description: "How shaders are compiled. The async modes reduce stutter.",
+            type: "select",
+            default: SHADER_MODES[0].key,
+            choices: SHADER_MODES,
+        }],
+    }],
+    values: {
+        graphics: { api: graphicsApi(userConfiguration)?.hook ?? null, shaderMode: shaderMode(userConfiguration) },
+    },
+});
+
+export const onLaunch = async (args: EmulatorLaunchArgs<{ video: { Renderer: string, "Shader Mode": string } }, Readonly<{ hdd?: Storage, flash?: Storage }>>) => {
     if (!args.storage.hdd) {
         throw new Error("Select a PlayStation 3 NAND and save repository for the HDD, and install system software before launching RPCS3.");
     }
@@ -55,6 +103,9 @@ export const onLaunch = async (args: EmulatorLaunchArgs<unknown, Readonly<{ hdd?
         "/dev_flash3/": `${fs.path(`${flash}/dev_flash3`)}/`,
     };
     fs.mount("/RPCS3/config/vfs.yml", new TextEncoder().encode(JSON.stringify(vfs)), { mode: "rw" });
+    const api = graphicsApi(args.userConfiguration);
+    args.configuration.options().video.Renderer = api.value;
+    args.configuration.options().video["Shader Mode"] = shaderMode(args.userConfiguration);
     Rpcs3Configuration.mount(args.configuration, fs);
     return {
         command: fs.path("/RPCS3/rpcs3.exe"),
@@ -64,8 +115,8 @@ export const onLaunch = async (args: EmulatorLaunchArgs<unknown, Readonly<{ hdd?
             ["LOCALAPPDATA", fs.path("/User/AppData/Local")], ["TEMP", fs.path("/User/Temp")],
             ["TMP", fs.path("/User/Temp")]],
         isolate: false,
-        hooks: { graphics: ["vulkan"], input: ["sdl3"] },
-        surfaces: [{ index: 0, pattern: "RPCS3|FPS.*Vulkan" }],
+        hooks: { graphics: [api.hook], input: ["sdl3"] },
+        surfaces: [{ index: 0, pattern: `RPCS3|FPS.*${api.value}` }],
     };
 };
 
@@ -73,4 +124,4 @@ export const onSaveCheckpoint = ({ storage, changed }: SaveCheckpointContext) =>
     storage !== "hdd" || !changed.some(({ path }) =>
         path.split("/").some((part) => part.startsWith(".working_") || part.startsWith(".backup_")));
 
-export default { onPluginLoad, onUpdateContents, onLaunch, onSaveCheckpoint };
+export default { onPluginLoad, onUpdateContents, onConfigure, onLaunch, onSaveCheckpoint };

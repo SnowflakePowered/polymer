@@ -59,6 +59,8 @@ export interface EmulatorUpdatesHost<File, Directory extends CacheDirectory, Ent
   readonly osIdentifier: string;
   /** Preferred release channel; stable, preview, and nightly are tried after it. */
   readonly channel?: string;
+  /** Table that records generations, so updaters sharing a database stay independent. */
+  readonly table?: string;
   connect(): Promise<Database>;
   download(url: string, file: File, options?: { sha256?: string; byteLength?: number }): Promise<void>;
   unarchive(file: File, directory: Directory, options?: { stripRoot?: boolean }): Promise<void>;
@@ -70,13 +72,16 @@ export type CacheDirectoryEntry<Entry extends CacheEntry> = Extract<Entry, { kin
 
 type Generation = { id: number };
 
-const INDEX_URL = "https://emulator-index.snowflakepowe.red/";
+const INDEX_URL = "https://emulator-index.polymer.gg/";
 
 export class EmulatorUpdates<File, Directory extends CacheDirectory, Entry extends CacheEntry> {
   readonly #host: EmulatorUpdatesHost<File, Directory, Entry>;
+  readonly #table: string;
 
   constructor(host: EmulatorUpdatesHost<File, Directory, Entry>) {
     this.#host = host;
+    this.#table = host.table ?? "runtime_generations";
+    if (!/^[A-Za-z_]\w*$/.test(this.#table)) throw new TypeError(`Invalid generations table ${this.#table}`);
   }
 
   /** The newest release of an emulator in the index for this host. */
@@ -95,7 +100,7 @@ export class EmulatorUpdates<File, Directory extends CacheDirectory, Entry exten
   /** Whether a generation is installed. */
   async ready(): Promise<boolean> {
     const installed = await this.#query(database => database
-      .prepare("SELECT id FROM runtime_generations WHERE state IN ('pending', 'active')")
+      .prepare(`SELECT id FROM ${this.#table} WHERE state IN ('pending', 'active')`)
       .all<Generation>());
     for (const { id } of installed) {
       if (await this.#generation(id)) return true;
@@ -108,23 +113,23 @@ export class EmulatorUpdates<File, Directory extends CacheDirectory, Entry exten
     return new this.#host.Job(`Updating ${this.#host.name}`).run(async () => {
       const version = sources.map(source => source.version).join("+");
       const found = await this.#query(database => database
-        .prepare("SELECT id FROM runtime_generations WHERE version = ? AND state IN ('pending', 'active')")
+        .prepare(`SELECT id FROM ${this.#table} WHERE version = ? AND state IN ('pending', 'active')`)
         .get<Generation>([version]));
       const current = found && await this.#generation(found.id) ? found : undefined;
       if (found && !current) {
         await this.#query(database => database
-          .prepare("UPDATE runtime_generations SET state = 'retired' WHERE id = ?")
+          .prepare(`UPDATE ${this.#table} SET state = 'retired' WHERE id = ?`)
           .run([found.id]));
       }
       if (current) {
         await this.#query(database => database
-          .prepare("UPDATE runtime_generations SET state = 'retired' WHERE state = 'pending' AND id != ?")
+          .prepare(`UPDATE ${this.#table} SET state = 'retired' WHERE state = 'pending' AND id != ?`)
           .run([current.id]));
       }
       await this.#discardStale();
       if (current) return;
       const { lastInsertRowid } = await this.#query(database => database
-        .prepare("INSERT INTO runtime_generations (version, state) VALUES (?, 'staging')")
+        .prepare(`INSERT INTO ${this.#table} (version, state) VALUES (?, 'staging')`)
         .run([version]));
       const root = `generation-${lastInsertRowid}`;
       for (const source of sources) {
@@ -136,8 +141,8 @@ export class EmulatorUpdates<File, Directory extends CacheDirectory, Entry exten
         await this.#host.cache.remove(name);
       }
       await this.#query(database => database.transactionAsync(async transaction => {
-        await transaction.exec("UPDATE runtime_generations SET state = 'retired' WHERE state = 'pending'");
-        await transaction.prepare("UPDATE runtime_generations SET state = 'pending' WHERE id = ?").run([lastInsertRowid]);
+        await transaction.exec(`UPDATE ${this.#table} SET state = 'retired' WHERE state = 'pending'`);
+        await transaction.prepare(`UPDATE ${this.#table} SET state = 'pending' WHERE id = ?`).run([lastInsertRowid]);
       }));
     });
   }
@@ -145,7 +150,7 @@ export class EmulatorUpdates<File, Directory extends CacheDirectory, Entry exten
   /** The active generation, without promoting a pending one. */
   async active(): Promise<CacheDirectoryEntry<Entry> | undefined> {
     const active = await this.#query(database => database
-      .prepare("SELECT id FROM runtime_generations WHERE state = 'active'")
+      .prepare(`SELECT id FROM ${this.#table} WHERE state = 'active'`)
       .get<Generation>());
     return active && await this.#generation(active.id);
   }
@@ -154,15 +159,15 @@ export class EmulatorUpdates<File, Directory extends CacheDirectory, Entry exten
   async launch(): Promise<CacheDirectoryEntry<Entry>> {
     const active = await this.#query(database => database.transactionAsync(async transaction => {
       const pending = await transaction
-        .prepare("SELECT id FROM runtime_generations WHERE state = 'pending'")
+        .prepare(`SELECT id FROM ${this.#table} WHERE state = 'pending'`)
         .get<Generation>();
       if (pending) {
-        await transaction.exec("UPDATE runtime_generations SET state = 'retired' WHERE state = 'previous'");
-        await transaction.exec("UPDATE runtime_generations SET state = 'previous' WHERE state = 'active'");
-        await transaction.prepare("UPDATE runtime_generations SET state = 'active' WHERE id = ?").run([pending.id]);
+        await transaction.exec(`UPDATE ${this.#table} SET state = 'retired' WHERE state = 'previous'`);
+        await transaction.exec(`UPDATE ${this.#table} SET state = 'previous' WHERE state = 'active'`);
+        await transaction.prepare(`UPDATE ${this.#table} SET state = 'active' WHERE id = ?`).run([pending.id]);
       }
       return transaction
-        .prepare("SELECT id FROM runtime_generations WHERE state = 'active'")
+        .prepare(`SELECT id FROM ${this.#table} WHERE state = 'active'`)
         .get<Generation>();
     }));
     const generation = active && await this.#generation(active.id);
@@ -173,7 +178,7 @@ export class EmulatorUpdates<File, Directory extends CacheDirectory, Entry exten
   async #query<T>(work: (database: Database) => Promise<T>): Promise<T> {
     const database = await this.#host.connect();
     try {
-      await database.exec(`CREATE TABLE IF NOT EXISTS runtime_generations (
+      await database.exec(`CREATE TABLE IF NOT EXISTS ${this.#table} (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         version TEXT NOT NULL,
         state TEXT NOT NULL CHECK (state IN ('staging', 'pending', 'active', 'previous', 'retired'))
@@ -194,13 +199,13 @@ export class EmulatorUpdates<File, Directory extends CacheDirectory, Entry exten
 
   async #discardStale(): Promise<void> {
     const stale = await this.#query(database => database
-      .prepare("SELECT id FROM runtime_generations WHERE state IN ('staging', 'retired')")
+      .prepare(`SELECT id FROM ${this.#table} WHERE state IN ('staging', 'retired')`)
       .all<Generation>());
     for (const { id } of stale) {
       try {
         await this.#host.cache.directory(`generation-${id}`).delete();
         await this.#query(database => database
-          .prepare("DELETE FROM runtime_generations WHERE id = ?")
+          .prepare(`DELETE FROM ${this.#table} WHERE id = ?`)
           .run([id]));
       } catch (error) {
         console.warn(`${this.#host.name}: generation ${id} is still in use`, error);
