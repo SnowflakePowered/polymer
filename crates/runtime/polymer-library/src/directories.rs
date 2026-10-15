@@ -24,6 +24,13 @@ impl Directories {
         }
     }
 
+    pub fn lock(&self) -> std::io::Result<std::fs::File> {
+        std::fs::create_dir_all(&self.storage)?;
+        let file = std::fs::File::create(self.storage.join("instance.lock"))?;
+        file.try_lock()?;
+        Ok(file)
+    }
+
     pub fn cache(&self) -> &Path {
         &self.cache
     }
