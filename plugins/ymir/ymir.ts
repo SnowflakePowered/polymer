@@ -2,10 +2,10 @@ import { caches, config } from "polymer:plugin";
 import { connect } from "polymer:database";
 import { download } from "polymer:download";
 import { Job } from "polymer:jobs";
-import { osIdentifier } from "polymer:sys";
+import { graphicsApis, osIdentifier } from "polymer:sys";
 import { unarchive } from "polymer:unarchive";
 import { EmulatorUpdates } from "jsr:@polymer-fe/emulator-updates@^0.1.0";
-import type { EmulatorLaunchArgs } from "polymer:api";
+import type { ConfigurationResult, EmulatorLaunchArgs, GraphicsHook, Package, UserConfiguration } from "polymer:api";
 
 const runtime = new EmulatorUpdates({
     name: "Ymir",
@@ -22,6 +22,31 @@ export const onPluginLoad = () => runtime.ready();
 
 export const onUpdateContents = async () => runtime.update([await runtime.release("ymir")]);
 
+const GRAPHICS_APIS = ([
+    { hook: "d3d11", label: "Direct3D 11", value: "direct3d11" },
+    { hook: "d3d12", label: "Direct3D 12", value: "direct3d12" },
+    { hook: "vulkan", label: "Vulkan", value: "vulkan" },
+    { hook: "opengl", label: "OpenGL", value: "opengl" },
+] satisfies { hook: GraphicsHook, label: string, value: string }[]).filter(api => graphicsApis.includes(api.hook));
+
+const GRAPHICS_API_OPTION = {
+    key: "api",
+    title: "Graphics API",
+    type: "select",
+    default: GRAPHICS_APIS[0]?.hook ?? null,
+    choices: GRAPHICS_APIS.map(api => ({ key: api.hook, label: api.label })),
+} as const;
+
+function graphicsApi(configuration?: UserConfiguration) {
+    return GRAPHICS_APIS.find(api => api.hook === configuration?.graphics?.api) ?? GRAPHICS_APIS[0];
+}
+
+export const onConfigure = (_pkg: Package, userConfiguration?: UserConfiguration): ConfigurationResult => ({
+    schema: "ymir/v1",
+    groups: GRAPHICS_APIS.length > 1 ? [{ key: "graphics", title: "Graphics", options: [GRAPHICS_API_OPTION] }] : [],
+    values: { graphics: { api: graphicsApi(userConfiguration)?.hook ?? null } },
+});
+
 export const onLaunch = async (args: EmulatorLaunchArgs<{
     system: { InternalBackupRAMImagePath: string },
     ipl: { Path: string },
@@ -35,6 +60,7 @@ export const onLaunch = async (args: EmulatorLaunchArgs<{
     fs.mount("/Profile/bios.bin", await args.firmwareStore.open(bios.label), { mode: "r" });
     fs.mount("/User");
     const game = fs.mount("/Game", args.launchSet[0].package, { mode: "rx" });
+    const api = graphicsApi(args.userConfiguration);
     const options = args.configuration.options();
     options.system.InternalBackupRAMImagePath = JSON.stringify(fs.path("/Profile/state/bup-int.bin"));
     options.ipl.Path = JSON.stringify(fs.path("/Profile/bios.bin"));
@@ -50,13 +76,13 @@ export const onLaunch = async (args: EmulatorLaunchArgs<{
         command: fs.path("/Ymir/ymir-sdl3.exe"),
         workingDirectory: fs.path("/Ymir"),
         argv: ["--profile", fs.path("/Profile"), "--disc", game],
-        env: [["SDL_RENDER_DRIVER", "direct3d11"], ["USERPROFILE", fs.path("/User")],
+        env: [["SDL_RENDER_DRIVER", api.value], ["USERPROFILE", fs.path("/User")],
             ["APPDATA", fs.path("/User/AppData/Roaming")], ["LOCALAPPDATA", fs.path("/User/AppData/Local")],
             ["TEMP", fs.path("/User/Temp")], ["TMP", fs.path("/User/Temp")]],
         isolate: true,
-        hooks: { graphics: ["d3d11"], input: ["sdl3"] },
+        hooks: { graphics: [api.hook], input: ["sdl3"] },
         surfaces: [{ index: 0, pattern: "Ymir" }],
     };
 };
 
-export default { onPluginLoad, onUpdateContents, onLaunch };
+export default { onPluginLoad, onUpdateContents, onConfigure, onLaunch };

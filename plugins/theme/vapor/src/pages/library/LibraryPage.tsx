@@ -30,7 +30,7 @@ export function LibraryPage() {
       <div class="vp-library-count">{shell.state.total} games</div>
       <Show when={shell.state.games.length} fallback={<EmptyState title={shell.state.filtered ? "No games match" : "Your library is empty"} />}>
         <CapsuleGrid><For each={shell.state.games}>{(game, index) =>
-          <Capsule title={game.name} subtitle={platformName(game.platform)} art={game.artwork} ratio={game.artworkRatio} data-autofocus={index() === 0} badge={game.missingKey ? "Missing key" : undefined}
+          <Capsule busy={shell.state.closing === game.path} title={game.name} subtitle={platformName(game.platform)} art={game.artwork} ratio={game.artworkRatio} data-autofocus={index() === 0} badge={game.missingKey ? "Missing key" : undefined}
             progress={game.scraping ? game.scraping.completed / Math.max(1, game.scraping.total) : undefined} onClick={() => void shell.open(game, "details")} />
         }</For></CapsuleGrid>
       </Show>

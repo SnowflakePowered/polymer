@@ -6,7 +6,7 @@ api = "^0.1"
 main = "ymir.ts"
 
 [plugin.permissions.net]
-allowed-hosts = ["emulator-index.snowflakepowe.red", "github.com", "release-assets.githubusercontent.com", "jsr.io"]
+allowed-hosts = ["emulator-index.polymer.gg", "github.com", "release-assets.githubusercontent.com", "jsr.io"]
 
 [[plugin.caches]]
 key = "runtime"

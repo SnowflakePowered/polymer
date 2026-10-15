@@ -24,6 +24,7 @@ export type ShellModel = {
   request: LaunchRequest | null;
   surfaces: LaunchRequest["surfaces"];
   launch: LaunchInstance | null;
+  closingGame: string | null;
   audio: AudioState;
   error: string;
   recent: RecentGame[];
@@ -35,6 +36,7 @@ export type ShellModel = {
   libraryActivities: LibraryActivity[];
   selectedGame: string | null;
   gamepadOpen: boolean;
+  cursorVisible: boolean;
   pauseOpen: boolean;
   shader: PlatformShader;
   controllerToast: { name: string; index: number } | null;

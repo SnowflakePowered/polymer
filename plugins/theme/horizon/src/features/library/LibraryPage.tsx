@@ -1,7 +1,7 @@
 import { Show, createSignal, onCleanup, onMount, type ParentProps } from "solid-js";
 import { useLocation } from "@solidjs/router";
 import { AppSidebar } from "../../components/AppSidebar";
-import { ActionHints, EmptyState } from "../../ui";
+import { EmptyState } from "../../ui";
 import { useShell } from "../../app/shell-context";
 import { EmptyLibrary } from "./EmptyLibrary";
 import { GameWall } from "./GameWall";
@@ -17,7 +17,7 @@ export function LibraryPage(props: ParentProps) {
   const [shelfOpen, setShelfOpen] = createSignal(false);
   const closeShelf = () => {
     setShelfOpen(false);
-    requestAnimationFrame(() => (document.querySelector<HTMLElement>(".horizon-game-tile[aria-current='true']") ?? document.querySelector<HTMLElement>(".horizon-game-tile"))?.focus());
+    requestAnimationFrame(() => document.activeElement?.isConnected && document.activeElement !== document.body || (document.querySelector<HTMLElement>(".horizon-game-tile[aria-current='true']") ?? document.querySelector<HTMLElement>(".horizon-game-tile"))?.focus());
   };
   onMount(() => {
     const changed = (event: Event) => setDropActive((event as CustomEvent<boolean>).detail);
@@ -34,7 +34,6 @@ export function LibraryPage(props: ParentProps) {
       <Show when={games().length > 0} fallback={<Show when={filtered()} fallback={<EmptyLibrary dropActive={dropActive()} />}><EmptyState title="No games match these filters." /></Show>}>
         <GameWall games={games()} onEnd={shell.loadMoreGames} onTopEdge={() => setShelfOpen(true)} />
       </Show>
-      <ActionHints floating />
     </section>
   </main>{props.children}</>;
 }

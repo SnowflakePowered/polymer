@@ -8,6 +8,7 @@ import { ShaderPanel } from "./ShaderPicker";
 import { SuspendPoints } from "./SuspendPoints";
 import { DiscPicker } from "./DiscPicker";
 import { DUAL_SCREEN_PLATFORMS } from "./DualScreenStage";
+import { POINTER_PLATFORMS } from "./SurfaceStage";
 import { useMatch } from "@solidjs/router";
 import "./PauseOverlay.css";
 
@@ -19,6 +20,7 @@ export function PauseOverlay() {
   const game = createMemo(() => shell.model.libraryGames.find(entry => entry.path === shell.model.draft?.path));
   const resume = () => shell.setModel("pauseOpen", false);
   const dualScreen = useMatch(() => "/game/:platform/*", { platform: DUAL_SCREEN_PLATFORMS });
+  const pointer = useMatch(() => "/game/:platform/*", { platform: [...POINTER_PLATFORMS] });
   const setVolume = (value: number) => { shell.setModel("audio", "volume", value); shell.model.launch?.setVolume(value); };
   const [panel, setPanel] = createSignal<Panel>("options");
   const tabs: Partial<Record<Panel, HTMLButtonElement>> = {};
@@ -63,6 +65,7 @@ export function PauseOverlay() {
                 <Show when={(shell.model.launch?.getLaunchSet().length ?? 0) > 1 && shell.model.launch}>{launch => <DiscPicker launch={launch()} />}</Show>
                 <ScreenLayoutPicker />
                 <Show when={shell.model.surfaces.length > 1 && !dualScreen()}><SettingRow><Toggle label="Gamepad display" checked={shell.model.gamepadOpen} onCheckedChange={open => shell.setModel("gamepadOpen", open)} /></SettingRow></Show>
+                <Show when={pointer()}><SettingRow><Toggle label="Show mouse cursor" checked={shell.model.cursorVisible} onCheckedChange={visible => shell.setModel("cursorVisible", visible)} /></SettingRow></Show>
               </Show>
               <Show when={panel() === "shader"}><ShaderPanel /></Show>
               <Show when={(panel() === "load" || panel() === "save") && shell.model.launch?.saveStates} keyed>{store => <SuspendPoints store={store} mode={panel() === "save" ? "save" : "load"} onRestored={resume} />}</Show>

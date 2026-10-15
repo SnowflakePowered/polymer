@@ -1,5 +1,5 @@
 import { FloatingPanel } from "../../ui";
-import { For, Show, createSignal } from "solid-js";
+import { For, Show, createSignal, onCleanup } from "solid-js";
 import { useMatch } from "@solidjs/router";
 import type { LaunchRequest } from "@polymer-fe/frontend";
 import { useShell } from "../../app/shell-context";
@@ -9,7 +9,8 @@ import "./SurfaceStage.css";
 
 type Surface = LaunchRequest["surfaces"][number];
 
-const POINTER_PLATFORMS = new Set(["NINTENDO_WII", "NINTENDO_WIIU"]);
+export const POINTER_PLATFORMS = new Set(["NINTENDO_WII", "NINTENDO_WIIU"]);
+const CURSOR_IDLE_MS = 3000;
 
 export function SurfaceStage(props: {
   surfaces: Surface[];
@@ -22,8 +23,12 @@ export function SurfaceStage(props: {
   const [size, setSize] = createSignal({ width: 520, height: 340 });
   const primary = () => props.surfaces[0] || { index: 0, rotation: 0 };
   const game = useMatch(() => "/game/:platform/*");
-  const cursor = () => POINTER_PLATFORMS.has(game()?.params.platform ?? "") ? "hidden" : undefined;
-  return <section class="horizon-surface-stage">
+  const [idle, setIdle] = createSignal(true);
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  const wake = () => { setIdle(false); clearTimeout(idleTimer); idleTimer = setTimeout(() => setIdle(true), CURSOR_IDLE_MS); };
+  onCleanup(() => clearTimeout(idleTimer));
+  const cursor = () => POINTER_PLATFORMS.has(game()?.params.platform ?? "") && (!shell.model.cursorVisible || idle()) ? "hidden" : undefined;
+  return <section class="horizon-surface-stage" onPointerMove={wake}>
     <ClassicSurfaceBackdrop surface={() => props.find(primary().index)} revision={props.revision} />
     <tracked-surface ref={(element: HTMLElement) => props.register(primary().index, element)} src={String(primary().index)} data-index={String(primary().index)} class="horizon-game-surface" attr:data-cursor={cursor()} />
     <For each={props.surfaces.slice(1)}>{(surface) =>

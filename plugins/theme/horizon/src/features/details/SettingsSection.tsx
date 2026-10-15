@@ -42,16 +42,14 @@ export function SettingsSection(props: {
       <Show when={active().key === "controllers"}>
         <ControllerSection emulator={props.emulator} update={props.updateEmulator} />
       </Show>
-      <Show when={group()}>{(current) => <>
-        <Show when={current().description}><p class="horizon-settings-description">{current().description}</p></Show>
-        <For each={current().options}>{(option) => <SettingRow>
-          <OptionControl
-            option={option}
-            value={props.emulator.userConfiguration?.[current().key]?.[option.key] ?? option.default}
-            onChange={(value) => props.updateConfiguration(current().key, option.key, value)}
-          />
-        </SettingRow>}</For>
-      </>}</Show>
+      <Show when={group()?.description}><p class="horizon-settings-description">{group()?.description}</p></Show>
+      <For each={group()?.options}>{(option) => <SettingRow>
+        <OptionControl
+          option={option}
+          value={props.emulator.userConfiguration?.[group()?.key ?? ""]?.[option.key] ?? option.default}
+          onChange={(value) => { const current = group(); if (current) props.updateConfiguration(current.key, option.key, value); }}
+        />
+      </SettingRow>}</For>
     </section>
   </div>;
 }

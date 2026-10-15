@@ -8,22 +8,39 @@ export { Icon, type IconName } from "./icons";
 export function BannerImage(props: { src: string; class?: string }) {
   return <img class={props.class} src={props.src} alt="" />;
 }
-import a from "../assets/switch/button-a.svg";
-import b from "../assets/switch/button-b.svg";
-import l from "../assets/switch/button-l.svg";
-import r from "../assets/switch/button-r.svg";
-import plus from "../assets/switch/button-plus.svg";
-import minus from "../assets/switch/button-minus.svg";
 import pro from "../assets/switch/controller-pro.svg";
 import console from "../assets/switch/controller-switch.svg";
 import left from "../assets/switch/joycon-left-horizontal.svg";
 import right from "../assets/switch/joycon-right-horizontal.svg";
 
-const buttons = { a, b, l, r, plus, minus };
-export type ButtonName = keyof typeof buttons | "x" | "y" | "home" | "dpad";
+import button_a from "../assets/prompts/switch/a.svg";
+import button_b from "../assets/prompts/switch/b.svg";
+import button_x from "../assets/prompts/switch/x.svg";
+import button_y from "../assets/prompts/switch/y.svg";
+import button_l from "../assets/prompts/switch/l.svg";
+import button_r from "../assets/prompts/switch/r.svg";
+import button_plus from "../assets/prompts/switch/plus.svg";
+import button_minus from "../assets/prompts/switch/minus.svg";
+import button_home from "../assets/prompts/switch/home.svg";
+import button_dpad from "../assets/prompts/switch/dpad.svg";
+import key_arrows from "../assets/prompts/keyboard/arrows.svg";
+import key_enter from "../assets/prompts/keyboard/enter.svg";
+import key_escape from "../assets/prompts/keyboard/escape.svg";
+import key_shift from "../assets/prompts/keyboard/shift.svg";
+import key_page_up from "../assets/prompts/keyboard/page-up.svg";
+import key_page_down from "../assets/prompts/keyboard/page-down.svg";
+import key_tab from "../assets/prompts/keyboard/tab.svg";
+import key_space from "../assets/prompts/keyboard/space.svg";
+
+const buttons = { a: button_a, b: button_b, x: button_x, y: button_y, l: button_l, r: button_r, plus: button_plus, minus: button_minus, home: button_home, dpad: button_dpad };
+const keyboard = { arrows: key_arrows, enter: key_enter, escape: key_escape, shift: key_shift, "page-up": key_page_up, "page-down": key_page_down, tab: key_tab, space: key_space };
+export type ButtonName = "a" | "b" | "x" | "y" | "l" | "r" | "plus" | "minus" | "home" | "dpad";
+export type KeyName = "arrows" | "enter" | "escape" | "shift" | "page-up" | "page-down" | "tab" | "space";
 export function ButtonGlyph(props: { button: ButtonName }) {
-  const source = () => buttons[props.button as keyof typeof buttons];
-  return <Show when={source()} fallback={<kbd class="hz-button-glyph">{{ x: "X", y: "Y", home: "⌂", dpad: "✥" }[props.button as "x"]}</kbd>}><img class="hz-button-glyph" src={source()} alt={props.button.toUpperCase()} /></Show>;
+  return <img class="hz-button-glyph" src={buttons[props.button]} alt={props.button.toUpperCase()} />;
+}
+export function KeyGlyph(props: { name: KeyName }) {
+  return <img class="hz-button-glyph" src={keyboard[props.name]} alt={props.name} />;
 }
 export function ButtonChord(props: { buttons: readonly ButtonName[] }) {
   return <span class="hz-chord"><For each={props.buttons}>{(button, index) => <><Show when={index() > 0}> + </Show><ButtonGlyph button={button} /></>}</For></span>;

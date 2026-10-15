@@ -1,6 +1,6 @@
 import { Match, Switch, createSignal } from "solid-js";
 import { css } from "../../../styled-system/css";
-import { Screen, ScreenHeader, MasterDetail, CategoryNavigation, Section, SettingRow, Toggle, ActionHints, Icon } from "../../ui";
+import { Screen, ScreenHeader, MasterDetail, CategoryNavigation, Section, SettingRow, Toggle, Icon } from "../../ui";
 import { AppSidebar } from "../../components/AppSidebar";
 import { useShell } from "../../app/shell-context";
 import { KeySettings } from "./KeySettings";
@@ -35,6 +35,5 @@ export function SettingsPage() {
         </Switch>
       </section>
     </MasterDetail>
-    <ActionHints />
   </Screen></div>;
 }
