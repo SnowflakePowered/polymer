@@ -1,5 +1,6 @@
 @layer horizon {
-.horizon-shelf { display: flex; flex: none; align-items: center; height: 10rem; border-bottom: 1px solid var(--hz-divider); background: var(--hz-panel); }
+.horizon-shelf { display: flex; flex: none; align-items: center; height: 10rem; overflow: hidden; border-bottom: 1px solid var(--hz-divider); background: var(--hz-panel); animation: horizon-shelf-in 180ms ease-in; }
+@keyframes horizon-shelf-in { from { height: 0; } to { height: 10rem; } }
 .horizon-shelf-arrow { display: grid; width: 2.25rem; height: 2.25rem; flex: none; place-items: center; margin: 0 .25rem; padding: 0; border: 0; border-radius: 50%; color: var(--hz-muted); background: transparent; cursor: pointer; }
 .horizon-shelf-arrow:hover { background: var(--hz-divider); }
 .horizon-shelf-track { display: flex; min-width: 0; flex: 1; align-items: stretch; height: 100%; overflow-x: auto; scrollbar-width: none; }

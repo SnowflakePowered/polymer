@@ -1,7 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { RecentGame } from "../../app/models";
 import { useShell } from "../../app/shell-context";
-import { useInputScope } from "../../ui";
+import { useInputScope, useNavigation } from "../../ui";
 import { CoverLayout } from "./cover-layout";
 import { GameTile } from "./GameTile";
 import { GameContextMenu } from "./GameContextMenu";
@@ -11,6 +11,7 @@ import "./GameWall.css";
 
 export function GameWall(props: { games: RecentGame[]; onEnd?: () => void; onTopEdge?: () => void }) {
   const shell = useShell();
+  const navigation = useNavigation();
   const [context, setContext] = createSignal<{ game: RecentGame }>();
   const [info, setInfo] = createSignal<RecentGame>();
   const [zoom, setZoom] = createSignal(1);
@@ -57,13 +58,24 @@ export function GameWall(props: { games: RecentGame[]; onEnd?: () => void; onTop
   };
 
   onMount(() => {
-    const observer = new ResizeObserver(([entry]) => setViewport({ width: Math.max(1, entry.contentRect.width), height: entry.contentRect.height }));
+    const observer = new ResizeObserver(([entry]) => setViewport({ width: Math.max(1, entry.contentRect.width), height: wall.parentElement!.clientHeight - wall.offsetHeight + entry.contentRect.height }));
     observer.observe(wall);
     onCleanup(() => observer.disconnect());
+    const keydown = (event: KeyboardEvent) => {
+      const focused = [...elements].find(([, element]) => element === event.target)?.[0];
+      const game = event.key === "Tab" && !event.shiftKey && !navigation.hasOverlay() && gameFor(focused ?? null);
+      if (!game) return;
+      event.preventDefault();
+      setInfo(game);
+    };
+    wall.addEventListener("keydown", keydown);
+    onCleanup(() => wall.removeEventListener("keydown", keydown));
     requestAnimationFrame(() => { if ((document.activeElement === document.body || document.activeElement === document.documentElement)) elements.get(selected() || "")?.focus(); });
   });
   useInputScope(() => ({ root: wall, navigation: true,
-    hints: () => [{ action: "move", label: "Move" }, { action: "details", label: "Details" }, { action: "activate", label: "Start" }],
+    hints: () => navigation.origin() === "keyboard"
+      ? [{ action: "move", label: "Move" }, { action: "details", label: "Details", keyboard: "tab" }, { action: "details", label: "Settings" }, { action: "activate", label: "Search", keyboard: "space" }, { action: "activate", label: "Start" }]
+      : [{ action: "move", label: "Move" }, { action: "details", label: "Settings" }, { action: "activate", label: "Start" }],
     handle: action => {
       if (!props.games.length) return false;
       const sourceId = action.sourceId;
@@ -86,8 +98,9 @@ export function GameWall(props: { games: RecentGame[]; onEnd?: () => void; onTop
         elements.get(next)?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
         return true;
       }
+      if (action.type === "activate" && action.origin === "keyboard" && (action.event as KeyboardEvent).key === " ") { shell.setModel("librarySearchOpen", true); return true; }
       if (action.type === "activate") { const game = gameFor(current); if (game) shell.launchRecent(game); return true; }
-      if (action.type === "details") { const game = gameFor(current); if (game) setInfo(game); return true; }
+      if (action.type === "details") { const game = gameFor(current); if (game) shell.showDetails(game); return true; }
       return false;
     },
   }));
@@ -102,7 +115,7 @@ export function GameWall(props: { games: RecentGame[]; onEnd?: () => void; onTop
     <div class="horizon-game-wall-canvas" style={{ height: `${layout().height}px` }}>
     <For each={props.games}>{(game, index) => {
       const id = () => gameId(game);
-      return <GameTile game={game} selected={selected() === id()} players={playersFor(id())} placement={layout().placements[index()]} onRatio={ratio => setRatios(values => ({ ...values, [game.artwork || id()]: ratio }))} register={(key, element) => element ? elements.set(key, element) : elements.delete(key)} onActivate={() => selected() === id() ? launch() : choose(id())} onContextMenu={() => { shell.setModel("selectedGame", id()); setContext({ game }); }} />;
+      return <GameTile game={game} closing={shell.model.closingGame === game.path} selected={selected() === id()} players={playersFor(id())} placement={layout().placements[index()]} onRatio={ratio => setRatios(values => ({ ...values, [game.artwork || id()]: ratio }))} register={(key, element) => element ? elements.set(key, element) : elements.delete(key)} onActivate={() => selected() === id() ? launch() : choose(id())} onContextMenu={() => { shell.setModel("selectedGame", id()); setContext({ game }); }} />;
     }}</For>
     </div>
     <Show when={context()}>{value => <GameContextMenu {...value()} onClose={() => setContext(undefined)} />}</Show>

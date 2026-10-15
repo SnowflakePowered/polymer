@@ -1,7 +1,7 @@
 import { ShellContext } from "./shell-context";
 import { LibraryState } from "@polymer-fe/frontend/library-state";
 import { useNavigate } from "@solidjs/router";
-import { createEffect, onCleanup, onMount, type ParentProps } from "solid-js";
+import { batch, createEffect, onCleanup, onMount, type ParentProps } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import type { LaunchRequest, PackageConfiguration } from "@polymer-fe/frontend";
 import type { ControllerDevice } from "@polymer-fe/frontend";
@@ -59,9 +59,11 @@ export function ShellProvider(props: ParentProps) {
     libraryFiltered: false,
     libraryQuery: { text: "", platforms: [], sort: "title" },
     librarySearchOpen: false,
+    closingGame: null,
     libraryActivities: [],
     selectedGame: null,
     gamepadOpen: false,
+    cursorVisible: false,
     pauseOpen: false,
     shader: { preset: null, enabled: true },
     controllerToast: null,
@@ -172,7 +174,7 @@ export function ShellProvider(props: ParentProps) {
   const launchDraft = (draft = model.draft || undefined) => {
     if (model.launchableId && draft) void beginLaunch(model.launchableId, draft);
   };
-  const launchRecent = (game: RecentGame) => void prepare(game.path, game.emulator || undefined, "launch");
+  const launchRecent = (game: RecentGame) => { if (model.closingGame !== game.path) void prepare(game.path, game.emulator || undefined, "launch"); };
   const showDetails = (game: RecentGame) => void prepare(game.path, game.emulator || undefined, "details");
   const cancelDetails = () => {
     detection?.abort();
@@ -182,7 +184,25 @@ export function ShellProvider(props: ParentProps) {
     setModel("error", "");
     go("/", true);
   };
-  const closeGame = () => model.launch?.close();
+  const closeGame = () => {
+    const launch = model.launch;
+    if (!launch) return;
+    const path = model.draft?.path ?? null;
+    shaders.stop();
+    batch(() => {
+      setModel("closingGame", path);
+      setModel("request", null);
+      setModel("launch", null);
+      setModel("surfaces", []);
+      setModel("pauseOpen", false);
+      setModel("gamepadOpen", false);
+      setModel("launcher", { kind: "idle" });
+    });
+    go("/", true);
+    const closed = () => { if (model.closingGame === path) setModel("closingGame", null); };
+    launch.closed.then(closed, closed);
+    launch.close();
+  };
   const rememberGame = () => {
     const game = model.draft;
     if (!game) return;

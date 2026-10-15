@@ -33,6 +33,7 @@ export type ShellState = {
   draft: PackageConfiguration | null;
   request: LaunchRequest | null;
   launch: LaunchInstance | null;
+  closing: string | null;
   audio: { available: boolean; volume: number; muted: boolean };
   notifications: Record<string, Notification>;
   menu: "main" | "quick" | "order" | "shader" | "states" | null;
@@ -60,7 +61,7 @@ export class Shell {
     const [state, set] = createStore<ShellState>({
       phase: { kind: "idle" }, games: [], total: 0, filtered: false, activities: [], platforms: [],
       query: { text: "", platform: null, sort: "title" }, recent: [],
-      launchableId: null, draft: null, request: null, launch: window.Polymer.emulator.activeLaunch,
+      launchableId: null, draft: null, request: null, launch: window.Polymer.emulator.activeLaunch, closing: null,
       audio: { available: false, volume: 1, muted: false }, notifications: {}, menu: null, screenLayout: "stacked",
       shader: { preset: null, enabled: true },
     });
@@ -92,6 +93,7 @@ export class Shell {
   }
 
   async open(game: Pick<LibraryEntry, "path" | "name" | "emulator">, then: "details" | "launch") {
+    if (this.state.closing) return;
     if (window.Polymer.emulator.activeLaunch) return this.fail(new Error("Close the running game before opening another one"));
     this.preparation?.abort();
     const preparation = this.preparation = new AbortController();
@@ -145,6 +147,18 @@ export class Shell {
     if (error) this.fail(new Error(error));
     this.set(produce((state: ShellState) => { state.request = null; state.launch = null; state.menu = null; state.phase = { kind: "idle" }; }));
     this.navigate("/", true);
+  }
+
+  exitGame() {
+    const launch = this.state.launch;
+    if (!launch) return;
+    const path = this.state.draft?.path ?? null;
+    this.shaders.stop();
+    this.set(produce((state: ShellState) => { state.closing = path; state.request = null; state.launch = null; state.menu = null; state.phase = { kind: "idle" }; }));
+    this.navigate("/", true);
+    const closed = () => { if (this.state.closing === path) this.set("closing", null); };
+    launch.closed.then(closed, closed);
+    launch.close();
   }
 
   closeDetails() {

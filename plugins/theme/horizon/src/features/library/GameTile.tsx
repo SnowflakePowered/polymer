@@ -1,6 +1,6 @@
 import "../../components/CoverArt.css";
 import { For, Show, createEffect, createSignal, onCleanup } from "solid-js";
-import { CoverArt, Tile, ScrollingText, PlayerBadge, Icon } from "../../ui";
+import { CoverArt, Tile, ScrollingText, PlayerBadge, Icon, Spinner } from "../../ui";
 import { Progress as ProgressIndicator } from "../../ui";
 import type { RecentGame } from "../../app/models";
 import type { CoverPlacement } from "./cover-layout";
@@ -9,6 +9,7 @@ import "./GameTile.css";
 
 export function GameTile(props: {
   game: RecentGame;
+  closing: boolean;
   selected: boolean;
   players: number[];
   placement: CoverPlacement;
@@ -34,6 +35,7 @@ export function GameTile(props: {
     aria-label={`${props.game.name}, ${window.Polymer.machine(props.game.platform)?.name ?? props.game.platform}${props.game.missingKey ? ", missing key" : ""}`}
     aria-current={props.selected ? "true" : undefined}
     aria-haspopup="dialog"
+    aria-busy={props.closing || undefined}
     onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
     onClick={props.onActivate}
     onContextMenu={event => { event.preventDefault(); event.currentTarget.focus(); props.onContextMenu(event); }}
@@ -44,6 +46,7 @@ export function GameTile(props: {
     <Show when={props.game.missingKey}>{key => <span class="horizon-game-missing-key" title={`Missing key: ${key().id}`} role="img" aria-label="Missing key">
       <Icon name="key" tone="onBrand" strokeWidth={2.2} />
     </span>}</Show>
+    <Show when={props.closing}><span class="horizon-game-closing"><Spinner label={`Closing ${props.game.name}`} /></span></Show>
     <Show when={props.game.scraping}>{progress => <div class="horizon-game-scraping">
       <ProgressIndicator label={`Scraping ${props.game.name}`} completed={progress().completed} total={progress().total} />
     </div>}</Show>

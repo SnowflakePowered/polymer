@@ -2,12 +2,12 @@ import { DialogParts as Dialog, Button, Spinner, ControllerIllustration, ButtonC
 import { For, Show, createSignal, onCleanup, onMount } from "solid-js";
 import type { InputSourceSelector, ManagedControllerDevice } from "@polymer-fe/frontend";
 import { ControllerOrder } from "@polymer-fe/frontend/controller-order";
-import buttonA from "../../assets/switch/button-a.svg";
-import buttonB from "../../assets/switch/button-b.svg";
-import buttonL from "../../assets/switch/button-l.svg";
-import buttonMinus from "../../assets/switch/button-minus.svg";
-import buttonPlus from "../../assets/switch/button-plus.svg";
-import buttonR from "../../assets/switch/button-r.svg";
+import buttonA from "../../assets/prompts/switch/a.svg";
+import buttonB from "../../assets/prompts/switch/b.svg";
+import buttonL from "../../assets/prompts/switch/l.svg";
+import buttonMinus from "../../assets/prompts/switch/minus.svg";
+import buttonPlus from "../../assets/prompts/switch/plus.svg";
+import buttonR from "../../assets/prompts/switch/r.svg";
 import controllerPro from "../../assets/switch/controller-pro.svg";
 import controllerSwitch from "../../assets/switch/controller-switch.svg";
 import { useShell } from "../../app/shell-context";

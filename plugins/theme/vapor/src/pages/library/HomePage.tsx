@@ -15,10 +15,10 @@ export function HomePage() {
     return (played.length ? played : shell.state.games).slice(0, 12);
   });
   const rest = createMemo(() => shell.state.games.filter(game => !recent().some(entry => entry.path === game.path)));
-  const current = () => recent().find(game => game.path === focused()) ?? recent()[0];
+  const current = () => recent().find(game => game.path === focused()) ?? rest().find(game => game.path === focused()) ?? recent()[0];
   const [showcases, setShowcases] = createStore<Record<string, LibraryShowcase>>({});
   createEffect(() => {
-    for (const { path } of recent()) {
+    for (const { path } of [...recent(), ...rest().filter(game => game.path === focused())]) {
       if (path in showcases) continue;
       setShowcases(path, {});
       void shell.library.showcase(path).then(showcase => setShowcases(path, showcase)).catch(() => {});
@@ -30,10 +30,10 @@ export function HomePage() {
   return <Page class="vp-home" focusWhen={() => recent().length} hints={[{ action: "activate", label: "Select" }]}>
     <Show when={recent().length} fallback={<EmptyState title="Your library is empty" body="Drop a game, folder or archive onto this window to add it." />}>
       <section class="vp-recent">
-        <div class="vp-recent-backdrop"><Show when={background(current())}>{art => <img src={art()} alt="" />}</Show><span /></div>
+        <div class="vp-recent-backdrop"><Show when={background(current()) ?? current()?.artwork}>{art => <img src={art()} classList={{ "vp-recent-cover": !background(current()) }} alt="" />}</Show><span /></div>
         <Shelf title="Recent games">
           <For each={recent()}>{(game, index) =>
-            <Capsule wide={index() === 0 && !!background(game)} title={game.name} subtitle={platformName(game.platform)} data-autofocus={index() === 0}
+            <Capsule busy={shell.state.closing === game.path} wide={index() === 0 && !!background(game)} title={game.name} subtitle={platformName(game.platform)} data-autofocus={index() === 0}
               art={index() === 0 && background(game) || game.artwork} logo={index() === 0 && background(game) ? showcases[game.path]?.logo : undefined} ratio={game.artworkRatio}
               onFocus={() => setFocused(game.path)} onClick={() => open(game)} />
           }</For>
@@ -41,8 +41,8 @@ export function HomePage() {
         <Show when={current()}>{game => <div class="vp-recent-label"><strong>{game().name}</strong><span><Icon name="play" size={12} color="#59bf40" />{played(game())}</span></div>}</Show>
       </section>
       <Show when={rest().length}><h2 class="vp-shelf-title">Library</h2><CapsuleGrid><For each={rest()}>{game =>
-        <Capsule title={game.name} subtitle={platformName(game.platform)} art={game.artwork} ratio={game.artworkRatio} badge={game.missingKey ? "Missing key" : undefined}
-          progress={game.scraping ? game.scraping.completed / Math.max(1, game.scraping.total) : undefined} onClick={() => open(game)} />
+        <Capsule busy={shell.state.closing === game.path} title={game.name} subtitle={platformName(game.platform)} art={game.artwork} ratio={game.artworkRatio} badge={game.missingKey ? "Missing key" : undefined}
+          progress={game.scraping ? game.scraping.completed / Math.max(1, game.scraping.total) : undefined} onFocus={() => setFocused(game.path)} onClick={() => open(game)} />
       }</For></CapsuleGrid></Show>
     </Show>
   </Page>;

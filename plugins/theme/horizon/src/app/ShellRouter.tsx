@@ -1,8 +1,11 @@
-import { MemoryRouter, Route, createMemoryHistory } from "@solidjs/router";
+import { Show } from "solid-js";
+import { MemoryRouter, Route, createMemoryHistory, useLocation } from "@solidjs/router";
+import { ActionHints } from "../ui";
 import { ShellProvider } from "./ShellProvider";
 import { StoragePage } from "../features/storage/StoragePage";
 import { SavesPage } from "../features/saves/SavesPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
+import { ControllersPage } from "../features/controllers/ControllersPage";
 import { LibraryPage } from "../features/library/LibraryPage";
 import { GameDetailsPage } from "../features/details/GameDetailsPage";
 import { GameLayout } from "../features/game/GameLayout";
@@ -21,13 +24,14 @@ function NotFound() {
 }
 
 export function ShellRouter() {
-  return <MemoryRouter history={history} root={(props) => <InputProvider><ShellProvider>{props.children}</ShellProvider></InputProvider>}>
+  return <MemoryRouter history={history} root={(props) => <InputProvider><ShellProvider>{props.children}<Show when={!useLocation().pathname.startsWith("/game")}><ActionHints floating /></Show></ShellProvider></InputProvider>}>
     <Route path="/" component={LibraryPage}>
       <Route path="/" component={() => null} />
       <Route path="/details" component={GameDetailsPage} />
     </Route>
     <Route path="/saves" component={SavesPage} />
     <Route path="/storage" component={StoragePage} />
+    <Route path="/controllers" component={ControllersPage} />
     <Route path="/settings" component={SettingsPage} />
     <Route path="/game" component={GameLayout}>
       <Route path="/launching" component={LaunchingPage} />

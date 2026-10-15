@@ -25,7 +25,14 @@ export function PlatformShelf(props: { onExit(): void }) {
     hints: () => [{ action: "move", label: "Move" }, { action: "activate", label: "Select" }, { action: "back", label: "Close" }],
     handle: action => {
       if (action.type === "back" || (action.type === "move" && action.direction === "down")) { props.onExit(); return true; }
-      return action.type === "move" && action.direction === "up";
+      if (action.type !== "move") return false;
+      if (action.direction === "left" || action.direction === "right") {
+        const cards = [...track.querySelectorAll<HTMLElement>(".horizon-shelf-card")];
+        const card = cards[cards.indexOf(document.activeElement as HTMLElement) + (action.direction === "left" ? -1 : 1)];
+        card?.focus();
+        card?.scrollIntoView?.({ inline: "nearest", block: "nearest" });
+      }
+      return true;
     },
   }));
   onMount(() => requestAnimationFrame(() => {
@@ -33,7 +40,7 @@ export function PlatformShelf(props: { onExit(): void }) {
     card?.focus();
     card?.scrollIntoView?.({ inline: "center", block: "nearest" });
   }));
-  return <section ref={root} class="horizon-shelf">
+  return <section ref={root} class="horizon-shelf" onFocusOut={() => queueMicrotask(() => { if (root.isConnected && !root.contains(document.activeElement)) props.onExit(); })}>
     <Chevron direction="left" onClick={() => scroll(-1)} />
     <div ref={track} class="horizon-shelf-track" role="group" aria-label="Systems">
       <button type="button" class="horizon-shelf-card" aria-pressed={current() === null} onClick={() => choose(null)}>

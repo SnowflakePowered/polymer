@@ -1,6 +1,6 @@
 import { For, Show, splitProps, type JSX, type ParentProps } from "solid-js";
 import { useFocusRing, useInputScope, useNavigation, type ActionHint, type InputAction } from "./input";
-import { ButtonGlyph } from "./media";
+import { ButtonGlyph, KeyGlyph, type KeyName } from "./media";
 
 export function Screen(props: ParentProps<{ class?: string; hints?: readonly ActionHint[]; onAction?: (action: InputAction) => boolean }>) {
   let root!: HTMLElement;
@@ -31,10 +31,10 @@ export function DetailList(props: { items: readonly { label: string; value: JSX.
   return <dl class="hz-details"><For each={props.items}>{item => <div><dt>{item.label}</dt><dd>{item.value}</dd></div>}</For></dl>;
 }
 export function Divider() { return <hr class="hz-divider" />; }
-const keys = { move: "↑↓←→", activate: "Enter", back: "Esc", details: "Shift", pause: "Esc", previous: "PageUp", next: "PageDown" };
+const keys = { move: "arrows", activate: "enter", back: "escape", details: "shift", pause: "escape", previous: "page-up", next: "page-down" } as const;
 const glyphs = { move: "dpad", activate: "a", back: "b", details: "x", pause: "home", previous: "l", next: "r" } as const;
 export function ActionHints(props: { hints?: readonly ActionHint[]; floating?: boolean }) {
   const navigation = useNavigation();
   const hints = () => props.hints ?? navigation.hints();
-  return <Show when={!props.floating || hints().length}><footer class="hz-hints" data-floating={props.floating || undefined}><For each={hints()}>{hint => <span><Show when={navigation.origin() === "controller"} fallback={<kbd>{hint.keyboard ?? keys[hint.action]}</kbd>}><ButtonGlyph button={glyphs[hint.action]} /></Show>{hint.label}</span>}</For></footer></Show>;
+  return <Show when={!props.floating || hints().length}><footer class="hz-hints" data-floating={props.floating || undefined}><For each={hints()}>{hint => <span><Show when={navigation.origin() === "controller"} fallback={<KeyGlyph name={(hint.keyboard ?? keys[hint.action]) as KeyName} />}><ButtonGlyph button={glyphs[hint.action]} /></Show>{hint.label}</span>}</For></footer></Show>;
 }

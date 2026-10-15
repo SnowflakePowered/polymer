@@ -1,7 +1,7 @@
 import { Show, createResource, createSignal, onCleanup, onMount } from "solid-js";
 import type { RecentGame } from "../../app/models";
 import { useShell } from "../../app/shell-context";
-import { ActionHints, CoverArt, DialogParts as Dialog, OverlayPortal, type ActionHint } from "../../ui";
+import { CoverArt, DialogParts as Dialog, OverlayPortal, type ActionHint } from "../../ui";
 import "./GameInfoCard.css";
 
 export function GameInfoCard(props: { game: RecentGame; returnFocus(): HTMLElement | null | undefined; onClose(): void }) {
@@ -72,7 +72,6 @@ export function GameInfoCard(props: { game: RecentGame; returnFocus(): HTMLEleme
             </div>
             <p class="horizon-info-page" aria-live="polite">{layout().pages > 1 ? `${current() + 1}/${layout().pages}` : ""}</p>
           </section>
-          <ActionHints floating hints={hints()} />
         </Dialog.Content>
       </Dialog.Positioner>
     </OverlayPortal>

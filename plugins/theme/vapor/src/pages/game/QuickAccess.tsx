@@ -41,6 +41,6 @@ export function QuickAccess() {
         </PanelSection>
       </Show>
     </SidePanel>
-    <ConfirmModal open={confirm()} onClose={() => setConfirm(false)} title="Exit game?" description="Unsaved progress will be lost." confirm="Exit game" danger onConfirm={() => shell.state.launch?.close()} />
+    <ConfirmModal open={confirm()} onClose={() => setConfirm(false)} title="Exit game?" description="Unsaved progress will be lost." confirm="Exit game" danger onConfirm={() => shell.exitGame()} />
   </>;
 }

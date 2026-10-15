@@ -1,5 +1,5 @@
 import { onMount } from "solid-js";
-import { Icon, IconButton, TextField } from "../../ui";
+import { Icon, IconButton, TextField, useInputScope } from "../../ui";
 import { useShell } from "../../app/shell-context";
 import { css } from "../../../styled-system/css";
 
@@ -22,7 +22,12 @@ export function LibrarySearch() {
     shell.queryLibrary({ text: "" });
   };
   onMount(() => requestAnimationFrame(() => root.querySelector("input")?.focus()));
-  return <div ref={root} class={popup} role="search" onKeyDown={event => { if (event.key === "Escape") { event.stopPropagation(); close(); } }}>
+  useInputScope(() => ({ root: root.closest<HTMLElement>(".horizon-library") ?? undefined, handle: action => {
+    if (action.type !== "back") return false;
+    close();
+    return true;
+  } }));
+  return <div ref={root} class={popup} role="search">
     <Icon name="search" tone="muted" />
     <TextField label="Search" placeholder="Search titles" value={shell.model.libraryQuery.text} onValueChange={text => shell.queryLibrary({ text })} />
     <IconButton icon="close" label="Close search" onClick={close} />

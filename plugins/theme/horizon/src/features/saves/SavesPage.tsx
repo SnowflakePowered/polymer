@@ -1,7 +1,7 @@
 import { For, Show, createMemo, createResource, createSignal, onMount } from "solid-js";
 import type { ConsoleStorageVolume, StorageSave } from "@polymer-fe/frontend";
 import { css } from "../../../styled-system/css";
-import { Screen, ScreenHeader, MasterDetail, CategoryNavigation, Section, TileGrid, Tile, Icon, ActionDialog, ConfirmDialog, ActionHints, EmptyState, ErrorState, Spinner, type MenuAction } from "../../ui";
+import { Screen, ScreenHeader, MasterDetail, CategoryNavigation, Section, TileGrid, Tile, Icon, ActionDialog, ConfirmDialog, EmptyState, ErrorState, Spinner, type MenuAction } from "../../ui";
 import { AppSidebar } from "../../components/AppSidebar";
 import { useShell } from "../../app/shell-context";
 import { ProfileNameDialog, SaveDetailsDialog, SaveIcon, type NameRequest } from "./SaveDialogs";
@@ -111,7 +111,6 @@ export function SavesPage() {
         </Tile>}</For></TileGrid>
       </Show></Show></Section>
     </MasterDetail></Show></Show>
-    <ActionHints />
     <Show when={target().profile}>{volume => <>
       <ActionDialog open={menu() === "profile"} title={`Profiles · ${platformName()}`} actions={profileActions(volume())} returnFocus={focusTarget} onClose={() => setMenu(current => current === "profile" ? null : current)} />
       <ConfirmDialog open={menu() === "deleteProfile"} pending={busy()} title={`Delete ${profileName(volume())}?`} description="All saves and checkpoints in this profile are permanently removed." confirmLabel="Delete profile" returnFocus={focusTarget} onClose={() => setMenu(null)} onConfirm={() => void run(async () => { await volume().delete(); setProfileId(null); await refresh(); setMenu(null); })} />

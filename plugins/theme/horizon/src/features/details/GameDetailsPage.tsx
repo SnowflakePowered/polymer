@@ -1,4 +1,4 @@
-import { DialogParts as Dialog, Button, ButtonGlyph, ActionHints } from "../../ui";
+import { DialogParts as Dialog, Button, ButtonGlyph } from "../../ui";
 import { Show, createMemo } from "solid-js";
 import { produce, unwrap } from "solid-js/store";
 import { Icon } from "../../ui";
@@ -67,7 +67,6 @@ export function GameDetailsPage() {
         <div class="horizon-details-footer">
           <Button class="horizon-details-start" type="button" onClick={() => shell.launchDraft()}><Icon name="play" tone="action" />Start game</Button>
           <Button type="button" title="Escape" onClick={shell.cancelDetails}>Back</Button>
-          <ActionHints />
         </div>
       </Dialog.Content>
       </Dialog.Positioner>

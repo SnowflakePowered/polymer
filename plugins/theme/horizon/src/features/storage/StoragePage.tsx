@@ -2,7 +2,7 @@ import { For, Show, createResource, createSignal, onCleanup, onMount } from "sol
 import { useSearchParams } from "@solidjs/router";
 import type { ConsoleStorageVolume, DepotType, Job, StorageArtifact, StorageInspection, StorageRemovalPlan } from "@polymer-fe/frontend";
 import { css } from "../../../styled-system/css";
-import { Screen, ScreenHeader, MasterDetail, CategoryNavigation, TileGrid, Tile, Icon, DetailList, Section, Button, ActionGroup, Dialog, ConfirmDialog, ActionHints, EmptyState, ErrorState, Progress, Spinner, BannerImage } from "../../ui";
+import { Screen, ScreenHeader, MasterDetail, CategoryNavigation, TileGrid, Tile, Icon, DetailList, Section, Button, ActionGroup, Dialog, ConfirmDialog, EmptyState, ErrorState, Progress, Spinner, BannerImage } from "../../ui";
 import { AppSidebar } from "../../components/AppSidebar";
 import { useShell } from "../../app/shell-context";
 import "./StoragePage.css";
@@ -118,7 +118,7 @@ export function StoragePage() {
             </Tile>}</For></TileGrid>
           </Show></Section>
       </>}</Show>
-    </MasterDetail></Show></Show><ActionHints />
+    </MasterDetail></Show></Show>
     <ConfirmDialog open={confirmRecover()} pending={busy()} title="Recover NAND?" description={`Discard uncommitted changes to ${current()?.label ?? ""}? Successfully installed contents and separate save profiles are kept.`} confirmLabel="Discard changes and recover" onClose={() => setConfirmRecover(false)} onConfirm={() => void run(async () => { await current()!.recover(); setConfirmRecover(false); setPlan(undefined); })} />
     <Dialog open={!!plan()} onOpenChange={open => { if (!open && !busy()) setPlan(undefined); }} pending={busy()} title="Remove installed titles" actions={<><Button disabled={busy()} onClick={() => setPlan(undefined)}>Cancel</Button><Button appearance="danger" pending={busy()} disabled={checked()?.dirty || !!plan()?.affected.length} onClick={() => void run(remove)}>Remove selected artifacts</Button></>}>
       <Show when={plan()}>{removal => <><p>Remove {removal().requested.join(", ")}?</p><Show when={removal().affected.length}><p>Also affects: {removal().affected.join(", ")}. Review these artifacts before including them.</p><Button disabled={busy()} onClick={() => void run(async () => setPlan(await current()!.artifacts.planRemoval([...removal().requested, ...removal().affected])))}>Include affected artifacts</Button></Show></>}</Show><Show when={error()}><ErrorState message={error()} /></Show>

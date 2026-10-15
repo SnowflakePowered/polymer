@@ -15,7 +15,7 @@ const paths: Record<IconName, () => JSX.Element> = {
   play: () => <path d="m9 5 10 7-10 7Z" />,
   info: () => <><path d="M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18Z" /><path d="M12 11v6M12 7h.01" /></>,
   close: () => <path d="m6 6 12 12M18 6 6 18" />,
-  gamepad: () => <><path d="M7 6.5h10c2.5 0 4 2.5 4.5 6.5l1 5.5c.5 3.5-2.5 4-4.5 2L14.5 16.5h-5L6 20.5c-2 2-5 1.5-4.5-2l1-5.5C3 9 4.5 6.5 7 6.5Z" /><path d="M7 9.5v6M4 12.5h6M10.5 10h3" /><circle cx="17" cy="10.5" r="1" /><circle cx="19.5" cy="13.5" r="1" /></>,
+  gamepad: () => <><path d="M7.5 6h9a5 5 0 0 1 4.9 4l1.05 5.6a3 3 0 0 1-5.15 2.6l-1.9-1.8a2 2 0 0 0-1.45-.6h-3.9a2 2 0 0 0-1.45.6l-1.9 1.8a3 3 0 0 1-5.15-2.6L2.6 10a5 5 0 0 1 4.9-4Z" /><path d="M7.5 9.5v4M5.5 11.5h4" /><circle cx="15.75" cy="12.5" r=".6" fill="currentColor" /><circle cx="17.75" cy="10.5" r=".6" fill="currentColor" /></>,
   keyboard: () => <><rect x="2.5" y="6" width="19" height="12" rx="2" /><path d="M6 10h.01M9 10h.01M12 10h.01M15 10h.01M18 10h.01M6 13h.01M9 13h.01M12 13h.01M15 13h.01M18 13h.01M7 16h10" /></>,
   volume: () => <><path d="M4 9v6h4l5 4V5L8 9Z" /><path d="M16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11" /></>,
   theme: () => <><path d="M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18Z" /><path d="M12 3v18a9 9 0 0 0 0-18Z" fill="currentColor" /></>,
