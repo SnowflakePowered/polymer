@@ -62,6 +62,27 @@ fn run(
     });
     tracing_subscriber::fmt().with_env_filter(filter).init();
     #[cfg(windows)]
+    let _instance_mutex = unsafe {
+        use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
+        let mutex = windows::Win32::System::Threading::CreateMutexW(
+            None,
+            false,
+            windows::core::w!("Local\\Polymer.Instance"),
+        )?;
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            return Err("Polymer is already running".into());
+        }
+        mutex
+    };
+    let _instance_lock = polymer_library::Directories::discover()?
+        .lock()
+        .map_err(|error| -> Box<dyn std::error::Error> {
+            match error.kind() {
+                std::io::ErrorKind::WouldBlock => "Polymer is already running".into(),
+                _ => error.into(),
+            }
+        })?;
+    #[cfg(windows)]
     let _game_bar_watcher = match game_bar_watcher::GameBarWatcher::launch() {
         Ok(watcher) => Some(watcher),
         Err(error) => {
