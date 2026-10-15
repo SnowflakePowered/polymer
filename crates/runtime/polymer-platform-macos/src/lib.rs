@@ -10,8 +10,10 @@ pub use audio::SystemAudioState;
 pub use bundle::{BundleFactory, StagedBundle};
 pub use output_watcher::DefaultOutputWatcher;
 
+mod graphics;
 mod guest;
 mod window;
+pub use graphics::GraphicsSupport;
 pub use guest::GuestPlatform;
 
 /// Host-side native view identity; guest window identities use WindowServer IDs.

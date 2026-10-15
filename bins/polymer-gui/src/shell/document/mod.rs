@@ -481,7 +481,12 @@ impl ShellDocument {
             }
         }
         let animation_time = self.animation_time();
+        let cursor = self.document.as_ref().get_cursor();
         self.document.as_mut().resolve(animation_time);
+        let resolved = self.document.as_ref().get_cursor();
+        if resolved != cursor {
+            self.document.as_ref().shell_provider.set_cursor(resolved);
+        }
     }
 
     /// Re-lays out and publishes paint scenes when the shell changed.
