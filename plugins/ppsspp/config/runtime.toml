@@ -8,6 +8,7 @@ output = { format = "ini", path = "ppsspp.ini" }
 [targets.settings.General]
 [targets.settings.Graphics]
 [targets.settings.Control]
+[targets.settings.CPU]
 
 [sections.general]
 title = "General"
@@ -100,6 +101,16 @@ title = "DisabledGraphicsBackends"
 type = "string"
 default = "VULKAN"
 emit = { key = "DisabledGraphicsBackends" }
+
+[sections.cpu]
+title = "CPU"
+target = "settings.CPU"
+
+[[sections.cpu.options]]
+key = "CPUSpeed"
+title = "CPUSpeed"
+type = "int"
+emit = { key = "CPUSpeed" }
 
 [sections.control]
 title = "Control"

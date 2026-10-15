@@ -25,6 +25,18 @@ type = "int"
 default = 1
 emit = { key = "resolution_factor" }
 
+[targets.settings."Core"]
+
+[sections.core]
+title = "core"
+target = "settings.Core"
+
+[[sections.core.options]]
+key = "cpu_clock_percentage"
+title = "cpu_clock_percentage"
+type = "int"
+emit = { key = "cpu_clock_percentage" }
+
 [targets.settings."Layout"]
 
 [sections.layout]

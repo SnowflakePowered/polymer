@@ -1,4 +1,4 @@
-import { osIdentifier } from "polymer:sys";
+import { graphicsApis, osIdentifier } from "polymer:sys";
 import { caches, config } from "polymer:plugin";
 import { connect } from "polymer:database";
 import { download } from "polymer:download";
@@ -33,6 +33,7 @@ import type {
     StateContext,
     UiNodeSnapshot,
     UserConfiguration,
+    GraphicsHook,
 } from "polymer:api";
 import { HotkeyParser } from "pkg:hotkeys.ts";
 
@@ -43,6 +44,8 @@ type Options = {
                 permission_asked: boolean,
             },
             core: {
+                overclock_enable: boolean,
+                overclock: number,
                 gfx_backend: string,
                 gci_folder_a_path: string,
                 enable_save_states: boolean,
@@ -71,6 +74,8 @@ type Options = {
         gfx: {
             settings: {
                 aspect_ratio: string,
+                internal_resolution: number,
+                shader_compilation_mode: string,
             },
         },
         ports: {
@@ -113,13 +118,100 @@ export const onConfigure = (
             type: "bool",
             default: true,
         }],
+    }, {
+        key: "graphics",
+        title: "Graphics",
+        options: [...(GRAPHICS_APIS.length > 1 ? [GRAPHICS_API_OPTION] : []), {
+            key: "resolution",
+            title: "Internal Resolution",
+            description: "Multiple of the console's native resolution.",
+            type: "int",
+            default: 1,
+            min: 1,
+            max: MAX_RESOLUTION,
+        }, SHADER_COMPILATION_OPTION],
+    }, {
+        key: "cpu",
+        title: "CPU",
+        options: [CPU_CLOCK_OPTION],
     }],
     values: {
         polymer: {
             quickResume: !isNKit(pkg.filename) && quickResumeEnabled(userConfiguration),
         },
+        graphics: {
+            api: graphicsApi(userConfiguration)?.hook ?? null,
+            resolution: internalResolution(userConfiguration),
+            shaders: shaderCompilation(userConfiguration),
+        },
+        cpu: { clock: cpuClock(userConfiguration) },
     },
 });
+
+const GRAPHICS_APIS = ([
+    { hook: "d3d11", label: "Direct3D 11", value: "D3D" },
+    { hook: "d3d12", label: "Direct3D 12", value: "D3D12" },
+    { hook: "metal", label: "Metal", value: "Metal" },
+    { hook: "vulkan", label: "Vulkan", value: "Vulkan" },
+    { hook: "opengl", label: "OpenGL", value: "OGL" },
+] satisfies { hook: GraphicsHook, label: string, value: string }[]).filter(api => graphicsApis.includes(api.hook));
+
+const GRAPHICS_API_OPTION = {
+    key: "api",
+    title: "Graphics API",
+    type: "select",
+    default: GRAPHICS_APIS[0]?.hook ?? null,
+    choices: GRAPHICS_APIS.map(api => ({ key: api.hook, label: api.label })),
+} as const;
+
+function graphicsApi(configuration?: UserConfiguration) {
+    return GRAPHICS_APIS.find(api => api.hook === configuration?.graphics?.api) ?? GRAPHICS_APIS[0];
+}
+
+const MAX_CPU_CLOCK = 400;
+
+const CPU_CLOCK_OPTION = {
+    key: "clock",
+    title: "CPU Clock",
+    description: "Percentage of the console's native CPU speed. Higher values can reduce slowdown but may break some games.",
+    type: "int",
+    default: 100,
+    min: 100,
+    max: MAX_CPU_CLOCK,
+} as const;
+
+function cpuClock(configuration?: UserConfiguration): number {
+    const value = configuration?.cpu?.clock;
+    return typeof value === "number" && Number.isInteger(value) ? Math.min(MAX_CPU_CLOCK, Math.max(100, value)) : 100;
+}
+
+const SHADER_COMPILATION_MODES = [
+    { key: "Synchronous", label: "Specialized" },
+    { key: "SynchronousUberShaders", label: "Exclusive Ubershaders" },
+    { key: "AsynchronousUberShaders", label: "Hybrid Ubershaders" },
+    { key: "AsynchronousSkipRendering", label: "Skip Drawing" },
+];
+
+const SHADER_COMPILATION_OPTION = {
+    key: "shaders",
+    title: "Ubershaders",
+    description: "Ubershaders reduce stutter while new shaders compile, at a performance cost.",
+    type: "select",
+    default: "Synchronous",
+    choices: SHADER_COMPILATION_MODES,
+} as const;
+
+function shaderCompilation(configuration?: UserConfiguration): string {
+    const value = configuration?.graphics?.shaders;
+    return SHADER_COMPILATION_MODES.find(mode => mode.key === value)?.key ?? "Synchronous";
+}
+
+const MAX_RESOLUTION = 8;
+
+function internalResolution(configuration?: UserConfiguration): number {
+    const value = configuration?.graphics?.resolution;
+    return typeof value === "number" && Number.isInteger(value) ? Math.min(MAX_RESOLUTION, Math.max(1, value)) : 1;
+}
 
 const WII_REMOTE_SLOT_COUNT = 4;
 const WII_REMOTE_SOURCE_NAMES = ["None", "Emulated Wii Remote", "Real Wii Remote"] as const;
@@ -498,8 +590,12 @@ export const onLaunch = async (args: EmulatorLaunchArgs<Options, Readonly<{ nand
     // Telemetry remains disabled and Dolphin does not open its consent dialog.
     options.analytics.enabled = false;
     options.analytics.permission_asked = true;
-    options.core.gfx_backend = isMacos ? "Metal" : "D3D";
+    options.core.gfx_backend = graphicsApi(args.userConfiguration).value;
+    options.core.overclock_enable = cpuClock(args.userConfiguration) !== 100;
+    options.core.overclock = cpuClock(args.userConfiguration) / 100;
     args.configuration.options().gfx.settings.aspect_ratio = "Stretch";
+    args.configuration.options().gfx.settings.internal_resolution = internalResolution(args.userConfiguration);
+    args.configuration.options().gfx.settings.shader_compilation_mode = shaderCompilation(args.userConfiguration);
     options.core.gci_folder_a_path = args.filesystem.path("/MemoryCard/USA");
     // Dolphin disables save states by default in current development builds.
     // Polymer uses them for both explicit state slots and quick resume.
@@ -598,7 +694,7 @@ export const onLaunch = async (args: EmulatorLaunchArgs<Options, Readonly<{ nand
         argv,
         isolate: true,
         hooks: {
-            graphics: isMacos ? ["metal"] : ["d3d11"],
+            graphics: [graphicsApi(args.userConfiguration).hook],
             input: isMacos ? ["sdl3"] : ["sdl3", "bluetooth-api-win32"],
         },
         controllerTopology,

@@ -2,10 +2,10 @@ import { caches, config } from "polymer:plugin";
 import { connect } from "polymer:database";
 import { download } from "polymer:download";
 import { Job } from "polymer:jobs";
-import { osIdentifier } from "polymer:sys";
+import { graphicsApis, osIdentifier } from "polymer:sys";
 import { unarchive } from "polymer:unarchive";
 import { EmulatorUpdates } from "jsr:@polymer-fe/emulator-updates@^0.1.0";
-import type { DiscChangeContext, EmulatorLaunchArgs, PauseResumeContext, Storage } from "polymer:api";
+import type { ConfigurationResult, DiscChangeContext, EmulatorLaunchArgs, Package, PauseResumeContext, Storage, GraphicsHook, UserConfiguration } from "polymer:api";
 import { HotkeyParser } from "pkg:hotkeys.ts";
 
 type Options = {
@@ -49,6 +49,8 @@ type Options = {
         input_sources: { sdl: boolean },
         gamelist: { recursive_paths: string },
         autoupdater: { check_at_startup: boolean },
+        gpu: { resolution_scale: number, renderer: string },
+        cpu: { overclock_enable: boolean, overclock_numerator: number, overclock_denominator: number },
 };
 
 let currentDisc = 0;
@@ -67,6 +69,72 @@ const runtime = new EmulatorUpdates({
 export const onPluginLoad = () => runtime.ready();
 
 export const onUpdateContents = async () => runtime.update([await runtime.release("duckstation")]);
+
+export const onConfigure = (_pkg: Package, userConfiguration?: UserConfiguration): ConfigurationResult => ({
+    schema: "duckstation/v1",
+    groups: [{
+        key: "graphics",
+        title: "Graphics",
+        options: [...(GRAPHICS_APIS.length > 1 ? [GRAPHICS_API_OPTION] : []), {
+            key: "resolution",
+            title: "Internal Resolution",
+            description: "Multiple of the console's native resolution.",
+            type: "int",
+            default: 1,
+            min: 1,
+            max: MAX_RESOLUTION,
+        }],
+    }, {
+        key: "cpu",
+        title: "CPU",
+        options: [CPU_CLOCK_OPTION],
+    }],
+    values: { graphics: { api: graphicsApi(userConfiguration)?.hook ?? null, resolution: internalResolution(userConfiguration) }, cpu: { clock: cpuClock(userConfiguration) } },
+});
+
+const GRAPHICS_APIS = ([
+    { hook: "d3d11", label: "Direct3D 11", value: "D3D11" },
+    { hook: "d3d12", label: "Direct3D 12", value: "D3D12" },
+    { hook: "metal", label: "Metal", value: "Metal" },
+    { hook: "vulkan", label: "Vulkan", value: "Vulkan" },
+    { hook: "opengl", label: "OpenGL", value: "OpenGL" },
+] satisfies { hook: GraphicsHook, label: string, value: string }[]).filter(api => graphicsApis.includes(api.hook));
+
+const GRAPHICS_API_OPTION = {
+    key: "api",
+    title: "Graphics API",
+    type: "select",
+    default: GRAPHICS_APIS[0]?.hook ?? null,
+    choices: GRAPHICS_APIS.map(api => ({ key: api.hook, label: api.label })),
+} as const;
+
+function graphicsApi(configuration?: UserConfiguration) {
+    return GRAPHICS_APIS.find(api => api.hook === configuration?.graphics?.api) ?? GRAPHICS_APIS[0];
+}
+
+const MAX_CPU_CLOCK = 400;
+
+const CPU_CLOCK_OPTION = {
+    key: "clock",
+    title: "CPU Clock",
+    description: "Percentage of the console's native CPU speed. Higher values can reduce slowdown but may break some games.",
+    type: "int",
+    default: 100,
+    min: 100,
+    max: MAX_CPU_CLOCK,
+} as const;
+
+function cpuClock(configuration?: UserConfiguration): number {
+    const value = configuration?.cpu?.clock;
+    return typeof value === "number" && Number.isInteger(value) ? Math.min(MAX_CPU_CLOCK, Math.max(100, value)) : 100;
+}
+
+const MAX_RESOLUTION = 8;
+
+function internalResolution(configuration?: UserConfiguration): number {
+    const value = configuration?.graphics?.resolution;
+    return typeof value === "number" && Number.isInteger(value) ? Math.min(MAX_RESOLUTION, Math.max(1, value)) : 1;
+}
 
 export const onLaunch = async (args: EmulatorLaunchArgs<Options, Readonly<{ card1?: Storage, card2?: Storage }>>) => {
     const biosFiles = (await args.firmwareStore.list()).filter(entry => entry.platform === "SONY_PSX");
@@ -97,6 +165,11 @@ export const onLaunch = async (args: EmulatorLaunchArgs<Options, Readonly<{ card
 
     const options = args.configuration.options();
     options.main.settings_version = 3;
+    options.gpu.resolution_scale = internalResolution(args.userConfiguration);
+    options.gpu.renderer = graphicsApi(args.userConfiguration).value;
+    options.cpu.overclock_enable = cpuClock(args.userConfiguration) !== 100;
+    options.cpu.overclock_numerator = cpuClock(args.userConfiguration);
+    options.cpu.overclock_denominator = 100;
     options.main.setup_wizard_incomplete = false;
     options.main.confirm_power_off = false;
     options.main.save_state_on_exit = false;
@@ -142,7 +215,7 @@ export const onLaunch = async (args: EmulatorLaunchArgs<Options, Readonly<{ card
         ],
         argv: ["-fastboot", "--", discPaths[args.initialDiscIndex]],
         isolate: true,
-        hooks: { graphics: ["d3d11"], input: ["sdl3"] },
+        hooks: { graphics: [graphicsApi(args.userConfiguration).hook], input: ["sdl3"] },
         surfaces: [{ index: 0 }],
     };
 };
@@ -160,4 +233,4 @@ export const onDiscChange = (context: DiscChangeContext) => {
     currentDisc = context.index;
 };
 
-export default { onPluginLoad, onUpdateContents, onLaunch, onParseHotkey, onPauseResume, onDiscChange };
+export default { onPluginLoad, onUpdateContents, onConfigure, onLaunch, onParseHotkey, onPauseResume, onDiscChange };
