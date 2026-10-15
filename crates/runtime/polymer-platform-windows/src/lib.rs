@@ -35,5 +35,8 @@ pub use window_lifetime::WindowLifetime;
 mod guest;
 pub use guest::GuestPlatform;
 
+mod graphics;
+pub use graphics::GraphicsSupport;
+
 mod output_watcher;
 pub use output_watcher::DefaultOutputWatcher;

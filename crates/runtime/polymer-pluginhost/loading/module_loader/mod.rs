@@ -349,14 +349,28 @@ impl ModuleLoader for PluginModuleLoader {
                 "aarch64" => "arm64",
                 architecture => architecture,
             };
-            Ok(ModuleSource::new(
-                ModuleType::JavaScript,
-                ModuleSourceCode::String(
-                    format!("export const osIdentifier = '{os}-{architecture}';").into(),
-                ),
-                module_specifier,
-                None,
-            ))
+            #[cfg(windows)]
+            let graphics = polymer_platform_windows::GraphicsSupport::available();
+            #[cfg(target_os = "macos")]
+            let graphics = polymer_platform_macos::GraphicsSupport::available();
+            #[cfg(not(any(windows, target_os = "macos")))]
+            let graphics: &[polymer_protocol::GraphicsHook] = &[];
+            serde_json::to_string(graphics)
+                .map(|graphics| {
+                    ModuleSource::new(
+                        ModuleType::JavaScript,
+                        ModuleSourceCode::String(
+                            format!(
+                                "export const osIdentifier = '{os}-{architecture}';
+export const graphicsApis = Object.freeze({graphics});"
+                            )
+                            .into(),
+                        ),
+                        module_specifier,
+                        None,
+                    )
+                })
+                .map_err(ModuleLoaderError::from_err)
         } else if module_specifier.as_str() == API_MODULE {
             Ok(ModuleSource::new(
                 ModuleType::JavaScript,
