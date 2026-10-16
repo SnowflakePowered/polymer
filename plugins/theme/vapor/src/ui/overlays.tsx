@@ -6,12 +6,13 @@ import { embeddedRuntime, useInputScope, type InputAction } from "./input";
 
 type Dismisser = { content: () => HTMLElement | undefined; close(): void };
 const dismissers: Dismisser[] = [];
-const dismissOnClick = (event: MouseEvent) => {
+const PRESS_EVENTS = ["pointerdown", "mousedown", "pointerup", "mouseup"] as const;
+const dismissOnClick = (event: Event) => {
   const top = dismissers.at(-1), content = top?.content();
   if (!top || !content || !(event.target instanceof Node) || content.contains(event.target)) return;
   event.preventDefault();
   event.stopPropagation();
-  top.close();
+  if (event.type === "click") top.close();
 };
 
 /** Closes the topmost overlay on a click outside it. Pointer presses are ignored so the click cannot reach what was underneath. */
@@ -19,11 +20,11 @@ export function useClickOutside(content: () => HTMLElement | undefined, open: ()
   createEffect(() => {
     if (!open()) return;
     const dismisser = { content, close };
-    if (!dismissers.length) document.addEventListener("click", dismissOnClick, true);
+    if (!dismissers.length) for (const type of ["click", ...PRESS_EVENTS]) document.addEventListener(type, dismissOnClick, true);
     dismissers.push(dismisser);
     onCleanup(() => {
       dismissers.splice(dismissers.indexOf(dismisser), 1);
-      if (!dismissers.length) document.removeEventListener("click", dismissOnClick, true);
+      if (!dismissers.length) for (const type of ["click", ...PRESS_EVENTS]) document.removeEventListener(type, dismissOnClick, true);
     });
   });
 }

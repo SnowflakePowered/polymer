@@ -129,7 +129,14 @@ impl LayoutOption {
             })
             .collect::<Option<Box<[Choice]>>>()
             .ok_or_else(invalid)?;
-        if (kind == "select") == parsed.is_empty() {
+        let valid = match kind {
+            "select" => !parsed.is_empty(),
+            "int" => parsed
+                .iter()
+                .all(|choice| choice.key.as_str().parse::<i64>().is_ok()),
+            _ => parsed.is_empty(),
+        };
+        if !valid {
             return Err(invalid());
         }
         Ok(parsed)

@@ -40,7 +40,7 @@ function Frame(props: ParentProps) {
   } }));
   return <div class="vp-root" data-playing={playing() || undefined}>
     <Show when={!playing()}><TopBar actions={[
-      ...jobs().some(active) ? [{ icon: "download" as const, label: "Downloads", run: () => shell.navigate("/downloads") }] : [],
+      ...jobs().some(active) ? [{ icon: "download" as const, label: "Updates", run: () => shell.navigate("/downloads") }] : [],
       { icon: "search", label: "Library", run: () => shell.navigate("/library") }, { icon: "settings", label: "Settings", run: () => shell.navigate("/settings") },
     ]} /></Show>
     <div class="vp-content">{props.children}</div>
