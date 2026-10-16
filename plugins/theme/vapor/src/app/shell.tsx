@@ -198,7 +198,10 @@ export class Shell {
     (values[group] ||= {})[option] = value;
     this.editEmulator(emulator.id, candidate => { candidate.userConfiguration = values; });
     void window.Polymer.configuration.configure(launchableId, emulator.id, values).then(result => {
-      if (result) this.editEmulator(emulator.id, candidate => { candidate.configuration = result.configuration; candidate.userConfiguration = result.userConfiguration; });
+      const index = this.state.draft?.candidates.findIndex(item => item.id === emulator.id) ?? -1;
+      if (!result || index < 0) return;
+      this.set("draft", "candidates", index, "configuration", reconcile(result.configuration, { key: "key" }));
+      this.set("draft", "candidates", index, "userConfiguration", reconcile(result.userConfiguration));
     }).catch(this.fail);
   }
 

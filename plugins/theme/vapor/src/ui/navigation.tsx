@@ -31,7 +31,7 @@ export function Tabs(props: { tabs: readonly Tab[]; active: string; onChange(id:
   } }));
   return <div ref={root} class="vp-tabs">
     <Show when={props.glyphs !== false}><Glyph name="lb" /></Show>
-    <For each={props.tabs}>{tab => <button type="button" class="vp-tab" aria-pressed={tab.id === props.active} disabled={tab.disabled} onClick={() => props.onChange(tab.id)}><span>{tab.title}</span><Show when={tab.badge}><span class="vp-tab-badge">{tab.badge}</span></Show></button>}</For>
+    <For each={props.tabs}>{tab => <button type="button" class="vp-tab" tabIndex={-1} aria-pressed={tab.id === props.active} disabled={tab.disabled} onMouseDown={event => event.preventDefault()} onClick={() => props.onChange(tab.id)}><span>{tab.title}</span><Show when={tab.badge}><span class="vp-tab-badge">{tab.badge}</span></Show></button>}</For>
     <Show when={props.glyphs !== false}><Glyph name="rb" /></Show>
   </div>;
 }

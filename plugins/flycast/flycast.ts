@@ -41,6 +41,7 @@ export const onConfigure = (_pkg: Package, userConfiguration?: UserConfiguration
             default: 1,
             min: 1,
             max: MAX_RESOLUTION,
+            choices: Array.from({ length: MAX_RESOLUTION }, (_, index) => ({ key: String(index + 1), label: `${640 * (index + 1)}×${480 * (index + 1)}` })),
         }],
     }, {
         key: "cpu",

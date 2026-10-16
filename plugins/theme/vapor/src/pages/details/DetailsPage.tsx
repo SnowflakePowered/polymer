@@ -12,7 +12,9 @@ function OptionField(props: { option: ConfigurationLayoutOption; value: Value; o
   return <Switch fallback={<TextField label={props.option.title} description={props.option.description} value={String(props.value ?? "")} onChange={props.onChange} />}>
     <Match when={props.option.type === "bool"}><ToggleField label={props.option.title} description={props.option.description} checked={Boolean(props.value)} onChange={props.onChange} /></Match>
     <Match when={props.option.type === "select"}><DropdownField label={props.option.title} description={props.option.description} value={props.value === null ? null : String(props.value)} options={(props.option.choices ?? []).map(choice => ({ value: choice.key, label: choice.label }))} onChange={props.onChange} /></Match>
-    <Match when={props.option.type === "int" && ranged()}><SliderField label={props.option.title} description={props.option.description} value={Number(props.value ?? 0)} min={props.option.min} max={props.option.max} onChange={props.onChange} /></Match>
+    <Match when={props.option.type === "int" && ranged()}><SliderField label={props.option.title} description={props.option.description} value={Number(props.value ?? 0)} min={props.option.min} max={props.option.max} onChange={props.onChange}
+      format={value => props.option.choices?.find(choice => choice.key === String(value))?.label ?? String(value)}
+      notches={props.option.max! - props.option.min! <= 10 ? Array.from({ length: props.option.max! - props.option.min! + 1 }, (_, index) => props.option.choices?.length ? `${props.option.min! + index}×` : String(props.option.min! + index)) : undefined} /></Match>
     <Match when={props.option.type === "int" || props.option.type === "float"}><NumberField label={props.option.title} description={props.option.description} value={Number(props.value ?? 0)} min={props.option.min} max={props.option.max} step={props.option.type === "int" ? 1 : .1} onChange={props.onChange} /></Match>
   </Switch>;
 }
@@ -43,23 +45,23 @@ export function DetailsPage() {
     const played = shell.state.recent.find(item => item.path === game()?.path)?.playedAt;
     return played ? new Date(played).toLocaleDateString() : "Never";
   };
-  return <Show when={game()}>{draft => <Page class="vp-details" hints={[{ action: "activate", label: "Select" }, { action: "back", label: "Back" }]} onAction={action => {
+  return <Show when={game()} keyed>{draft => <Page class="vp-details" hints={[{ action: "activate", label: "Select" }, { action: "back", label: "Back" }]} onAction={action => {
     if (action.type !== "back") return false;
     shell.closeDetails();
     return true;
   }}>
-    <Hero title={entry()?.name ?? draft().name} art={showcase()?.background} logo={showcase()?.logo} banner={banner()}>
+    <Hero title={entry()?.name ?? draft.name} art={showcase()?.background} logo={showcase()?.logo} banner={banner()}>
       <PlayBar action={<PlayButton data-autofocus state={shell.state.phase.kind === "idle" ? "play" : "launching"} onClick={() => void shell.launch()} />}
-        stats={[{ label: "Platform", value: platformName(draft().platform) }, { label: "Last played", value: lastPlayed() }, { label: "Emulator", value: emulator()?.id ?? "None" }]} />
+        stats={[{ label: "Platform", value: platformName(draft.platform) }, { label: "Last played", value: lastPlayed() }, { label: "Emulator", value: emulator()?.id ?? "None" }]} />
     </Hero>
     <section class="vp-details-body">
       <Tabs tabs={tabs()} active={tab()} onChange={setTab} />
       <div class="vp-details-panel">
         <Show when={tab() === "emulation"}>
-          <DropdownField label="Emulator" description="The emulator used to play this game." value={draft().gameEmulator ?? ""}
-            options={[{ value: "", label: `Platform default (${platformDefault()})` }, ...draft().candidates.map(item => ({ value: item.id, label: item.id }))]}
+          <DropdownField label="Emulator" description="The emulator used to play this game." value={draft.gameEmulator ?? ""}
+            options={[{ value: "", label: `Platform default (${platformDefault()})` }, ...draft.candidates.map(item => ({ value: item.id, label: item.id }))]}
             onChange={value => shell.selectEmulator(value || null)} />
-          <Field label="Location" description={decodeURI(draft().path.replace(/^file:\/\/\//, ""))} />
+          <Field label="Location" description={decodeURI(draft.path.replace(/^file:\/\/\//, ""))} />
         </Show>
         <Show when={tab() === "controllers"}>
           <Show when={emulator()?.groups.length} fallback={<Field label="No controller ports" description="This emulator does not take controller input." />}>
@@ -69,9 +71,9 @@ export function DetailsPage() {
             }</For>}</For>
           </Show>
         </Show>
-        <Show when={group()}>{current => <>
-          <Show when={current().description}><p class="vp-details-description">{current().description}</p></Show>
-          <For each={current().options}>{option => <OptionField option={option} value={emulator()?.userConfiguration?.[current().key]?.[option.key] ?? option.default} onChange={value => shell.configure(current().key, option.key, value)} />}</For>
+        <Show when={group()} keyed>{current => <>
+          <Show when={current.description}><p class="vp-details-description">{current.description}</p></Show>
+          <For each={current.options}>{option => <OptionField option={option} value={emulator()?.userConfiguration?.[current.key]?.[option.key] ?? option.default} onChange={value => shell.configure(current.key, option.key, value)} />}</For>
         </>}</Show>
       </div>
     </section>

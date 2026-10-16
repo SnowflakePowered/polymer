@@ -11,7 +11,7 @@ export function MainMenu() {
     <MenuItem icon="library" label="Library" active={location.pathname === "/library"} data-autofocus={location.pathname === "/library"} onClick={() => go("/library")} />
     <MenuItem icon="disc" label="Saves" active={location.pathname === "/saves"} data-autofocus={location.pathname === "/saves"} onClick={() => go("/saves")} />
     <MenuItem icon="storage" label="System Storage" active={location.pathname === "/storage"} data-autofocus={location.pathname === "/storage"} onClick={() => go("/storage")} />
-    <MenuItem icon="download" label="Downloads" active={location.pathname === "/downloads"} data-autofocus={location.pathname === "/downloads"} onClick={() => go("/downloads")} />
+    <MenuItem icon="download" label="Updates" active={location.pathname === "/downloads"} data-autofocus={location.pathname === "/downloads"} onClick={() => go("/downloads")} />
     <MenuItem icon="settings" label="Settings" active={location.pathname === "/settings"} data-autofocus={location.pathname === "/settings"} onClick={() => go("/settings")} />
   </SidePanel>;
 }

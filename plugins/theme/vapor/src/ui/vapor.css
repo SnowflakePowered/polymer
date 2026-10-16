@@ -37,7 +37,8 @@
 html, body { margin: 0; height: 100%; background: var(--vp-root); color: var(--vp-text); font: 400 16px/20px var(--vp-font); overflow: hidden; }
 body[data-debug="true"] { height: calc(100% - 32px); transform: translateY(32px); }
 #root { height: 100%; }
-* { box-sizing: border-box; }
+* { box-sizing: border-box; user-select: none; }
+input, textarea, [contenteditable] { user-select: text; }
 button { font: inherit; color: inherit; border: 0; background: none; padding: 0; margin: 0; cursor: pointer; text-align: start; display: flex; align-items: center; justify-content: flex-start; }
 button:disabled { cursor: default; }
 :focus { outline: none; }
@@ -129,15 +130,18 @@ h1, h2, h3, p { margin: 0; font-weight: inherit; }
 .vp-slider-control { position: relative; display: flex; align-items: center; height: 24px; min-width: 100px; }
 .vp-slider-track { position: relative; flex: 1; height: 6px; border-radius: 3px; background: var(--vp-control); overflow: hidden; }
 .vp-slider-range { position: absolute; top: 0; bottom: 0; border-radius: 3px; background: var(--vp-blue); transition: background-color .2s ease-in-out; }
-.vp-slider-handle { position: absolute; top: 0; width: 24px; height: 24px; border-radius: 50%; background: var(--vp-white); box-shadow: 0 0 5px rgba(0, 0, 0, .35); }
-.vp-slider-handle:focus { border: 3px solid rgba(255, 255, 255, .15); animation: vp-handle-pop .2s ease-out; }
-@keyframes vp-handle-pop { from { transform: scale(1.4); } to { transform: scale(1); } }
+.vp-slider-handle { position: absolute; top: 0; width: 24px; height: 24px; outline: none; }
+.vp-slider-knob { position: absolute; inset: 0; box-sizing: content-box; border-radius: 50%; background: var(--vp-white); box-shadow: 0 0 5px rgba(0, 0, 0, .35); pointer-events: none; }
+.vp-slider-handle:focus .vp-slider-knob { margin: -3px; border: 3px solid rgba(255, 255, 255, .15); animation: vp-handle-pop .2s ease-out; }
+@keyframes vp-handle-pop { from { transform: scale(1.4); } }
+.vp-slider[data-disabled] .vp-slider-knob { background: #8b929a; }
 .vp-slider[data-disabled] .vp-slider-range { background: var(--vp-disabled); }
 .vp-slider-value { min-width: 4em; padding: 4px 8px; border-radius: 3px; background: var(--vp-field); color: var(--vp-tertiary); text-align: center; }
 .vp-field[data-focus-ring] .vp-slider-value { background: rgba(0, 0, 0, .25); color: var(--vp-white); }
 .vp-slider-notches { grid-column: 1; display: flex; justify-content: space-between; margin-top: 6px; }
 .vp-slider-notch { display: flex; flex-direction: column; align-items: center; gap: 4px; width: 24px; font-size: 10px; line-height: 10px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase; color: var(--vp-tertiary); }
 .vp-slider-notch i { display: block; width: 4px; height: 12px; background: var(--vp-control); }
+.vp-slider-notch[data-active] i { background: var(--vp-blue); }
 
 /* Dropdown */
 .vp-dropdown { display: inline-flex; min-width: 0; }
@@ -215,10 +219,10 @@ h1, h2, h3, p { margin: 0; font-weight: inherit; }
 .vp-tabs > .vp-glyph:first-child { position: absolute; left: var(--vp-gutter); }
 .vp-tabs > .vp-glyph:last-child { position: absolute; right: var(--vp-gutter); }
 .vp-tab { gap: 8px; height: 34px; padding: 6px 16px; border-radius: 64px; font-size: 12px; line-height: 22px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase; color: var(--vp-text); white-space: nowrap; transition: background-color .1s, color .1s, box-shadow .1s; }
-.vp-tab:hover, .vp-tab[aria-pressed="true"] { background: var(--vp-control); color: var(--vp-white); }
-.vp-tab:focus { background: var(--vp-white); color: var(--vp-field); box-shadow: 0 3px 6px rgba(0, 0, 0, .32); }
+.vp-tab:hover { background: var(--vp-control); color: var(--vp-white); }
+.vp-tab[aria-pressed="true"] { background: var(--vp-white); color: var(--vp-field); box-shadow: 0 3px 6px rgba(0, 0, 0, .32); }
 .vp-tab-badge { color: var(--vp-tertiary); }
-.vp-tab:focus .vp-tab-badge { color: var(--vp-field); }
+.vp-tab[aria-pressed="true"] .vp-tab-badge { color: var(--vp-field); }
 
 /* Paged settings */
 .vp-paged { flex: 1; min-height: 0; display: flex; }

@@ -38,7 +38,7 @@ export function JobsPage() {
     return true;
   }}>
     <div class="vp-jobs-body">
-      <h1 class="vp-jobs-title">Downloads</h1>
+      <h1 class="vp-jobs-title">Updates</h1>
       <Show when={top().length} fallback={<EmptyState title="Nothing in progress" body="Installs, downloads and library imports appear here." />}>
         <Show when={running().length}>
           <h2 class="vp-section-title">In progress</h2>

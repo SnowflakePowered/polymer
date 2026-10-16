@@ -129,6 +129,7 @@ export const onConfigure = (
             default: 1,
             min: 1,
             max: MAX_RESOLUTION,
+            choices: Array.from({ length: MAX_RESOLUTION }, (_, index) => ({ key: String(index + 1), label: `${640 * (index + 1)}×${528 * (index + 1)}` })),
         }, SHADER_COMPILATION_OPTION],
     }, {
         key: "cpu",

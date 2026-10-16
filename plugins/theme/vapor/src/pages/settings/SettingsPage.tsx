@@ -81,7 +81,8 @@ function About() {
   const configure = (plugin: Plugin, option: PluginOption, value: unknown) => void plugin.configure(option.key, value)
     .then(() => refetch(), shell.fail);
   return <Show when={plugins()} fallback={<Throbber />}><For each={plugins()}>{({ plugin, options }) => <>
-    <Field label={plugin.id} description={`${plugin.class} plugin`}><span class="vp-settings-version">{plugin.version}</span></Field>
+    <h3 class="vp-section-title">{plugin.id}</h3>
+    <Field label="Version" description={`${plugin.class} plugin`}><span class="vp-settings-version">{plugin.version}</span></Field>
     <For each={options}>{option => <Switch fallback={<Field label={option.display} description={String(option.value)} />}>
       <Match when={option.choices.length}>
         <DropdownField label={option.display} value={String(option.value)} options={option.choices.map(choice => ({ value: String(choice), label: String(choice) }))}
