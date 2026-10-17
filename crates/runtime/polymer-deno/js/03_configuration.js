@@ -142,6 +142,7 @@ export function createConfiguration(pluginApi) {
         })),
         controllerTopology: plugin.controllerTopology ?? prepared.controllerTopology,
         machine: prepared.machine,
+        launchable: launchSet[0],
         preparedFilesystem: plugin.preparedFilesystem,
         controllerSession: plugin.controllerSession,
         launchSet: Object.freeze([...prepared.launchSet]),

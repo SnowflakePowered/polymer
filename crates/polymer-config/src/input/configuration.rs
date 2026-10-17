@@ -15,6 +15,15 @@ pub enum ProjectionMode {
     Custom,
 }
 
+/// How the emulated controller is held.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Orientation {
+    #[default]
+    Vertical,
+    Horizontal,
+}
+
 /// Serializable overrides from layout elements to physical controller controls.
 ///
 /// A `None` source explicitly disables the target rather than falling back to
@@ -183,9 +192,6 @@ pub struct PortConfiguration {
     /// Prefer host mouse input over pointer-capable controller input.
     #[serde(default)]
     pub force_mouse: bool,
-    /// Per-target changes layered over the selected projection mode.
-    #[serde(default)]
-    pub overrides: ControllerBindings,
 }
 
 /// A durable physical-source binding for one virtual controller index.
@@ -249,18 +255,6 @@ pub enum InputOperation {
     SetLayout {
         port: VirtualPort,
         layout: String,
-    },
-    SetOverride {
-        port: VirtualPort,
-        target: BindingKey,
-        binding: Option<BindingKey>,
-    },
-    ResetTarget {
-        port: VirtualPort,
-        target: BindingKey,
-    },
-    ResetPortOverrides {
-        port: VirtualPort,
     },
     RemovePort {
         port: VirtualPort,

@@ -843,6 +843,7 @@ impl HciHost {
     ) -> Result<Bytes> {
         let _guard = self.command_lock.lock().await;
         let mut events = self.events.subscribe();
+        tracing::trace!(?command, "HCI command");
         self.command.send(&command).await?;
         let opcode = command.opcode();
         time::timeout(COMMAND_TIMEOUT, async {
@@ -958,6 +959,7 @@ async fn dispatch_events(
                         }
                         _ => {}
                     }
+                    tracing::trace!(?event, "HCI event");
                     let _ = events.send(event);
                 }
                 Err(error) => { tracing::error!(%error, "Bluetooth HCI event receiver stopped"); break; }

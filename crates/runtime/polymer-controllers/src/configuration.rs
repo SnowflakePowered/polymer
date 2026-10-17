@@ -1,10 +1,9 @@
-use crate::layout::{InputBinding, InputLayout};
+use crate::layout::InputLayout;
 use consolespec::MachineSpec;
-use consolespec::input::BindingKey;
 use parking_lot::RwLock;
 use polymer_config::input::{
-    ControllerBindings, InputConfiguration, InputOperation, InputTransaction, PortConfiguration,
-    SourceAssignment, SourceSelector, VirtualPort,
+    InputConfiguration, InputOperation, InputTransaction, PortConfiguration, SourceAssignment,
+    SourceSelector, VirtualPort,
 };
 use serde::Serialize;
 use std::{
@@ -120,7 +119,6 @@ impl HubState {
                         layout,
                         slot,
                         force_mouse: false,
-                        overrides: ControllerBindings::default(),
                     },
                 );
             }
@@ -147,27 +145,7 @@ impl HubState {
                 self.assignments = replacement;
             }
             InputOperation::SetLayout { port, layout } => {
-                let port = port_mut(&mut self.ports, port)?;
-                port.layout = layout;
-                // Overrides name targets in the previous topology. Clearing them is
-                // deterministic and avoids accidentally applying a same-named
-                // control with different semantics in the replacement layout.
-                port.overrides.clear();
-            }
-            InputOperation::SetOverride {
-                port,
-                target,
-                binding,
-            } => {
-                port_mut(&mut self.ports, port)?
-                    .overrides
-                    .insert(target, binding);
-            }
-            InputOperation::ResetTarget { port, target } => {
-                port_mut(&mut self.ports, port)?.overrides.remove(target);
-            }
-            InputOperation::ResetPortOverrides { port } => {
-                port_mut(&mut self.ports, port)?.overrides.clear();
+                port_mut(&mut self.ports, port)?.layout = layout;
             }
             InputOperation::RemovePort { port } => {
                 if self.ports.remove(&port).is_none() {
@@ -209,10 +187,6 @@ pub enum InputConfigurationError {
         layout: String,
     },
     UnknownPort(VirtualPort),
-    UnknownTarget {
-        layout: String,
-        target: BindingKey,
-    },
     InvalidBinding(String),
 }
 
@@ -249,9 +223,6 @@ impl fmt::Display for InputConfigurationError {
                 "port {port} does not accept input layout {layout}"
             ),
             Self::UnknownPort(port) => write!(formatter, "unknown virtual port {port}"),
-            Self::UnknownTarget { layout, target } => {
-                write!(formatter, "input layout {layout} has no element {target}")
-            }
             Self::InvalidBinding(message) => formatter.write_str(message),
         }
     }
@@ -413,31 +384,8 @@ fn validate_ports(
         {
             return Err(InputConfigurationError::DuplicateSlot(slot));
         }
-
-        let layout = InputLayout::get(&port.layout)
+        InputLayout::get(&port.layout)
             .ok_or_else(|| InputConfigurationError::UnknownLayout(port.layout.clone()))?;
-        for (target, source) in port.overrides.iter() {
-            if !layout.has(*target) {
-                return Err(InputConfigurationError::UnknownTarget {
-                    layout: layout.id.clone(),
-                    target: *target,
-                });
-            }
-            if let Some(source) = source {
-                let binding = layout.custom_binding(*target, *source).ok_or_else(|| {
-                    InputConfigurationError::InvalidBinding(format!(
-                        "input source '{source}' is not a physical gamepad expression"
-                    ))
-                })?;
-                if matches!(binding, InputBinding::Axis { .. })
-                    && !layout.accepts_axis_binding(*target)
-                {
-                    return Err(InputConfigurationError::InvalidBinding(format!(
-                        "element {target} does not accept an axis binding"
-                    )));
-                }
-            }
-        }
     }
     Ok(())
 }

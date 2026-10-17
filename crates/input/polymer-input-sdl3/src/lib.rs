@@ -2,6 +2,7 @@
 
 mod source_registry;
 
+use dashmap::DashSet;
 use parking_lot::{Mutex, RwLock};
 use polymer_input::{
     BackendError, BackendHandle, BackendId, BatteryState, Calibration, Capabilities,
@@ -11,7 +12,7 @@ use polymer_input::{
 use sdl3::{
     EventSubsystem,
     event::{Event, EventType},
-    gamepad::{Axis, Button, Gamepad},
+    gamepad::{Axis, Button, ButtonLabel, Gamepad},
     sensor::SensorType,
 };
 use source_registry::{DeviceFingerprint, DeviceIdentity, SourceRegistry};
@@ -34,6 +35,7 @@ const EMBEDDED_GAMECONTROLLER_DB: &str =
 pub struct Sdl3Config {
     pub gamecontroller_database: Option<PathBuf>,
     pub poll_interval: Duration,
+    pub held_devices: Arc<DashSet<String>>,
 }
 
 impl Default for Sdl3Config {
@@ -41,6 +43,7 @@ impl Default for Sdl3Config {
         Self {
             gamecontroller_database: None,
             poll_interval: Duration::from_millis(1),
+            held_devices: Arc::default(),
         }
     }
 }
@@ -163,6 +166,8 @@ impl Drop for Sdl3Backend {
 struct Pad {
     gamepad: Gamepad,
     instance: sdl3::joystick::JoystickId,
+    buttons: [Button; 21],
+    path: Option<String>,
     device: DeviceId,
     descriptor: DeviceDescriptor,
     active: bool,
@@ -184,6 +189,7 @@ struct Worker {
     registry: SourceRegistry,
     next_refresh: Instant,
     poll_interval: Duration,
+    held_devices: Arc<DashSet<String>>,
 }
 
 impl Worker {
@@ -207,6 +213,7 @@ impl Worker {
         let _ = started.send(Ok(()));
         while !worker.stop.load(Ordering::Acquire) {
             worker.poll_events();
+            worker.release_held();
             worker.subsystem.update();
             worker.refresh(true);
             worker.drain_commands();
@@ -275,6 +282,7 @@ impl Worker {
             registry: SourceRegistry::default(),
             next_refresh: Instant::now(),
             poll_interval: config.poll_interval,
+            held_devices: config.held_devices,
         })
     }
 
@@ -352,7 +360,28 @@ impl Worker {
         }
     }
 
+    fn release_held(&mut self) {
+        if self.held_devices.is_empty() {
+            return;
+        }
+        let (held, handle) = (&self.held_devices, &self.handle);
+        self.pads.retain(|pad| {
+            let released = pad.path.as_ref().is_some_and(|path| held.contains(path));
+            if released && pad.active {
+                handle.publish(&pad.device, &DeviceState::default());
+            }
+            !released
+        });
+    }
+
     fn open(&mut self, id: sdl3::joystick::JoystickId, active: bool) {
+        if self
+            .subsystem
+            .path_for_id(id)
+            .is_ok_and(|path| self.held_devices.contains(&path.to_lowercase()))
+        {
+            return;
+        }
         let Ok(gamepad) = self.subsystem.open(id) else {
             return;
         };
@@ -388,6 +417,17 @@ impl Worker {
             } else {
                 Capabilities::default()
             };
+        let mut buttons = BUTTONS;
+        for button in [Button::South, Button::East, Button::West, Button::North] {
+            let index = match gamepad.button_label_for_gamepad_type(button) {
+                ButtonLabel::A | ButtonLabel::Cross => 0,
+                ButtonLabel::B | ButtonLabel::Circle => 1,
+                ButtonLabel::X | ButtonLabel::Square => 2,
+                ButtonLabel::Y | ButtonLabel::Triangle => 3,
+                ButtonLabel::Unknown => continue,
+            };
+            buttons[index] = button;
+        }
         let _ = gamepad.sensor_set_enabled(SensorType::Accelerometer, true);
         let _ = gamepad.sensor_set_enabled(SensorType::Gyroscope, true);
         let descriptor = DeviceDescriptor {
@@ -409,6 +449,8 @@ impl Worker {
         self.pads.push(Pad {
             gamepad,
             instance: id,
+            buttons,
+            path: fingerprint.path.map(|path| path.to_lowercase()),
             device,
             descriptor,
             active,
@@ -479,7 +521,8 @@ impl Worker {
     fn state(pad: &Pad) -> DeviceState {
         DeviceState {
             gamepad: GamepadReport {
-                buttons: BUTTONS
+                buttons: pad
+                    .buttons
                     .iter()
                     .enumerate()
                     .filter(|(_, button)| pad.gamepad.button(**button))

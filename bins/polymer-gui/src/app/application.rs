@@ -371,6 +371,9 @@ impl ShellApplication {
             }
             let entered = state.profile.enter();
             state.publish_input_state();
+            if state.input.controllers.begin_adoption() {
+                self.command_actors.adopt_assignments();
+            }
             state.profile.record(TurnPhase::Input, entered);
             deadline = deadline.min(state.input.next_publication());
             state.poll_target();

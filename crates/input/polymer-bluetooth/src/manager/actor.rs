@@ -26,6 +26,7 @@ impl BluetoothActor {
             wake_tasks: HashMap::new(),
             pairing_task: None,
             event_task: None,
+            cable_task: None,
             shutdown_complete: false,
         }
     }
@@ -46,6 +47,9 @@ impl BluetoothActor {
         let pairing = self.pairing.take();
         let event_task = self.event_task.take();
         let pairing_task = self.pairing_task.take();
+        if let Some(task) = self.cable_task.take() {
+            task.abort();
+        }
         let events = self.events.clone();
         let adapter = self.config.ble_adapter_index;
         async move {

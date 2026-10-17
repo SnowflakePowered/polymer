@@ -154,6 +154,11 @@ impl BluetoothActor {
                 }
             })
         });
+        let cable_task = Some(Self::spawn_cable_pairing(
+            &config,
+            bredr.as_ref(),
+            internal.clone(),
+        ));
         Self {
             config,
             bredr,
@@ -174,6 +179,7 @@ impl BluetoothActor {
             wake_tasks,
             pairing_task,
             event_task,
+            cable_task,
             shutdown_complete: false,
         }
     }

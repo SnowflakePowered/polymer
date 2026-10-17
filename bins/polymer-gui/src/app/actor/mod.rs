@@ -106,6 +106,10 @@ impl GuiActors {
         }
     }
 
+    pub(super) fn adopt_assignments(&self) {
+        self.input.do_send(input::AdoptAssignments);
+    }
+
     pub(super) fn close(&self, token: crate::shell::runtime::InstanceToken) {
         self.state.do_send(frontend::emulator::Close { token });
     }

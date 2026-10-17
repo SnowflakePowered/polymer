@@ -7,6 +7,7 @@ pub struct ManagerConfig {
     pub controllers: ControllerRegistry,
     pub firmware: FirmwareRegistry,
     pub store: Arc<dyn ControllerStore>,
+    pub held_devices: Arc<dashmap::DashSet<String>>,
 }
 
 impl Default for ManagerConfig {
@@ -17,6 +18,7 @@ impl Default for ManagerConfig {
             controllers: ControllerRegistry::standard(),
             firmware: FirmwareRegistry::embedded(),
             store: Arc::new(MemoryControllerStore::default()),
+            held_devices: Arc::default(),
         }
     }
 }
@@ -86,6 +88,12 @@ pub enum ManagerEvent {
         profile_id: ProfileId,
     },
     Connected(ConnectedController),
+    CablePaired {
+        controller_id: ControllerId,
+        profile_id: ProfileId,
+        vendor_product: Option<crate::devices::VendorProductId>,
+        name: String,
+    },
     RawReport {
         controller_id: ControllerId,
         session_id: SessionId,
@@ -121,6 +129,10 @@ pub(super) struct HciLifecycle(pub std::result::Result<HciEvent, broadcast::erro
 #[derive(actix::Message)]
 #[rtype(result = "()")]
 pub(super) struct WakeDiscovered(pub ControllerRecord, pub BleDevice, pub tokio::task::Id);
+
+#[derive(actix::Message)]
+#[rtype(result = "()")]
+pub(super) struct CablePaired(pub ControllerRecord, pub String);
 
 #[derive(actix::Message)]
 #[rtype(result = "()")]

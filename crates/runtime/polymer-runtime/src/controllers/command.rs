@@ -1,4 +1,7 @@
-use super::{ControllerCommandOutcome, ControllerManager, ControllerManagerEffect, DeviceMapping};
+use super::{
+    ControllerCommandOutcome, ControllerManager, ControllerManagerEffect, MappingUpdate,
+    profile::{MappingScope, MappingWrite},
+};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -22,15 +25,21 @@ enum ControllerCommand {
     #[serde(rename = "controllers.forget")]
     Forget { id: String },
     #[serde(rename = "controllers.mapping.get")]
-    GetMapping { id: String, layout_id: String },
+    GetMapping {
+        scope: MappingScope,
+        layout_id: String,
+    },
     #[serde(rename = "controllers.mapping.set")]
     SetMapping {
-        id: String,
+        scope: MappingScope,
         layout_id: String,
-        mapping: DeviceMapping,
+        mapping: MappingUpdate,
     },
     #[serde(rename = "controllers.mapping.reset")]
-    ResetMapping { id: String, layout_id: String },
+    ResetMapping {
+        scope: MappingScope,
+        layout_id: String,
+    },
 }
 
 impl ControllerManager {
@@ -59,6 +68,17 @@ impl ControllerManager {
                     committing: false,
                     assignments: Vec::new(),
                     join_requests: Vec::new(),
+                    connected: self
+                        .hub
+                        .as_ref()
+                        .map(|hub| {
+                            hub.device_snapshots()
+                                .into_iter()
+                                .filter(|(_, _, _, connected)| *connected)
+                                .map(|(_, descriptor, _, _)| descriptor.id)
+                                .collect()
+                        })
+                        .unwrap_or_default(),
                     keyboard: None,
                 });
                 Ok(ControllerCommandOutcome {
@@ -140,43 +160,40 @@ impl ControllerManager {
             ControllerCommand::Forget { id } => {
                 Ok(self.outcome(vec![ControllerManagerEffect::Forget(id)], false))
             }
-            ControllerCommand::GetMapping { id, layout_id } => Ok(ControllerCommandOutcome {
-                response: self.mapping_response(&id, &layout_id)?,
+            ControllerCommand::GetMapping { scope, layout_id } => Ok(ControllerCommandOutcome {
+                response: self.mapping_response(&scope, &layout_id)?,
                 session_commit: None,
                 reapply_topology: false,
                 effects: Vec::new(),
             }),
             ControllerCommand::SetMapping {
-                id,
+                scope,
                 layout_id,
                 mapping,
             } => {
-                let write = self.set_mapping(&id, &layout_id, mapping)?;
-                let outcome = self.outcome(Vec::new(), true);
-                return Ok(Box::pin(async move {
-                    write.await?;
-                    Ok(outcome)
-                }));
+                let change = self.set_mapping(scope, &layout_id, mapping)?;
+                return Ok(self.mapping_change(change));
             }
-            ControllerCommand::ResetMapping { id, layout_id } => {
-                let (identity, layout) = self.mapping_key(&id, &layout_id)?;
-                let mut store = self
-                    .mapping_store
-                    .clone()
-                    .ok_or_else(|| "the input mapping store is unavailable".to_owned())?;
-                let mappings = self.mappings.clone();
-                let outcome = self.outcome(Vec::new(), true);
-                return Ok(Box::pin(async move {
-                    store
-                        .remove_mapping(&identity, &layout)
-                        .await
-                        .map_err(|error| error.to_string())?;
-                    mappings.remove(&identity, &layout);
-                    Ok(outcome)
-                }));
+            ControllerCommand::ResetMapping { scope, layout_id } => {
+                let change = self.reset_mapping(scope, &layout_id)?;
+                return Ok(self.mapping_change(change));
             }
         };
         Ok(Box::pin(async move { outcome }))
+    }
+
+    fn mapping_change(
+        &self,
+        (write, response): (MappingWrite, serde_json::Value),
+    ) -> polymer_deno::polymer::ApiFuture<Result<ControllerCommandOutcome, String>> {
+        let outcome = ControllerCommandOutcome {
+            response,
+            ..self.outcome(Vec::new(), true)
+        };
+        Box::pin(async move {
+            write.await?;
+            Ok(outcome)
+        })
     }
 
     fn outcome(

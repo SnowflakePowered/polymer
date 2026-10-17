@@ -156,6 +156,7 @@ export type ControllerMapping = Readonly<{
     device?: ControllerDevice,
     mouse: boolean,
     projectionMode: "name" | "position" | "custom",
+    orientation: "vertical" | "horizontal",
     mapping: Readonly<Record<string, string>>,
     pointer: Readonly<{
         source: "none" | "deviceNative" | "hostMouse" | "deviceThenHostMouse",

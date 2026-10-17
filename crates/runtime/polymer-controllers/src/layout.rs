@@ -3,7 +3,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 use consolespec::input::{Alignment, AnalogClass, BindingKey, Component, Sign};
-use polymer_config::input::ControllerBindings;
+use polymer_config::input::{ControllerBindings, Orientation, ProjectionMode};
+use polymer_input::GamepadButton;
 
 use crate::model::{self, Control, Sensor};
 use crate::projection::{Projection, Target};
@@ -52,6 +53,7 @@ pub struct InputLayout {
     pub id: String,
     pub name: String,
     pub elements: Vec<InputElement>,
+    pub horizontal: bool,
     #[serde(skip)]
     pub clusters: Vec<Cluster>,
     #[serde(skip)]
@@ -85,6 +87,7 @@ impl InputLayout {
         Self {
             id: spec.id().to_owned(),
             name,
+            horizontal: Projection::horizontal().has_layout(spec.id()),
             elements,
             clusters,
             keys,
@@ -167,11 +170,52 @@ impl InputLayout {
         }
     }
 
-    pub fn default_controller_bindings(&self) -> ControllerBindings {
-        ControllerBindings::new(
-            self.default_gamepad_bindings()
-                .map(|(target, source)| (target, Some(source))),
-        )
+    pub fn resolved_bindings(
+        &self,
+        mode: ProjectionMode,
+        orientation: Orientation,
+        overrides: &ControllerBindings,
+    ) -> ControllerBindings {
+        let mut bindings = ControllerBindings::default();
+        if mode != ProjectionMode::Custom {
+            for (target, source) in self.default_gamepad_bindings() {
+                bindings.insert(target, Some(source));
+            }
+        }
+        if mode == ProjectionMode::Name {
+            for (target, source) in self.named_face_bindings() {
+                bindings.insert(target, Some(source));
+            }
+        }
+        if mode != ProjectionMode::Custom && orientation == Orientation::Horizontal {
+            for (target, source) in Projection::horizontal().entries(&self.id) {
+                match source {
+                    Target::Key(source) => bindings.insert(target, Some(source)),
+                    Target::None => bindings.insert(target, None),
+                    Target::Both(..) | Target::Transport(_) => {}
+                }
+            }
+        }
+        for (target, source) in overrides.iter() {
+            bindings.insert(*target, source.copied());
+        }
+        bindings
+    }
+
+    fn named_face_bindings(&self) -> impl Iterator<Item = (BindingKey, BindingKey)> + '_ {
+        [
+            ("A", GamepadButton::A),
+            ("B", GamepadButton::B),
+            ("X", GamepadButton::X),
+            ("Y", GamepadButton::Y),
+        ]
+        .into_iter()
+        .filter_map(|(label, source)| {
+            self.elements
+                .iter()
+                .find(|element| element.label.eq_ignore_ascii_case(label))
+                .map(|element| (element.key, Control::binding(source)))
+        })
     }
 
     pub fn validate_controller_bindings(

@@ -82,6 +82,7 @@ export interface FilterChain {
 export type GraphicsHook = "vulkan" | "d3d11" | "d3d12" | "opengl" | "metal";
 export type InputHook = "sdl2" | "sdl3" | "bluetooth-api-win32" | "xinput";
 export type ProjectionMode = "name" | "position" | "custom";
+export type Orientation = "vertical" | "horizontal";
 export type PointerMode = "none" | "relative" | "absoluteDevice" | "absoluteScreen";
 
 export type InputSourceSelector =
@@ -156,12 +157,30 @@ export type ControllerPlayer = {
   readonly controller: ManagedControllerDevice | null;
 };
 
-export type ControllerMappingProfile = {
-  readonly mode: ProjectionMode;
+export type InputLayout = Readonly<{
+  id: string;
+  name: string;
+  horizontal: boolean;
+  elements: readonly Readonly<{ id: string; key: string; label: string; kind: string }>[];
+}>;
+
+export type MappingScope =
+  | Readonly<{ kind: "source"; source: InputSourceSelector }>
+  | Readonly<{ kind: "game"; launchable: string; group: string; port: number }>;
+
+/** `null` mode or orientation inherits: from the device at source scope (defaulting to Name and vertical), from the source profile at game scope. */
+export type InputMapping = Readonly<{
+  mode?: ProjectionMode | null;
+  orientation?: Orientation | null;
   /** Logical input expression to physical input expression, or `none`. */
-  readonly mapping: Readonly<Record<string, string>>;
-  readonly scope: "device" | "type";
-};
+  overrides: Readonly<Record<string, string>>;
+}>;
+
+/** At game scope, `bindings` is resolved against the default source profile; the device is unknown before launch. */
+export type ResolvedInputMapping = InputMapping & Readonly<{
+  bindings: Readonly<Record<string, string>>;
+  inherited: "game" | "device" | "type" | "default";
+}>;
 
 export type BluetoothAvailability = "unknown" | "available" | "unavailable";
 
@@ -185,11 +204,13 @@ export interface ControllersApi extends EventTarget {
   readonly devices: readonly ManagedControllerDevice[];
   readonly connected: readonly ManagedControllerDevice[];
   readonly players: readonly ControllerPlayer[];
-  readonly layouts: readonly Readonly<Record<string, unknown>>[];
+  readonly layouts: readonly InputLayout[];
+  /** Standard pad sources. `buttons[i]` is the source for bit `i` of `InputState.buttons`. */
+  readonly pad: Readonly<{ buttons: readonly string[]; axes: readonly string[] }>;
   readonly activeConnectionSession: ConnectionSession | null;
   startConnectionSession(): Promise<ConnectionSession>;
-  rumble(deviceId: string, options: Readonly<{ lowFrequency: number; highFrequency: number; durationMs: number }>): void;
-  recenter(deviceId: string): void;
+  rumble(index: number, options: Readonly<{ lowFrequency: number; highFrequency: number; durationMs: number }>): void;
+  recenter(index: number): void;
   calibrate(deviceId: string, calibration: InputCalibration): InputCalibration;
   getCalibration(deviceId: string): InputCalibration;
   resetCalibration(deviceId: string): InputCalibration;
@@ -197,13 +218,9 @@ export interface ControllersApi extends EventTarget {
   configurePointer(deviceId: string, pointer: NonNullable<InputCalibration["pointer"]>): InputCalibration;
   disconnect(id: string): Promise<void>;
   forget(id: string): Promise<void>;
-  getMapping(id: string, layoutId: string): Promise<ControllerMappingProfile>;
-  setMapping(
-    id: string,
-    layoutId: string,
-    mapping: Readonly<{ mode: ProjectionMode; mapping?: Readonly<Record<string, string>> }>,
-  ): Promise<ControllerMappingProfile>;
-  resetMapping(id: string, layoutId: string): Promise<ControllerMappingProfile>;
+  getMapping(scope: MappingScope, layoutId: string): Promise<ResolvedInputMapping>;
+  setMapping(scope: MappingScope, layoutId: string, mapping: InputMapping): Promise<ResolvedInputMapping>;
+  resetMapping(scope: MappingScope, layoutId: string): Promise<ResolvedInputMapping>;
 }
 
 export type TrackedSurface = {
@@ -222,7 +239,8 @@ export type ControllerMapping = {
   mouse: boolean;
   layout: string;
   projectionMode?: ProjectionMode;
-  /** Logical input expression to physical input expression, or `none`. */
+  orientation?: Orientation;
+  /** Overrides on top of `projectionMode`: logical input expression to physical input expression, or `none`. */
   mapping: Record<string, string>;
   pointer: Readonly<{
     source: "none" | "deviceNative" | "hostMouse" | "deviceThenHostMouse";
@@ -263,6 +281,7 @@ type LaunchFields = {
   }>;
   controllerTopology: ControllerTopology;
   machine: string;
+  launchable?: string;
   preparedFilesystem?: string;
   controllerSession?: string;
   launchSet?: readonly LibraryLaunchable[];
@@ -516,7 +535,6 @@ export type ConfigurationSelection = {
     ports: Array<{
       index: number;
       layout: string;
-      mapping?: Record<string, string>;
     }>;
   }>;
   storage?: Record<string, string | string[]>;

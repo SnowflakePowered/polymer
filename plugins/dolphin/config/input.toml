@@ -186,13 +186,6 @@ default = false
 emit = { key = "Options/Upright Wiimote", bool_style = "upper" }
 
 [[input.layouts.WII_REMOTE_CONTROLLER.options]]
-key = "sideways_wiimote"
-title = "Sideways Wii Remote"
-type = "bool"
-default = false
-emit = { key = "Options/Sideways Wiimote", bool_style = "upper" }
-
-[[input.layouts.WII_REMOTE_CONTROLLER.options]]
 key = "relative_input"
 title = "Relative Input"
 type = "bool"
@@ -278,13 +271,6 @@ default = false
 emit = { key = "Options/Upright Wiimote", bool_style = "upper" }
 
 [[input.layouts.WII_REMOTE_NUNCHUCK_CONTROLLER.options]]
-key = "sideways_wiimote"
-title = "Sideways Wii Remote"
-type = "bool"
-default = false
-emit = { key = "Options/Sideways Wiimote", bool_style = "upper" }
-
-[[input.layouts.WII_REMOTE_NUNCHUCK_CONTROLLER.options]]
 key = "relative_input"
 title = "Relative Input"
 type = "bool"
@@ -320,32 +306,32 @@ target = "wiipad.Wiimote1"
 layouts = ["WII_REMOTE_CONTROLLER", "WII_REMOTE_NUNCHUCK_CONTROLLER"]
 emit.unplugged = [{ key = "Source", value = "0" }]
 emit.passthrough = [{ key = "Source", value = "2" }]
-emit.WII_REMOTE_CONTROLLER = [{ key = "Extension", value = "None" }, { key = "Device", value = "{device}" }]
-emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ key = "Extension", value = "Nunchuk" }, { key = "Device", value = "{device}" }]
+emit.WII_REMOTE_CONTROLLER = [{ key = "Extension", value = "None" }, { key = "Device", value = "{device}" }, { key = "Options/Sideways Wiimote", value = "False" }]
+emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ key = "Extension", value = "Nunchuk" }, { key = "Device", value = "{device}" }, { key = "Options/Sideways Wiimote", value = "False" }]
 
 [platforms.NINTENDO_WII.ports.wii.1]
 target = "wiipad.Wiimote2"
 layouts = ["WII_REMOTE_CONTROLLER", "WII_REMOTE_NUNCHUCK_CONTROLLER"]
 emit.unplugged = [{ key = "Source", value = "0" }]
 emit.passthrough = [{ key = "Source", value = "2" }]
-emit.WII_REMOTE_CONTROLLER = [{ key = "Extension", value = "None" }, { key = "Device", value = "{device}" }]
-emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ key = "Extension", value = "Nunchuk" }, { key = "Device", value = "{device}" }]
+emit.WII_REMOTE_CONTROLLER = [{ key = "Extension", value = "None" }, { key = "Device", value = "{device}" }, { key = "Options/Sideways Wiimote", value = "False" }]
+emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ key = "Extension", value = "Nunchuk" }, { key = "Device", value = "{device}" }, { key = "Options/Sideways Wiimote", value = "False" }]
 
 [platforms.NINTENDO_WII.ports.wii.2]
 target = "wiipad.Wiimote3"
 layouts = ["WII_REMOTE_CONTROLLER", "WII_REMOTE_NUNCHUCK_CONTROLLER"]
 emit.unplugged = [{ key = "Source", value = "0" }]
 emit.passthrough = [{ key = "Source", value = "2" }]
-emit.WII_REMOTE_CONTROLLER = [{ key = "Extension", value = "None" }, { key = "Device", value = "{device}" }]
-emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ key = "Extension", value = "Nunchuk" }, { key = "Device", value = "{device}" }]
+emit.WII_REMOTE_CONTROLLER = [{ key = "Extension", value = "None" }, { key = "Device", value = "{device}" }, { key = "Options/Sideways Wiimote", value = "False" }]
+emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ key = "Extension", value = "Nunchuk" }, { key = "Device", value = "{device}" }, { key = "Options/Sideways Wiimote", value = "False" }]
 
 [platforms.NINTENDO_WII.ports.wii.3]
 target = "wiipad.Wiimote4"
 layouts = ["WII_REMOTE_CONTROLLER", "WII_REMOTE_NUNCHUCK_CONTROLLER"]
 emit.unplugged = [{ key = "Source", value = "0" }]
 emit.passthrough = [{ key = "Source", value = "2" }]
-emit.WII_REMOTE_CONTROLLER = [{ key = "Extension", value = "None" }, { key = "Device", value = "{device}" }]
-emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ key = "Extension", value = "Nunchuk" }, { key = "Device", value = "{device}" }]
+emit.WII_REMOTE_CONTROLLER = [{ key = "Extension", value = "None" }, { key = "Device", value = "{device}" }, { key = "Options/Sideways Wiimote", value = "False" }]
+emit.WII_REMOTE_NUNCHUCK_CONTROLLER = [{ key = "Extension", value = "Nunchuk" }, { key = "Device", value = "{device}" }, { key = "Options/Sideways Wiimote", value = "False" }]
 
 [platforms.NINTENDO_WII.ports.gamecube.0]
 target = "gcpad.GCPad1"

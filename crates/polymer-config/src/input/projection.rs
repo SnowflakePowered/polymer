@@ -28,6 +28,7 @@ use crate::error::{Error, Result};
 use super::gamepad::StandardGamepad;
 
 pub const EMBEDDED_SDL_PROJECTION: &str = include_str!("../../projection/SDL.proj.toml");
+pub const EMBEDDED_SDL_HORIZONTAL: &str = include_str!("../../projection/SDL.horizontal.toml");
 
 /// A way off the pad. Some controls are not gamepad controls at all, and saying
 /// *which* transport carries them is what lets one be routed later.
@@ -93,6 +94,25 @@ impl Projection {
             Self::embedded()
                 .unwrap_or_else(|error| panic!("the standard projection is unusable: {error}"))
         })
+    }
+
+    pub fn horizontal() -> &'static Self {
+        static HORIZONTAL: OnceLock<Projection> = OnceLock::new();
+        HORIZONTAL.get_or_init(|| {
+            Self::from_toml(EMBEDDED_SDL_HORIZONTAL)
+                .unwrap_or_else(|error| panic!("the horizontal projection is unusable: {error}"))
+        })
+    }
+
+    pub fn has_layout(&self, layout_id: &str) -> bool {
+        self.layouts.contains_key(layout_id)
+    }
+
+    pub fn entries(&self, layout_id: &str) -> impl Iterator<Item = (BindingKey, Target)> + '_ {
+        self.layouts
+            .get(layout_id)
+            .into_iter()
+            .flat_map(|table| table.iter().map(|(key, target)| (*key, *target)))
     }
 
     pub(crate) fn from_toml(source: &str) -> Result<Self> {

@@ -77,6 +77,27 @@ impl StandardGamepad {
         }
     }
 
+    pub fn axis_sources() -> impl Iterator<Item = BindingKey> {
+        Self::AXES
+            .into_iter()
+            .flat_map(|key| match key {
+                BindingKey::Analog {
+                    class,
+                    alignment,
+                    component,
+                } => [
+                    Some(key),
+                    Some(BindingKey::Analog {
+                        class,
+                        alignment,
+                        component: Component::new(component.axis, Sign::Negative),
+                    }),
+                ],
+                key => [Some(key), None],
+            })
+            .flatten()
+    }
+
     pub fn has(key: BindingKey) -> bool {
         if Self::decompose(key).is_some() {
             return true;

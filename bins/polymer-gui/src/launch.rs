@@ -25,6 +25,8 @@ pub struct AttachedLaunchPlan {
     pub controller_topology: ControllerTopology,
     pub machine: String,
     #[serde(default)]
+    pub launchable: Option<String>,
+    #[serde(default)]
     pub prepared_filesystem: Option<String>,
     #[serde(default)]
     pub controller_session: Option<String>,

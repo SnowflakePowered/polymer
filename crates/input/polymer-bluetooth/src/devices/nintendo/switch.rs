@@ -8,7 +8,7 @@ use tokio::sync::broadcast;
 
 use crate::devices::{
     ConnectOptions, ConnectionPolicy, ControllerDevice, ControllerSession, DeviceIdentity,
-    HostIdentity, MatchConfidence, PairingPolicy, ProfileId, ReconnectPolicy,
+    HostIdentity, MatchConfidence, PairingPolicy, ProfileId, ReconnectPolicy, VendorProductId,
 };
 use crate::{Error, ReportReceiver, Result, Transport};
 
@@ -31,13 +31,18 @@ trait SwitchModel: Send + Sync + 'static {
     const PROFILE_ID: &'static str;
     const DISPLAY_NAME: &'static str;
     const NAMES: &'static [&'static str];
+    const PRODUCT_ID: u16;
     const HAS_IMU: bool = false;
+
+    fn product_id(_identity: &DeviceIdentity) -> u16 {
+        Self::PRODUCT_ID
+    }
 
     fn policy() -> ConnectionPolicy {
         ConnectionPolicy {
             pairing: PairingPolicy::FixedPin(b"0000"),
             reconnect: ReconnectPolicy::ControllerInitiated,
-            controller_opens_hid: true,
+            controller_opens_hid: false,
             wait_for_encryption_before_inbound_hid: true,
             host_opens_hid_on_reconnect: false,
             become_master: false,
@@ -276,6 +281,15 @@ where
         M::matches_switch(identity)
     }
 
+    fn vendor_product(&self, identity: &DeviceIdentity) -> Option<VendorProductId> {
+        identity.vendor_product().or_else(|| {
+            Some(VendorProductId::new(
+                super::NINTENDO_VENDOR_ID,
+                M::product_id(identity),
+            ))
+        })
+    }
+
     fn connection_policy(
         &self,
         _identity: &DeviceIdentity,
@@ -300,6 +314,7 @@ controller_model! {
         const HAS_IMU: bool = true;
         const DISPLAY_NAME: &'static str = "Nintendo Switch Pro Controller";
         const NAMES: &'static [&'static str] = &["Pro Controller"];
+        const PRODUCT_ID: u16 = 0x2009;
     }
 }
 
@@ -309,6 +324,7 @@ controller_model! {
         const HAS_IMU: bool = true;
         const DISPLAY_NAME: &'static str = "Joy-Con (L)";
         const NAMES: &'static [&'static str] = &["Joy-Con (L)"];
+        const PRODUCT_ID: u16 = 0x2006;
     }
 }
 
@@ -318,6 +334,7 @@ controller_model! {
         const HAS_IMU: bool = true;
         const DISPLAY_NAME: &'static str = "Joy-Con (R)";
         const NAMES: &'static [&'static str] = &["Joy-Con (R)"];
+        const PRODUCT_ID: u16 = 0x2007;
     }
 }
 
@@ -327,6 +344,15 @@ controller_model! {
         const DISPLAY_NAME: &'static str = "Nintendo Switch Online NES Controller";
         const NAMES: &'static [&'static str] =
             &["NES Controller", "HVC Controller (L)", "HVC Controller (R)"];
+        const PRODUCT_ID: u16 = 0x2007;
+
+        fn product_id(identity: &DeviceIdentity) -> u16 {
+            if identity.name_is("HVC Controller (L)") {
+                0x2006
+            } else {
+                Self::PRODUCT_ID
+            }
+        }
     }
 }
 
@@ -335,6 +361,7 @@ controller_model! {
         const PROFILE_ID: &'static str = "nintendo.switch.nso-snes";
         const DISPLAY_NAME: &'static str = "Nintendo Switch Online SNES Controller";
         const NAMES: &'static [&'static str] = &["SNES Controller"];
+        const PRODUCT_ID: u16 = 0x2017;
     }
 }
 
@@ -343,6 +370,7 @@ controller_model! {
         const PROFILE_ID: &'static str = "nintendo.switch.nso-n64";
         const DISPLAY_NAME: &'static str = "Nintendo Switch Online N64 Controller";
         const NAMES: &'static [&'static str] = &["Nintendo N64 Controller", "N64 Controller"];
+        const PRODUCT_ID: u16 = 0x2019;
     }
 }
 
@@ -352,5 +380,6 @@ controller_model! {
         const DISPLAY_NAME: &'static str =
             "Nintendo Switch Online Genesis / Mega Drive Controller";
         const NAMES: &'static [&'static str] = &["MD/Gen Control Pad"];
+        const PRODUCT_ID: u16 = 0x201e;
     }
 }

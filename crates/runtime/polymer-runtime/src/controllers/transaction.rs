@@ -1,4 +1,4 @@
-use polymer_controllers::{ControllerTopology, ControllerTopologyChange};
+use polymer_controllers::{ControllerMapping, ControllerTopology, ControllerTopologyChange};
 
 use polymer_config::input::{InputConfiguration, InputTransaction};
 
@@ -47,6 +47,30 @@ impl ControllerTopologyTransaction {
 
     pub fn topology_changed(&self) -> bool {
         self.previous_topology != self.requested_topology
+    }
+
+    pub fn adopt_rebinding(&mut self) -> bool {
+        let previous = &self.previous_topology.mappings;
+        let requested = &mut self.requested_topology.mappings;
+        let rebinding = previous.len() == requested.len()
+            && previous
+                .iter()
+                .zip(requested.iter())
+                .all(|(previous, requested)| {
+                    ControllerMapping {
+                        projection_mode: requested.projection_mode,
+                        orientation: requested.orientation,
+                        mapping: requested.mapping.clone(),
+                        pointer: requested.pointer,
+                        ..previous.clone()
+                    } == *requested
+                });
+        if rebinding {
+            for (requested, previous) in requested.iter_mut().zip(previous) {
+                requested.pointer = previous.pointer;
+            }
+        }
+        rebinding
     }
 
     pub fn change(&self) -> ControllerTopologyChange {

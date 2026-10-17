@@ -14,7 +14,7 @@ impl HubInner {
             tracing::warn!(%backend, device = %descriptor.id, "input backend published a foreign device");
             return;
         }
-        let (listeners, index, calibration, home_led) = {
+        let (listeners, index, calibration, home_led, inherited) = {
             let _topology = self.topology.write();
             let id = descriptor.id.clone();
             let mut entry = self
@@ -31,13 +31,29 @@ impl HubInner {
             entry.connected = true;
             drop(entry);
             let index = self.index_of(&id);
+            let inherited = descriptor
+                .serial
+                .filter(|_| {
+                    index.is_none()
+                        && descriptor.role == crate::DeviceRole::Whole
+                        && self.policy.read().auto_assign
+                })
+                .and_then(|serial| {
+                    self.devices
+                        .iter()
+                        .filter(|entry| {
+                            entry.descriptor.id.backend() != backend
+                                && entry.descriptor.serial == Some(serial)
+                        })
+                        .find_map(|entry| self.index_of(&entry.descriptor.id))
+                });
             let calibration = self
                 .calibration_sessions
                 .get(&id)
                 .map(|session| session.feedback());
             let home_led = self.home_led.get(&id).map(|value| *value);
             let listeners = self.listeners();
-            (listeners, index, calibration, home_led)
+            (listeners, index, calibration, home_led, inherited)
         };
         if let Some(calibration) = calibration {
             let _ = self.apply_feedback(&descriptor.id, &calibration);
@@ -50,6 +66,10 @@ impl HubInner {
                 index,
                 device: &descriptor,
             });
+        }
+        if let Some(index) = inherited {
+            let _ = self.assign(&descriptor.id, Some(index), false);
+            return;
         }
         let auto_compose = self.policy.read().auto_compose;
         if auto_compose

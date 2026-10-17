@@ -20,7 +20,8 @@ pub use games::{
     MetadataValue, MountedTitle, PackageFile, PackageManifest, ResolvedLaunchable,
 };
 pub use inputstore::{
-    InputIdentityScope, InputMappingMode, InputMappingProfile, InputStore, InputStoreError,
+    InputGameKey, InputGameOverride, InputIdentityScope, InputMappingMode, InputMappingProfile,
+    InputStore, InputStoreError,
 };
 pub use polymer_consolestorage::nand::VirtualNand;
 pub use polymer_consolestorage::{

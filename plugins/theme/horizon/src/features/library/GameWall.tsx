@@ -44,11 +44,13 @@ export function GameWall(props: { games: RecentGame[]; onEnd?: () => void; onTop
   const launch = () => { const game = gameFor(selected()); if (game) shell.launchRecent(game); };
   const playerIndex = (sourceId: string) => {
     const assigned = window.Polymer.controllers.players.find((player) => player.controller?.id === sourceId);
-    return assigned?.index ?? Math.max(0, window.Polymer.controllers.connected.findIndex((source) => source.id === sourceId));
+    const connected = window.Polymer.controllers.connected.findIndex((source) => source.id === sourceId);
+    return assigned?.index ?? (connected < 0 ? undefined : connected);
   };
-  const playersFor = (id: string) => Object.entries(controllerSelections())
+  const playersFor = (id: string) => [...new Set(Object.entries(controllerSelections())
     .filter(([, game]) => game === id)
-    .map(([sourceId]) => playerIndex(sourceId));
+    .map(([sourceId]) => playerIndex(sourceId))
+    .filter((index): index is number => index !== undefined))];
   const zoomWall = (event: WheelEvent) => {
     if (!event.ctrlKey || !event.deltaY) return;
     event.preventDefault();
@@ -92,7 +94,10 @@ export function GameWall(props: { games: RecentGame[]; onEnd?: () => void; onTop
       if (action.type === "move") {
         const next = nearestInDirection([...elements].map(([id, element]) => ({ id, rect: element.getBoundingClientRect() })), current, action.direction as Direction);
         if (!next && action.direction === "up" && !sourceId && props.onTopEdge) { props.onTopEdge(); return true; }
-        if (!next) return false;
+        if (!next) {
+          if (sourceId) setControllerSelections(({ [sourceId]: _, ...values }) => values);
+          return false;
+        }
         if (sourceId) setControllerSelections(values => ({ ...values, [sourceId]: next }));
         else choose(next);
         elements.get(next)?.scrollIntoView?.({ block: "nearest", inline: "nearest" });

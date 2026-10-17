@@ -1268,6 +1268,7 @@ fn start_target_session(
                 layout: pad.layout.clone(),
                 mode: polymer_controllers::topology::RemapMode::Position,
                 bindings: Vec::new(),
+                orientation: polymer_config::input::Orientation::Vertical,
                 pointer: polymer_controllers::topology::PointerBinding::default(),
             })
             .collect(),

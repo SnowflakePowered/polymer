@@ -5,21 +5,25 @@ export type PauseRelease = () => Promise<void>;
 type PauseEntry = {
   leases: number;
   paused: boolean;
+  settledAt: number;
   sync?: Promise<void>;
 };
+
+const PAUSE_SETTLE_MS = 150;
 
 /**
  * Reference-counted pause leases for UI that takes exclusive control while a game is running.
  * The first lease filters input and requests emulator pause; the final release resumes the
- * emulator and restores input.
+ * emulator and restores input. Emulators pause through toggle hotkeys that drop presses
+ * arriving too close together, so state changes are spaced apart and coalesced.
  */
 export class PauseRegistry {
-  readonly #entries = new Map<LaunchInstance, PauseEntry>();
+  readonly #entries = new WeakMap<LaunchInstance, PauseEntry>();
 
   acquire(launch: LaunchInstance): PauseRelease {
     let entry = this.#entries.get(launch);
     if (!entry) {
-      entry = { leases: 0, paused: false };
+      entry = { leases: 0, paused: false, settledAt: 0 };
       this.#entries.set(launch, entry);
     }
     entry.leases += 1;
@@ -47,17 +51,20 @@ export class PauseRegistry {
   #sync(launch: LaunchInstance, entry: PauseEntry): Promise<void> {
     entry.sync ??= (async () => {
       while (entry.paused !== entry.leases > 0) {
+        const wait = entry.settledAt - performance.now();
+        if (wait > 0) {
+          await new Promise((resolve) => setTimeout(resolve, wait));
+          continue;
+        }
         const pause = entry.leases > 0;
         await launch.setPauseState(pause ? "pause" : "resume");
         entry.paused = pause;
+        entry.settledAt = performance.now() + PAUSE_SETTLE_MS;
       }
     })().finally(() => {
       entry.sync = undefined;
       // Closing the last overlay must restore input even if resume fails.
-      if (entry.leases === 0) {
-        launch.activateInput();
-        if (!entry.paused) this.#entries.delete(launch);
-      }
+      if (entry.leases === 0) launch.activateInput();
     });
     return entry.sync;
   }

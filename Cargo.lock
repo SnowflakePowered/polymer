@@ -10803,6 +10803,7 @@ name = "polymer-input-sdl3"
 version = "0.1.0"
 dependencies = [
  "cc",
+ "dashmap",
  "parking_lot",
  "polymer-controllers",
  "polymer-input",

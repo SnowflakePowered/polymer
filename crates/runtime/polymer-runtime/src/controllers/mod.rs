@@ -5,6 +5,7 @@ mod profile;
 mod transaction;
 pub use transaction::ControllerTopologyTransaction;
 
+use dashmap::DashMap;
 use parking_lot::RwLock;
 use polymer_config::input::{
     InputConfiguration, InputOperation, InputTransaction, ProjectionMode, SourceAssignment,
@@ -12,8 +13,8 @@ use polymer_config::input::{
 };
 use polymer_controllers::{ControllerConfiguration, ControllerDevice, ControllerTopology};
 use polymer_input::{DeviceDescriptor, DeviceId, DeviceRole, GamepadButton, InputHub};
-use polymer_library::InputStore;
-use profile::MappingProfile;
+use polymer_library::{InputGameKey, InputStore};
+use profile::{GameProfile, MappingProfile};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     path::Path,
@@ -86,22 +87,29 @@ pub struct ControllerSessionCommit {
 
 #[derive(Clone, Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DeviceMapping {
-    pub mode: ProjectionMode,
+pub struct MappingUpdate {
     #[serde(default)]
-    pub mapping: BTreeMap<String, String>,
+    pub mode: Option<ProjectionMode>,
+    #[serde(default)]
+    pub orientation: Option<polymer_config::input::Orientation>,
+    #[serde(default)]
+    pub overrides: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Default)]
-pub struct ControllerProfiles(Arc<RwLock<HashMap<String, HashMap<String, MappingProfile>>>>);
+pub struct ControllerProfiles {
+    sources: Arc<RwLock<HashMap<String, HashMap<String, MappingProfile>>>>,
+    games: Arc<DashMap<InputGameKey, GameProfile>>,
+}
 
 impl ControllerProfiles {
     fn clear(&self) {
-        self.0.write().clear();
+        self.sources.write().clear();
+        self.games.clear();
     }
 
     fn get(&self, identity: &str, layout: &str) -> Option<MappingProfile> {
-        self.0
+        self.sources
             .read()
             .get(identity)
             .and_then(|profiles| profiles.get(layout))
@@ -109,7 +117,7 @@ impl ControllerProfiles {
     }
 
     fn put(&self, identity: String, layout: String, profile: MappingProfile) {
-        self.0
+        self.sources
             .write()
             .entry(identity)
             .or_default()
@@ -117,7 +125,7 @@ impl ControllerProfiles {
     }
 
     fn remove(&self, identity: &str, layout: &str) {
-        let mut mappings = self.0.write();
+        let mut mappings = self.sources.write();
         if let Some(profiles) = mappings.get_mut(identity) {
             profiles.remove(layout);
             if profiles.is_empty() {
@@ -132,9 +140,12 @@ pub struct ControllerManager {
     applied: Option<ControllerTopology>,
     hub: Option<InputHub>,
     session: Option<ControllerConnectionSession>,
+    adopting: bool,
+    rejected_adoption: Vec<SourceAssignment>,
     join_neutral: HashSet<DeviceId>,
     mappings: ControllerProfiles,
     mapping_store: Option<InputStore>,
+    game: Option<String>,
 }
 
 struct ControllerConnectionSession {
@@ -142,6 +153,7 @@ struct ControllerConnectionSession {
     committing: bool,
     assignments: Vec<SourceAssignment>,
     join_requests: Vec<DeviceId>,
+    connected: HashSet<DeviceId>,
     keyboard: Option<u8>,
 }
 
@@ -153,9 +165,12 @@ impl ControllerManager {
             applied: None,
             hub: None,
             session: None,
+            adopting: false,
+            rejected_adoption: Vec::new(),
             join_neutral: HashSet::new(),
             mappings,
             mapping_store: None,
+            game: None,
         }
     }
 
@@ -168,11 +183,20 @@ impl ControllerManager {
             .await
             .map_err(|error| error.to_string())?;
         let profiles = store.profiles().await.map_err(|error| error.to_string())?;
+        let games = store
+            .game_overrides()
+            .await
+            .map_err(|error| error.to_string())?;
         mappings.clear();
         for profile in profiles {
             let identity = profile.identity.clone();
             let layout = profile.layout_id.clone();
             mappings.put(identity, layout, MappingProfile::from_stored(profile));
+        }
+        for game in games {
+            mappings
+                .games
+                .insert(game.key.clone(), GameProfile::from_stored(game));
         }
         Ok(Self {
             configuration: ControllerConfiguration::new(None, [])
@@ -180,9 +204,12 @@ impl ControllerManager {
             applied: None,
             hub: Some(hub),
             session: None,
+            adopting: false,
+            rejected_adoption: Vec::new(),
             join_neutral: HashSet::new(),
             mappings,
             mapping_store: Some(store),
+            game: None,
         })
     }
 
@@ -198,14 +225,20 @@ impl ControllerManager {
         self.applied.as_ref()
     }
 
-    pub fn initialize(&mut self, topology: ControllerTopology) -> Result<(), String> {
+    pub fn initialize(
+        &mut self,
+        topology: ControllerTopology,
+        game: Option<String>,
+    ) -> Result<(), String> {
         topology.validate()?;
         self.applied = Some(topology);
+        self.game = game;
         Ok(())
     }
 
     pub fn clear_applied(&mut self) {
         self.applied = None;
+        self.game = None;
     }
 
     pub fn apply_configuration(
@@ -265,7 +298,9 @@ impl ControllerManager {
             .configuration
             .apply(transaction.input)
             .map_err(|error| error.to_string())?;
-        self.applied = Some(applied);
+        if self.applied.is_some() {
+            self.applied = Some(applied);
+        }
         Ok(configuration)
     }
 
@@ -420,6 +455,97 @@ impl ControllerManager {
         Ok(())
     }
 
+    pub fn begin_adoption(&mut self) -> bool {
+        if self.adopting || self.session.is_some() {
+            return false;
+        }
+        let adopted = self.adopted_assignments();
+        if adopted.is_empty() || adopted == self.rejected_adoption {
+            return false;
+        }
+        self.adopting = true;
+        true
+    }
+
+    pub fn adoption_transaction(&self) -> Result<ControllerTopologyTransaction, String> {
+        if self.session.is_some() {
+            return Err("a controller connection session is active".to_owned());
+        }
+        let configuration = self.configuration();
+        let adopted = self.adopted_assignments();
+        let assignments = configuration
+            .assignments
+            .iter()
+            .filter(|assignment| {
+                adopted.iter().all(|adopted| {
+                    adopted.index != assignment.index && adopted.source != assignment.source
+                })
+            })
+            .cloned()
+            .chain(adopted.iter().cloned())
+            .collect();
+        self.transaction(InputTransaction {
+            expected_revision: configuration.revision,
+            operations: vec![InputOperation::ReplaceAssignments { assignments }],
+        })
+    }
+
+    pub fn finish_adoption(&mut self, adopted: bool) -> Result<(), String> {
+        self.adopting = false;
+        if self.session.is_some() {
+            return Ok(());
+        }
+        let result = if adopted {
+            Ok(())
+        } else {
+            self.sync_configuration(&self.configuration())
+        };
+        self.rejected_adoption = self.adopted_assignments();
+        result
+    }
+
+    fn adopted_assignments(&self) -> Vec<SourceAssignment> {
+        let configuration = self.configuration();
+        let assignments = self
+            .hub
+            .as_ref()
+            .map(InputHub::assignments)
+            .unwrap_or_default();
+        let mut taken = configuration
+            .assignments
+            .iter()
+            .map(|assignment| assignment.index)
+            .chain(assignments.iter().map(|(index, _)| index.get()))
+            .collect::<HashSet<_>>();
+        assignments
+            .into_iter()
+            .filter_map(|(index, device)| {
+                let source = SourceSelector::Device {
+                    device_id: device.to_string(),
+                };
+                let configured = configuration.source_for(index.get());
+                if configured == Some(&source) {
+                    return None;
+                }
+                if configured != Some(&SourceSelector::KeyboardMouse) {
+                    return Some(SourceAssignment {
+                        index: index.get(),
+                        source,
+                    });
+                }
+                if configuration
+                    .assignments
+                    .iter()
+                    .any(|assignment| assignment.source == source)
+                {
+                    return None;
+                }
+                let index = (0..u8::MAX).find(|candidate| taken.insert(*candidate))?;
+                Some(SourceAssignment { index, source })
+            })
+            .collect()
+    }
+
     pub fn observe_session(&mut self) -> bool {
         let Some(session) = self.session.as_mut() else {
             return false;
@@ -432,10 +558,17 @@ impl ControllerManager {
         }
         let previous = std::mem::take(&mut session.join_requests);
         for (index, descriptor, state, connected) in hub.device_snapshots() {
-            if !connected || index.is_some() {
+            if !connected {
+                session.connected.remove(&descriptor.id);
                 continue;
             }
-            if !Self::join_eligible(&descriptor, state.gamepad.buttons) {
+            let arrived = session.connected.insert(descriptor.id.clone());
+            if index.is_some() {
+                continue;
+            }
+            if arrived && descriptor.role == DeviceRole::Whole {
+                session.join_requests.push(descriptor.id);
+            } else if !Self::join_eligible(&descriptor, state.gamepad.buttons) {
                 self.join_neutral.insert(descriptor.id);
             } else if self.join_neutral.remove(&descriptor.id) || previous.contains(&descriptor.id)
             {

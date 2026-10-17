@@ -52,7 +52,7 @@ type OverlayProps = ParentProps<{ open: boolean; onClose(): void; class?: string
 function Overlay(props: OverlayProps & { kind: "modal" | "left" | "right" }) {
   let opener: HTMLElement | null = null;
   createComputed(() => { if (props.open) opener = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null; });
-  return <ArkDialog.Root open={props.open} trapFocus={!embeddedRuntime} closeOnInteractOutside={false} finalFocusEl={() => opener} onOpenChange={details => { if (!details.open) props.onClose(); }}>
+  return <ArkDialog.Root open={props.open} trapFocus={!embeddedRuntime} closeOnInteractOutside={false} closeOnEscape={false} finalFocusEl={() => opener} onOpenChange={details => { if (!details.open) props.onClose(); }}>
     <OverlayPortal><ArkDialog.Backdrop class="vp-backdrop" data-kind={props.kind} /><ArkDialog.Positioner class="vp-overlay-position" data-kind={props.kind}>
       <ScopedContent class={`vp-overlay vp-${props.kind} ${props.class ?? ""}`} onAction={props.onAction} initialFocus={props.initialFocus} returnFocus={() => opener}>{props.children}</ScopedContent>
     </ArkDialog.Positioner></OverlayPortal>
