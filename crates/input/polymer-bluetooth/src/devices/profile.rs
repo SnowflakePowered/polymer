@@ -36,7 +36,7 @@ pub struct PnpIdentity {
     pub version: u16,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct VendorProductId {
     pub vendor_id: u16,
     pub product_id: u16,

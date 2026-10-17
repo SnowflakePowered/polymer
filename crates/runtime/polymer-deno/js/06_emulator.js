@@ -74,6 +74,7 @@ export function createEmulator() {
         })),
       },
       machine: options.machine,
+      launchable: options.launchable ?? null,
       preparedFilesystem: options.preparedFilesystem,
       controllerSession: options.controllerSession,
       launchSet: options.launchSet ?? [],

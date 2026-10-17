@@ -11,7 +11,10 @@ use atomic_write_file::AtomicWriteFile;
 use rusqlite::{Connection, params};
 
 use crate::transport::bredr::{LinkKey, LinkKeyStore};
-use crate::{DeviceAddr, Error, Result, TransportKind, devices::ProfileId};
+use crate::{
+    DeviceAddr, Error, Result, TransportKind,
+    devices::{ProfileId, VendorProductId},
+};
 
 const STORE_VERSION: u32 = 1;
 
@@ -20,6 +23,7 @@ pub struct ControllerRecord {
     pub address: DeviceAddr,
     pub transport: TransportKind,
     pub profile_id: ProfileId,
+    pub vendor_product: Option<VendorProductId>,
     pub link_key: Option<[u8; 16]>,
     pub link_key_type: Option<u8>,
     pub adapter_index: Option<usize>,
@@ -99,6 +103,7 @@ impl ControllerLinkKeyStore {
         }) {
             record.link_key = existing.link_key;
             record.link_key_type = existing.link_key_type;
+            record.vendor_product = record.vendor_product.or(existing.vendor_product);
         }
         self.store.put(record)
     }
@@ -130,6 +135,7 @@ impl LinkKeyStore for ControllerLinkKeyStore {
                 address: addr,
                 transport: TransportKind::BrEdr,
                 profile_id: ProfileId::new("unknown.bredr"),
+                vendor_product: None,
                 link_key: None,
                 link_key_type: None,
                 adapter_index: None,
@@ -142,7 +148,17 @@ impl LinkKeyStore for ControllerLinkKeyStore {
     }
     fn remove(&self, addr: DeviceAddr) -> Result<()> {
         let _update = self.updates.lock().map_err(|_| Error::ChannelClosed)?;
-        self.store.remove(addr)
+        let Some(mut record) = self
+            .store
+            .records()?
+            .into_iter()
+            .find(|record| record.address == addr && record.transport == TransportKind::BrEdr)
+        else {
+            return Ok(());
+        };
+        record.link_key = None;
+        record.link_key_type = None;
+        self.store.put(record)
     }
 }
 
@@ -219,6 +235,9 @@ impl SqliteControllerStore {
                     adapter_index  INTEGER CHECK (adapter_index IS NULL OR adapter_index >= 0),
                     auto_reconnect INTEGER NOT NULL CHECK (auto_reconnect IN (0, 1)),
                     player_index   INTEGER NOT NULL CHECK (player_index BETWEEN 0 AND 255),
+                    vendor_id      INTEGER CHECK (vendor_id IS NULL OR vendor_id BETWEEN 0 AND 65535),
+                    product_id     INTEGER CHECK (product_id IS NULL OR product_id BETWEEN 0 AND 65535),
+                    CHECK ((vendor_id IS NULL) = (product_id IS NULL)),
                     PRIMARY KEY (address, address_kind, transport)
                 ) STRICT;
                 "#,
@@ -299,10 +318,17 @@ impl SqliteControllerStore {
             .transpose()?;
         let player_index = u8::try_from(row.get::<_, i64>(8).map_err(Self::database_error)?)
             .map_err(|_| Error::Store("Bluetooth player index is out of range".to_owned()))?;
+        let vendor_id = row.get::<_, Option<u16>>(9).map_err(Self::database_error)?;
+        let product_id = row
+            .get::<_, Option<u16>>(10)
+            .map_err(Self::database_error)?;
         Ok(ControllerRecord {
             address: DeviceAddr::new(address, kind),
             transport,
             profile_id: ProfileId::new(row.get::<_, String>(3).map_err(Self::database_error)?),
+            vendor_product: vendor_id
+                .zip(product_id)
+                .map(|(vendor_id, product_id)| VendorProductId::new(vendor_id, product_id)),
             link_key,
             link_key_type: row.get::<_, Option<u8>>(5).map_err(Self::database_error)?,
             adapter_index,
@@ -319,7 +345,8 @@ impl ControllerStore for SqliteControllerStore {
             .prepare(
                 r#"
                 SELECT address, address_kind, transport, profile_id, link_key,
-                       link_key_type, adapter_index, auto_reconnect, player_index
+                       link_key_type, adapter_index, auto_reconnect, player_index,
+                       vendor_id, product_id
                 FROM bluetooth_controllers
                 ORDER BY transport, address
                 "#,
@@ -345,15 +372,18 @@ impl ControllerStore for SqliteControllerStore {
                 r#"
                 INSERT INTO bluetooth_controllers (
                     address, address_kind, transport, profile_id, link_key,
-                    link_key_type, adapter_index, auto_reconnect, player_index
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                    link_key_type, adapter_index, auto_reconnect, player_index,
+                    vendor_id, product_id
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
                 ON CONFLICT (address, address_kind, transport) DO UPDATE SET
                     profile_id = excluded.profile_id,
                     link_key = excluded.link_key,
                     link_key_type = excluded.link_key_type,
                     adapter_index = excluded.adapter_index,
                     auto_reconnect = excluded.auto_reconnect,
-                    player_index = excluded.player_index
+                    player_index = excluded.player_index,
+                    vendor_id = excluded.vendor_id,
+                    product_id = excluded.product_id
                 "#,
                 params![
                     record.address.bytes().as_slice(),
@@ -365,6 +395,8 @@ impl ControllerStore for SqliteControllerStore {
                     adapter_index,
                     record.auto_reconnect,
                     record.player_index,
+                    record.vendor_product.map(|value| value.vendor_id),
+                    record.vendor_product.map(|value| value.product_id),
                 ],
             )
             .map_err(Self::database_error)?;

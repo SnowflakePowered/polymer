@@ -183,7 +183,11 @@ impl DeviceDescriptor {
     /// Converts a backend-provided stable identifier into Polymer's
     /// backend-neutral device serial namespace.
     pub fn serial_uuid(serial: &str) -> Option<Uuid> {
-        let serial = serial.trim();
+        let serial = serial
+            .trim()
+            .chars()
+            .filter(|character| !matches!(character, ':' | '-'))
+            .collect::<String>();
         if serial.is_empty() {
             return None;
         }

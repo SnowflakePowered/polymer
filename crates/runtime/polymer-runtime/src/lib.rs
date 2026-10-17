@@ -27,7 +27,7 @@ pub use consolestorage::StorageService;
 pub use controllers::{
     ControllerAssignmentSnapshot, ControllerCommandOutcome, ControllerManager,
     ControllerManagerEffect, ControllerProfiles, ControllerSessionCommit,
-    ControllerTopologyTransaction, DeviceMapping,
+    ControllerTopologyTransaction, MappingUpdate,
 };
 pub use frontend::{ControllerApiState, FrontendCommands, FrontendServices};
 pub use instance::{

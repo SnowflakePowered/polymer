@@ -51,6 +51,10 @@ function freezeState(state) {
     players: freezePlayers(state?.players),
     activeConnectionSession: state?.activeConnectionSession || null,
     layouts: Object.freeze([...(state?.layouts || [])]),
+    pad: Object.freeze({
+      buttons: Object.freeze([...(state?.pad?.buttons || [])]),
+      axes: Object.freeze([...(state?.pad?.axes || [])]),
+    }),
   });
 }
 
@@ -91,6 +95,7 @@ class ConnectionSession extends EventTarget {
 class ControllersClient extends EventTarget {
   #state;
   #session = null;
+  #pairedSequence;
   #sessionState = Object.freeze({ discovery: Object.freeze({ active: false }), candidates: Object.freeze([]), joinRequests: Object.freeze([]) });
 
   constructor(initial) {
@@ -105,6 +110,7 @@ class ControllersClient extends EventTarget {
   get connected() { return Object.freeze(this.devices.filter((device) => device.connected)); }
   get players() { return this.#state.players; }
   get layouts() { return this.#state.layouts; }
+  get pad() { return this.#state.pad; }
   get activeConnectionSession() { return this.#state.activeConnectionSession ? this.#session : null; }
   get sessionState() { return this.#sessionState; }
   isSessionActive(id) { return this.#state.activeConnectionSession?.id === id; }
@@ -117,12 +123,12 @@ class ControllersClient extends EventTarget {
     return session;
   }
 
-  rumble(deviceId, options) {
-    op_controller_device_command({ type: "rumble", index: this.#index(deviceId), ...options });
+  rumble(index, options) {
+    op_controller_device_command({ type: "rumble", index: Number(index), ...options });
   }
 
-  recenter(deviceId) {
-    op_controller_device_command({ type: "recenter", index: this.#index(deviceId) });
+  recenter(index) {
+    op_controller_device_command({ type: "recenter", index: Number(index) });
   }
 
   calibrate(deviceId, calibration) {
@@ -154,16 +160,16 @@ class ControllersClient extends EventTarget {
 
   disconnect(id) { return this.#stateCommand({ type: "controllers.disconnect", id: String(id) }); }
   forget(id) { return this.#stateCommand({ type: "controllers.forget", id: String(id) }); }
-  getMapping(id, layoutId) {
-    return op_controller_api_command({ type: "controllers.mapping.get", id: String(id), layoutId: String(layoutId) });
+  getMapping(scope, layoutId) {
+    return op_controller_api_command({ type: "controllers.mapping.get", scope, layoutId: String(layoutId) });
   }
-  setMapping(id, layoutId, mapping) {
+  setMapping(scope, layoutId, mapping) {
     return op_controller_api_command({
-      type: "controllers.mapping.set", id: String(id), layoutId: String(layoutId), mapping,
+      type: "controllers.mapping.set", scope, layoutId: String(layoutId), mapping,
     });
   }
-  resetMapping(id, layoutId) {
-    return op_controller_api_command({ type: "controllers.mapping.reset", id: String(id), layoutId: String(layoutId) });
+  resetMapping(scope, layoutId) {
+    return op_controller_api_command({ type: "controllers.mapping.reset", scope, layoutId: String(layoutId) });
   }
 
   async sessionCommand(action, sessionId, detail = {}) {
@@ -191,6 +197,13 @@ class ControllersClient extends EventTarget {
     if (JSON.stringify(previous.devices) !== JSON.stringify(this.devices)) {
       this.dispatchEvent(new CustomEvent("devicechange", { detail: this.devices }));
     }
+    const paired = (state?.controllers || state)?.paired || [];
+    for (const device of paired) {
+      if (this.#pairedSequence !== undefined && device.sequence > this.#pairedSequence) {
+        this.dispatchEvent(new CustomEvent("controllerconnected", { detail: freezeDevice(device) }));
+      }
+    }
+    this.#pairedSequence = Math.max(this.#pairedSequence ?? 0, ...paired.map((device) => device.sequence));
     const previousDevices = new Map(previous.devices.map((device) => [device.id, device]));
     for (const device of this.devices) {
       if (device.connected && !previousDevices.get(device.id)?.connected) {
@@ -249,14 +262,6 @@ class ControllersClient extends EventTarget {
     } else if (this.#session?.id !== state.id) {
       this.#session = new ConnectionSession(this, String(state.id));
     }
-  }
-
-  #index(deviceId) {
-    const device = this.devices.find((candidate) => candidate.id === String(deviceId));
-    if (!device || device.index === null || device.index === undefined) {
-      throw new TypeError(`Controller '${deviceId}' is not assigned to a player`);
-    }
-    return device.index;
   }
 
   async #restoreCalibration(deviceId) {

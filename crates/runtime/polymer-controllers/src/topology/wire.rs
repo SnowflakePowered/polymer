@@ -21,6 +21,8 @@ pub struct PortBinding {
     pub mode: RemapMode,
     pub bindings: Vec<(String, Option<String>)>,
     #[serde(default)]
+    pub orientation: polymer_config::input::Orientation,
+    #[serde(default)]
     pub pointer: PointerBinding,
 }
 

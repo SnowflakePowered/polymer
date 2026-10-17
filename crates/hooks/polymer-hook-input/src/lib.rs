@@ -54,6 +54,7 @@ impl HookInput {
         let mut state = self.raw(player)?;
         let host = self.host.sample();
         state.pointer = self.topology.pointer(player, state.pointer, &host);
+        state.sensor = self.topology.sensor(player, state.sensor);
         Some(state)
     }
 

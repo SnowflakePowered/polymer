@@ -41,10 +41,11 @@ impl ShellCoordinator {
             surface.group = surface_groups.get(&surface.index).copied();
         }
         self.emit_instance_event(token, "start", &serde_json::Value::Null);
-        if let Err(error) = self
-            .input
-            .configure_launch(&options.machine, &options.controller_topology)
-        {
+        if let Err(error) = self.input.configure_launch(
+            &options.machine,
+            &options.controller_topology,
+            options.launchable.clone(),
+        ) {
             self.emit_instance_event(token, "error", &instance_events::error(&error));
             self.emit_instance_event(token, "closed", &serde_json::Value::Null);
             return Err(error);

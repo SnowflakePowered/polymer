@@ -25,7 +25,7 @@ const button = css({
 
 export function SidebarButton(props: ParentProps<{ icon: IconName; iconSize?: number; label: string; active?: boolean; expanded?: boolean; onClick?: () => void }>) {
   const stroke = () => props.iconSize ? 60 / props.iconSize : undefined;
-  return <button type="button" class={button} data-select-ring disabled={!props.onClick} data-active={props.active || undefined} aria-label={props.label} aria-current={props.active && props.expanded === undefined ? "page" : undefined} aria-expanded={props.expanded} title={props.label} onClick={props.onClick}>
+  return <button type="button" class={button} disabled={!props.onClick} data-active={props.active || undefined} aria-label={props.label} aria-current={props.active && props.expanded === undefined ? "page" : undefined} aria-expanded={props.expanded} title={props.label} onClick={props.onClick}>
     <span data-tone="rest"><Icon name={props.icon} tone="onBrand" strokeWidth={stroke()} /></span>
     <span data-tone="inverted"><Icon name={props.icon} tone="brand" strokeWidth={stroke()} /></span>
     <span data-label><span data-tone="rest">{props.label}</span><span data-tone="inverted">{props.label}</span></span>

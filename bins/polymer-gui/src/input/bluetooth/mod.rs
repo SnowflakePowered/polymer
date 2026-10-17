@@ -6,8 +6,14 @@ use polymer_bluetooth::{
 };
 use polymer_input::{BackendId, DeviceId};
 use polymer_input_bluetooth::{BluetoothBackend, DiscoveryEvent};
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    sync::Arc,
+    time::Duration,
+};
 use tokio::sync::broadcast;
+
+const PAIRED_HISTORY: usize = 8;
 
 pub(super) struct BluetoothUi {
     manager: polymer_bluetooth::BluetoothManager,
@@ -18,6 +24,8 @@ pub(super) struct BluetoothUi {
     devices: BTreeMap<String, Candidate>,
     identities: BTreeMap<String, ControllerId>,
     sessions: BTreeMap<String, SessionId>,
+    paired: VecDeque<(u64, Candidate)>,
+    paired_sequence: u64,
     error: Option<String>,
 }
 
@@ -42,6 +50,8 @@ impl BluetoothUi {
             devices: BTreeMap::new(),
             identities: BTreeMap::new(),
             sessions: BTreeMap::new(),
+            paired: VecDeque::new(),
+            paired_sequence: 0,
             error: None,
         }
     }
@@ -173,6 +183,15 @@ impl BluetoothUi {
                 }
             }
         }
+        controllers["paired"] = self
+            .paired
+            .iter()
+            .map(|(sequence, device)| {
+                let mut value = device.value();
+                value["sequence"] = (*sequence).into();
+                value
+            })
+            .collect();
         if let Some(session) = controllers["activeConnectionSession"].as_object_mut() {
             session.insert(
                 "discovery".to_owned(),
@@ -276,6 +295,30 @@ impl BluetoothUi {
                         pairing: false,
                     },
                 );
+            }
+            ManagerEvent::CablePaired {
+                controller_id,
+                profile_id,
+                vendor_product,
+                name,
+            } => {
+                let id = Self::device_id(controller_id);
+                self.identities.insert(id.clone(), controller_id);
+                self.paired_sequence += 1;
+                if self.paired.len() == PAIRED_HISTORY {
+                    self.paired.pop_front();
+                }
+                self.paired.push_back((
+                    self.paired_sequence,
+                    Candidate {
+                        id,
+                        name,
+                        profile: Some(profile_id.to_string()),
+                        vendor_id: vendor_product.map(|ids| ids.vendor_id),
+                        product_id: vendor_product.map(|ids| ids.product_id),
+                        pairing: false,
+                    },
+                ));
             }
             ManagerEvent::Disconnected { controller_id, .. } => {
                 if let Some(device) = self.devices.get_mut(&Self::device_id(controller_id)) {

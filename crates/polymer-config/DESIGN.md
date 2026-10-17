@@ -1727,6 +1727,170 @@ What the config layer keeps is the per-option half: `enabled_when` still greys
 out an option, `Availability::Unavailable` still explains why a choice is
 unselectable, and realize still returns `Diagnostics`.
 
+### 6.8 Input remapping — [designed]
+
+Remapping happens before the emulator sees anything: a host source is resolved
+onto the standard virtual pad, and `input.toml` (§6.1) keeps mapping that pad
+onto the emulator's vocabulary. No plugin participates, and no emulator file
+changes when a binding does.
+
+#### Model
+
+A mapping is a **mode plus sparse overrides**. The mode picks a base:
+
+| mode | base |
+| --- | --- |
+| `position` | the layout's projection (`SDL.proj.toml`) |
+| `name` | `position`, then A/B/X/Y re-bound by element label |
+| `custom` | nothing; every custom binding target must be overridden |
+
+Overrides map a layout target to a source, or to `"none"` to disable the
+target. `Mapping::compile` already overlays bindings on the base, so the hook
+receives `mode` and overrides and needs no merge of its own.
+
+The pad's buttons are positional (`button.a` is the bottom one). Inputspec
+stays label-only and is not consistent about what an element name means:
+PlayStation's Cross is `button.a` by position, SNES's A is `button.a` by label.
+`gen_projection.py` therefore carries a `POSITION` table that places the face
+buttons of the label-named Nintendo layouts, so `SDL.proj.toml` — and with it
+`position` — is physical. `name` and `position` then differ exactly by the
+A↔B / X↔Y swap on those layouts, and no separate swap setting is needed.
+
+The host side comes from SDL, not inputspec: `gamecontrollerdb.txt` maps every
+pad onto the positional slots, and SDL3's `SDL_GetGamepadButtonLabel` reports
+what is printed on each. `name` currently assumes Xbox labels; it should instead
+resolve each guest label against the selected device's labels in
+`topology_for`, sending the result as face-button overrides so the hook still
+sees only a base and overrides. Bluetooth devices take their labels from the
+profile id.
+
+Source expressions are strings, so the wire `Vec<(String, Option<String>)>`
+does not change:
+
+| source | form |
+| --- | --- |
+| standard pad | `button.a`, `analog.stick.left.x+`, `directional.n` |
+| keyboard | `key.<code>`, DOM `KeyboardEvent.code` (as `DEFAULT.kb.toml`) |
+| mouse | `mouse.button.<n>`, `mouse.delta.x`, `mouse.position.y` |
+
+`BindingKey` belongs to consolespec, so the source side becomes a Polymer
+`InputSource` enum in `polymer-config/src/input`, replacing `Option<BindingKey>`
+in `ControllerBindings`. The hook builds the existing `Source::Key`,
+`Source::MouseButton`, and `AxisInput::{KeyPair, MouseDelta, MousePosition}`
+variants from it.
+
+#### Scopes and resolution
+
+```ts
+type MappingScope =
+  | { kind: "source"; source: InputSourceSelector }
+  | { kind: "game"; launchable: string; group: string; port: number };
+```
+
+A port resolves **game override → source profile → layout default**. The game
+mode wins when set (`null` inherits); overrides merge per target.
+
+- **Source** profiles are keyed by device identity (`sdl:serial/…`, the
+  Bluetooth id), by model (`sdl:model/vid/pid/name`), or by `keyboardMouse`.
+  They are edited from the Controllers page.
+- **Game** overrides are keyed by launchable and emulator port. The pre-launch
+  details page and the in-game quick menu edit the same record, so a toggle in
+  either place is visible in the other.
+
+Game overrides live in `ControllerProfiles` next to source profiles, keyed by
+launchable, port and layout. `ControllerManager::resolved_profile` is the one
+merge, used both when `onLaunch` receives its topology and when a change is
+reapplied mid-game; the running game is known from `AttachedLaunchPlan.launchable`
+(the first launch-set entry). A game-scope `custom` mode may be completed by the
+source profile's overrides at merge time. The launch request carries no mapping,
+and `PortConfiguration.overrides` with its operations is gone.
+
+#### API
+
+```ts
+type InputLayout = Readonly<{
+  id: string;
+  name: string;
+  elements: readonly Readonly<{ id: string; key: string; label: string; kind: string }>[];
+}>;
+
+type InputMapping = Readonly<{
+  mode: ProjectionMode | null;
+  overrides: Readonly<Record<string, string>>;
+}>;
+
+type ResolvedInputMapping = InputMapping & Readonly<{
+  bindings: Readonly<Record<string, string>>;
+  inherited: "game" | "device" | "type" | "default";
+}>;
+
+interface ControllersApi {
+  readonly layouts: readonly InputLayout[];
+  getMapping(scope: MappingScope, layoutId: string): Promise<ResolvedInputMapping>;
+  setMapping(scope: MappingScope, layoutId: string, mapping: InputMapping): Promise<ResolvedInputMapping>;
+  resetMapping(scope: MappingScope, layoutId: string, target?: string): Promise<ResolvedInputMapping>;
+}
+```
+
+`bindings` is the fully merged result, for display. Press-to-bind reads
+`Polymer.input.get(player)` for pads and `keydown` for the keyboard; there is
+no capture API.
+
+#### Orientation
+
+A Wii Remote or a single Joy-Con can be held sideways. `orientation`
+(`vertical` | `horizontal`) is a second base modifier, stored next to `mode`.
+`gen_projection.py` writes `SDL.horizontal.toml`, in the projection's shape: for
+each layout that can be held sideways, the pad control that drives each guest
+control. It never changes the projection itself, which the serializer writes
+into emulator configs. Resolution is projection → Name face swap → horizontal
+table → overrides, and `InputLayout.horizontal` says which layouts have a table.
+
+Horizontal also rotates motion in the hook, a quarter turn about SDL's up axis
+for both sensors: `(x, y, z) → (−z, y, x)`. With the D-pad table this reproduces
+Dolphin's "Sideways Wii Remote" (`WiimoteEmu.cpp`: `dpad_sideways_bitmasks`,
+`GetOrientation`) for our bindings, which use only the IMU groups. The one
+difference is order: Dolphin rotates after the Point angle, the hook before.
+Dolphin's own option is pinned to `False` in every Wii port's emits, not
+dropped, because serialization merges into existing files and a stale `True`
+would rotate twice.
+
+A physical Joy-Con or Wii Remote held sideways as the host device is a separate
+setting: the decoders report in the device's upright frame.
+
+#### Applying a change
+
+A change that only alters modes or bindings is published straight to the hook.
+It does not run the plugin's `onControllerChanged`, because no emulator file
+depends on bindings, and the topology the plugin last returned (its pointer
+choices) is kept.
+
+#### Storage
+
+`input.db`, owned by `InputStore`:
+
+- `input_mapping_profiles` / `input_mapping_bindings` hold source profiles.
+  Bindings are kept for every mode.
+- `input_game_overrides(launchable, port_group, port_index, layout_id, mode NULL)`
+  and `input_game_override_bindings(…, target, source)` hold game overrides.
+
+#### UI
+
+- Controllers page: per-device and keyboard defaults, and the remap editor.
+- Details page, per port next to the layout picker: button layout
+  (Inherit / Name / Position), Customize, Reset. The layout toggle is disabled
+  when no A/B/X/Y label pair would move.
+- In-game quick menu: the same button-layout toggle, written to game scope.
+
+#### Implementation order
+
+1. Overrides for every mode, direct-to-hook publish, typed `layouts`, resolved
+   mapping responses.
+2. Game scope: tables, `scope` parameter, `AttachedLaunchPlan.launchable`.
+3. Keyboard and mouse sources.
+4. UI: Controllers page, details page, quick menu, shared remap editor.
+5. `name` resolved against the device's SDL button labels.
+
 ---
 
 ## 7. Actions

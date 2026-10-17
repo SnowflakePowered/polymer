@@ -6,8 +6,8 @@ pub use wire::*;
 use crate::configuration::ControllerConfiguration;
 use crate::layout::InputLayout;
 use polymer_config::input::{
-    ControllerBindings, InputOperation, InputTransaction, PortConfiguration, ProjectionMode,
-    SourceAssignment, SourceSelector, VirtualPort,
+    ControllerBindings, InputOperation, InputTransaction, Orientation, PortConfiguration,
+    ProjectionMode, SourceAssignment, SourceSelector, VirtualPort,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -139,6 +139,8 @@ pub struct ControllerMapping {
     pub mouse: bool,
     #[serde(default)]
     pub projection_mode: ProjectionMode,
+    #[serde(default)]
+    pub orientation: Orientation,
     #[serde(default)]
     pub mapping: ControllerBindings,
     #[serde(default)]
@@ -279,6 +281,7 @@ impl ControllerTopology {
                     device: None,
                     mouse: false,
                     projection_mode: ProjectionMode::Position,
+                    orientation: Orientation::Vertical,
                     mapping: ControllerBindings::default(),
                     pointer: PointerBinding {
                         mode: port.pointer,
@@ -323,6 +326,12 @@ impl ControllerTopology {
             let layout = InputLayout::get(&mapping.layout)
                 .ok_or_else(|| format!("unknown input layout {}", mapping.layout))?;
             layout.validate_controller_bindings(&mapping.mapping)?;
+            if mapping.orientation == Orientation::Horizontal && !layout.horizontal {
+                return Err(format!(
+                    "input layout {} cannot be held horizontally",
+                    layout.id
+                ));
+            }
             let mut binding_targets = HashSet::new();
             for (target, _) in mapping.mapping.iter() {
                 binding_targets.insert(*target);
@@ -418,17 +427,14 @@ impl ControllerTopology {
                     port,
                     layout: mapping.layout.clone(),
                     mode,
-                    bindings: if mode == RemapMode::Custom {
-                        mapping
-                            .mapping
-                            .iter()
-                            .map(|(target, source)| {
-                                (target.to_string(), source.map(ToString::to_string))
-                            })
-                            .collect()
-                    } else {
-                        Vec::new()
-                    },
+                    bindings: mapping
+                        .mapping
+                        .iter()
+                        .map(|(target, source)| {
+                            (target.to_string(), source.map(ToString::to_string))
+                        })
+                        .collect(),
+                    orientation: mapping.orientation,
                     pointer: mapping.pointer,
                 })
             })
@@ -461,7 +467,6 @@ impl ControllerTopology {
                 layout: mapping.layout.clone(),
                 slot: Some(mapping.gamepad),
                 force_mouse: mapping.mouse,
-                overrides: mapping.mapping.clone(),
             });
             if let Some(source) = &mapping.source {
                 assignments.push(SourceAssignment {

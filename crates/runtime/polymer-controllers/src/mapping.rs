@@ -1,7 +1,7 @@
 use consolespec::input::{BindingKey, Component, Sign};
-use polymer_config::input::ProjectionMode;
+use polymer_config::input::{ControllerBindings, Orientation, ProjectionMode};
 use polymer_input::{GamepadButton, GamepadReport, KeyCode};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::fmt;
 
 use crate::layout::{
@@ -169,27 +169,16 @@ impl Mapping {
     pub fn compile(
         layout: &InputLayout,
         mode: ProjectionMode,
-        bindings: &[(BindingKey, Option<BindingKey>)],
+        orientation: Orientation,
+        bindings: &ControllerBindings,
     ) -> Result<Self, MappingError> {
-        let mut selected = HashMap::new();
-        if mode != ProjectionMode::Custom {
-            selected.extend(
-                layout
-                    .default_gamepad_bindings()
-                    .map(|(target, source)| (target, Some(source))),
-            );
-            if mode == ProjectionMode::Name {
-                selected.extend(Self::named_face_bindings(layout));
-            }
-        }
-        selected.extend(bindings.iter().copied());
         let mut mapping = Self {
             buttons: [None; 21],
             axes: [None; 8],
             keys: Vec::new(),
         };
-        for (target, source) in selected {
-            mapping.bind_gamepad(layout, target, source)?;
+        for (target, source) in layout.resolved_bindings(mode, orientation, bindings).iter() {
+            mapping.bind_gamepad(layout, *target, source.copied())?;
         }
         if mode != ProjectionMode::Custom {
             mapping.bind_keyboard(layout);
@@ -198,7 +187,13 @@ impl Mapping {
     }
 
     pub fn identity(layout: &InputLayout, mode: ProjectionMode) -> Self {
-        Self::compile(layout, mode, &[]).expect("an input layout's embedded mapping is valid")
+        Self::compile(
+            layout,
+            mode,
+            Orientation::Vertical,
+            &ControllerBindings::default(),
+        )
+        .expect("an input layout's embedded mapping is valid")
     }
 
     pub fn apply(&self, source: &GamepadReport, host: &HostSample) -> GamepadReport {
@@ -274,25 +269,6 @@ impl Mapping {
             _ => return Err(MappingError::invalid(target_key, source)),
         }
         Ok(())
-    }
-
-    fn named_face_bindings(
-        layout: &InputLayout,
-    ) -> impl Iterator<Item = (BindingKey, Option<BindingKey>)> + '_ {
-        [
-            ("A", GamepadButton::A),
-            ("B", GamepadButton::B),
-            ("X", GamepadButton::X),
-            ("Y", GamepadButton::Y),
-        ]
-        .into_iter()
-        .filter_map(|(label, source)| {
-            layout
-                .elements
-                .iter()
-                .find(|element| element.label.eq_ignore_ascii_case(label))
-                .map(|element| (element.key, Some(Control::binding(source))))
-        })
     }
 
     fn clear(&mut self, target: Control) {

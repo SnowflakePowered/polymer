@@ -180,12 +180,22 @@ impl ShellCoordinator {
         )
     }
 
+    pub(super) fn adopt_controller_assignments(&mut self) -> Result<ControllerChange, String> {
+        let transaction = self.input.controllers.adoption_transaction()?;
+        self.dispatch_controller_transaction(
+            transaction,
+            InputChangeCompletion::ControllerApi {
+                value: serde_json::Value::Null,
+            },
+        )
+    }
+
     fn dispatch_controller_transaction(
         &mut self,
-        transaction: polymer_runtime::ControllerTopologyTransaction,
+        mut transaction: polymer_runtime::ControllerTopologyTransaction,
         completion: InputChangeCompletion,
     ) -> Result<ControllerChange, String> {
-        if !transaction.topology_changed() {
+        if transaction.adopt_rebinding() {
             let applied = transaction.requested_topology().clone();
             let result = self
                 .input

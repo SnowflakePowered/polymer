@@ -2,7 +2,7 @@
 
 use crate::{ControllerAssignmentSnapshot, ControllerManager, ControllerProfiles};
 use polymer_config::ast::{PortAssignment, PortAssignments};
-use polymer_config::input::{ControllerBindings, ProjectionMode, SourceSelector, VirtualPort};
+use polymer_config::input::{SourceSelector, VirtualPort};
 use polymer_controllers::{ControllerMapping, ControllerTarget, ControllerTopology};
 use polymer_input::InputHub;
 use polymer_pluginhost::{
@@ -12,10 +12,7 @@ use polymer_pluginhost::{
 };
 use polymer_scraping::Package;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::{BTreeMap, HashMap},
-    sync::Arc,
-};
+use std::{collections::BTreeMap, sync::Arc};
 
 #[derive(Clone, Debug)]
 pub struct ConfigurationDefaults {
@@ -37,7 +34,6 @@ pub struct DefaultGamepad {
     pub port: Option<VirtualPort>,
     pub layout: String,
     pub force_mouse: bool,
-    pub mapping: HashMap<String, String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -110,8 +106,6 @@ pub struct LaunchGroupRequest {
 pub struct LaunchPortRequest {
     pub index: usize,
     pub layout: String,
-    #[serde(default)]
-    pub mapping: HashMap<String, String>,
 }
 
 pub struct ConfiguredSelection {
@@ -207,6 +201,7 @@ pub(crate) fn prepare_api_with_sources(
     sources: &InputHub,
     controller_profiles: &ControllerProfiles,
     controller_assignments: &ControllerAssignmentSnapshot,
+    launchable: &str,
 ) -> Result<serde_json::Value, String> {
     package
         .prepare_launch()
@@ -236,7 +231,7 @@ pub(crate) fn prepare_api_with_sources(
         .viewer
         .gamepads
         .iter()
-        .map(|gamepad| resolved_controller(gamepad, sources, &controller_manager))
+        .map(|gamepad| resolved_controller(gamepad, sources, &controller_manager, Some(launchable)))
         .collect::<Result<Vec<_>, _>>()?;
     let plugin = plugins
         .plugin::<dyn EmulatorPluginInstance>(&emulator)
@@ -272,6 +267,7 @@ fn resolved_controller(
     gamepad: &DefaultGamepad,
     sources: &InputHub,
     controllers: &ControllerManager,
+    game: Option<&str>,
 ) -> Result<ControllerMapping, String> {
     let port = gamepad
         .port
@@ -287,34 +283,7 @@ fn resolved_controller(
             .map(|(_, device)| device),
         Some(SourceSelector::KeyboardMouse) | None => None,
     };
-    let (projection_mode, mut mapping) = if let Some(device) = &device {
-        let profile = controllers.mapping_for_device(device, &gamepad.layout);
-        (profile.mode, profile.mapping.into_iter().collect())
-    } else {
-        (ProjectionMode::Position, HashMap::new())
-    };
-
-    if device.is_none()
-        && let Some(layout) = polymer_controllers::layout::InputLayout::get(&gamepad.layout)
-    {
-        for (target, source) in layout.default_gamepad_bindings() {
-            mapping.insert(target.to_string(), source.to_string());
-        }
-    }
-
-    // Explicit launch mappings always win, including `disabled`.
-    if device.is_none() {
-        mapping.extend(gamepad.mapping.iter().map(|(target, source)| {
-            (
-                target.clone(),
-                if source == "disabled" {
-                    "none".to_owned()
-                } else {
-                    source.clone()
-                },
-            )
-        }));
-    }
+    let profile = controllers.resolved_profile(device.as_ref(), game, port, &gamepad.layout);
     Ok(ControllerMapping {
         target: ControllerTarget {
             group: port.group.clone(),
@@ -329,8 +298,9 @@ fn resolved_controller(
             .map(polymer_controllers::ControllerDevice::from_descriptor),
         mouse: gamepad.force_mouse,
         layout: gamepad.layout.clone(),
-        projection_mode,
-        mapping: ControllerBindings::try_from_strings(mapping)?,
+        projection_mode: profile.mode,
+        orientation: profile.orientation,
+        mapping: profile.bindings(),
         pointer: polymer_controllers::topology::PointerBinding::default(),
     })
 }
@@ -558,7 +528,6 @@ fn validate_assignments(
                         .map_err(|_| format!("{} controller index is too large.", group.name))?,
                 )),
                 layout: port.layout,
-                mapping: port.mapping,
             });
         }
         if !layouts.is_empty() {

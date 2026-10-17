@@ -41,6 +41,7 @@ use crate::{
 };
 
 mod actor;
+mod cable;
 mod connection;
 mod discovery;
 mod initialization;
@@ -120,6 +121,7 @@ pub struct BluetoothActor {
     wake_tasks: HashMap<DeviceAddr, JoinHandle<()>>,
     pairing_task: Option<JoinHandle<Result<()>>>,
     event_task: Option<JoinHandle<()>>,
+    cable_task: Option<JoinHandle<()>>,
     shutdown_complete: bool,
 }
 
@@ -132,6 +134,9 @@ impl Drop for BluetoothActor {
             task.abort();
         }
         if let Some(task) = &self.event_task {
+            task.abort();
+        }
+        if let Some(task) = &self.cable_task {
             task.abort();
         }
     }

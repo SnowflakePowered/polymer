@@ -1,17 +1,18 @@
 use consolespec::input::BindingKey;
 use parking_lot::{RwLock, RwLockReadGuard};
-use polymer_config::input::ProjectionMode;
+use polymer_config::input::{ControllerBindings, Orientation, ProjectionMode};
 use polymer_controllers::{
     layout::InputLayout,
     mapping::{HostSample, Mapping},
     topology::{InputTopology, PointerBinding, PointerMode, PointerSource, RemapMode},
 };
-use polymer_input::{GamepadReport, PointerFlags, PointerKind, PointerReport};
+use polymer_input::{GamepadReport, PointerFlags, PointerKind, PointerReport, SensorReport};
 use std::{collections::BTreeMap, str::FromStr};
 
 struct CompiledPort {
     mapping: Option<Mapping>,
     pointer: PointerBinding,
+    orientation: Orientation,
 }
 
 #[derive(Default)]
@@ -44,20 +45,19 @@ impl TopologyState {
                     RemapMode::Custom => Some(ProjectionMode::Custom),
                     RemapMode::Passthrough => None,
                 };
-                let bindings = port
-                    .bindings
-                    .iter()
-                    .filter_map(|(target, source)| {
+                let bindings =
+                    ControllerBindings::new(port.bindings.iter().filter_map(|(target, source)| {
                         Some((
                             BindingKey::from_str(target).ok()?,
                             source
                                 .as_ref()
                                 .and_then(|source| BindingKey::from_str(source).ok()),
                         ))
-                    })
-                    .collect::<Vec<_>>();
+                    }));
                 mode.map_or(Some(None), |mode| {
-                    Mapping::compile(layout, mode, &bindings).ok().map(Some)
+                    Mapping::compile(layout, mode, port.orientation, &bindings)
+                        .ok()
+                        .map(Some)
                 })
                 .map(|mapping| {
                     (
@@ -65,6 +65,7 @@ impl TopologyState {
                         CompiledPort {
                             mapping,
                             pointer: port.pointer,
+                            orientation: port.orientation,
                         },
                     )
                 })
@@ -131,6 +132,24 @@ impl TopologyState {
                 selected
             }
             PointerMode::AbsoluteScreen => PointerReport::default(),
+        }
+    }
+
+    pub fn sensor(&self, player: u8, sensor: SensorReport) -> SensorReport {
+        let horizontal = self
+            .0
+            .read()
+            .ports
+            .get(&player)
+            .is_some_and(|port| port.orientation == Orientation::Horizontal);
+        if !horizontal {
+            return sensor;
+        }
+        let rotate = |[x, y, z]: [f32; 3]| [-z, y, x];
+        SensorReport {
+            accelerometer: rotate(sensor.accelerometer),
+            gyroscope: rotate(sensor.gyroscope),
+            ..sensor
         }
     }
 

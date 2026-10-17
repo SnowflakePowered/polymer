@@ -13,6 +13,7 @@ pub use commands::{EmulatorRecipients, FrontendCommands, FrontendRecipients, Inp
 use crate::ControllerProfiles;
 use crate::{ConfigurationDefaults, LibraryService};
 use parking_lot::{Mutex, RwLock};
+use polymer_config::input::gamepad::StandardGamepad;
 use polymer_deno::polymer::{
     ApiFuture, ConsoleStorage, InstanceToken, Library, PolymerHost, PolymerNotification,
     PolymerNotificationSender,
@@ -106,6 +107,10 @@ impl ControllerApiState {
         controllers["layouts"] =
             serde_json::to_value(polymer_controllers::layout::InputLayout::all())
                 .unwrap_or_default();
+        controllers["pad"] = serde_json::json!({
+            "buttons": StandardGamepad::BUTTONS,
+            "axes": StandardGamepad::axis_sources().collect::<Vec<_>>(),
+        });
         *self.controller_assignments.write() = assignments;
         let revision = state["revision"]
             .as_u64()
@@ -822,6 +827,7 @@ impl PolymerHost for FrontendServices {
                 &sources,
                 &profiles,
                 &assignments,
+                &launchable_id,
             )?;
             prepared["launchSet"] =
                 Value::Array(discs.iter().map(|(record, _)| record.clone()).collect());
@@ -864,25 +870,47 @@ impl PolymerHost for FrontendServices {
     fn plugin_options(&self, plugin: String) -> ApiFuture<Result<Value, String>> {
         let handle = self.plugins.handle();
         Box::pin(async move {
-            handle.options(&plugin).await.map(Value::Object).map_err(|error| error.message)
+            handle
+                .options(&plugin)
+                .await
+                .map(Value::Object)
+                .map_err(|error| error.message)
         })
     }
 
-    fn set_plugin_option(&self, plugin: String, key: String, value: Value) -> ApiFuture<Result<(), String>> {
+    fn set_plugin_option(
+        &self,
+        plugin: String,
+        key: String,
+        value: Value,
+    ) -> ApiFuture<Result<(), String>> {
         let handle = self.plugins.handle();
         Box::pin(async move {
-            handle.set_option(&plugin, &key, value).await.map_err(|error| error.message)
+            handle
+                .set_option(&plugin, &key, value)
+                .await
+                .map_err(|error| error.message)
         })
     }
 
     fn plugin_cache_size(&self, plugin: String, key: String) -> ApiFuture<Result<u64, String>> {
         let handle = self.plugins.handle();
-        Box::pin(async move { handle.cache_size(&plugin, &key).await.map_err(|error| error.message) })
+        Box::pin(async move {
+            handle
+                .cache_size(&plugin, &key)
+                .await
+                .map_err(|error| error.message)
+        })
     }
 
     fn clear_plugin_cache(&self, plugin: String, key: String) -> ApiFuture<Result<(), String>> {
         let handle = self.plugins.handle();
-        Box::pin(async move { handle.clear_cache(&plugin, &key).await.map_err(|error| error.message) })
+        Box::pin(async move {
+            handle
+                .clear_cache(&plugin, &key)
+                .await
+                .map_err(|error| error.message)
+        })
     }
 
     fn invoke_plugin(

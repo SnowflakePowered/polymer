@@ -4,6 +4,8 @@
 [3DS_LAYOUT]
 "analog.slider.x+" = "trigger.left"
 "analog.slider.x-" = "trigger.left"
+"button.a"         = "button.b"
+"button.b"         = "button.a"
 
 [A2600_PADDLE_CONTROLLER]
 "analog.rotary.x+" = "analog.stick.left.x+"
@@ -39,6 +41,10 @@
 "button.8"         = "keyboard"
 "button.9"         = "keyboard"
 
+[DSI_LAYOUT]
+"button.a" = "button.b"
+"button.b" = "button.a"
+
 [DUALSENSE_CONTROLLER]
 "button.0" = "button.5"
 "button.1" = "button.0"
@@ -51,9 +57,19 @@
 "analog.slider.x-" = "analog.stick.left.x-"
 
 [GAMECUBE_CONTROLLER]
+"button.b" = "button.x"
 "button.l" = "trigger.left"
 "button.r" = "trigger.right"
+"button.x" = "button.b"
 "button.z" = "button.r"
+
+[GB_LAYOUT]
+"button.a" = "button.b"
+"button.b" = "button.a"
+
+[GBA_LAYOUT]
+"button.a" = "button.b"
+"button.b" = "button.a"
 
 [GEN6_CONTROLLER]
 "button.c" = "button.l"
@@ -93,11 +109,20 @@
 "button.0" = "button.x"
 
 [N64_CONTROLLER]
+"button.b"            = "button.x"
 "button.z"            = "trigger.right"
 "directional.right.e" = "analog.stick.right.x+"
 "directional.right.n" = "analog.stick.right.y-"
 "directional.right.s" = "analog.stick.right.y+"
 "directional.right.w" = "analog.stick.right.x-"
+
+[NDS_LAYOUT]
+"button.a" = "button.b"
+"button.b" = "button.a"
+
+[NES_CONTROLLER]
+"button.a" = "button.b"
+"button.b" = "button.a"
 
 [PCFX_CONTROLLER]
 "button.0" = "trigger.left"
@@ -113,7 +138,17 @@
 "button.c" = "trigger.left"
 "button.z" = "trigger.right"
 
+[SNES_CONTROLLER]
+"button.a" = "button.b"
+"button.b" = "button.a"
+"button.x" = "button.y"
+"button.y" = "button.x"
+
 [SWITCH_2_JOYCONS_CONTROLLER]
+"button.a"         = "button.b"
+"button.b"         = "button.a"
+"button.x"         = "button.y"
+"button.y"         = "button.x"
 "pointer.right"    = "none"
 "pointer.right.x+" = "none"
 "pointer.right.x-" = "none"
@@ -124,20 +159,40 @@
 "button.0" = "button.x"
 "button.1" = "button.y"
 
+[SWITCH_2_PRO_CONTROLLER]
+"button.a" = "button.b"
+"button.b" = "button.a"
+"button.x" = "button.y"
+"button.y" = "button.x"
+
 [SWITCH_2_RIGHT_JOYCON_CONTROLLER]
 "button.0" = "button.l"
 "button.1" = "trigger.left"
 "button.2" = "button.0"
 
+[SWITCH_JOYCONS_CONTROLLER]
+"button.a" = "button.b"
+"button.b" = "button.a"
+"button.x" = "button.y"
+"button.y" = "button.x"
+
 [SWITCH_LEFT_JOYCON_CONTROLLER]
 "button.0" = "button.x"
 "button.1" = "button.y"
+
+[SWITCH_PRO_CONTROLLER]
+"button.a" = "button.b"
+"button.b" = "button.a"
+"button.x" = "button.y"
+"button.y" = "button.x"
 
 [SWITCH_RIGHT_JOYCON_CONTROLLER]
 "button.0" = "button.l"
 "button.1" = "trigger.left"
 
 [VB_CONTROLLER]
+"button.a"            = "button.b"
+"button.b"            = "button.a"
 "directional.right.e" = "analog.stick.right.x+"
 "directional.right.n" = "analog.stick.right.y-"
 "directional.right.s" = "analog.stick.right.y+"
@@ -166,6 +221,18 @@
 "pointer.x-"           = "analog.stick.left.x-"
 "pointer.y+"           = "analog.stick.left.y-"
 "pointer.y-"           = "analog.stick.left.y+"
+
+[WIIU_DRC_CONTROLLER]
+"button.a" = "button.b"
+"button.b" = "button.a"
+"button.x" = "button.y"
+"button.y" = "button.x"
+
+[WIIU_PRO_CONTROLLER]
+"button.a" = "button.b"
+"button.b" = "button.a"
+"button.x" = "button.y"
+"button.y" = "button.x"
 
 [WS_LAYOUT]
 "button.0" = "button.x"

@@ -52,6 +52,7 @@ impl BluetoothActor {
             address,
             transport: identity.transport,
             profile_id: controller.id(),
+            vendor_product: controller.vendor_product(&identity),
             link_key: None,
             link_key_type: None,
             adapter_index: (identity.transport == TransportKind::Ble)
@@ -150,6 +151,7 @@ impl BluetoothActor {
             address,
             transport: identity.transport,
             profile_id: profile_id.clone(),
+            vendor_product,
             link_key: None,
             link_key_type: None,
             adapter_index: (identity.transport == TransportKind::Ble)
@@ -262,7 +264,9 @@ impl BluetoothActor {
         };
         attach_result?;
         let mut transport: Box<dyn Transport> = Box::new(hid);
-        let vendor_product = controller.vendor_product(&identity);
+        let vendor_product = controller
+            .vendor_product(&identity)
+            .or(record.vendor_product);
         let mut controller_session = controller.connect(&options);
         if let Err(error) = controller_session.synchronize(transport.as_mut()).await {
             let _ = transport.disconnect().await;

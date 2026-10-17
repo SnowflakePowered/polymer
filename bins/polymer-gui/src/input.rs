@@ -74,9 +74,13 @@ impl InputRouter {
     ) -> Result<Self, String> {
         let directories =
             polymer_library::Directories::discover().map_err(|error| error.to_string())?;
+        let held_devices = Arc::<dashmap::DashSet<String>>::default();
         let sdl = Arc::new(
-            polymer_input_sdl3::Sdl3Backend::new(Default::default())
-                .map_err(|error| error.to_string())?,
+            polymer_input_sdl3::Sdl3Backend::new(polymer_input_sdl3::Sdl3Config {
+                held_devices: held_devices.clone(),
+                ..Default::default()
+            })
+            .map_err(|error| error.to_string())?,
         );
         hub.register_backend(sdl.clone())
             .map_err(|error| error.to_string())?;
@@ -86,6 +90,7 @@ impl InputRouter {
         .map_err(|error| error.to_string())?;
         let bluetooth_config = polymer_bluetooth::ManagerConfig {
             store: Arc::new(bluetooth_store),
+            held_devices,
             ..Default::default()
         };
         let bluetooth = Arc::new(
@@ -440,6 +445,7 @@ impl InputRouter {
         &mut self,
         machine: &str,
         topology: &ControllerTopology,
+        launchable: Option<String>,
     ) -> Result<(), String> {
         let transaction =
             topology.input_transaction(machine, self.configuration_snapshot().revision)?;
@@ -452,7 +458,7 @@ impl InputRouter {
                 .map_err(|error| error.to_string())?;
         }
         self.topology = Some(wire);
-        self.controllers.initialize(topology.clone())?;
+        self.controllers.initialize(topology.clone(), launchable)?;
         self.keyboard.configure(topology);
         self.rebuild_input_hooks(topology)
     }

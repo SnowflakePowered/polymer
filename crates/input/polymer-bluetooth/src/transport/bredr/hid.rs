@@ -337,10 +337,20 @@ impl BrEdrHid {
             .security_events
             .take()
             .unwrap_or_else(|| self.host.events());
-        let key = self
+        let key = match self
             .host
             .authenticate(handle, self.addr, true, events)
-            .await?;
+            .await
+        {
+            Err(Error::HciStatus { status: 0x06, .. }) if self.keys.get(self.addr)?.is_some() => {
+                self.keys.remove(self.addr)?;
+                let events = self.host.events();
+                self.host
+                    .authenticate(handle, self.addr, true, events)
+                    .await?
+            }
+            result => result?,
+        };
         self.persist(key)
     }
 

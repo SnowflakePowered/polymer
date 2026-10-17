@@ -7,7 +7,7 @@ use async_trait::async_trait;
 
 use crate::{
     AddressKind, DeviceAddr, Error, Result, TransportKind,
-    devices::ProfileId,
+    devices::{ProfileId, VendorProductId},
     store::{ControllerRecord, ControllerStore},
     transport::bredr::LinkKey,
 };
@@ -231,6 +231,10 @@ impl CablePairing {
             address,
             transport,
             profile_id: session.identity().profile_id.clone(),
+            vendor_product: Some(VendorProductId::new(
+                session.identity().vendor_id,
+                session.identity().product_id,
+            )),
             // Do not carry stale keys from a previous pairing into a cable bond.
             link_key: verified.link_key.as_ref().map(|key| key.value),
             link_key_type: verified.link_key.as_ref().map(|key| key.key_type),

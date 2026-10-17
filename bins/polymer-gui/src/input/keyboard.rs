@@ -1,4 +1,4 @@
-use polymer_config::input::{ProjectionMode, SourceSelector};
+use polymer_config::input::SourceSelector;
 use polymer_controllers::ControllerTopology;
 use polymer_controllers::{
     layout::InputLayout,
@@ -24,13 +24,13 @@ impl KeyboardInput {
                     return None;
                 }
                 let layout = InputLayout::get(&port.layout)?;
-                let bindings = port
-                    .mapping
-                    .iter()
-                    .filter(|_| port.projection_mode == ProjectionMode::Custom)
-                    .map(|(target, source)| (*target, source.copied()))
-                    .collect::<Vec<_>>();
-                let mapping = Mapping::compile(layout, port.projection_mode, &bindings).ok()?;
+                let mapping = Mapping::compile(
+                    layout,
+                    port.projection_mode,
+                    port.orientation,
+                    &port.mapping,
+                )
+                .ok()?;
                 Some((port.gamepad, mapping))
             })
             .collect();
