@@ -3,6 +3,7 @@ import type { ConfigurationLayoutOption } from "@polymer-fe/frontend";
 import { useShell } from "../../app/shell";
 import { DropdownField, Field, Hero, NumberField, Page, PlayBar, PlayButton, SliderField, Tabs, TextField, ToggleField } from "../../ui";
 import { platformName } from "../library/platform";
+import { PortMapping } from "./PortMapping";
 import "./details.css";
 
 type Value = boolean | number | string | null;
@@ -33,7 +34,7 @@ export function DetailsPage() {
     const artifact = (await volume?.artifacts.list())?.find(item => item.id === title);
     return artifact?.icons.find(icon => /^data:application\/x-(3ds|wii)-banner/.test(icon));
   });
-  const layouts = new Map(window.Polymer.controllers.layouts.map(layout => [String(layout.id), String(layout.name)]));
+  const layouts = new Map(window.Polymer.controllers.layouts.map(layout => [layout.id, layout.name === layout.id ? "Layout" : layout.name]));
   const tabs = createMemo(() => [
     { id: "emulation", title: "Emulation" },
     { id: "controllers", title: "Controllers" },
@@ -65,10 +66,11 @@ export function DetailsPage() {
         </Show>
         <Show when={tab() === "controllers"}>
           <Show when={emulator()?.groups.length} fallback={<Field label="No controller ports" description="This emulator does not take controller input." />}>
-            <For each={emulator()!.groups}>{(group, groupIndex) => <For each={group.ports}>{(port, portIndex) =>
+            <For each={emulator()!.groups}>{(group, groupIndex) => <For each={group.ports}>{(port, portIndex) => <>
               <DropdownField label={`${emulator()!.groups.length > 1 ? `${group.name} · ` : ""}Port ${port.index + 1}`} value={port.selectedLayout}
                 options={port.layouts.map(value => ({ value, label: layouts.get(value) ?? value }))} onChange={value => shell.selectLayout(groupIndex(), portIndex(), value)} />
-            }</For>}</For>
+              <Show when={shell.state.launchableId}>{launchable => <PortMapping launchable={launchable()} group={group.name} port={port.index} slot={emulator()!.groups.slice(0, groupIndex()).reduce((count, earlier) => count + earlier.ports.length, 0) + port.index} layoutId={port.selectedLayout} />}</Show>
+            </>}</For>}</For>
           </Show>
         </Show>
         <Show when={group()} keyed>{current => <>

@@ -25,6 +25,7 @@ function Controllers() {
   });
   const shell = useShell();
   return <><Field label="Controller order" description="Connect controllers and choose which player each one is."><Button onClick={() => shell.update("menu", "order")}>Change order</Button></Field>
+  <Field label="Button mapping" description="Rebind buttons, sticks and keys for each controller."><Button onClick={() => shell.navigate("/mapping")}>Edit mapping</Button></Field>
   <h3 class="vp-section-title">Connected</h3>
   <Show when={devices().length} fallback={<Field label="No controllers" description="Connect a controller to see it here." />}>
     <For each={devices()}>{device => <Field label={device.name} description={device.connected ? device.index === null ? "Connected" : `Player ${device.index + 1}` : "Not connected"}>

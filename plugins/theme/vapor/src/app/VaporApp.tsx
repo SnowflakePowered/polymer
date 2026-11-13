@@ -10,6 +10,7 @@ import { GamePage } from "../pages/game/GamePage";
 import { MainMenu } from "../pages/menu/MainMenu";
 import { StoragePage } from "../pages/storage/StoragePage";
 import { SavesPage } from "../pages/saves/SavesPage";
+import { MappingPage } from "../pages/controllers/MappingPage";
 import { ControllerOrderModal } from "../pages/controllers/ControllerOrderModal";
 import { ShaderModal } from "../pages/game/ShaderModal";
 import { SaveStatesModal } from "../pages/game/SaveStatesModal";
@@ -66,6 +67,7 @@ export function VaporApp() {
     <Route path="/library" component={LibraryPage} />
     <Route path="/details" component={DetailsPage} />
     <Route path="/settings" component={SettingsPage} />
+    <Route path="/mapping" component={MappingPage} />
     <Route path="/storage" component={StoragePage} />
     <Route path="/saves" component={SavesPage} />
     <Route path="/downloads" component={JobsPage} />
