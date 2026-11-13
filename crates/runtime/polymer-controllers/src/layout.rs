@@ -3,8 +3,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 use consolespec::input::{Alignment, AnalogClass, BindingKey, Component, Sign};
-use polymer_config::input::{ControllerBindings, Orientation, ProjectionMode};
-use polymer_input::GamepadButton;
+use polymer_config::input::{ControllerBindings, InputSource, Orientation, ProjectionMode};
+use polymer_input::{GamepadButton, KeyCode};
 
 use crate::model::{self, Control, Sensor};
 use crate::projection::{Projection, Target};
@@ -52,6 +52,7 @@ impl Cluster {
 pub struct InputLayout {
     pub id: String,
     pub name: String,
+    pub consoles: Vec<String>,
     pub elements: Vec<InputElement>,
     pub horizontal: bool,
     #[serde(skip)]
@@ -84,9 +85,14 @@ impl InputLayout {
             .collect();
         let keys = elements.iter().map(|element| element.key).collect();
         let name = spec.name().unwrap_or_else(|| spec.id()).to_owned();
+        let consoles = consolespec::MachineSpec::all()
+            .filter(|machine| machine.input_groups().any(|group| group.accepts(spec.id())))
+            .map(|machine| machine.name().to_owned())
+            .collect();
         Self {
             id: spec.id().to_owned(),
             name,
+            consoles,
             horizontal: Projection::horizontal().has_layout(spec.id()),
             elements,
             clusters,
@@ -179,25 +185,25 @@ impl InputLayout {
         let mut bindings = ControllerBindings::default();
         if mode != ProjectionMode::Custom {
             for (target, source) in self.default_gamepad_bindings() {
-                bindings.insert(target, Some(source));
+                bindings.insert(target, Some(InputSource::Pad(source)));
             }
         }
         if mode == ProjectionMode::Name {
             for (target, source) in self.named_face_bindings() {
-                bindings.insert(target, Some(source));
+                bindings.insert(target, Some(InputSource::Pad(source)));
             }
         }
         if mode != ProjectionMode::Custom && orientation == Orientation::Horizontal {
             for (target, source) in Projection::horizontal().entries(&self.id) {
                 match source {
-                    Target::Key(source) => bindings.insert(target, Some(source)),
+                    Target::Key(source) => bindings.insert(target, Some(InputSource::Pad(source))),
                     Target::None => bindings.insert(target, None),
                     Target::Both(..) | Target::Transport(_) => {}
                 }
             }
         }
         for (target, source) in overrides.iter() {
-            bindings.insert(*target, source.copied());
+            bindings.insert(*target, source.cloned());
         }
         bindings
     }
@@ -227,17 +233,63 @@ impl InputLayout {
                 return Err(format!("input layout {} has no element {target}", self.id));
             }
             if let Some(source) = source {
-                let binding = self.custom_binding(*target, *source).ok_or_else(|| {
+                self.validate_source(*target, source)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_source(&self, target: BindingKey, source: &InputSource) -> Result<(), String> {
+        let control = self.projected_control(target);
+        let accepts_button = matches!(control, Some(Control::Button(_)));
+        let accepts_axis = self.accepts_axis_binding(target);
+        match source {
+            InputSource::Pad(key) => {
+                let binding = self.custom_binding(target, *key).ok_or_else(|| {
                     format!("input source '{source}' is not a physical gamepad expression")
                 })?;
-                if matches!(binding, InputBinding::Axis { .. })
-                    && !self.accepts_axis_binding(*target)
-                {
+                if matches!(binding, InputBinding::Axis { .. }) && !accepts_axis {
                     return Err(format!("element {target} does not accept an axis binding"));
+                }
+            }
+            InputSource::Key(code) => {
+                if KeyCode::new(code).as_str() == "Unidentified" {
+                    return Err(format!("unknown keyboard code '{code}'"));
+                }
+                if !self.custom_binding_targets().any(|key| key == target) {
+                    return Err(format!("element {target} does not accept a key binding"));
+                }
+            }
+            InputSource::MouseButton(index) => {
+                if *index >= 8 || !accepts_button {
+                    return Err(format!("element {target} does not accept '{source}'"));
+                }
+            }
+            InputSource::MouseDelta(_) | InputSource::MousePosition(_) => {
+                if !accepts_axis {
+                    return Err(format!("element {target} does not accept '{source}'"));
                 }
             }
         }
         Ok(())
+    }
+
+    pub fn keyboard_bindings(&self) -> impl Iterator<Item = (BindingKey, InputSource)> + '_ {
+        let defaults = KeyboardMapping::from_toml(EMBEDDED_DEFAULT_KEYBOARD_MAPPING)
+            .expect("the embedded keyboard mapping is valid");
+        defaults
+            .bindings
+            .into_iter()
+            .filter_map(|(canonical, code)| {
+                let key = self.resolve(canonical)?;
+                self.custom_binding_targets()
+                    .any(|target| target == key)
+                    .then(|| (key, InputSource::Key(code)))
+            })
+    }
+
+    pub fn axis_inverted(&self, target: BindingKey) -> bool {
+        self.projected_key(target).is_some_and(Self::negative)
     }
 
     pub fn custom_source(&self, target: BindingKey, binding: &InputBinding) -> Option<BindingKey> {

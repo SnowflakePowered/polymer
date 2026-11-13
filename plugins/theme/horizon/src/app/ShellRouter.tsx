@@ -6,6 +6,7 @@ import { StoragePage } from "../features/storage/StoragePage";
 import { SavesPage } from "../features/saves/SavesPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
 import { ControllersPage } from "../features/controllers/ControllersPage";
+import { MappingPage } from "../features/controllers/MappingPage";
 import { LibraryPage } from "../features/library/LibraryPage";
 import { GameDetailsPage } from "../features/details/GameDetailsPage";
 import { GameLayout } from "../features/game/GameLayout";
@@ -32,6 +33,7 @@ export function ShellRouter() {
     <Route path="/saves" component={SavesPage} />
     <Route path="/storage" component={StoragePage} />
     <Route path="/controllers" component={ControllersPage} />
+    <Route path="/controllers/mapping" component={MappingPage} />
     <Route path="/settings" component={SettingsPage} />
     <Route path="/game" component={GameLayout}>
       <Route path="/launching" component={LaunchingPage} />

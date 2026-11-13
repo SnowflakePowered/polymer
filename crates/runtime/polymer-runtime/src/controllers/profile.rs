@@ -32,6 +32,8 @@ pub(super) enum MappingScope {
         launchable: String,
         group: String,
         port: u8,
+        #[serde(default)]
+        source: Option<SourceSelector>,
     },
 }
 
@@ -136,8 +138,13 @@ impl GameProfile {
         }
     }
 
-    fn response(&self, layout: &InputLayout, stored: bool) -> serde_json::Value {
-        let resolved = self.over(MappingProfile::DEFAULT);
+    fn response(
+        &self,
+        layout: &InputLayout,
+        stored: bool,
+        base: MappingProfile,
+    ) -> serde_json::Value {
+        let resolved = self.over(base);
         serde_json::json!({
             "mode": self.mode,
             "orientation": self.orientation,
@@ -169,6 +176,7 @@ impl ControllerManager {
                     SourceSelector::KeyboardMouse => None,
                 });
                 let profile = self.resolved_profile(
+                    source.as_ref(),
                     descriptor.as_ref(),
                     self.game.as_deref(),
                     &port.port,
@@ -200,14 +208,17 @@ impl ControllerManager {
 
     pub(crate) fn resolved_profile(
         &self,
+        source: Option<&SourceSelector>,
         device: Option<&DeviceDescriptor>,
         game: Option<&str>,
         port: &VirtualPort,
         layout: &str,
     ) -> MappingProfile {
-        let base = device.map_or(MappingProfile::UNPROFILED, |device| {
-            self.profile_for(device, layout)
-        });
+        let base = match (device, source) {
+            (Some(device), _) => self.profile_for(device, layout),
+            (None, Some(SourceSelector::KeyboardMouse)) => self.keyboard_profile(layout),
+            (None, _) => MappingProfile::UNPROFILED,
+        };
         let key = game.map(|launchable| InputGameKey {
             launchable: launchable.to_owned(),
             group: port.group.clone(),
@@ -218,6 +229,36 @@ impl ControllerManager {
             Some(game) => game.over(base),
             None => base,
         }
+    }
+
+    fn base_profile(&self, source: Option<&SourceSelector>, layout: &str) -> MappingProfile {
+        match source {
+            Some(SourceSelector::KeyboardMouse) => self.keyboard_profile(layout),
+            Some(SourceSelector::Device { device_id }) => self
+                .descriptor(device_id)
+                .map_or(MappingProfile::DEFAULT, |device| {
+                    self.profile_for(&device, layout)
+                }),
+            None => MappingProfile::DEFAULT,
+        }
+    }
+
+    fn keyboard_profile(&self, layout_id: &str) -> MappingProfile {
+        let mut profile = self
+            .mappings
+            .get("keyboardMouse", layout_id)
+            .unwrap_or(MappingProfile::UNPROFILED);
+        if profile.mode != ProjectionMode::Custom
+            && let Some(layout) = InputLayout::get(layout_id)
+        {
+            let mut overrides = layout
+                .keyboard_bindings()
+                .map(|(target, source)| (target.to_string(), source.to_string()))
+                .collect::<BTreeMap<_, _>>();
+            overrides.extend(profile.overrides);
+            profile.overrides = overrides;
+        }
+        profile
     }
 
     pub fn projection_mode(&self, device: &DeviceDescriptor, layout: &str) -> ProjectionMode {
@@ -260,6 +301,9 @@ impl ControllerManager {
     ) -> Result<serde_json::Value, String> {
         let layout = Self::layout(layout_id)?;
         Ok(match scope {
+            MappingScope::Source {
+                source: SourceSelector::KeyboardMouse,
+            } => self.keyboard_profile(&layout.id).response(layout),
             MappingScope::Source { source } => self
                 .mappings
                 .get(&self.source_identity(source), &layout.id)
@@ -269,12 +313,15 @@ impl ControllerManager {
                 launchable,
                 group,
                 port,
+                source,
             } => {
                 let key = Self::game_key(launchable, group, *port, layout);
                 let game = self.mappings.games.get(&key).map(|game| game.clone());
-                game.as_ref()
-                    .unwrap_or(&GameProfile::default())
-                    .response(layout, game.is_some())
+                game.as_ref().unwrap_or(&GameProfile::default()).response(
+                    layout,
+                    game.is_some(),
+                    self.base_profile(source.as_ref(), &layout.id),
+                )
             }
         })
     }
@@ -346,14 +393,16 @@ impl ControllerManager {
                 launchable,
                 group,
                 port,
+                source,
             } => {
                 let key = Self::game_key(&launchable, &group, port, layout);
+                let base = self.base_profile(source.as_ref(), &layout.id);
                 let game = GameProfile {
                     mode: update.mode,
                     orientation: update.orientation,
                     overrides: update.overrides,
                 };
-                let response = game.response(layout, true);
+                let response = game.response(layout, true, base);
                 let stored = InputGameOverride {
                     key: key.clone(),
                     mode: game.mode.map(MappingProfile::stored_mode),
@@ -404,8 +453,10 @@ impl ControllerManager {
                 launchable,
                 group,
                 port,
+                source,
             } => {
                 let key = Self::game_key(&launchable, &group, port, layout);
+                let base = self.base_profile(source.as_ref(), &layout.id);
                 let write = async move {
                     store
                         .remove_game_override(&key)
@@ -416,7 +467,7 @@ impl ControllerManager {
                 };
                 Ok((
                     Box::pin(write),
-                    GameProfile::default().response(layout, false),
+                    GameProfile::default().response(layout, false, base),
                 ))
             }
         }

@@ -23,7 +23,7 @@ export const DialogParts = { ...ArkDialog, Root: DialogRoot, Content: DialogCont
 export type DialogProps = ParentProps<{ open: boolean; onOpenChange(open: boolean): void; title: JSX.Element; description?: string; actions?: JSX.Element; class?: string; initialFocus?: () => HTMLElement | null; returnFocus?: () => HTMLElement | null | undefined; pending?: boolean; onAction?: (action: InputAction) => boolean }>;
 export function Dialog(props: DialogProps) {
   return <DialogRoot open={props.open} onOpenChange={details => { if (details.open || !props.pending) props.onOpenChange(details.open); }} initialFocusEl={props.initialFocus} closeOnInteractOutside={!props.pending} closeOnEscape={!props.pending}>
-    <OverlayPortal><ArkDialog.Backdrop class="hz-scrim" /><ArkDialog.Positioner class="hz-dialog-positioner"><DialogContent class={props.class} onAction={props.onAction} returnFocus={props.returnFocus}>
+    <OverlayPortal><ArkDialog.Backdrop class="hz-scrim" /><ArkDialog.Positioner class="hz-dialog-positioner"><DialogContent class={`${props.class?.includes("hz-side-panel") ? "" : "hz-dialog-modal "}${props.class ?? ""}`} onAction={props.onAction} returnFocus={props.returnFocus}>
       <ArkDialog.Title class="hz-dialog-title">{props.title}</ArkDialog.Title><Show when={props.description}><ArkDialog.Description class="hz-description">{props.description}</ArkDialog.Description></Show>
       <div class="hz-dialog-body">{props.children}</div><Show when={props.actions}><div class="hz-actions">{props.actions}</div></Show>
     </DialogContent></ArkDialog.Positioner></OverlayPortal>

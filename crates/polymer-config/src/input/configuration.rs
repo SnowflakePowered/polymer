@@ -1,3 +1,4 @@
+use super::source::InputSource;
 use consolespec::input::BindingKey;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use std::{collections::HashMap, fmt, str::FromStr};
@@ -29,14 +30,14 @@ pub enum Orientation {
 /// A `None` source explicitly disables the target rather than falling back to
 /// the layout's default projection.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ControllerBindings(HashMap<BindingKey, Option<BindingKey>>);
+pub struct ControllerBindings(HashMap<BindingKey, Option<InputSource>>);
 
 impl ControllerBindings {
-    pub fn new(bindings: impl IntoIterator<Item = (BindingKey, Option<BindingKey>)>) -> Self {
+    pub fn new(bindings: impl IntoIterator<Item = (BindingKey, Option<InputSource>)>) -> Self {
         Self(bindings.into_iter().collect())
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&BindingKey, Option<&BindingKey>)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&BindingKey, Option<&InputSource>)> {
         self.0
             .iter()
             .map(|(target, source)| (target, source.as_ref()))
@@ -50,7 +51,7 @@ impl ControllerBindings {
         self.0.contains_key(&target)
     }
 
-    pub fn insert(&mut self, target: BindingKey, source: Option<BindingKey>) {
+    pub fn insert(&mut self, target: BindingKey, source: Option<InputSource>) {
         self.0.insert(target, source);
     }
 
@@ -71,7 +72,7 @@ impl ControllerBindings {
                 let target = BindingKey::from_str(&target).map_err(|error| error.to_string())?;
                 let source = match source.as_str() {
                     "none" => None,
-                    _ => Some(BindingKey::from_str(&source).map_err(|error| error.to_string())?),
+                    _ => Some(InputSource::from_str(&source)?),
                 };
                 Ok((target, source))
             })

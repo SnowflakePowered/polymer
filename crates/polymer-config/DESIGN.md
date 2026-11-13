@@ -1773,11 +1773,17 @@ does not change:
 | keyboard | `key.<code>`, DOM `KeyboardEvent.code` (as `DEFAULT.kb.toml`) |
 | mouse | `mouse.button.<n>`, `mouse.delta.x`, `mouse.position.y` |
 
-`BindingKey` belongs to consolespec, so the source side becomes a Polymer
+`BindingKey` belongs to consolespec, so the source side is a Polymer
 `InputSource` enum in `polymer-config/src/input`, replacing `Option<BindingKey>`
-in `ControllerBindings`. The hook builds the existing `Source::Key`,
-`Source::MouseButton`, and `AxisInput::{KeyPair, MouseDelta, MousePosition}`
-variants from it.
+in `ControllerBindings`. A key source drives a button or one half of a stick
+axis, so two keys on opposite halves cancel; `mouse.button.<n>` drives a button;
+`mouse.delta.*` and `mouse.position.*` drive an axis. A key or mouse override
+replaces the default keyboard binding for its target, and `none` removes it.
+
+The `keyboardMouse` source resolves to Position plus `DEFAULT.kb.toml` expressed
+as explicit `key.*` overrides, so the editor shows real bindings before anything
+is saved. A gamepad port still gets the embedded keyboard defaults for the
+targets it does not override.
 
 #### Scopes and resolution
 

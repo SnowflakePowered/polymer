@@ -283,7 +283,13 @@ fn resolved_controller(
             .map(|(_, device)| device),
         Some(SourceSelector::KeyboardMouse) | None => None,
     };
-    let profile = controllers.resolved_profile(device.as_ref(), game, port, &gamepad.layout);
+    let profile = controllers.resolved_profile(
+        gamepad.source.as_ref(),
+        device.as_ref(),
+        game,
+        port,
+        &gamepad.layout,
+    );
     Ok(ControllerMapping {
         target: ControllerTarget {
             group: port.group.clone(),
