@@ -20,6 +20,7 @@ function Volume(props: { volume: ConsoleStorageVolume; installs: Job[]; bootstra
   const [recovering, setRecovering] = createSignal(false);
   const [inspection, { refetch }] = createResource(() => [props.volume, props.revision] as const, ([volume]) => volume.inspect());
   const checked = (): StorageInspection | undefined => inspection.loading ? undefined : inspection();
+  const needsSetup = () => props.bootstrap && checked()?.minimal === false;
   const total = () => (checked()?.artifacts ?? []).reduce((sum, artifact) => sum + artifact.byteLength, 0);
   const run = (action: () => Promise<unknown>) => props.run(async () => { await action(); await refetch(); });
   const remove = () => run(async () => { const removal = plan(); if (removal && !removal.affected.length) await props.volume.artifacts.uninstall(removal); setPlan(undefined); });
@@ -30,8 +31,8 @@ function Volume(props: { volume: ConsoleStorageVolume; installs: Job[]; bootstra
     <Field label={props.volume.label ?? "Internal NAND"} description={inspection.error ? message(inspection.error) : `${checked()?.artifacts.length ?? "…"} titles · ${size(total())}`} icon={<Icon name="storage" />}>
       <Show when={inspection.loading}><Throbber size="small" /></Show>
     </Field>
-    <Show when={props.bootstrap || shell.state.draft?.platform === props.volume.platform}><div class="vp-actions">
-      <Show when={props.bootstrap}><Button disabled={props.busy || checked()?.dirty} onClick={() => void run(() => props.volume.bootstrap())}>Complete setup</Button></Show>
+    <Show when={needsSetup() || shell.state.draft?.platform === props.volume.platform}><div class="vp-actions">
+      <Show when={needsSetup()}><Button disabled={props.busy || checked()?.dirty} onClick={() => void run(() => props.volume.bootstrap())}>Complete setup</Button></Show>
       <Show when={shell.state.draft?.platform === props.volume.platform}><Button primary disabled={props.busy || checked()?.dirty} onClick={() => void shell.launch()}>Continue launch</Button></Show>
     </div></Show>
     <Show when={props.installs.length}><h3 class="vp-section-title">Installing</h3><For each={props.installs}>{install =>

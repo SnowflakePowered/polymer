@@ -1,0 +1,48 @@
+@layer horizon {
+.horizon-mapping-shell { display: flex; height: 100%; color: var(--hz-text); background: var(--hz-surface); }
+.horizon-mapping-screen { min-width: 0; flex: 1; }
+.horizon-mapping-icon { width: 2.4rem; height: 2.4rem; flex: none; }
+.horizon-mapping-layout { display: grid; grid-template-columns: 20rem minmax(0, 1fr); gap: 0; align-items: stretch; }
+.horizon-mapping-sources { background: var(--hz-panel); padding: 1rem 0; min-height: 24rem; }
+.horizon-mapping-overview { display: flex; flex-direction: column; gap: 1.5rem; padding: 1rem 3rem; min-width: 0; }
+.horizon-outline-preview { width: min(22rem, 100%); aspect-ratio: 500 / 370; margin: 0 auto; color: var(--hz-text); }
+.horizon-outline-preview svg { width: 100%; height: 100%; }
+.horizon-mapping-actions { display: flex; flex-direction: column; gap: .5rem; }
+.horizon-mapping-controls { display: flex; flex-wrap: wrap; gap: 1.5rem; align-items: end; }
+.horizon-mapping-editing { display: flex; flex-direction: column; gap: 1rem; }
+.horizon-mapping-editing-actions { display: flex; flex-direction: column; align-items: center; gap: .75rem; }
+.horizon-mapping-editing-actions .hz-button { width: min(35rem, 100%); min-height: 4.5rem; border-radius: .4rem; font-size: 1.25rem; justify-content: center; }
+.horizon-button-guide { position: relative; width: 100%; }
+.horizon-guide-outline { position: absolute; pointer-events: none; color: var(--hz-text); }
+.horizon-guide-outline svg { width: 100%; height: 100%; }
+.horizon-guide-lines { position: absolute; inset: 0; pointer-events: none; }
+.horizon-callout { font: inherit; cursor: pointer; position: absolute; transform: translate(-50%, -50%); display: inline-flex; align-items: center; justify-content: center; gap: .3rem; padding: 0 .35rem; box-sizing: border-box; border-radius: .2rem; background: #111; color: #fff; border: 2px solid var(--hz-text); }
+.horizon-callout[data-changed] { border-color: var(--hz-action); }
+.horizon-callout .hz-button-glyph { width: auto; height: calc(var(--chip-height, 2.6rem) * .7); }
+.horizon-callout kbd { font: inherit; font-size: .9em; min-width: 1.4em; padding: .1em .3em; border: 1.5px solid #fff; border-radius: .35em; text-align: center; }
+.horizon-source-cluster { display: grid; grid-template-columns: repeat(3, auto); gap: 1px; }
+.horizon-source-cluster > :first-child { grid-column: 2; grid-row: 1; }
+.horizon-source-cluster > :not(:first-child) { grid-row: 2; }
+.horizon-callout .horizon-source-cluster .hz-button-glyph { height: calc(var(--chip-height, 2.6rem) * .38); }
+.horizon-binding-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.horizon-binding-group { background: var(--hz-panel); padding: .5rem; }
+.horizon-binding-group h3 { margin: .5rem 1rem; color: var(--hz-muted); font-size: .8em; font-weight: 500; }
+.horizon-binding-row { font: inherit; color: inherit; background: none; border: 0; width: 100%; cursor: pointer; display: flex; align-items: center; justify-content: space-between; padding: .4rem 1rem; }
+.horizon-binding-row[data-changed] > span:first-child { color: var(--hz-action); }
+.horizon-binding-row .horizon-callout { position: static; transform: none; min-width: 2.6rem; height: 2.6rem; }
+.horizon-capture-current, .horizon-capture-cancel { display: flex; align-items: center; gap: .75rem; margin: .75rem 0 0; }
+.horizon-capture-chip { position: static; transform: none; min-width: 3rem; height: 3rem; cursor: default; }
+.horizon-capture-target { width: 1.2em; height: 1.2em; vertical-align: -.2em; }
+.horizon-capture-cancel .hz-button-glyph { width: 2rem; height: 2rem; }
+.horizon-layout-picker { display: flex; flex-direction: column; gap: .5rem; padding: .5rem; border-radius: var(--hz-radius-panel); background: var(--hz-panel); }
+.horizon-layout-picker .hz-field { grid-template-columns: 1fr; }
+.horizon-layout-results { display: flex; height: calc(100vh - 44rem); min-height: 8rem; flex-direction: column; gap: .25rem; overflow-y: auto; scrollbar-width: none; }
+.horizon-layout-results .hz-description { margin: .75rem 1rem; }
+.horizon-layout-result { display: flex; min-height: 3rem; flex: none; align-items: center; justify-content: space-between; gap: 1rem; padding: .5rem 1rem; border: 0; border-radius: var(--hz-radius-card); color: var(--hz-text); background: transparent; font: inherit; text-align: left; cursor: pointer; }
+.horizon-layout-controller { color: var(--hz-muted); text-align: right; }
+.horizon-layout-result:hover { background: var(--hz-panel); }
+.horizon-layout-result[aria-current="true"] { color: var(--hz-action); background: var(--hz-surface); }
+.horizon-layout-result[aria-current="true"] .horizon-layout-controller { color: inherit; }
+.horizon-port-mapping-actions { display: flex; gap: 1rem; margin-top: .75rem; }
+.horizon-mapping-dialog { width: min(72rem, 92vw); }
+}

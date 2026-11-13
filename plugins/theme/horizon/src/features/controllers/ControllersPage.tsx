@@ -11,14 +11,14 @@ const PLAYER_LIGHTS = ["1000", "1100", "1110", "1111", "1001", "1010", "1011", "
 const shellLayout = css({ display: "flex", height: "100%", color: "text", bg: "surface" });
 const screen = css({ minWidth: "0", flex: "1" });
 const headerIcon = css({ width: "2.4rem", height: "2.4rem", flex: "none" });
-const layout = css({ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 16rem", gap: "1.5rem", alignItems: "start" });
+const layout = css({ display: "flex", flexDirection: "column", justifyContent: "space-between", gap: "2rem", minHeight: "calc(100vh - 12rem)" });
 const grid = css({ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: "1.5rem 1rem", minHeight: "12rem", alignContent: "start" });
 const slot = css({ display: "flex", flexDirection: "column", alignItems: "center", gap: ".5rem", minWidth: "0", textAlign: "center", "& .hz-controller-illustration": { width: "6rem", height: "4.5rem" } });
 const lights = css({ display: "flex", gap: ".25rem", "& i": { width: ".55rem", height: ".55rem", bg: "track" }, "& i[data-lit]": { bg: "#3fd61c" } });
 const name = css({ maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: ".85em", color: "muted" });
 const battery = css({ display: "inline-flex", alignItems: "center", gap: ".25rem", fontSize: ".8em", color: "muted", "& > span": { position: "relative", width: "1.6rem", height: ".8rem", border: "2px solid currentColor", borderRadius: ".15rem", overflow: "hidden" }, "& > span > i": { position: "absolute", inset: "1px", right: "auto", bg: "text" }, "&[data-low] > span > i": { bg: "#f06a1d" }, "&[data-charging] > span > i": { bg: "#3fd61c" } });
 const empty = css({ gridColumn: "1 / -1", color: "muted", margin: "0" });
-const menu = css({ display: "flex", flexDirection: "column", gap: ".5rem", paddingLeft: "1.5rem", borderLeft: "1px solid token(colors.divider)", "& .hz-action-row": { padding: "1rem 1.5rem", borderRadius: "4px" } });
+const menu = css({ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "1rem", "& .hz-action-row": { minHeight: "4.5rem", padding: "1rem 1.5rem", border: "2px solid token(colors.text)", borderRadius: ".4rem", bg: "surface", justifyContent: "center", textAlign: "center" } });
 
 function BatteryMeter(props: { device: ManagedControllerDevice }) {
   return <Show when={props.device.battery?.level != null ? props.device.battery : null}>{state => <span class={battery} data-low={state().level! <= 20 || undefined} data-charging={state().charging || undefined} aria-label={`Battery ${state().level}%${state().charging ? ", charging" : ""}`}>
@@ -58,6 +58,7 @@ export function ControllersPage() {
       </section>
       <nav class={menu} aria-label="Controller actions">
         <ActionRow data-input-default onClick={() => setReordering(true)}>Change Grip/Order</ActionRow>
+        <ActionRow onClick={() => shell.navigate("/controllers/mapping")}>Button Mapping</ActionRow>
       </nav>
     </div>
     <Show when={reordering()}><ControllerReorder onClose={() => setReordering(false)} /></Show>

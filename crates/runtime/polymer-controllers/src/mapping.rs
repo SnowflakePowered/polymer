@@ -1,5 +1,7 @@
 use consolespec::input::{BindingKey, Component, Sign};
-use polymer_config::input::{ControllerBindings, Orientation, ProjectionMode};
+use polymer_config::input::{
+    ControllerBindings, InputSource, Orientation, PointerAxis, ProjectionMode,
+};
 use polymer_input::{GamepadButton, GamepadReport, KeyCode};
 use std::collections::BTreeSet;
 use std::fmt;
@@ -37,30 +39,13 @@ pub struct HostSample {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Source {
     Button(u8),
-    Key(KeyCode),
     MouseButton(u8),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PointerAxis {
-    X,
-    Y,
-}
-
-impl PointerAxis {
-    const fn index(self) -> usize {
-        match self {
-            Self::X => 0,
-            Self::Y => 1,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AxisInput {
     Axis(u8),
     Button(u8),
-    KeyPair(KeyCode, KeyCode),
     MouseDelta(PointerAxis),
     MousePosition(PointerAxis),
 }
@@ -83,6 +68,15 @@ impl AxisSource {
         }
     }
 
+    const fn pointer(source: AxisInput, invert: bool) -> Self {
+        Self {
+            source,
+            invert,
+            scale: 1.0,
+            dead_zone: 0.0,
+        }
+    }
+
     const fn button(source: u8) -> Self {
         Self {
             source: AxisInput::Button(source),
@@ -98,13 +92,6 @@ impl AxisSource {
             AxisInput::Button(index) => GamepadButton::from_wire(index).map_or(0, |button| {
                 (i32::from(gamepad.button_pressure(button)) * i32::from(i16::MAX) / 255) as i16
             }),
-            AxisInput::KeyPair(negative, positive) => {
-                match (host.keys.contains(negative), host.keys.contains(positive)) {
-                    (true, false) => i16::MIN,
-                    (false, true) => i16::MAX,
-                    _ => 0,
-                }
-            }
             AxisInput::MouseDelta(axis) => {
                 (host.delta[axis.index()].clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16
             }
@@ -145,7 +132,7 @@ enum Target {
 pub struct MappingError(String);
 
 impl MappingError {
-    fn invalid(target: BindingKey, source: BindingKey) -> Self {
+    fn invalid(target: BindingKey, source: impl fmt::Display) -> Self {
         Self(format!("cannot map input source {source} to {target}"))
     }
 }
@@ -178,10 +165,10 @@ impl Mapping {
             keys: Vec::new(),
         };
         for (target, source) in layout.resolved_bindings(mode, orientation, bindings).iter() {
-            mapping.bind_gamepad(layout, *target, source.copied())?;
+            mapping.bind(layout, *target, source)?;
         }
         if mode != ProjectionMode::Custom {
-            mapping.bind_keyboard(layout);
+            mapping.bind_keyboard(layout, bindings);
         }
         Ok(mapping)
     }
@@ -224,21 +211,13 @@ impl Mapping {
 
     pub fn consumes_key(&self, code: KeyCode) -> bool {
         self.keys.iter().any(|(candidate, _)| *candidate == code)
-            || self.axes.iter().flatten().any(|axis| {
-                matches!(axis.source, AxisInput::KeyPair(negative, positive) if negative == code || positive == code)
-            })
-            || self
-                .buttons
-                .iter()
-                .flatten()
-                .any(|source| matches!(source, Source::Key(candidate) if *candidate == code))
     }
 
-    fn bind_gamepad(
+    fn bind(
         &mut self,
         layout: &InputLayout,
         target_key: BindingKey,
-        source: Option<BindingKey>,
+        source: Option<&InputSource>,
     ) -> Result<(), MappingError> {
         let Some(target_control) = layout.projected_control(target_key) else {
             return Ok(());
@@ -247,6 +226,45 @@ impl Mapping {
             self.clear(target_control);
             return Ok(());
         };
+        let invalid = || MappingError::invalid(target_key, source);
+        match (source, target_control) {
+            (InputSource::Pad(key), _) => {
+                self.bind_gamepad(layout, target_key, target_control, *key)
+            }
+            (InputSource::Key(code), _) => {
+                let target = Self::target(layout, target_key).ok_or_else(invalid)?;
+                self.keys.push((KeyCode::new(code), target));
+                Ok(())
+            }
+            (InputSource::MouseButton(index), Control::Button(target)) => {
+                self.buttons[usize::from(target)] = Some(Source::MouseButton(*index));
+                Ok(())
+            }
+            (InputSource::MouseDelta(axis), Control::Axis(target)) => {
+                self.axes[usize::from(target)] = Some(AxisSource::pointer(
+                    AxisInput::MouseDelta(*axis),
+                    layout.axis_inverted(target_key),
+                ));
+                Ok(())
+            }
+            (InputSource::MousePosition(axis), Control::Axis(target)) => {
+                self.axes[usize::from(target)] = Some(AxisSource::pointer(
+                    AxisInput::MousePosition(*axis),
+                    layout.axis_inverted(target_key),
+                ));
+                Ok(())
+            }
+            _ => Err(invalid()),
+        }
+    }
+
+    fn bind_gamepad(
+        &mut self,
+        layout: &InputLayout,
+        target_key: BindingKey,
+        target_control: Control,
+        source: BindingKey,
+    ) -> Result<(), MappingError> {
         match (target_control, layout.custom_binding(target_key, source)) {
             (Control::Button(target), Some(InputBinding::Button { button })) => {
                 let Some(Control::Button(source)) = Control::from_key(button) else {
@@ -281,18 +299,20 @@ impl Mapping {
         }
     }
 
-    fn bind_keyboard(&mut self, layout: &InputLayout) {
+    fn bind_keyboard(&mut self, layout: &InputLayout, overrides: &ControllerBindings) {
         let Ok(mapping) = KeyboardMapping::from_toml(EMBEDDED_DEFAULT_KEYBOARD_MAPPING) else {
             return;
         };
         for (canonical, code) in mapping.bindings {
-            let Some(target) = layout
+            let Some(key) = layout
                 .resolve(canonical)
-                .and_then(|key| Self::target(layout, key))
+                .filter(|key| !overrides.contains(*key))
             else {
                 continue;
             };
-            self.keys.push((KeyCode::new(&code), target));
+            if let Some(target) = Self::target(layout, key) {
+                self.keys.push((KeyCode::new(&code), target));
+            }
         }
     }
 
@@ -325,7 +345,7 @@ impl Mapping {
     fn pressed(source: Source, gamepad: &GamepadReport, host: &HostSample) -> bool {
         match source {
             Source::Button(index) => gamepad.buttons & (1 << index) != 0,
-            Source::Key(code) => host.keys.contains(code),
+
             Source::MouseButton(index) => host.mouse_buttons & (1 << index) != 0,
         }
     }

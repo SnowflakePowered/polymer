@@ -21,7 +21,7 @@
 .hz-details > div { display: flex; justify-content: space-between; gap: 1rem; padding: .35rem 0; }
 .hz-details dt { color: var(--hz-muted); } .hz-details dd { margin: 0; overflow-wrap: anywhere; }
 .hz-divider { border: 0; border-top: 1px solid var(--hz-divider); margin: 1rem 0; }
-.hz-button { display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center; gap: .5rem; min-height: 2.75rem; padding: .6rem 1rem; border: 1px solid var(--hz-divider); border-radius: var(--hz-radius); color: var(--hz-action); background: var(--hz-panel); font: inherit; white-space: nowrap; cursor: pointer; transition: background-color var(--hz-motion), box-shadow var(--hz-motion); }
+.hz-button { display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center; gap: .5rem; min-height: 2.75rem; padding: .6rem 1.6rem; border: 2px solid var(--hz-text); border-radius: .6rem; color: var(--hz-text); background: var(--hz-surface); font: inherit; white-space: nowrap; cursor: pointer; transition: background-color var(--hz-motion), box-shadow var(--hz-motion); }
 .hz-button[data-appearance='primary'] { background: var(--hz-action); color: var(--hz-on-action); border-color: var(--hz-action); }
 .hz-button[data-appearance='danger'], .hz-badge[data-danger] { color: var(--hz-danger); }
 .hz-button:hover:not(:disabled) { filter: brightness(.97); } .hz-button:active:not(:disabled) { transform: translateY(1px); }
@@ -38,6 +38,7 @@
 .hz-avatar { display: inline-grid; place-content: center; width: 3rem; height: 3rem; border-radius: 50%; overflow: hidden; background: var(--hz-panel); color: var(--hz-text); }
 .hz-avatar img { width: 100%; height: 100%; object-fit: cover; } .hz-cover-art { max-width: 100%; object-fit: contain; }
 .hz-tile { display: block; border: 0; border-radius: var(--hz-radius-card); overflow: hidden; padding: 0; background: var(--hz-panel); color: var(--hz-text); text-align: left; font: inherit; }
+.hz-tile img { pointer-events: none; }
 .hz-tile[data-selected] { box-shadow: inset 0 -4px var(--hz-action); }
 .hz-empty-slot { display: grid; min-height: 6rem; place-content: center; border: 1px dashed var(--hz-divider); border-radius: var(--hz-radius-card); color: var(--hz-muted); }
 .hz-player-badge, .hz-badge { display: inline-block; border-radius: .2rem; padding: .2rem .5rem; color: var(--hz-action); background: var(--hz-raised); font-size: .8em; }
@@ -68,6 +69,17 @@
 .hz-dialog { display: flex; flex-direction: column; width: min(36rem, 100%); max-height: calc(100vh - 4rem); padding: 1.5rem; border-radius: var(--hz-radius-panel); background: var(--hz-overlay); box-shadow: 0 1rem 2.5rem var(--hz-shadow); pointer-events: auto; }
 .hz-dialog-title { font-size: var(--hz-title); font-weight: 400; margin: 0 0 .75rem; padding-bottom: .75rem; border-bottom: 1px solid var(--hz-divider); }
 .hz-dialog-body { overflow: auto; min-height: 0; padding: .25rem; } .hz-dialog .hz-actions { flex: none; }
+.hz-dialog-modal { padding: 0; overflow: hidden; }
+.hz-dialog-modal > .hz-dialog-title { margin: 0; padding: 1.5rem 1.5rem .75rem; }
+.hz-dialog-modal > .hz-description { margin: 0; padding: 0 1.5rem; }
+.hz-dialog-modal > .hz-dialog-body { padding: 1rem 1.5rem 1.5rem; }
+.hz-dialog-modal > .hz-actions { flex-wrap: nowrap; gap: 0; padding: 0; border-top: 1px solid var(--hz-divider); }
+.hz-dialog-modal > .hz-actions > .hz-button { flex: 1 1 0; min-height: 3.5rem; border: 0; border-radius: 0; background: transparent; color: var(--hz-action); }
+.hz-dialog-modal > .hz-actions > .hz-button:first-child { border-bottom-left-radius: var(--hz-radius-panel); }
+.hz-dialog-modal > .hz-actions > .hz-button:last-child { border-bottom-right-radius: var(--hz-radius-panel); }
+.hz-dialog-modal > .hz-actions > .hz-button + .hz-button { border-left: 1px solid var(--hz-divider); }
+.hz-dialog-modal > .hz-actions > .hz-button[data-appearance='danger'] { color: var(--hz-danger); }
+.hz-dialog-modal > .hz-actions > .hz-button[data-appearance='primary'] { background: transparent; color: var(--hz-action); }
 .hz-side-panel { justify-self: end; height: 100%; max-height: 100%; border-radius: var(--hz-radius-panel) 0 0 var(--hz-radius-panel); }
 .hz-popover { padding: 1rem; border: 1px solid var(--hz-divider); border-radius: var(--hz-radius); background: var(--hz-overlay); box-shadow: 0 .5rem 1.5rem var(--hz-shadow); min-width: 16rem; }
 .hz-floating-panel { border: 1px solid var(--hz-divider); border-radius: var(--hz-radius-card); background: var(--hz-panel); box-shadow: 0 .5rem 1.5rem var(--hz-shadow); overflow: hidden; }

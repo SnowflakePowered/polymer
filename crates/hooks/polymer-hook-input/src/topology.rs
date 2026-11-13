@@ -1,6 +1,6 @@
 use consolespec::input::BindingKey;
 use parking_lot::{RwLock, RwLockReadGuard};
-use polymer_config::input::{ControllerBindings, Orientation, ProjectionMode};
+use polymer_config::input::{ControllerBindings, InputSource, Orientation, ProjectionMode};
 use polymer_controllers::{
     layout::InputLayout,
     mapping::{HostSample, Mapping},
@@ -51,7 +51,7 @@ impl TopologyState {
                             BindingKey::from_str(target).ok()?,
                             source
                                 .as_ref()
-                                .and_then(|source| BindingKey::from_str(source).ok()),
+                                .and_then(|source| InputSource::from_str(source).ok()),
                         ))
                     }));
                 mode.map_or(Some(None), |mode| {

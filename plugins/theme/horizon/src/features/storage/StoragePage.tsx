@@ -84,7 +84,10 @@ export function StoragePage() {
     onCleanup(() => window.Polymer.jobs.removeEventListener("jobchange", listener));
     void window.Polymer.jobs.list().then(jobs => setInstalls(jobs.filter(installing))).catch(reason => setError(String(reason)));
     void api.platforms().then(items => setPlatforms(items.map(item => item.platform))).catch(reason => setError(String(reason)));
-    void loadVolumes().catch(reason => setError(String(reason)));
+    void (async () => {
+      if (platform() && !await api.Storage.supports("nand", platform())) setPlatform("");
+      await loadVolumes();
+    })().catch(reason => setError(String(reason)));
   });
 
   const [artifactId, setArtifactId] = createSignal<string | null>(null);
@@ -106,7 +109,7 @@ export function StoragePage() {
       <Show when={current()}>{volume => <>
           <Show when={checked()?.dirty}><ErrorState message="This NAND has uncommitted changes. Recover it before launching or installing contents."><Button disabled={busy()} onClick={() => setConfirmRecover(true)}>Recover NAND…</Button></ErrorState></Show>
           <Show when={platforms().includes(platform()) || shell.model.draft?.platform === platform()}><ActionGroup>
-            <Show when={platforms().includes(platform())}><Button disabled={busy() || checked()?.dirty} onClick={() => void run(async () => { await volume().bootstrap(); })}>Complete setup</Button></Show>
+            <Show when={platforms().includes(platform()) && checked()?.minimal === false}><Button disabled={busy() || checked()?.dirty} onClick={() => void run(async () => { await volume().bootstrap(); })}>Complete setup</Button></Show>
             <Show when={shell.model.draft?.platform === platform()}><Button disabled={busy() || checked()?.dirty} onClick={() => shell.launchDraft()}>Continue launch</Button></Show>
           </ActionGroup></Show>
           <Section title="Installed titles"><Show when={checked()?.artifacts.length || pending().length} fallback={<Show when={checked()} fallback={<Spinner label="Checking NAND" />}><EmptyState title="No titles installed" description="Drag a title package onto your library to install it." /></Show>}>

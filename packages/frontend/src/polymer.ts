@@ -160,19 +160,20 @@ export type ControllerPlayer = {
 export type InputLayout = Readonly<{
   id: string;
   name: string;
+  consoles: readonly string[];
   horizontal: boolean;
   elements: readonly Readonly<{ id: string; key: string; label: string; kind: string }>[];
 }>;
 
 export type MappingScope =
   | Readonly<{ kind: "source"; source: InputSourceSelector }>
-  | Readonly<{ kind: "game"; launchable: string; group: string; port: number }>;
+  | Readonly<{ kind: "game"; launchable: string; group: string; port: number; source?: InputSourceSelector }>;
 
 /** `null` mode or orientation inherits: from the device at source scope (defaulting to Name and vertical), from the source profile at game scope. */
 export type InputMapping = Readonly<{
   mode?: ProjectionMode | null;
   orientation?: Orientation | null;
-  /** Logical input expression to physical input expression, or `none`. */
+  /** Layout target to source expression, or `none`. A source is a standard pad key (`button.a`), `key.<KeyboardEvent.code>`, `mouse.button.<n>`, `mouse.delta.<x|y>` or `mouse.position.<x|y>`. */
   overrides: Readonly<Record<string, string>>;
 }>;
 
