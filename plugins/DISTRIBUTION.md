@@ -111,7 +111,7 @@ claim scopes or to rotate or revoke keys; archives signed only by a removed key 
 Official repositories publish bare IDs. This repository's entry would be:
 
 ```toml
-repo = "chyyran/snowglass"
+repo = "SnowflakePowered/polymer"
 ref = "master"
 keys = ["…"]
 official = true
