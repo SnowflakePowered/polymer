@@ -67,6 +67,10 @@ where
         self.manifest.config()
     }
 
+    fn meta(&self) -> &polymer_pluginmanifest::PluginMeta {
+        self.manifest.meta()
+    }
+
     fn api(&self) -> &semver::VersionReq {
         self.manifest.api()
     }
