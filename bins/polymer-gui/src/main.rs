@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod baseui;
 mod cli;
 mod commands;
 #[cfg(windows)]
@@ -27,6 +28,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             polymer_composition_windows::WorkerWinRtApartment::uninitialize_current_thread,
         );
     let runtime = builder.build()?;
+    if cli::ShellArguments::pick_theme_requested() {
+        return baseui::BaseUi::run(&runtime);
+    }
     let runtime = std::sync::Arc::new(runtime);
     let system = actix::System::with_tokio_rt(|| runtime.clone());
     run(&runtime, &system)

@@ -18,6 +18,20 @@ struct PluginBlock {
     permissions: PluginPermissions,
     #[serde(default)]
     config: PluginConfig,
+    #[serde(default)]
+    meta: PluginMeta,
+}
+
+/// Human-facing description of a package from `[plugin.meta]`.
+#[derive(Debug, Default, Clone, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PluginMeta {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub author: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -176,6 +190,10 @@ impl<B> PluginManifest<B> {
 
     pub fn caches(&self) -> &[PluginCache] {
         &self.plugin.caches
+    }
+
+    pub fn meta(&self) -> &PluginMeta {
+        &self.plugin.meta
     }
 
     pub fn config(&self) -> &PluginConfig {

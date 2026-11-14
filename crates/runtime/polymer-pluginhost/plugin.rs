@@ -18,6 +18,8 @@ pub trait PluginInstance: Send + Sync + 'static {
 
     fn config(&self) -> &PluginConfig;
 
+    fn meta(&self) -> &polymer_pluginmanifest::PluginMeta;
+
     /// The host API versions the plugin supports.
     fn api(&self) -> &semver::VersionReq;
 

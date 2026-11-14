@@ -4,7 +4,7 @@ use std::{error::Error, fs};
 
 #[derive(Parser)]
 #[command(name = "polymer-gui", version, about)]
-struct ShellArguments {
+pub(crate) struct ShellArguments {
     /// Theme plugin ID (temporarily overrides localStorage selection).
     #[arg(long, value_name = "ID")]
     theme: Option<String>,
@@ -12,6 +12,34 @@ struct ShellArguments {
     /// Start and connect to the selected theme's development server.
     #[arg(long)]
     debug: bool,
+
+    /// Choose the theme in a standalone window, then start the shell with it.
+    #[arg(long)]
+    pick_theme: bool,
+}
+
+impl ShellArguments {
+    pub(crate) fn pick_theme_requested() -> bool {
+        Self::parse().pick_theme
+    }
+
+    pub(crate) fn discover_plugins(
+        directories: &polymer_library::Directories,
+    ) -> Result<PluginRegistry, Box<dyn Error>> {
+        let plugins = PluginRegistry::new();
+        let index = polymer_distribution::Index::read(&directories.plugin_index()).unwrap_or_else(|error| {
+            eprintln!("polymer: could not read the plugin index: {error}");
+            polymer_distribution::Index::default()
+        });
+        for (path, error) in &index.rejected {
+            eprintln!("polymer: skipping plugin index entry {}: {error}", path.display());
+        }
+        let search_paths = [std::env::current_dir()?.join("plugins"), directories.packages()];
+        for (path, error) in plugins.discover(&search_paths, &index) {
+            eprintln!("polymer: skipping plugin {}: {error}", path.display());
+        }
+        Ok(plugins)
+    }
 }
 
 pub struct ShellOptions {
@@ -27,18 +55,7 @@ pub struct ShellOptions {
 pub async fn parse() -> Result<ShellOptions, Box<dyn Error>> {
     let arguments = ShellArguments::parse();
     let directories = polymer_library::Directories::discover()?;
-    let plugins = PluginRegistry::new();
-    let index = polymer_distribution::Index::read(&directories.plugin_index()).unwrap_or_else(|error| {
-        eprintln!("polymer: could not read the plugin index: {error}");
-        polymer_distribution::Index::default()
-    });
-    for (path, error) in &index.rejected {
-        eprintln!("polymer: skipping plugin index entry {}: {error}", path.display());
-    }
-    let search_paths = [std::env::current_dir()?.join("plugins"), directories.packages()];
-    for (path, error) in plugins.discover(&search_paths, &index) {
-        eprintln!("polymer: skipping plugin {}: {error}", path.display());
-    }
+    let plugins = ShellArguments::discover_plugins(&directories)?;
     let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(std::path::Path::parent);

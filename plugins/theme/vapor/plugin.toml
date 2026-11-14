@@ -5,6 +5,10 @@ class = "theme"
 api = "^0.1"
 main = "dist/index.html"
 
+[plugin.meta]
+name = "Vapor"
+author = "chyyran"
+
 [theme]
 root = "dist"
 

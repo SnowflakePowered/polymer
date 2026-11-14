@@ -74,9 +74,25 @@ impl ApplicationHandler<crate::app::UserEvent> for EventLoopApplication<'_> {
         match event_loop.create_window(
             Window::default_attributes()
                 .with_title("Polymer")
+                .with_transparent(true)
                 .with_inner_size(LogicalSize::new(1280.0, 720.0)),
         ) {
-            Ok(window) => self.inner.accept_native_window(window),
+            Ok(window) => {
+                #[cfg(windows)]
+                if let Err(error) = window_vibrancy::apply_mica(&window, Some(true)) {
+                    tracing::warn!(%error, "polymer: could not apply the Mica backdrop");
+                }
+                #[cfg(target_os = "macos")]
+                if let Err(error) = window_vibrancy::apply_vibrancy(
+                    &window,
+                    window_vibrancy::NSVisualEffectMaterial::HudWindow,
+                    None,
+                    None,
+                ) {
+                    tracing::warn!(%error, "polymer: could not apply the window vibrancy");
+                }
+                self.inner.accept_native_window(window)
+            }
             Err(error) => {
                 self.inner.fail(error);
                 event_loop.exit();
