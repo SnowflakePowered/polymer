@@ -76,6 +76,7 @@ polymer-pack sign --key polymer.key dist/melonds-0.0.1.asar
 polymer-pack record --id melonds --url https://…/melonds-0.0.1.asar dist/melonds-0.0.1.asar
 polymer-pack verify                              # checks Polymer.toml
 polymer-pack verify --index polymer.toml --fetch # also downloads and checks every release
+polymer-pack check-index path/to/polymer-index   # checks a polymer-index checkout
 ```
 
 - `pack` validates the plugin as Polymer would load it, then archives it. A theme packs its

@@ -45,21 +45,28 @@ impl Verify {
             println!("{}: {} release(s)", listing.id, listing.release.len());
         }
         if let (true, Some(entry)) = (self.fetch, &entry) {
-            let keys = entry.public_keys();
-            let client = reqwest::blocking::Client::new();
-            for listing in &manifest.plugin {
-                for release in listing.release.iter().filter(|release| !release.yanked) {
-                    let file = client
-                        .get(&release.url)
-                        .send()?
-                        .error_for_status()?
-                        .bytes()?;
-                    listing.matches(release, &SignedArchive::split(&file)?.verify(&keys)?)?;
-                    println!(
-                        "{} {}: signature and contents verified",
-                        listing.id, release.version
-                    );
-                }
+            Self::releases(&manifest, entry)?;
+        }
+        Ok(())
+    }
+
+    /// Downloads every release that is not yanked and checks its signature against the keys of
+    /// `entry`, and its contents against the listing.
+    pub fn releases(manifest: &RepositoryManifest, entry: &IndexEntry) -> crate::Result<()> {
+        let keys = entry.public_keys();
+        let client = reqwest::blocking::Client::new();
+        for listing in &manifest.plugin {
+            for release in listing.release.iter().filter(|release| !release.yanked) {
+                let file = client
+                    .get(&release.url)
+                    .send()?
+                    .error_for_status()?
+                    .bytes()?;
+                listing.matches(release, &SignedArchive::split(&file)?.verify(&keys)?)?;
+                println!(
+                    "{} {}: signature and contents verified",
+                    listing.id, release.version
+                );
             }
         }
         Ok(())
