@@ -1,0 +1,62 @@
+name: Release plugin
+
+on:
+  workflow_dispatch:
+    inputs:
+      id:
+        description: Plugin ID in Polymer.toml
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install polymer-pack
+        run: cargo install --locked --path bins/polymer-pack
+
+      - name: Build the plugin
+        env:
+          ID: ${{ inputs.id }}
+        run: |
+          path="$(python3 -c 'import os, sys, tomllib; print(next(p["path"] for p in tomllib.load(open("Polymer.toml", "rb"))["plugin"] if p["id"] == os.environ["ID"]))')"
+          if [ -f "$path/package.json" ]; then
+            npm ci --prefix "$path"
+            npm run build --prefix "$path"
+          fi
+
+      - name: Pack and sign
+        id: pack
+        env:
+          ID: ${{ inputs.id }}
+          POLYMER_SIGNING_KEY: ${{ secrets.POLYMER_SIGNING_KEY }}
+        run: |
+          archive="$(polymer-pack pack --id "$ID" --out dist)"
+          polymer-pack sign "$archive"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          echo "tag=$(basename "$archive" .asar)" >> "$GITHUB_OUTPUT"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ steps.pack.outputs.tag }}" "${{ steps.pack.outputs.archive }}"
+
+      - name: Record
+        env:
+          ID: ${{ inputs.id }}
+        run: |
+          archive="${{ steps.pack.outputs.archive }}"
+          polymer-pack record --id "$ID" \
+            --url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${{ steps.pack.outputs.tag }}/$(basename "$archive")" \
+            "$archive"
+
+      - name: Commit the release
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "release ${{ steps.pack.outputs.tag }}"
+          git push

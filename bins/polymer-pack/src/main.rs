@@ -1,3 +1,4 @@
+mod index;
 mod keygen;
 mod pack;
 mod record;
@@ -29,6 +30,8 @@ enum Command {
     Record(record::Record),
     /// Checks Polymer.toml and, optionally, every release it lists.
     Verify(verify::Verify),
+    /// Checks a polymer-index checkout and, optionally, the repositories it registers.
+    CheckIndex(index::CheckIndex),
 }
 
 fn main() -> ExitCode {
@@ -38,6 +41,7 @@ fn main() -> ExitCode {
         Command::Sign(command) => command.run(),
         Command::Record(command) => command.run(),
         Command::Verify(command) => command.run(),
+        Command::CheckIndex(command) => command.run(),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
