@@ -46,6 +46,7 @@ struct ForwardingState {
     enabled: bool,
     connected: BTreeSet<PlayerIndex>,
     blocked_until_neutral: BTreeSet<PlayerIndex>,
+    holding: BTreeSet<PlayerIndex>,
 }
 
 impl ForwardingState {
@@ -153,25 +154,38 @@ impl InputIpcListener {
     /// Publishes an action-only SDL chord without consulting guest forwarding.
     pub fn activate_buttons(&self, player: PlayerIndex, buttons: u32) -> Result<(), String> {
         const HOLD_TIME: std::time::Duration = std::time::Duration::from_millis(50);
-        let handle = self.0.hub.lock();
-        let handle = handle
+        let hub = self
+            .0
+            .hub
+            .lock()
             .as_ref()
+            .map(|handle| handle.hub().clone())
             .ok_or_else(|| "input action endpoint is not attached".to_owned())?;
-        let device = handle
+        let device = hub
             .devices()
             .into_iter()
             .find_map(|(index, device)| (index == Some(player)).then_some(device))
             .ok_or_else(|| format!("input action player {} is not connected", player.get()))?;
-        let forwarding = self.0.forwarding.lock();
+        let enabled = {
+            let mut forwarding = self.0.forwarding.lock();
+            forwarding.holding.insert(player);
+            forwarding.enabled
+        };
         let mut publication = self.0.publication.lock();
-        if !forwarding.enabled {
+        if !enabled {
             publication.connect(player, &device);
         }
         publication.publish_action(player, buttons);
         drop(publication);
         std::thread::sleep(HOLD_TIME);
+        let mut forwarding = self.0.forwarding.lock();
+        forwarding.holding.remove(&player);
         let mut publication = self.0.publication.lock();
-        publication.publish_action(player, 0);
+        let live = forwarding.enabled && !forwarding.blocked_until_neutral.contains(&player);
+        match hub.state(player).filter(|_| live) {
+            Some(state) => publication.publish_state(player, &state),
+            None => publication.publish_action(player, 0),
+        }
         if !forwarding.enabled {
             publication.disconnect(player);
         }
@@ -188,15 +202,12 @@ impl InputIpcListener {
         spec: RawHidSpec,
     ) -> io::Result<RawHidChannel> {
         let channel = RawHidChannel::open(index, spec, self.0.hub.clone())?;
+        let hub = self.0.hub.lock().as_ref().map(|handle| handle.hub().clone());
         let mut forwarding = self.0.forwarding.lock();
         channel.set_capture(true);
         if forwarding.enabled {
-            let neutral = self
-                .0
-                .hub
-                .lock()
-                .as_ref()
-                .and_then(|handle| handle.hub().state(index))
+            let neutral = hub
+                .and_then(|hub| hub.state(index))
                 .is_some_and(|state| state.gamepad.buttons == 0);
             if neutral {
                 channel.set_capture(false);
@@ -295,7 +306,7 @@ impl InputListener for InputIpcListener {
                 self.0.publication.lock().disconnect(*index);
             }
             InputEvent::State { index, state, .. } => {
-                if !forwarding.accepts(*index, state) {
+                if forwarding.holding.contains(index) || !forwarding.accepts(*index, state) {
                     return;
                 }
                 if let Some(channel) = self.0.raw_hid.lock().get(index) {
