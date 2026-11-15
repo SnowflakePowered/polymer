@@ -16,11 +16,70 @@ pub(crate) struct ShellArguments {
     /// Choose the theme in a standalone window, then start the shell with it.
     #[arg(long)]
     pick_theme: bool,
+
+    /// Show the setup window for WinFsp and Bluetooth adapters, even when WinFsp is installed.
+    #[cfg(windows)]
+    #[arg(long)]
+    install_dependencies: bool,
+
+    #[cfg(windows)]
+    #[arg(long, hide = true, value_name = "PARENT_PID")]
+    winfsp_installer: Option<u32>,
+
+    #[cfg(windows)]
+    #[arg(
+        long,
+        hide = true,
+        value_name = "PARENT_PID",
+        requires = "winusb_device"
+    )]
+    winusb_installer: Option<u32>,
+
+    #[cfg(windows)]
+    #[arg(
+        long,
+        hide = true,
+        value_name = "PARENT_PID",
+        requires = "winusb_device"
+    )]
+    winusb_uninstaller: Option<u32>,
+
+    #[cfg(windows)]
+    #[arg(long, hide = true, value_name = "DEVICE_ID")]
+    winusb_device: Option<String>,
 }
 
 impl ShellArguments {
     pub(crate) fn pick_theme_requested() -> bool {
         Self::parse().pick_theme
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn dependencies_requested() -> bool {
+        Self::parse().install_dependencies
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn elevated_task() -> Option<(u32, crate::baseui::ElevatedTask)> {
+        use crate::baseui::ElevatedTask;
+        let arguments = Self::parse();
+        let device_id = arguments.winusb_device.unwrap_or_default();
+        let winusb = arguments.winusb_installer.map(|parent| {
+            (
+                parent,
+                ElevatedTask::InstallWinUsb {
+                    device_id: device_id.clone(),
+                },
+            )
+        });
+        let removal = arguments
+            .winusb_uninstaller
+            .map(|parent| (parent, ElevatedTask::RemoveWinUsb { device_id }));
+        arguments
+            .winfsp_installer
+            .map(|parent| (parent, ElevatedTask::InstallWinFsp))
+            .or(winusb)
+            .or(removal)
     }
 
     pub(crate) fn discover_plugins(

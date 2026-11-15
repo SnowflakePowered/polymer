@@ -129,6 +129,12 @@ impl ShellApplication {
         self.pending_window.is_none() && self.state.borrow().is_none() && self.error.is_none()
     }
 
+    pub(crate) fn titlebar(&self) -> bool {
+        self.options
+            .as_ref()
+            .is_none_or(|options| options.theme.titlebar())
+    }
+
     pub(crate) fn accept_native_window(&mut self, window: Window) {
         self.pending_window = Some(window);
     }

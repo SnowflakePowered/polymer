@@ -159,3 +159,12 @@ name = "Vapor"
 description = "The Vapor theme."
 authors = ["SnowflakePowered"]
 maintainers = ["chyyran"]
+
+[[plugin]]
+id = "mica"
+class = "theme"
+path = "plugins/theme/mica"
+name = "Mica"
+description = "The Mica theme."
+authors = ["SnowflakePowered"]
+maintainers = ["chyyran"]

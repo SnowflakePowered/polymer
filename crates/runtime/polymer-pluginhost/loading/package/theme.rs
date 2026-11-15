@@ -25,4 +25,8 @@ impl ThemePluginInstance for ThemePlugin {
     fn assets(&self) -> Option<&Path> {
         PluginManifest::assets(self)
     }
+
+    fn titlebar(&self) -> bool {
+        PluginManifest::titlebar(self)
+    }
 }
