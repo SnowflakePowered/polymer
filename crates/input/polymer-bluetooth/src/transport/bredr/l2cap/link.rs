@@ -12,7 +12,7 @@ use tokio::{
 
 use crate::{
     Error, Result,
-    transport::bredr::hci::{HciHost, L2capFrame},
+    transport::bredr::hci::{HciHost, L2capFrames},
 };
 
 use super::{
@@ -81,7 +81,7 @@ impl Link {
     pub fn new_with_frame_receiver(
         host: Arc<HciHost>,
         handle: u16,
-        frames: broadcast::Receiver<L2capFrame>,
+        frames: L2capFrames,
     ) -> Self {
         let (commands, receiver) = mpsc::channel(64);
         tokio::spawn(link_actor(
@@ -221,7 +221,7 @@ impl Drop for Channel {
 async fn link_actor(
     host: Arc<HciHost>,
     handle: u16,
-    mut frames: broadcast::Receiver<L2capFrame>,
+    mut frames: L2capFrames,
     command_sender: mpsc::WeakSender<LinkCommand>,
     mut commands: mpsc::Receiver<LinkCommand>,
 ) {
@@ -285,8 +285,21 @@ async fn link_actor(
                     }
                 }
             }
-            frame = frames.recv() => {
-                let Ok(frame) = frame else { continue; };
+            frame = async {
+                tokio::select! {
+                    biased;
+                    frame = frames.signals.recv() => frame,
+                    frame = frames.data.recv() => frame,
+                }
+            } => {
+                let frame = match frame {
+                    Ok(frame) => frame,
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::warn!(handle, skipped, "L2CAP frame stream lagged");
+                        continue;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => continue,
+                };
                 if frame.handle != handle { continue; }
                 let packet = match Packet::parse(&frame.pdu) { Ok(packet) => packet, Err(error) => { tracing::warn!(handle, %error, "invalid L2CAP PDU"); continue; } };
                 if packet.channel_id != SIGNALING_CID {
