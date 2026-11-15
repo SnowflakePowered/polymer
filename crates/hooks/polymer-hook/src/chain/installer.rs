@@ -52,7 +52,10 @@ macro_rules! __chain_hooks_installer {
                 while index != 0 {
                     index -= 1;
                     match self.terminals[index].uninstall() {
-                        Ok(()) => { self.terminals.remove(index); }
+                        Ok(()) => {
+                            self.terminals.remove(index);
+                            self.complete = false;
+                        }
                         Err(error) => { first_error.get_or_insert(error); }
                     }
                 }
@@ -104,7 +107,10 @@ macro_rules! __chain_hooks_installer {
                 while index != 0 {
                     index -= 1;
                     match self.terminals[index].uninstall() {
-                        Ok(()) => { self.terminals.remove(index); }
+                        Ok(()) => {
+                            self.terminals.remove(index);
+                            self.complete = false;
+                        }
                         Err(error) => { first_error.get_or_insert(error); }
                     }
                 }
