@@ -3,6 +3,8 @@ name = "polymer-distribution"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "Polymer plugin index, release manifests, and signed archives"
 
 [dependencies]
 asar.workspace = true

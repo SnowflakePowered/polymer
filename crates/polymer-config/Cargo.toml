@@ -3,6 +3,8 @@ name = "polymer-config"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "Emulator configuration definitions and output formats for Polymer"
 
 [dependencies]
 toml-spanner = { version = "1", features = ["derive"] }

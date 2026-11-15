@@ -2,7 +2,7 @@
 
 use crate::loading::{PluginCache, PluginConfig, PluginModuleLoader};
 
-pub use polymer_pluginmanifest::HostApi;
+pub use crate::host::HostApi;
 
 /// Runtime-neutral identity and package services shared by every plugin class.
 pub trait PluginInstance: Send + Sync + 'static {
