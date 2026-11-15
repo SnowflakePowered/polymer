@@ -46,6 +46,7 @@ impl ShellCoordinator {
             &options.controller_topology,
             options.launchable.clone(),
         ) {
+            self.input.clear_input_hooks();
             self.emit_instance_event(token, "error", &instance_events::error(&error));
             self.emit_instance_event(token, "closed", &serde_json::Value::Null);
             return Err(error);
@@ -54,6 +55,7 @@ impl ShellCoordinator {
             .input
             .configure_input_hooks(&options.hooks.input, &self.session)
         {
+            self.input.clear_input_hooks();
             self.emit_instance_event(token, "error", &instance_events::error(&error));
             self.emit_instance_event(token, "closed", &serde_json::Value::Null);
             return Err(error);
@@ -84,6 +86,7 @@ impl ShellCoordinator {
                 Ok(())
             }
             Err(error) => {
+                self.input.clear_input_hooks();
                 self.emit_instance_event(token, "error", &instance_events::error(&error));
                 self.emit_instance_event(token, "closed", &serde_json::Value::Null);
                 Err(error)
