@@ -290,7 +290,8 @@ impl InstanceLifecycle {
         // shut down. Those workers can be blocked in target-owned IPC while
         // the emulator is alive, which previously prevented close() from ever
         // reaching the process termination step.
-        if let Some(mut process) = self.guest.lock().take() {
+        let process = self.guest.lock().take();
+        if let Some(mut process) = process {
             let _ = process.terminate_tree_and_wait();
         }
         self.surfaces.shutdown();
