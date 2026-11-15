@@ -70,6 +70,12 @@ description = "Game Boy Advance emulation."
 authors = ["SnowflakePowered"]
 maintainers = ["chyyran"]
 
+[[plugin.release]]
+version = "0.0.1"
+api = "^0.1"
+url = "https://github.com/SnowflakePowered/polymer/releases/download/mgba-0.0.1/mgba-0.0.1.asar"
+yanked = false
+
 [[plugin]]
 id = "pcsx2"
 class = "emulator"
