@@ -1,25 +1,28 @@
 use std::{
     io::{self, BufRead, BufReader},
-    os::windows::process::CommandExt,
+    os::windows::{io::AsRawHandle, process::CommandExt},
     path::PathBuf,
     process::{Child, Command, Stdio},
 };
 
-use windows::Win32::System::Threading::CREATE_NO_WINDOW;
+use windows::Win32::{
+    Foundation::HANDLE,
+    System::Threading::{CREATE_NO_WINDOW, WaitForSingleObject},
+};
 
 pub struct GameBarWatcher {
-    // Retaining the handle lets us report premature watcher exits in a future
-    // health check. Dropping Child does not terminate the process on Windows.
-    _child: Child,
+    child: Child,
 }
 
 impl GameBarWatcher {
+    const SHUTDOWN_TIMEOUT_MS: u32 = 5_000;
+
     pub fn launch() -> io::Result<Self> {
         let executable = watcher_executable()?;
         let mut child = Command::new(&executable)
             .arg("--parent-pid")
             .arg(std::process::id().to_string())
-            .stdin(Stdio::null())
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .creation_flags(CREATE_NO_WINDOW.0)
@@ -45,7 +48,15 @@ impl GameBarWatcher {
             )));
         }
 
-        Ok(Self { _child: child })
+        Ok(Self { child })
+    }
+}
+
+impl Drop for GameBarWatcher {
+    fn drop(&mut self) {
+        drop(self.child.stdin.take());
+        let process = HANDLE(self.child.as_raw_handle());
+        unsafe { WaitForSingleObject(process, Self::SHUTDOWN_TIMEOUT_MS) };
     }
 }
 

@@ -14,6 +14,8 @@ mod launch;
 mod metrics;
 mod shell;
 mod theme;
+#[cfg(windows)]
+mod updater;
 mod window_manager;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -21,6 +23,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some((parent, task)) = cli::ShellArguments::elevated_task() {
         std::process::exit(task.run(parent));
     }
+    #[cfg(windows)]
+    updater::Updater::startup();
     let mut builder = tokio::runtime::Builder::new_multi_thread();
     builder.worker_threads(2).enable_all();
     #[cfg(windows)]
@@ -41,7 +45,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let runtime = std::sync::Arc::new(runtime);
     let system = actix::System::with_tokio_rt(|| runtime.clone());
-    run(&runtime, &system)
+    #[cfg(windows)]
+    let updater = updater::Updater::start();
+    run(&runtime, &system)?;
+    #[cfg(windows)]
+    if let Some(updater) = updater {
+        updater.apply_on_exit();
+    }
+    Ok(())
 }
 
 fn run(

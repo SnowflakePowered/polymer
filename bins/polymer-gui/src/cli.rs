@@ -62,7 +62,7 @@ impl ShellArguments {
     #[cfg(windows)]
     pub(crate) fn elevated_task() -> Option<(u32, crate::baseui::ElevatedTask)> {
         use crate::baseui::ElevatedTask;
-        let arguments = Self::parse();
+        let arguments = Self::try_parse().ok()?;
         let device_id = arguments.winusb_device.unwrap_or_default();
         let winusb = arguments.winusb_installer.map(|parent| {
             (
