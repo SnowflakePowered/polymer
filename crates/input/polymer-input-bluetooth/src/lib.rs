@@ -242,12 +242,15 @@ impl BluetoothBackend {
                     session_id,
                     ..
                 } => {
-                    let device = controllers
-                        .read()
-                        .get(controller_id)
-                        .and_then(|controller| {
-                            (controller.session == *session_id).then(|| controller.device.clone())
-                        });
+                    let device = {
+                        let mut controllers = controllers.write();
+                        match controllers.get(controller_id) {
+                            Some(controller) if controller.session == *session_id => controllers
+                                .remove(controller_id)
+                                .map(|controller| controller.device),
+                            _ => None,
+                        }
+                    };
                     if let Some(device) = device {
                         handle.disconnected(&device);
                     }
