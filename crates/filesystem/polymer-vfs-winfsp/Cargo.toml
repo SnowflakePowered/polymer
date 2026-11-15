@@ -11,6 +11,7 @@ path = "lib.rs"
 polymer-vfs.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+dashmap.workspace = true
 parking_lot.workspace = true
 winfsp = { version = "0.13.0", default-features = false, features = ["system", "windows-62"] }
 windows = { workspace = true, features = [
