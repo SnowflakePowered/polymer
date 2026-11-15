@@ -407,8 +407,9 @@ impl ShellCompositor {
         device: &RenderDevice,
     ) -> Result<bool, Box<dyn Error>> {
         if let Some(result) = self.raster.pending.take() {
-            self.apply_result(result)?;
+            let applied = self.apply_result(result);
             self.raster.worker.acknowledge_publication();
+            applied?;
         }
         let pixels_dirty = std::mem::take(&mut self.pixels_dirty);
         let Some(content) = self.content_update(surfaces, game_revision, device) else {
