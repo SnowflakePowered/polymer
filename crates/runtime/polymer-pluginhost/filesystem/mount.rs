@@ -44,6 +44,11 @@ impl FilesystemState {
         source: MountSource,
         permissions: Permissions,
     ) -> Result<VfsPathBuf, VfsError> {
+        if self.sealed && !(self.prepared.is_some() && matches!(source, MountSource::Bytes { .. })) {
+            return Err(VfsError::Unsupported(
+                "the launch filesystem is sealed; only mounted file contents can be replaced".into(),
+            ));
+        }
         match source {
             MountSource::Scratch => {
                 let ResourceHandle::Tree(handle) = self.scratch_resource()? else {
