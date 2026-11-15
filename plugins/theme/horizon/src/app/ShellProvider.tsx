@@ -3,7 +3,7 @@ import { LibraryState } from "@polymer-fe/frontend/library-state";
 import { useNavigate } from "@solidjs/router";
 import { batch, createEffect, onCleanup, onMount, type ParentProps } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
-import type { LaunchRequest, PackageConfiguration } from "@polymer-fe/frontend";
+import type { LaunchInstance, LaunchRequest, PackageConfiguration } from "@polymer-fe/frontend";
 import type { ControllerDevice } from "@polymer-fe/frontend";
 import { NotificationProvider } from "../components/notifications/NotificationProvider";
 import { ToastRegion } from "../components/notifications/ToastRegion";
@@ -86,6 +86,7 @@ export function ShellProvider(props: ParentProps) {
   const games = new GameLauncher(window.Polymer);
   const shaders = new PlatformShaders();
   let detection: AbortController | null = null;
+  let closingLaunch: LaunchInstance | null = null;
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
   const go = (path: string, replace = false) => navigate(path, { replace });
@@ -127,10 +128,12 @@ export function ShellProvider(props: ParentProps) {
   window.Polymer.controllers.addEventListener("playerchange", playersChanged);
 
   const prepare = async (path: string, emulator: string | undefined, destination: "details" | "launch") => {
-    if (window.Polymer.emulator.activeLaunch) {
-      fail(new DOMException("Close the active game before opening another one", "InvalidStateError"));
+    const active = window.Polymer.emulator.activeLaunch;
+    if (active && active !== closingLaunch) {
+      setModel("error", "Close the active game before opening another one");
       return;
     }
+    if (active) await active.closed.catch(() => {});
     detection?.abort();
     const preparation = new AbortController();
     detection = preparation;
@@ -187,6 +190,7 @@ export function ShellProvider(props: ParentProps) {
   const closeGame = () => {
     const launch = model.launch;
     if (!launch) return;
+    closingLaunch = launch;
     const path = model.draft?.path ?? null;
     shaders.stop();
     batch(() => {
