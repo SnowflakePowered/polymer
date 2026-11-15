@@ -159,7 +159,8 @@ impl CaptureWorkers {
         if let Some(acceptor) = self.acceptor.lock().take() {
             let _ = acceptor.join();
         }
-        for worker in self.connections.lock().drain(..) {
+        let workers = std::mem::take(&mut *self.connections.lock());
+        for worker in workers {
             let _ = worker.join();
         }
         self.shared.routes.clear();
@@ -322,11 +323,16 @@ fn receive_connection(
             let timeline = Arc::new(timeline);
             shared.timelines.insert(connection, timeline.clone());
             let watcher_shared = shared.clone();
-            connections.lock().push(
+            let mut workers = connections.lock();
+            if shared.stopping.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            workers.push(
                 thread::Builder::new()
                     .name(format!("polymer-runtime-frames-{connection}"))
                     .spawn(move || watcher_shared.watch_frames(connection, &timeline))?,
             );
+            drop(workers);
             socket.send(Message::StreamAccepted)?;
         }
     })();
