@@ -190,6 +190,7 @@ impl HubInner {
 
     pub(crate) fn try_auto_assign(&self, device: &DeviceId) {
         let index = {
+            let _topology = self.topology.write();
             let policy = *self.policy.read();
             if !policy.auto_assign || self.index_of(device).is_some() {
                 return;
@@ -207,11 +208,20 @@ impl HubInner {
             {
                 return;
             }
-            self.lowest_free()
+            let Some(index) = self.lowest_free() else {
+                return;
+            };
+            self.assignments.insert(index, device.clone());
+            index
         };
-        if let Some(index) = index {
-            let _ = self.assign(device, Some(index), false);
+        for listener in self.listeners() {
+            listener.on_input(InputEvent::Assigned {
+                device,
+                from: None,
+                to: Some(index),
+            });
         }
+        let _ = self.apply_managed_led(device, index);
     }
 
     pub(crate) fn try_auto_compose(&self) {
