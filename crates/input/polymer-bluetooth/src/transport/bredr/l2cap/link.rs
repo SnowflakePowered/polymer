@@ -238,6 +238,7 @@ async fn link_actor(
         tokio::select! {
             command = commands.recv() => {
                 let Some(command) = command else { break; };
+                discard_abandoned(&host, handle, &mut next_identifier, &mut pending, &mut accepts, &mut connection_ids, &mut configuration_ids).await;
                 match command {
                     LinkCommand::Open { psm, response } => {
                         if let Some(index) = stored_requests.iter().position(|request| request.psm == psm) {
@@ -295,6 +296,7 @@ async fn link_actor(
                     }
                     continue;
                 }
+                discard_abandoned(&host, handle, &mut next_identifier, &mut pending, &mut accepts, &mut connection_ids, &mut configuration_ids).await;
                 let signals = match Signal::parse_all(&packet.payload) { Ok(signals) => signals, Err(error) => { tracing::warn!(handle, %error, "invalid L2CAP signaling packet"); continue; } };
                 for signal in signals {
                     tracing::debug!(handle, ?signal, "received L2CAP signal");
@@ -377,6 +379,13 @@ async fn link_actor(
                                 continue;
                             }
                             connection_ids.remove(&identifier);
+                            if local_cid == 0 {
+                                if result == 0 {
+                                    let identifier = allocate_identifier(&mut next_identifier);
+                                    let _ = send_signal(&host, handle, Signal::DisconnectionRequest { identifier, destination_cid, source_cid }).await;
+                                }
+                                continue;
+                            }
                             if result != 0 || source_cid != local_cid {
                                 fail_pending(local_cid, Error::L2cap(format!("connection to PSM 0x{:04x} rejected with result 0x{result:04x}", pending.get(&local_cid).map_or(0, |p| p.psm))), &mut pending);
                                 continue;
@@ -515,6 +524,46 @@ async fn accept_request(
     };
     if let Err(error) = send_signal(host, handle, config).await {
         fail_pending(local_cid, error, pending);
+    }
+}
+
+async fn discard_abandoned(
+    host: &HciHost,
+    handle: u16,
+    next_identifier: &mut u8,
+    pending: &mut HashMap<u16, PendingChannel>,
+    accepts: &mut HashMap<u16, VecDeque<oneshot::Sender<Result<Channel>>>>,
+    connection_ids: &mut HashMap<u8, u16>,
+    configuration_ids: &mut HashMap<u8, u16>,
+) {
+    for waiters in accepts.values_mut() {
+        waiters.retain(|waiter| !waiter.is_closed());
+    }
+    let abandoned: Vec<u16> = pending
+        .iter()
+        .filter(|(_, channel)| channel.response.is_closed())
+        .map(|(local_cid, _)| *local_cid)
+        .collect();
+    for local_cid in abandoned {
+        let Some(channel) = pending.remove(&local_cid) else {
+            continue;
+        };
+        for cid in connection_ids
+            .values_mut()
+            .chain(configuration_ids.values_mut())
+            .filter(|cid| **cid == local_cid)
+        {
+            *cid = 0;
+        }
+        if channel.remote_cid != 0 {
+            let identifier = allocate_identifier(next_identifier);
+            let disconnect = Signal::DisconnectionRequest {
+                identifier,
+                destination_cid: channel.remote_cid,
+                source_cid: local_cid,
+            };
+            let _ = send_signal(host, handle, disconnect).await;
+        }
     }
 }
 
