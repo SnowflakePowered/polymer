@@ -369,6 +369,7 @@ impl Worker {
             let released = pad.path.as_ref().is_some_and(|path| held.contains(path));
             if released && pad.active {
                 handle.publish(&pad.device, &DeviceState::default());
+                handle.disconnected(&pad.device);
             }
             !released
         });
