@@ -6,37 +6,37 @@ use crate::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use std::time::Duration;
-use tokio::sync::Mutex;
+use tokio::{sync::Mutex, time::Instant};
 
 pub(super) struct Control {
-    channel: Mutex<(Channel, bool)>,
+    channel: Mutex<(Channel, Option<Instant>)>,
 }
 
 impl Control {
     pub(super) fn new(channel: Channel) -> Self {
         Self {
-            channel: Mutex::new((channel, false)),
+            channel: Mutex::new((channel, None)),
         }
     }
 
     async fn exchange(&self, request: Vec<u8>) -> Result<Bytes> {
         let mut guard = self.channel.lock().await;
-        let (channel, pending) = &mut *guard;
-        if *pending {
-            return Err(Error::Unsupported(
-                "HID control transaction lost synchronization; reconnect required",
-            ));
+        let (channel, owed_until) = &mut *guard;
+        if let Some(deadline) = *owed_until
+            && let Ok(owed) = tokio::time::timeout_at(deadline, channel.receive()).await
+        {
+            owed?;
         }
         // Leave poisoned on cancellation, timeout or I/O failure. A late ACK has
         // no transaction ID and must never complete the next command.
-        *pending = true;
+        *owed_until = Some(Instant::now() + Duration::from_secs(4));
         let reply = tokio::time::timeout(Duration::from_secs(2), async {
             channel.sender().send(Bytes::from(request), false).await?;
             channel.receive().await
         })
         .await
         .map_err(|_| Error::Timeout("HID control transaction"))??;
-        *pending = false;
+        *owed_until = None;
         Ok(reply)
     }
 }
