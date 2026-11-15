@@ -104,7 +104,7 @@ export class LibraryState {
     void this.load(this.games.length, PAGE_SIZE).finally(() => { this.loadingMore = false; });
   }
 
-  async import(path: string) {
+  async import(path: string | FileSystemHandle) {
     try {
       this.importChanged(await this.library.import({ path }));
     } catch (error) {
