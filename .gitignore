@@ -22,3 +22,4 @@ s*.log
 smoke-*.png
 /.tmp-dolphin-debug/
 bins/polymer-pack/target/
+/.claude/worktrees/
