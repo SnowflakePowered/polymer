@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use polymer_bluetooth::manager::{COMMAND_RESPONSE_TIMEOUT, SendRaw, SetExternalOwnership};
+use polymer_bluetooth::manager::{SendRaw, SetExternalOwnership};
 
 pub mod airmouse;
 pub mod decoder;
@@ -132,17 +132,9 @@ impl InputBackend for BluetoothBackend {
         let session = self
             .session_for(device)
             .ok_or_else(|| BackendError::Unavailable(device.to_string()))?;
-        let manager = self.manager.clone();
-        let report = report.to_vec();
-        tokio::spawn(async move {
-            let _ = manager
-                .actor
-                .send(SendRaw {
-                    session_id: session,
-                    bytes: report,
-                })
-                .timeout(COMMAND_RESPONSE_TIMEOUT)
-                .await;
+        self.manager.actor.do_send(SendRaw {
+            session_id: session,
+            bytes: report.to_vec(),
         });
         Ok(())
     }
@@ -151,16 +143,9 @@ impl InputBackend for BluetoothBackend {
         let session = self
             .session_for(device)
             .ok_or_else(|| BackendError::Unavailable(device.to_string()))?;
-        let manager = self.manager.clone();
-        tokio::spawn(async move {
-            let _ = manager
-                .actor
-                .send(SetExternalOwnership {
-                    session_id: session,
-                    enabled,
-                })
-                .timeout(COMMAND_RESPONSE_TIMEOUT)
-                .await;
+        self.manager.actor.do_send(SetExternalOwnership {
+            session_id: session,
+            enabled,
         });
         Ok(())
     }
