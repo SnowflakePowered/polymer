@@ -69,8 +69,10 @@ impl ShellCoordinator {
                 &instance_events::error(&error),
             );
         }
-        self.quitting = false;
-        self.close_game(pending.token);
+        if self.game_host.is_active(pending.token) {
+            self.quitting = false;
+            self.close_game(pending.token);
+        }
     }
 
     pub(super) fn publish_input_configuration(&mut self) {

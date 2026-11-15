@@ -57,7 +57,7 @@ impl Handler<Close> for StateActor {
                         .await
                         .map_err(|_| "emulator plugin session closed during onQuit".to_owned())
                         .and_then(|result| result);
-                    let _ = state.with_active(pending.token, |state| {
+                    let _ = state.with(|state| {
                         state.finish_quit(pending, callback);
                         Ok(())
                     });
