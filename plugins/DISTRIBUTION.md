@@ -91,7 +91,8 @@ polymer-pack check-index path/to/polymer-index   # checks a polymer-index checko
   repository; anyone holding it can publish releases of your plugins.
 
 [`support/release-workflow.yml`](support/release-workflow.yml) is a GitHub Actions workflow that
-packs, signs, publishes to GitHub Releases, records, and commits the release.
+packs and signs every plugin whose version is not yet recorded, publishes them as one GitHub
+release, records them, and commits the release.
 
 ## polymer-index
 

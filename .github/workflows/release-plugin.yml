@@ -1,11 +1,7 @@
-name: Release plugin
+name: Release plugins
 
 on:
   workflow_dispatch:
-    inputs:
-      id:
-        description: Plugin ID in Polymer.toml
-        required: true
 
 permissions:
   contents: write
@@ -19,44 +15,55 @@ jobs:
       - name: Install polymer-pack
         run: cargo install --locked --path bins/polymer-pack
 
-      - name: Build the plugin
-        env:
-          ID: ${{ inputs.id }}
+      - name: Find unreleased plugins
+        id: plan
         run: |
-          path="$(python3 -c 'import os, sys, tomllib; print(next(p["path"] for p in tomllib.load(open("Polymer.toml", "rb"))["plugin"] if p["id"] == os.environ["ID"]))')"
-          if [ -f "$path/package.json" ]; then
-            npm ci --prefix "$path"
-            npm run build --prefix "$path"
-          fi
+          python3 - > unreleased.tsv <<'EOF'
+          import tomllib
+          for listing in tomllib.load(open("Polymer.toml", "rb"))["plugin"]:
+              version = tomllib.load(open(f"{listing['path']}/plugin.toml", "rb"))["plugin"]["version"]
+              if all(release["version"] != version for release in listing.get("release", [])):
+                  print(f"{listing['id']}\t{listing['path']}\t{version}")
+          EOF
+          cat unreleased.tsv
+          echo "count=$(wc -l < unreleased.tsv)" >> "$GITHUB_OUTPUT"
+          echo "tag=plugins-$(date -u +%Y%m%d)-${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
 
-      - name: Pack and sign
-        id: pack
+      - name: Build, pack and sign
+        if: steps.plan.outputs.count != '0'
         env:
-          ID: ${{ inputs.id }}
           POLYMER_SIGNING_KEY: ${{ secrets.POLYMER_SIGNING_KEY }}
         run: |
-          archive="$(polymer-pack pack --id "$ID" --out dist)"
-          polymer-pack sign "$archive"
-          echo "archive=$archive" >> "$GITHUB_OUTPUT"
-          echo "tag=$(basename "$archive" .asar)" >> "$GITHUB_OUTPUT"
+          while IFS=$'\t' read -r id path version; do
+            if [ -f "$path/package.json" ]; then
+              npm ci --prefix "$path"
+              npm run build --prefix "$path"
+            fi
+            archive="$(polymer-pack pack --id "$id" --out dist)"
+            polymer-pack sign "$archive"
+            printf '%s\t%s\n' "$id" "$archive" >> packed.tsv
+            echo "- $id $version" >> notes.md
+          done < unreleased.tsv
 
       - name: Publish
+        if: steps.plan.outputs.count != '0'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ steps.pack.outputs.tag }}" "${{ steps.pack.outputs.archive }}"
+        run: gh release create "${{ steps.plan.outputs.tag }}" dist/*.asar --title "${{ steps.plan.outputs.tag }}" --notes-file notes.md
 
       - name: Record
-        env:
-          ID: ${{ inputs.id }}
+        if: steps.plan.outputs.count != '0'
         run: |
-          archive="${{ steps.pack.outputs.archive }}"
-          polymer-pack record --id "$ID" \
-            --url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${{ steps.pack.outputs.tag }}/$(basename "$archive")" \
-            "$archive"
+          while IFS=$'\t' read -r id archive; do
+            polymer-pack record --id "$id" \
+              --url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${{ steps.plan.outputs.tag }}/$(basename "$archive")" \
+              "$archive"
+          done < packed.tsv
 
       - name: Commit the release
+        if: steps.plan.outputs.count != '0'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -am "release ${{ steps.pack.outputs.tag }}"
+          git commit -m "release ${{ steps.plan.outputs.tag }}" -- Polymer.toml
           git push
