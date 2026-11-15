@@ -76,6 +76,7 @@ impl ImageLoader {
                 entry: Arc::downgrade(entry),
                 waker: self.waker.clone(),
                 doc_id: self.doc_id,
+                delivered: false,
             }),
         );
     }
@@ -88,6 +89,7 @@ struct EntryState {
     revision: u64,
     generation: u64,
     loading: bool,
+    failed: Option<u64>,
 }
 
 /// One image URL. Its decoded pixels are only held until they are handed to
@@ -134,7 +136,8 @@ impl ImageEntry {
             _ => {}
         }
         let drawable = state.level.map(|_| state.revision);
-        let reload = !std::mem::replace(&mut state.loading, true);
+        let reload = !state.loading && state.failed != Some(generation);
+        state.loading |= reload;
         drop(state);
         if reload {
             loader.load(self);
@@ -147,6 +150,13 @@ impl ImageEntry {
         let mut state = self.state.lock();
         state.decoded = Some(pixels);
         state.loading = false;
+        state.failed = None;
+    }
+
+    fn fail(&self) {
+        let mut state = self.state.lock();
+        state.loading = false;
+        state.failed = Some(state.generation);
     }
 }
 
@@ -154,10 +164,21 @@ struct DecodeHandler {
     entry: Weak<ImageEntry>,
     waker: Arc<dyn NetWaker>,
     doc_id: usize,
+    delivered: bool,
+}
+
+impl Drop for DecodeHandler {
+    fn drop(&mut self) {
+        if !self.delivered
+            && let Some(entry) = self.entry.upgrade()
+        {
+            entry.fail();
+        }
+    }
 }
 
 impl NetHandler for DecodeHandler {
-    fn bytes(self: Box<Self>, _resolved_url: String, bytes: Bytes) {
+    fn bytes(mut self: Box<Self>, _resolved_url: String, bytes: Bytes) {
         rayon::spawn(move || {
             if self.entry.strong_count() == 0 {
                 return;
@@ -182,6 +203,7 @@ impl NetHandler for DecodeHandler {
                     width,
                     height,
                 });
+                self.delivered = true;
                 self.waker.wake(self.doc_id);
             }
         });
