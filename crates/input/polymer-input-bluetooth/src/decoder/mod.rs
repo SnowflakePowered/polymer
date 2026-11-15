@@ -1,4 +1,4 @@
-use polymer_bluetooth::manager::{COMMAND_RESPONSE_TIMEOUT, SetPlayerIndex, SetRumble};
+use polymer_bluetooth::manager::{SetPlayerIndex, SetRumble};
 use polymer_bluetooth::{BluetoothManager, ConnectedController, SessionId, devices::ProfileId};
 use polymer_input::{
     BackendError, Calibration, Capabilities, DeviceDescriptor, DeviceId, DeviceRole, DeviceState,
@@ -145,33 +145,16 @@ pub trait BluetoothControllerDevice: Send + Sync {
                 high_frequency,
                 ..
             } => {
-                let manager = manager.clone();
-                let low = *low_frequency;
-                let high = *high_frequency;
-                tokio::spawn(async move {
-                    let _ = manager
-                        .actor
-                        .send(SetRumble {
-                            session_id: session,
-                            low_frequency: low,
-                            high_frequency: high,
-                        })
-                        .timeout(COMMAND_RESPONSE_TIMEOUT)
-                        .await;
+                manager.actor.do_send(SetRumble {
+                    session_id: session,
+                    low_frequency: *low_frequency,
+                    high_frequency: *high_frequency,
                 });
             }
             Feedback::PlayerLed { index } => {
-                let manager = manager.clone();
-                let index = *index;
-                tokio::spawn(async move {
-                    let _ = manager
-                        .actor
-                        .send(SetPlayerIndex {
-                            session_id: session,
-                            index,
-                        })
-                        .timeout(COMMAND_RESPONSE_TIMEOUT)
-                        .await;
+                manager.actor.do_send(SetPlayerIndex {
+                    session_id: session,
+                    index: *index,
                 });
             }
             Feedback::Calibrate(calibration) => {
