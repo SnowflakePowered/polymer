@@ -1,15 +1,13 @@
+use dashmap::DashMap;
 use parking_lot::RwLock;
 use polymer_vfs::{
     CreateOptions, FileKind, FilesystemEndpoint, FilesystemHost, FinalizationReason, Metadata,
     MetadataChanges, MountedFilesystem, OpenFile, OpenOptions, PreparedFilesystem, RemoveKind,
-    VfsError, VfsPathBuf, VfsResult,
+    VfsError, VfsPathBuf, VfsPathUnit, VfsResult,
 };
 use std::{
     ffi::c_void,
-    sync::{
-        Arc, OnceLock,
-        atomic::{AtomicBool, Ordering as AtomicOrdering},
-    },
+    sync::{Arc, OnceLock, Weak},
     time::{SystemTime, UNIX_EPOCH},
 };
 use windows::{
@@ -129,18 +127,18 @@ struct PolymerFileSystem {
     filesystem: Arc<PreparedFilesystem>,
     security: SecurityDescriptor,
     created_at: u64,
+    paths: DashMap<Vec<Vec<VfsPathUnit>>, Weak<RwLock<VfsPathBuf>>>,
 }
 
 struct SecurityDescriptor(Vec<u8>);
 
 struct PolymerFileContext {
-    path: RwLock<VfsPathBuf>,
+    path: Arc<RwLock<VfsPathBuf>>,
     kind: FileKind,
     metadata: RwLock<Metadata>,
     file: RwLock<Option<Box<dyn OpenFile>>>,
     directory_buffer: OnceLock<DirBuffer>,
     can_write: bool,
-    delete_pending: AtomicBool,
 }
 
 struct ListedEntry {
@@ -155,7 +153,37 @@ impl PolymerFileSystem {
             filesystem,
             security: SecurityDescriptor::full_access()?,
             created_at: system_time_filetime(),
+            paths: DashMap::new(),
         })
+    }
+
+    fn move_paths(&self, source: &VfsPathBuf, target: &VfsPathBuf) -> winfsp::Result<()> {
+        let from = source.normalized_components().map_err(map_vfs_error)?;
+        let to = target.normalized_components().map_err(map_vfs_error)?;
+        let moved = self
+            .paths
+            .iter()
+            .filter(|entry| entry.key().starts_with(&from))
+            .map(|entry| entry.key().clone())
+            .collect::<Vec<_>>();
+        for key in moved {
+            let Some((key, shared)) = self.paths.remove(&key) else {
+                continue;
+            };
+            let Some(shared) = shared.upgrade() else {
+                continue;
+            };
+            let mut path = shared.write();
+            let mut units = target.as_slice().to_vec();
+            for component in path.components().skip(from.len()) {
+                units.push(b'/' as u16);
+                units.extend_from_slice(component.as_slice());
+            }
+            *path = VfsPathBuf::from_units(units).map_err(map_vfs_error)?;
+            let renamed = [to.as_slice(), &key[from.len()..]].concat();
+            self.paths.insert(renamed, Arc::downgrade(&shared));
+        }
+        Ok(())
     }
 
     fn open_path(
@@ -183,14 +211,21 @@ impl PolymerFileSystem {
         if create_options & FILE_NON_DIRECTORY_FILE != 0 && metadata.kind == FileKind::Directory {
             return Err(STATUS_FILE_IS_A_DIRECTORY.into());
         }
+        let key = path.normalized_components().map_err(map_vfs_error)?;
+        let mut entry = self.paths.entry(key).or_default();
+        let path = entry.upgrade().unwrap_or_else(|| {
+            let shared = Arc::new(RwLock::new(path));
+            *entry = Arc::downgrade(&shared);
+            shared
+        });
+        drop(entry);
         Ok(PolymerFileContext {
-            path: RwLock::new(path),
+            path,
             kind: metadata.kind,
             metadata: RwLock::new(metadata),
             file: RwLock::new(file),
             directory_buffer: OnceLock::new(),
             can_write,
-            delete_pending: AtomicBool::new(false),
         })
     }
 
@@ -345,7 +380,13 @@ impl FileSystemContext for PolymerFileSystem {
         Ok(context)
     }
 
-    fn close(&self, _context: Self::FileContext) {}
+    fn close(&self, context: Self::FileContext) {
+        let key = context.path.read().normalized_components();
+        drop(context);
+        if let Ok(key) = key {
+            self.paths.remove_if(&key, |_, shared| shared.strong_count() == 0);
+        }
+    }
 
     fn create(
         &self,
@@ -405,10 +446,11 @@ impl FileSystemContext for PolymerFileSystem {
         if let Some(file) = context.file.write().take() {
             let _ = file.flush();
         }
-        let delete = context.delete_pending.swap(false, AtomicOrdering::AcqRel)
-            || FspCleanupFlags::FspCleanupDelete.is_flagged(flags);
-        if delete {
+        if FspCleanupFlags::FspCleanupDelete.is_flagged(flags) {
             let path = context.path.read().clone();
+            if let Ok(key) = path.normalized_components() {
+                self.paths.remove(&key);
+            }
             let kind = match context.kind {
                 FileKind::File => RemoveKind::File,
                 FileKind::Directory => RemoveKind::Directory,
@@ -519,6 +561,7 @@ impl FileSystemContext for PolymerFileSystem {
         self.filesystem
             .rename_with_options(&source, &target, replace_if_exists)
             .map_err(map_vfs_error)?;
+        self.move_paths(&source, &target)?;
         *context.path.write() = target;
         Ok(())
     }
@@ -565,9 +608,6 @@ impl FileSystemContext for PolymerFileSystem {
                 .validate_remove(&path, kind)
                 .map_err(map_vfs_error)?;
         }
-        context
-            .delete_pending
-            .store(delete_file, AtomicOrdering::Release);
         Ok(())
     }
 
