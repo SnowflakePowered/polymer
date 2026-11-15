@@ -8,6 +8,7 @@ use std::io;
 pub struct InputPublication {
     publisher: InputPublisher,
     sequences: [u32; 8],
+    offsets: [u32; 8],
 }
 
 impl InputPublication {
@@ -15,6 +16,7 @@ impl InputPublication {
         Ok(Self {
             publisher: InputPublisher::new()?,
             sequences: [0; 8],
+            offsets: [0; 8],
         })
     }
 
@@ -47,7 +49,9 @@ impl InputPublication {
                 state,
                 ..
             } => {
-                self.sequences[usize::from(index.get())] = sequence;
+                let slot = usize::from(index.get());
+                let sequence = sequence.wrapping_add(self.offsets[slot]);
+                self.sequences[slot] = sequence;
                 Some(InputMessage::DeviceState(WireDeviceState {
                     index: index.get(),
                     sequence,
@@ -94,8 +98,6 @@ impl InputPublication {
     }
 
     pub fn publish_action(&mut self, index: PlayerIndex, buttons: u32) {
-        let sequence = &mut self.sequences[usize::from(index.get())];
-        *sequence = sequence.wrapping_add(1);
         let state = DeviceState {
             gamepad: polymer_input::GamepadReport {
                 buttons,
@@ -103,6 +105,14 @@ impl InputPublication {
             },
             ..Default::default()
         };
+        self.publish_state(index, &state);
+    }
+
+    pub fn publish_state(&mut self, index: PlayerIndex, state: &DeviceState) {
+        let slot = usize::from(index.get());
+        self.offsets[slot] = self.offsets[slot].wrapping_add(1);
+        let sequence = &mut self.sequences[slot];
+        *sequence = sequence.wrapping_add(1);
         let _ = self
             .publisher
             .publish(InputMessage::DeviceState(WireDeviceState {
