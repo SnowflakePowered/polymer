@@ -12,4 +12,5 @@ pub trait ThemePluginInstance: PluginInstance {
     fn debug(&self) -> Option<&ThemeDebug>;
     fn theme_root(&self) -> Option<&Path>;
     fn assets(&self) -> Option<&Path>;
+    fn titlebar(&self) -> bool;
 }

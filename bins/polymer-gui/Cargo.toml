@@ -93,5 +93,23 @@ objc2-web-kit = "0.3.2"
 polymer-composition-windows.workspace = true
 polymer-platform-windows.workspace = true
 polymer-hook-input-dinput.workspace = true
-windows.workspace = true
+windows = { workspace = true, features = [
+    "Devices_Radios",
+    "Foundation_Collections",
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Devices_Properties",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_ApplicationInstallationAndServicing",
+    "Win32_System_Registry",
+    "Win32_System_SystemInformation",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
 webview2-com = "0.39.1"
+
+[target.'cfg(all(windows, target_arch = "x86_64"))'.dependencies]
+libwdi-sys = { version = "0.1.5", default-features = false, features = ["enable-x86"] }
+
+[target.'cfg(all(windows, target_arch = "aarch64"))'.dependencies]
+libwdi-sys = { version = "0.1.5", default-features = false, features = ["enable-arm64"] }

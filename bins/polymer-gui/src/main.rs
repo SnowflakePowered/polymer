@@ -17,6 +17,10 @@ mod theme;
 mod window_manager;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(windows)]
+    if let Some((parent, task)) = cli::ShellArguments::elevated_task() {
+        std::process::exit(task.run(parent));
+    }
     let mut builder = tokio::runtime::Builder::new_multi_thread();
     builder.worker_threads(2).enable_all();
     #[cfg(windows)]
@@ -28,6 +32,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             polymer_composition_windows::WorkerWinRtApartment::uninitialize_current_thread,
         );
     let runtime = builder.build()?;
+    #[cfg(windows)]
+    if baseui::Setup::required() {
+        return baseui::Setup::run(&runtime);
+    }
     if cli::ShellArguments::pick_theme_requested() {
         return baseui::BaseUi::run(&runtime);
     }

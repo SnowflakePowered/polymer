@@ -79,6 +79,7 @@ pub struct InputDiagnostics {
 pub fn draw_debug_overlay(context: &egui::Context, model: &DebugOverlayModel) {
     egui::TopBottomPanel::top("polymer-debug-statistics")
         .exact_height(32.0)
+        .frame(egui::Frame::side_top_panel(&context.style()).fill(egui::Color32::TRANSPARENT))
         .show(context, |ui| {
             egui::ScrollArea::horizontal().show(ui, |ui| {
                 ui.horizontal(|ui| {

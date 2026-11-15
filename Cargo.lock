@@ -902,7 +902,9 @@ dependencies = [
 
 [[package]]
 name = "bannerbobomb-parser"
-version = "0.1.0"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e7519e1cbad151221ee3ca5b0f62fa1677cacc16d6b7b3cc055c6c10a7515da0"
 dependencies = [
  "binrw 0.15.2",
  "thiserror 2.0.20",
@@ -910,7 +912,9 @@ dependencies = [
 
 [[package]]
 name = "bannerbobomb-svg"
-version = "0.1.0"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d8a2e4f5f341322b6dea64f9c811591207fa3ff970052a007993d93955a3154"
 dependencies = [
  "bannerbobomb-parser",
  "base64 0.22.1",
@@ -1026,6 +1030,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf95709a440f45e986983918d0e8a1f30a9b1df04918fc828670606804ac3c09"
 dependencies = [
  "virtue",
+]
+
+[[package]]
+name = "bindgen"
+version = "0.66.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2b84e06fc203107bfbad243f4aba2af864eb7db3b1cf46ea0a023b0b433d2a7"
+dependencies = [
+ "bitflags 2.13.1",
+ "cexpr",
+ "clang-sys",
+ "lazy_static",
+ "lazycell",
+ "log",
+ "peeking_take_while",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "rustc-hash 1.1.0",
+ "shlex 1.3.0",
+ "syn 2.0.119",
+ "which 4.4.2",
 ]
 
 [[package]]
@@ -1966,7 +1993,9 @@ checksum = "18758054972164c3264f7c8386f5fc6da6114cb46b619fd365d4e3b2dc3ae487"
 
 [[package]]
 name = "cgfx-parser"
-version = "0.1.0"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c4564488aadd4a685b905a265d6675f064dadf6ab9562dcf9231d46df143f61f"
 dependencies = [
  "nom 8.0.0",
  "thiserror 2.0.20",
@@ -1974,7 +2003,9 @@ dependencies = [
 
 [[package]]
 name = "cgfx-renderer"
-version = "0.1.0"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e22494e4333cca267570acb97c0363f8fe38ca0723801cdbedb0aa6c32e89ceb"
 dependencies = [
  "cgfx-parser",
  "glam",
@@ -1983,7 +2014,9 @@ dependencies = [
 
 [[package]]
 name = "cgfx-wgpu"
-version = "0.1.0"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6e455342174887670b188cb280db09ed382f1e333bfc535db1952c39d6b907b"
 dependencies = [
  "bytemuck",
  "cgfx-parser",
@@ -2336,7 +2369,9 @@ dependencies = [
 
 [[package]]
 name = "consolespec"
-version = "0.0.2"
+version = "0.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9370340e6b759acc758697c19ce48ecfaf98e4e86a907c05d52fb61a20f242f"
 dependencies = [
  "consolespec-build",
  "phf 0.14.0",
@@ -2349,6 +2384,8 @@ dependencies = [
 [[package]]
 name = "consolespec-build"
 version = "0.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "622394d818a1e3325137c9b5f7bd03f54f387fb45c476de332a7669d34ab0941"
 dependencies = [
  "ruzstd",
 ]
@@ -3676,6 +3713,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "diffy"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b545b8c50194bdd008283985ab0b31dba153cfd5b3066a92770634fbc0d7d291"
+dependencies = [
+ "nu-ansi-term",
+]
+
+[[package]]
 name = "digest"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4168,6 +4214,19 @@ checksum = "900d271a03799a1ee8d1ca9b19893b48ca674a9284fefcfb85f05e74ed314217"
 dependencies = [
  "log",
  "regex",
+]
+
+[[package]]
+name = "env_logger"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4cd405aab171cb85d6735e5c8d9db038c17d3ca007a4d2c25f337935c3d90580"
+dependencies = [
+ "humantime",
+ "is-terminal",
+ "log",
+ "regex",
+ "termcolor",
 ]
 
 [[package]]
@@ -5995,7 +6054,9 @@ dependencies = [
 
 [[package]]
 name = "gumshoe"
-version = "0.0.5-beta"
+version = "0.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c8f12d7e929168ba67330e8349258bab3f998598762e6f61d49976bd1958a6ef"
 dependencies = [
  "aes 0.8.4",
  "atrac3p-decoder2",
@@ -7134,6 +7195,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "is-terminal"
+version = "0.4.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
+dependencies = [
+ "hermit-abi",
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "is_executable"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7737,6 +7809,19 @@ dependencies = [
  "cc",
  "pkg-config",
  "vcpkg",
+]
+
+[[package]]
+name = "libwdi-sys"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1eb481b12b7edfb0b714fab828e37e0207abb5d8305d10e5dfc6daa85084150"
+dependencies = [
+ "bindgen 0.66.1",
+ "cc",
+ "diffy",
+ "env_logger 0.10.2",
+ "log",
 ]
 
 [[package]]
@@ -9657,6 +9742,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "peeking_take_while"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "19b17cddbe7ec3f8bc800887bab5e717348c95ea2ca0b1bf0837fb964dc67099"
+
+[[package]]
 name = "pem-rfc7468"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10452,6 +10543,7 @@ dependencies = [
  "keyboard-types",
  "kurbo",
  "librashader",
+ "libwdi-sys",
  "mime_guess",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
@@ -15427,7 +15519,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2f96fb1bf669ebd868caf17d865cfa7dc94ad5b2e840402bb28525be09767fc"
 dependencies = [
  "bindgen 0.69.5",
- "env_logger",
+ "env_logger 0.11.11",
  "parking_lot",
  "tracing",
  "tracing-appender",
@@ -15478,7 +15570,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b83c90ebfc04dc00d1c98cf030510b0d132ec819c355b9ed64d6b767f13db686"
 dependencies = [
  "bindgen 0.69.5",
- "env_logger",
+ "env_logger 0.11.11",
  "genawaiter",
  "parking_lot",
  "tracing",
@@ -17282,7 +17374,9 @@ dependencies = [
 
 [[package]]
 name = "xa11y-core"
-version = "0.15.0"
+version = "0.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc2449b86894a3cab13b5d385df147be0a2ebad69d91f31027de155829c3b3ae"
 dependencies = [
  "png",
  "serde",
@@ -17293,7 +17387,9 @@ dependencies = [
 
 [[package]]
 name = "xa11y-macos"
-version = "0.15.0"
+version = "0.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06ad7cb69c409037b163b497a1ac93edd3830ae7303545b48e9a4963cfa75edb"
 dependencies = [
  "cc",
  "core-foundation 0.10.1",
@@ -17304,7 +17400,9 @@ dependencies = [
 
 [[package]]
 name = "xa11y-windows"
-version = "0.15.0"
+version = "0.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1028740fc76287de938a4e33206ea2cca93e4c78f77db7fffa25f541ac1f134a"
 dependencies = [
  "serde_json",
  "windows 0.62.2",

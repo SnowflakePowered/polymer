@@ -13,6 +13,20 @@ pub struct ThemeBlock {
     root: Option<PathBuf>,
     #[serde(default)]
     assets: Option<PathBuf>,
+    #[serde(default)]
+    chrome: ThemeChrome,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+struct ThemeChrome {
+    titlebar: bool,
+}
+
+impl Default for ThemeChrome {
+    fn default() -> Self {
+        Self { titlebar: true }
+    }
 }
 
 impl ThemeBlock {
@@ -85,5 +99,9 @@ impl PluginManifest<ThemeBlock> {
 
     pub fn assets(&self) -> Option<&Path> {
         self.block().assets.as_deref()
+    }
+
+    pub fn titlebar(&self) -> bool {
+        self.block().chrome.titlebar
     }
 }

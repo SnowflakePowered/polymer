@@ -1,6 +1,13 @@
 mod navigation;
 mod plugin_list;
+#[cfg(windows)]
+mod setup;
 mod theme_picker;
+
+#[cfg(windows)]
+use setup::BluetoothPanel;
+#[cfg(windows)]
+pub(crate) use setup::{ElevatedTask, Setup};
 
 use eframe::egui::{self, Align2, Color32, FontId, Frame, Margin, Sense, Stroke, Vec2};
 use navigation::{GamepadNavigation, NavAction};
@@ -17,15 +24,24 @@ const ACCENT: Color32 = Color32::from_rgb(120, 170, 255);
 enum Tab {
     Themes,
     Plugins,
+    #[cfg(windows)]
+    Bluetooth,
 }
 
 impl Tab {
-    const ALL: [Tab; 2] = [Tab::Themes, Tab::Plugins];
+    const ALL: &[Tab] = &[
+        Tab::Themes,
+        Tab::Plugins,
+        #[cfg(windows)]
+        Tab::Bluetooth,
+    ];
 
     fn title(self) -> &'static str {
         match self {
             Tab::Themes => "Themes",
             Tab::Plugins => "Plugins",
+            #[cfg(windows)]
+            Tab::Bluetooth => "Bluetooth",
         }
     }
 
@@ -43,7 +59,7 @@ impl Tab {
             strip.bottom(),
             Stroke::new(1.0_f32, Color32::from_white_alpha(30)),
         );
-        for (index, tab) in Self::ALL.into_iter().enumerate() {
+        for (index, &tab) in Self::ALL.iter().enumerate() {
             let rect = egui::Rect::from_min_size(
                 strip.min + Vec2::new(width * index as f32, 0.0),
                 Vec2::new(width, TAB_HEIGHT),
@@ -83,6 +99,10 @@ pub(crate) struct BaseUi {
     plugins: PluginList,
     chosen: Rc<RefCell<Option<String>>>,
     gamepads: Option<GamepadNavigation>,
+    #[cfg(windows)]
+    runtime: tokio::runtime::Handle,
+    #[cfg(windows)]
+    bluetooth: Option<BluetoothPanel>,
 }
 
 impl BaseUi {
@@ -95,39 +115,23 @@ impl BaseUi {
             .unwrap_or_default();
         let chosen = Rc::new(RefCell::new(None));
         let app_chosen = chosen.clone();
-        let options = eframe::NativeOptions {
-            viewport: egui::ViewportBuilder::default()
-                .with_title("Polymer")
-                .with_inner_size(WINDOW_SIZE)
-                .with_resizable(false)
-                .with_maximize_button(false)
-                .with_transparent(true),
-            ..Default::default()
-        };
+        #[cfg(windows)]
+        let handle = runtime.handle().clone();
         eframe::run_native(
             "Polymer",
-            options,
+            Self::window_options(),
             Box::new(move |creation| {
-                #[cfg(windows)]
-                if let Err(error) = window_vibrancy::apply_mica(creation, Some(true)) {
-                    tracing::warn!(%error, "polymer: could not apply the Mica backdrop");
-                }
-                #[cfg(target_os = "macos")]
-                if let Err(error) = window_vibrancy::apply_vibrancy(
-                    creation,
-                    window_vibrancy::NSVisualEffectMaterial::HudWindow,
-                    None,
-                    None,
-                ) {
-                    tracing::warn!(%error, "polymer: could not apply the window vibrancy");
-                }
-                creation.egui_ctx.set_visuals(egui::Visuals::dark());
+                Self::apply_backdrop(creation);
                 Ok(Box::new(Self {
                     tab: Tab::Themes,
                     themes: ThemePicker::new(&registry, current),
                     plugins: PluginList::new(&registry),
                     chosen: app_chosen,
                     gamepads: GamepadNavigation::new(),
+                    #[cfg(windows)]
+                    runtime: handle,
+                    #[cfg(windows)]
+                    bluetooth: None,
                 }))
             }),
         )
@@ -140,6 +144,42 @@ impl BaseUi {
             .args(std::env::args_os().skip(1).filter(|argument| argument != "--pick-theme"))
             .spawn()?;
         Ok(())
+    }
+
+    fn busy(&self) -> bool {
+        #[cfg(windows)]
+        return self.bluetooth.as_ref().is_some_and(BluetoothPanel::busy);
+        #[cfg(not(windows))]
+        false
+    }
+
+    fn window_options() -> eframe::NativeOptions {
+        eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default()
+                .with_title("Polymer")
+                .with_inner_size(WINDOW_SIZE)
+                .with_resizable(false)
+                .with_maximize_button(false)
+                .with_transparent(true),
+            ..Default::default()
+        }
+    }
+
+    fn apply_backdrop(creation: &eframe::CreationContext<'_>) {
+        #[cfg(windows)]
+        if let Err(error) = window_vibrancy::apply_mica(creation, Some(true)) {
+            tracing::warn!(%error, "polymer: could not apply the Mica backdrop");
+        }
+        #[cfg(target_os = "macos")]
+        if let Err(error) = window_vibrancy::apply_vibrancy(
+            creation,
+            window_vibrancy::NSVisualEffectMaterial::HudWindow,
+            None,
+            None,
+        ) {
+            tracing::warn!(%error, "polymer: could not apply the window vibrancy");
+        }
+        creation.egui_ctx.set_visuals(egui::Visuals::dark());
     }
 }
 
@@ -158,7 +198,9 @@ impl eframe::App for BaseUi {
             match action {
                 NavAction::PrevTab => self.tab = self.tab.shifted(-1),
                 NavAction::NextTab => self.tab = self.tab.shifted(1),
-                NavAction::Cancel => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                NavAction::Cancel if !self.busy() => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close)
+                }
                 _ => {}
             }
         }
@@ -185,6 +227,13 @@ impl eframe::App for BaseUi {
                                     _ => {}
                                 }
                             }
+                        }
+                        #[cfg(windows)]
+                        Tab::Bluetooth => {
+                            let runtime = &self.runtime;
+                            self.bluetooth
+                                .get_or_insert_with(|| BluetoothPanel::new(runtime.clone(), false))
+                                .show(ui, &actions);
                         }
                     }
                 });

@@ -71,16 +71,42 @@ impl ApplicationHandler<crate::app::UserEvent> for EventLoopApplication<'_> {
             return;
         }
         self.creating_window = true;
-        match event_loop.create_window(
-            Window::default_attributes()
-                .with_title("Polymer")
-                .with_transparent(true)
-                .with_inner_size(LogicalSize::new(1280.0, 720.0)),
-        ) {
+        #[cfg_attr(not(any(windows, target_os = "macos")), allow(unused_variables))]
+        let titlebar = self.inner.titlebar();
+        let attributes = Window::default_attributes()
+            .with_title("Polymer")
+            .with_transparent(true)
+            .with_inner_size(LogicalSize::new(1280.0, 720.0));
+        #[cfg(target_os = "macos")]
+        let attributes = {
+            use winit::platform::macos::WindowAttributesExtMacOS;
+            attributes
+                .with_titlebar_transparent(!titlebar)
+                .with_title_hidden(!titlebar)
+                .with_fullsize_content_view(!titlebar)
+        };
+        match event_loop.create_window(attributes) {
             Ok(window) => {
                 #[cfg(windows)]
                 if let Err(error) = window_vibrancy::apply_mica(&window, Some(true)) {
                     tracing::warn!(%error, "polymer: could not apply the Mica backdrop");
+                }
+                #[cfg(windows)]
+                if !titlebar {
+                    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                    let extended = match window.window_handle().map(|handle| handle.as_raw()) {
+                        Ok(RawWindowHandle::Win32(handle)) => {
+                            polymer_platform_windows::ExtendedTitleBar::install(
+                                polymer_platform_windows::NativeWindow(handle.hwnd.get()),
+                            )
+                        }
+                        _ => Err(std::io::Error::other(
+                            "the shell window has no Win32 handle",
+                        )),
+                    };
+                    if let Err(error) = extended {
+                        tracing::warn!(%error, "polymer: could not extend the shell into the title bar");
+                    }
                 }
                 #[cfg(target_os = "macos")]
                 if let Err(error) = window_vibrancy::apply_vibrancy(

@@ -33,6 +33,10 @@ impl SelectedTheme {
         }
     }
 
+    pub(crate) fn titlebar(&self) -> bool {
+        self.plugin.titlebar()
+    }
+
     pub(crate) async fn load_document(&mut self) -> Result<ShellDocumentSource, Box<dyn Error>> {
         if self.debug {
             let debug = self.plugin.debug().cloned().ok_or_else(|| {

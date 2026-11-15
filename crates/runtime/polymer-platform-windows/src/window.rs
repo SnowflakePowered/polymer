@@ -116,6 +116,148 @@ unsafe extern "system" fn key_forward_subclass(
 }
 
 #[cfg(windows)]
+pub struct ExtendedTitleBar;
+
+#[cfg(windows)]
+impl ExtendedTitleBar {
+    pub fn install(window: NativeWindow) -> std::io::Result<()> {
+        use windows::Win32::UI::{
+            Shell::SetWindowSubclass,
+            WindowsAndMessaging::{
+                SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+                SetWindowPos,
+            },
+        };
+        let window = hwnd(window);
+        if unsafe { SetWindowSubclass(window, Some(Self::subclass), 0, 0) } == false {
+            return Err(std::io::Error::last_os_error());
+        }
+        Self::extend_frame(window);
+        unsafe {
+            SetWindowPos(
+                window,
+                None,
+                0,
+                0,
+                0,
+                0,
+                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            )
+        }
+        .map_err(std::io::Error::other)
+    }
+
+    fn metrics(window: HWND) -> (i32, i32) {
+        use windows::Win32::UI::{
+            HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi},
+            WindowsAndMessaging::{SM_CXPADDEDBORDER, SM_CYCAPTION, SM_CYFRAME},
+        };
+        let dpi = unsafe { GetDpiForWindow(window) };
+        let border = unsafe {
+            GetSystemMetricsForDpi(SM_CYFRAME, dpi) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi)
+        };
+        (
+            border,
+            border + unsafe { GetSystemMetricsForDpi(SM_CYCAPTION, dpi) },
+        )
+    }
+
+    fn extend_frame(window: HWND) {
+        use windows::Win32::{Graphics::Dwm::DwmExtendFrameIntoClientArea, UI::Controls::MARGINS};
+        let margins = MARGINS {
+            cyTopHeight: Self::metrics(window).1,
+            ..Default::default()
+        };
+        let _ = unsafe { DwmExtendFrameIntoClientArea(window, &margins) };
+    }
+
+    unsafe extern "system" fn subclass(
+        window: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+        _subclass_id: usize,
+        _context: usize,
+    ) -> windows::Win32::Foundation::LRESULT {
+        use windows::Win32::{
+            Foundation::LRESULT,
+            Graphics::Dwm::DwmDefWindowProc,
+            UI::{
+                Shell::DefSubclassProc,
+                WindowsAndMessaging::{WM_ACTIVATE, WM_DPICHANGED, WM_NCCALCSIZE, WM_NCHITTEST},
+            },
+        };
+        let mut handled = LRESULT(0);
+        if unsafe { DwmDefWindowProc(window, message, wparam, lparam, &mut handled) }.as_bool() {
+            return handled;
+        }
+        match message {
+            WM_NCCALCSIZE if wparam.0 != 0 => unsafe {
+                Self::calculate_size(window, wparam, lparam)
+            },
+            WM_NCHITTEST => unsafe { Self::hit_test(window, wparam, lparam) },
+            WM_ACTIVATE | WM_DPICHANGED => {
+                Self::extend_frame(window);
+                unsafe { DefSubclassProc(window, message, wparam, lparam) }
+            }
+            _ => unsafe { DefSubclassProc(window, message, wparam, lparam) },
+        }
+    }
+
+    unsafe fn calculate_size(
+        window: HWND,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> windows::Win32::Foundation::LRESULT {
+        use windows::Win32::UI::{
+            Shell::DefSubclassProc,
+            WindowsAndMessaging::{IsZoomed, NCCALCSIZE_PARAMS, WM_NCCALCSIZE},
+        };
+        let params = lparam.0 as *mut NCCALCSIZE_PARAMS;
+        let top = unsafe { (*params).rgrc[0].top };
+        let result = unsafe { DefSubclassProc(window, WM_NCCALCSIZE, wparam, lparam) };
+        let inset = if unsafe { IsZoomed(window) }.as_bool() {
+            Self::metrics(window).0
+        } else {
+            0
+        };
+        unsafe { (*params).rgrc[0].top = top + inset };
+        result
+    }
+
+    unsafe fn hit_test(
+        window: HWND,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> windows::Win32::Foundation::LRESULT {
+        use windows::Win32::{
+            Foundation::{LRESULT, POINT},
+            Graphics::Gdi::ScreenToClient,
+            UI::{
+                Shell::DefSubclassProc,
+                WindowsAndMessaging::{HTCAPTION, HTCLIENT, HTTOP, IsZoomed, WM_NCHITTEST},
+            },
+        };
+        let hit = unsafe { DefSubclassProc(window, WM_NCHITTEST, wparam, lparam) };
+        if hit.0 != HTCLIENT as isize {
+            return hit;
+        }
+        let mut point = POINT {
+            x: (lparam.0 & 0xffff) as i16 as i32,
+            y: ((lparam.0 >> 16) & 0xffff) as i16 as i32,
+        };
+        let _ = unsafe { ScreenToClient(window, &mut point) };
+        let (border, caption) = Self::metrics(window);
+        let zoomed = unsafe { IsZoomed(window) }.as_bool();
+        LRESULT(match point.y {
+            y if !zoomed && y < border => HTTOP as isize,
+            y if y < caption => HTCAPTION as isize,
+            _ => HTCLIENT as isize,
+        })
+    }
+}
+
+#[cfg(windows)]
 unsafe fn post_logical_focus(target: isize) {
     use windows::Win32::UI::WindowsAndMessaging::{
         WA_ACTIVE, WM_ACTIVATE, WM_ACTIVATEAPP, WM_SETFOCUS,
