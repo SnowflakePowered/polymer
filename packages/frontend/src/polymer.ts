@@ -741,7 +741,7 @@ export interface LibraryApi extends EventTarget {
    * Starts an `import` job for a path, or returns the active one for the same path. Installable
    * packages install into `storage`, or into the first NAND for their platform, created if needed.
    */
-  import(input: { path: string; storage?: string }): Promise<Job>;
+  import(input: { path: string | FileSystemHandle; storage?: string }): Promise<Job>;
   readonly updates: Readonly<{
     /**
      * Starts an in-memory `check` job for a library title, installed or not; when it
