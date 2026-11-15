@@ -14,8 +14,7 @@ const panel = css({
   position: "absolute", top: "0", bottom: "0", left: "0", zIndex: "1", display: "flex", width: "100%", flexDirection: "column", alignItems: "center",
   paddingTop: "2rem", paddingBottom: "5.9rem", color: "onBrand", bg: "brand", overflowX: "hidden", overflowY: "auto", transition: "width 160ms ease",
   "@media (max-height: 600px)": { paddingTop: "1rem", paddingBottom: "1rem" },
-  "[data-expanded] > &": { width: "max(100%, 38.5vw)", alignItems: "stretch" },
-  "[data-expanded] > & .horizon-avatar": { marginInline: "1.6rem" },
+  "[data-expanded] > &": { width: "max(100%, 38.5vw)", alignItems: "stretch", "& .horizon-avatar": { marginInline: "1.6rem" } },
 });
 const scrim = css({
   position: "fixed", inset: "0", zIndex: "0", bg: "rgb(0 0 0 / 35%)", backdropFilter: "blur(24px)", opacity: "0", pointerEvents: "none", transition: "opacity 160ms ease",
