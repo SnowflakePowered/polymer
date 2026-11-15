@@ -1,0 +1,4 @@
+.mc-jobs { background: var(--mc-content); }
+.mc-jobs-body { display: flex; flex-direction: column; width: 100%; max-width: 1180px; margin: 0 auto; padding: 8px var(--mc-gutter) 48px; }
+.mc-jobs-title { margin-bottom: 10px; font-size: 22px; line-height: 28px; font-weight: 700; color: var(--mc-white); }
+.mc-jobs .mc-field[data-below] .mc-field-children { grid-column: 2 / -1; }
