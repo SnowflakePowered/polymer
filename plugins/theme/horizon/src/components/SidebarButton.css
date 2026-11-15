@@ -1,0 +1,3 @@
+.horizon-sidebar-button:hover { color: var(--hz-colors-brand); background: var(--hz-colors-on-brand); }
+.horizon-sidebar-button:hover [data-tone="rest"] { display: none; }
+.horizon-sidebar-button:hover [data-tone="inverted"] { display: flex; }
