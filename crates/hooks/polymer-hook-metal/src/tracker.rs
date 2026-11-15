@@ -58,13 +58,9 @@ impl Tracker {
     ) {
         let key = buffer as *const _ as usize;
         PENDING.insert(key, Pending(buffer.retain()));
-        let done = RcBlock::new(
-            move |buffer: NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
-                if unsafe { buffer.as_ref() }.status() == MTLCommandBufferStatus::Completed {
-                    PENDING.remove(&key);
-                }
-            },
-        );
+        let done = RcBlock::new(move |_: NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
+            PENDING.remove(&key);
+        });
         unsafe {
             buffer.addCompletedHandler(RcBlock::as_ptr(&done));
         }
