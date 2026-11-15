@@ -3,6 +3,8 @@ name = "polymer-pluginmanifest"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "Parsing and validation of Polymer plugin manifests"
 
 [dependencies]
 asar.workspace = true

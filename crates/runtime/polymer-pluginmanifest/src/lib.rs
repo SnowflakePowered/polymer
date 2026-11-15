@@ -3,7 +3,6 @@
 
 mod config;
 mod emulator;
-mod host;
 mod id;
 mod manifest;
 mod platform;
@@ -13,7 +12,6 @@ mod theme;
 
 pub use config::{PluginConfig, PluginConfigError, PluginOption};
 pub use emulator::{EmulatorBlock, SaveStateConfig};
-pub use host::HostApi;
 pub use id::PluginId;
 pub use manifest::{AnyPluginManifest, PackageError, PluginCache, PluginClass, PluginManifest, PluginMeta};
 pub use platform::PlatformBlock;

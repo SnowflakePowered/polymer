@@ -3,6 +3,8 @@ name = "polymer-pack"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "Packs, signs, and checks Polymer plugins for distribution"
 
 [dependencies]
 asar = { workspace = true, features = ["write"] }
