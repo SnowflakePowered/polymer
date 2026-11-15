@@ -11465,6 +11465,7 @@ dependencies = [
 name = "polymer-vfs-winfsp"
 version = "0.1.0"
 dependencies = [
+ "dashmap",
  "parking_lot",
  "polymer-vfs",
  "windows 0.62.2",
