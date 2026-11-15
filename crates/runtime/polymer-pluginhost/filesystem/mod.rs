@@ -152,6 +152,7 @@ pub(crate) struct FilesystemState {
     storage_volumes: HashMap<Handle<VolumeResource>, Arc<VolumeResource>>,
     caches: BTreeMap<String, CacheResource>,
     used: bool,
+    sealed: bool,
     prepared: Option<Arc<polymer_vfs::PreparedFilesystem>>,
     staged_files: Vec<(VfsPathBuf, Vec<u8>)>,
     quick_resume: Option<(ResourceHandle, Option<ResourceHandle>)>,
@@ -171,6 +172,7 @@ impl FilesystemState {
             storage_volumes: HashMap::new(),
             caches: BTreeMap::new(),
             used: false,
+            sealed: false,
             prepared: None,
             staged_files: Vec::new(),
             quick_resume: None,
@@ -603,6 +605,7 @@ impl FilesystemState {
     }
 
     fn seal(&mut self) -> Result<Option<PreparedFilesystemLaunch>, VfsError> {
+        self.sealed = true;
         if !self.used {
             return Ok(None);
         }
