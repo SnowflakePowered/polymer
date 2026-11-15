@@ -68,6 +68,10 @@ impl BluetoothActor {
         let (abort, registration) = AbortHandle::new_pair();
         self.connect_tasks
             .insert(address, PendingOperation { id, abort });
+        let identity_host = context
+            .host
+            .clone()
+            .filter(|_| transport == TransportKind::BrEdr);
         let connect = async move {
             if suspend {
                 match transport {
@@ -83,21 +87,25 @@ impl BluetoothActor {
             }
             Self::connect(context, address, id, options, device).await
         };
-        Box::pin(
-            Abortable::new(
-                time::timeout(CONNECTION_ATTEMPT_TIMEOUT, connect),
-                registration,
-            )
-            .into_actor(self)
-            .then(move |result, actor, _| {
+        let connect = async move {
+            let result = time::timeout(CONNECTION_ATTEMPT_TIMEOUT, connect).await;
+            if !matches!(result, Ok(Ok(_)))
+                && let Some(host) = identity_host
+            {
+                let _ = host.set_host_identity("Polymer", [0x0c, 0x01, 0x1c]).await;
+            }
+            result
+        };
+        Box::pin(Abortable::new(connect, registration).into_actor(self).then(
+            move |result, actor, _| {
                 let result = result
                     .map_err(|_| Error::Unsupported("connection was cancelled"))
                     .and_then(|result| {
                         result.unwrap_or(Err(Error::Timeout("controller connection")))
                     });
                 actor.finish_connection(id, address, transport, result, reconnect)
-            }),
-        )
+            },
+        ))
     }
 
     fn finish_connection(
@@ -270,6 +278,7 @@ impl Handler<HciLifecycle> for BluetoothActor {
             .await
             .unwrap_or(Err(Error::Timeout("inbound controller connection")));
             if result.is_err() {
+                let _ = host.set_host_identity("Polymer", [0x0c, 0x01, 0x1c]).await;
                 let _ = host.reject_connection(addr).await;
             }
             result
