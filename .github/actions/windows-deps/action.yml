@@ -1,0 +1,22 @@
+name: Windows build dependencies
+description: Installs the WinFsp developer files and extracts the WDK 8.0 redistributables that libwdi embeds.
+
+runs:
+  using: composite
+  steps:
+    - name: Install WinFsp
+      shell: pwsh
+      run: |
+        $msi = (Get-Item bins/polymer-gui/redist/winfsp-*.msi).FullName
+        $install = Start-Process msiexec -ArgumentList '/i', "`"$msi`"", '/qn', '/norestart', 'INSTALLLEVEL=1000' -Wait -PassThru
+        if ($install.ExitCode -notin 0, 3010) { throw "WinFsp install failed with $($install.ExitCode)" }
+
+    - name: Extract the WDK 8.0 redistributables
+      shell: pwsh
+      run: |
+        $msi = Join-Path $env:RUNNER_TEMP 'wdk-redist.msi'
+        $wdk = Join-Path $env:RUNNER_TEMP 'wdk'
+        Invoke-WebRequest 'https://go.microsoft.com/fwlink/p/?LinkID=253170' -OutFile $msi
+        $extract = Start-Process msiexec -ArgumentList '/a', "`"$msi`"", '/qn', "TARGETDIR=`"$wdk`"" -Wait -PassThru
+        if ($extract.ExitCode -ne 0) { throw "WDK redistributable extraction failed with $($extract.ExitCode)" }
+        "WDK_DIR=$wdk\Windows Kits\8.0" >> $env:GITHUB_ENV
