@@ -100,9 +100,10 @@ impl PluginLifecycle {
                 )
                 .await;
                 match &result {
-                    Ok(Some(Value::Bool(false))) => self.ready.store(false, Ordering::Release),
+                    Ok(value) => self
+                        .ready
+                        .store(!matches!(value, Some(Value::Bool(false))), Ordering::Release),
                     Err(_) => self.storage.clear(),
-                    Ok(_) => {}
                 }
                 result?;
                 plugin_exports(runtime.js_runtime_mut(), entrypoint).await
