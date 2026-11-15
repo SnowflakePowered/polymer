@@ -98,7 +98,7 @@ impl HciHost {
 
         // Temporary credit capacity lets initialization run before the actual
         // Read Buffer Size result is known. No ACL packet is sent during init.
-        let acl_task = tokio::spawn(acl_worker(acl_tx, acl_worker_rx, 1));
+        let acl_task = tokio::spawn(acl_worker(acl_tx, acl_worker_rx, 1, links.clone()));
         let dispatch_task = tokio::spawn(dispatch_events(
             event_rx,
             acl_rx,
@@ -732,7 +732,7 @@ impl HciHost {
     async fn disconnect(&self, handle: u16) -> Result<()> {
         self.execute_checked(Command::disconnect(handle, 0x13), "Disconnect")
             .await?; // remote user terminated
-        self.forget_handle(handle).await
+        Ok(())
     }
 
     /// Starts BR/EDR authentication and optionally enables link encryption.
@@ -901,13 +901,6 @@ impl HciHost {
         }
         Ok(())
     }
-
-    pub async fn forget_handle(&self, handle: u16) -> Result<()> {
-        self.acl_worker
-            .send(AclWorkerMessage::Forget(handle))
-            .await
-            .map_err(|_| Error::ChannelClosed)
-    }
 }
 
 impl Drop for HciHost {
@@ -953,9 +946,9 @@ async fn dispatch_events(
                         Event::DisconnectionComplete { status, handle, .. } => {
                             if *status == 0 {
                                 links.remove(handle);
+                                let _ = acl_worker.send(AclWorkerMessage::Forget(*handle)).await;
                             }
                             reassembler.discard_handle(*handle);
-                            let _ = acl_worker.send(AclWorkerMessage::Forget(*handle)).await;
                         }
                         _ => {}
                     }
@@ -983,6 +976,7 @@ async fn acl_worker(
     mut usb: AclSender,
     mut messages: mpsc::Receiver<AclWorkerMessage>,
     initial_capacity: u16,
+    links: Arc<DashMap<u16, (u64, DeviceAddr)>>,
 ) {
     let mut credits = AclCredits::new(initial_capacity);
     let mut queue: VecDeque<QueuedAcl> = VecDeque::new();
@@ -1005,6 +999,10 @@ async fn acl_worker(
             let Some(queued) = queue.pop_front() else {
                 break;
             };
+            if !links.contains_key(&queued.packet.handle) {
+                let _ = queued.completion.send(Err(Error::ChannelClosed));
+                continue;
+            }
             credits.try_acquire(queued.packet.handle);
             let result = usb.send(&queued.packet).await;
             if result.is_err() {
