@@ -58,6 +58,7 @@ impl VideoPlayback {
     }
 
     fn close(&mut self) {
+        self.seeks = 0;
         if let Some(feed) = self.feed.take() {
             feed.close();
             self.send(VideoRequest::Close);
@@ -128,7 +129,6 @@ impl MediaPlayback for VideoPlayback {
     fn reload(&mut self, status: &MediaStatus) {
         self.close();
         self.fetching = status.source.is_some();
-        self.seeks = 0;
         self.position = Duration::ZERO;
         (self.width, self.height) = (0, 0);
     }
