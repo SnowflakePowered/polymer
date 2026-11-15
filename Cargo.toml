@@ -122,8 +122,8 @@ polymer-ipc = { path = "crates/runtime/polymer-ipc" }
 polymer-statistics = { path = "crates/runtime/polymer-statistics" }
 polymer-platform = { path = "crates/runtime/polymer-platform" }
 polymer-unarchive = { path = "crates/runtime/polymer-unarchive" }
-polymer-distribution = { path = "crates/runtime/polymer-distribution" }
-polymer-pluginmanifest = { path = "crates/runtime/polymer-pluginmanifest" }
+polymer-distribution = { version = "0.1.0", path = "crates/runtime/polymer-distribution" }
+polymer-pluginmanifest = { version = "0.1.0", path = "crates/runtime/polymer-pluginmanifest" }
 polymer-platform-windows = { path = "crates/runtime/polymer-platform-windows" }
 polymer-platform-macos = { path = "crates/runtime/polymer-platform-macos" }
 objc2 = "0.6.4"
@@ -134,7 +134,7 @@ objc2-fs-kit = "0.3.2"
 block2 = "0.6.2"
 polymer-automation = { path = "crates/runtime/polymer-automation" }
 polymer-input = { path = "crates/input/polymer-input" }
-polymer-config = { path = "crates/polymer-config" }
+polymer-config = { version = "0.1.0", path = "crates/polymer-config" }
 polymer-hook-input-dinput = { path = "crates/hooks/polymer-hook-input-dinput" }
 polymer-hook-input-sdl = { path = "crates/hooks/polymer-hook-input-sdl" }
 polymer-hook-input-win32 = { path = "crates/hooks/polymer-hook-input-win32" }

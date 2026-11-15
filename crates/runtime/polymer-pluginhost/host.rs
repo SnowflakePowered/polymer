@@ -16,10 +16,10 @@ impl HostApi {
     /// The API version a plugin of `class` is checked against.
     pub fn for_class(class: &str) -> &'static semver::Version {
         static PLUGIN: LazyLock<semver::Version> = LazyLock::new(|| {
-            HostApi::package_version(include_str!("../../../../packages/plugin-api/package.json"))
+            HostApi::package_version(include_str!("../../../packages/plugin-api/package.json"))
         });
         static FRONTEND: LazyLock<semver::Version> = LazyLock::new(|| {
-            HostApi::package_version(include_str!("../../../../packages/frontend/package.json"))
+            HostApi::package_version(include_str!("../../../packages/frontend/package.json"))
         });
         if class == "theme" { &FRONTEND } else { &PLUGIN }
     }
