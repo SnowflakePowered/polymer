@@ -48,10 +48,10 @@ impl FrameLatency {
     /// application calls Present and observes the failure.
     pub fn refresh<B: SwapchainBackend>(&self, controller: &mut SwapchainController<B>) -> bool {
         let maximum = self.maximum();
+        self.signal(false);
         let ready = match controller.wait_for_pacing(maximum, AcquireDeadline::Nonblocking) {
             Ok(()) => true,
             Err(ControllerError::WouldBlock) => {
-                self.signal(false);
                 let armed = controller
                     .pacing_release_target(maximum)
                     .or_else(|| controller.pending_release())
