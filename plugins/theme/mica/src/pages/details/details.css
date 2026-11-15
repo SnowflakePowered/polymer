@@ -1,0 +1,5 @@
+.mc-details { background: var(--mc-details); }
+.mc-details-body { display: flex; flex-direction: column; gap: 12px; padding: 8px 0 48px; }
+.mc-details-body > .mc-tabs { border-bottom: 1px solid var(--mc-stroke); }
+.mc-details-panel { display: flex; flex-direction: column; width: 100%; max-width: 1180px; padding: 8px var(--mc-gutter) 0; }
+.mc-details-description { margin-bottom: 12px; font-size: 13px; line-height: 18px; color: var(--mc-secondary); }

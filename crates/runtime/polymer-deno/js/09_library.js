@@ -152,9 +152,7 @@ export function createLibrary() {
     }) },
     import: { value: async input => {
       if (input === null || typeof input !== "object") throw new TypeError("import input must be an object");
-      const path = optionalString(input.path, "path");
-      if (path === null) throw new TypeError("path is required");
-      return op_jobs_import(path, optionalString(input.storage, "storage"));
+      return op_jobs_import(hostPath(input.path, "path"), optionalString(input.storage, "storage"));
     } },
     importKey: { value: async (platform, namespace, key, titleid) => {
       platform = optionalString(platform, "platform");

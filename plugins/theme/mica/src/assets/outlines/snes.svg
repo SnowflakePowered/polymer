@@ -1,0 +1,23 @@
+<svg role="img" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 240" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M66.0,28.2 C68.0,14.2 80.0,8 96.0,8 H166.0 Q172.0,8 172.0,15"/>
+  <path d="M434.0,28.2 C432.0,14.2 420.0,8 404.0,8 H334.0 Q328.0,8 328.0,15"/>
+  <path d="M117,15 H383 A105,105 0 1 1 334.3,213 Q326.3,205 312.3,205 H187.7 Q173.7,205 165.7,213 A105,105 0 1 1 117,15 Z"/>
+  <circle cx="117" cy="120" r="70"/>
+  <circle cx="117" cy="120" r="57"/>
+  <path d="M101.5,83 Q101.5,79 105.5,79 H128.5 Q132.5,79 132.5,83 V104.5 H154 Q158,104.5 158,108.5 V131.5 Q158,135.5 154,135.5 H132.5 V157 Q132.5,161 128.5,161 H105.5 Q101.5,161 101.5,157 V135.5 H80 Q76,135.5 76,131.5 V108.5 Q76,104.5 80,104.5 H101.5 Z"/>
+  <path d="M117.0,86.0 L123.0,97.2 L111.0,97.2 Z" stroke-width="2.5"/>
+  <path d="M117.0,154.0 L111.0,142.8 L123.0,142.8 Z" stroke-width="2.5"/>
+  <path d="M83.0,120.0 L94.2,114.0 L94.2,126.0 Z" stroke-width="2.5"/>
+  <path d="M151.0,120.0 L139.8,126.0 L139.8,114.0 Z" stroke-width="2.5"/>
+  <circle cx="117" cy="120" r="7" stroke-width="2.5"/>
+  <rect x="-17" y="-6.5" width="34" height="13.0" rx="6.5" transform="translate(209 135) rotate(-35)"/>
+  <rect x="-17" y="-6.5" width="34" height="13.0" rx="6.5" transform="translate(264 135) rotate(-35)"/>
+  <circle cx="383" cy="120" r="97"/>
+  <circle cx="383" cy="120" r="91" stroke-width="2"/>
+  <rect x="-55.3" y="-25.5" width="110.7" height="51.0" rx="25.5" transform="translate(360.0 101.0) rotate(-39.6)"/>
+  <rect x="-55.3" y="-25.5" width="110.7" height="51.0" rx="25.5" transform="translate(406.0 139.0) rotate(-39.6)"/>
+  <circle cx="383" cy="82" r="18.5"/>
+  <circle cx="429" cy="120" r="18.5"/>
+  <circle cx="383" cy="158" r="18.5"/>
+  <circle cx="337" cy="120" r="18.5"/>
+</svg>
