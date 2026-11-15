@@ -352,33 +352,16 @@ impl BluetoothControllerDevice for WiimoteDecoder {
                 high_frequency,
                 ..
             } => {
-                let manager = manager.clone();
-                let low = *low_frequency;
-                let high = *high_frequency;
-                tokio::spawn(async move {
-                    let _ = manager
-                        .actor
-                        .send(SetRumble {
-                            session_id: session,
-                            low_frequency: low,
-                            high_frequency: high,
-                        })
-                        .timeout(COMMAND_RESPONSE_TIMEOUT)
-                        .await;
+                manager.actor.do_send(SetRumble {
+                    session_id: session,
+                    low_frequency: *low_frequency,
+                    high_frequency: *high_frequency,
                 });
             }
             Feedback::PlayerLed { index } => {
-                let manager = manager.clone();
-                let index = *index;
-                tokio::spawn(async move {
-                    let _ = manager
-                        .actor
-                        .send(SetPlayerIndex {
-                            session_id: session,
-                            index,
-                        })
-                        .timeout(COMMAND_RESPONSE_TIMEOUT)
-                        .await;
+                manager.actor.do_send(SetPlayerIndex {
+                    session_id: session,
+                    index: *index,
                 });
             }
             Feedback::Recenter => self.air_mouse.center(),
