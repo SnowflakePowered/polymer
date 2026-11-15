@@ -18,7 +18,7 @@ use crate::{ConnectionState, DeviceAddr, Error, ReportReceiver, Result, Transpor
 
 use super::{
     LinkKey, LinkKeyStore,
-    hci::{Command, Event as HciEvent, HciHost, InquiryResult, L2capFrame},
+    hci::{Command, Event as HciEvent, HciHost, InquiryResult, L2capFrames},
     l2cap::{Channel, ChannelSender, HID_CONTROL_PSM, HID_INTERRUPT_PSM, Link},
 };
 
@@ -142,7 +142,7 @@ impl BrEdrHid {
     pub async fn attach_inbound_with_frames(
         &mut self,
         handle: u16,
-        frames: broadcast::Receiver<L2capFrame>,
+        frames: L2capFrames,
         hci_events: broadcast::Receiver<HciEvent>,
     ) -> Result<()> {
         self.adopt(handle);
@@ -163,7 +163,7 @@ impl BrEdrHid {
     pub async fn attach_inbound_encrypted_with_frames(
         &mut self,
         handle: u16,
-        frames: broadcast::Receiver<L2capFrame>,
+        frames: L2capFrames,
         mut hci_events: broadcast::Receiver<HciEvent>,
     ) -> Result<()> {
         self.adopt(handle);
@@ -204,7 +204,7 @@ impl BrEdrHid {
     pub async fn attach_inbound_host_hid_with_frames(
         &mut self,
         handle: u16,
-        frames: broadcast::Receiver<L2capFrame>,
+        frames: L2capFrames,
         hci_events: broadcast::Receiver<HciEvent>,
     ) -> Result<()> {
         self.adopt(handle);
