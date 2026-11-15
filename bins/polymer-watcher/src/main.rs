@@ -32,7 +32,16 @@ fn run() -> io::Result<()> {
     println!("READY");
     io::stdout().flush()?;
 
-    wait_for_process(&parent)
+    let (finished, done) = std::sync::mpsc::channel();
+    let closed = finished.clone();
+    std::thread::spawn(move || {
+        let _ = io::copy(&mut io::stdin(), &mut io::sink());
+        let _ = closed.send(Ok(()));
+    });
+    std::thread::spawn(move || {
+        let _ = finished.send(wait_for_process(&parent));
+    });
+    done.recv().unwrap_or(Ok(()))
 }
 
 fn parse_parent_id(mut arguments: impl Iterator<Item = OsString>) -> io::Result<u32> {
