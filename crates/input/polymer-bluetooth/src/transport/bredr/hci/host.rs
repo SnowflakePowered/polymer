@@ -51,6 +51,11 @@ pub struct L2capFrame {
     pub pdu: Bytes,
 }
 
+pub struct L2capFrames {
+    pub(crate) data: broadcast::Receiver<L2capFrame>,
+    pub(crate) signals: broadcast::Receiver<L2capFrame>,
+}
+
 enum AclWorkerMessage {
     Send {
         packet: AclPacket,
@@ -72,6 +77,7 @@ pub struct HciHost {
     acl_worker: mpsc::Sender<AclWorkerMessage>,
     events: broadcast::Sender<Event>,
     l2cap_frames: broadcast::Sender<L2capFrame>,
+    l2cap_signals: broadcast::Sender<L2capFrame>,
     links: Arc<DashMap<u16, (u64, DeviceAddr)>>,
     connection_gate: RwLock<()>,
     info: ControllerInfo,
@@ -93,6 +99,7 @@ impl HciHost {
         let (command, event_rx, acl_tx, acl_rx) = usb.split()?;
         let (event_sender, _) = broadcast::channel(256);
         let (l2cap_sender, _) = broadcast::channel(1024);
+        let (signal_sender, _) = broadcast::channel(1024);
         let (acl_worker_sender, acl_worker_rx) = mpsc::channel(256);
         let links = Arc::new(DashMap::new());
 
@@ -104,6 +111,7 @@ impl HciHost {
             acl_rx,
             event_sender.clone(),
             l2cap_sender.clone(),
+            signal_sender.clone(),
             acl_worker_sender.clone(),
             links.clone(),
         ));
@@ -114,6 +122,7 @@ impl HciHost {
             acl_worker: acl_worker_sender,
             events: event_sender,
             l2cap_frames: l2cap_sender,
+            l2cap_signals: signal_sender,
             links,
             connection_gate: RwLock::new(()),
             info: ControllerInfo {
@@ -390,8 +399,11 @@ impl HciHost {
     pub fn events(&self) -> broadcast::Receiver<Event> {
         self.events.subscribe()
     }
-    pub fn l2cap_frames(&self) -> broadcast::Receiver<L2capFrame> {
-        self.l2cap_frames.subscribe()
+    pub fn l2cap_frames(&self) -> L2capFrames {
+        L2capFrames {
+            data: self.l2cap_frames.subscribe(),
+            signals: self.l2cap_signals.subscribe(),
+        }
     }
 
     pub async fn inquiry(
@@ -916,6 +928,7 @@ async fn dispatch_events(
     mut acl_rx: AclReceiver,
     events: broadcast::Sender<Event>,
     l2cap_frames: broadcast::Sender<L2capFrame>,
+    l2cap_signals: broadcast::Sender<L2capFrame>,
     acl_worker: mpsc::Sender<AclWorkerMessage>,
     links: Arc<DashMap<u16, (u64, DeviceAddr)>>,
 ) {
@@ -961,7 +974,10 @@ async fn dispatch_events(
                 Ok(packet) => {
                     let handle = packet.handle;
                     match reassembler.push(packet) {
-                        Ok(Some(pdu)) => { let _ = l2cap_frames.send(L2capFrame { handle, pdu }); }
+                        Ok(Some(pdu)) => {
+                            let stream = if pdu.get(2..4) == Some(&[0x01, 0x00]) { &l2cap_signals } else { &l2cap_frames };
+                            let _ = stream.send(L2capFrame { handle, pdu });
+                        }
                         Ok(None) => {}
                         Err(error) => tracing::warn!(handle, %error, "dropping malformed ACL packet"),
                     }
