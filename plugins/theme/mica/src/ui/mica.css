@@ -66,7 +66,7 @@ h1, h2, h3, p { margin: 0; font-weight: inherit; }
 @keyframes mc-pop { from { opacity: 0; transform: scale(1.04); } to { opacity: 1; transform: scale(1); } }
 
 .mc-root { position: relative; display: flex; height: 100%; }
-.mc-root[data-playing] { background: var(--mc-root); }
+.mc-root[data-playing] { background-image: linear-gradient(var(--mc-root), var(--mc-root)); background-position: 0 var(--mc-caption); background-size: 100% 100%; background-repeat: no-repeat; }
 .mc-main { position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; background-image: radial-gradient(120% 70% at 70% -10%, #1f2c5c 0%, rgba(31, 44, 92, 0) 60%), linear-gradient(var(--mc-ground), var(--mc-ground)); background-position: 0 var(--mc-caption); background-size: 100% 100%; background-repeat: no-repeat; }
 .mc-content { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .mc-page { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; overflow-x: hidden; padding-bottom: var(--mc-footer); animation: mc-rise .3s var(--mc-ease-snap); }
