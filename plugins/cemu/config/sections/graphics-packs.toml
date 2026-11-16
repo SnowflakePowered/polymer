@@ -7,14 +7,14 @@ repeat = true
 key = "filename"
 title = "Pack"
 type = "string"
-emit = { key = "filename", xml.attribute = true }
+emit = { key = "filename", attribute = true }
 
 [[sections.content.graphics_packs.options]]
 key = "enabled"
 title = "Enabled"
 type = "bool"
 default = true
-emit = { key = "disabled", xml.attribute = true, bool_style = "inverted" }
+emit = { key = "disabled", attribute = true, bool_style = "inverted" }
 
 [sections.content.graphics_packs.presets]
 title = "Presets"

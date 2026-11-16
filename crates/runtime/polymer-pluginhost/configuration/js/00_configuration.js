@@ -51,8 +51,8 @@ function configuration(id) {
     entries() {
       return op_configuration_entries(id);
     },
-    render() {
-      const rendered = op_configuration_render(id);
+    render(renderOptions) {
+      const rendered = op_configuration_render(id, renderOptions ?? null);
       return Object.freeze(rendered);
     },
   });

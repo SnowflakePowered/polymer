@@ -23,6 +23,7 @@ import {
     type GraphicsApi,
     type GraphicsPack,
 } from "pkg:graphics-packs.ts";
+import { HotkeyParser } from "pkg:hotkeys.ts";
 
 type Options = {
     content: {
@@ -257,4 +258,6 @@ export function onSaveCheckpoint({ storage, save, changed }: SaveCheckpointConte
         || changed.some((entry) => entry.path === committed);
 }
 
-export default { onPluginLoad, onUpdateContents, onConfigure, onLaunch, onSaveCheckpoint };
+export const onParseHotkey = (expression: string) => HotkeyParser.parse(expression);
+
+export default { onPluginLoad, onUpdateContents, onConfigure, onLaunch, onParseHotkey, onSaveCheckpoint };

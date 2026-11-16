@@ -1,9 +1,5 @@
-[bool_style.lower]
-true = "true"
-false = "false"
-
 [targets.settings]
-output = { format = "ini", path = "Ymir.toml" }
+output = { format = "toml", path = "Ymir.toml" }
 
 [sections.runtime]
 title = "runtime"
@@ -34,20 +30,20 @@ key = "InternalBackupRAMPerGame"
 title = "InternalBackupRAMPerGame"
 type = "bool"
 default = false
-emit = { key = "InternalBackupRAMPerGame", bool_style = "lower" }
+emit = { key = "InternalBackupRAMPerGame" }
 
-[targets.settings."IPL"]
+[targets.settings.System.IPL]
 
 [sections.ipl]
 title = "ipl"
-target = "settings.IPL"
+target = "settings.System.IPL"
 
 [[sections.ipl.options]]
 key = "Override"
 title = "Override"
 type = "bool"
 default = true
-emit = { key = "Override", bool_style = "lower" }
+emit = { key = "Override" }
 
 [[sections.ipl.options]]
 key = "Path"
@@ -55,3 +51,23 @@ title = "Path"
 type = "string"
 default = ""
 emit = { key = "Path" }
+
+[targets.settings."General"]
+
+[sections.general]
+title = "general"
+target = "settings.General"
+
+[[sections.general.options]]
+key = "PauseWhenUnfocused"
+title = "PauseWhenUnfocused"
+type = "bool"
+default = false
+emit = { key = "PauseWhenUnfocused" }
+
+[[sections.general.options]]
+key = "CheckForUpdates"
+title = "CheckForUpdates"
+type = "bool"
+default = false
+emit = { key = "CheckForUpdates" }

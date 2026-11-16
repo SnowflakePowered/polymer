@@ -62,16 +62,9 @@ export const onLaunch = async (args: EmulatorLaunchArgs<{
     const game = fs.mount("/Game", args.launchSet[0].package, { mode: "rx" });
     const api = graphicsApi(args.userConfiguration);
     const options = args.configuration.options();
-    options.system.InternalBackupRAMImagePath = JSON.stringify(fs.path("/Profile/state/bup-int.bin"));
-    options.ipl.Path = JSON.stringify(fs.path("/Profile/bios.bin"));
-    // The host's INI emitter can carry TOML scalar/array literals. Expand the
-    // native table paths here because host target paths identify separate nodes.
-    const rendered = new TextDecoder().decode(args.configuration.render()["Ymir.toml"])
-        .replace("[IPL]", "[System.IPL]")
-        .replace(/\[Type([12])\]/g, "[Input.Port$1]")
-        .replace(/\[Port([12])\]/g, "[Input.Port$1.ControlPad.Binds]");
-    const config = `${rendered}\n[General]\nPauseWhenUnfocused = false\nCheckForUpdates = false\n`;
-    fs.mount("/Profile/Ymir.toml", new TextEncoder().encode(config), { mode: "rw" });
+    options.system.InternalBackupRAMImagePath = fs.path("/Profile/state/bup-int.bin");
+    options.ipl.Path = fs.path("/Profile/bios.bin");
+    fs.mount("/Profile/Ymir.toml", args.configuration.render()["Ymir.toml"], { mode: "rw" });
     return {
         command: fs.path("/Ymir/ymir-sdl3.exe"),
         workingDirectory: fs.path("/Ymir"),

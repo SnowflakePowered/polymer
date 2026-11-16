@@ -1,17 +1,13 @@
-[bool_style.lower]
-true = "true"
-false = "false"
-
 [targets.settings]
-output = { format = "ini", path = "melonDS.toml" }
+output = { format = "toml", path = "melonDS.toml" }
 
 [targets.settings.Screen]
 [targets.settings.3D]
-[targets.settings.GL]
+[targets.settings.3D.GL]
 [targets.settings.Emu]
 [targets.settings.Instance0]
-[targets.settings.Window0]
-[targets.settings.Keyboard]
+[targets.settings.Instance0.Window0]
+[targets.settings.Instance0.Keyboard]
 
 [sections.runtime]
 title = "runtime"
@@ -22,13 +18,13 @@ key = "LimitFPS"
 title = "LimitFPS"
 type = "bool"
 default = true
-emit = { key = "LimitFPS", bool_style = "lower" }
+emit = { key = "LimitFPS" }
 
 [[sections.runtime.options]]
 key = "TargetFPS"
 title = "TargetFPS"
-type = "string"
-default = "60.0"
+type = "float"
+default = 60.0
 emit = { key = "TargetFPS" }
 
 [[sections.runtime.options]]
@@ -36,7 +32,7 @@ key = "PauseLostFocus"
 title = "PauseLostFocus"
 type = "bool"
 default = false
-emit = { key = "PauseLostFocus", bool_style = "lower" }
+emit = { key = "PauseLostFocus" }
 
 [sections.screen]
 title = "Screen"
@@ -47,21 +43,21 @@ key = "UseGL"
 title = "UseGL"
 type = "bool"
 default = true
-emit = { key = "UseGL", bool_style = "lower" }
+emit = { key = "UseGL" }
 
 [[sections.screen.options]]
 key = "Filter"
 title = "Filter"
 type = "bool"
 default = false
-emit = { key = "Filter", bool_style = "lower" }
+emit = { key = "Filter" }
 
 [[sections.screen.options]]
 key = "VSync"
 title = "VSync"
 type = "bool"
 default = true
-emit = { key = "VSync", bool_style = "lower" }
+emit = { key = "VSync" }
 
 [sections.renderer]
 title = "3D"
@@ -76,7 +72,7 @@ emit = { key = "Renderer" }
 
 [sections.gl]
 title = "3D.GL"
-target = "settings.GL"
+target = "settings.3D.GL"
 
 [[sections.gl.options]]
 key = "ScaleFactor"
@@ -94,14 +90,14 @@ key = "ExternalBIOSEnable"
 title = "ExternalBIOSEnable"
 type = "bool"
 default = false
-emit = { key = "ExternalBIOSEnable", bool_style = "lower" }
+emit = { key = "ExternalBIOSEnable" }
 
 [[sections.emu.options]]
 key = "DirectBoot"
 title = "DirectBoot"
 type = "bool"
 default = true
-emit = { key = "DirectBoot", bool_style = "lower" }
+emit = { key = "DirectBoot" }
 
 [[sections.emu.options]]
 key = "ConsoleType"
@@ -125,19 +121,19 @@ emit = { key = "JoystickID" }
 key = "SaveFilePath"
 title = "SaveFilePath"
 type = "string"
-default = "\"\""
+default = ""
 emit = { key = "SaveFilePath" }
 
 [[sections.instance.options]]
 key = "SavestatePath"
 title = "SavestatePath"
 type = "string"
-default = "\"\""
+default = ""
 emit = { key = "SavestatePath" }
 
 [sections.window]
 title = "Instance0.Window0"
-target = "settings.Window0"
+target = "settings.Instance0.Window0"
 
 [[sections.window.options]]
 key = "ScreenLayout"
@@ -162,7 +158,7 @@ emit = { key = "ScreenGap" }
 
 [sections.keyboard]
 title = "Instance0.Keyboard"
-target = "settings.Keyboard"
+target = "settings.Instance0.Keyboard"
 
 [[sections.keyboard.options]]
 key = "HK_Pause"

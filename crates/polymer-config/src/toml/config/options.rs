@@ -9,12 +9,7 @@ pub struct Emit<'de> {
     pub(crate) value: Option<OptionValue<'de>>,
     pub(crate) bool_style: Option<&'de str>,
     pub(crate) int_style: Option<&'de str>,
-    pub(crate) xml: Option<XmlStyle>,
-}
-
-#[derive(Debug, Toml)]
-#[toml(FromToml)]
-pub struct XmlStyle {
+    pub(crate) float_style: Option<&'de str>,
     #[toml(default)]
     pub(crate) attribute: bool,
 }

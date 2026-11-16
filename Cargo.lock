@@ -10336,10 +10336,12 @@ dependencies = [
  "petgraph",
  "quick-xml 0.39.4",
  "rt-format",
+ "rust-yaml",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
  "toml-spanner",
+ "toml_edit 0.25.13+spec-1.1.0",
  "uuid",
 ]
 
@@ -12396,6 +12398,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f9598a861645d22d8fe873d123e9faa209f78ff9ddca7617c2af968f7a18aad"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "rust-yaml"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3597280f43f5f5c9b7e7f281eab078651cf3a551a439e86d9506fe3a85d74f1d"
+dependencies = [
+ "base64 0.22.1",
+ "indexmap 2.14.0",
+ "regex",
 ]
 
 [[package]]
@@ -15208,6 +15221,7 @@ dependencies = [
  "indexmap 2.14.0",
  "toml_datetime 1.1.1+spec-1.1.0",
  "toml_parser",
+ "toml_writer",
  "winnow 1.0.4",
 ]
 

@@ -94,7 +94,8 @@ pub struct EmitDefinition {
     pub value: Option<Value>,
     pub bool_style: Option<Box<str>>,
     pub int_style: Option<Box<str>>,
-    pub xml_attribute: bool,
+    pub float_style: Option<Box<str>>,
+    pub attribute: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -212,13 +213,52 @@ pub enum OptionRange {
     Float { min: f64, max: f64 },
 }
 
+/// An emulator-facing binding value whose text is a template until serialized.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BindingValue {
+    Text(Box<str>),
+    Integer(i64),
+    List(Box<[Box<str>]>),
+}
+
+impl BindingValue {
+    /// Applies `expand` to every piece of text in the value.
+    pub fn map_text<E>(&self, expand: impl Fn(&str) -> Result<String, E>) -> Result<Self, E> {
+        Ok(match self {
+            Self::Text(text) => Self::Text(expand(text)?.into_boxed_str()),
+            Self::Integer(value) => Self::Integer(*value),
+            Self::List(items) => Self::List(
+                items
+                    .iter()
+                    .map(|item| expand(item).map(String::into_boxed_str))
+                    .collect::<Result<_, _>>()?,
+            ),
+        })
+    }
+}
+
+/// One binding written as its own section of ordered values.
+#[derive(Debug)]
+pub struct BindingShape {
+    pub section: Box<str>,
+    pub values: IndexMap<Box<str>, BindingField>,
+}
+
+#[derive(Debug)]
+pub enum BindingField {
+    Key,
+    Value,
+    Literal(Box<str>),
+}
+
 /// Input option templates and the consoles on which they may be instantiated.
 #[derive(Debug)]
 pub struct InputDefinition {
     pub driver: Box<str>,
     pub device: Box<str>,
-    pub mapping: IndexMap<BindingKey, Box<str>>,
-    pub mouse: IndexMap<BindingKey, Box<str>>,
+    pub mapping: IndexMap<BindingKey, BindingValue>,
+    pub mouse: IndexMap<BindingKey, BindingValue>,
+    pub binding: Option<BindingShape>,
     pub options: Box<[Handle<OptionDefinition>]>,
     pub layouts: BTreeMap<Box<str>, LayoutDefinition>,
     pub platforms: BTreeMap<Box<str>, PlatformDefinition>,

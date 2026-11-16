@@ -31,6 +31,7 @@ platforms = ["NINTENDO_WIIU"]
 [emulator.configuration]
 definitions = [
     "config/cemu.toml",
+    "config/actions.toml",
     "config/input.toml",
     "config/sections/content.toml",
     "config/sections/content-*.toml",

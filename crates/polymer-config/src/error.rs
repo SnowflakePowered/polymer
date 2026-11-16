@@ -29,8 +29,6 @@ pub enum Error {
     RepeatMismatch { section: Box<str>, target: Box<str> },
     #[error("repeated target `{0}` has no parent to contain it")]
     RepeatWithoutParent(Box<str>),
-    #[error("target `{target}` writes format `{format}`, which has no attributes")]
-    AttributeUnsupportedFormat { target: Box<str>, format: Box<str> },
     #[error("target `{0}` is a document root and has no element to hold an attribute")]
     AttributeOnDocumentRoot(Box<str>),
     #[error("the definition has no input configuration")]

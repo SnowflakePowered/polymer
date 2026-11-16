@@ -1,17 +1,17 @@
-[targets.settings]
-output = { format = "ini", path = "runtime.ini" }
+[targets.input]
+output = { format = "yaml", path = "config/input_configs/global/Default.yml" }
 
-[targets.settings."Player1"]
+[targets.input."Player 1 Input".Config]
 
-[targets.settings."Player2"]
+[targets.input."Player 2 Input".Config]
 
-[targets.settings."Player3"]
+[targets.input."Player 3 Input".Config]
 
-[targets.settings."Player4"]
+[targets.input."Player 4 Input".Config]
 
 [input]
 driver = "sdl3"
-device = "{index}"
+device = "{name} {number}"
 
 [input.mapping]
 "button.a" = "South"
@@ -68,25 +68,25 @@ device = "{index}"
 "analog.stick.right.y+" = "Right Stick Up"
 
 [platforms.SONY_PS3.ports.controller.0]
-target = "settings.Player1"
+target = "input.Player 1 Input.Config"
 layouts = ["DUALSHOCK_3_CONTROLLER"]
-emit."unplugged" = [{ key = "Handler", value = "Null" }]
-emit."DUALSHOCK_3_CONTROLLER" = [{ key = "Handler", value = "SDL" }, { key = "Device", value = "{device}" }]
+emit."unplugged" = [{ key = "Handler", value = "Null", target = "input.Player 1 Input" }]
+emit."DUALSHOCK_3_CONTROLLER" = [{ key = "Handler", value = "SDL", target = "input.Player 1 Input" }, { key = "Device", value = "{device}", target = "input.Player 1 Input" }]
 
 [platforms.SONY_PS3.ports.controller.1]
-target = "settings.Player2"
+target = "input.Player 2 Input.Config"
 layouts = ["DUALSHOCK_3_CONTROLLER"]
-emit."unplugged" = [{ key = "Handler", value = "Null" }]
-emit."DUALSHOCK_3_CONTROLLER" = [{ key = "Handler", value = "SDL" }, { key = "Device", value = "{device}" }]
+emit."unplugged" = [{ key = "Handler", value = "Null", target = "input.Player 2 Input" }]
+emit."DUALSHOCK_3_CONTROLLER" = [{ key = "Handler", value = "SDL", target = "input.Player 2 Input" }, { key = "Device", value = "{device}", target = "input.Player 2 Input" }]
 
 [platforms.SONY_PS3.ports.controller.2]
-target = "settings.Player3"
+target = "input.Player 3 Input.Config"
 layouts = ["DUALSHOCK_3_CONTROLLER"]
-emit."unplugged" = [{ key = "Handler", value = "Null" }]
-emit."DUALSHOCK_3_CONTROLLER" = [{ key = "Handler", value = "SDL" }, { key = "Device", value = "{device}" }]
+emit."unplugged" = [{ key = "Handler", value = "Null", target = "input.Player 3 Input" }]
+emit."DUALSHOCK_3_CONTROLLER" = [{ key = "Handler", value = "SDL", target = "input.Player 3 Input" }, { key = "Device", value = "{device}", target = "input.Player 3 Input" }]
 
 [platforms.SONY_PS3.ports.controller.3]
-target = "settings.Player4"
+target = "input.Player 4 Input.Config"
 layouts = ["DUALSHOCK_3_CONTROLLER"]
-emit."unplugged" = [{ key = "Handler", value = "Null" }]
-emit."DUALSHOCK_3_CONTROLLER" = [{ key = "Handler", value = "SDL" }, { key = "Device", value = "{device}" }]
+emit."unplugged" = [{ key = "Handler", value = "Null", target = "input.Player 4 Input" }]
+emit."DUALSHOCK_3_CONTROLLER" = [{ key = "Handler", value = "SDL", target = "input.Player 4 Input" }, { key = "Device", value = "{device}", target = "input.Player 4 Input" }]

@@ -5,7 +5,7 @@ use indexmap::IndexMap;
 use crate::{
     Handle,
     ast::{
-        BoolStyleDefinition, ConfigurationDefinition, ConfigurationInstance, EmitDefinition,
+        BindingField, BindingShape, BindingValue, BoolStyleDefinition, ConfigurationDefinition, ConfigurationInstance, EmitDefinition,
         InputDefinition, LayoutDefinition, OptionDefinition, OwnedTargetPath, SettingPath,
         TargetDefinition, TargetGraph, TargetOutputDefinition, Value,
     },
@@ -13,7 +13,7 @@ use crate::{
 };
 
 use super::{
-    BmlEmitter, DocumentRef, EmittedAttribute, EmittedBinding, EmittedValue, Emitter, IniEmitter,
+    BmlEmitter, DocumentRef, EmittedAttribute, EmittedValue, Emitter, IniEmitter, RenderOptions, TomlEmitter, YamlEmitter,
     ScalarValue, SectionRef, XmlEmitter,
 };
 use crate::input::{
@@ -27,7 +27,7 @@ pub struct Serializer<'a> {
     definition: &'a ConfigurationDefinition,
     target_graph: &'a TargetGraph,
     writes: Vec<IndexMap<Option<Box<str>>, Vec<WritePlan<'a>>>>,
-    bindings: Vec<Vec<BindingPlan>>,
+    bindings: Vec<Vec<BindingPlan<'a>>>,
     gamepad_bindings: BTreeMap<(Box<str>, usize), usize>,
 }
 
@@ -64,6 +64,7 @@ struct WritePlan<'a> {
     source: WriteSource<'a>,
     bool_style: Option<&'a BoolStyleDefinition>,
     int_style: Option<&'a str>,
+    float_style: Option<&'a str>,
     attribute: bool,
 }
 
@@ -77,9 +78,10 @@ enum WriteSource<'a> {
     OwnedString(Box<str>),
 }
 
-struct BindingPlan {
+struct BindingPlan<'a> {
     key: Box<str>,
-    value: Box<str>,
+    value: BindingValue,
+    shape: Option<&'a BindingShape>,
 }
 
 impl<'a> Serializer<'a> {
@@ -182,7 +184,7 @@ impl<'a> Serializer<'a> {
     }
 
     /// Serializes every output-bearing root into a path-to-bytes map.
-    pub fn serialize(&self) -> Result<BTreeMap<Box<str>, Vec<u8>>> {
+    pub fn serialize(&self, options: &RenderOptions) -> Result<BTreeMap<Box<str>, Vec<u8>>> {
         let mut outputs = BTreeMap::new();
         for document in self.documents() {
             if !self.is_active(document.target, None) {
@@ -191,7 +193,7 @@ impl<'a> Serializer<'a> {
             if outputs.contains_key(document.output.path.as_ref()) {
                 return Err(Error::DuplicateOutputPath(document.output.path.clone()));
             }
-            let emitter = Self::emitter(&document.output.format)
+            let emitter = Self::emitter(&document.output.format, options)
                 .ok_or_else(|| Error::UnsupportedFormat(document.output.format.clone()))?;
             let bytes = self.serialize_document(document, emitter)?;
             outputs.insert(document.output.path.clone(), bytes);
@@ -199,10 +201,12 @@ impl<'a> Serializer<'a> {
         Ok(outputs)
     }
 
-    fn emitter(format: &str) -> Option<Box<dyn Emitter>> {
+    fn emitter(format: &str, options: &RenderOptions) -> Option<Box<dyn Emitter>> {
         match format {
             "bml" => Some(Box::new(BmlEmitter::new())),
-            "ini" => Some(Box::new(IniEmitter::new())),
+            "ini" => Some(Box::new(IniEmitter::new(options.ini))),
+            "toml" => Some(Box::new(TomlEmitter::new())),
+            "yaml" => Some(Box::new(YamlEmitter::new())),
             "xml" => Some(Box::new(XmlEmitter::new())),
             _ => None,
         }
@@ -410,14 +414,14 @@ impl<'a> Serializer<'a> {
             )?;
         }
         for action in actions.map.values() {
-            self.add_binding(&actions.target, &action.name, &action.expression)?;
+            self.add_binding(&actions.target, &action.name, BindingValue::Text(action.expression.clone()), None)?;
         }
         Ok(())
     }
 
     fn plan_layout_bindings(
         &mut self,
-        input: &InputDefinition,
+        input: &'a InputDefinition,
         target: &'a OwnedTargetPath,
         layout_name: &str,
         layout: &LayoutDefinition,
@@ -426,7 +430,7 @@ impl<'a> Serializer<'a> {
     ) -> Result<()> {
         for (logical_key, emulator_key) in &layout.mapping {
             if let Some(mapping) = input.mouse.get(logical_key).filter(|_| mouse) {
-                self.add_binding(target, emulator_key, &expand_template(mapping, device)?)?;
+                self.add_binding(target, emulator_key, mapping.map_text(|text| expand_template(text, device))?, input.binding.as_ref())?;
                 continue;
             }
             let projected = match Projection::shared().target(layout_name, *logical_key) {
@@ -449,19 +453,26 @@ impl<'a> Serializer<'a> {
                 .mapping
                 .get(&projected)
                 .ok_or(Error::MissingInputMapping(projected))?;
-            self.add_binding(target, emulator_key, &expand_template(mapping, device)?)?;
+            self.add_binding(target, emulator_key, mapping.map_text(|text| expand_template(text, device))?, input.binding.as_ref())?;
         }
         Ok(())
     }
 
-    fn add_binding(&mut self, target: &'a OwnedTargetPath, key: &str, value: &str) -> Result<()> {
+    fn add_binding(
+        &mut self,
+        target: &'a OwnedTargetPath,
+        key: &str,
+        value: BindingValue,
+        shape: Option<&'a BindingShape>,
+    ) -> Result<()> {
         let handle = self
             .target_graph
             .resolve(target.as_str())
             .ok_or_else(|| Error::UnknownTarget(target.as_str().into()))?;
         self.bindings[handle.index()].push(BindingPlan {
             key: key.into(),
-            value: value.into(),
+            value,
+            shape,
         });
         Ok(())
     }
@@ -491,7 +502,7 @@ impl<'a> Serializer<'a> {
                     .ok_or_else(|| Error::UnknownBoolStyle(name.clone()))
             })
             .transpose()?;
-        self.validate_attribute(target_definition, handle, emit)?;
+        self.validate_attribute(target_definition, emit)?;
         self.writes[handle.index()]
             .entry(instance)
             .or_default()
@@ -500,7 +511,8 @@ impl<'a> Serializer<'a> {
                 source,
                 bool_style,
                 int_style: emit.int_style.as_deref(),
-                attribute: emit.xml_attribute,
+                float_style: emit.float_style.as_deref(),
+                attribute: emit.attribute,
             });
         Ok(())
     }
@@ -558,6 +570,7 @@ impl<'a> Serializer<'a> {
                 .last()
                 .unwrap_or(target.path.as_str()),
             attributes: &attributes,
+            repeated: target.repeat,
         };
         emitter.enter_section(section)?;
         self.write_values(handle, instance, emitter)?;
@@ -597,13 +610,35 @@ impl<'a> Serializer<'a> {
         }
         if instance.is_none() {
             for binding in &self.bindings[handle.index()] {
-                emitter.write_binding(EmittedBinding {
-                    key: &binding.key,
-                    value: std::borrow::Cow::Borrowed(&binding.value),
-                })?;
+                Self::write_binding(binding, self.definition.targets[handle].path.as_str(), emitter)?;
             }
         }
         Ok(())
+    }
+
+    fn write_binding(binding: &BindingPlan<'_>, path: &str, emitter: &mut dyn Emitter) -> Result<()> {
+        let Some(shape) = binding.shape else {
+            return emitter.write_value(EmittedValue {
+                key: &binding.key,
+                value: (&binding.value).into(),
+            });
+        };
+        let section = SectionRef {
+            path,
+            name: &shape.section,
+            attributes: &[],
+            repeated: true,
+        };
+        emitter.enter_section(section)?;
+        for (key, field) in &shape.values {
+            let value = match field {
+                BindingField::Key => ScalarValue::String(&binding.key),
+                BindingField::Value => (&binding.value).into(),
+                BindingField::Literal(text) => ScalarValue::String(text),
+            };
+            emitter.write_value(EmittedValue { key, value })?;
+        }
+        emitter.exit_section(section)
     }
 
     fn scalar_for_plan<'b>(&'b self, plan: &'b WritePlan<'a>) -> Result<Option<ScalarValue<'b>>> {
@@ -670,7 +705,10 @@ impl<'a> Serializer<'a> {
                 value: *value,
                 style: plan.int_style,
             },
-            Value::Float(value) => ScalarValue::Float(*value),
+            Value::Float(value) => ScalarValue::Float {
+                value: *value,
+                style: plan.float_style,
+            },
             Value::String(value) => ScalarValue::String(value),
             Value::Path(value) => ScalarValue::Path(value),
             Value::Null | Value::Choice(_) => unreachable!(),
@@ -714,7 +752,7 @@ impl<'a> Serializer<'a> {
                     .target_graph
                     .resolve(emit_target.as_str())
                     .ok_or_else(|| Error::UnknownTarget(emit_target.as_str().into()))?;
-                self.validate_attribute(&self.definition.targets[emit_handle], emit_handle, emit)?;
+                self.validate_attribute(&self.definition.targets[emit_handle], emit)?;
             }
         }
         for (handle, target) in self.definition.targets.iter() {
@@ -728,28 +766,9 @@ impl<'a> Serializer<'a> {
         Ok(())
     }
 
-    fn validate_attribute(
-        &self,
-        target: &TargetDefinition,
-        handle: Handle<TargetDefinition>,
-        emit: &EmitDefinition,
-    ) -> Result<()> {
-        if !emit.xml_attribute {
-            return Ok(());
-        }
-        if target.parent.is_none() && target.additional_parents.is_empty() {
+    fn validate_attribute(&self, target: &TargetDefinition, emit: &EmitDefinition) -> Result<()> {
+        if emit.attribute && target.parent.is_none() && target.additional_parents.is_empty() {
             return Err(Error::AttributeOnDocumentRoot(target.path.as_str().into()));
-        }
-        if let Some(format) = self
-            .target_graph
-            .output_formats(handle)
-            .iter()
-            .find(|format| format.as_ref() != "xml")
-        {
-            return Err(Error::AttributeUnsupportedFormat {
-                target: target.path.as_str().into(),
-                format: format.clone(),
-            });
         }
         Ok(())
     }
@@ -794,6 +813,7 @@ fn expand_device(template: &str, index: usize) -> Result<String> {
     let guid = SdlGamepadIdentity::GUID.simple().to_string();
     let expanded = template
         .replace("{index}", &index.to_string())
+        .replace("{number}", &(index + 1).to_string())
         .replace("{name}", name)
         .replace("{guid}", &guid);
     reject_unknown_template(template, expanded)
