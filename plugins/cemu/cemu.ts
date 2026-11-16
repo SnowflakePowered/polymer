@@ -36,7 +36,7 @@ type Options = {
             }>,
         }>,
     },
-    "content-graphic": { api: number, async_compile: boolean },
+    "content-graphic": { api: number, async_compile: boolean, vsync: number },
 };
 
 type Storages = Readonly<{
@@ -108,10 +108,16 @@ export async function onConfigure(
             description: "Compile shaders in the background to reduce stutter. Vulkan only.",
             type: "bool",
             default: true,
+        }, {
+            key: "vsync",
+            title: "VSync",
+            description: "Synchronize frames to the display's refresh rate to prevent tearing.",
+            type: "bool",
+            default: false,
         }],
     }];
     const values: Record<string, Record<string, boolean | number | string | null>> = {
-        [GRAPHICS_GROUP]: { api, asyncShaders: asyncShaders(userConfiguration) },
+        [GRAPHICS_GROUP]: { api, asyncShaders: asyncShaders(userConfiguration), vsync: userConfiguration?.[GRAPHICS_GROUP]?.vsync === true },
     };
     const generation = await graphicsPacks.active();
     if (normalizeTitleId(game.titleId) && generation) {
@@ -133,6 +139,7 @@ export async function onLaunch(args: EmulatorLaunchArgs<Options, Storages>) {
     args.configuration.options().content.open_pad = true;
     args.configuration.options()["content-graphic"].api = api === "vulkan" ? 1 : 0;
     args.configuration.options()["content-graphic"].async_compile = asyncShaders(userConfiguration);
+    args.configuration.options()["content-graphic"].vsync = userConfiguration[GRAPHICS_GROUP]?.vsync === true ? 1 : 0;
 
     const generation = await runtime.launch();
     const entries = await runtimeEntries(generation);

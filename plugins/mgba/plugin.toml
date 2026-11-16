@@ -21,4 +21,4 @@ choices = ["stable", "preview", "nightly"]
 platforms = ["NINTENDO_GBA"]
 
 [emulator.configuration]
-definitions = ["config/input.toml"]
+definitions = ["config/input.toml", "config/runtime.toml"]
