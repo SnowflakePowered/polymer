@@ -21,11 +21,29 @@ pub struct InputBlock<'de> {
     pub device: &'de str,
     /// The mapping **values** from the SDL virtual gamepad to the emulator's
     /// configuration dialect.
-    pub mapping: LayoutMapping<'de>,
+    pub mapping: InputMapping<'de>,
     pub mouse: Option<MouseMapping<'de>>,
+    /// How one binding is written. Without it, a binding is `key = value`.
+    pub binding: Option<BindingShape<'de>>,
     /// The mapping **keys** from the layout inputspec to the emulator's
     /// emulated controller keys.
     pub layouts: BTreeMap<&'de str, LayoutMapping<'de>>,
+}
+
+/// Writes each binding as its own `section`, holding `values` in order. A
+/// value of `{key}` or `{value}` is the binding's emulator key or value.
+#[derive(Debug, Toml)]
+#[toml(FromToml)]
+pub struct BindingShape<'de> {
+    pub section: &'de str,
+    pub values: BindingShapeValues<'de>,
+}
+
+#[derive(Debug, Toml)]
+#[toml(FromToml)]
+pub struct BindingShapeValues<'de> {
+    #[toml(flatten, with = super::with::ordered_strings)]
+    pub values: IndexMap<&'de str, &'de str>,
 }
 
 /// The raw TOML `input.layouts` namespace.
@@ -41,11 +59,28 @@ pub struct LayoutMapping<'de> {
     pub options: Vec<OptionDefinition<'de>>,
 }
 
+/// An emulator-facing binding template: text, an integer, or a list of text.
+#[derive(Debug)]
+pub enum MappingValue<'de> {
+    Text(&'de str),
+    Integer(i64),
+    List(Vec<&'de str>),
+}
+
+#[derive(Debug, Toml)]
+#[toml(FromToml)]
+pub struct InputMapping<'de> {
+    #[toml(flatten, with = super::with::binding_value_map)]
+    pub mapping: IndexMap<BindingKey, MappingValue<'de>>,
+    #[toml(default)]
+    pub options: Vec<OptionDefinition<'de>>,
+}
+
 #[derive(Debug, Toml)]
 #[toml(FromToml)]
 pub struct MouseMapping<'de> {
-    #[toml(flatten, with = super::with::binding_map)]
-    pub mapping: IndexMap<BindingKey, &'de str>,
+    #[toml(flatten, with = super::with::binding_value_map)]
+    pub mapping: IndexMap<BindingKey, MappingValue<'de>>,
 }
 
 pub type PortGroup<'de> = BTreeMap<&'de str, Port<'de>>;

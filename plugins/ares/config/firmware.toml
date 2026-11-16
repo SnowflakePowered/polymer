@@ -1,0 +1,221 @@
+[targets.settings.ColecoVision.Firmware]
+[targets.settings.PCEngineCD.Firmware]
+[targets.settings.FamicomDiskSystem.Firmware]
+[targets.settings.GameBoyAdvance.Firmware]
+[targets.settings.Nintendo64DD.Firmware]
+[targets.settings.MegaCD.Firmware]
+[targets.settings.GameGear.Firmware]
+[targets.settings.Saturn.Firmware]
+[targets.settings.MasterSystem.Firmware]
+[targets.settings.NeoGeoAES.Firmware]
+[targets.settings.NeoGeoPocket.Firmware]
+[targets.settings.NeoGeoPocketColor.Firmware]
+[targets.settings.PlayStation.Firmware]
+
+[sections.colecovision_firmware]
+title = "ColecoVision Firmware"
+target = "settings.ColecoVision.Firmware"
+
+[[sections.colecovision_firmware.options]]
+key = "BIOS_World"
+title = "BIOS.World"
+type = "string"
+emit = { key = "BIOS.World" }
+
+[sections.pcenginecd_firmware]
+title = "PCEngineCD Firmware"
+target = "settings.PCEngineCD.Firmware"
+
+[[sections.pcenginecd_firmware.options]]
+key = "System-Card-1_0_Japan"
+title = "System-Card-1.0.Japan"
+type = "string"
+emit = { key = "System-Card-1.0.Japan" }
+
+[[sections.pcenginecd_firmware.options]]
+key = "System-Card-3_0_Japan"
+title = "System-Card-3.0.Japan"
+type = "string"
+emit = { key = "System-Card-3.0.Japan" }
+
+[[sections.pcenginecd_firmware.options]]
+key = "System-Card-3_0_US"
+title = "System-Card-3.0.US"
+type = "string"
+emit = { key = "System-Card-3.0.US" }
+
+[[sections.pcenginecd_firmware.options]]
+key = "Games-Express_Japan"
+title = "Games-Express.Japan"
+type = "string"
+emit = { key = "Games-Express.Japan" }
+
+[sections.famicomdisksystem_firmware]
+title = "FamicomDiskSystem Firmware"
+target = "settings.FamicomDiskSystem.Firmware"
+
+[[sections.famicomdisksystem_firmware.options]]
+key = "BIOS_Japan"
+title = "BIOS.Japan"
+type = "string"
+emit = { key = "BIOS.Japan" }
+
+[sections.gameboyadvance_firmware]
+title = "GameBoyAdvance Firmware"
+target = "settings.GameBoyAdvance.Firmware"
+
+[[sections.gameboyadvance_firmware.options]]
+key = "BIOS_World"
+title = "BIOS.World"
+type = "string"
+emit = { key = "BIOS.World" }
+
+[sections.nintendo64dd_firmware]
+title = "Nintendo64DD Firmware"
+target = "settings.Nintendo64DD.Firmware"
+
+[[sections.nintendo64dd_firmware.options]]
+key = "BIOS_Japan"
+title = "BIOS.Japan"
+type = "string"
+emit = { key = "BIOS.Japan" }
+
+[[sections.nintendo64dd_firmware.options]]
+key = "BIOS_US"
+title = "BIOS.US"
+type = "string"
+emit = { key = "BIOS.US" }
+
+[[sections.nintendo64dd_firmware.options]]
+key = "BIOS_DEV"
+title = "BIOS.DEV"
+type = "string"
+emit = { key = "BIOS.DEV" }
+
+[sections.megacd_firmware]
+title = "MegaCD Firmware"
+target = "settings.MegaCD.Firmware"
+
+[[sections.megacd_firmware.options]]
+key = "BIOS_US"
+title = "BIOS.US"
+type = "string"
+emit = { key = "BIOS.US" }
+
+[[sections.megacd_firmware.options]]
+key = "BIOS_Japan"
+title = "BIOS.Japan"
+type = "string"
+emit = { key = "BIOS.Japan" }
+
+[[sections.megacd_firmware.options]]
+key = "BIOS_Europe"
+title = "BIOS.Europe"
+type = "string"
+emit = { key = "BIOS.Europe" }
+
+[sections.gamegear_firmware]
+title = "GameGear Firmware"
+target = "settings.GameGear.Firmware"
+
+[[sections.gamegear_firmware.options]]
+key = "BIOS_World"
+title = "BIOS.World"
+type = "string"
+emit = { key = "BIOS.World" }
+
+[sections.saturn_firmware]
+title = "Saturn Firmware"
+target = "settings.Saturn.Firmware"
+
+[[sections.saturn_firmware.options]]
+key = "BIOS_US"
+title = "BIOS.US"
+type = "string"
+emit = { key = "BIOS.US" }
+
+[[sections.saturn_firmware.options]]
+key = "BIOS_Japan"
+title = "BIOS.Japan"
+type = "string"
+emit = { key = "BIOS.Japan" }
+
+[[sections.saturn_firmware.options]]
+key = "BIOS_Europe"
+title = "BIOS.Europe"
+type = "string"
+emit = { key = "BIOS.Europe" }
+
+[sections.mastersystem_firmware]
+title = "MasterSystem Firmware"
+target = "settings.MasterSystem.Firmware"
+
+[[sections.mastersystem_firmware.options]]
+key = "BIOS_US"
+title = "BIOS.US"
+type = "string"
+emit = { key = "BIOS.US" }
+
+[[sections.mastersystem_firmware.options]]
+key = "BIOS_Japan"
+title = "BIOS.Japan"
+type = "string"
+emit = { key = "BIOS.Japan" }
+
+[[sections.mastersystem_firmware.options]]
+key = "BIOS_Europe"
+title = "BIOS.Europe"
+type = "string"
+emit = { key = "BIOS.Europe" }
+
+[sections.neogeoaes_firmware]
+title = "NeoGeoAES Firmware"
+target = "settings.NeoGeoAES.Firmware"
+
+[[sections.neogeoaes_firmware.options]]
+key = "BIOS_World"
+title = "BIOS.World"
+type = "string"
+emit = { key = "BIOS.World" }
+
+[sections.neogeopocket_firmware]
+title = "NeoGeoPocket Firmware"
+target = "settings.NeoGeoPocket.Firmware"
+
+[[sections.neogeopocket_firmware.options]]
+key = "BIOS_World"
+title = "BIOS.World"
+type = "string"
+emit = { key = "BIOS.World" }
+
+[sections.neogeopocketcolor_firmware]
+title = "NeoGeoPocketColor Firmware"
+target = "settings.NeoGeoPocketColor.Firmware"
+
+[[sections.neogeopocketcolor_firmware.options]]
+key = "BIOS_World"
+title = "BIOS.World"
+type = "string"
+emit = { key = "BIOS.World" }
+
+[sections.playstation_firmware]
+title = "PlayStation Firmware"
+target = "settings.PlayStation.Firmware"
+
+[[sections.playstation_firmware.options]]
+key = "BIOS_US"
+title = "BIOS.US"
+type = "string"
+emit = { key = "BIOS.US" }
+
+[[sections.playstation_firmware.options]]
+key = "BIOS_Japan"
+title = "BIOS.Japan"
+type = "string"
+emit = { key = "BIOS.Japan" }
+
+[[sections.playstation_firmware.options]]
+key = "BIOS_Europe"
+title = "BIOS.Europe"
+type = "string"
+emit = { key = "BIOS.Europe" }

@@ -25,6 +25,7 @@ definitions = [
     "config/dolphin.toml",
     "config/actions.toml",
     "config/input.toml",
+    "config/logger.toml",
     "config/sections/main.toml",
     "config/sections/gfx.toml",
     "config/sections/gfx/*.toml",

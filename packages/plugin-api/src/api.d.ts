@@ -100,9 +100,20 @@ export type Filesystem = {
     path(path: string): string,
 };
 
+export type RenderOptions = Readonly<{
+    ini?: Readonly<{
+        /** Which values are wrapped in double quotes. Defaults to "none". */
+        quote?: "none" | "strings" | "all",
+        /** Backslash-escapes `\` and `"` inside quoted values. */
+        escape?: boolean,
+        /** Writes `key = value` instead of `key=value`. */
+        spaces?: boolean,
+    }>,
+}>;
+
 export type Configuration<Options = unknown> = {
     options(): Options,
-    render(): Readonly<Record<string, Uint8Array>>,
+    render(options?: RenderOptions): Readonly<Record<string, Uint8Array>>,
 };
 
 export type RepeatedSection<Options> = Readonly<{

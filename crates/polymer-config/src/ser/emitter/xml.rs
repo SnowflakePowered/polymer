@@ -7,7 +7,7 @@ use quick_xml::{
 
 use crate::error::Error;
 
-use super::{DocumentRef, EmitResult, EmittedBinding, EmittedValue, Emitter, SectionRef};
+use super::{DocumentRef, EmitResult, EmittedValue, Emitter, SectionRef};
 
 /// An in-memory XML emitter backed by [`quick_xml`].
 pub struct XmlEmitter {
@@ -68,25 +68,6 @@ impl Emitter for XmlEmitter {
         self.document
             .create_element(value.key)
             .write_text_content(BytesText::new(&rendered))?;
-        Ok(())
-    }
-
-    fn write_binding(&mut self, binding: EmittedBinding<'_>) -> EmitResult<()> {
-        if self.sections.is_empty() {
-            return Err(Error::emitter_message(
-                "an XML binding cannot be emitted outside the root element",
-            ));
-        }
-        self.document
-            .write_event(Event::Start(BytesStart::new("entry")))?;
-        self.document
-            .create_element("mapping")
-            .write_text_content(BytesText::new(binding.key))?;
-        self.document
-            .create_element("button")
-            .write_text_content(BytesText::new(&binding.value))?;
-        self.document
-            .write_event(Event::End(BytesEnd::new("entry")))?;
         Ok(())
     }
 

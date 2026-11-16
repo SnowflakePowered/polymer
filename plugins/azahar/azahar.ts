@@ -133,15 +133,14 @@ export const onLaunch = async (args: EmulatorLaunchArgs<
     fs.mount("/User");
     const game = fs.mount("/Game", args.launchSet[0].package, { mode: "rx" });
     const options = args.configuration.options().storage;
-    // QSettings treats backslashes as escapes and commas as list separators.
-    options.nand_directory = JSON.stringify(fs.path("/Storage/nand").replaceAll("\\", "/"));
-    options.sdmc_directory = JSON.stringify(fs.path("/Storage/sdmc").replaceAll("\\", "/"));
+    options.nand_directory = fs.path("/Storage/nand");
+    options.sdmc_directory = fs.path("/Storage/sdmc");
     args.configuration.options().renderer.resolution_factor = internalResolution(args.userConfiguration);
     args.configuration.options().renderer.graphics_api = graphicsApi(args.userConfiguration).value;
     args.configuration.options().renderer.use_vsync = args.userConfiguration?.graphics?.vsync !== false;
     args.configuration.options().renderer.frame_limit = frameLimit(args.userConfiguration);
     args.configuration.options().core.cpu_clock_percentage = cpuClock(args.userConfiguration);
-    for (const [name, bytes] of Object.entries(args.configuration.render())) {
+    for (const [name, bytes] of Object.entries(args.configuration.render({ ini: { quote: "strings", escape: true } }))) {
         fs.mount(`/Azahar/user/config/${name}`, bytes, { mode: "rw" });
     }
     return {

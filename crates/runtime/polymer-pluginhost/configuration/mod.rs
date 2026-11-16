@@ -2,7 +2,7 @@ use deno_core::{OpState, op2};
 use deno_error::JsErrorBox;
 use polymer_config::{
     ast::{ConfigurationInstance, Value},
-    ser::{GamepadBinding, Serializer},
+    ser::{GamepadBinding, RenderOptions, Serializer},
 };
 use serde::Serialize;
 use serde_bytes::ByteBuf;
@@ -194,12 +194,13 @@ impl ConfigurationInstances {
     pub(crate) fn render(
         &mut self,
         id: ConfigurationId,
+        options: &RenderOptions,
     ) -> Result<SerializedConfiguration, ConfigurationAccessError> {
         let entry = self
             .instances
             .get(&id)
             .ok_or(ConfigurationAccessError::UnknownConfiguration(id))?;
-        serialize(&entry.instance, entry.bindings.clone())
+        serialize(&entry.instance, entry.bindings.clone(), options)
     }
 
     fn bindings(topology: &polymer_controllers::ControllerTopology) -> Vec<GamepadBinding> {
@@ -218,9 +219,10 @@ impl ConfigurationInstances {
 pub(crate) fn serialize(
     instance: &ConfigurationInstance,
     bindings: Vec<GamepadBinding>,
+    options: &RenderOptions,
 ) -> Result<SerializedConfiguration, ConfigurationAccessError> {
     let serializer = Serializer::new(instance, bindings)?;
-    let files = serializer.serialize()?;
+    let files = serializer.serialize(options)?;
     Ok(files
         .into_iter()
         .map(|(path, bytes)| (path.into(), bytes))
@@ -311,10 +313,11 @@ fn op_configuration_entries(
 fn op_configuration_render(
     state: &mut OpState,
     id: ConfigurationId,
+    #[serde] options: Option<RenderOptions>,
 ) -> Result<BTreeMap<String, ByteBuf>, JsErrorBox> {
     Ok(state
         .borrow_mut::<ConfigurationInstances>()
-        .render(id)
+        .render(id, &options.unwrap_or_default())
         .map_err(|error| JsErrorBox::generic(error.to_string()))?
         .into_iter()
         .map(|(path, bytes)| (path, ByteBuf::from(bytes)))

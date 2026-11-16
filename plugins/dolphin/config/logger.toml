@@ -1,0 +1,97 @@
+[targets.logger]
+output = { format = "ini", path = "Config/Logger.ini" }
+
+[targets.logger.Logs]
+[targets.logger.Options]
+
+[sections.logs]
+title = "Logs"
+target = "logger.Logs"
+
+[[sections.logs.options]]
+key = "BOOT"
+title = "BOOT"
+type = "bool"
+default = true
+emit = { key = "BOOT", bool_style = "upper" }
+
+[[sections.logs.options]]
+key = "COMMON"
+title = "COMMON"
+type = "bool"
+default = true
+emit = { key = "COMMON", bool_style = "upper" }
+
+[[sections.logs.options]]
+key = "CORE"
+title = "CORE"
+type = "bool"
+default = true
+emit = { key = "CORE", bool_style = "upper" }
+
+[[sections.logs.options]]
+key = "IOS"
+title = "IOS"
+type = "bool"
+default = true
+emit = { key = "IOS", bool_style = "upper" }
+
+[[sections.logs.options]]
+key = "IOS_ES"
+title = "IOS_ES"
+type = "bool"
+default = true
+emit = { key = "IOS_ES", bool_style = "upper" }
+
+[[sections.logs.options]]
+key = "IOS_FS"
+title = "IOS_FS"
+type = "bool"
+default = true
+emit = { key = "IOS_FS", bool_style = "upper" }
+
+[[sections.logs.options]]
+key = "WII_IPC"
+title = "WII_IPC"
+type = "bool"
+default = true
+emit = { key = "WII_IPC", bool_style = "upper" }
+
+[[sections.logs.options]]
+key = "WIIMOTE"
+title = "WIIMOTE"
+type = "bool"
+default = true
+emit = { key = "WIIMOTE", bool_style = "upper" }
+
+[sections.logging]
+title = "Options"
+target = "logger.Options"
+
+[[sections.logging.options]]
+key = "Verbosity"
+title = "Verbosity"
+type = "int"
+default = 4
+emit = { key = "Verbosity" }
+
+[[sections.logging.options]]
+key = "WriteToConsole"
+title = "WriteToConsole"
+type = "bool"
+default = true
+emit = { key = "WriteToConsole", bool_style = "upper" }
+
+[[sections.logging.options]]
+key = "WriteToFile"
+title = "WriteToFile"
+type = "bool"
+default = true
+emit = { key = "WriteToFile", bool_style = "upper" }
+
+[[sections.logging.options]]
+key = "WriteToWindow"
+title = "WriteToWindow"
+type = "bool"
+default = false
+emit = { key = "WriteToWindow", bool_style = "upper" }

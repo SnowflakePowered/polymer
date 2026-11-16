@@ -15,6 +15,8 @@ consolespec.workspace = true
 indexmap = { version = "2" }
 configparser = { version = "3.2", features = ["indexmap"] }
 quick-xml = "0.39"
+toml_edit = "0.25"
+rust-yaml = { version = "1.1", default-features = false }
 bml = "0.3.1"
 rt-format = "0.3.1"
 crc = "3.4"

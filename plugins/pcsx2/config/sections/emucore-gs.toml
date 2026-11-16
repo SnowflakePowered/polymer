@@ -752,8 +752,8 @@ emit = { key = "TVShader" }
 [[sections.emucore-gs.options]]
 key = "upscale_multiplier"
 title = "Upscale Multiplier"
-type = "string"
-emit = { key = "upscale_multiplier" }
+type = "float"
+emit = { key = "upscale_multiplier", float_style = "{:.2}" }
 
 [[sections.emucore-gs.options]]
 key = "use_blit_swap_chain"

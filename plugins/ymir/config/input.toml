@@ -1,34 +1,34 @@
 [targets.settings]
-output = { format = "ini", path = "Ymir.toml" }
+output = { format = "toml", path = "Ymir.toml" }
 
-[targets.settings."Port1"]
+[targets.settings.Input.Port1.ControlPad.Binds]
 
-[targets.settings."Port2"]
+[targets.settings.Input.Port2.ControlPad.Binds]
 
 [input]
 driver = "sdl3"
 device = "{index}"
 
 [input.mapping]
-"button.a" = "[\"GamepadA@{device}\"]"
-"button.b" = "[\"GamepadB@{device}\"]"
-"button.x" = "[\"GamepadX@{device}\"]"
-"button.y" = "[\"GamepadY@{device}\"]"
-"button.select" = "[\"GamepadBack@{device}\"]"
-"button.guide" = "[\"GamepadGuide@{device}\"]"
-"button.start" = "[\"GamepadStart@{device}\"]"
-"button.clickl" = "[\"GamepadLeftThumb@{device}\"]"
-"button.clickr" = "[\"GamepadRightThumb@{device}\"]"
-"button.l" = "[\"GamepadLeftBumper@{device}\"]"
-"button.r" = "[\"GamepadRightBumper@{device}\"]"
-"directional.n" = "[\"GamepadDpadUp@{device}\"]"
-"directional.s" = "[\"GamepadDpadDown@{device}\"]"
-"directional.w" = "[\"GamepadDpadLeft@{device}\"]"
-"directional.e" = "[\"GamepadDpadRight@{device}\"]"
-"trigger.left" = "[\"GamepadLeftTriggerButton@{device}\"]"
-"trigger.right" = "[\"GamepadRightTriggerButton@{device}\"]"
-"button.0" = "[\"GamepadMisc1@{device}\"]"
-"button.1" = "[\"GamepadRightPaddle1@{device}\"]"
+"button.a" = ["GamepadA@{device}"]
+"button.b" = ["GamepadB@{device}"]
+"button.x" = ["GamepadX@{device}"]
+"button.y" = ["GamepadY@{device}"]
+"button.select" = ["GamepadBack@{device}"]
+"button.guide" = ["GamepadGuide@{device}"]
+"button.start" = ["GamepadStart@{device}"]
+"button.clickl" = ["GamepadLeftThumb@{device}"]
+"button.clickr" = ["GamepadRightThumb@{device}"]
+"button.l" = ["GamepadLeftBumper@{device}"]
+"button.r" = ["GamepadRightBumper@{device}"]
+"directional.n" = ["GamepadDpadUp@{device}"]
+"directional.s" = ["GamepadDpadDown@{device}"]
+"directional.w" = ["GamepadDpadLeft@{device}"]
+"directional.e" = ["GamepadDpadRight@{device}"]
+"trigger.left" = ["GamepadLeftTriggerButton@{device}"]
+"trigger.right" = ["GamepadRightTriggerButton@{device}"]
+"button.0" = ["GamepadMisc1@{device}"]
+"button.1" = ["GamepadRightPaddle1@{device}"]
 
 [input.layouts."SAT_CONTROLLER"]
 "button.a" = "A"
@@ -46,17 +46,13 @@ device = "{index}"
 "button.z" = "Z"
 
 [platforms.SEGA_SAT.ports.controller.0]
-target = "settings.Port1"
+target = "settings.Input.Port1.ControlPad.Binds"
 layouts = ["SAT_CONTROLLER"]
-emit.unplugged = [{ key = "PeripheralType", value = '"None"', target = "settings.Type1" }]
-emit.SAT_CONTROLLER = [{ key = "PeripheralType", value = '"ControlPad"', target = "settings.Type1" }]
+emit.unplugged = [{ key = "PeripheralType", value = "None", target = "settings.Input.Port1" }]
+emit.SAT_CONTROLLER = [{ key = "PeripheralType", value = "ControlPad", target = "settings.Input.Port1" }]
 
 [platforms.SEGA_SAT.ports.controller.1]
-target = "settings.Port2"
+target = "settings.Input.Port2.ControlPad.Binds"
 layouts = ["SAT_CONTROLLER"]
-emit.unplugged = [{ key = "PeripheralType", value = '"None"', target = "settings.Type2" }]
-emit.SAT_CONTROLLER = [{ key = "PeripheralType", value = '"ControlPad"', target = "settings.Type2" }]
-
-[targets.settings.Type1]
-
-[targets.settings.Type2]
+emit.unplugged = [{ key = "PeripheralType", value = "None", target = "settings.Input.Port2" }]
+emit.SAT_CONTROLLER = [{ key = "PeripheralType", value = "ControlPad", target = "settings.Input.Port2" }]

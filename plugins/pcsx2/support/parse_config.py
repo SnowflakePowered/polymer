@@ -46,6 +46,13 @@ cppconfig.NOOP_MACROS = ("TRANSLATE_NOOP", "TRANSLATE_SV", "FSUI_NSTR")
 
 SETTINGS_FILE = "inis/PCSX2.ini"
 BOOL_STYLE = "lower"
+FLOAT_STYLE = "{:.2}"
+FLOAT_SETTINGS = {
+    ("EmuCore/GS", "upscale_multiplier"),
+    ("Framerate", "NominalScalar"),
+    ("Framerate", "SlomoScalar"),
+    ("Framerate", "TurboScalar"),
+}
 FILESYSTEM_SETTINGS = {
     ("DEV9/Hdd", "HddFile"),
     ("EmuCore", "BlockDumpSaveDirectory"),
@@ -317,9 +324,13 @@ def build_definition(settings: list[dict], defaults: dict[tuple[str, str], str],
                 typed += 1
             if (section, setting["key"]) in FILESYSTEM_SETTINGS:
                 kind = "path"
+            if (section, setting["key"]) in FLOAT_SETTINGS:
+                kind = "float"
             emit = {"key": setting["key"]}
             if kind == "bool":
                 emit["bool_style"] = BOOL_STYLE
+            if kind == "float":
+                emit["float_style"] = FLOAT_STYLE
             lines.append(f"[[sections.{toml_key(slug)}.options]]")
             lines.append(f"key = {toml_string(key)}")
             lines.append(f"title = {toml_string(humanize(setting['key'].replace('.', ' ')))}")

@@ -40,8 +40,8 @@ type Options = {
             slot2_filename: string,
         },
         input_sources: { sdl: boolean },
-        "emucore-gs": { renderer: number, upscale_multiplier: string, vsync_enable: boolean },
-        framerate: { nominal_scalar: string },
+        "emucore-gs": { renderer: number, upscale_multiplier: number, vsync_enable: boolean },
+        framerate: { nominal_scalar: number },
         "emucore-speedhacks": { ee_cycle_rate: number },
 };
 
@@ -215,9 +215,9 @@ export const onLaunch = async (args: EmulatorLaunchArgs<Options, Readonly<{ mem1
     options.input_sources.sdl = true;
     options["emucore-gs"].renderer = graphicsApi(args.userConfiguration).value;
     options["emucore-speedhacks"].ee_cycle_rate = cpuClock(args.userConfiguration).value;
-    options["emucore-gs"].upscale_multiplier = String(internalResolution(args.userConfiguration));
+    options["emucore-gs"].upscale_multiplier = internalResolution(args.userConfiguration);
     options["emucore-gs"].vsync_enable = args.userConfiguration?.graphics?.vsync === true;
-    options.framerate.nominal_scalar = String(frameLimit(args.userConfiguration) / 100);
+    options.framerate.nominal_scalar = frameLimit(args.userConfiguration) / 100;
     args.filesystem.mount("/PCSX2", args.configuration, { mode: "rw" });
 
     return {
