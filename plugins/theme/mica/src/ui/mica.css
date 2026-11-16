@@ -64,6 +64,7 @@ h1, h2, h3, p { margin: 0; font-weight: inherit; }
 @keyframes mc-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes mc-rise { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes mc-pop { from { opacity: 0; transform: scale(1.04); } to { opacity: 1; transform: scale(1); } }
+@keyframes mc-drop { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
 
 .mc-root { position: relative; display: flex; height: 100%; }
 .mc-root[data-playing] { background-image: linear-gradient(var(--mc-root), var(--mc-root)); background-position: 0 var(--mc-caption); background-size: 100% 100%; background-repeat: no-repeat; }
@@ -169,6 +170,10 @@ button.mc-field:hover { background: var(--mc-surface-hover); }
 .mc-menu-layer[data-open] { display: flex; }
 .mc-menu { display: flex; flex-direction: column; min-width: 300px; max-width: 70%; max-height: calc(100% - 48px); overflow-y: auto; padding: 4px; border: 1px solid var(--mc-stroke); border-radius: var(--mc-radius-card); background: var(--mc-layer); box-shadow: 0 8px 32px rgba(0, 0, 0, .5); animation: mc-pop .2s var(--mc-ease-snap) both; }
 .mc-menu[data-state="closed"] { display: none; }
+.mc-menu-layer[data-anchored] { top: 0; bottom: 0; display: none; background: transparent; }
+.mc-menu-layer[data-anchored][data-open] { display: block; }
+.mc-menu-layer[data-anchored] .mc-menu { position: absolute; min-width: 160px; max-width: min(26rem, calc(100vw - 16px)); max-height: calc(100vh - 16px); border-radius: var(--mc-radius-card); box-shadow: 0 8px 16px rgba(0, 0, 0, .26); animation: mc-drop .25s var(--mc-ease-snap) both; }
+.mc-menu-layer[data-anchored] .mc-menu-item { min-height: 32px; padding: 0 12px; }
 .mc-menu-title { padding: 10px 12px 8px; font-size: 14px; line-height: 20px; font-weight: 600; color: var(--mc-white); }
 .mc-menu-list { display: flex; flex-direction: column; gap: 2px; }
 .mc-menu-item { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 40px; padding: 0 12px 0 16px; border-radius: var(--mc-radius); color: var(--mc-white); cursor: pointer; transition: background-color 80ms ease-out; }

@@ -1,6 +1,7 @@
-import { For, Show, createEffect, createMemo, onCleanup } from "solid-js";
+import { For, Show, createEffect, createMemo, createResource, createSignal, onCleanup } from "solid-js";
 import { unwrap } from "solid-js/store";
 import type { LaunchInstance } from "@polymer-fe/frontend";
+import type { LibraryShowcase } from "@polymer-fe/frontend/library-state";
 import type { ShaderTarget } from "@polymer-fe/frontend/shaders";
 import { DUAL_SCREEN_PLATFORMS, useShell } from "../../app/shell";
 import { Throbber, useInputScope } from "../../ui";
@@ -46,6 +47,17 @@ export function GamePage() {
     return true;
   } }));
 
+  const loading = () => shell.state.phase.kind !== "idle";
+  const path = createMemo<string | undefined>(previous => shell.state.phase.kind === "preparing" ? shell.state.phase.path : shell.state.draft?.path ?? previous);
+  const status = createMemo<string>(previous => { const phase = shell.state.phase; return phase.kind === "idle" ? previous ?? "" : `${phase.kind === "preparing" ? "Preparing" : "Launching"} ${phase.name}`; });
+  const [art] = createResource(path, path => shell.library.showcase(path).catch(() => ({} as LibraryShowcase)));
+  const [shown, setShown] = createSignal(loading());
+  createEffect(() => {
+    if (loading()) return setShown(true);
+    const timer = setTimeout(() => setShown(false), 600);
+    onCleanup(() => clearTimeout(timer));
+  });
+
   const register = (index: number) => (element: HTMLElement) => { element.setAttribute("src", String(index)); elements.set(index, element); };
   return <main class="vp-game">
     <Show when={dualScreen()} fallback={
@@ -63,8 +75,14 @@ export function GamePage() {
         </tracked-surface-group>
       </section>
     </Show>
-    <Show when={shell.state.phase.kind !== "idle"}>
-      <section class="vp-launching" aria-live="polite"><Throbber /><p>{shell.state.phase.kind === "preparing" ? "Preparing" : "Launching"} {"name" in shell.state.phase ? shell.state.phase.name : ""}</p></section>
+    <Show when={shown()}>
+      <section class="vp-launching" data-leaving={!loading() || undefined} aria-live="polite">
+        <Show when={art()?.background ?? art()?.cover}>{image => <img class="vp-launching-backdrop" src={image()} alt="" />}</Show>
+        <div class="vp-launching-content">
+          <Show when={art()?.cover}>{cover => <img class="vp-launching-cover" src={cover()} alt="" />}</Show>
+          <Throbber /><p>{status()}</p>
+        </div>
+      </section>
     </Show>
     <QuickAccess />
   </main>;

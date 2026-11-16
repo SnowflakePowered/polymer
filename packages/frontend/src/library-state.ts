@@ -15,7 +15,7 @@ export type LibraryEntry = {
 };
 
 /** Wide artwork for presenting one game, when its scrapers or package provide it. */
-export type LibraryShowcase = { background?: string; logo?: string };
+export type LibraryShowcase = { background?: string; logo?: string; cover?: string };
 export type LibraryActivity = { id: string; title: string; message: string; state: "running" | "complete" | "error"; completed?: number; total?: number };
 /** Activities contain running jobs and newly completed notices, not notification history. */
 export type LibrarySnapshot = { games: LibraryEntry[]; total: number; filtered: boolean; status: string; activities: LibraryActivity[] };
@@ -153,7 +153,7 @@ export class LibraryState {
     void this.load(0, this.limit, true);
   };
 
-  /** Fetches a game's background and logo by launchable path, preferring scraped media over package banners. */
+  /** Fetches a game's background, logo and box art by launchable path, preferring scraped media over package banners. */
   showcase(path: string): Promise<LibraryShowcase> {
     let showcase = this.showcases.get(path);
     if (!showcase) {
@@ -161,11 +161,12 @@ export class LibraryState {
         const launchable = await this.library.launchables.find(path);
         const game = launchable && await this.library.games.get(launchable.parentBinaryId ?? launchable.binaryId);
         if (!game) return {};
-        const [background, logo] = await Promise.all([
+        const [background, logo, cover] = await Promise.all([
           this.media(game, ["media.background", "banner.background"], false),
           this.media(game, ["media.logo", "banner.logo"], false),
+          this.media(game, ["media.boxart.front"], false),
         ]);
-        return { background: background?.url, logo: logo?.url };
+        return { background: background?.url, logo: logo?.url, cover: cover?.url };
       })();
       this.showcases.set(path, showcase);
       showcase.catch(() => this.showcases.delete(path));

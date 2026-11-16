@@ -79,12 +79,23 @@ export function SidePanel(props: OverlayProps & { side: "left" | "right" | "cent
 
 export type MenuAction = { label: string; danger?: boolean; disabled?: boolean; run(): void };
 
-export function ContextMenu(props: { open: boolean; onClose(): void; title?: string; actions: readonly MenuAction[] }) {
+export function ContextMenu(props: { open: boolean; onClose(): void; title?: string; actions: readonly MenuAction[]; anchor?: () => HTMLElement | undefined }) {
   let content!: HTMLDivElement;
   const values = () => props.actions.map((action, index) => ({ ...action, value: String(index) })).filter(action => !action.disabled);
   const api = useMenu(() => ({ open: props.open, onOpenChange: details => { if (!details.open) props.onClose(); }, onInteractOutside: event => event.preventDefault(),
     onSelect: details => { props.actions[Number(details.value)]?.run(); props.onClose(); } }));
   const [ready, setReady] = createSignal(false);
+  const [place, setPlace] = createSignal<{ top: number; left: number }>();
+  createEffect(() => {
+    const anchor = props.open ? props.anchor?.() : undefined;
+    if (!anchor) return setPlace(undefined);
+    const frame = requestAnimationFrame(() => {
+      const box = anchor.getBoundingClientRect(), menu = content.getBoundingClientRect();
+      const top = box.bottom + menu.height + 12 > window.innerHeight ? box.top - menu.height - 4 : box.bottom + 4;
+      setPlace({ top: Math.max(8, top), left: Math.max(8, Math.min(box.left, window.innerWidth - menu.width - 8)) });
+    });
+    onCleanup(() => { cancelAnimationFrame(frame); setPlace(undefined); });
+  });
   useClickOutside(() => content, () => props.open, () => props.onClose());
   createEffect(() => { if (props.open) queueMicrotask(() => { api.api().setHighlightedValue(values()[0]?.value ?? ""); setReady(true); }); else setReady(false); });
   useInputScope(() => ({ root: content, enabled: props.open && ready(), overlay: true, navigation: true, handle: action => {
@@ -97,8 +108,9 @@ export function ContextMenu(props: { open: boolean; onClose(): void; title?: str
     if (next) api.api().setHighlightedValue(next.value);
     return true;
   } }));
-  return <Menu.RootProvider value={api}><OverlayPortal><div class="mc-menu-layer" data-open={props.open || undefined}><Menu.Content ref={content} class="mc-menu mc-context-menu">
-    <Show when={props.title}><div class="mc-menu-title">{props.title}</div></Show>
+  return <Menu.RootProvider value={api}><OverlayPortal><div class="mc-menu-layer" data-anchored={props.anchor ? "" : undefined} data-open={props.open || undefined}><Menu.Content ref={content} class="mc-menu mc-context-menu"
+    style={!props.anchor ? undefined : place() ? { top: `${place()!.top}px`, left: `${place()!.left}px` } : { visibility: "hidden" }}>
+    <Show when={props.title && !props.anchor}><div class="mc-menu-title">{props.title}</div></Show>
     <For each={props.actions}>{(action, index) => <Menu.Item value={String(index())} disabled={action.disabled} class="mc-menu-item" data-danger={action.danger || undefined}><span>{action.label}</span></Menu.Item>}</For>
   </Menu.Content></div></OverlayPortal></Menu.RootProvider>;
 }

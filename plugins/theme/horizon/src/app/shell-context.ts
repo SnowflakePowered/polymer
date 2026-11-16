@@ -1,6 +1,7 @@
 import { createContext, useContext, type Context } from "solid-js";
 import type { PackageConfiguration } from "@polymer-fe/frontend";
 import type { PlatformShaders } from "@polymer-fe/frontend/shaders";
+import type { LibraryShowcase } from "@polymer-fe/frontend/library-state";
 import type { LibraryQueryState, RecentGame, ShellModel } from "./models";
 
 export type ShellContextValue = {
@@ -17,6 +18,7 @@ export type ShellContextValue = {
   rememberGame(): void;
   queryLibrary(query: Partial<LibraryQueryState>): void;
   loadMoreGames(): void;
+  showcase(path: string): Promise<LibraryShowcase>;
 };
 
 export const ShellContext: Context<ShellContextValue | undefined> = import.meta.hot?.data.shellContext ?? createContext<ShellContextValue>();
