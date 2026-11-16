@@ -138,7 +138,7 @@ export function ShellProvider(props: ParentProps) {
     const preparation = new AbortController();
     detection = preparation;
     setModel("error", "");
-    setModel("launcher", { kind: "detecting", name: path.split(/[\\/]/).pop() || path });
+    setModel("launcher", { kind: "detecting", name: path.split(/[\\/]/).pop() || path, path });
     if (destination === "launch") {
       setModel("request", null);
       setModel("surfaces", []);
@@ -295,6 +295,7 @@ export function ShellProvider(props: ParentProps) {
       rememberGame,
       queryLibrary,
       loadMoreGames,
+      showcase: path => libraryState.showcase(path),
     }}>
       <ColorModeProvider mode={model.colorMode}><NotificationProvider><div class="horizon-shell-root">
         <div class="horizon-shell-content">{props.children}</div>

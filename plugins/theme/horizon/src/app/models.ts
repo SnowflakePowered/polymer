@@ -12,7 +12,7 @@ export type AudioState = { available: boolean; volume: number; muted: boolean };
 
 export type LauncherState =
   | { kind: "idle" }
-  | { kind: "detecting"; name: string }
+  | { kind: "detecting"; name: string; path: string }
   | { kind: "details" }
   | { kind: "launching"; name: string }
   | { kind: "error"; message: string };

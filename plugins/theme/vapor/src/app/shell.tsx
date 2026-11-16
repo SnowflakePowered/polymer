@@ -14,7 +14,7 @@ const RECENT_LIMIT = 30;
 
 export type Phase =
   | { kind: "idle" }
-  | { kind: "preparing"; name: string }
+  | { kind: "preparing"; name: string; path: string }
   | { kind: "launching"; name: string };
 export type LibrarySort = "title" | "platform" | "added";
 export const DUAL_SCREEN_PLATFORMS = ["NINTENDO_3DS", "NINTENDO_N3DS"];
@@ -97,7 +97,7 @@ export class Shell {
     if (window.Polymer.emulator.activeLaunch) return this.fail(new Error("Close the running game before opening another one"));
     this.preparation?.abort();
     const preparation = this.preparation = new AbortController();
-    this.set("phase", { kind: "preparing", name: game.name });
+    this.set("phase", { kind: "preparing", name: game.name, path: game.path });
     if (then === "launch") this.navigate("/game");
     try {
       const resolved = await this.games.resolve(game.path, game.emulator || undefined, preparation.signal);

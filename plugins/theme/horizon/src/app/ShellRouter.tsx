@@ -10,7 +10,6 @@ import { MappingPage } from "../features/controllers/MappingPage";
 import { LibraryPage } from "../features/library/LibraryPage";
 import { GameDetailsPage } from "../features/details/GameDetailsPage";
 import { GameLayout } from "../features/game/GameLayout";
-import { LaunchingPage } from "../features/game/LaunchingPage";
 import { PlayPage } from "../features/game/PlayPage";
 import { ControllerReorder } from "../features/game/ControllerReorder";
 import "./ShellRouter.css";
@@ -36,9 +35,9 @@ export function ShellRouter() {
     <Route path="/controllers/mapping" component={MappingPage} />
     <Route path="/settings" component={SettingsPage} />
     <Route path="/game" component={GameLayout}>
-      <Route path="/launching" component={LaunchingPage} />
+      <Route path="/launching" component={() => null} />
       <Route path="/:platform/:game">
-        <Route path="/launching" component={LaunchingPage} />
+        <Route path="/launching" component={() => null} />
         <Route path="/play/:layout?" component={PlayPage} />
         <Route path="/reorder" component={() => <ControllerReorder />} />
       </Route>

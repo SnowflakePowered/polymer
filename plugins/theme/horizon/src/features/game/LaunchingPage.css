@@ -1,5 +1,8 @@
 @layer horizon {
-.horizon-launching { display: grid; width: 100%; height: 100%; z-index: 40; grid-area: 1 / 1; place-items: center; color: var(--hz-text); background: var(--hz-surface); font-family: var(--hz-font); }
-.horizon-launching > div { width: min(24rem, 70%); }
-.horizon-launching p { font-size: 1.25rem; }
+.horizon-launching { position: relative; display: grid; width: 100%; height: 100%; z-index: 40; grid-area: 1 / 1; place-items: center; overflow: hidden; color: var(--hz-text); background: var(--hz-surface); font-family: var(--hz-font); }
+.horizon-launching-backdrop { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.horizon-launching-logo { position: relative; max-width: 60vw; max-height: 40vh; object-fit: contain; animation: horizon-launching-pulse 2s ease-in-out infinite; }
+.horizon-launching-title { position: relative; margin: 0; padding: 0 2rem; font-size: 2.5rem; text-align: center; animation: horizon-launching-pulse 2s ease-in-out infinite; }
+@keyframes horizon-launching-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+.horizon-launching-spinner { position: absolute; right: 2.5rem; bottom: 2.5rem; }
 }

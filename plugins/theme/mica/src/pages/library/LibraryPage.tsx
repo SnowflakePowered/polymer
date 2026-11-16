@@ -11,6 +11,7 @@ export function LibraryPage() {
   const shell = useShell();
   const [sortOpen, setSortOpen] = createSignal(false);
   const [adding, setAdding] = createSignal(false);
+  let sort!: HTMLButtonElement;
   const tabs = () => [{ id: "", title: "All games" }, ...shell.state.platforms.map(platform => ({ id: platform, title: platformName(platform) }))];
   const loadMore = (event: Event) => {
     const element = event.currentTarget as HTMLElement;
@@ -24,7 +25,7 @@ export function LibraryPage() {
     <header class="mc-library-header">
       <Tabs tabs={tabs()} active={shell.state.query.platform ?? ""} onChange={id => shell.query({ platform: id || null })} />
       <div class="mc-library-tools">
-        <button type="button" class="mc-library-sort" onClick={() => setSortOpen(true)}><Icon name="sort" size={16} /><span>{SORTS[shell.state.query.sort]}</span></button>
+        <button ref={sort} type="button" class="mc-library-sort" onClick={() => setSortOpen(true)}><Icon name="sort" size={16} /><span>{SORTS[shell.state.query.sort]}</span></button>
         <div class="mc-library-spacer" />
         <span class="mc-library-count">{shell.state.total} {shell.state.total === 1 ? "game" : "games"}</span>
         <button type="button" class="mc-library-add" aria-label="Add a game to your library" title="Add a game to your library" onClick={() => setAdding(true)}><Icon name="add" size={20} /></button>
@@ -39,7 +40,7 @@ export function LibraryPage() {
       </Show>
     </div>
     <AddGameModal open={adding()} onClose={() => setAdding(false)} />
-    <ContextMenu open={sortOpen()} onClose={() => setSortOpen(false)} title="Sort by"
+    <ContextMenu open={sortOpen()} onClose={() => setSortOpen(false)} title="Sort by" anchor={() => sort}
       actions={(Object.keys(SORTS) as LibrarySort[]).map(sort => ({ label: SORTS[sort], run: () => shell.query({ sort }) }))} />
   </Page>;
 }

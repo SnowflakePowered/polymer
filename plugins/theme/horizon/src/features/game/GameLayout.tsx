@@ -7,6 +7,7 @@ import type { ShaderTarget } from "@polymer-fe/frontend/shaders";
 import { useShell } from "../../app/shell-context";
 import { DUAL_SCREEN_LAYOUTS, DUAL_SCREEN_PLATFORMS, DualScreenStage, type DualScreenLayout } from "./DualScreenStage";
 import { SurfaceStage } from "./SurfaceStage";
+import { LaunchingScreen } from "./LaunchingPage";
 import "./GameLayout.css";
 
 export function GameLayout(props: ParentProps) {
@@ -87,5 +88,6 @@ export function GameLayout(props: ParentProps) {
       <DualScreenStage layout={layout()} register={register} registerGroup={element => { group = element; }} />
     </Show>
     {props.children}
+    <LaunchingScreen />
   </main>;
 }
