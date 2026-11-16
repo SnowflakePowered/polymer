@@ -99,6 +99,14 @@ function graphicsApi(configuration?: UserConfiguration) {
     return GRAPHICS_APIS.find(api => api.hook === configuration?.graphics?.api) ?? GRAPHICS_APIS[0];
 }
 
+const VSYNC_OPTION = {
+    key: "vsync",
+    title: "VSync",
+    description: "Synchronize frames to the display's refresh rate to prevent tearing.",
+    type: "bool",
+    default: true,
+} as const;
+
 const MAX_CPU_CLOCK = 400;
 
 const CPU_CLOCK_OPTION = {
@@ -119,15 +127,18 @@ function cpuClock(configuration?: UserConfiguration): number {
 export const onConfigure = (_pkg: Package, userConfiguration?: UserConfiguration): ConfigurationResult => ({
     schema: "ppsspp/v1",
     groups: [
-        ...(GRAPHICS_APIS.length > 1 ? [{ key: "graphics", title: "Graphics", options: [GRAPHICS_API_OPTION] }] : []),
+        { key: "graphics", title: "Graphics", options: [...(GRAPHICS_APIS.length > 1 ? [GRAPHICS_API_OPTION] : []), VSYNC_OPTION] },
         { key: "cpu", title: "CPU", options: [CPU_CLOCK_OPTION] },
     ],
-    values: { graphics: { api: graphicsApi(userConfiguration)?.hook ?? null }, cpu: { clock: cpuClock(userConfiguration) } },
+    values: {
+        graphics: { api: graphicsApi(userConfiguration)?.hook ?? null, vsync: userConfiguration?.graphics?.vsync !== false },
+        cpu: { clock: cpuClock(userConfiguration) },
+    },
 });
 
 export const onLaunch = async (args: EmulatorLaunchArgs<{
     general: { FullscreenOnDoubleclick: boolean, StateSlot: number },
-    graphics: { GraphicsBackend: string, DisabledGraphicsBackends: string },
+    graphics: { GraphicsBackend: string, DisabledGraphicsBackends: string, VerticalSync: boolean },
     cpu: { CPUSpeed: number },
 }>) => {
     const fs = args.filesystem;
@@ -143,6 +154,7 @@ export const onLaunch = async (args: EmulatorLaunchArgs<{
     const api = graphicsApi(args.userConfiguration);
     args.configuration.options().graphics.GraphicsBackend = api.value;
     args.configuration.options().graphics.DisabledGraphicsBackends = api.hook === "vulkan" ? "" : "VULKAN";
+    args.configuration.options().graphics.VerticalSync =args.userConfiguration?.graphics?.vsync !== false;
     args.configuration.options().cpu.CPUSpeed = cpuClock(args.userConfiguration) === 100
         ? 0
         : Math.round(2.22 * cpuClock(args.userConfiguration));

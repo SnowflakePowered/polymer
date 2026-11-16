@@ -102,6 +102,13 @@ type = "string"
 default = "VULKAN"
 emit = { key = "DisabledGraphicsBackends" }
 
+[[sections.graphics.options]]
+key = "VerticalSync"
+title = "VerticalSync"
+type = "bool"
+default = true
+emit = { key = "VerticalSync", bool_style = "ppsspp" }
+
 [sections.cpu]
 title = "CPU"
 target = "settings.CPU"

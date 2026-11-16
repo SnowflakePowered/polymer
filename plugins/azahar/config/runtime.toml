@@ -25,6 +25,20 @@ type = "int"
 default = 1
 emit = { key = "resolution_factor" }
 
+[[sections.renderer.options]]
+key = "use_vsync"
+title = "use_vsync"
+type = "bool"
+default = true
+emit = { key = "use_vsync", bool_style = "lower" }
+
+[[sections.renderer.options]]
+key = "frame_limit"
+title = "frame_limit"
+type = "int"
+default = 100
+emit = { key = "frame_limit" }
+
 [targets.settings."Core"]
 
 [sections.core]

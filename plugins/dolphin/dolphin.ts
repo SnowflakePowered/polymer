@@ -46,6 +46,7 @@ type Options = {
             core: {
                 overclock_enable: boolean,
                 overclock: number,
+                emulation_speed: number,
                 gfx_backend: string,
                 gci_folder_a_path: string,
                 enable_save_states: boolean,
@@ -77,6 +78,9 @@ type Options = {
                 internal_resolution: number,
                 shader_compilation_mode: string,
             },
+            hardware: {
+                vsync: boolean,
+            },
         },
         ports: {
             NINTENDO_WII: {
@@ -100,7 +104,7 @@ function isNKit(path: string): boolean {
 }
 
 function quickResumeEnabled(configuration?: UserConfiguration): boolean {
-    return configuration?.polymer?.quickResume !== false;
+    return configuration?.quickResume?.enabled !== false;
 }
 
 export const onConfigure = (
@@ -109,10 +113,10 @@ export const onConfigure = (
 ): ConfigurationResult => ({
     schema: "dolphin/v1",
     groups: [{
-        key: "polymer",
-        title: "Polymer",
+        key: "quickResume",
+        title: "Quick Resume",
         options: [{
-            key: "quickResume",
+            key: "enabled",
             title: "Quick Resume",
             description: "Resume this game where you left off on its next launch.",
             type: "bool",
@@ -130,20 +134,22 @@ export const onConfigure = (
             min: 1,
             max: MAX_RESOLUTION,
             choices: Array.from({ length: MAX_RESOLUTION }, (_, index) => ({ key: String(index + 1), label: `${640 * (index + 1)}×${528 * (index + 1)}` })),
-        }, SHADER_COMPILATION_OPTION],
+        }, SHADER_COMPILATION_OPTION, VSYNC_OPTION, FRAME_LIMIT_OPTION],
     }, {
         key: "cpu",
         title: "CPU",
         options: [CPU_CLOCK_OPTION],
     }],
     values: {
-        polymer: {
-            quickResume: !isNKit(pkg.filename) && quickResumeEnabled(userConfiguration),
+        quickResume: {
+            enabled: !isNKit(pkg.filename) && quickResumeEnabled(userConfiguration),
         },
         graphics: {
             api: graphicsApi(userConfiguration)?.hook ?? null,
             resolution: internalResolution(userConfiguration),
             shaders: shaderCompilation(userConfiguration),
+            vsync: userConfiguration?.graphics?.vsync === true,
+            frameLimit: frameLimit(userConfiguration),
         },
         cpu: { clock: cpuClock(userConfiguration) },
     },
@@ -205,6 +211,29 @@ const SHADER_COMPILATION_OPTION = {
 function shaderCompilation(configuration?: UserConfiguration): string {
     const value = configuration?.graphics?.shaders;
     return SHADER_COMPILATION_MODES.find(mode => mode.key === value)?.key ?? "Synchronous";
+}
+
+const VSYNC_OPTION = {
+    key: "vsync",
+    title: "VSync",
+    description: "Synchronize frames to the display's refresh rate to prevent tearing.",
+    type: "bool",
+    default: false,
+} as const;
+
+const FRAME_LIMIT_OPTION = {
+    key: "frameLimit",
+    title: "Frame Limiter",
+    description: "Percentage of the console's native speed.",
+    type: "int",
+    default: 100,
+    min: 50,
+    max: 150,
+} as const;
+
+function frameLimit(configuration?: UserConfiguration): number {
+    const value = configuration?.graphics?.frameLimit;
+    return typeof value === "number" && Number.isInteger(value) ? Math.min(150, Math.max(50, value)) : 100;
 }
 
 const MAX_RESOLUTION = 8;
@@ -597,6 +626,8 @@ export const onLaunch = async (args: EmulatorLaunchArgs<Options, Readonly<{ nand
     args.configuration.options().gfx.settings.aspect_ratio = "Stretch";
     args.configuration.options().gfx.settings.internal_resolution = internalResolution(args.userConfiguration);
     args.configuration.options().gfx.settings.shader_compilation_mode = shaderCompilation(args.userConfiguration);
+    args.configuration.options().gfx.hardware.vsync = args.userConfiguration?.graphics?.vsync === true;
+    options.core.emulation_speed = frameLimit(args.userConfiguration) / 100;
     options.core.gci_folder_a_path = args.filesystem.path("/MemoryCard/USA");
     // Dolphin disables save states by default in current development builds.
     // Polymer uses them for both explicit state slots and quick resume.

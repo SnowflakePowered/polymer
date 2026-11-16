@@ -1,5 +1,7 @@
 [targets.settings]
-output = { format = "ini", path = "melonDS.ini" }
+output = { format = "ini", path = "melonDS.toml" }
+
+[targets.settings.Joystick]
 
 [input]
 driver = "sdl2"
@@ -23,20 +25,20 @@ device = "{index}"
 "directional.e" = "14"
 
 [input.layouts."NDS_LAYOUT"]
-"button.a" = "Joy_A"
-"button.b" = "Joy_B"
-"button.x" = "Joy_X"
-"button.y" = "Joy_Y"
-"button.select" = "Joy_Select"
-"button.start" = "Joy_Start"
-"button.l" = "Joy_L"
-"button.r" = "Joy_R"
-"directional.n" = "Joy_Up"
-"directional.s" = "Joy_Down"
-"directional.w" = "Joy_Left"
-"directional.e" = "Joy_Right"
+"button.a" = "A"
+"button.b" = "B"
+"button.x" = "X"
+"button.y" = "Y"
+"button.select" = "Select"
+"button.start" = "Start"
+"button.l" = "L"
+"button.r" = "R"
+"directional.n" = "Up"
+"directional.s" = "Down"
+"directional.w" = "Left"
+"directional.e" = "Right"
 
 [platforms.NINTENDO_NDS.ports.layout.0]
-target = "settings"
+target = "settings.Joystick"
 layouts = ["NDS_LAYOUT"]
 emit = {}

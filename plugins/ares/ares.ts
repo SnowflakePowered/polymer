@@ -9,7 +9,7 @@ import { systems } from "pkg:systems.ts";
 import type { BatteryStorage, ConfigurationResult, EmulatorLaunchArgs, Package, Storage, UserConfiguration } from "polymer:api";
 
 type LaunchArgs = EmulatorLaunchArgs<{
-    video: { driver: string, quality: string },
+    video: { driver: string, quality: string, blocking: boolean },
     input: { defocus: string, driver: string },
     general: { auto_save_memory: boolean, no_file_prompt: boolean, show_status_bar: boolean },
     paths: { home: string, saves: string, firmware: string, screenshots: string },
@@ -39,18 +39,29 @@ const N64_RESOLUTIONS = [
 
 export const onConfigure = (pkg: Package, userConfiguration?: UserConfiguration): ConfigurationResult => ({
     schema: "ares/v1",
-    groups: N64_PLATFORMS.includes(pkg.platform) ? [{
+    groups: [{
         key: "graphics",
         title: "Graphics",
-        options: [{
+        options: [...(N64_PLATFORMS.includes(pkg.platform) ? [{
             key: "resolution",
             title: "Internal Resolution",
             type: "select",
             default: "SD",
             choices: N64_RESOLUTIONS,
+        } as const] : []), {
+            key: "vsync",
+            title: "VSync",
+            description: "Synchronize frames to the display's refresh rate to prevent tearing.",
+            type: "bool",
+            default: false,
         }],
-    }] : [],
-    values: N64_PLATFORMS.includes(pkg.platform) ? { graphics: { resolution: n64Resolution(userConfiguration) } } : {},
+    }],
+    values: {
+        graphics: {
+            ...(N64_PLATFORMS.includes(pkg.platform) ? { resolution: n64Resolution(userConfiguration) } : {}),
+            vsync: userConfiguration?.graphics?.vsync === true,
+        },
+    },
 });
 
 function n64Resolution(configuration?: UserConfiguration): string {
@@ -77,6 +88,7 @@ export const onLaunch = async (args: LaunchArgs) => {
 
     const options = args.configuration.options();
     options.video.driver = "OpenGL 3.2";
+    options.video.blocking = args.userConfiguration?.graphics?.vsync === true;
     if (N64_PLATFORMS.includes(args.console)) options.video.quality = n64Resolution(args.userConfiguration);
     options.input.defocus = "Allow";
     options.input.driver = "SDL";

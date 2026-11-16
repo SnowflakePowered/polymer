@@ -40,7 +40,8 @@ type Options = {
             slot2_filename: string,
         },
         input_sources: { sdl: boolean },
-        "emucore-gs": { renderer: number, upscale_multiplier: string },
+        "emucore-gs": { renderer: number, upscale_multiplier: string, vsync_enable: boolean },
+        framerate: { nominal_scalar: string },
         "emucore-speedhacks": { ee_cycle_rate: number },
 };
 
@@ -73,14 +74,45 @@ export const onConfigure = (_pkg: Package, userConfiguration?: UserConfiguration
             min: 1,
             max: MAX_RESOLUTION,
             choices: Array.from({ length: MAX_RESOLUTION }, (_, index) => ({ key: String(index + 1), label: `${640 * (index + 1)}×${448 * (index + 1)}` })),
-        }],
+        }, VSYNC_OPTION, FRAME_LIMIT_OPTION],
     }, {
         key: "cpu",
         title: "CPU",
         options: [CPU_CLOCK_OPTION],
     }],
-    values: { graphics: { api: graphicsApi(userConfiguration)?.hook ?? null, resolution: internalResolution(userConfiguration) }, cpu: { clock: cpuClock(userConfiguration).key } },
+    values: {
+        graphics: {
+            api: graphicsApi(userConfiguration)?.hook ?? null,
+            resolution: internalResolution(userConfiguration),
+            vsync: userConfiguration?.graphics?.vsync === true,
+            frameLimit: frameLimit(userConfiguration),
+        },
+        cpu: { clock: cpuClock(userConfiguration).key },
+    },
 });
+
+const VSYNC_OPTION = {
+    key: "vsync",
+    title: "VSync",
+    description: "Synchronize frames to the display's refresh rate to prevent tearing.",
+    type: "bool",
+    default: false,
+} as const;
+
+const FRAME_LIMIT_OPTION = {
+    key: "frameLimit",
+    title: "Frame Limiter",
+    description: "Percentage of the console's native speed.",
+    type: "int",
+    default: 100,
+    min: 50,
+    max: 150,
+} as const;
+
+function frameLimit(configuration?: UserConfiguration): number {
+    const value = configuration?.graphics?.frameLimit;
+    return typeof value === "number" && Number.isInteger(value) ? Math.min(150, Math.max(50, value)) : 100;
+}
 
 const GRAPHICS_APIS = ([
     { hook: "d3d11", label: "Direct3D 11", value: 3 },
@@ -184,6 +216,8 @@ export const onLaunch = async (args: EmulatorLaunchArgs<Options, Readonly<{ mem1
     options["emucore-gs"].renderer = graphicsApi(args.userConfiguration).value;
     options["emucore-speedhacks"].ee_cycle_rate = cpuClock(args.userConfiguration).value;
     options["emucore-gs"].upscale_multiplier = String(internalResolution(args.userConfiguration));
+    options["emucore-gs"].vsync_enable = args.userConfiguration?.graphics?.vsync === true;
+    options.framerate.nominal_scalar = String(frameLimit(args.userConfiguration) / 100);
     args.filesystem.mount("/PCSX2", args.configuration, { mode: "rw" });
 
     return {
