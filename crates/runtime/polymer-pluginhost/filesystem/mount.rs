@@ -44,9 +44,11 @@ impl FilesystemState {
         source: MountSource,
         permissions: Permissions,
     ) -> Result<VfsPathBuf, VfsError> {
-        if self.sealed && !(self.prepared.is_some() && matches!(source, MountSource::Bytes { .. })) {
+        if self.sealed && !(self.prepared.is_some() && matches!(source, MountSource::Bytes { .. }))
+        {
             return Err(VfsError::Unsupported(
-                "the launch filesystem is sealed; only mounted file contents can be replaced".into(),
+                "the launch filesystem is sealed; only mounted file contents can be replaced"
+                    .into(),
             ));
         }
         match source {

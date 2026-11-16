@@ -113,6 +113,7 @@ impl UploadArena {
     }
 }
 
+#[allow(clippy::missing_safety_doc)]
 pub unsafe fn create_texture(
     device: &ID3D12Device,
     width: u32,

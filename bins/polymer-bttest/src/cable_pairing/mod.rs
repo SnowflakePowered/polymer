@@ -32,7 +32,7 @@ pub enum Event {
     Host(CablePairingHost),
     BleHost(CablePairingHost),
     RegistryUnavailable(String),
-    Finished(Result<Outcome, String>),
+    Finished(Box<Result<Outcome, String>>),
 }
 
 #[derive(Default)]
@@ -65,7 +65,7 @@ impl CablePairingPanel {
             Event::Finished(result) => {
                 self.busy = false;
                 self.failed = result.is_err();
-                match result {
+                match *result {
                     Ok(Outcome::DriverSwitched(message)) => {
                         self.devices.clear();
                         self.inspected = None;

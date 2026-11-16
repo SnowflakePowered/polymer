@@ -83,11 +83,11 @@ impl VirtualCreation {
             if !unsafe { polymer_hook_dxgi::install_factory_interfaces(factory.as_raw()) } {
                 return Err(windows::core::Error::from_hresult(E_FAIL));
             }
-            let mut description = unsafe { *desc.cast::<DXGI_SWAP_CHAIN_DESC>() };
+            let description = unsafe { *desc.cast::<DXGI_SWAP_CHAIN_DESC>() };
             let mut created = None;
             unsafe {
                 factory
-                    .CreateSwapChain(&native_device, &mut description, &mut created)
+                    .CreateSwapChain(&native_device, &description, &mut created)
                     .ok()?;
             }
             created.ok_or_else(|| windows::core::Error::from_hresult(E_FAIL))

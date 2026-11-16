@@ -18,6 +18,7 @@ use winit::{
 };
 /// Raw winit integration. The coordinated application receives only neutral
 /// shell/device events and an abstract loop directive.
+#[allow(clippy::type_complexity)]
 pub(crate) struct EventLoopApplication<'a> {
     native_turn: Option<Box<dyn FnMut(&mut crate::app::ShellApplication) + 'a>>,
     inner: crate::app::ShellApplication,

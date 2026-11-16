@@ -81,7 +81,7 @@ impl Pbuffer {
     }
 
     pub fn lost(&self) -> bool {
-        self.dimension(0x2036).map_or(true, |lost| lost != 0)
+        self.dimension(0x2036) != Ok(0)
     }
 }
 

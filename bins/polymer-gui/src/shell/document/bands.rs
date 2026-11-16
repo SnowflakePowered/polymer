@@ -22,8 +22,7 @@
 
 use anyrender::{
     Filter, Glyph, NormalizedCoord, Paint, PaintRef, PaintScene, RenderContext,
-    filters::FilterEffect,
-    recording::RenderCommand,
+    filters::FilterEffect, recording::RenderCommand,
 };
 use kurbo::{Affine, BezPath, Rect, Shape, Stroke, Vec2};
 use peniko::{BlendMode, Color, Fill, FontData, ImageBrush, ImageQuality, StyleRef};

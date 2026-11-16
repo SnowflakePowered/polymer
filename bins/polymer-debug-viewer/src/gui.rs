@@ -13,7 +13,6 @@ pub(crate) struct ConfiguredGamepad {
     pub(crate) source: Option<SourceSelector>,
     pub(crate) slot: usize,
     pub(crate) layout: String,
-    pub(crate) force_mouse: bool,
 }
 
 pub(crate) struct LauncherState {
@@ -130,13 +129,10 @@ impl LauncherState {
                         "Invalid controller source '{selector}'; expected K, sdl://..., or bt://..."
                     ));
                 };
-                let force_mouse =
-                    pad.force_mouse || matches!(source, SourceSelector::KeyboardMouse);
                 Ok(ConfiguredGamepad {
                     source: Some(source),
                     slot: pad.slot,
                     layout: pad.layout.clone(),
-                    force_mouse,
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -155,7 +151,6 @@ impl LauncherState {
                         source: None,
                         slot,
                         layout: "XBOX_CONTROLLER".to_owned(),
-                        force_mouse: false,
                     })
                 })
                 .collect());
@@ -423,13 +418,4 @@ pub(crate) fn draw_launcher_window(
                 .clicked();
         });
     start
-}
-
-fn is_remappable_element(key: BindingKey) -> bool {
-    matches!(key, BindingKey::Button(_) | BindingKey::Directional { .. })
-        || element_accepts_axis(key)
-}
-
-fn element_accepts_axis(key: BindingKey) -> bool {
-    key.is_analog()
 }

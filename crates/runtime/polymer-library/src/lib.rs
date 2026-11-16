@@ -14,10 +14,9 @@ pub use directories::Directories;
 pub use games::{
     CuePart, CueTemplate, DiscSets, Game, GameCatalog, GameCatalogError, GamePage, GameQuery,
     GameSort, IdentifiedLaunchable, ImportOrigin, InstalledArtifact, InstalledLocation, Launchable,
-    LaunchableUri,
-    LibrarySource, MediaData, MountedTitleRow,
-    MediaPreview, MediaResource, Metadata, MetadataData, MetadataInput, MetadataInputData,
-    MetadataValue, MountedTitle, PackageFile, PackageManifest, ResolvedLaunchable,
+    LaunchableUri, LibrarySource, MediaData, MediaPreview, MediaResource, Metadata, MetadataData,
+    MetadataInput, MetadataInputData, MetadataValue, MountedTitle, MountedTitleRow, PackageFile,
+    PackageManifest, ResolvedLaunchable,
 };
 pub use inputstore::{
     InputGameKey, InputGameOverride, InputIdentityScope, InputMappingMode, InputMappingProfile,

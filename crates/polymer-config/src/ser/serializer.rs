@@ -516,7 +516,7 @@ impl<'a> Serializer<'a> {
             for instance in self.writes[handle.index()]
                 .keys()
                 .filter_map(Option::as_deref)
-                .filter(|instance| Self::belongs_to(*instance, parent_instance))
+                .filter(|instance| Self::belongs_to(instance, parent_instance))
             {
                 self.write_section_instance(handle, Some(instance), emitter)?;
             }

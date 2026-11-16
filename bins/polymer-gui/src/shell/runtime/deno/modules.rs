@@ -57,7 +57,9 @@ impl BrowserModuleLoader {
                 }
                 "theme" => {
                     let code = self.urls.archived(specifier).ok_or_else(|| {
-                        ModuleLoaderError::type_error(format!("Theme module {specifier} does not exist"))
+                        ModuleLoaderError::type_error(format!(
+                            "Theme module {specifier} does not exist"
+                        ))
                     })?;
                     (code, specifier.clone())
                 }

@@ -40,7 +40,7 @@ pub struct PluginInvocationError {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stack: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub details: Option<Value>,
+    pub details: Option<Box<Value>>,
 }
 
 /// Result of a plugin call before application-owned resources are converted

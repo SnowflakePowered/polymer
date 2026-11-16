@@ -384,7 +384,8 @@ impl FileSystemContext for PolymerFileSystem {
         let key = context.path.read().normalized_components();
         drop(context);
         if let Ok(key) = key {
-            self.paths.remove_if(&key, |_, shared| shared.strong_count() == 0);
+            self.paths
+                .remove_if(&key, |_, shared| shared.strong_count() == 0);
         }
     }
 

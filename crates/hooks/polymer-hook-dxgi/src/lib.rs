@@ -15,6 +15,7 @@ unsafe fn dxgi_hook_export<T: Copy>(name: &std::ffi::CStr) -> Option<T> {
 }
 
 #[unsafe(no_mangle)]
+#[allow(clippy::missing_safety_doc)]
 pub unsafe extern "system" fn PolymerInstallDxgiHook() -> i32 {
     polymer_hook::telemetry::init_file_tracing(polymer_hook::config::log_file(
         polymer_hook::config::DXGI_LOG_FILE,

@@ -13,9 +13,10 @@ impl<B> PluginPackage<B> {
     pub fn new(manifest: PluginManifest<B>) -> Result<Self, PackageError> {
         polymer_deno::Runtime::network_permissions(manifest.allowed_hosts())
             .map_err(|error| PackageError::ModuleSpecifier(error.to_string()))?;
-        let module_loader = crate::loading::PluginModuleLoader::new(manifest.id(), manifest.source().clone())
-            .with_network_hosts(manifest.allowed_hosts().to_vec())
-            .with_insecure_hosts(manifest.insecure_hosts().to_vec());
+        let module_loader =
+            crate::loading::PluginModuleLoader::new(manifest.id(), manifest.source().clone())
+                .with_network_hosts(manifest.allowed_hosts().to_vec())
+                .with_insecure_hosts(manifest.insecure_hosts().to_vec());
         let entrypoint = module_loader
             .package_specifier(manifest.main())
             .map_err(|error| PackageError::ModuleSpecifier(error.to_string()))?;

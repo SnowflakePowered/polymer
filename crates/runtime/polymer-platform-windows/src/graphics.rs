@@ -16,10 +16,15 @@ impl GraphicsSupport {
     pub fn available() -> &'static [GraphicsHook] {
         static AVAILABLE: OnceLock<Vec<GraphicsHook>> = OnceLock::new();
         AVAILABLE.get_or_init(|| {
-            [GraphicsHook::Vulkan, GraphicsHook::D3d12, GraphicsHook::D3d11, GraphicsHook::OpenGl]
-                .into_iter()
-                .filter(|hook| Self::probe(*hook))
-                .collect()
+            [
+                GraphicsHook::Vulkan,
+                GraphicsHook::D3d12,
+                GraphicsHook::D3d11,
+                GraphicsHook::OpenGl,
+            ]
+            .into_iter()
+            .filter(|hook| Self::probe(*hook))
+            .collect()
         })
     }
 

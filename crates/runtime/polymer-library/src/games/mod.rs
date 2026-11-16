@@ -11,9 +11,7 @@ pub use uri::{
     InstalledArtifact, InstalledLocation, LaunchableUri, MountedTitle, ResolvedLaunchable,
 };
 
-pub use catalog::{
-    GameCatalog, GameCatalogError, ImportOrigin, LibrarySource, MountedTitleRow,
-};
+pub use catalog::{GameCatalog, GameCatalogError, ImportOrigin, LibrarySource, MountedTitleRow};
 pub use discs::{DiscSets, Serial};
 pub use model::{
     Game, GamePage, GameQuery, GameSort, IdentifiedLaunchable, Launchable, MediaData,

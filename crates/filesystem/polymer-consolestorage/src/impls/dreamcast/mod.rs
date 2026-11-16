@@ -321,6 +321,7 @@ impl DreamcastMemoryCard {
         })
     }
 
+    #[allow(clippy::type_complexity)]
     fn snapshot(&self, selected: &[SaveDepotId]) -> Vec<([u8; 12], [Option<(u64, Timestamp)>; 2])> {
         let selected = selected.iter().map(|id| id.0).collect::<HashSet<_>>();
         self.saves()

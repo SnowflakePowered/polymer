@@ -218,7 +218,7 @@ impl ShellDocument {
         self.dirty = true;
         self.needs_resolve = true;
         self.needs_geometry_sync |=
-            &*name != "style" || style_change_requires_geometry(previous, current);
+            name != "style" || style_change_requires_geometry(previous, current);
     }
 
     pub(crate) fn set_attribute(&mut self, node: NodeId, name: &str, value: &str) {

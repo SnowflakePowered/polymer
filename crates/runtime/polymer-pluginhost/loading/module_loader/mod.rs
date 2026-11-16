@@ -1,3 +1,4 @@
+use dashmap::DashMap;
 use deno_ast::{
     EmitOptions, MediaType, ParseParams, TranspileModuleOptions, TranspileOptions, parse_module,
 };
@@ -6,7 +7,6 @@ use deno_core::{
     ModuleSourceCode, ModuleSpecifier, ModuleType, ResolutionKind, error::ModuleLoaderError,
     resolve_import,
 };
-use dashmap::DashMap;
 use futures_util::FutureExt;
 use polymer_pluginmanifest::{PackageEntry, PackageSource};
 use std::{path::PathBuf, sync::Arc};
@@ -102,8 +102,13 @@ impl PluginModuleLoader {
     }
 
     /// The module URL of a validated package-relative path.
-    pub(crate) fn package_specifier(&self, relative: &str) -> Result<ModuleSpecifier, ModuleLoaderError> {
-        self.base.join(relative).map_err(ModuleLoaderError::from_err)
+    pub(crate) fn package_specifier(
+        &self,
+        relative: &str,
+    ) -> Result<ModuleSpecifier, ModuleLoaderError> {
+        self.base
+            .join(relative)
+            .map_err(ModuleLoaderError::from_err)
     }
 
     fn resolve_package(&self, specifier: &str) -> Result<ModuleSpecifier, ModuleLoaderError> {
@@ -286,8 +291,8 @@ impl ModuleLoader for PluginModuleLoader {
         if let Ok(referrer) = ModuleSpecifier::parse(referrer)
             && self.overridden(&referrer)
         {
-            let resolved =
-                resolve_import(specifier, referrer.as_str()).map_err(ModuleLoaderError::from_err)?;
+            let resolved = resolve_import(specifier, referrer.as_str())
+                .map_err(ModuleLoaderError::from_err)?;
             if self.overridden(&resolved) {
                 return Ok(resolved);
             }

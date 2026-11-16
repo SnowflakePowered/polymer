@@ -22,8 +22,9 @@ impl PluginRuntimeHandle {
             .registry()
             .platform(platform)
             .ok_or_else(|| PluginInvocationError::worker("Platform provider unavailable"))?;
-        let mut worker =
-            self.worker_options(provider.as_ref(), BTreeMap::new(), None).await?;
+        let mut worker = self
+            .worker_options(provider.as_ref(), BTreeMap::new(), None)
+            .await?;
         worker.platform.target = Some((manager.clone(), platform.to_owned(), id));
         worker.firmware.platform = Some(platform.to_owned());
         worker.keys.root = manager.root().join("keys");

@@ -103,7 +103,7 @@ impl ChunkSurfaces {
         unsafe {
             D3D11On12CreateDevice(
                 &device,
-                D3D11_CREATE_DEVICE_BGRA_SUPPORT.0 as u32,
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT.0,
                 None,
                 Some(&[Some(context.queue.clone())]),
                 0,

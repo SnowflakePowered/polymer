@@ -100,9 +100,10 @@ impl PluginLifecycle {
                 )
                 .await;
                 match &result {
-                    Ok(value) => self
-                        .ready
-                        .store(!matches!(value, Some(Value::Bool(false))), Ordering::Release),
+                    Ok(value) => self.ready.store(
+                        !matches!(value, Some(Value::Bool(false))),
+                        Ordering::Release,
+                    ),
                     Err(_) => self.storage.clear(),
                 }
                 result?;
@@ -275,7 +276,10 @@ impl PluginRuntimeHandle {
     }
 
     /// The plugin's database, with the table holding the user's choices for its options.
-    async fn options_database(&self, plugin_id: &str) -> Result<turso::Connection, PluginInvocationError> {
+    async fn options_database(
+        &self,
+        plugin_id: &str,
+    ) -> Result<turso::Connection, PluginInvocationError> {
         let path = self.directories().plugin_database(plugin_id);
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent)
@@ -312,8 +316,12 @@ impl PluginRuntimeHandle {
                 .map_err(PluginInvocationError::worker)?;
             let mut saved = serde_json::Map::new();
             while let Some(row) = rows.next().await.map_err(PluginInvocationError::worker)? {
-                let key = row.get::<String>(0).map_err(PluginInvocationError::worker)?;
-                let value = row.get::<String>(1).map_err(PluginInvocationError::worker)?;
+                let key = row
+                    .get::<String>(0)
+                    .map_err(PluginInvocationError::worker)?;
+                let value = row
+                    .get::<String>(1)
+                    .map_err(PluginInvocationError::worker)?;
                 if let Ok(value) = serde_json::from_str(&value) {
                     saved.insert(key, value);
                 }
@@ -350,7 +358,9 @@ impl PluginRuntimeHandle {
         plugin_id: &str,
     ) -> Result<serde_json::Map<String, Value>, PluginInvocationError> {
         let plugin = self.instance(plugin_id)?;
-        let mut effective = plugin.config().effective(&self.saved_config(plugin_id).await);
+        let mut effective = plugin
+            .config()
+            .effective(&self.saved_config(plugin_id).await);
         effective.retain(|key, _| plugin.config().options().any(|(name, _)| name == key));
         Ok(effective)
     }
@@ -365,7 +375,9 @@ impl PluginRuntimeHandle {
         self.instance(plugin_id)?
             .config()
             .validate_option(key, &value)
-            .map_err(|error| PluginInvocationError::new("TypeError", "INVALID_OPTION", error.to_string()))?;
+            .map_err(|error| {
+                PluginInvocationError::new("TypeError", "INVALID_OPTION", error.to_string())
+            })?;
         self.options_database(plugin_id)
             .await?
             .execute(
@@ -377,8 +389,17 @@ impl PluginRuntimeHandle {
         Ok(())
     }
 
-    fn cache_path(&self, plugin_id: &str, key: &str) -> Result<std::path::PathBuf, PluginInvocationError> {
-        if !self.instance(plugin_id)?.caches().iter().any(|cache| cache.key == key) {
+    fn cache_path(
+        &self,
+        plugin_id: &str,
+        key: &str,
+    ) -> Result<std::path::PathBuf, PluginInvocationError> {
+        if !self
+            .instance(plugin_id)?
+            .caches()
+            .iter()
+            .any(|cache| cache.key == key)
+        {
             return Err(PluginInvocationError::new(
                 "NotFoundError",
                 "UNKNOWN_CACHE",
@@ -389,13 +410,19 @@ impl PluginRuntimeHandle {
     }
 
     /// The bytes used by one of a plugin's caches.
-    pub async fn cache_size(&self, plugin_id: &str, key: &str) -> Result<u64, PluginInvocationError> {
+    pub async fn cache_size(
+        &self,
+        plugin_id: &str,
+        key: &str,
+    ) -> Result<u64, PluginInvocationError> {
         let path = self.cache_path(plugin_id, key)?;
         tokio::task::spawn_blocking(move || {
             let mut size = 0;
             let mut pending = vec![path];
             while let Some(directory) = pending.pop() {
-                let Ok(entries) = std::fs::read_dir(&directory) else { continue };
+                let Ok(entries) = std::fs::read_dir(&directory) else {
+                    continue;
+                };
                 for entry in entries.flatten() {
                     match entry.metadata() {
                         Ok(metadata) if metadata.is_dir() => pending.push(entry.path()),
@@ -411,7 +438,11 @@ impl PluginRuntimeHandle {
     }
 
     /// Deletes everything in one of a plugin's caches.
-    pub async fn clear_cache(&self, plugin_id: &str, key: &str) -> Result<(), PluginInvocationError> {
+    pub async fn clear_cache(
+        &self,
+        plugin_id: &str,
+        key: &str,
+    ) -> Result<(), PluginInvocationError> {
         let path = self.cache_path(plugin_id, key)?;
         tokio::task::spawn_blocking(move || match std::fs::remove_dir_all(path) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -471,8 +502,9 @@ impl PluginRuntimeHandle {
                 )
             })?;
         let entrypoint = plugin.entrypoint().to_string();
-        let worker =
-            self.worker_options(plugin.as_ref(), BTreeMap::new(), None).await?;
+        let worker = self
+            .worker_options(plugin.as_ref(), BTreeMap::new(), None)
+            .await?;
         let loading = lifecycle.clone();
         self.run_with_control(self.cancellation_token().control, move |control| {
             run_worker(entrypoint, worker, loading, control, |_| async { Ok(()) })
@@ -518,8 +550,9 @@ impl PluginRuntimeHandle {
         let cancellation = self.cancellation_token();
         let entrypoint = plugin.entrypoint().to_string();
         let invocation_entrypoint = entrypoint.clone();
-        let worker =
-            self.worker_options(plugin.as_ref(), BTreeMap::new(), None).await?;
+        let worker = self
+            .worker_options(plugin.as_ref(), BTreeMap::new(), None)
+            .await?;
         let lifecycle = self.lifecycle(plugin_id);
         let result = self
             .run_with_control(cancellation.control, move |control| {
@@ -662,8 +695,9 @@ impl PluginRuntimeHandle {
         }
         let entrypoint = plugin.entrypoint().to_string();
         let invocation_entrypoint = entrypoint.clone();
-        let worker =
-            self.worker_options(plugin.as_ref(), BTreeMap::new(), None).await?;
+        let worker = self
+            .worker_options(plugin.as_ref(), BTreeMap::new(), None)
+            .await?;
         let lifecycle = self.lifecycle(plugin_id);
         let provided = plugin
             .provides()
@@ -820,8 +854,9 @@ impl PluginRuntimeHandle {
     ) -> Result<PluginInvocationResult, PluginInvocationError> {
         let entrypoint = plugin.entrypoint().to_string();
         let invocation_entrypoint = entrypoint.clone();
-        let worker =
-            self.worker_options(plugin.as_ref(), BTreeMap::new(), None).await?;
+        let worker = self
+            .worker_options(plugin.as_ref(), BTreeMap::new(), None)
+            .await?;
 
         let lifecycle = self.lifecycle(plugin.id());
         let path = export_path.to_vec();

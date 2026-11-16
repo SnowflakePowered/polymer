@@ -174,7 +174,7 @@ impl SaveGameSink for WiiSaveRepo {
         )
     }
 
-    fn export_save<'a>(&self, id: &SaveDepotId) -> Result<SaveDepot, Error> {
+    fn export_save(&self, id: &SaveDepotId) -> Result<SaveDepot, Error> {
         let root = data_path(id.0);
         let mut paths = self
             .root

@@ -77,6 +77,7 @@ impl<'a> NodeGeometry<'a> {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn inset_quad(
         x: f32,
         y: f32,

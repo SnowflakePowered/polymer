@@ -3,8 +3,8 @@ use std::sync::LazyLock;
 
 use serde::Deserialize;
 
-use crate::savegame::id::{DreamcastProductId, SonyProductCode};
 use crate::savegame::SaveDepotId;
+use crate::savegame::id::{DreamcastProductId, SonyProductCode};
 
 pub(crate) const TARGET_CAPACITY_PERCENT: u32 = 80;
 

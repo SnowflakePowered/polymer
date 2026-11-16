@@ -1,4 +1,5 @@
 #[unsafe(no_mangle)]
+#[allow(clippy::missing_safety_doc)]
 pub unsafe extern "system" fn PolymerInstallD3d12Hook() -> i32 {
     polymer_hook::telemetry::init_file_tracing(polymer_hook::config::log_file(
         polymer_hook::config::D3D12_LOG_FILE,

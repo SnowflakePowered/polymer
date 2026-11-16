@@ -2,7 +2,6 @@ use super::{ACCENT, navigation::NavAction};
 use eframe::egui::{self, Align2, Color32, CursorIcon, FontId, Rounding, Sense, Stroke, Vec2};
 use polymer_pluginhost::{loading::PluginRegistry, theme::ThemePluginInstance};
 
-
 const CARD_HEIGHT: f32 = 84.0;
 const BADGE_SIZE: f32 = 52.0;
 
@@ -60,16 +59,21 @@ impl ThemeCard {
         let text_x = badge.right() + 12.0;
         let mut y = rect.top() + 14.0;
         let lines = [
-            (self.name.clone(), FontId::proportional(16.0), Color32::WHITE),
+            (
+                self.name.clone(),
+                FontId::proportional(16.0),
+                Color32::WHITE,
+            ),
             (
                 format!("{} · v{}", self.id, self.version),
                 FontId::proportional(12.0),
                 Color32::from_white_alpha(150),
             ),
             (
-                self.author
-                    .as_ref()
-                    .map_or_else(|| "Unknown author".to_owned(), |author| format!("by {author}")),
+                self.author.as_ref().map_or_else(
+                    || "Unknown author".to_owned(),
+                    |author| format!("by {author}"),
+                ),
                 FontId::proportional(12.0),
                 Color32::from_white_alpha(190),
             ),
@@ -102,8 +106,15 @@ impl ThemePicker {
             .iter()
             .map(|theme| ThemeCard::new(theme.as_ref()))
             .collect();
-        let focus = cards.iter().position(|card| card.id == current).unwrap_or(0);
-        Self { cards, current, focus }
+        let focus = cards
+            .iter()
+            .position(|card| card.id == current)
+            .unwrap_or(0);
+        Self {
+            cards,
+            current,
+            focus,
+        }
     }
 
     pub(super) fn show(&mut self, ui: &mut egui::Ui, actions: &[NavAction]) -> Option<String> {
@@ -113,7 +124,9 @@ impl ThemePicker {
             match action {
                 NavAction::Up => self.focus = self.focus.saturating_sub(1),
                 NavAction::Down => self.focus = (self.focus + 1).min(last),
-                NavAction::Confirm => chosen = self.cards.get(self.focus).map(|card| card.id.clone()),
+                NavAction::Confirm => {
+                    chosen = self.cards.get(self.focus).map(|card| card.id.clone())
+                }
                 _ => {}
             }
         }

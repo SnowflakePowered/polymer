@@ -61,7 +61,9 @@ impl ResourceFactory<dyn Volume> for AsarVolumeFactory {
         let (header, offset) = Header::read(&mut &data[..])?;
         validate_header(&header)?;
         let reader = AsarReader::new_from_header(header, offset, data, None)?;
-        Ok(Arc::new(AsarVolume::from_reader(mapping.clone(), &reader)?.at(&self.root)?))
+        Ok(Arc::new(
+            AsarVolume::from_reader(mapping.clone(), &reader)?.at(&self.root)?,
+        ))
     }
 }
 
@@ -157,15 +159,20 @@ impl AsarVolume {
     /// The same archive, rooted at the directory `path` below the archive root.
     fn at(mut self, path: &[String]) -> VfsResult<Self> {
         for name in path {
-            let AsarNode::Directory(children) =
-                self.inner.nodes.get(&self.root).ok_or(VfsError::StaleNode)?
+            let AsarNode::Directory(children) = self
+                .inner
+                .nodes
+                .get(&self.root)
+                .ok_or(VfsError::StaleNode)?
             else {
                 return Err(VfsError::NotDirectory(VfsPathBuf::root()));
             };
             self.root = children
                 .get(&VfsComponent::new(name)?.normalized()?)
                 .map(|(_, child)| *child)
-                .ok_or_else(|| VfsError::Asar(format!("archive has no directory '{}'", path.join("/"))))?;
+                .ok_or_else(|| {
+                    VfsError::Asar(format!("archive has no directory '{}'", path.join("/")))
+                })?;
         }
         Ok(self)
     }

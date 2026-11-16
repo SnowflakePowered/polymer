@@ -237,10 +237,7 @@ impl Queue {
                     .reset_command_pool(slot.resources.pool, vk::CommandPoolResetFlags::empty())?;
             }
         }
-        let command = match self.handoff(barriers, &mut slot.resources) {
-            Ok(command) => command,
-            Err(error) => return Err(error),
-        };
+        let command = self.handoff(barriers, &mut slot.resources)?;
         let work = Arc::new(Submission {
             completion: self.completion.clone(),
             value: completion_value,
@@ -262,7 +259,7 @@ impl Queue {
             .push_next(&mut timeline)
             .wait_semaphores(&wait_handles)
             .wait_dst_stage_mask(&stages)
-            .command_buffers(&commands)
+            .command_buffers(commands)
             .signal_semaphores(&signal_handles);
         if let Err(error) =
             unsafe { device.queue_submit(self.handle, &[submit], vk::Fence::null()) }

@@ -271,7 +271,7 @@ impl SaveGameSink for BatterySaveRepo {
         Box::new(self.describe(SAVE_DEPOT).ok().into_iter())
     }
 
-    fn export_save<'a>(&self, id: &SaveDepotId) -> Result<SaveDepot, Error> {
+    fn export_save(&self, id: &SaveDepotId) -> Result<SaveDepot, Error> {
         let save_descriptor = self.describe(*id)?;
         let mut bytes = Vec::new();
         self.root
@@ -299,7 +299,7 @@ impl SaveGameSink for BatterySaveRepo {
             let blob = blobs.next().await.ok_or_else(|| {
                 Error::InvalidPath("a battery save depot must contain one file".to_owned())
             })?;
-            if blobs.next().await.is_some() || blob.target_path != PathBuf::from(SAVE_FILE) {
+            if blobs.next().await.is_some() || blob.target_path != *SAVE_FILE {
                 return Err(Error::InvalidPath(
                     "a battery save depot must contain only save.bin".to_owned(),
                 ));

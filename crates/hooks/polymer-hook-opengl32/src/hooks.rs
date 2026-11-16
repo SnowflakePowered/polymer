@@ -39,7 +39,7 @@ polymer_hook::chain_hooks! {
     #[trampoline]
     #[terminal(installed(target = crate::install::system_make_current), fallback = 0)]
     #[infix(Callbacks::bind)]
-    pub(crate) unsafe extern "system" fn make_current(hdc: Hdc, context: *mut c_void) -> i32;
+    pub(crate) unsafe extern "system" fn make_current(hdc: Hdc, rendering_context: *mut c_void) -> i32;
 
     #[trampoline]
     #[terminal(installed(target = crate::install::system_get_current_dc), fallback = std::ptr::null_mut())]
@@ -54,11 +54,10 @@ polymer_hook::chain_hooks! {
     #[trampoline]
     #[terminal(installed(target = crate::install::system_get_client_rect), fallback = 0)]
     #[postfix(|result, _context| {
-        if result != 0 && !rect.is_null() {
-            if let Some([width, height]) = WglSwapchain::window_extent(window as isize) {
+        if result != 0 && !rect.is_null()
+            && let Some([width, height]) = WglSwapchain::window_extent(window as isize) {
                 unsafe { *rect = windows_sys::Win32::Foundation::RECT { left: 0, top: 0, right: width as i32, bottom: height as i32 }; }
             }
-        }
     })]
     pub(crate) unsafe extern "system" fn get_client_rect(window: *mut c_void, rect: *mut windows_sys::Win32::Foundation::RECT) -> i32;
 }

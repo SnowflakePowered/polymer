@@ -122,7 +122,7 @@ impl Handler<LibraryImportKey> for LibraryBackend {
                     namespace: namespace.clone(),
                     id,
                 },
-                title_id: (namespace == "content").then(|| title_id).flatten(),
+                title_id: (namespace == "content").then_some(title_id).flatten(),
                 bytes: key,
             };
             let description = ImportedKey {

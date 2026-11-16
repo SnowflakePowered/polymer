@@ -233,7 +233,7 @@ pub(super) async fn run(
                     }
                 }
                 let _ = events.send(Event::CablePairing(crate::cable_pairing::Event::Finished(
-                    result.map_err(|error| error.to_string()),
+                    Box::new(result.map_err(|error| error.to_string())),
                 )));
             }
             Some(recovery) = ble_recovery_rx.recv() => {
@@ -336,7 +336,7 @@ pub(super) async fn run(
                                             {
                                                 let _ = report_events.send(Event::DecodedInput {
                                                     addr: addr.to_string(),
-                                                    input,
+                                                    input: Box::new(input),
                                                 });
                                             }
                                             let _ = report_events.send(Event::BleReport {
@@ -610,7 +610,7 @@ pub(super) async fn run(
             command = commands.recv() => {
                 let Some(command) = command else { break; };
                 match command {
-                    Command::CablePairing(action) => cable_pairing.start(action),
+                    Command::CablePairing(action) => cable_pairing.start(*action),
                     Command::BeginControllerOrder { adapter_index } => {
                         controller_order_adapter = Some(adapter_index);
                         listen_inbound = true;

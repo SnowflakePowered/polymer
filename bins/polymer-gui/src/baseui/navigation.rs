@@ -32,7 +32,11 @@ impl NavAction {
             .map(|(_, action)| action)
             .collect();
         if input.key_pressed(egui::Key::Tab) {
-            actions.push(if input.modifiers.shift { Self::PrevTab } else { Self::NextTab });
+            actions.push(if input.modifiers.shift {
+                Self::PrevTab
+            } else {
+                Self::NextTab
+            });
         }
         actions
     }

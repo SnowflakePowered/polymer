@@ -24,6 +24,12 @@ pub struct HookInstallationRegistry<I> {
     installation: Mutex<Option<I>>,
 }
 
+impl<I> Default for HookInstallationRegistry<I> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<I> HookInstallationRegistry<I> {
     pub const fn new() -> Self {
         Self {

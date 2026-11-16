@@ -162,7 +162,11 @@ fn directories_holding_previously_written_files_can_be_renamed() {
     );
     let filesystem = plan.seal().unwrap();
     filesystem.materialize().unwrap();
-    for directory in ["/NAND/staging", "/NAND/staging/flash0", "/NAND/staging/flash0/font"] {
+    for directory in [
+        "/NAND/staging",
+        "/NAND/staging/flash0",
+        "/NAND/staging/flash0/font",
+    ] {
         filesystem.create_dir(&directory.parse().unwrap()).unwrap();
     }
     let path = "/NAND/staging/flash0/font/ltn0.pgf".parse().unwrap();

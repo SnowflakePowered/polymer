@@ -137,15 +137,15 @@ impl Calibration {
             .zip(self.sticks)
             .filter_map(|(v, c)| c.map(|c| (v, c)))
         {
-            for axis in 0..2 {
-                let centered = i32::from(values[axis]) - i32::from(calibration.center[axis]);
+            for (axis, value) in values.iter_mut().enumerate() {
+                let centered = i32::from(*value) - i32::from(calibration.center[axis]);
                 let range = if centered < 0 {
                     i32::from(calibration.center[axis]) - i32::from(calibration.min[axis])
                 } else {
                     i32::from(calibration.max[axis]) - i32::from(calibration.center[axis])
                 }
                 .max(1);
-                values[axis] = (centered * i32::from(i16::MAX) / range)
+                *value = (centered * i32::from(i16::MAX) / range)
                     .clamp(i32::from(i16::MIN), i32::from(i16::MAX))
                     as i16;
             }

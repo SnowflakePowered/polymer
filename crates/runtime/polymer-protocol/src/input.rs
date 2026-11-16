@@ -93,7 +93,7 @@ impl RawKeyInput {
     pub fn direct_input_data(self) -> DirectInputData {
         DirectInputData {
             device: DirectInputDevice::Keyboard,
-            offset: u32::from(self.scan_code) | u32::from(self.extended) * 0x80,
+            offset: u32::from(self.scan_code) | (u32::from(self.extended) * 0x80),
             data: if self.pressed { 0x80 } else { 0 },
             timestamp: self.timestamp,
             sequence: self.sequence,

@@ -45,9 +45,11 @@ impl OverlayState {
             window.theme(),
             None,
         );
-        let mut diagnostics = DebugOverlayModel::default();
-        diagnostics.backend = "Waiting".to_owned();
-        diagnostics.consumer = consumer.to_owned();
+        let diagnostics = DebugOverlayModel {
+            backend: "Waiting".to_owned(),
+            consumer: consumer.to_owned(),
+            ..Default::default()
+        };
         Self {
             shell_cursor: Cell::new(egui::CursorIcon::Default),
             cursor_dirty: Cell::new(false),

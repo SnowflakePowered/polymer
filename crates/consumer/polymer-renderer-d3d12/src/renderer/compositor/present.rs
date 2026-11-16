@@ -31,6 +31,7 @@ impl D3d12Compositor {
             let surface = self.surfaces.remove(index);
             // Always reinsert the surface, including on recording errors: its
             // retained slot and native resources must survive failed frames.
+            #[allow(clippy::redundant_closure_call)]
             let result = (|| -> Result<(), Box<dyn Error>> {
                 if let Some(frame) = surface.frames.pending() {
                     let source = surface
