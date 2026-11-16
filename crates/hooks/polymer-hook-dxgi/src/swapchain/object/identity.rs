@@ -48,6 +48,7 @@ impl VirtualDxgiSwapchain {
         }
         count
     }
+    #[allow(clippy::arc_with_non_send_sync)]
     pub(super) unsafe extern "system" fn set_private(
         this: *mut c_void,
         name: *const GUID,
@@ -70,6 +71,7 @@ impl VirtualDxgiSwapchain {
             .insert(name, Arc::new(PrivateData::Bytes(bytes)));
         S_OK
     }
+    #[allow(clippy::arc_with_non_send_sync)]
     pub(super) unsafe extern "system" fn set_private_interface(
         this: *mut c_void,
         name: *const GUID,

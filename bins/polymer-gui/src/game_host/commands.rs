@@ -115,6 +115,7 @@ impl GameHost {
         })
     }
 
+    #[allow(clippy::type_complexity)]
     pub fn begin_quit(
         &mut self,
         token: crate::shell::runtime::InstanceToken,
@@ -143,13 +144,14 @@ impl GameHost {
         let Some(cache) = cache else {
             return Ok(None);
         };
-        let screenshot = self
-            .capture_primary_screenshot()
-            .and_then(|screenshot| match screenshot.encode(image::ImageFormat::Png) {
-                Ok(png) => Some(png),
-                Err(error) => {
-                    tracing::warn!("polymer: Quick Resume screenshot encoding failed: {error}");
-                    None
+        let screenshot =
+            self.capture_primary_screenshot().and_then(|screenshot| {
+                match screenshot.encode(image::ImageFormat::Png) {
+                    Ok(png) => Some(png),
+                    Err(error) => {
+                        tracing::warn!("polymer: Quick Resume screenshot encoding failed: {error}");
+                        None
+                    }
                 }
             });
         let Some(session) = self

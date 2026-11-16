@@ -38,11 +38,14 @@ pub(super) async fn op_shell_read_asset(
     let (body, guess) = match urls.archived(&parsed) {
         Some(body) => (body, mime_guess::from_path(parsed.path())),
         None => {
-            let path = urls
-                .local_file(&parsed)
-                .ok_or_else(|| JsErrorBox::type_error(format!("{url} is not a local shell asset")))?;
+            let path = urls.local_file(&parsed).ok_or_else(|| {
+                JsErrorBox::type_error(format!("{url} is not a local shell asset"))
+            })?;
             let guess = mime_guess::from_path(&path);
-            (tokio::fs::read(&path).await.map_err(JsErrorBox::from_err)?, guess)
+            (
+                tokio::fs::read(&path).await.map_err(JsErrorBox::from_err)?,
+                guess,
+            )
         }
     };
     let content_type = guess.first_or_octet_stream().to_string();

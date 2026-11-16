@@ -13,7 +13,9 @@ mod theme;
 pub use config::{PluginConfig, PluginConfigError, PluginOption};
 pub use emulator::{EmulatorBlock, SaveStateConfig};
 pub use id::PluginId;
-pub use manifest::{AnyPluginManifest, PackageError, PluginCache, PluginClass, PluginManifest, PluginMeta};
+pub use manifest::{
+    AnyPluginManifest, PackageError, PluginCache, PluginClass, PluginManifest, PluginMeta,
+};
 pub use platform::PlatformBlock;
 pub use scraper::{ScrapeRequirement, ScraperBlock};
 pub use source::{PackageArchive, PackageEntry, PackageSource};

@@ -86,7 +86,9 @@ impl SelectedTheme {
                 let main = self.plugin.main();
                 let page = match self.archived_root().as_str() {
                     "" => Some(main),
-                    root => main.strip_prefix(root).and_then(|page| page.strip_prefix('/')),
+                    root => main
+                        .strip_prefix(root)
+                        .and_then(|page| page.strip_prefix('/')),
                 }
                 .ok_or_else(|| unavailable(&"it is outside the theme root"))?;
                 ModuleSpecifier::parse(&format!("theme:///{page}"))?
@@ -112,7 +114,10 @@ impl SelectedTheme {
         }
     }
 
-    async fn fetch_document(&self, url: &ModuleSpecifier) -> Result<ShellDocumentSource, Box<dyn Error>> {
+    async fn fetch_document(
+        &self,
+        url: &ModuleSpecifier,
+    ) -> Result<ShellDocumentSource, Box<dyn Error>> {
         let html = match url.scheme() {
             "file" => {
                 let path = url
@@ -249,7 +254,6 @@ async fn ensure_debug_address_available(url: &ModuleSpecifier) -> Result<(), Box
     }
     Ok(())
 }
-
 
 struct ThemeServer {
     child: Child,

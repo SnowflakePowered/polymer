@@ -170,7 +170,7 @@ pub trait SaveGameSink: Send + Sync {
 
     fn enumerate_saves(&self) -> SaveDescriptors<'_>;
 
-    fn export_save<'a>(&self, save_descriptor: &SaveDepotId) -> Result<SaveDepot, Error>;
+    fn export_save(&self, save_descriptor: &SaveDepotId) -> Result<SaveDepot, Error>;
 
     fn install_save<'a>(
         &'a self,

@@ -34,9 +34,9 @@ impl Handler<AdoptAssignments> for InputActor {
                     Ok(change) => state.finish_controller_change(change).await,
                     Err(error) => Err(error),
                 };
-                if let Err(error) = state.with(|state| {
-                    state.input.controllers.finish_adoption(result.is_ok())
-                }) {
+                if let Err(error) =
+                    state.with(|state| state.input.controllers.finish_adoption(result.is_ok()))
+                {
                     tracing::warn!(%error, "failed to restore controller assignments");
                 }
             }

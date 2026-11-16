@@ -56,18 +56,22 @@ fn op_platform_resource(
     let binding = state.borrow::<PlatformBinding>();
     let host = match (PlatformBinding::host(&path), &binding.source) {
         (Some(host), _) => host,
-        (None, PackageSource::Directory(root)) => {
-            root.join(PlatformBinding::relative(path.strip_prefix("pkg:").unwrap_or(&path))?)
-        }
+        (None, PackageSource::Directory(root)) => root.join(PlatformBinding::relative(
+            path.strip_prefix("pkg:").unwrap_or(&path),
+        )?),
         (None, PackageSource::Archive(archive)) => {
             let relative = PlatformBinding::relative(path.strip_prefix("pkg:").unwrap_or(&path))?;
-            return Ok(match (archive.file(&relative), binding.source.entry(&relative)) {
-                (Some(bytes), _) => json!({"exists": true, "size": bytes.len(), "directory": false}),
-                (None, Some(PackageEntry::Directory)) => {
-                    json!({"exists": true, "size": 0, "directory": true})
-                }
-                _ => json!({"exists": false}),
-            });
+            return Ok(
+                match (archive.file(&relative), binding.source.entry(&relative)) {
+                    (Some(bytes), _) => {
+                        json!({"exists": true, "size": bytes.len(), "directory": false})
+                    }
+                    (None, Some(PackageEntry::Directory)) => {
+                        json!({"exists": true, "size": 0, "directory": true})
+                    }
+                    _ => json!({"exists": false}),
+                },
+            );
         }
     };
     match std::fs::metadata(host) {

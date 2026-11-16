@@ -284,7 +284,7 @@ impl InputLayout {
                 let key = self.resolve(canonical)?;
                 self.custom_binding_targets()
                     .any(|target| target == key)
-                    .then(|| (key, InputSource::Key(code)))
+                    .then_some((key, InputSource::Key(code)))
             })
     }
 

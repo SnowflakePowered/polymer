@@ -179,7 +179,9 @@ unsafe fn find_device_loader_data_callback(
             if unsafe { (*layer_info).function } == 1 {
                 let callback = unsafe { (*layer_info).data.opaque };
                 if !callback.is_null() {
-                    return Some(unsafe { mem::transmute(callback) });
+                    return Some(unsafe {
+                        mem::transmute::<*mut std::ffi::c_void, SetDeviceLoaderData>(callback)
+                    });
                 }
             }
         }
@@ -238,11 +240,9 @@ pub(crate) unsafe fn handle_destroy_instance(
     let continuation = *next
         .fp_next()
         .expect("Vulkan around chains always have a terminal");
-    {
-        hook_state()
-            .physical_device
-            .retain(|_, state| state.instance != instance)
-    };
+    hook_state()
+        .physical_device
+        .retain(|_, state| state.instance != instance);
     let dispatch = unsafe { dispatch_key(instance) }.and_then(|key| {
         hook_state()
             .instance
@@ -315,11 +315,9 @@ pub(crate) unsafe fn handle_destroy_device(
             .remove(&key)
             .map(|(_, dispatch)| dispatch)
     });
-    {
-        hook_state()
-            .queue
-            .retain(|_, dispatch| dispatch.device != device)
-    };
+    hook_state()
+        .queue
+        .retain(|_, dispatch| dispatch.device != device);
     unsafe { continuation(device, allocator, next) };
 }
 

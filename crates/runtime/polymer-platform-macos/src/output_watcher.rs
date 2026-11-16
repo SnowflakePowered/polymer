@@ -43,7 +43,9 @@ impl DefaultOutputWatcher {
     }
 
     fn client_data(&self) -> *mut c_void {
-        std::ptr::from_ref::<ChangeCallback>(&self.callback).cast_mut().cast()
+        std::ptr::from_ref::<ChangeCallback>(&self.callback)
+            .cast_mut()
+            .cast()
     }
 
     unsafe extern "C-unwind" fn changed(

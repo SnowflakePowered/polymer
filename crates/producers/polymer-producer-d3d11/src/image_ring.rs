@@ -44,6 +44,7 @@ pub struct D3d11ImageRing {
 }
 
 impl D3d11ImageRing {
+    #[allow(clippy::missing_safety_doc)]
     pub unsafe fn new(
         device: &ID3D11Device,
         source: &D3D11_TEXTURE2D_DESC,

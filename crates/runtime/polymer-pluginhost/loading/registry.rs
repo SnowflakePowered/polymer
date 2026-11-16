@@ -6,6 +6,8 @@ use crate::{
     emulator::EmulatorPluginInstance, platform::PlatformPluginInstance, plugin::PluginInstance,
     scraper::ScraperPluginInstance, theme::ThemePluginInstance,
 };
+use polymer_distribution::{Index, SignedArchive};
+use polymer_pluginmanifest::{AnyPluginManifest, PackageArchive, PackageSource};
 use std::{
     any::{Any, TypeId},
     collections::HashMap,
@@ -13,8 +15,6 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, RwLock},
 };
-use polymer_distribution::{Index, SignedArchive};
-use polymer_pluginmanifest::{AnyPluginManifest, PackageArchive, PackageSource};
 use thiserror::Error;
 
 struct RegisteredPlugin {
@@ -95,7 +95,13 @@ impl PluginRegistry {
         }
         archives.sort_by_cached_key(|path| {
             let version = fs::read(path).ok().and_then(|file| {
-                Some(SignedArchive::split(&file).ok()?.trusted_comment().ok()?.version)
+                Some(
+                    SignedArchive::split(&file)
+                        .ok()?
+                        .trusted_comment()
+                        .ok()?
+                        .version,
+                )
             });
             std::cmp::Reverse(version)
         });
@@ -126,7 +132,9 @@ impl PluginRegistry {
             };
             let mut children = entries
                 .filter_map(Result::ok)
-                .filter(|entry| !matches!(entry.file_name().to_str(), Some("node_modules" | ".git")))
+                .filter(|entry| {
+                    !matches!(entry.file_name().to_str(), Some("node_modules" | ".git"))
+                })
                 .filter_map(|entry| Some((entry.path(), entry.file_type().ok()?)))
                 .collect::<Vec<_>>();
             children.sort_by(|(left, _), (right, _)| left.cmp(right));
@@ -134,7 +142,9 @@ impl PluginRegistry {
                 if kind.is_dir() {
                     pending.push(child);
                 } else if kind.is_file()
-                    && child.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("asar"))
+                    && child
+                        .extension()
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("asar"))
                 {
                     archives.push(child);
                 }
@@ -178,7 +188,10 @@ impl PluginRegistry {
 
     /// Registers every interface implemented by a package. A plugin ID can be registered
     /// only once.
-    fn load_source(&self, source: PackageSource) -> Result<Arc<dyn PluginInstance>, PluginRegistryError> {
+    fn load_source(
+        &self,
+        source: PackageSource,
+    ) -> Result<Arc<dyn PluginInstance>, PluginRegistryError> {
         let manifest = AnyPluginManifest::load(source)?;
         let host = crate::plugin::HostApi::for_class(manifest.class());
         if !manifest.api().matches(host) {

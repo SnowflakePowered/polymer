@@ -59,10 +59,7 @@ pub(crate) unsafe fn register_raw_input_devices(
 ) -> i32 {
     let state = next.state.clone();
     let registered = polymer_hook::next!(next, devices, count, size);
-    if registered != 0
-        && !devices.is_null()
-        && size as usize == size_of::<RAWINPUTDEVICE>()
-    {
+    if registered != 0 && !devices.is_null() && size as usize == size_of::<RAWINPUTDEVICE>() {
         let devices = unsafe { std::slice::from_raw_parts(devices, count as usize) };
         state.input.raw_keyboard().register(devices);
     }

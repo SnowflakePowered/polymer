@@ -574,7 +574,7 @@ impl BluetoothTestApp {
                         view.motion = Some(motion);
                         view.orientation_reference.get_or_insert(motion.orientation);
                     }
-                    view.decoded_input = Some(input);
+                    view.decoded_input = Some(*input);
                 }
                 Event::Log(message) => self.log(message),
                 Event::Error(message) => {
@@ -681,7 +681,7 @@ impl eframe::App for BluetoothTestApp {
                     self.connection_ui(&mut columns[1]);
                 });
                 if let Some(action) = self.cable_pairing.show(ui) {
-                    self.send(Command::CablePairing(action));
+                    self.send(Command::CablePairing(Box::new(action)));
                 }
                 self.motion_capture_ui(ui);
                 if !self.controller_inputs.is_empty() {

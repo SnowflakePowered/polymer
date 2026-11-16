@@ -107,6 +107,7 @@ pub(crate) unsafe fn create_legacy(
     unsafe { CreationDispatch::create(&info, output) }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) unsafe fn create_for_hwnd(
     factory: *mut c_void,
     device: *mut c_void,

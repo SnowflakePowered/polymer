@@ -1,5 +1,5 @@
-use super::{GamePlacement, GameViewStyle};
 use super::ShellDocument;
+use super::{GamePlacement, GameViewStyle};
 use crate::shell::protocol::{ShellEvent, SurfaceCapture, SurfaceGroupBounds, TrackedSource};
 use anyrender::PaintScene as _;
 use blitz_dom::node::{ElementData, Widget};

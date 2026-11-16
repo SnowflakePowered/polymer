@@ -170,10 +170,10 @@ impl ImportedVulkanSurface {
     }
 
     pub fn commit(&mut self) {
-        if self.frames.has_pending() {
-            if let Some(cache) = &mut self.cache {
-                cache.initialized = true;
-            }
+        if self.frames.has_pending()
+            && let Some(cache) = &mut self.cache
+        {
+            cache.initialized = true;
         }
         if let Some(ready) = self.frames.commit(self.retention()) {
             polymer_statistics::capture_latency(self.connection, self.surface_id, ready.elapsed());

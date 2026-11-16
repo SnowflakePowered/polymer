@@ -104,7 +104,10 @@ fn mounted_directories_holding_closed_files_can_be_renamed() {
     plan.mount_tree(
         "/NAND".parse().unwrap(),
         Arc::new(Resource::new(
-            Arc::new(polymer_vfs::HostDirectoryFactory::new(root.path().to_owned(), true)),
+            Arc::new(polymer_vfs::HostDirectoryFactory::new(
+                root.path().to_owned(),
+                true,
+            )),
             permissions,
             ResourceOrigin::HostFile,
         )),
@@ -114,9 +117,12 @@ fn mounted_directories_holding_closed_files_can_be_renamed() {
         .mount(endpoint, Arc::new(plan.seal().unwrap()))
         .unwrap();
     let nand = std::path::PathBuf::from(
-        filesystem
-            .endpoint()
-            .project("/NAND".parse::<polymer_vfs::VfsPathBuf>().unwrap().as_path()),
+        filesystem.endpoint().project(
+            "/NAND"
+                .parse::<polymer_vfs::VfsPathBuf>()
+                .unwrap()
+                .as_path(),
+        ),
     );
     std::fs::create_dir_all(nand.join("staging/flash0/font")).unwrap();
     std::fs::write(nand.join("staging/flash0/font/ltn0.pgf"), b"font").unwrap();

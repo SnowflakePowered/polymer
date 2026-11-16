@@ -68,7 +68,7 @@ polymer_hook::chain_hooks! {
     #[terminal(dynamic(instance, c"vkCreateWin32SurfaceKHR": vk::PFN_vkCreateWin32SurfaceKHR), fallback = vk::Result::ERROR_EXTENSION_NOT_PRESENT)]
     #[postfix(|result, _context| {
         if result == vk::Result::SUCCESS && !create_info.is_null() && !surface.is_null() {
-            crate::swapchain::Surface::created(instance, unsafe { *surface }, unsafe { (*create_info).hwnd as isize });
+            crate::swapchain::Surface::created(instance, unsafe { *surface }, unsafe { (*create_info).hwnd });
         }
     })]
     pub(crate) unsafe extern "system" fn create_win32_surface(

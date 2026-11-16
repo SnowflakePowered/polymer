@@ -16,7 +16,7 @@ async fn platform_keys_persist_atomically() {
         title_id: Some(identity.id.clone()),
         bytes: vec![1; 16],
     };
-    wii.put(&[record.clone()]).await.unwrap();
+    wii.put(std::slice::from_ref(&record)).await.unwrap();
     assert!(ps3.list(&KeyQuery::default()).await.unwrap().is_empty());
     assert_eq!(
         wii.list(&KeyQuery {
@@ -79,7 +79,7 @@ async fn generated_licenses_compose_with_nand_and_saves_and_keep_session_bytes()
             title_id: Some(id.into()),
             bytes: vec![0x42; 16],
         };
-        keys.put(&[record.clone()]).await.unwrap();
+        keys.put(std::slice::from_ref(&record)).await.unwrap();
         // Unassociated opaque records must not crash native ID selection.
         keys.put(&[KeyRecord {
             identity: KeyIdentity {
@@ -161,7 +161,7 @@ async fn generated_licenses_compose_with_nand_and_saves_and_keep_session_bytes()
                 .read_to_end(&mut retained)
                 .unwrap();
             assert_eq!(retained, ticket);
-            keys.put(&[record.clone()]).await.unwrap();
+            keys.put(std::slice::from_ref(&record)).await.unwrap();
             composed
                 .open(target, true)
                 .unwrap()
@@ -189,7 +189,7 @@ async fn replaced_keys_drop_stale_titles_and_ids_are_case_sensitive() {
         title_id: Some("old".into()),
         bytes: vec![1],
     };
-    keys.put(&[original.clone()]).await.unwrap();
+    keys.put(std::slice::from_ref(&original)).await.unwrap();
     let replacement = KeyRecord {
         title_id: None,
         bytes: vec![2],

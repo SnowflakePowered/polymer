@@ -287,8 +287,7 @@ impl GroupSession {
     }
 
     fn present(&mut self) -> Result<(), Box<dyn Error>> {
-        if !self.redraw_due() || !self.compositor.begin_frame_within(PERMIT_WAIT)
-        {
+        if !self.redraw_due() || !self.compositor.begin_frame_within(PERMIT_WAIT) {
             return Ok(());
         }
         self.stale = false;

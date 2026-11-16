@@ -88,7 +88,11 @@ impl Sink<'_> {
             .split(['/', '\\'])
             .filter(|component| !component.is_empty() && *component != ".")
             .peekable();
-        if self.root.as_deref().is_some_and(|root| components.peek() == Some(&root)) {
+        if self
+            .root
+            .as_deref()
+            .is_some_and(|root| components.peek() == Some(&root))
+        {
             components.next();
         }
         let mut path = self.destination.to_path_buf();
@@ -136,9 +140,9 @@ impl Sink<'_> {
             return Ok(());
         };
         self.completed += target.len() as u64;
-        let mut depth = path
-            .strip_prefix(self.destination)
-            .map_or(0, |relative| relative.components().count().saturating_sub(1));
+        let mut depth = path.strip_prefix(self.destination).map_or(0, |relative| {
+            relative.components().count().saturating_sub(1)
+        });
         let mut contained = !target.starts_with('/');
         for component in target.split('/') {
             match component {
@@ -242,6 +246,7 @@ impl Archive {
                 _ => root = Some(first),
             }
         }
-        root.filter(|root| !root.ends_with(".app")).map(str::to_owned)
+        root.filter(|root| !root.ends_with(".app"))
+            .map(str::to_owned)
     }
 }

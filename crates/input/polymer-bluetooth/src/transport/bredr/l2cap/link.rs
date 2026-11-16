@@ -78,11 +78,7 @@ impl Link {
         Self::new_with_frame_receiver(host, handle, frames)
     }
 
-    pub fn new_with_frame_receiver(
-        host: Arc<HciHost>,
-        handle: u16,
-        frames: L2capFrames,
-    ) -> Self {
+    pub fn new_with_frame_receiver(host: Arc<HciHost>, handle: u16, frames: L2capFrames) -> Self {
         let (commands, receiver) = mpsc::channel(64);
         tokio::spawn(link_actor(
             host,

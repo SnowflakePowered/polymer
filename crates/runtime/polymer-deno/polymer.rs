@@ -51,14 +51,14 @@ pub mod library;
 
 pub use library::Library;
 use library::{
-    op_library_games_delete, op_library_games_get, op_library_games_list,
+    op_contents_refresh, op_library_games_delete, op_library_games_get, op_library_games_list,
     op_library_games_platforms, op_library_import_key, op_library_keys_licensed,
     op_library_keys_list, op_library_keys_platforms, op_library_keys_remove,
     op_library_launchables_add, op_library_launchables_delete, op_library_launchables_find,
     op_library_metadata_add, op_library_metadata_delete, op_library_metadata_replace,
     op_library_metadata_text, op_library_metadata_update, op_library_metadata_url,
     op_library_sources_add, op_library_sources_list, op_library_sources_remove,
-    op_library_sources_scan, op_contents_refresh, op_scraping_scrapers, op_scraping_start,
+    op_library_sources_scan, op_scraping_scrapers, op_scraping_start,
 };
 
 pub type ApiFuture<T> = Pin<Box<dyn Future<Output = T> + 'static>>;
@@ -134,7 +134,12 @@ pub trait PolymerHost: Send + Sync {
     ) -> ApiFuture<Result<Value, String>>;
     fn list_plugins(&self) -> Value;
     fn plugin_options(&self, plugin: String) -> ApiFuture<Result<Value, String>>;
-    fn set_plugin_option(&self, plugin: String, key: String, value: Value) -> ApiFuture<Result<(), String>>;
+    fn set_plugin_option(
+        &self,
+        plugin: String,
+        key: String,
+        value: Value,
+    ) -> ApiFuture<Result<(), String>>;
     fn plugin_cache_size(&self, plugin: String, key: String) -> ApiFuture<Result<u64, String>>;
     fn clear_plugin_cache(&self, plugin: String, key: String) -> ApiFuture<Result<(), String>>;
     fn invoke_plugin(
@@ -354,7 +359,9 @@ async fn op_plugin_options(
     #[string] plugin: String,
 ) -> Result<serde_json::Value, JsErrorBox> {
     let host = state.borrow().borrow::<Arc<dyn PolymerHost>>().clone();
-    host.plugin_options(plugin).await.map_err(JsErrorBox::type_error)
+    host.plugin_options(plugin)
+        .await
+        .map_err(JsErrorBox::type_error)
 }
 
 #[op2]
@@ -365,7 +372,9 @@ async fn op_plugin_set_option(
     #[serde] value: serde_json::Value,
 ) -> Result<(), JsErrorBox> {
     let host = state.borrow().borrow::<Arc<dyn PolymerHost>>().clone();
-    host.set_plugin_option(plugin, key, value).await.map_err(JsErrorBox::type_error)
+    host.set_plugin_option(plugin, key, value)
+        .await
+        .map_err(JsErrorBox::type_error)
 }
 
 #[op2]
@@ -376,7 +385,9 @@ async fn op_plugin_cache_size(
     #[string] key: String,
 ) -> Result<u64, JsErrorBox> {
     let host = state.borrow().borrow::<Arc<dyn PolymerHost>>().clone();
-    host.plugin_cache_size(plugin, key).await.map_err(JsErrorBox::type_error)
+    host.plugin_cache_size(plugin, key)
+        .await
+        .map_err(JsErrorBox::type_error)
 }
 
 #[op2]
@@ -386,7 +397,9 @@ async fn op_plugin_cache_clear(
     #[string] key: String,
 ) -> Result<(), JsErrorBox> {
     let host = state.borrow().borrow::<Arc<dyn PolymerHost>>().clone();
-    host.clear_plugin_cache(plugin, key).await.map_err(JsErrorBox::type_error)
+    host.clear_plugin_cache(plugin, key)
+        .await
+        .map_err(JsErrorBox::type_error)
 }
 
 #[op2]

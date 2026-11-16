@@ -12,11 +12,11 @@ use windows::Win32::{
     Graphics::{
         Direct3D::D3D_FEATURE_LEVEL_11_0,
         Direct3D12::{
-            D3D12_AUTO_BREADCRUMB_NODE, D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC,
-            D3D12_COMMAND_QUEUE_FLAG_NONE, D3D12_DRED_ALLOCATION_NODE,
-            D3D12_DRED_ENABLEMENT_FORCED_ON, D3D12CreateDevice, D3D12GetDebugInterface,
-            ID3D12CommandQueue, ID3D12Device, ID3D12DeviceRemovedExtendedData,
-            ID3D12DeviceRemovedExtendedDataSettings, ID3D12Fence, ID3D12Resource,
+            D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC,
+            D3D12_COMMAND_QUEUE_FLAG_NONE, D3D12_DRED_ENABLEMENT_FORCED_ON, D3D12CreateDevice,
+            D3D12GetDebugInterface, ID3D12CommandQueue, ID3D12Device,
+            ID3D12DeviceRemovedExtendedData, ID3D12DeviceRemovedExtendedDataSettings, ID3D12Fence,
+            ID3D12Resource,
         },
         Dxgi::{CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, IDXGIAdapter1, IDXGIFactory4},
     },
@@ -215,7 +215,7 @@ impl D3d12ConsumerDevice {
                         operations.collect::<Vec<_>>().join(", "),
                     );
                 }
-                node = breadcrumbs.pNext as *const D3D12_AUTO_BREADCRUMB_NODE;
+                node = breadcrumbs.pNext;
             }
         }
         if let Ok(fault) = unsafe { dred.GetPageFaultAllocationOutput() }
@@ -233,7 +233,7 @@ impl D3d12ConsumerDevice {
                         name(allocation.ObjectNameW),
                         allocation.AllocationType
                     );
-                    node = allocation.pNext as *const D3D12_DRED_ALLOCATION_NODE;
+                    node = allocation.pNext;
                 }
             }
         }

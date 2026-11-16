@@ -22,7 +22,7 @@ pub(crate) fn load_window(window: &AtomicIsize) -> Option<NativeWindow> {
 pub(crate) fn native_window(window: &Window) -> Result<NativeWindow, Box<dyn Error>> {
     match window.window_handle()?.as_raw() {
         #[cfg(windows)]
-        RawWindowHandle::Win32(handle) => Ok(NativeWindow(handle.hwnd.get() as isize)),
+        RawWindowHandle::Win32(handle) => Ok(NativeWindow(handle.hwnd.get())),
         #[cfg(target_os = "macos")]
         RawWindowHandle::AppKit(handle) => Ok(NativeWindow(handle.ns_view.as_ptr() as isize)),
         _ => Err("unsupported native viewer window".into()),

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use std::{fs, io::Read, path::PathBuf};
 
 use aes::cipher::{BlockEncrypt, KeyInit};

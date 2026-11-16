@@ -133,10 +133,10 @@ impl DeviceSet {
         let query = unsafe {
             SetupDiGetDeviceInterfaceDetailW(self.0, &interface, None, 0, Some(&mut required), None)
         };
-        if let Err(error) = query {
-            if error.code() != ERROR_INSUFFICIENT_BUFFER.to_hresult() {
-                return Err(Self::error("query HID interface details", error));
-            }
+        if let Err(error) = query
+            && error.code() != ERROR_INSUFFICIENT_BUFFER.to_hresult()
+        {
+            return Err(Self::error("query HID interface details", error));
         }
         let mut storage = vec![
             0u64;
@@ -272,10 +272,10 @@ impl DeviceSet {
                     None,
                 )
             };
-            if let Err(error) = result {
-                if error.code() != ERROR_INSUFFICIENT_BUFFER.to_hresult() {
-                    return Err(Self::error("inspect WinUSB INF section", error));
-                }
+            if let Err(error) = result
+                && error.code() != ERROR_INSUFFICIENT_BUFFER.to_hresult()
+            {
+                return Err(Self::error("inspect WinUSB INF section", error));
             }
             let section = String::from_utf16_lossy(
                 &detail.SectionName[..detail

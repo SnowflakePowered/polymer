@@ -104,13 +104,12 @@ unsafe extern "system" fn key_forward_subclass(
             | WM_SYSCHAR
             | WM_SYSDEADCHAR
             | WM_UNICHAR
-    ) {
-        if target != 0 {
-            if matches!(message, WM_KEYDOWN | WM_SYSKEYDOWN) {
-                unsafe { post_logical_focus(target) };
-            }
-            let _ = unsafe { PostMessageW(Some(HWND(target as *mut _)), message, wparam, lparam) };
+    ) && target != 0
+    {
+        if matches!(message, WM_KEYDOWN | WM_SYSKEYDOWN) {
+            unsafe { post_logical_focus(target) };
         }
+        let _ = unsafe { PostMessageW(Some(HWND(target as *mut _)), message, wparam, lparam) };
     }
     unsafe { DefSubclassProc(window, message, wparam, lparam) }
 }

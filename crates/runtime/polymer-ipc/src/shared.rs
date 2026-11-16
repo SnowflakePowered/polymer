@@ -122,6 +122,7 @@ pub struct Subscriber {
 unsafe impl Send for Subscriber {}
 
 impl Subscriber {
+    #[allow(clippy::missing_safety_doc)]
     pub unsafe fn from_handle(handle: i64, len: u64) -> io::Result<Self> {
         #[cfg(windows)]
         let file = unsafe { File::from_raw_handle(handle as isize as _) };

@@ -284,6 +284,7 @@ impl InputRouter {
         self.captured_connection().is_some() || self.ui_buttons_active()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn route_game_pointer(
         &mut self,
         phase: PointerPhase,

@@ -44,10 +44,10 @@ impl VirtualDxgiDriver for D3d12Frontend {
             return error.code();
         }
         let next = (index + 1) % self.resources.len();
-        if flags.contains(DXGI_PRESENT_DO_NOT_WAIT) {
-            if let Err(error) = state.acquire(next, AcquireDeadline::Nonblocking, None) {
-                return error.code();
-            }
+        if flags.contains(DXGI_PRESENT_DO_NOT_WAIT)
+            && let Err(error) = state.acquire(next, AcquireDeadline::Nonblocking, None)
+        {
+            return error.code();
         }
         let lease = state.leases[index].take().unwrap();
         self.pacing.signal(false);

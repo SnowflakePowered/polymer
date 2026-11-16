@@ -118,7 +118,7 @@ pub enum RadioKind {
 }
 
 pub enum Command {
-    CablePairing(crate::cable_pairing::Action),
+    CablePairing(Box<crate::cable_pairing::Action>),
     BeginControllerOrder {
         adapter_index: usize,
     },
@@ -211,7 +211,7 @@ pub enum Event {
     },
     DecodedInput {
         addr: String,
-        input: decoder::DecodedInput,
+        input: Box<decoder::DecodedInput>,
     },
     Log(String),
     Error(String),

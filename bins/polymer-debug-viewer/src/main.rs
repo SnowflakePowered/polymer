@@ -532,7 +532,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .with_resizable(true),
         )?;
         #[cfg(windows)]
-        let viewer_window = native_window(&window)?;
+        let _viewer_window = native_window(&window)?;
         let mut egui_context = egui::Context::default();
         let mut egui_state = egui_winit::State::new(
             egui_context.clone(),
@@ -593,8 +593,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                         target.exit();
                     }
                 }
-                WindowEvent::Focused(focused) => {
-                    if !focused {
+                WindowEvent::Focused(focused)
+                    if !focused => {
                         pressed_keys.clear();
                         if let Some(connection) = pointer_routing.captured_connection() {
                             let size = window.inner_size();
@@ -610,7 +610,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                             );
                         }
                     }
-                }
                 WindowEvent::KeyboardInput { event, .. } => {
                     if let PhysicalKey::Code(code) = event.physical_key {
                         #[cfg(target_os = "macos")]
@@ -638,8 +637,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                         }
                     }
                     #[cfg(windows)]
-                    if let Some(backing) = load_window(&backing_window) {
-                        if event.state == ElementState::Pressed
+                    if let Some(backing) = load_window(&backing_window)
+                        && event.state == ElementState::Pressed
                             && let Some(text) = event.text
                         {
                             for character in text.chars() {
@@ -649,7 +648,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 }
                             }
                         }
-                    }
                 }
                 WindowEvent::CursorMoved { position, .. } => {
                     pointer_routing.set_cursor(position.x, position.y);
@@ -1158,7 +1156,6 @@ struct StartedTarget {
     layouts: Vec<InputLayout>,
 }
 
-#[expect(clippy::too_many_arguments)]
 fn start_target_session(
     launcher: &LauncherState,
     executable_dir: &Path,

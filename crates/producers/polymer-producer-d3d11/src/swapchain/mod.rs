@@ -24,9 +24,7 @@ pub struct CreateInfo {
 }
 impl CreateInfo {
     fn validate_threading(&self) -> Result<(), Error> {
-        if unsafe { self.device.GetCreationFlags() } & D3D11_CREATE_DEVICE_SINGLETHREADED.0 as u32
-            != 0
-        {
+        if unsafe { self.device.GetCreationFlags() } & D3D11_CREATE_DEVICE_SINGLETHREADED.0 != 0 {
             return Err(Error::new(
                 DXGI_ERROR_UNSUPPORTED,
                 "virtual D3D11 currently requires a device permitting serialized cross-thread ownership",

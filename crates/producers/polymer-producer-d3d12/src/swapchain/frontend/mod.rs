@@ -116,12 +116,12 @@ impl State {
         if self.failed {
             return Err(Error::from_hresult(DXGI_ERROR_DEVICE_REMOVED));
         }
-        if self.leases[index].is_some() {
-            if let Some(maximum) = maximum {
-                self.controller
-                    .wait_for_pacing(maximum, deadline)
-                    .map_err(D3d12Frontend::error)?;
-            }
+        if self.leases[index].is_some()
+            && let Some(maximum) = maximum
+        {
+            self.controller
+                .wait_for_pacing(maximum, deadline)
+                .map_err(D3d12Frontend::error)?;
         }
         if self.leases[index].is_none() {
             self.leases[index] = Some(

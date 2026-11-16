@@ -73,7 +73,11 @@ impl PluginModuleLoader {
             ))
         })?;
         ModuleSpecifier::from_file_path(directory.join(path.trim_start_matches("./"))).map_err(
-            |()| ModuleLoaderError::type_error(format!("cannot resolve local JSR package '{package}'")),
+            |()| {
+                ModuleLoaderError::type_error(format!(
+                    "cannot resolve local JSR package '{package}'"
+                ))
+            },
         )
     }
 

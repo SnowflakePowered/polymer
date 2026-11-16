@@ -254,7 +254,10 @@ impl BluetoothPanel {
             .unwrap_or_default();
         if radios.is_empty() {
             Err("Needs an adapter that Windows uses")
-        } else if radios.iter().any(|radio| radio.State() == Ok(RadioState::On)) {
+        } else if radios
+            .iter()
+            .any(|radio| radio.State() == Ok(RadioState::On))
+        {
             Ok(())
         } else {
             Err("Turn on Bluetooth in Windows settings")

@@ -66,8 +66,9 @@ impl PointerCalibration {
                     continue;
                 }
                 let factor = system[row][column];
-                for entry in column..9 {
-                    system[row][entry] -= factor * system[column][entry];
+                let pivot = system[column];
+                for (value, pivot) in system[row][column..].iter_mut().zip(&pivot[column..]) {
+                    *value -= factor * pivot;
                 }
             }
         }
