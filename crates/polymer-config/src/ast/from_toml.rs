@@ -8,7 +8,7 @@ use crate::{
             Emit, OptionDefinition as TomlOptionDefinition, OptionValue, Section, SelectDefinition,
             Target,
         },
-        input::{InputBlock, LayoutMapping, Port, PortTable},
+        input::{InputBlock, LayoutMapping, MappingValue, Port, PortTable},
     },
 };
 
@@ -188,7 +188,18 @@ impl ConfigurationDefinition {
         input: InputBlock<'de>,
         platforms: BTreeMap<&'de str, PortTable<'de>>,
     ) -> InputDefinition {
-        let (mapping, options) = self.lower_layout_mapping(input.mapping);
+        let mapping = input
+            .mapping
+            .mapping
+            .into_iter()
+            .map(|(key, value)| (key, value.into()))
+            .collect();
+        let options = input
+            .mapping
+            .options
+            .into_iter()
+            .map(|option| self.lower_option(option))
+            .collect();
         let mouse = input
             .mouse
             .map(|table| {
@@ -204,6 +215,22 @@ impl ConfigurationDefinition {
             device: input.device.into(),
             mapping,
             mouse,
+            binding: input.binding.map(|shape| BindingShape {
+                section: shape.section.into(),
+                values: shape
+                    .values
+                    .values
+                    .into_iter()
+                    .map(|(key, value)| {
+                        let field = match value {
+                            "{key}" => BindingField::Key,
+                            "{value}" => BindingField::Value,
+                            literal => BindingField::Literal(literal.into()),
+                        };
+                        (key.into(), field)
+                    })
+                    .collect(),
+            }),
             options,
             layouts: input
                 .layouts
@@ -267,6 +294,16 @@ impl From<Option<Vec<SelectDefinition<'_>>>> for DomainDefinition {
     }
 }
 
+impl From<MappingValue<'_>> for BindingValue {
+    fn from(value: MappingValue<'_>) -> Self {
+        match value {
+            MappingValue::Text(text) => Self::Text(text.into()),
+            MappingValue::Integer(value) => Self::Integer(value),
+            MappingValue::List(items) => Self::List(items.into_iter().map(Into::into).collect()),
+        }
+    }
+}
+
 impl From<OptionValue<'_>> for Value {
     fn from(value: OptionValue<'_>) -> Self {
         match value {
@@ -286,7 +323,8 @@ impl From<Emit<'_>> for EmitDefinition {
             value: emit.value.map(Value::from),
             bool_style: emit.bool_style.map(Into::into),
             int_style: emit.int_style.map(Into::into),
-            xml_attribute: emit.xml.is_some_and(|xml| xml.attribute),
+            float_style: emit.float_style.map(Into::into),
+            attribute: emit.attribute,
         }
     }
 }

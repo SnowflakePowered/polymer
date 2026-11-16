@@ -572,27 +572,6 @@ export const onLaunch = async (args: EmulatorLaunchArgs<Options, Readonly<{ nand
     }
     args.filesystem.mount("/Dolphin", dolphin, { mode: "rx" });
     args.filesystem.mount("/User/StateSaves", args.saveStates.directory, { mode: "rwx" });
-    args.filesystem.mount(
-        "/User/Config/Logger.ini",
-        new TextEncoder().encode([
-            "[Logs]",
-            "BOOT = True",
-            "COMMON = True",
-            "CORE = True",
-            "IOS = True",
-            "IOS_ES = True",
-            "IOS_FS = True",
-            "WII_IPC = True",
-            "WIIMOTE = True",
-            "[Options]",
-            "Verbosity = 4",
-            "WriteToConsole = True",
-            "WriteToFile = True",
-            "WriteToWindow = False",
-            "",
-        ].join("\n")),
-        { mode: "rw" },
-    );
     args.filesystem.mount("/User/Logs/dolphin.log", new Uint8Array(), { mode: "rw" });
     if (args.storage.slotA) {
         args.filesystem.mount("/MemoryCard/USA", args.storage.slotA, {

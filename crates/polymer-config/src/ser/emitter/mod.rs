@@ -1,19 +1,30 @@
 use std::{borrow::Cow, fmt, io::Write, path::Path};
 
-use rt_format::{FormatArgument, NoNamedArguments, ParsedFormat, Specifier};
+use rt_format::{Format, FormatArgument, NoNamedArguments, ParsedFormat, Specifier};
 
 use crate::{
-    ast::{BoolStyleDefinition, TargetOutputDefinition},
+    ast::{BindingValue, BoolStyleDefinition, TargetOutputDefinition},
     error::{Error, Result},
 };
 
 mod bml;
 mod ini;
+mod toml;
 mod xml;
+mod yaml;
 
 pub use bml::BmlEmitter;
-pub use ini::IniEmitter;
+pub use ini::{IniEmitter, IniOptions, IniQuote};
+pub use toml::TomlEmitter;
 pub use xml::XmlEmitter;
+pub use yaml::YamlEmitter;
+
+/// Per-format options for one render, keyed by output format.
+#[derive(Clone, Copy, Debug, Default, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RenderOptions {
+    pub ini: IniOptions,
+}
 
 /// A format-specific, in-memory document builder driven by
 /// [`Serializer`](super::Serializer).
@@ -30,14 +41,6 @@ pub trait Emitter {
     fn enter_section(&mut self, section: SectionRef<'_>) -> EmitResult<()>;
 
     fn write_value(&mut self, value: EmittedValue<'_>) -> EmitResult<()>;
-
-    /// Writes one emulator input binding. Structured formats may override this.
-    fn write_binding(&mut self, binding: EmittedBinding<'_>) -> EmitResult<()> {
-        self.write_value(EmittedValue {
-            key: binding.key,
-            value: ScalarValue::String(&binding.value),
-        })
-    }
 
     fn exit_section(&mut self, section: SectionRef<'_>) -> EmitResult<()>;
 
@@ -63,6 +66,8 @@ pub struct SectionRef<'a> {
     pub path: &'a str,
     pub name: &'a str,
     pub attributes: &'a [EmittedAttribute<'a>],
+    /// Whether this section is one of several same-named siblings.
+    pub repeated: bool,
 }
 
 impl SectionRef<'_> {
@@ -89,14 +94,8 @@ pub struct EmittedValue<'a> {
     pub value: ScalarValue<'a>,
 }
 
-#[derive(Clone, Debug)]
-pub struct EmittedBinding<'a> {
-    pub key: &'a str,
-    pub value: Cow<'a, str>,
-}
-
 /// A choice has already been mapped to its emulator-facing scalar by the time
-/// it reaches an emitter.
+/// it reaches an emitter. A list only reaches formats that can hold one.
 #[derive(Clone, Copy, Debug)]
 pub enum ScalarValue<'a> {
     Boolean {
@@ -107,9 +106,26 @@ pub enum ScalarValue<'a> {
         value: i64,
         style: Option<&'a str>,
     },
-    Float(f64),
+    Float {
+        value: f64,
+        style: Option<&'a str>,
+    },
     String(&'a str),
     Path(&'a Path),
+    List(&'a [Box<str>]),
+}
+
+impl<'a> From<&'a BindingValue> for ScalarValue<'a> {
+    fn from(value: &'a BindingValue) -> Self {
+        match value {
+            BindingValue::Text(text) => Self::String(text),
+            BindingValue::Integer(value) => Self::Integer {
+                value: *value,
+                style: None,
+            },
+            BindingValue::List(items) => Self::List(items),
+        }
+    }
 }
 
 impl<'a> ScalarValue<'a> {
@@ -131,69 +147,114 @@ impl<'a> ScalarValue<'a> {
             Self::Integer {
                 value,
                 style: Some(style),
-            } => Cow::Owned(render_integer(value, style)?),
-            Self::Float(value) => Cow::Owned(value.to_string()),
+            } => Cow::Owned(NumberArgument::Integer(value).render(style)?),
+            Self::Float { value, style: None } => Cow::Owned(value.to_string()),
+            Self::Float {
+                value,
+                style: Some(style),
+            } => Cow::Owned(NumberArgument::Float(value).render(style)?),
             Self::String(value) => Cow::Borrowed(value),
             Self::Path(value) => Cow::Borrowed(
                 value
                     .to_str()
                     .ok_or_else(|| Error::NonUtf8Path(value.to_owned()))?,
             ),
+            Self::List(_) => {
+                return Err(Error::emitter_message(
+                    "this format cannot represent a list value",
+                ));
+            }
         })
     }
 }
 
-fn render_integer(value: i64, style: &str) -> EmitResult<String> {
-    let arguments = [IntegerArgument(value)];
-    let format = ParsedFormat::parse(style, &arguments, &NoNamedArguments).map_err(|offset| {
-        Error::emitter_message(format!(
-            "invalid integer style `{style}` at byte offset {offset}"
-        ))
-    })?;
-    Ok(format.to_string())
+/// A number rendered through a runtime format string such as `{:.2}` or `{:#x}`.
+#[derive(Debug)]
+enum NumberArgument {
+    Integer(i64),
+    Float(f64),
 }
 
-#[derive(Debug)]
-struct IntegerArgument(i64);
+impl NumberArgument {
+    fn render(self, style: &str) -> EmitResult<String> {
+        let arguments = [self];
+        let format = ParsedFormat::parse(style, &arguments, &NoNamedArguments).map_err(|offset| {
+            Error::emitter_message(format!(
+                "invalid number style `{style}` at byte offset {offset}"
+            ))
+        })?;
+        Ok(format.to_string())
+    }
 
-impl FormatArgument for IntegerArgument {
-    fn supports_format(&self, _specifier: &Specifier) -> bool {
-        true
+    fn integer(
+        &self,
+        formatter: &mut fmt::Formatter<'_>,
+        format: fn(&i64, &mut fmt::Formatter<'_>) -> fmt::Result,
+    ) -> fmt::Result {
+        match self {
+            Self::Integer(value) => format(value, formatter),
+            Self::Float(_) => Err(fmt::Error),
+        }
+    }
+}
+
+impl FormatArgument for NumberArgument {
+    fn supports_format(&self, specifier: &Specifier) -> bool {
+        matches!(self, Self::Integer(_))
+            || matches!(
+                specifier.format,
+                Format::Display | Format::Debug | Format::LowerExp | Format::UpperExp
+            )
     }
 
     fn fmt_display(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.0, formatter)
+        match self {
+            Self::Integer(value) => fmt::Display::fmt(value, formatter),
+            Self::Float(value) => fmt::Display::fmt(value, formatter),
+        }
     }
 
     fn fmt_debug(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(&self.0, formatter)
+        match self {
+            Self::Integer(value) => fmt::Debug::fmt(value, formatter),
+            Self::Float(value) => fmt::Debug::fmt(value, formatter),
+        }
     }
 
     fn fmt_octal(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Octal::fmt(&self.0, formatter)
+        self.integer(formatter, fmt::Octal::fmt)
     }
 
     fn fmt_lower_hex(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::LowerHex::fmt(&self.0, formatter)
+        self.integer(formatter, fmt::LowerHex::fmt)
     }
 
     fn fmt_upper_hex(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::UpperHex::fmt(&self.0, formatter)
+        self.integer(formatter, fmt::UpperHex::fmt)
     }
 
     fn fmt_binary(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Binary::fmt(&self.0, formatter)
+        self.integer(formatter, fmt::Binary::fmt)
     }
 
     fn fmt_lower_exp(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::LowerExp::fmt(&self.0, formatter)
+        match self {
+            Self::Integer(value) => fmt::LowerExp::fmt(value, formatter),
+            Self::Float(value) => fmt::LowerExp::fmt(value, formatter),
+        }
     }
 
     fn fmt_upper_exp(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::UpperExp::fmt(&self.0, formatter)
+        match self {
+            Self::Integer(value) => fmt::UpperExp::fmt(value, formatter),
+            Self::Float(value) => fmt::UpperExp::fmt(value, formatter),
+        }
     }
 
     fn to_usize(&self) -> std::result::Result<usize, ()> {
-        usize::try_from(self.0).map_err(|_| ())
+        match self {
+            Self::Integer(value) => usize::try_from(*value).map_err(|_| ()),
+            Self::Float(_) => Err(()),
+        }
     }
 }

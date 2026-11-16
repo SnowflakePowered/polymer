@@ -8,17 +8,17 @@ target = "ini.Framerate"
 [[sections.framerate.options]]
 key = "nominal_scalar"
 title = "Nominal Scalar"
-type = "string"
-emit = { key = "NominalScalar" }
+type = "float"
+emit = { key = "NominalScalar", float_style = "{:.2}" }
 
 [[sections.framerate.options]]
 key = "slomo_scalar"
 title = "Slomo Scalar"
-type = "string"
-emit = { key = "SlomoScalar" }
+type = "float"
+emit = { key = "SlomoScalar", float_style = "{:.2}" }
 
 [[sections.framerate.options]]
 key = "turbo_scalar"
 title = "Turbo Scalar"
-type = "string"
-emit = { key = "TurboScalar" }
+type = "float"
+emit = { key = "TurboScalar", float_style = "{:.2}" }

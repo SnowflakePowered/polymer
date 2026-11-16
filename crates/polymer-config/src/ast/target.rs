@@ -1,7 +1,7 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 
 use petgraph::{
-    Direction::{Incoming, Outgoing},
+    Direction::Outgoing,
     algo::toposort,
     graphmap::DiGraphMap,
 };
@@ -34,7 +34,6 @@ pub struct TargetGraph {
     target_by_path: HashMap<OwnedTargetPath, Handle<TargetDefinition>>,
     graph: DiGraphMap<Handle<TargetDefinition>, ()>,
     output_roots: Box<[Handle<TargetDefinition>]>,
-    output_formats: Box<[Box<[Box<str>]>]>,
 }
 
 impl ConfigurationDefinition {
@@ -79,7 +78,7 @@ impl TargetGraph {
             }
         }
 
-        let topological_order = toposort(&graph, None).map_err(|cycle| {
+        toposort(&graph, None).map_err(|cycle| {
             let handle = cycle.node_id();
             Error::TargetCycle(definition.targets[handle].path.as_str().into())
         })?;
@@ -90,34 +89,10 @@ impl TargetGraph {
                 (target.parent.is_none() && target.output.is_some()).then_some(handle)
             })
             .collect::<Box<[_]>>();
-        let mut output_formats = (0..definition.targets.len())
-            .map(|_| BTreeSet::<Box<str>>::new())
-            .collect::<Vec<_>>();
-        for root in output_roots.iter().copied() {
-            output_formats[root.index()].insert(
-                definition.targets[root]
-                    .output
-                    .as_ref()
-                    .expect("output roots have an output")
-                    .format
-                    .clone(),
-            );
-        }
-        for handle in topological_order.iter().copied() {
-            let inherited = graph
-                .neighbors_directed(handle, Incoming)
-                .flat_map(|parent| output_formats[parent.index()].iter().cloned())
-                .collect::<Vec<_>>();
-            output_formats[handle.index()].extend(inherited);
-        }
         Ok(Self {
             target_by_path,
             graph,
             output_roots,
-            output_formats: output_formats
-                .into_iter()
-                .map(|formats| formats.into_iter().collect())
-                .collect(),
         })
     }
 
@@ -134,9 +109,5 @@ impl TargetGraph {
 
     pub fn output_roots(&self) -> &[Handle<TargetDefinition>] {
         &self.output_roots
-    }
-
-    pub fn output_formats(&self, target: Handle<TargetDefinition>) -> &[Box<str>] {
-        &self.output_formats[target.index()]
     }
 }

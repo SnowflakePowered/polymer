@@ -63,8 +63,7 @@ export const onLaunch = async (args: EmulatorLaunchArgs<{ qt: { videoSync: boole
     args.filesystem.mount("/mGBA", await runtime.launch(), { mode: "rx" });
     args.configuration.options().qt.videoSync = args.userConfiguration?.graphics?.vsync === true;
     args.configuration.options().qt.fpsTarget = 60 * frameLimit(args.userConfiguration) / 100;
-    const settings = new TextDecoder().decode(args.configuration.render()["config.ini"]).replace("[qt]", "[ports.qt]");
-    args.filesystem.mount("/mGBA/config.ini", new TextEncoder().encode(settings), { mode: "rw" });
+    args.filesystem.mount("/mGBA/config.ini", args.configuration.render()["config.ini"], { mode: "rw" });
     args.filesystem.mount("/User");
     const gamePath = args.filesystem.mount("/Game", args.launchSet[0].package, { mode: "rx" });
     if (args.storage.battery) {

@@ -5,7 +5,6 @@ import { Job } from "polymer:jobs";
 import { graphicsApis, osIdentifier } from "polymer:sys";
 import { unarchive } from "polymer:unarchive";
 import { EmulatorUpdates } from "jsr:@polymer-fe/emulator-updates@^0.1.0";
-import { Rpcs3Configuration } from "pkg:configuration.ts";
 import type { ConfigurationResult, EmulatorLaunchArgs, GraphicsHook, Package, SaveCheckpointContext, Storage, UserConfiguration } from "polymer:api";
 
 const runtime = new EmulatorUpdates({
@@ -71,7 +70,10 @@ export const onConfigure = (_pkg: Package, userConfiguration?: UserConfiguration
     },
 });
 
-export const onLaunch = async (args: EmulatorLaunchArgs<{ video: { Renderer: string, "Shader Mode": string } }, Readonly<{ hdd?: Storage, flash?: Storage }>>) => {
+export const onLaunch = async (args: EmulatorLaunchArgs<{
+    video: { Renderer: string, "Shader Mode": string },
+    vfs: Record<"/dev_hdd0/" | "/dev_hdd1/" | "/dev_flash/" | "/dev_flash2/" | "/dev_flash3/", string>,
+}, Readonly<{ hdd?: Storage, flash?: Storage }>>) => {
     if (!args.storage.hdd) {
         throw new Error("Select a PlayStation 3 NAND and save repository for the HDD, and install system software before launching RPCS3.");
     }
@@ -95,18 +97,18 @@ export const onLaunch = async (args: EmulatorLaunchArgs<{ video: { Renderer: str
     const game = installed
         ? fs.path(`/Storage/${installed.device}/${installed.path}/${installed.entrypoint}`)
         : fs.mount("/Game", args.launchSet[0].package, { mode: "rx" });
-    const vfs = {
-        "/dev_hdd0/": `${fs.path("/Storage/hdd/dev_hdd0")}/`,
-        "/dev_hdd1/": `${fs.path("/RPCS3/dev_hdd1")}/`,
-        "/dev_flash/": `${fs.path(`${flash}/dev_flash`)}/`,
-        "/dev_flash2/": `${fs.path(`${flash}/dev_flash2`)}/`,
-        "/dev_flash3/": `${fs.path(`${flash}/dev_flash3`)}/`,
-    };
-    fs.mount("/RPCS3/config/vfs.yml", new TextEncoder().encode(JSON.stringify(vfs)), { mode: "rw" });
+    const vfs = args.configuration.options().vfs;
+    vfs["/dev_hdd0/"] = `${fs.path("/Storage/hdd/dev_hdd0")}/`;
+    vfs["/dev_hdd1/"] = `${fs.path("/RPCS3/dev_hdd1")}/`;
+    vfs["/dev_flash/"] = `${fs.path(`${flash}/dev_flash`)}/`;
+    vfs["/dev_flash2/"] = `${fs.path(`${flash}/dev_flash2`)}/`;
+    vfs["/dev_flash3/"] = `${fs.path(`${flash}/dev_flash3`)}/`;
     const api = graphicsApi(args.userConfiguration);
     args.configuration.options().video.Renderer = api.value;
     args.configuration.options().video["Shader Mode"] = shaderMode(args.userConfiguration);
-    Rpcs3Configuration.mount(args.configuration, fs);
+    for (const [name, bytes] of Object.entries(args.configuration.render())) {
+        fs.mount(`/RPCS3/${name}`, bytes, { mode: "rw" });
+    }
     return {
         command: fs.path("/RPCS3/rpcs3.exe"),
         workingDirectory: fs.path("/RPCS3"),

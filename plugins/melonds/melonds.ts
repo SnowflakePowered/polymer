@@ -74,7 +74,7 @@ function frameLimit(configuration?: UserConfiguration): number {
 }
 
 export const onLaunch = async (args: EmulatorLaunchArgs<{
-    runtime: { TargetFPS: string },
+    runtime: { TargetFPS: number },
     screen: { VSync: boolean },
     gl: { ScaleFactor: number },
     instance: { SaveFilePath: string, SavestatePath: string },
@@ -91,15 +91,14 @@ export const onLaunch = async (args: EmulatorLaunchArgs<{
         fs.mount(`/User/saves/${stem}.sav`, args.storage.battery, { mode: "rw" });
     }
     const options = args.configuration.options();
-    options.instance.SaveFilePath = JSON.stringify(fs.path("/User/saves"));
-    options.instance.SavestatePath = JSON.stringify(fs.path("/User/states"));
+    options.instance.SaveFilePath = fs.path("/User/saves");
+    options.instance.SavestatePath = fs.path("/User/states");
     options.screen.VSync = args.userConfiguration?.graphics?.vsync !== false;
     options.gl.ScaleFactor = internalResolution(args.userConfiguration);
-    options.runtime.TargetFPS = (60 * frameLimit(args.userConfiguration) / 100).toFixed(1);
-    const settings = new TextDecoder().decode(args.configuration.render()["melonDS.toml"])
-        .replace(/^\[GL\]\r?$/m, "[3D.GL]")
-        .replace(/^\[(Window0|Keyboard|Joystick)\]\r?$/gm, "[Instance0.$1]");
-    fs.mount("/melonDS/portable/melonDS.toml", new TextEncoder().encode(settings), { mode: "rw" });
+    options.runtime.TargetFPS = 60 * frameLimit(args.userConfiguration) / 100;
+    for (const [name, bytes] of Object.entries(args.configuration.render())) {
+        fs.mount(`/melonDS/portable/${name}`, bytes, { mode: "rw" });
+    }
 
     return {
         command: fs.path("/melonDS/melonDS.exe"),

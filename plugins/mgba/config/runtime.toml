@@ -5,11 +5,11 @@ false = "0"
 [targets.settings]
 output = { format = "ini", path = "config.ini" }
 
-[targets.settings.qt]
+[targets.settings.ports.qt]
 
 [sections.qt]
 title = "qt"
-target = "settings.qt"
+target = "settings.ports.qt"
 
 [[sections.qt.options]]
 key = "videoSync"

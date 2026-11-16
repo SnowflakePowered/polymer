@@ -13,6 +13,7 @@ type LaunchArgs = EmulatorLaunchArgs<{
     input: { defocus: string, driver: string },
     general: { auto_save_memory: boolean, no_file_prompt: boolean, show_status_bar: boolean },
     paths: { home: string, saves: string, firmware: string, screenshots: string },
+    [firmware: `${string}_firmware`]: Record<string, string>,
 }, BatteryStorage & Readonly<{ card1?: Storage }>>;
 
 const runtime = new EmulatorUpdates({
@@ -100,9 +101,8 @@ export const onLaunch = async (args: LaunchArgs) => {
     options.paths.saves = `${fs.path("/User/saves")}/`;
     options.paths.firmware = `${fs.path("/User/firmware")}/`;
     options.paths.screenshots = `${fs.path("/User/screenshots")}/`;
-    const firmware = await AresFirmware.mount(args);
-    const settings = new TextDecoder().decode(args.configuration.render()["settings.bml"]);
-    fs.mount("/User/settings.bml", new TextEncoder().encode(settings + firmware), { mode: "rw" });
+    await AresFirmware.mount(args);
+    fs.mount("/User/settings.bml", args.configuration.render()["settings.bml"], { mode: "rw" });
     return {
         command: fs.path("/ares/ares.exe"),
         workingDirectory: fs.path("/ares"),
@@ -117,26 +117,27 @@ export const onLaunch = async (args: LaunchArgs) => {
 };
 
 class AresFirmware {
-    static async mount(args: LaunchArgs): Promise<string> {
+    static async mount(args: LaunchArgs): Promise<void> {
         const system = systems[args.console];
-        if (system.firmware.length === 0) return "";
+        if (system.firmware.length === 0) return;
         const files = await args.firmwareStore.list();
         const available = await Promise.all(files.map(async file => {
             const resource = await args.firmwareStore.open(file.label);
             return { resource, sha256: await resource.digest("sha2") };
         }));
-        const lines = [`\n${(system.firmwareSystem ?? system.name).replaceAll(/[ ()]/g, "")}\n  Firmware`];
+        const options = args.configuration.options()[`${(system.firmwareSystem ?? system.name).replaceAll(/[ ()]/g, "").toLowerCase()}_firmware`];
+        let mounted = 0;
         for (const [slot, hash] of system.firmware) {
             const file = hash ? available.find(file => file.sha256 === hash) : available[0];
             if (!file) continue;
             const name = `/User/firmware/${slot}.bin`;
             args.filesystem.mount(name, file.resource, { mode: "r" });
-            lines.push(`    ${slot}: ${args.filesystem.path(name)}`);
+            options[slot.replaceAll(".", "_")] = args.filesystem.path(name);
+            mounted++;
         }
-        if (lines.length === 1 && ["COLECO_CV", "NEC_TGCD", "NINTENDO_FDS", "NINTENDO_GBA", "NINTENDO_N64DD", "SEGA_32X_CD", "SEGA_CD", "SEGA_SAT", "SNK_NG", "SNK_NGP", "SNK_NGPC", "SONY_PSX"].includes(args.console)) {
+        if (mounted === 0 && ["COLECO_CV", "NEC_TGCD", "NINTENDO_FDS", "NINTENDO_GBA", "NINTENDO_N64DD", "SEGA_32X_CD", "SEGA_CD", "SEGA_SAT", "SNK_NG", "SNK_NGP", "SNK_NGPC", "SONY_PSX"].includes(args.console)) {
             throw new Error(`ares requires a compatible ${system.name} BIOS. Import the firmware into Polymer first.`);
         }
-        return `${lines.join("\n")}\n`;
     }
 }
 

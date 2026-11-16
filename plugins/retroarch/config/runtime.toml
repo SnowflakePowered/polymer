@@ -5,18 +5,149 @@ emulator = "retroarch-lrps2"
 true = "true"
 false = "false"
 
-[targets.generated]
-output = { format = "ini", path = "generated.ini" }
+[targets.retroarch]
+output = { format = "ini", path = "retroarch.cfg" }
 
-[targets.generated.Core]
+[targets.core]
+output = { format = "ini", path = "core-options.cfg" }
+
+[sections.retroarch]
+title = "RetroArch"
+target = "retroarch"
+
+[[sections.retroarch.options]]
+key = "config_save_on_exit"
+title = "config_save_on_exit"
+type = "bool"
+default = false
+emit = { key = "config_save_on_exit", bool_style = "lower" }
+
+[[sections.retroarch.options]]
+key = "core_info_cache_enable"
+title = "core_info_cache_enable"
+type = "bool"
+default = false
+emit = { key = "core_info_cache_enable", bool_style = "lower" }
+
+[[sections.retroarch.options]]
+key = "core_options_path"
+title = "core_options_path"
+type = "string"
+default = ""
+emit = { key = "core_options_path" }
+
+[[sections.retroarch.options]]
+key = "system_directory"
+title = "system_directory"
+type = "string"
+default = ""
+emit = { key = "system_directory" }
+
+[[sections.retroarch.options]]
+key = "savefile_directory"
+title = "savefile_directory"
+type = "string"
+default = ""
+emit = { key = "savefile_directory" }
+
+[[sections.retroarch.options]]
+key = "savestate_directory"
+title = "savestate_directory"
+type = "string"
+default = ""
+emit = { key = "savestate_directory" }
+
+[[sections.retroarch.options]]
+key = "log_dir"
+title = "log_dir"
+type = "string"
+default = ""
+emit = { key = "log_dir" }
+
+[[sections.retroarch.options]]
+key = "libretro_directory"
+title = "libretro_directory"
+type = "string"
+default = ""
+emit = { key = "libretro_directory" }
+
+[[sections.retroarch.options]]
+key = "libretro_info_path"
+title = "libretro_info_path"
+type = "string"
+default = ""
+emit = { key = "libretro_info_path" }
+
+[[sections.retroarch.options]]
+key = "assets_directory"
+title = "assets_directory"
+type = "string"
+default = ""
+emit = { key = "assets_directory" }
+
+[[sections.retroarch.options]]
+key = "video_driver"
+title = "video_driver"
+type = "string"
+default = "d3d11"
+emit = { key = "video_driver" }
+
+[[sections.retroarch.options]]
+key = "video_fullscreen"
+title = "video_fullscreen"
+type = "bool"
+default = true
+emit = { key = "video_fullscreen", bool_style = "lower" }
+
+[[sections.retroarch.options]]
+key = "input_autodetect_enable"
+title = "input_autodetect_enable"
+type = "bool"
+default = true
+emit = { key = "input_autodetect_enable", bool_style = "lower" }
+
+[[sections.retroarch.options]]
+key = "pause_nonactive"
+title = "pause_nonactive"
+type = "bool"
+default = false
+emit = { key = "pause_nonactive", bool_style = "lower" }
+
+[[sections.retroarch.options]]
+key = "quit_on_close_content"
+title = "quit_on_close_content"
+type = "int"
+default = 1
+emit = { key = "quit_on_close_content" }
 
 [sections.core]
 title = "LRPS2"
-target = "generated.Core"
+target = "core"
 
 [[sections.core.options]]
-key = "placeholder"
-title = "Placeholder"
-type = "bool"
-default = false
-emit = { key = "Placeholder", bool_style = "lower" }
+key = "pcsx2_bios"
+title = "pcsx2_bios"
+type = "string"
+default = ""
+emit = { key = "pcsx2_bios" }
+
+[[sections.core.options]]
+key = "pcsx2_renderer"
+title = "pcsx2_renderer"
+type = "string"
+default = "D3D11"
+emit = { key = "pcsx2_renderer" }
+
+[[sections.core.options]]
+key = "pcsx2_fastboot"
+title = "pcsx2_fastboot"
+type = "string"
+default = "enabled"
+emit = { key = "pcsx2_fastboot" }
+
+[[sections.core.options]]
+key = "pcsx2_shared_memory_cards"
+title = "pcsx2_shared_memory_cards"
+type = "string"
+default = "enabled"
+emit = { key = "pcsx2_shared_memory_cards" }

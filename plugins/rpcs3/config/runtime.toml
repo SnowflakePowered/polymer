@@ -1,15 +1,11 @@
-[bool_style.lower]
-true = "true"
-false = "false"
+[targets.config]
+output = { format = "yaml", path = "config.yml" }
 
-[targets.settings]
-output = { format = "ini", path = "runtime.ini" }
-
-[targets.settings."Video"]
+[targets.config."Video"]
 
 [sections.video]
 title = "video"
-target = "settings.Video"
+target = "config.Video"
 
 [[sections.video.options]]
 key = "Renderer"
@@ -24,29 +20,71 @@ title = "Shader Mode"
 type = "string"
 emit = { key = "Shader Mode" }
 
-[targets.settings."Miscellaneous"]
+[targets.config."Miscellaneous"]
 
 [sections.misc]
 title = "misc"
-target = "settings.Miscellaneous"
+target = "config.Miscellaneous"
 
 [[sections.misc.options]]
 key = "Exit RPCS3 when process finishes"
 title = "Exit RPCS3 when process finishes"
 type = "bool"
 default = true
-emit = { key = "Exit RPCS3 when process finishes", bool_style = "lower" }
+emit = { key = "Exit RPCS3 when process finishes" }
 
 [[sections.misc.options]]
 key = "Pause emulation on RPCS3 focus loss"
 title = "Pause emulation on RPCS3 focus loss"
 type = "bool"
 default = false
-emit = { key = "Pause emulation on RPCS3 focus loss", bool_style = "lower" }
+emit = { key = "Pause emulation on RPCS3 focus loss" }
 
 [[sections.misc.options]]
 key = "Start games in fullscreen mode"
 title = "Start games in fullscreen mode"
 type = "bool"
 default = false
-emit = { key = "Start games in fullscreen mode", bool_style = "lower" }
+emit = { key = "Start games in fullscreen mode" }
+
+[targets.vfs]
+output = { format = "yaml", path = "config/vfs.yml" }
+
+[sections.vfs]
+title = "vfs"
+target = "vfs"
+
+[[sections.vfs.options]]
+key = "/dev_hdd0/"
+title = "/dev_hdd0/"
+type = "string"
+default = ""
+emit = { key = "/dev_hdd0/" }
+
+[[sections.vfs.options]]
+key = "/dev_hdd1/"
+title = "/dev_hdd1/"
+type = "string"
+default = ""
+emit = { key = "/dev_hdd1/" }
+
+[[sections.vfs.options]]
+key = "/dev_flash/"
+title = "/dev_flash/"
+type = "string"
+default = ""
+emit = { key = "/dev_flash/" }
+
+[[sections.vfs.options]]
+key = "/dev_flash2/"
+title = "/dev_flash2/"
+type = "string"
+default = ""
+emit = { key = "/dev_flash2/" }
+
+[[sections.vfs.options]]
+key = "/dev_flash3/"
+title = "/dev_flash3/"
+type = "string"
+default = ""
+emit = { key = "/dev_flash3/" }

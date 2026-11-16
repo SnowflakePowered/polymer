@@ -55,6 +55,7 @@ platforms = [
 [emulator.configuration]
 definitions = [
     "config/ares.toml",
+    "config/firmware.toml",
     "config/input.toml",
     "config/sections/*.toml",
 ]

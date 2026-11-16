@@ -18,10 +18,6 @@ const runtime = new EmulatorUpdates({
     Job,
 });
 
-function quoted(value: string): string {
-    return `"${value.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")}"`;
-}
-
 export const onPluginLoad = () => runtime.ready();
 
 export const onUpdateContents = async () => runtime.update([await runtime.release("retroarch"), {
@@ -30,7 +26,19 @@ export const onUpdateContents = async () => runtime.update([await runtime.releas
     directory: "cores",
 }]);
 
-export const onLaunch = async (args: EmulatorLaunchArgs<{ core: { placeholder: boolean } }>) => {
+export const onLaunch = async (args: EmulatorLaunchArgs<{
+    retroarch: {
+        core_options_path: string,
+        system_directory: string,
+        savefile_directory: string,
+        savestate_directory: string,
+        log_dir: string,
+        libretro_directory: string,
+        libretro_info_path: string,
+        assets_directory: string,
+    },
+    core: { pcsx2_bios: string },
+}>) => {
     const bios = (await args.firmwareStore.list()).find(entry =>
         entry.platform === "SONY_PS2" && entry.byteLength === 4 * 1024 * 1024
     );
@@ -48,45 +56,18 @@ export const onLaunch = async (args: EmulatorLaunchArgs<{ core: { placeholder: b
     args.filesystem.mount(`/User/system/pcsx2/bios/${biosName}`, biosFile, { mode: "r" });
     const gamePath = args.filesystem.mount("/Game", args.launchSet[0].package, { mode: "rx" });
 
-    const runtimeConfig = [
-        `config_save_on_exit = "false"`,
-        `core_info_cache_enable = "false"`,
-        `core_options_path = ${quoted(args.filesystem.path("/User/core-options.cfg"))}`,
-        `system_directory = ${quoted(args.filesystem.path("/User/system"))}`,
-        `savefile_directory = ${quoted(args.filesystem.path("/User/saves"))}`,
-        `savestate_directory = ${quoted(args.filesystem.path("/User/states"))}`,
-        `log_dir = ${quoted(args.filesystem.path("/User/logs"))}`,
-        `libretro_directory = ${quoted(args.filesystem.path("/RetroArch/cores"))}`,
-        `libretro_info_path = ${quoted(args.filesystem.path("/RetroArch/info"))}`,
-        `assets_directory = ${quoted(args.filesystem.path("/RetroArch/assets"))}`,
-        `video_driver = "d3d11"`,
-        `video_fullscreen = "true"`,
-        `input_autodetect_enable = "true"`,
-        `pause_nonactive = "false"`,
-        `quit_on_close_content = "1"`,
-        "",
-    ].join("\n");
-    args.filesystem.mount(
-        "/User/retroarch.cfg",
-        new TextEncoder().encode(runtimeConfig),
-        { mode: "r" },
-    );
-    args.filesystem.mount(
-        "/User/core-options.cfg",
-        new TextEncoder().encode([
-            `pcsx2_bios = ${quoted(biosName)}`,
-            `pcsx2_renderer = "D3D11"`,
-            `pcsx2_fastboot = "enabled"`,
-            `pcsx2_shared_memory_cards = "enabled"`,
-            "",
-        ].join("\n")),
-        { mode: "r" },
-    );
-
     const options = args.configuration.options();
-    options.core.placeholder = false;
-    for (const [name, bytes] of Object.entries(args.configuration.render())) {
-        args.filesystem.mount(`/Generated/${name}`, bytes, { mode: "rw" });
+    options.retroarch.core_options_path = args.filesystem.path("/User/core-options.cfg");
+    options.retroarch.system_directory = args.filesystem.path("/User/system");
+    options.retroarch.savefile_directory = args.filesystem.path("/User/saves");
+    options.retroarch.savestate_directory = args.filesystem.path("/User/states");
+    options.retroarch.log_dir = args.filesystem.path("/User/logs");
+    options.retroarch.libretro_directory = args.filesystem.path("/RetroArch/cores");
+    options.retroarch.libretro_info_path = args.filesystem.path("/RetroArch/info");
+    options.retroarch.assets_directory = args.filesystem.path("/RetroArch/assets");
+    options.core.pcsx2_bios = biosName;
+    for (const [name, bytes] of Object.entries(args.configuration.render({ ini: { quote: "all", spaces: true } }))) {
+        args.filesystem.mount(`/User/${name}`, bytes, { mode: "rw" });
     }
 
     return {
