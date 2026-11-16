@@ -11,7 +11,7 @@ use crate::keys::{KeyDescription, KeyRecord};
 use crate::nand::{NandCompletion, VirtualNand};
 use crate::{
     ComposedStorage, Error, KeyProjection, KeyStoreStorage, MountableStorage, Permissions,
-    SaveRepo, VersionedStorage, VolumeStorage,
+    SaveRepo, Storage, VersionedStorage, VolumeStorage,
 };
 
 /// A single mount with `nand/` and `sdmc/` subdirectories.
@@ -135,9 +135,13 @@ impl VirtualNand for CtrNand {
         if let Some(saves) = saves {
             layers.push(crate::storage::ComposedLayer::saves("saves", saves));
         }
+        let scratch = crate::ScratchStorage::new(self.root());
+        for path in [Layout::NAND_RW, Layout::NAND_RO] {
+            scratch.create_dir_all(path)?;
+        }
         layers.push(crate::storage::ComposedLayer::volatile(
             "scratch",
-            Arc::new(crate::ScratchStorage::new(self.root())),
+            Arc::new(scratch),
         ));
         Ok(Arc::new(ComposedStorage::with_layers(layers)?))
     }

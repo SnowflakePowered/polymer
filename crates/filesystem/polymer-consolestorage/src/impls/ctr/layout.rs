@@ -8,6 +8,13 @@ impl Layout {
         "sdmc/Nintendo 3DS/00000000000000000000000000000000/00000000000000000000000000000000";
     pub const NAND_DATA: &str = "nand/data/00000000000000000000000000000000";
     pub const NAND_TITLE: &str = "nand/00000000000000000000000000000000/title";
+    pub const NAND_RW: &str = "nand/rw";
+    pub const NAND_RO: &str = "nand/ro";
+
+    pub fn within(path: &str, root: &str) -> bool {
+        path.strip_prefix(root)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+    }
 
     pub fn valid_path(path: &str) -> bool {
         path.split('/').all(|part| {
@@ -19,14 +26,9 @@ impl Layout {
     }
 
     pub fn profile_path(path: &str) -> bool {
-        let nand_data = path
-            .strip_prefix(Self::NAND_DATA)
-            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'));
-        let sd_data = path == "sdmc" || path.starts_with("sdmc/");
-        let titles = format!("{}/title", Self::SD);
-        let installed_tree = path
-            .strip_prefix(&titles)
-            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'));
+        let nand_data = Self::within(path, Self::NAND_DATA) || Self::within(path, Self::NAND_RW);
+        let sd_data = Self::within(path, "sdmc");
+        let installed_tree = Self::within(path, &format!("{}/title", Self::SD));
         nand_data || (sd_data && !installed_tree)
     }
 }
