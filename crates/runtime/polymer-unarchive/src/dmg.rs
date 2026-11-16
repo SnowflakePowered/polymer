@@ -28,11 +28,20 @@ impl DmgUnarchiver {
     }
 
     fn extracted(entry: &WalkEntry) -> bool {
-        let first = entry.path.trim_start_matches('/').split('/').next().unwrap_or_default();
+        let first = entry
+            .path
+            .trim_start_matches('/')
+            .split('/')
+            .next()
+            .unwrap_or_default();
         match entry.entry.kind {
             EntryKind::Directory => false,
             EntryKind::Symlink if entry.path == "/Applications" => false,
-            _ => !first.starts_with('\0') && !first.starts_with(".HFS+ Private") && !first.starts_with(".journal"),
+            _ => {
+                !first.starts_with('\0')
+                    && !first.starts_with(".HFS+ Private")
+                    && !first.starts_with(".journal")
+            }
         }
     }
 

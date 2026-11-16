@@ -2,6 +2,7 @@ use super::*;
 
 impl D3d12Compositor {
     /// Reads the primary imported surface's last displayed frame as normalized RGBA pixels.
+    #[allow(clippy::type_complexity)]
     pub fn snapshot_rgba(&mut self) -> Result<Option<(u32, u32, Vec<u8>)>, Box<dyn Error>> {
         let Some(connection) = self.surfaces.first().map(|surface| surface.connection) else {
             return Ok(None);
@@ -10,6 +11,7 @@ impl D3d12Compositor {
     }
 
     /// Reads one imported stream's last displayed frame as normalized RGBA pixels.
+    #[allow(clippy::type_complexity)]
     pub fn snapshot_stream_rgba(
         &mut self,
         connection: u64,
@@ -138,7 +140,7 @@ pub(super) fn normalize_rgba(
     quarter_turns: u8,
 ) -> (u32, u32, Vec<u8>) {
     let rotation = quarter_turns % 4;
-    let (output_width, output_height) = if rotation % 2 == 0 {
+    let (output_width, output_height) = if rotation.is_multiple_of(2) {
         (width, height)
     } else {
         (height, width)

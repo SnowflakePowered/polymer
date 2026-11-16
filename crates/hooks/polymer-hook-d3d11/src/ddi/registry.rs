@@ -65,8 +65,8 @@ impl Registry {
             return;
         }
         let adapter = Adapter {
-            create: unsafe { std::mem::transmute(args.functions.add(1).read()) },
-            close: unsafe { std::mem::transmute(args.functions.add(2).read()) },
+            create: unsafe { std::mem::transmute::<usize, DeviceFn>(args.functions.add(1).read()) },
+            close: unsafe { std::mem::transmute::<usize, CloseFn>(args.functions.add(2).read()) },
         };
         ADAPTERS.insert(args.driver, adapter);
         unsafe {
@@ -100,7 +100,9 @@ impl Registry {
         }
         let device = Arc::new(Device {
             handle: args.driver,
-            rotate: unsafe { std::mem::transmute(args.dxgi_functions.add(ROTATE).read()) },
+            rotate: unsafe {
+                std::mem::transmute::<usize, RotateFn>(args.dxgi_functions.add(ROTATE).read())
+            },
             alive: AtomicBool::new(true),
             functions: RwLock::new(unsafe { Self::functions(args.functions) }),
         });
@@ -112,9 +114,15 @@ impl Registry {
     }
     unsafe fn functions(table: *mut usize) -> Functions {
         Functions {
-            resource: unsafe { std::mem::transmute(table.add(RESOURCE_CREATE).read()) },
-            relocate: unsafe { std::mem::transmute(table.add(RELOCATE).read()) },
-            destroy: unsafe { std::mem::transmute(table.add(DEVICE_DESTROY).read()) },
+            resource: unsafe {
+                std::mem::transmute::<usize, ResourceFn>(table.add(RESOURCE_CREATE).read())
+            },
+            relocate: unsafe {
+                std::mem::transmute::<usize, RelocateFn>(table.add(RELOCATE).read())
+            },
+            destroy: unsafe {
+                std::mem::transmute::<usize, DestroyFn>(table.add(DEVICE_DESTROY).read())
+            },
         }
     }
     unsafe fn patch(table: *mut usize) {
@@ -141,13 +149,16 @@ impl Registry {
         let mut functions = device.functions.write();
         unsafe {
             if table.add(RESOURCE_CREATE).read() != Self::create_resource as *const () as usize {
-                functions.resource = std::mem::transmute(table.add(RESOURCE_CREATE).read());
+                functions.resource =
+                    std::mem::transmute::<usize, ResourceFn>(table.add(RESOURCE_CREATE).read());
             }
             if table.add(RELOCATE).read() != Self::relocate as *const () as usize {
-                functions.relocate = std::mem::transmute(table.add(RELOCATE).read());
+                functions.relocate =
+                    std::mem::transmute::<usize, RelocateFn>(table.add(RELOCATE).read());
             }
             if table.add(DEVICE_DESTROY).read() != Self::destroy_device as *const () as usize {
-                functions.destroy = std::mem::transmute(table.add(DEVICE_DESTROY).read());
+                functions.destroy =
+                    std::mem::transmute::<usize, DestroyFn>(table.add(DEVICE_DESTROY).read());
             }
             Self::patch(table);
         }

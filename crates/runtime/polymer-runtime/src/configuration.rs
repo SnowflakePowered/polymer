@@ -14,17 +14,9 @@ use polymer_scraping::Package;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ConfigurationDefaults {
     pub gamepads: Vec<DefaultGamepad>,
-}
-
-impl Default for ConfigurationDefaults {
-    fn default() -> Self {
-        Self {
-            gamepads: Vec::new(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -193,6 +185,7 @@ pub async fn configure_api(
     serde_json::to_value(layout).map_err(|error| error.to_string())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_api_with_sources(
     plugins: PluginRegistry,
     viewer: ConfigurationDefaults,

@@ -110,8 +110,9 @@ impl PluginRuntimeHandle {
                 provider.id()
             )));
         }
-        let mut worker =
-            self.worker_options(provider.as_ref(), BTreeMap::new(), None).await?;
+        let mut worker = self
+            .worker_options(provider.as_ref(), BTreeMap::new(), None)
+            .await?;
         worker.firmware.platform = Some(platform.to_owned());
         worker.keys.root = manager.root().join("keys");
         worker.keys.platform = Some(platform.to_owned());

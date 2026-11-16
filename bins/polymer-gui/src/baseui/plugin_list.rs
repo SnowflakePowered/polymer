@@ -18,12 +18,15 @@ impl PluginList {
         let mut groups: BTreeMap<String, Vec<PluginRow>> = BTreeMap::new();
         for plugin in plugins.plugins::<dyn PluginInstance>() {
             let meta = plugin.meta();
-            groups.entry(plugin.class().to_owned()).or_default().push(PluginRow {
-                name: meta.name.clone().unwrap_or_else(|| plugin.id().to_owned()),
-                id: plugin.id().to_owned(),
-                version: plugin.version().to_owned(),
-                author: meta.author.clone(),
-            });
+            groups
+                .entry(plugin.class().to_owned())
+                .or_default()
+                .push(PluginRow {
+                    name: meta.name.clone().unwrap_or_else(|| plugin.id().to_owned()),
+                    id: plugin.id().to_owned(),
+                    version: plugin.version().to_owned(),
+                    author: meta.author.clone(),
+                });
         }
         Self { groups }
     }

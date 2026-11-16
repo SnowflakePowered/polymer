@@ -32,7 +32,7 @@ impl VulkanCompositor {
             let surface =
                 ash_window::create_surface(&entry, &instance, display, window_handle, None)?;
             let surface_loader = ash::khr::surface::Instance::new(&entry, &instance);
-            let required = vec![
+            let required = [
                 ash::khr::swapchain::NAME,
                 ash::khr::external_memory_win32::NAME,
                 ash::khr::external_semaphore_win32::NAME,

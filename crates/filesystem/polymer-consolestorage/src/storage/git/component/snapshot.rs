@@ -111,7 +111,6 @@ impl ComponentHistory<'_> {
             .chain(
                 source
                     .read_dir(&component.root, true)?
-                    .into_iter()
                     .filter(|entry| entry.metadata.kind == EntryKind::Directory)
                     .map(|entry| entry.path),
             )

@@ -53,7 +53,6 @@ impl ScrapeInput {
     }
 }
 
-
 /// Scraper capability projected from a registered scripted plugin.
 pub trait ScraperPluginInstance: PluginInstance {
     fn requirements(&self) -> &[ScrapeRequirement];

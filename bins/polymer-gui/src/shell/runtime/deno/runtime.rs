@@ -5,6 +5,7 @@ use deno_core::ModuleSpecifier;
 use serde_json::Value;
 
 use super::assets::{op_shell_read_asset, op_shell_resolve_asset};
+use super::capture::op_surface_capture;
 use super::dom::{
     LayoutCache, LayoutSnapshot, ScriptNodeId, op_dom_append_child, op_dom_attributes,
     op_dom_children, op_dom_clear_image_mip_chains, op_dom_clone, op_dom_closest,
@@ -15,7 +16,6 @@ use super::dom::{
     op_dom_scroll_metrics, op_dom_set_attribute, op_dom_set_inner_html, op_dom_set_text,
     op_dom_take_layout, op_dom_template_content, op_dom_text, op_dom_text_content,
 };
-use super::capture::op_surface_capture;
 use super::filesystem::{
     op_fs_child, op_fs_entries, op_fs_modified, op_fs_pick, op_fs_read, op_fs_remove, op_fs_write,
 };
@@ -144,6 +144,7 @@ pub struct Runtime {
 }
 
 impl Runtime {
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::shell::runtime) async fn start(
         debug: bool,
         document: SharedShellDocument,

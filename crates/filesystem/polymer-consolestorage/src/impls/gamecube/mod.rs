@@ -251,6 +251,7 @@ impl GameCubeMemoryCard {
         })
     }
 
+    #[allow(clippy::type_complexity)]
     fn snapshot(&self, saves: &[SaveDepotId]) -> Vec<(Vec<u8>, Option<(u64, Timestamp)>)> {
         let selected = saves.iter().map(|id| id.0).collect::<HashSet<_>>();
         self.saves()

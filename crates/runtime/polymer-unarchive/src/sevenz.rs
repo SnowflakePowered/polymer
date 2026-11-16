@@ -35,7 +35,9 @@ impl Unarchiver for SevenZipUnarchiver {
             if entry.is_directory() || entry.is_anti_item() {
                 return Ok(true);
             }
-            match sink.file(entry.name(), None, |output| Ok(std::io::copy(reader, output)?)) {
+            match sink.file(entry.name(), None, |output| {
+                Ok(std::io::copy(reader, output)?)
+            }) {
                 Ok(()) => Ok(true),
                 Err(error) => {
                     failure = Some(error);

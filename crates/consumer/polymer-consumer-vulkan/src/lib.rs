@@ -191,6 +191,7 @@ pub fn physical_device_matches_luid(
     id.device_luid_valid == vk::TRUE && id.device_luid[..8] == expected
 }
 
+#[allow(clippy::type_complexity)]
 unsafe fn import_resources(
     instance: &ash::Instance,
     device: &ash::Device,

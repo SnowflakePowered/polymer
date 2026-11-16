@@ -199,10 +199,9 @@ impl<L: SaveLayout> SaveRepo for SonySaveRepo<L> {
                     })
                 })
                 .is_ok()
+                && let Ok(icon) = SaveIcon::decode(&bytes)
             {
-                if let Ok(icon) = SaveIcon::decode(&bytes) {
-                    return Ok(Some(icon));
-                }
+                return Ok(Some(icon));
             }
         }
         Ok(None)
@@ -232,7 +231,7 @@ impl<L: SaveLayout> SaveGameSink for SonySaveRepo<L> {
         )
     }
 
-    fn export_save<'a>(&self, id: &SaveDepotId) -> Result<SaveDepot, Error> {
+    fn export_save(&self, id: &SaveDepotId) -> Result<SaveDepot, Error> {
         let mut paths = Vec::new();
         for directory in self.canonical_directories(*id) {
             paths.extend(

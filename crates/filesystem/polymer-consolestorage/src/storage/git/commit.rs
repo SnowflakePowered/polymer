@@ -242,7 +242,7 @@ impl GitVolumeStorage {
                 Some(tip) => PlatformRepository::write_text(&mut editor, &path, &tip.to_string())?,
                 None => {
                     editor
-                        .remove(&format!("meta/resources/saves/{depot:016x}"))
+                        .remove(format!("meta/resources/saves/{depot:016x}"))
                         .map_err(|error| Error::git("remove profile save resource", error))?;
                 }
             }

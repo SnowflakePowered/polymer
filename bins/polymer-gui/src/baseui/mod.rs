@@ -52,7 +52,8 @@ impl Tab {
 
     fn bar(&mut self, ui: &mut egui::Ui) {
         let width = ui.available_width() / Self::ALL.len() as f32;
-        let (strip, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), TAB_HEIGHT), Sense::hover());
+        let (strip, _) =
+            ui.allocate_exact_size(Vec2::new(ui.available_width(), TAB_HEIGHT), Sense::hover());
         let painter = ui.painter();
         painter.hline(
             strip.x_range(),
@@ -72,7 +73,8 @@ impl Tab {
                 (false, false) => Color32::from_white_alpha(130),
             };
             if active {
-                ui.painter().rect_filled(rect, 0.0, Color32::from_white_alpha(10));
+                ui.painter()
+                    .rect_filled(rect, 0.0, Color32::from_white_alpha(10));
                 ui.painter().hline(
                     rect.x_range(),
                     rect.bottom() - 1.0,
@@ -109,7 +111,8 @@ impl BaseUi {
     pub(crate) fn run(runtime: &tokio::runtime::Runtime) -> Result<(), Box<dyn Error>> {
         let directories = polymer_library::Directories::discover()?;
         let registry = crate::cli::ShellArguments::discover_plugins(&directories)?;
-        let storage = runtime.block_on(polymer_deno::webstorage::LocalStorage::open(&directories))?;
+        let storage =
+            runtime.block_on(polymer_deno::webstorage::LocalStorage::open(&directories))?;
         let current = runtime
             .block_on(storage.get_item(crate::theme::STORAGE_KEY))?
             .unwrap_or_default();
@@ -141,7 +144,11 @@ impl BaseUi {
         };
         runtime.block_on(storage.set_item(crate::theme::STORAGE_KEY, &theme))?;
         std::process::Command::new(std::env::current_exe()?)
-            .args(std::env::args_os().skip(1).filter(|argument| argument != "--pick-theme"))
+            .args(
+                std::env::args_os()
+                    .skip(1)
+                    .filter(|argument| argument != "--pick-theme"),
+            )
             .spawn()?;
         Ok(())
     }

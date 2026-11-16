@@ -249,9 +249,11 @@ macro_rules! impl_com_hook {
                 let mut patched = Box::new(unsafe { <$storage>::read(original, A::SLOTS) });
                 unsafe {
                     let unknown = patched.as_mut_ptr::<::windows::core::IUnknown_Vtbl>();
-                    (*unknown).Release = ::core::mem::transmute(
+                    #[allow(clippy::useless_transmute)]
+                    let release = ::core::mem::transmute(
                         $release_dispatch as unsafe extern "system" fn($release_this_type) -> u32
                     );
+                    (*unknown).Release = release;
                     $(if A::supports(::core::any::TypeId::of::<$vtable_interface>()) {
                         let table = patched.as_mut_ptr::<<$vtable_interface as ::windows::core::Interface>::Vtable>();
                         (*table).$base = ::core::mem::transmute(
@@ -294,6 +296,7 @@ macro_rules! impl_com_hook {
         impl<A: Vtable> $hook_trait for [<$hook State>]<A> {
             $(fn state(&self) -> &$common_context { &self.state })?
             $(fn $context(&self) -> &$context_type { &self.$context })*
+            #[allow(clippy::useless_transmute)]
             fn [<base_ $release_dispatch>](&self) -> unsafe extern "system" fn($release_this_type) -> u32 {
                 unsafe {
                     ::core::mem::transmute(

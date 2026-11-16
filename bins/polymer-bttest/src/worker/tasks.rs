@@ -50,7 +50,7 @@ pub(super) fn spawn_bredr_report_task(
                     {
                         let _ = events.send(Event::DecodedInput {
                             addr: addr.to_string(),
-                            input,
+                            input: Box::new(input),
                         });
                     }
                     let _ = events.send(Event::Report {

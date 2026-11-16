@@ -437,7 +437,11 @@ impl PreparedFilesystem {
         let mut state = self.materialized.lock();
         let resources = state.as_mut().ok_or_else(not_materialized)?;
         for prefix in &prefixes {
-            if let Some(index) = resources.mutations.iter().position(|active| active == prefix) {
+            if let Some(index) = resources
+                .mutations
+                .iter()
+                .position(|active| active == prefix)
+            {
                 resources.mutations.swap_remove(index);
             }
         }
@@ -561,7 +565,8 @@ impl PreparedFilesystem {
                     namespace_file = None;
                 }
                 if let Node::File(file) = node {
-                    let file = namespace_file.unwrap_or(self.remember_tree_file(path, file, generation)?);
+                    let file =
+                        namespace_file.unwrap_or(self.remember_tree_file(path, file, generation)?);
                     node = Node::File(file.clone());
                     namespace_file = Some(file);
                 }

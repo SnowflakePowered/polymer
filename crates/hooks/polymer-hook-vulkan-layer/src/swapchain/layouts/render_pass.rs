@@ -56,26 +56,26 @@ unsafe extern "system" fn destroy(
     pass: vk::RenderPass,
     allocator: *const vk::AllocationCallbacks<'_>,
 ) {
-    if let Ok(owner) = Device::get(device) {
-        if let Some((_, pass)) = owner.layouts.passes.remove(&pass) {
-            for handle in pass.variants.values() {
-                unsafe {
-                    owner.external.device.destroy_render_pass(*handle, None);
-                }
+    if let Ok(owner) = Device::get(device)
+        && let Some((_, pass)) = owner.layouts.passes.remove(&pass)
+    {
+        for handle in pass.variants.values() {
+            unsafe {
+                owner.external.device.destroy_render_pass(*handle, None);
             }
         }
     }
-    if let Some(gdpa) = crate::layer::device_gdpa(device) {
-        if let Some(next) = unsafe {
+    if let Some(gdpa) = crate::layer::device_gdpa(device)
+        && let Some(next) = unsafe {
             crate::terminal::device_proc::<vk::PFN_vkDestroyRenderPass>(
                 gdpa,
                 device,
                 c"vkDestroyRenderPass",
             )
-        } {
-            unsafe {
-                next(device, pass, allocator);
-            }
+        }
+    {
+        unsafe {
+            next(device, pass, allocator);
         }
     }
 }
@@ -137,13 +137,13 @@ unsafe extern "system" fn view(
         return vk::Result::ERROR_DEVICE_LOST;
     };
     let result = unsafe { next(device, info, allocator, output) };
-    if result == vk::Result::SUCCESS {
-        if let Ok(owner) = Device::get(device) {
-            owner.layouts.views.insert(
-                unsafe { *output },
-                owner.images.contains_key(&unsafe { (*info).image }),
-            );
-        }
+    if result == vk::Result::SUCCESS
+        && let Ok(owner) = Device::get(device)
+    {
+        owner.layouts.views.insert(
+            unsafe { *output },
+            owner.images.contains_key(&unsafe { (*info).image }),
+        );
     }
     result
 }
@@ -155,17 +155,17 @@ unsafe extern "system" fn destroy_view(
     if let Ok(owner) = Device::get(device) {
         owner.layouts.views.remove(&view);
     }
-    if let Some(gdpa) = crate::layer::device_gdpa(device) {
-        if let Some(next) = unsafe {
+    if let Some(gdpa) = crate::layer::device_gdpa(device)
+        && let Some(next) = unsafe {
             crate::terminal::device_proc::<vk::PFN_vkDestroyImageView>(
                 gdpa,
                 device,
                 c"vkDestroyImageView",
             )
-        } {
-            unsafe {
-                next(device, view, allocator);
-            }
+        }
+    {
+        unsafe {
+            next(device, view, allocator);
         }
     }
 }
@@ -184,18 +184,18 @@ unsafe extern "system" fn framebuffer(
         return vk::Result::ERROR_DEVICE_LOST;
     };
     let result = unsafe { next(device, info, allocator, output) };
-    if result == vk::Result::SUCCESS {
-        if let Ok(owner) = Device::get(device) {
-            let info = unsafe { &*info };
-            let views = if info.flags.contains(vk::FramebufferCreateFlags::IMAGELESS) {
-                Vec::new()
-            } else {
-                owner.layouts.virtual_views(unsafe {
-                    Layouts::slice(info.p_attachments, info.attachment_count)
-                })
-            };
-            owner.layouts.framebuffers.insert(unsafe { *output }, views);
-        }
+    if result == vk::Result::SUCCESS
+        && let Ok(owner) = Device::get(device)
+    {
+        let info = unsafe { &*info };
+        let views = if info.flags.contains(vk::FramebufferCreateFlags::IMAGELESS) {
+            Vec::new()
+        } else {
+            owner
+                .layouts
+                .virtual_views(unsafe { Layouts::slice(info.p_attachments, info.attachment_count) })
+        };
+        owner.layouts.framebuffers.insert(unsafe { *output }, views);
     }
     result
 }
@@ -207,17 +207,17 @@ unsafe extern "system" fn destroy_framebuffer(
     if let Ok(owner) = Device::get(device) {
         owner.layouts.framebuffers.remove(&framebuffer);
     }
-    if let Some(gdpa) = crate::layer::device_gdpa(device) {
-        if let Some(next) = unsafe {
+    if let Some(gdpa) = crate::layer::device_gdpa(device)
+        && let Some(next) = unsafe {
             crate::terminal::device_proc::<vk::PFN_vkDestroyFramebuffer>(
                 gdpa,
                 device,
                 c"vkDestroyFramebuffer",
             )
-        } {
-            unsafe {
-                next(device, framebuffer, allocator);
-            }
+        }
+    {
+        unsafe {
+            next(device, framebuffer, allocator);
         }
     }
 }

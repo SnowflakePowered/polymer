@@ -194,12 +194,7 @@ impl<'a> DocumentProtocol<'a> {
             "CSS.getPlatformFontsForNode" => Ok(json!({"fonts": []})),
             "CSS.getBackgroundColors" => Ok(json!({"backgroundColors": []})),
             "Page.getFrameTree" | "Page.getResourceTree" => {
-                let frame_tree = self.frame_tree();
-                if method == "Page.getResourceTree" {
-                    Ok(json!({"frameTree": frame_tree}))
-                } else {
-                    Ok(json!({"frameTree": frame_tree}))
-                }
+                Ok(json!({"frameTree": self.frame_tree()}))
             }
             "Page.getNavigationHistory" => Ok(json!({
                 "currentIndex": 0,
@@ -280,14 +275,16 @@ impl<'a> DocumentProtocol<'a> {
             .filter(|child| self.include_whitespace || !Self::is_whitespace_only(child))
             .collect::<Vec<_>>();
         let child_node_count = visible_children.len();
-        let children = deep
-            .then(|| {
+        let children = if deep {
+            {
                 visible_children
                     .into_iter()
                     .map(|child| self.protocol_node(child, true))
                     .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+            }
+        } else {
+            Default::default()
+        };
         let mut value = json!({
             "nodeId": Self::protocol_id(node.id),
             "backendNodeId": Self::protocol_id(node.id),

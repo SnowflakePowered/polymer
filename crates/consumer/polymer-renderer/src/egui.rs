@@ -125,7 +125,10 @@ pub fn draw_debug_overlay(context: &egui::Context, model: &DebugOverlayModel) {
         });
     let frame = egui::Frame::window(&context.style())
         .fill(egui::Color32::TRANSPARENT)
-        .stroke(egui::Stroke::new(1.0, egui::Color32::from_white_alpha(48)))
+        .stroke(egui::Stroke::new(
+            1.0_f32,
+            egui::Color32::from_white_alpha(48),
+        ))
         .shadow(egui::epaint::Shadow::NONE);
     egui::Window::new("Frame Graphs · rolling 120 seconds")
         .default_pos(egui::pos2(12.0, 48.0))
@@ -223,7 +226,7 @@ pub fn draw_statistics_graph(
         let y = egui::lerp(rect.top()..=rect.bottom(), division as f32 / 4.0);
         painter.line_segment(
             [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
-            egui::Stroke::new(1.0, egui::Color32::from_gray(55)),
+            egui::Stroke::new(1.0_f32, egui::Color32::from_gray(55)),
         );
     }
     if history.len() < 2 {
@@ -266,15 +269,15 @@ pub fn draw_statistics_graph(
     };
     painter.add(egui::Shape::line(
         points(|sample| sample.fps, fps_max),
-        egui::Stroke::new(1.5, egui::Color32::LIGHT_GREEN),
+        egui::Stroke::new(1.5_f32, egui::Color32::LIGHT_GREEN),
     ));
     painter.add(egui::Shape::line(
         points(|sample| sample.latency_ms, latency_max),
-        egui::Stroke::new(1.5, egui::Color32::LIGHT_RED),
+        egui::Stroke::new(1.5_f32, egui::Color32::LIGHT_RED),
     ));
     painter.add(egui::Shape::line(
         points(|sample| sample.frame_interval_ms, interval_max),
-        egui::Stroke::new(1.5, egui::Color32::LIGHT_BLUE),
+        egui::Stroke::new(1.5_f32, egui::Color32::LIGHT_BLUE),
     ));
     painter.text(
         rect.left_top() + egui::vec2(5.0, 4.0),

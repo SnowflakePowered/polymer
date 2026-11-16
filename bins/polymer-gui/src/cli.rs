@@ -86,14 +86,22 @@ impl ShellArguments {
         directories: &polymer_library::Directories,
     ) -> Result<PluginRegistry, Box<dyn Error>> {
         let plugins = PluginRegistry::new();
-        let index = polymer_distribution::Index::read(&directories.plugin_index()).unwrap_or_else(|error| {
-            eprintln!("polymer: could not read the plugin index: {error}");
-            polymer_distribution::Index::default()
-        });
+        let index = polymer_distribution::Index::read(&directories.plugin_index()).unwrap_or_else(
+            |error| {
+                eprintln!("polymer: could not read the plugin index: {error}");
+                polymer_distribution::Index::default()
+            },
+        );
         for (path, error) in &index.rejected {
-            eprintln!("polymer: skipping plugin index entry {}: {error}", path.display());
+            eprintln!(
+                "polymer: skipping plugin index entry {}: {error}",
+                path.display()
+            );
         }
-        let search_paths = [std::env::current_dir()?.join("plugins"), directories.packages()];
+        let search_paths = [
+            std::env::current_dir()?.join("plugins"),
+            directories.packages(),
+        ];
         for (path, error) in plugins.discover(&search_paths, &index) {
             eprintln!("polymer: skipping plugin {}: {error}", path.display());
         }

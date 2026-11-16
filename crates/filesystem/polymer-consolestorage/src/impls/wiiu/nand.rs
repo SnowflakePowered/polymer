@@ -388,7 +388,7 @@ impl SaveGameSink for WiiUSaveRepo {
         )
     }
 
-    fn export_save<'a>(&self, save_descriptor: &SaveDepotId) -> Result<SaveDepot, Error> {
+    fn export_save(&self, save_descriptor: &SaveDepotId) -> Result<SaveDepot, Error> {
         let root = save_descriptor.save_root();
         let save_descriptor = self.describe_save(*save_descriptor)?;
 

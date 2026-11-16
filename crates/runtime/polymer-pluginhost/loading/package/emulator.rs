@@ -1,6 +1,8 @@
 use super::plugin::PluginPackage;
 use crate::emulator::{EmulatorPluginInstance, EmulatorPort};
-use polymer_config::ast::{ConfigurationDefinition, ConfigurationInstance, PortAssignment, PortAssignments};
+use polymer_config::ast::{
+    ConfigurationDefinition, ConfigurationInstance, PortAssignment, PortAssignments,
+};
 use polymer_pluginmanifest::{EmulatorBlock, PackageError, PluginManifest, SaveStateConfig};
 
 pub type EmulatorPlugin = PluginPackage<EmulatorBlock>;

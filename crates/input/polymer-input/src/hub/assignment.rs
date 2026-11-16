@@ -28,14 +28,14 @@ impl HubInner {
                 self.assignments.remove(&from);
             }
             let mut events = vec![(device.clone(), from, index)];
-            if let Some(index) = index {
-                if let Some(displaced) = self.assignments.insert(index, device.clone()) {
-                    let to = explicit.then(|| self.lowest_free()).flatten();
-                    if let Some(to) = to {
-                        self.assignments.insert(to, displaced.clone());
-                    }
-                    events.push((displaced, Some(index), to));
+            if let Some(index) = index
+                && let Some(displaced) = self.assignments.insert(index, device.clone())
+            {
+                let to = explicit.then(|| self.lowest_free()).flatten();
+                if let Some(to) = to {
+                    self.assignments.insert(to, displaced.clone());
                 }
+                events.push((displaced, Some(index), to));
             }
             events
         };

@@ -137,10 +137,10 @@ impl Device {
         let result = unsafe {
             SetupDiGetDeviceInterfaceDetailW(set.0, &interface, None, 0, None, Some(&mut data))
         };
-        if let Err(error) = result {
-            if error.code() != windows::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER.to_hresult() {
-                return Err(io::Error::other(error));
-            }
+        if let Err(error) = result
+            && error.code() != windows::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER.to_hresult()
+        {
+            return Err(io::Error::other(error));
         }
         let mut node = data.DevInst;
         for _ in 0..8 {

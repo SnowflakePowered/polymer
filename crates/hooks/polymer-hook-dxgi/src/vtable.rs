@@ -1,4 +1,4 @@
-#![allow(clippy::missing_transmute_annotations)]
+#![allow(clippy::missing_transmute_annotations, clippy::too_many_arguments)]
 use std::ffi::c_void;
 use windows::{
     Win32::Graphics::Dxgi::{

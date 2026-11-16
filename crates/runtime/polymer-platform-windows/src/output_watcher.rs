@@ -76,6 +76,9 @@ impl DefaultOutputWatcher {
 impl Drop for DefaultOutputWatcher {
     fn drop(&mut self) {
         // SAFETY: unregisters the client registered in `new`.
-        let _ = unsafe { self.devices.UnregisterEndpointNotificationCallback(&self.client) };
+        let _ = unsafe {
+            self.devices
+                .UnregisterEndpointNotificationCallback(&self.client)
+        };
     }
 }

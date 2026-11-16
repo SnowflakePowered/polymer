@@ -172,8 +172,8 @@ impl RawHidChannel {
                         || std::borrow::Cow::Borrowed(&output[..length]),
                         |filter| filter.filter_output(&output[..length], capture.load(Ordering::Acquire)),
                     );
-                    if let Some(handle) = listener.lock().as_ref() {
-                        if let Err(error) = handle.send_raw_hid(index, &report)
+                    if let Some(handle) = listener.lock().as_ref()
+                        && let Err(error) = handle.send_raw_hid(index, &report)
                             && !logged_routing_error
                         {
                             tracing::warn!(
@@ -184,7 +184,6 @@ impl RawHidChannel {
                             );
                             logged_routing_error = true;
                         }
-                    }
                 }
             }
         }

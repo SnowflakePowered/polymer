@@ -200,10 +200,8 @@ impl Runtime {
             match event {
                 InputMessage::HostKey(key) => self.apply_key(key),
                 InputMessage::HostPointer(pointer) => self.apply_pointer(pointer),
-                InputMessage::HostWheel(wheel) => {
-                    if wheel.vertical != 0 {
-                        self.apply(self.mouse_event(8, wheel.vertical as u32, 0));
-                    }
+                InputMessage::HostWheel(wheel) if wheel.vertical != 0 => {
+                    self.apply(self.mouse_event(8, wheel.vertical as u32, 0));
                 }
                 _ => {}
             }
@@ -211,7 +209,7 @@ impl Runtime {
     }
 
     fn apply_key(&self, key: WireHostKey) {
-        let offset = u32::from(key.scan_code) | u32::from(key.extended) * 0x80;
+        let offset = u32::from(key.scan_code) | (u32::from(key.extended) * 0x80);
         self.apply(DirectInputData {
             device: DirectInputDevice::Keyboard,
             offset,

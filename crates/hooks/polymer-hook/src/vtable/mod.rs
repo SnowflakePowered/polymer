@@ -238,9 +238,11 @@ pub struct ComProxy {
 unsafe impl Send for ComProxy {}
 unsafe impl Sync for ComProxy {}
 
+#[allow(clippy::missing_safety_doc)]
 impl ComProxy {
     /// Builds a proxy whose untouched slots replace `this` and tail-call the
     /// corresponding slot on `inner`.
+    #[allow(clippy::new_ret_no_self)]
     pub unsafe fn new(
         inner: *mut ::core::ffi::c_void,
         iid: windows_core::GUID,

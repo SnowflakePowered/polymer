@@ -324,13 +324,12 @@ impl Swapchain {
         if let Ok(mut state) = self
             .live
             .enter_until(AcquireDeadline::after(Duration::from_secs(2)))
+            && let Some(controller) = state.controller.take()
         {
-            if let Some(controller) = state.controller.take() {
-                self.device
-                    .retired
-                    .lock()
-                    .push(controller.retire(RetireReason::ApplicationDestroyed));
-            }
+            self.device
+                .retired
+                .lock()
+                .push(controller.retire(RetireReason::ApplicationDestroyed));
         }
         for image in &self.images {
             self.device.images.remove(image);
@@ -369,12 +368,9 @@ pub(crate) unsafe extern "system" fn destroy(
     swapchain: vk::SwapchainKHR,
     _allocator: *const vk::AllocationCallbacks<'_>,
 ) {
-    match Swapchain::get(device, swapchain) {
-        Ok(Some(value)) => {
-            SWAPCHAINS.remove(&swapchain);
-            value.retire();
-        }
-        Err(_) | Ok(None) => {}
+    if let Ok(Some(value)) = Swapchain::get(device, swapchain) {
+        SWAPCHAINS.remove(&swapchain);
+        value.retire();
     }
 }
 pub(crate) unsafe extern "system" fn images(

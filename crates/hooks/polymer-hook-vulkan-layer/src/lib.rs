@@ -17,7 +17,7 @@ use ash::vk;
 use std::mem;
 
 fn hook(pointer: *const ()) -> vk::PFN_vkVoidFunction {
-    Some(unsafe { mem::transmute(pointer) })
+    Some(unsafe { mem::transmute::<*const (), unsafe extern "system" fn()>(pointer) })
 }
 
 /// Central registration table for every entry point owned by the layer.
@@ -42,7 +42,8 @@ pub(crate) fn registered_device_hook(name: &[u8]) -> vk::PFN_vkVoidFunction {
     if let Some(hook) = swapchain::device_hook(name) {
         return Some(hook);
     }
-    let always = match name {
+
+    match name {
         b"vkGetDeviceProcAddr" => hook(hooks::vkGetDeviceProcAddr as *const ()),
         b"vkDestroyDevice" => hook(hooks::vkDestroyDevice as *const ()),
         b"vkCreateSwapchainKHR" => hook(hooks::vkCreateSwapchainKHR as *const ()),
@@ -52,6 +53,5 @@ pub(crate) fn registered_device_hook(name: &[u8]) -> vk::PFN_vkVoidFunction {
         b"vkGetDeviceQueue" => hook(hooks::vkGetDeviceQueue as *const ()),
         b"vkGetDeviceQueue2" => hook(hooks::vkGetDeviceQueue2 as *const ()),
         _ => None,
-    };
-    always
+    }
 }

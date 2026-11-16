@@ -257,8 +257,7 @@ impl CssParser {
         let mut brackets = 0usize;
         let mut quote = None;
         let mut escaped = false;
-        for index in start..end {
-            let byte = bytes[index];
+        for (index, &byte) in bytes.iter().enumerate().take(end).skip(start) {
             if let Some(active) = quote {
                 if escaped {
                     escaped = false;

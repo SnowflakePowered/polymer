@@ -91,6 +91,7 @@ struct CacheResource {
     handle: Option<Handle<VolumeResource>>,
 }
 
+#[allow(clippy::type_complexity)]
 struct SharedResourceFactory<T: ?Sized> {
     source: Resource<T>,
     materialized: parking_lot::Mutex<Option<(Arc<T>, Arc<dyn ResourceLease>)>>,
@@ -307,7 +308,9 @@ impl FilesystemState {
         let permissions = Permissions::from_str("rx").expect("canonical package permissions");
         let origin = ResourceOrigin::Asar(format!("{}/{relative}", archive.path().display()));
         let volume = match (self.package.entry(relative), archive.file(relative)) {
-            (Some(PackageEntry::Directory), _) => AsarVolumeFactory::memory(archive.bytes().clone(), relative),
+            (Some(PackageEntry::Directory), _) => {
+                AsarVolumeFactory::memory(archive.bytes().clone(), relative)
+            }
             (Some(PackageEntry::File), Some(bytes))
                 if relative.to_ascii_lowercase().ends_with(".asar") =>
             {

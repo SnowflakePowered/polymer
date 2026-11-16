@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_arguments)]
 use windows_sys::{
     Win32::{
         Devices::{

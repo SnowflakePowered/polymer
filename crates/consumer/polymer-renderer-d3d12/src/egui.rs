@@ -204,6 +204,7 @@ impl D3d12EguiPainter {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_indexed(
         &mut self,
         frame_index: usize,

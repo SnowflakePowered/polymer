@@ -80,24 +80,24 @@ impl InstalledTitle {
         let boot = contents
             .first()
             .map(|content| depot.content_path(content.id.get()));
-        if let Some(path) = &boot {
-            if manifest.iter().any(|file| file.path() == Path::new(path)) {
-                let smdh = Self::exefs_file(storage, path, *b"icon\0\0\0\0")?
-                    .and_then(|icon| ExtdataIcon::parse(icon.get(..size_of::<ExtdataIcon>())?));
-                if let Some(smdh) = smdh {
-                    let name = smdh.description().0;
-                    if !name.trim().is_empty() {
-                        label = name;
-                    }
-                    icons = vec![IconHint::image(smdh.rgba())?];
+        if let Some(path) = &boot
+            && manifest.iter().any(|file| file.path() == Path::new(path))
+        {
+            let smdh = Self::exefs_file(storage, path, *b"icon\0\0\0\0")?
+                .and_then(|icon| ExtdataIcon::parse(icon.get(..size_of::<ExtdataIcon>())?));
+            if let Some(smdh) = smdh {
+                let name = smdh.description().0;
+                if !name.trim().is_empty() {
+                    label = name;
                 }
-                icons.extend(
-                    Self::exefs_file(storage, path, *b"banner\0\0")?
-                        .and_then(|banner| Some(CtrBanner::strip_sound(&banner)?.to_vec()))
-                        .filter(|banner| CtrBanner::parse(banner).is_some())
-                        .map(|banner| IconHint::Embedded(EmbeddedIcon::CtrBanner(banner.into()))),
-                );
+                icons = vec![IconHint::image(smdh.rgba())?];
             }
+            icons.extend(
+                Self::exefs_file(storage, path, *b"banner\0\0")?
+                    .and_then(|banner| Some(CtrBanner::strip_sound(&banner)?.to_vec()))
+                    .filter(|banner| CtrBanner::parse(banner).is_some())
+                    .map(|banner| IconHint::Embedded(EmbeddedIcon::CtrBanner(banner.into()))),
+            );
         }
         let entrypoint = boot.filter(|_| kind == DepotType::App).and_then(|package| {
             Some(ArtifactEntrypoint {

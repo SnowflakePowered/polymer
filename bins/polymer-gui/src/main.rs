@@ -97,14 +97,14 @@ fn run(
         }
         mutex
     };
-    let _instance_lock = polymer_library::Directories::discover()?
-        .lock()
-        .map_err(|error| -> Box<dyn std::error::Error> {
+    let _instance_lock = polymer_library::Directories::discover()?.lock().map_err(
+        |error| -> Box<dyn std::error::Error> {
             match error.kind() {
                 std::io::ErrorKind::WouldBlock => "Polymer is already running".into(),
                 _ => error.into(),
             }
-        })?;
+        },
+    )?;
     #[cfg(windows)]
     let _game_bar_watcher = match game_bar_watcher::GameBarWatcher::launch() {
         Ok(watcher) => Some(watcher),

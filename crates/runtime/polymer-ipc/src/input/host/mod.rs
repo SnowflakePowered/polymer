@@ -202,7 +202,12 @@ impl InputIpcListener {
         spec: RawHidSpec,
     ) -> io::Result<RawHidChannel> {
         let channel = RawHidChannel::open(index, spec, self.0.hub.clone())?;
-        let hub = self.0.hub.lock().as_ref().map(|handle| handle.hub().clone());
+        let hub = self
+            .0
+            .hub
+            .lock()
+            .as_ref()
+            .map(|handle| handle.hub().clone());
         let mut forwarding = self.0.forwarding.lock();
         channel.set_capture(true);
         if forwarding.enabled {

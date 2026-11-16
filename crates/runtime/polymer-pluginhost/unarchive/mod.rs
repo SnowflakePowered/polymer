@@ -1,8 +1,8 @@
 use crate::{cache::CacheState, runtime::jobs::PluginJobs};
+use ::polymer_unarchive::{Archive, ExtractOptions};
 use deno_core::{OpState, ResourceId, op2};
 use deno_error::JsErrorBox;
 use polymer_library::jobs::{JobKind, JobOutcome, JobProgress, JobSubject};
-use ::polymer_unarchive::{Archive, ExtractOptions};
 use std::{cell::RefCell, rc::Rc};
 
 #[derive(serde::Deserialize, Default)]
@@ -65,7 +65,12 @@ async fn op_unarchive(
     .map_err(|error| JsErrorBox::generic(error.to_string()));
     if let Some(job) = job
         && let Err(error) = job
-            .settle(result.as_ref().map(|()| JobOutcome::completed(None)).map_err(|error| error.to_string()))
+            .settle(
+                result
+                    .as_ref()
+                    .map(|()| JobOutcome::completed(None))
+                    .map_err(|error| error.to_string()),
+            )
             .await
     {
         tracing::warn!(%error, job = %job.id(), "could not settle extraction job");

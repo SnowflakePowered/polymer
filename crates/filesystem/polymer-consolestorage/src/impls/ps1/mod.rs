@@ -187,7 +187,7 @@ impl PlaystationMemoryCard {
             .filter(|entry| entry.metadata.kind == EntryKind::File)
             .filter_map(|entry| SaveDataHandle::from_native_name(&entry.name))
             .collect::<Vec<_>>();
-        saves.sort_by(|left, right| left.native_id.cmp(&right.native_id));
+        saves.sort_by_key(|left| left.native_id);
         saves
     }
 

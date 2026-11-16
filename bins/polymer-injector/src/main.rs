@@ -165,7 +165,10 @@ fn inject_library(
                 process,
                 std::ptr::null(),
                 0,
-                Some(std::mem::transmute(load_library)),
+                Some(std::mem::transmute::<
+                    unsafe extern "system" fn() -> isize,
+                    unsafe extern "system" fn(*mut std::ffi::c_void) -> u32,
+                >(load_library)),
                 remote_path,
                 0,
                 std::ptr::null_mut(),
@@ -199,7 +202,10 @@ fn inject_library(
                 process,
                 std::ptr::null(),
                 0,
-                Some(std::mem::transmute(remote_export)),
+                Some(std::mem::transmute::<
+                    *const (),
+                    unsafe extern "system" fn(*mut std::ffi::c_void) -> u32,
+                >(remote_export)),
                 std::ptr::null_mut(),
                 0,
                 std::ptr::null_mut(),

@@ -155,7 +155,7 @@ impl MemoryCard<'static> {
             let offset = indirect_offset + index as usize * FAT_ENTRY_SIZE;
             image[offset..offset + FAT_ENTRY_SIZE].copy_from_slice(&value.to_le_bytes());
         }
-        let entries_per_cluster = ENTRIES_PER_CLUSTER as usize;
+        let entries_per_cluster = ENTRIES_PER_CLUSTER;
         for (cluster, entry) in fat.iter().enumerate() {
             let fat_cluster = geometry.ifc_cluster as usize + 1 + cluster / entries_per_cluster;
             let offset =

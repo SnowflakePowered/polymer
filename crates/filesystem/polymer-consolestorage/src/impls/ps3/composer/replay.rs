@@ -51,12 +51,12 @@ impl Ps3Composition {
             self.unsatisfied.insert(revision.artifact.id().to_owned());
         }
         for (path, overwrite) in &package.files {
-            if let Some(existing) = self.spellings.insert(path.to_lowercase(), path.clone()) {
-                if existing != *path {
-                    return Err(Error::HistoryConflict(format!(
-                        "conflicting PS3 file spelling: {path}"
-                    )));
-                }
+            if let Some(existing) = self.spellings.insert(path.to_lowercase(), path.clone())
+                && existing != *path
+            {
+                return Err(Error::HistoryConflict(format!(
+                    "conflicting PS3 file spelling: {path}"
+                )));
             }
             if !overwrite && self.output.files.contains_key(path) {
                 continue;

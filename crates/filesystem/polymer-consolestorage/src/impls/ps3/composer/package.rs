@@ -78,10 +78,10 @@ impl PkgContribution {
         if let Some(target) = &self.target_app_version {
             return Ok(current == Some(Self::version(target)?));
         }
-        if kind == DepotType::AppUpdate {
-            if let (Some(current), Some(incoming)) = (current, self.app_version.as_deref()) {
-                return Ok(Self::version(incoming)? >= current);
-            }
+        if kind == DepotType::AppUpdate
+            && let (Some(current), Some(incoming)) = (current, self.app_version.as_deref())
+        {
+            return Ok(Self::version(incoming)? >= current);
         }
         Ok(true)
     }

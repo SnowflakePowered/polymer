@@ -264,10 +264,8 @@ impl<B: SwapchainBackend> SwapchainController<B> {
         loop {
             self.poll()?;
             let paced = maximum_latency.is_none_or(|maximum| self.pacing_ready(maximum));
-            if paced {
-                if let Some(lease) = self.try_acquire(requested, info)? {
-                    return Ok(lease);
-                }
+            if paced && let Some(lease) = self.try_acquire(requested, info)? {
+                return Ok(lease);
             }
             let release = match maximum_latency {
                 Some(maximum) if !paced => self.pacing_release_target(maximum),

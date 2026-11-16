@@ -154,10 +154,10 @@ pub(crate) unsafe extern "system" fn present(
     let result = match unsafe { PresentBatch::run(queue, &*info) } {
         Ok(result) | Err(result) => result,
     };
-    if result == vk::Result::ERROR_DEVICE_LOST {
-        if let Some(device) = Device::queue(queue) {
-            device.lost.store(true, Ordering::Release);
-        }
+    if result == vk::Result::ERROR_DEVICE_LOST
+        && let Some(device) = Device::queue(queue)
+    {
+        device.lost.store(true, Ordering::Release);
     }
     result
 }

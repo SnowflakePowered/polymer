@@ -46,10 +46,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .recv()
                 .await
                 .map_err(|_| polymer_bluetooth::Error::ChannelClosed)?
+                && incoming == addr
             {
-                if incoming == addr {
-                    break;
-                }
+                break;
             }
         }
         Ok::<_, polymer_bluetooth::Error>(())
