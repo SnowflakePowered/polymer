@@ -3,113 +3,170 @@ true = "true"
 false = "false"
 
 [targets.settings]
-output = { format = "ini", path = "melonDS.ini" }
+output = { format = "ini", path = "melonDS.toml" }
+
+[targets.settings.Screen]
+[targets.settings.3D]
+[targets.settings.GL]
+[targets.settings.Emu]
+[targets.settings.Instance0]
+[targets.settings.Window0]
+[targets.settings.Keyboard]
 
 [sections.runtime]
 title = "runtime"
 target = "settings"
 
 [[sections.runtime.options]]
-key = "ScreenUseGL"
-title = "ScreenUseGL"
+key = "LimitFPS"
+title = "LimitFPS"
+type = "bool"
+default = true
+emit = { key = "LimitFPS", bool_style = "lower" }
+
+[[sections.runtime.options]]
+key = "TargetFPS"
+title = "TargetFPS"
+type = "string"
+default = "60.0"
+emit = { key = "TargetFPS" }
+
+[[sections.runtime.options]]
+key = "PauseLostFocus"
+title = "PauseLostFocus"
+type = "bool"
+default = false
+emit = { key = "PauseLostFocus", bool_style = "lower" }
+
+[sections.screen]
+title = "Screen"
+target = "settings.Screen"
+
+[[sections.screen.options]]
+key = "UseGL"
+title = "UseGL"
+type = "bool"
+default = true
+emit = { key = "UseGL", bool_style = "lower" }
+
+[[sections.screen.options]]
+key = "Filter"
+title = "Filter"
+type = "bool"
+default = false
+emit = { key = "Filter", bool_style = "lower" }
+
+[[sections.screen.options]]
+key = "VSync"
+title = "VSync"
+type = "bool"
+default = true
+emit = { key = "VSync", bool_style = "lower" }
+
+[sections.renderer]
+title = "3D"
+target = "settings.3D"
+
+[[sections.renderer.options]]
+key = "Renderer"
+title = "Renderer"
 type = "int"
 default = 1
-emit = { key = "ScreenUseGL" }
+emit = { key = "Renderer" }
 
-[[sections.runtime.options]]
-key = "3DRenderer"
-title = "3DRenderer"
+[sections.gl]
+title = "3D.GL"
+target = "settings.GL"
+
+[[sections.gl.options]]
+key = "ScaleFactor"
+title = "ScaleFactor"
 type = "int"
 default = 1
-emit = { key = "3DRenderer" }
+emit = { key = "ScaleFactor" }
 
-[[sections.runtime.options]]
-key = "ScreenLayout"
-title = "ScreenLayout"
-type = "int"
-default = 0
-emit = { key = "ScreenLayout" }
+[sections.emu]
+title = "Emu"
+target = "settings.Emu"
 
-[[sections.runtime.options]]
-key = "ScreenSizing"
-title = "ScreenSizing"
-type = "int"
-default = 0
-emit = { key = "ScreenSizing" }
-
-[[sections.runtime.options]]
-key = "ScreenGap"
-title = "ScreenGap"
-type = "int"
-default = 0
-emit = { key = "ScreenGap" }
-
-[[sections.runtime.options]]
-key = "ScreenFilter"
-title = "ScreenFilter"
-type = "int"
-default = 0
-emit = { key = "ScreenFilter" }
-
-[[sections.runtime.options]]
-key = "ScreenVSync"
-title = "ScreenVSync"
-type = "int"
-default = 1
-emit = { key = "ScreenVSync" }
-
-[[sections.runtime.options]]
+[[sections.emu.options]]
 key = "ExternalBIOSEnable"
 title = "ExternalBIOSEnable"
-type = "int"
-default = 0
-emit = { key = "ExternalBIOSEnable" }
+type = "bool"
+default = false
+emit = { key = "ExternalBIOSEnable", bool_style = "lower" }
 
-[[sections.runtime.options]]
+[[sections.emu.options]]
 key = "DirectBoot"
 title = "DirectBoot"
-type = "int"
-default = 1
-emit = { key = "DirectBoot" }
+type = "bool"
+default = true
+emit = { key = "DirectBoot", bool_style = "lower" }
 
-[[sections.runtime.options]]
+[[sections.emu.options]]
 key = "ConsoleType"
 title = "ConsoleType"
 type = "int"
 default = 0
 emit = { key = "ConsoleType" }
 
-[[sections.runtime.options]]
+[sections.instance]
+title = "Instance0"
+target = "settings.Instance0"
+
+[[sections.instance.options]]
 key = "JoystickID"
 title = "JoystickID"
 type = "int"
 default = 0
 emit = { key = "JoystickID" }
 
-[[sections.runtime.options]]
-key = "PauseLostFocus"
-title = "PauseLostFocus"
-type = "int"
-default = 0
-emit = { key = "PauseLostFocus" }
-
-[[sections.runtime.options]]
+[[sections.instance.options]]
 key = "SaveFilePath"
 title = "SaveFilePath"
 type = "string"
-default = ""
+default = "\"\""
 emit = { key = "SaveFilePath" }
 
-[[sections.runtime.options]]
+[[sections.instance.options]]
 key = "SavestatePath"
 title = "SavestatePath"
 type = "string"
-default = ""
+default = "\"\""
 emit = { key = "SavestatePath" }
 
-[[sections.runtime.options]]
-key = "HKKey_Pause"
-title = "HKKey_Pause"
+[sections.window]
+title = "Instance0.Window0"
+target = "settings.Window0"
+
+[[sections.window.options]]
+key = "ScreenLayout"
+title = "ScreenLayout"
+type = "int"
+default = 0
+emit = { key = "ScreenLayout" }
+
+[[sections.window.options]]
+key = "ScreenSizing"
+title = "ScreenSizing"
+type = "int"
+default = 0
+emit = { key = "ScreenSizing" }
+
+[[sections.window.options]]
+key = "ScreenGap"
+title = "ScreenGap"
+type = "int"
+default = 0
+emit = { key = "ScreenGap" }
+
+[sections.keyboard]
+title = "Instance0.Keyboard"
+target = "settings.Keyboard"
+
+[[sections.keyboard.options]]
+key = "HK_Pause"
+title = "HK_Pause"
 type = "int"
 default = 16777224
-emit = { key = "HKKey_Pause" }
+emit = { key = "HK_Pause" }

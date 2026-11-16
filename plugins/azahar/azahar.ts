@@ -37,14 +37,45 @@ export const onConfigure = (_pkg: Package, userConfiguration?: UserConfiguration
             min: 1,
             max: MAX_RESOLUTION,
             choices: Array.from({ length: MAX_RESOLUTION }, (_, index) => ({ key: String(index + 1), label: `${400 * (index + 1)}×${240 * (index + 1)}` })),
-        }],
+        }, VSYNC_OPTION, FRAME_LIMIT_OPTION],
     }, {
         key: "cpu",
         title: "CPU",
         options: [CPU_CLOCK_OPTION],
     }],
-    values: { graphics: { api: graphicsApi(userConfiguration)?.hook ?? null, resolution: internalResolution(userConfiguration) }, cpu: { clock: cpuClock(userConfiguration) } },
+    values: {
+        graphics: {
+            api: graphicsApi(userConfiguration)?.hook ?? null,
+            resolution: internalResolution(userConfiguration),
+            vsync: userConfiguration?.graphics?.vsync !== false,
+            frameLimit: frameLimit(userConfiguration),
+        },
+        cpu: { clock: cpuClock(userConfiguration) },
+    },
 });
+
+const VSYNC_OPTION = {
+    key: "vsync",
+    title: "VSync",
+    description: "Synchronize frames to the display's refresh rate to prevent tearing.",
+    type: "bool",
+    default: true,
+} as const;
+
+const FRAME_LIMIT_OPTION = {
+    key: "frameLimit",
+    title: "Frame Limiter",
+    description: "Percentage of the console's native speed.",
+    type: "int",
+    default: 100,
+    min: 50,
+    max: 150,
+} as const;
+
+function frameLimit(configuration?: UserConfiguration): number {
+    const value = configuration?.graphics?.frameLimit;
+    return typeof value === "number" && Number.isInteger(value) ? Math.min(150, Math.max(50, value)) : 100;
+}
 
 const GRAPHICS_APIS = ([
     { hook: "vulkan", label: "Vulkan", value: 2 },
@@ -88,7 +119,7 @@ function internalResolution(configuration?: UserConfiguration): number {
 }
 
 export const onLaunch = async (args: EmulatorLaunchArgs<
-    { storage: { nand_directory: string, sdmc_directory: string }, renderer: { resolution_factor: number, graphics_api: number }, core: { cpu_clock_percentage: number } },
+    { storage: { nand_directory: string, sdmc_directory: string }, renderer: { resolution_factor: number, graphics_api: number, use_vsync: boolean, frame_limit: number }, core: { cpu_clock_percentage: number } },
     Readonly<{ ctrnand?: Storage }>
 >) => {
     if (!args.storage.ctrnand) {
@@ -107,6 +138,8 @@ export const onLaunch = async (args: EmulatorLaunchArgs<
     options.sdmc_directory = JSON.stringify(fs.path("/Storage/sdmc").replaceAll("\\", "/"));
     args.configuration.options().renderer.resolution_factor = internalResolution(args.userConfiguration);
     args.configuration.options().renderer.graphics_api = graphicsApi(args.userConfiguration).value;
+    args.configuration.options().renderer.use_vsync = args.userConfiguration?.graphics?.vsync !== false;
+    args.configuration.options().renderer.frame_limit = frameLimit(args.userConfiguration);
     args.configuration.options().core.cpu_clock_percentage = cpuClock(args.userConfiguration);
     for (const [name, bytes] of Object.entries(args.configuration.render())) {
         fs.mount(`/Azahar/user/config/${name}`, bytes, { mode: "rw" });

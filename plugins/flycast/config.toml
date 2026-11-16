@@ -36,6 +36,13 @@ type = "int"
 emit = { key = "rend.Resolution" }
 
 [[sections.runtime.options]]
+key = "vsync"
+title = "VSync"
+type = "bool"
+default = true
+emit = { key = "rend.vsync", bool_style = "yes_no" }
+
+[[sections.runtime.options]]
 key = "sh4_clock"
 title = "SH4 Clock"
 type = "int"

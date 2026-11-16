@@ -1,0 +1,26 @@
+[bool_style.numeric]
+true = "1"
+false = "0"
+
+[targets.settings]
+output = { format = "ini", path = "config.ini" }
+
+[targets.settings.qt]
+
+[sections.qt]
+title = "qt"
+target = "settings.qt"
+
+[[sections.qt.options]]
+key = "videoSync"
+title = "videoSync"
+type = "bool"
+default = false
+emit = { key = "videoSync", bool_style = "numeric" }
+
+[[sections.qt.options]]
+key = "fpsTarget"
+title = "fpsTarget"
+type = "float"
+default = 60.0
+emit = { key = "fpsTarget" }

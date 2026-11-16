@@ -8,7 +8,7 @@ import { EmulatorUpdates } from "jsr:@polymer-fe/emulator-updates@^0.1.0";
 import discScript from "pkg:disc.lua";
 import type { ConfigurationResult, DiscChangeContext, EmulatorLaunchArgs, Package, Storage, GraphicsHook, UserConfiguration } from "polymer:api";
 
-type Options = { runtime: { resolution: number, renderer: string, sh4_clock: number } };
+type Options = { runtime: { resolution: number, renderer: string, sh4_clock: number, vsync: boolean } };
 
 const DISC_REQUEST = "/Flycast/polymer-disc.txt";
 let discPaths: string[] = [];
@@ -42,13 +42,26 @@ export const onConfigure = (_pkg: Package, userConfiguration?: UserConfiguration
             min: 1,
             max: MAX_RESOLUTION,
             choices: Array.from({ length: MAX_RESOLUTION }, (_, index) => ({ key: String(index + 1), label: `${640 * (index + 1)}×${480 * (index + 1)}` })),
+        }, {
+            key: "vsync",
+            title: "VSync",
+            description: "Synchronize frames to the display's refresh rate to prevent tearing.",
+            type: "bool",
+            default: true,
         }],
     }, {
         key: "cpu",
         title: "CPU",
         options: [CPU_CLOCK_OPTION],
     }],
-    values: { graphics: { api: graphicsApi(userConfiguration)?.hook ?? null, resolution: internalResolution(userConfiguration) }, cpu: { clock: cpuClock(userConfiguration) } },
+    values: {
+        graphics: {
+            api: graphicsApi(userConfiguration)?.hook ?? null,
+            resolution: internalResolution(userConfiguration),
+            vsync: userConfiguration?.graphics?.vsync !== false,
+        },
+        cpu: { clock: cpuClock(userConfiguration) },
+    },
 });
 
 const GRAPHICS_APIS = ([
@@ -120,6 +133,7 @@ export const onLaunch = async (args: EmulatorLaunchArgs<Options, Readonly<{ vmu?
     args.configuration.options().runtime.resolution = 480 * internalResolution(args.userConfiguration);
     args.configuration.options().runtime.renderer = graphicsApi(args.userConfiguration).value;
     args.configuration.options().runtime.sh4_clock = Math.round(2 * cpuClock(args.userConfiguration));
+    args.configuration.options().runtime.vsync = args.userConfiguration?.graphics?.vsync !== false;
     for (const [name, bytes] of Object.entries(args.configuration.render())) {
         args.filesystem.mount(`/Flycast/${name}`, bytes, { mode: "rw" });
     }
